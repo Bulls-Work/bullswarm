@@ -432,7 +432,11 @@ export function rollupRecord(state, result, { project = null, cwd, now = Date.no
   const lifecycle = state?.lifecycle ?? {};
   const recordedCwd = cwd !== undefined ? cwd : (state?.intent?.cwd ?? null);
   const startedAtMs = parseIso(lifecycle.startedAt);
-  const finishedAt = lifecycle.finishedAt ?? result?.finishedAt ?? isoOf(now);
+  const terminal = terminalStateOf(state, result);
+  // A run that is not terminal has not finished, so its row carries no finish
+  // time at all: a reopened run is re-indexed here as running, and inheriting
+  // `now` (or its earlier finish) would list it beside the runs that ended.
+  const finishedAt = terminal ? (lifecycle.finishedAt ?? result?.finishedAt ?? isoOf(now)) : null;
   const finishedAtMs = parseIso(finishedAt);
   const agentSeconds = finiteNumber(state?.budget?.seconds);
   const attempts = [
@@ -449,7 +453,6 @@ export function rollupRecord(state, result, { project = null, cwd, now = Date.no
   const ledgerAttempts = hasCanonicalUsage ? attempts : (state?.attempts ?? attempts);
   const { pools, models, canonical } = attemptTotals(ledgerAttempts);
   const usage = aggregateAttemptUsage(attempts);
-  const terminal = terminalStateOf(state, result);
   const minutes = intervalMinutes(attempts, { now, terminal });
   const phases = phaseRecords(state, attempts, { now, terminal });
   const lifecycleWallMinutes = startedAtMs != null && finishedAtMs != null

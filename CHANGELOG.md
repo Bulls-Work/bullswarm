@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## 0.35.2 — the Step page reads like a transcript
+## 0.35.2 — the Step page reads like a transcript; prices without a command, honest totals, a home that stops growing
 
 - step: detail is now a scrollable transcript of every turn in order: the full
   response followed by one row per command or tool call; opening a turn or
@@ -8,8 +8,9 @@
 - step: overview opens on the latest ten turns on desktop and five on phones,
   newest at the bottom, with one `turns 1–N · … · click for detail` line for
   earlier work; a followed live window slides until the reader moves it.
-- step: `overview · detail` is one visible, clickable top-bar toggle; `v`, the
-  footer and Help name the same views, and standalone tasks use the same page.
+- step: `overview · detail` sits in the activity heading, right after the
+  heading word, each word a click target; `v`, the footer and Help name the
+  same views, and standalone tasks use the same page.
 - step: clicking a turn head toggles it exactly like Enter, and hover lights
   only the turn's text rather than its padding or desktop side column.
 - run: each timeline attempt row opens Step on that exact attempt; step and
@@ -29,6 +30,121 @@
 - mod: Usage opens with `u` or a click even with no workflow running, and back
   returns to idle; validated temporary chunks carry large Step records within
   hook limits and are removed immediately.
+- reprice: an incremental reconciler prices every terminal attempt that is
+  still unknown or a bytes/4 estimate, with no user command. The kernel prices
+  its own run at quiet boundaries and before the result and rollup are
+  written; a single `bullswarm run` whose usage is unmeasured starts a detached
+  pass 30 s after it ends (only when the pool's provider keeps transcripts);
+  the dashboard starts one detached, throttled pass (one per 5 minutes, one at
+  a time) after its first paint and says `pricing N older records…` while it
+  runs. A per-attempt ledger in `pricing/reconcile.json` retries recent
+  attempts after 1 and 10 minutes, gives older ones one try, and reopens an
+  attempt only when a new or grown transcript covers its window, so a second
+  pass does nothing. The automatic pass never makes an attempt worse: no match
+  or an ambiguous match leaves it as it was. `workflow reprice` stays the
+  manual full backfill and gains `--incremental` (with `--trigger`,
+  `--transcript-home`, `--delay-ms`). On a copy of a real home the first pass
+  priced 165 of 281 eligible attempts; the second took milliseconds and wrote
+  nothing.
+- transcripts: Codex and Claude matching tries the session id, then the task
+  text (the task-file path or exact text in the first user message), then cwd
+  + time window; more than one candidate stays unknown, and the cwd/time step
+  skips transcripts that quote a different task file. On the same copy the
+  formerly ambiguous attempts resolved by task text: codex 100, claude-code 19,
+  claude-code:acme 14. Indexes store prompt paths and hashes, never the text.
+  Single tasks are priced too; a task's window now ends at its `endedAt`.
+- capture: each attempt records an immutable `capture` block when its worker
+  exits — provider session id and its source, model, exclusive token classes,
+  provider-reported cost, exit code and signal — before the end meter read and
+  the transcript lookup, and persists it at once. Later pricing may upgrade an
+  estimate but never downgrades provider-reported usage. Planner and scout
+  attempts are captured too.
+- grok: the final `end` event is decoded (session id, token classes, cost),
+  proven on a real grok 1.0.13 stream checked in scrubbed as
+  `tests/fixtures/stream/grok-capture.jsonl`; `"rate limit"` is no longer a
+  grok auth signature, so a grok 429 is a throttle, not a 10-minute auth pause.
+- command-code: launched without `--no-session`, so its session transcript
+  exists afterwards and the reader matches it by session id.
+- money: every money total on Home, Runs, Run, Stats and Budget that includes
+  unmeasured attempts reads `at least $X · N unmeasured`; a scope with no
+  recorded amount reads `api unknown`. Budget prints a `spent …` line per pool,
+  and the Stats hover, axis and coverage note use the same words. One month
+  length, `DAYS_PER_MONTH = 30.4375` (365.25/12), is used everywhere.
+- home: the window-share cell shows the measured share from
+  `calibration/<pool>.json` (`5.0% measured`) when samples attribute a window
+  drop to today's runs, the labelled pace estimate only when none do, and a
+  dash otherwise. The recent list shows finished runs only — a reopened run
+  leaves it — and each row's mark is the Run page header's mark; a
+  non-terminal run's index row no longer carries a finish time.
+- retention: `state.json.retention` `{ "enabled": true, "workspacesDays": 7 }`
+  removes the `workspaces/` copies inside terminal runs older than the limit,
+  in a detached background sweep started by the kernel, watch completion and
+  the dashboard (at most every 6 hours, one at a time, only when a run holds a
+  workspace copy). Records, reports, streams, task/out markdown, interrupted
+  runs and any leased run are never touched. `bullswarm home prune
+  [--dry-run|--yes] [--days n]` lists or removes the same set with bytes, and
+  `bullswarm home status` shows the policy, bytes on disk and the last prune
+  and reprice results.
+- pauses: a limit notice pauses a pool for quota only on proof — the pool's
+  own meter at 95% or more on a running window, or a provider line that says a
+  usage window is spent and names its reset. Everything else, such as
+  `Rate limit exceeded. Please wait a moment and try again.`, is a transient
+  throttle: the same pool is retried after 20 s and 60 s (or the wait it
+  named), then the attempt moves on, and the pool is never paused. `pools`
+  prints `PAUSED until <time> · <proof> · provider: "<line>" · meter then: … ·
+  lift now: bullswarm pools resume <pool>`; `bullswarm pools resume <pool>`
+  lifts a pause, and `bullswarm strategy set-pausing off|on` turns automatic
+  pausing off or back on.
+- pauses: `bullswarm strategy set-pausing off` now stops every automatic
+  pause, not only quota — auth, the credential-group siblings an auth pause
+  benches with it, and the soft bench a second strike writes — so with the
+  switch off nothing is taken out of service by a command's own judgement;
+  routing still reads meters and a failed attempt still moves to another pool.
+  It is stored as `strategy.pausing: "off"`. `pools` opens with `automatic
+  pausing: off`, and `pools resume` still lifts a pause that was already in
+  place. Quota and auth signatures are matched against the provider's own
+  error channel only — its stderr, the events it flags as errors and its
+  terminal `result` record — never an assistant's reply or a tool result: on
+  2026-09-21 a pool was paused for a sentence an agent wrote about
+  `usage_credits_required` in its own report.
+- routing: an evidence step may run on the pool that wrote the judged work
+  when that pool is urgent; the reason then says `independence waived: <pool>
+  resets in <clock>`. Independence is judged by model family, so
+  `claude-code` and `claude-code:acme` are the same writer; with nothing
+  urgent, independence stays the tie-breaker.
+- watch: `bullswarm workflow watch <run> --until outcome|trouble` prints only
+  trouble lines (failed, rejected, paused, stalled, stale, steering) and the
+  outcome; `trouble` exits at the first one with a `next:` relaunch line. A
+  running attempt gets a stale score (quiet with no command running, no file
+  change while commands continue, the same command repeated, wall time over 3×
+  the expected minutes) and one `⚠ <step> looks stale: <reasons>` line.
+  `bullswarm workflow step restart <run> <step> [--pool <pool>]` stops that
+  attempt and requeues the step with its durable handoff; nothing restarts on
+  its own. The packaged skill teaches one background `--until trouble` watch
+  per run and one tool call per wake.
+- providers: OpenCode and Command Code expose the same durable-transcript
+  reader contract as the first-class providers. OpenCode reads its SQLite
+  sessions read-only; Command Code reads persisted project JSONL only when a
+  session transcript exists and carries usage.
+- reprice: transcript lookup follows the loaded provider registry, so
+  `opencode2*`, `opencode2:kaihk-*`, and `command-code` pools reach their
+  provider-owned readers without a hard-coded provider list. Ambiguous,
+  missing, and checkpoint-only records stay unknown rather than becoming
+  zero-cost attempts.
+- command-code: the 116 historical attempts studied for this release used
+  `--no-session`, so their checkpoints are documented as non-recoverable
+  history.
+- pricing: public model cards are retained only with a source and date (the
+  cards were checked 2026-09-20). `kaihk/*` and `opencode/union-alpha` relay
+  identifiers have no public card, so the underlying OpenAI card is not
+  substituted; observed Command Code models use the cited Command Code card.
+- evidence: live OpenCode and Command Code streams captured on 2026-09-20 are
+  checked in as `tests/fixtures/streams/opencode-hello.jsonl` and
+  `tests/fixtures/streams/command-code-hello.jsonl`; each contrib connector
+  claims the `eventStream.usage` rules those captures prove.
+- tests: detached reprice and prune children never recreate a home that was
+  deleted under them, and the OpenCode read-only test runs everywhere against
+  the exported rows instead of skipping without a local database.
 
 ## 0.35.1 — a calmer dashboard with honest active time
 

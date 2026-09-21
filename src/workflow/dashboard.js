@@ -1,4 +1,6 @@
 import { withV2Cancellation } from './v2-cancellation.js';
+import { reconcileActivity, scheduleReconcile } from './reconcile.js';
+import { spawnRetentionSweep } from '../lib/retention.js';
 // Interactive workflow dashboard, inspired by Claude Code's /workflows view.
 // It deliberately uses only ANSI sequences and Node's standard streams.
 
@@ -2099,7 +2101,7 @@ export function renderWorkflowTui(row, options = {}) {
 export async function runDashboard(bullswarmDir, {
   input = process.stdin, output = process.stdout, refreshMs = 1000,
   spinnerMs = 400, token = null, openSetupTui = null, homeDir = process.env.HOME ?? '',
-  clipboard = writeClipboard,
+  clipboard = writeClipboard, autoReprice = true, autoPrune = true,
 } = {}) {
   if ((!input.isTTY || !output.isTTY) && !token) throw new Error('workflow dashboard requires a TTY, or pass a run ID for a static text tree');
   if ((!input.isTTY || !output.isTTY) && token) {
@@ -2126,6 +2128,7 @@ export async function runDashboard(bullswarmDir, {
   // A legacy run has no drilldown: its page is the one line the CLI prints.
   const directV2 = Boolean(directRow) && !directRow.legacy;
   let message = null;
+  let pricingNoteShown = false;
   let lastGoodRow = null;
   let dashboardFilter = directV2 ? 'all' : 'active';
   let query = '';
@@ -2558,6 +2561,11 @@ export async function runDashboard(bullswarmDir, {
       if (preserved >= 0) selected = preserved;
       else selected = clamp(selected, 0, Math.max(0, rows.length - 1));
       readIntegration();
+      // While the detached pricing pass runs, say so quietly (never over
+      // another message) and clear the note when it ends.
+      const pricingNote = reconcileActivity(bullswarmDir);
+      if (pricingNote && (!message || pricingNoteShown)) { message = pricingNote; pricingNoteShown = true; }
+      else if (!pricingNote && pricingNoteShown) { if (message?.startsWith('pricing ')) message = null; pricingNoteShown = false; }
       void readUsage();
     } catch (err) { message = `display error: ${err.message}`; }
     // On the Runs page the cursor may sit on a finished row of the day table,
@@ -3825,6 +3833,13 @@ export async function runDashboard(bullswarmDir, {
   readPrices();
   if (token) ensureCatalog();
   paint();
+  // Price unmeasured history in a detached, throttled child once the first
+  // frame is up; the dashboard never waits for it. Repriced rollups arrive
+  // through readIndex() on a later refresh.
+  if (autoReprice) scheduleReconcile({ bullswarmDir, trigger: 'dashboard' });
+  // The same for old workspace copies (retention); both are off in tests
+  // that open the dashboard on a temporary home.
+  if (autoPrune) spawnRetentionSweep({ bullswarmDir, trigger: 'dashboard' });
   let timer = setInterval(refresh, refreshMs);
   timer.unref?.();
   let spinnerTimer = setInterval(spin, Math.max(50, Number(spinnerMs) || 400));

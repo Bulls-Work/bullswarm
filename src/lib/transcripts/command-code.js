@@ -5,8 +5,8 @@
 // rows carry inclusive inputTokens plus cacheReadTokens/cacheWriteTokens, so
 // the canonical fresh-input class is input - cache read - cache write.  The
 // historical Bullswarm attempts were launched with --no-session and therefore
-// have checkpoints rather than these usage-bearing transcripts; those attempts
-// remain unknown until Command Code is run with session persistence enabled.
+// have checkpoints rather than these usage-bearing transcripts. Since 0.35.2
+// sessions persist; older attempts without one remain unknown.
 
 import {
   readdirSync,

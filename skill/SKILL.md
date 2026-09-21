@@ -115,23 +115,73 @@ A run never waits for you. It runs until nothing more can happen on its own,
 then finishes, and its result hands back whatever is left with your options.
 What happens next is your decision.
 
+The standard is one background watch per run:
+
 ```bash
-bullswarm workflow watch <shortId> --next
-bullswarm workflow runs result <shortId> --json --summary
+bullswarm workflow watch <shortId> --until trouble
 ```
 
-Run `watch --next` in a background terminal and wait for it to exit. Do not
-poll in a loop and do not read files in the run directory. When it exits on an
-event, act on it and relaunch with the exact `next: bullswarm workflow watch
-<shortId> --next --after <sequence> --since <iso>` line it printed. When it
-exits on an `outcome:` line, the run has finished, paused, or been
-interrupted, and the output already holds what you need to decide.
+Start it in the background right after launch, then leave the run alone. It
+prints nothing while work goes well: no attach line, no line per finished
+step. It exits on the first trouble, or on the run's outcome. Trouble is a step
+that failed or was blocked, a check that rejected a requirement, a rejected
+plan revision, a pause, a stalled worker, a step that looks stale, or steering
+left for you.
 
-Each event is a decision point: read the output of the step that just
-finished (`bullswarm workflow action show <shortId> <actionId>` names its
-`outputFile`) and decide whether the rest of the plan still fits. If it does,
-relaunch the watcher. If it does not, revise the plan (section 4) before
-relaunching.
+Each exit is one wake. Read the output in one tool call, then act:
+
+- Trouble lines followed by `next: bullswarm workflow watch <shortId> --until
+  trouble --after <sequence> --since <iso>`: decide what to do, do it, and start
+  that exact line in the background again. The cursor means nothing is
+  missed or printed twice.
+- `outcome:`: the run finished, paused, or was interrupted, and the output
+  already holds what you need (see "When it finishes").
+
+Between wakes, do nothing about the run. Do not poll, do not read files in the
+run directory, do not run `runs show` or `tui`, and do not send the user a
+status reply per step: while the watch is quiet there is nothing to report.
+Use `--until outcome` when only the end matters. Trouble lines still print, but
+only the outcome ends the watch. Use `--next` instead when your plan depends on
+what an early step finds, because it also wakes on every finished step.
+
+A trouble line is a decision point:
+
+| Line | What it means | What to do |
+|---|---|---|
+| `✗ <step> failed …` / `⊘ <step> blocked …` | the step did not succeed | read its output (`bullswarm workflow action show <shortId> <step>` names `outputFile`); revise the plan (section 4), or let the run finish and retry |
+| `◆ <step> evidence · <id> failed` | a check rejected a requirement | a plan problem: add a step that fixes what the evidence names (see below) |
+| `× plan revision rejected …` | your revision was not applied | fix the issues it lists and revise again |
+| `⚠ <step> stalled on <pool> …` | the kernel stopped a silent worker | nothing: it retries on another pool or hands the step back |
+| `⧖ pause requested …` | someone paused the run | `bullswarm workflow resume <shortId>` when it should go on |
+| `⧖ steering received · …` | a person left guidance for you | decide what it means and revise the plan |
+| `⚠ <step> looks stale: <reasons>` | the step may be stuck | see below |
+
+### A step that looks stale
+
+The watcher scores each running step and prints `⚠ <step> looks stale:
+<reasons>` once per attempt when the score crosses its threshold:
+
+- `quiet 12m with no command running`: the agent produced nothing and no
+  command is in flight. A long test run is not quiet.
+- `no file change in 25m while 14 commands ran`: a step that writes keeps
+  running commands but changes nothing.
+- `same command 3× in a row: <command>`: the same command three times with no
+  file change in between.
+- `running 47m, over 3× the expected 15m`: well past what the router expected.
+
+Quiet alone is enough to print the line; otherwise two reasons must hold.
+Nothing is stopped for you. Choose one:
+
+- Let it run: start the `next:` watch again. This attempt is not reported a
+  second time.
+- Restart it: `bullswarm workflow step restart <shortId> <step>` (the watch
+  prints it as `or restart:`). This stops that step only and runs it again. The
+  new attempt gets a handoff block with the files changed, the diff stat, the
+  output so far and the last thing the agent said. Add `--pool <pool>` to move
+  the step to another pool.
+- Change it: revise the plan (section 4).
+
+Then start the watch again.
 
 ### When it finishes
 
@@ -149,7 +199,7 @@ command per option:
 | continue | the plan needs a fix, a new step, or a step redone | export, edit, and revise the plan (section 4) |
 | retry | a step stopped for a reason a retry fixes: no pool, a paused pool, a crashed or silent worker | `bullswarm workflow resume <shortId>` |
 | take over | the rest is small, or needs something only you have (a logged-in browser, a credential, a decision for the user) | do it yourself; `runs result <shortId> --json` names every step's output |
-| restart | the goal or the approach was wrong | start a new `workflow goal` run |
+| restart | the goal or the approach was wrong | start a new `workflow goal` run (a whole new run; `step restart` reruns one running step) |
 
 `retry` appears only when a step is retryable. `resume` on a finished run
 reruns exactly those steps and the steps blocked behind them. When nothing is
@@ -218,8 +268,8 @@ Rules that matter when you edit:
   <shortId>` starts nothing new and lets running agents finish (`--now` stops
   them; they run again after resume). Export and revise while paused, then
   `bullswarm workflow resume <shortId>`. A revision never lifts a pause.
-- `watch --next` wakes on `plan revised`, `plan revision rejected`, pause lines,
-  and `steering received`. Steering a person queued never halts work: decide
+- `watch --until trouble` wakes on `plan revision rejected`, pause requests,
+  and `steering received`; `watch --next` also wakes on `plan revised`. Steering a person queued never halts work: decide
   what it means for the plan and revise. The exported file lists pending
   steering in `steeringIds`, and a revision from that file marks it delivered.
   A run that finishes before you act on steering lists it as `steering not

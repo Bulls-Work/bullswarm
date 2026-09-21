@@ -110,8 +110,10 @@ windowPriceUsd = monthlyPriceUsd × windowDays / 30.4375
 subscriptionUsdFromPct = windowPriceUsd × pct / 100
 ```
 
-The divisor `30.4375` is intentional: it normalizes a monthly price to the
-average calendar month used by the contract. A changed quota-window kind starts
+The divisor `30.4375` (365.25 / 12, `DAYS_PER_MONTH` in `src/lib/prices.js`)
+is intentional: it normalizes a monthly price to the average calendar month.
+Since 0.35.2 it is the only month length anywhere — subscription cost, window
+prices and Budget's monthly window all use it. A changed quota-window kind starts
 a fresh calibration for that pool. If there is no plan price, no meter, or no
 API amount for calibration, the subscription basis stays explicitly unknown.
 
@@ -129,9 +131,39 @@ The value is stored in `state.strategy.subscriptions[pool].monthlyPriceUsd`.
 The quota-window declaration, when needed, is kept alongside it; it does not
 change the API rate card.
 
+## Prices arrive on their own
+
+Each attempt keeps what its provider reported: when the worker exits, the
+attempt records an immutable `capture` block (provider session id, model,
+exclusive token classes, provider-reported cost when present, exit code and
+signal) before any meter read or transcript lookup. Provider-reported usage is
+never replaced by a later sum; an estimate or an unknown can be upgraded.
+
+An attempt that ended unknown or estimated is priced later by an incremental
+reconciler, with no command:
+
+- the kernel prices its own run whenever no worker is streaming and once more
+  before it writes the result and rollup;
+- a single `bullswarm run` with unmeasured usage starts a detached pass 30 s
+  after it ends, when the pool's provider keeps transcripts;
+- the dashboard starts one detached pass after its first paint (at most one
+  every 5 minutes, one at a time) and shows `pricing N older records…` while
+  it runs.
+
+The reconciler matches a transcript by session id, then by task text (the task
+file's path or exact text in the delegate's first message), then by cwd and
+time window. More than one candidate stays unknown. Its ledger,
+`$BULLSWARM_HOME/pricing/reconcile.json`, records every try: a recent attempt is
+retried after 1 and 10 minutes, an older one gets one try, and a closed attempt
+reopens only when a new or grown transcript covers its window, so a second pass
+does nothing. A pass never makes an attempt worse: no match leaves it as it
+was. `bullswarm home status` prints the last pass as `last reprice`.
+
 ## Reprice old attempts
 
-Use `workflow reprice` when rate cards or transcript readers have improved:
+Use `workflow reprice` when rate cards or transcript readers have improved; it
+is the manual full backfill, and `workflow reprice --incremental` runs the
+automatic pass by hand:
 
 ```bash
 bullswarm workflow reprice [--apply] [--since <date>|--all] [--pool <name>] [--json]
@@ -156,10 +188,10 @@ found the following:
 
 | Pool or attempt | Durable source | What can be recovered | What never can be recovered |
 |---|---|---|---|
-| `claude-code`, `codex` | The provider's existing transcript store | A unique session or cwd/time-window match is summed as `transcript-summed` | An attempt whose provider transcript was deleted, never written, or remains ambiguous |
+| `claude-code`, `codex` | The provider's existing transcript store | A unique session, task-text, or cwd/time-window match is summed as `transcript-summed` | An attempt whose provider transcript was deleted, never written, or remains ambiguous |
 | `grok` started before 2026-09-14 | No supported durable transcript record for that period | Nothing from transcript history | Those pre-2026-09-14 attempts cannot be backfilled; later attempts still require a matching transcript |
 | `opencode2*`, including `opencode2:kaihk-*` | `~/.local/share/opencode/opencode.db` (`session`, `message`, and `part`) | Token classes, model, cwd, and time bounds when one session matches the attempt window; a task-file path/text disambiguates multiple candidates | No session, or more than one unresolved candidate, stays unknown |
-| `command-code` with a persisted session | `~/.commandcode/projects/<cwd-slug>/<session-id>.jsonl` | Assistant message usage and model when that JSONL transcript exists and matches | The supplied historical 116 attempts used `--no-session`; their checkpoint files, hook logs, and `history.jsonl` carry no authoritative usage, so those attempts cannot be backfilled |
+| `command-code` with a persisted session | `~/.commandcode/projects/<cwd-slug>/<session-id>.jsonl` | Assistant message usage and model when that JSONL transcript exists and matches | Historical attempts made with `--no-session` have no usage-bearing transcript and cannot be backfilled; since 0.35.2 Bullswarm leaves sessions enabled |
 | Any pool with no durable transcript | None | A provider-reported stream value may still win when the stream actually carries usage | No transcript means no historical sum: the result is `unknown`, never `$0` |
 
 The OpenCode matcher uses the attempt's exact cwd and inclusive time window,
@@ -207,17 +239,17 @@ fields: the strict total, which stays unknown, and `apiKnownSubtotalUsd` — the
 recorded sum over the attempts that did carry a price.
 
 Surfaces print the subtotal rather than a dash, because a dash beside a figure
-the rollups hold reads as "this was free". It is always marked `≈` and named as
-a lower bound:
+the rollups hold reads as "this was free". It is always named as the lower
+bound it is:
 
-- a Home card or recent row shows `≈ $9.52 api`;
-- a Stats panel row shows `≈ $63.16 api 21.1%`, and the Spending page states
-  the coverage once: `Coverage · 83 of 149 attempts carried a price; spend over
-  them is a subtotal, marked ≈.`;
+- a Home card or recent row shows `at least $9.52 · 6 unmeasured`;
+- a Stats panel row shows `at least $63.16 api 21.1%`, and the Spending page
+  states the coverage once: `Coverage · 66 of 149 attempts recorded no price;
+  every spend total over this scope reads at least $X · 66 unmeasured.`;
 - a hover label words it in full:
-  `20 Sep · codex · ≈$8.28 (8/11 attempts priced) · 12% of day`;
+  `20 Sep · codex · at least $8.28 · 3 unmeasured · 12% of day`;
 - Home's `spent per day` chart draws each day's recorded figure, marking the
-  whole axis `≈` when any bar is a subtotal.
+  whole axis `at least` when any bar is a subtotal.
 
 A subtotal is never summed into a strict total, so no surface claims a
 whole-scope number it does not have. A scope with no recorded amount at all

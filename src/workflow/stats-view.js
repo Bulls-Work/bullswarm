@@ -15,6 +15,7 @@ import {
   measurePanelGridLayout,
 } from './stat-kit.js';
 import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
+import { honestApiTotalText, spendFacts } from './spend-facts.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const TABS = Object.freeze([
@@ -216,22 +217,37 @@ function moneyText(rowOrValue, tokenSource = null, options = {}) {
     window: row.subscriptionWindow ?? row.window,
     basis: row.subscriptionBasis,
   };
-  // A panel row has a dozen columns for its conclusion, so it drops the
-  // `sub unknown (…)` prose an amount-less subscription carries; the page's
-  // own notes state the basis once instead. The summary keeps the full pair.
-  if (options.compact === true && finite(subscription.usd) == null) {
-    return apiMoneyText(money, row.tokenSource ?? tokenSource, row.tokens ?? null, options);
-  }
+  // The whole-scope label: the strict amount with its own basis words, or the
+  // recorded subtotal marked `≈`. A partial scope replaces it with the Run
+  // spend block's own lower bound and coverage (`at least $X · N unmeasured`).
   const pair = formatMoneyPair({
     api: { usd: money && !money.partial ? money.usd : null, tokenSource: row.tokenSource ?? tokenSource },
     subscription,
     tokens: row.tokens ?? null,
   });
-  const [apiText, ...subscriptionText] = pair.split(' · ');
-  return [
-    money?.partial ? apiMoneyText(money, null, row.tokens ?? null, options) : apiText,
-    ...subscriptionText,
-  ].join(' · ');
+  const [wholeApi, ...subscriptionText] = pair.split(' · ');
+  const legacyApi = money?.partial
+    ? apiMoneyText(money, null, row.tokens ?? null, options)
+    : wholeApi;
+  const facts = spendFacts(row);
+  // A panel cell has room for the amount and its share and nothing else — a
+  // longer phrase switches the panel grid's bars off, taking every row's hit
+  // region with them. So the cell keeps the `at least` marker and drops the
+  // word `api` (its panel title says what the money is) and the coverage
+  // counts, which `coverageNote()` states once for the page and the hover
+  // carries per row.
+  const apiText = facts
+    ? honestApiTotalText(facts, {
+      api: options.compact === true ? null : 'api',
+      whole: legacyApi,
+      counts: options.compact === true ? 'none' : options.counts ?? 'unmeasured',
+    })
+    : legacyApi;
+  // A panel row has a dozen columns for its conclusion, so it drops the
+  // `sub unknown (…)` prose an amount-less subscription carries; the page's
+  // own notes state the basis once instead. The summary keeps the full pair.
+  if (options.compact === true && finite(subscription.usd) == null) return apiText;
+  return [apiText, ...subscriptionText].join(' · ');
 }
 function minuteText(value) {
   const number = finite(value);
@@ -479,14 +495,14 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
   const title = tab === 'spending'
     ? info.modelCostMeasured ? 'Spend per day · API-equivalent · model' : stackBy === 'model' ? 'Worker-minutes per day · model cost is not measured' : 'Spend per day · API-equivalent · pool'
     : tab === 'pool' ? 'Spend per day · API-equivalent · pool' : tab === 'model' ? 'Worker-minutes per day · model' : 'Runs per day · project';
-  // Keep the chart's compact marker aligned with formatMoneyPair: `~` means
-  // a local byte estimate, `≈` a value that is not a strict total — a
-  // transcript-summed amount, a calibrated subscription, or a day whose
-  // attempts were only partly priced. The mark also sizes `columnBars`' tick
-  // gutter, so a marked chart keeps its whole label (`≈$160.00`).
+  // Keep the chart's marker aligned with the money rule: `~` means a local
+  // byte estimate, and a day whose attempts were only partly priced is a
+  // lower bound, marked in the Run spend block's own words. The mark also
+  // sizes `columnBars`' tick gutter, so a marked chart keeps its whole label
+  // (`at least $160.00`).
   const partial = sourceBuckets.some((bucket) => bucket.partial);
   const mark = info.unit === 'usd'
-    ? partial ? '≈' : sourceBuckets.some((bucket) => bucket.tokenSource === 'estimated:utf8-bytes/4') ? '~' : ''
+    ? partial ? 'at least ' : sourceBuckets.some((bucket) => bucket.tokenSource === 'estimated:utf8-bytes/4') ? '~' : ''
     : '';
   const chartArgs = {
     title,
@@ -575,14 +591,15 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
  * The one line a page needs when its money is partly a subtotal: `reprice`
  * does not invent a price for an attempt that never recorded one, so a period
  * can hold both kinds, and a figure over the priced attempts has to say so
- * once rather than per row.
+ * once rather than per row — in the Run spend block's own words.
  */
 function coverageNote(table) {
   const totals = object(table)?.totals;
   const attempts = finite(totals?.attempts);
   const priced = finite(totals?.pricedAttempts);
   if (attempts == null || priced == null || priced >= attempts) return null;
-  return `Coverage · ${priced} of ${attempts} attempts carried a price; spend over them is a subtotal, marked ≈.`;
+  const unmeasured = attempts - priced;
+  return `Coverage · ${unmeasured} of ${attempts} attempts recorded no price; every spend total over this scope reads at least $X · ${unmeasured} unmeasured.`;
 }
 
 /**

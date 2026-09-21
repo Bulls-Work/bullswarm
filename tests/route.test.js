@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   pickPool, paceScore, isQuarantined, isBenched, isExhausted, fiveHourForecast,
-  pacingForecast, DEFAULT_INFLIGHT_PENALTY_PCT,
+  pacingForecast, DEFAULT_INFLIGHT_PENALTY_PCT, modelFamilyOf,
 } from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../src/meters/framework.js';
 
@@ -1387,4 +1387,151 @@ test('a --worker-pool pin says it was pinned instead of claiming a comparison', 
     evidence: { writerPools: ['codex'] },
   });
   assert.equal(unpinned.why, 'evidence step: only the writer pool codex is eligible');
+});
+
+// R13: expiring quota over verifier independence; independence by model family.
+
+test('a writer is judged by model family, not pool account', () => {
+  assert.equal(modelFamilyOf('claude-code'), 'claude-code');
+  assert.equal(modelFamilyOf('claude-code:acme'), 'claude-code');
+  assert.equal(modelFamilyOf(pool('claude-code:initech')), 'claude-code');
+  assert.equal(modelFamilyOf({ name: 'x', connector: { profile: { providerId: 'codex' } } }), 'codex');
+  // A non-string provider field does not hide the pool name.
+  assert.equal(modelFamilyOf({ name: 'grok', provider: { id: 1 } }), 'grok');
+  assert.equal(modelFamilyOf(null), null);
+  assert.equal(modelFamilyOf(''), null);
+
+  // claude-code wrote the work: its sibling account is the same writer, so
+  // the ahead-of-pace acme still loses the evidence step to grok.
+  const r = pickPool('analyze', [
+    pool('claude-code:acme', { pace: 50 }),
+    pool('grok', { pace: -10 }),
+  ], {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['claude-code'] },
+  });
+  assert.equal(r.pick.pool, 'grok');
+  assert.match(r.why, /^evidence: independent of claude-code:acme \(they produced the judged work\)/);
+
+  // And the reverse: a acme writer makes the default claude-code account a writer.
+  const reverse = pickPool('analyze', [
+    pool('claude-code', { pace: 50 }),
+    pool('codex', { pace: 0 }),
+  ], {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['claude-code:acme'] },
+  });
+  assert.equal(reverse.pick.pool, 'codex');
+});
+
+test('an urgent writer takes the evidence step and the reason says independence was waived', () => {
+  // acme's week closes in 13h33m with +22.9 unspent (urgent); codex, the only
+  // independent pool, is ahead of the writer on surplus but not expiring.
+  const pools = [
+    pool('codex', { pace: 30 }),
+    pacedPool('claude-code:acme', 'weekly', 69, 13 * 60 + 33),
+  ];
+  const r = pickPool('analyze', pools, {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['claude-code'] },
+  });
+  assert.equal(r.pick.pool, 'claude-code:acme');
+  assert.equal(
+    r.why,
+    'independence waived: claude-code:acme resets in 13h33m'
+      + ' · surplus 22.9 over 8.1% of the week left → urgency 283, forecast 69.0%'
+      + ' · independent but not urgent: codex',
+  );
+  assert.deepEqual(
+    r.candidates.map((c) => [c.pool, c.urgencyState]),
+    [['claude-code:acme', 'urgent'], ['codex', null]],
+  );
+
+  // The same writer, same clock, is waived for an incumbent and a configured
+  // assignment too — urgency outranks both exactly as it does off evidence.
+  const assigned = pickPool('analyze', [
+    pool('codex', { pace: 30, incumbent: true }),
+    pacedPool('claude-code:acme', 'weekly', 69, 13 * 60 + 33),
+  ], {
+    callerEligible: false, callerSession: false, now: NOW,
+    preferredPool: 'codex',
+    evidence: { writerPools: ['claude-code:acme'] },
+  });
+  assert.equal(assigned.pick.pool, 'claude-code:acme');
+  assert.match(assigned.why, /^independence waived: claude-code:acme resets in 13h33m · /);
+});
+
+test('an urgent independent pool still beats an urgent writer', () => {
+  // The 2026-09-11 table: grok (2h02m left) and acme (13h33m) are both urgent.
+  // With acme as the writer, grok spends its expiring quota AND stays
+  // independent, so nothing is waived.
+  const r = pickPool('build', septemberPools(), {
+    ...septemberOpts,
+    evidence: { writerPools: ['claude-code:acme'] },
+  });
+  assert.equal(r.pick.pool, 'grok');
+  assert.doesNotMatch(r.why, /independence waived/);
+  assert.match(r.why, /^evidence: independent of claude-code:acme, claude-code:initech, claude-code \(they produced the judged work\)/);
+  // Order: urgent independent, urgent writer, then independent before writers.
+  assert.deepEqual(
+    r.candidates.map((c) => c.pool),
+    ['grok', 'claude-code:acme', 'relay:b', 'command-code', 'claude-code:initech', 'claude-code'],
+  );
+
+  // With grok as the writer instead, grok is urgent AND the most urgent pool,
+  // but acme is an urgent independent: acme wins, grok is only ranked second.
+  const grokWrote = pickPool('build', septemberPools(), {
+    ...septemberOpts,
+    evidence: { writerPools: ['grok'] },
+  });
+  assert.equal(grokWrote.pick.pool, 'claude-code:acme');
+  assert.deepEqual(grokWrote.candidates.slice(0, 2).map((c) => c.pool), ['claude-code:acme', 'grok']);
+  assert.doesNotMatch(grokWrote.why, /independence waived/);
+});
+
+test('with nothing urgent, independence stays the tie-breaker', () => {
+  // acme holds +20 with two days left: expiring-soon lead not reached, so it
+  // is a normal writer and loses to the independent pool as before R13.
+  const r = pickPool('analyze', [
+    pacedPool('claude-code:acme', 'weekly', 51.4, 2 * 24 * 60),
+    pool('codex', { pace: -5 }),
+  ], {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['claude-code'] },
+  });
+  assert.equal(r.pick.pool, 'codex');
+  assert.doesNotMatch(r.why, /independence waived/);
+  assert.match(r.why, /^evidence: independent of claude-code:acme/);
+
+  // A draining writer is not urgent either: no waiver.
+  const draining = pickPool('analyze', [
+    commandCodeReplay({ usedPct: 99, pace: -0.6, elapsedPct: 98.4 }),
+    pool('codex', { pace: -5 }),
+  ], {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['command-code'] },
+  });
+  assert.equal(draining.pick.pool, 'codex');
+  assert.doesNotMatch(draining.why, /independence waived/);
+});
+
+test('an urgent writer that is the only eligible pool is not a waiver', () => {
+  const r = pickPool('analyze', [
+    pacedPool('claude-code:acme', 'weekly', 69, 13 * 60 + 33),
+  ], {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['claude-code'] },
+  });
+  assert.equal(r.pick.pool, 'claude-code:acme');
+  assert.equal(r.why, 'evidence step: only the writer pool claude-code:acme is eligible');
+});
+
+test('non-evidence routing is unchanged by R13', () => {
+  const plain = pickPool('build', septemberPools(), septemberOpts);
+  const withEmptyWriters = pickPool('build', septemberPools(), {
+    ...septemberOpts, evidence: null,
+  });
+  assert.deepEqual(withEmptyWriters.candidates, plain.candidates);
+  assert.equal(withEmptyWriters.why, plain.why);
+  assert.equal(plain.pick.pool, 'grok');
 });

@@ -71,7 +71,7 @@ test('first-class provider validation reports usage and cache-write warnings wit
   try {
     const expected = {
       codex: { usageWarning: false, pricingWarning: false },
-      grok: { usageWarning: true, pricingWarning: true },
+      grok: { usageWarning: false, pricingWarning: true },
       'claude-code': { usageWarning: false, pricingWarning: false },
       echo: { usageWarning: false, pricingWarning: true },
     };

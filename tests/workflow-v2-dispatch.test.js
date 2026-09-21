@@ -109,7 +109,13 @@ test('a quarantine written with a decision append lands on the live file, not a 
           const live = loadState(home);
           live.pools.beta.enabled = false;
           saveState(home, live);
-          return { ok: false, why: 'usage limit reached', failureKind: 'quota', quarantineHint: true, meta: { exitCode: 1 } };
+          return {
+            ok: false, why: 'usage limit reached', failureKind: 'quota', quarantineHint: true, meta: { exitCode: 1 },
+            quotaPause: {
+              pause: true, rule: 'message', until: Date.now() + 3600_000,
+              line: 'usage limit reached · resets in 1 hour', why: 'usage limit reached',
+            },
+          };
         },
       },
     });
@@ -434,6 +440,19 @@ const quotaVerdict = () => ({
   quarantineSource: 'message',
   why: `usage limit: "You've hit your session limit · resets 10:20am (Asia/Hong_Kong)" `
     + `· pool paused until ${new Date(QUOTA_RESET).toISOString()}`,
+  // The decideQuotaPause() proof watch.js attaches; without it state.js
+  // refuses the quota pause (quota.js Q6).
+  quotaPause: {
+    pause: true,
+    rule: 'message',
+    until: QUOTA_RESET,
+    resetsAt: new Date(QUOTA_RESET).toISOString(),
+    line: "You've hit your session limit · resets 10:20am (Asia/Hong_Kong)",
+    meter: null,
+    meterWindow: null,
+    why: `usage limit: "You've hit your session limit · resets 10:20am (Asia/Hong_Kong)" `
+      + `· pool paused until ${new Date(QUOTA_RESET).toISOString()}`,
+  },
   meta: { exitCode: 1, wallSec: 0.2 },
 });
 
@@ -1354,4 +1373,71 @@ test('the persisted stream feeds the handoff block on a real fixture fallback', 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// quota.js Q6: a transient limit retries the same pool after a short backoff,
+// then falls over for this attempt only; the pool is never paused.
+
+const transientVerdict = (extra = {}) => ({
+  ok: false,
+  failureKind: 'throttle',
+  throttleWaitMs: null,
+  throttleRetrySamePool: true,
+  quotaPause: { pause: false, rule: 'transient', line: 'Error: Rate limit exceeded. Please wait a moment and try again.' },
+  why: 'rate limited (transient): "Error: Rate limit exceeded. Please wait a moment and try again." · pool not paused',
+  meta: { exitCode: 1, wallSec: 0.2 },
+  ...extra,
+});
+
+test('a transient limit retries the same pool after a short backoff and never pauses it', async () => {
+  const h = harness([transientVerdict(), good]);
+  const slept = [];
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    bullswarmDir: '/tmp/bs', dependencies: { ...h.dependencies, sleep: async (ms) => { slept.push(ms); } },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['luna-1', 'luna-1']);
+  assert.deepEqual(slept, [20_000]);
+  assert.equal(h.core.pools['luna-1']?.quarantine, undefined, 'a throttle never pauses the pool');
+});
+
+test('two throttles fall over to another pool for this attempt only, still with no pause', async () => {
+  const h = harness([transientVerdict(), transientVerdict(), transientVerdict(), good]);
+  const slept = [];
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    bullswarmDir: '/tmp/bs', dependencies: { ...h.dependencies, sleep: async (ms) => { slept.push(ms); } },
+  });
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool).slice(0, 3), ['luna-1', 'luna-1', 'luna-1']);
+  assert.deepEqual(slept, [20_000, 60_000]);
+  assert.ok(result.attempts.slice(3).every((attempt) => attempt.pool === 'luna-2'), result.attempts.map((a) => a.pool).join(','));
+  assert.equal(h.core.pools['luna-1']?.quarantine, undefined);
+});
+
+test('a throttle naming a wait too long to sit out falls over at once, with no pause', async () => {
+  const h = harness([transientVerdict({ throttleWaitMs: 5 * 3600_000, throttleRetrySamePool: false }), good]);
+  const slept = [];
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    bullswarmDir: '/tmp/bs', dependencies: { ...h.dependencies, sleep: async (ms) => { slept.push(ms); } },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['luna-1', 'luna-2']);
+  assert.deepEqual(slept, []);
+  assert.equal(h.core.pools['luna-1']?.quarantine, undefined);
+});
+
+test('a quota verdict without its proof pauses nothing (quota.js Q6)', async () => {
+  const unproven = quotaVerdict();
+  delete unproven.quotaPause;
+  const h = harness([unproven, good]);
+  await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(h.core.pools['luna-1']?.quarantine, undefined);
 });

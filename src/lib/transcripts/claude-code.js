@@ -13,7 +13,16 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { edgeTimes, overlapsIndex, transcriptEdges } from './indexing.js';
+import {
+  attemptTaskKeys,
+  edgeTimes,
+  incrementalEntries,
+  overlapsIndex,
+  promptKeys,
+  promptMatchesTask,
+  scanHeadRows,
+  transcriptEdges,
+} from './indexing.js';
 
 function finite(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -326,8 +335,48 @@ function candidateFiles(home, cwd, sessionId) {
     : narrowed;
 }
 
-export function buildTranscriptIndex({ home = homedir() } = {}) {
-  const entries = parentFiles(home, null, null).map((filePath) => {
+// The first user turn: the prompt rows before the first assistant row.
+// Meta rows (hook/command output) and tool results are not the prompt.
+function promptStep(row, texts) {
+  if (row?.type === 'assistant') return true;
+  if (row?.type !== 'user' || row.isMeta || row.isSidechain) return false;
+  const message = row.message && typeof row.message === 'object' ? row.message : null;
+  if (!message || (message.role && message.role !== 'user')) return false;
+  const content = message.content;
+  const text = typeof content === 'string'
+    ? content
+    : (Array.isArray(content) ? content : [])
+      .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('\n');
+  if (text.trim()) texts.push(text);
+  return false;
+}
+
+function promptTexts(filePath, headRows = null) {
+  const texts = [];
+  if (Array.isArray(headRows)) {
+    for (const row of headRows) if (promptStep(row, texts)) return texts;
+  }
+  const scanned = [];
+  scanHeadRows(filePath, (row) => promptStep(row, scanned));
+  return scanned;
+}
+
+/** First-user-turn keys for one session file (paths it quotes, text hashes). */
+export function sessionPromptKeys(filePath, headRows = null) {
+  return promptKeys(promptTexts(filePath, headRows));
+}
+
+/**
+ * Index every transcript's identity, cwd, edge times and first-turn keys.
+ * `previous` (an earlier index of the same home) lets unchanged files be
+ * reused; `changedFiles` names the files read this time and `grownFrom`
+ * the previous last timestamp of each one that only grew.
+ */
+export function buildTranscriptIndex({ home = homedir(), previous = null } = {}) {
+  const reusable = previous?.provider === 'claude-code' && previous?.home === home ? previous : null;
+  const { entries, changedFiles, grownFrom } = incrementalEntries(parentFiles(home, null, null), reusable, (filePath) => {
     const edge = transcriptEdges(filePath);
     const rows = edge.head;
     const cwd = rows.find((row) => typeof row.cwd === 'string' && row.cwd)?.cwd ?? null;
@@ -337,9 +386,10 @@ export function buildTranscriptIndex({ home = homedir() } = {}) {
       sessionId: sessionId?.sessionId ?? sessionId?.session_id ?? sessionIdFromPath(filePath),
       cwd,
       ...edgeTimes(edge),
+      ...sessionPromptKeys(filePath, rows),
     };
   });
-  return { provider: 'claude-code', home, entries };
+  return { provider: 'claude-code', home, entries, changedFiles, grownFrom };
 }
 
 /** Parse one captured Claude result event (useful when no durable transcript exists). */
@@ -368,10 +418,55 @@ export function parseClaudeResultEvent(input, { file = null, confidence = 'exact
   });
 }
 
+function chosenRecord(filePath, { sessionId, startedAt, endedAt, confidence, wantedId = null }) {
+  const chosen = parsedSession(filePath, { sessionId, startedAt, endedAt, confidence });
+  return {
+    tokens: chosen.tokens,
+    model: chosen.model ?? null,
+    sessionId: chosen.sessionId ?? wantedId,
+    cwd: chosen.cwd ?? null,
+    file: chosen.file,
+    firstAt: chosen.firstAt,
+    lastAt: chosen.lastAt,
+    requests: chosen.requests,
+    confidence: chosen.confidence,
+  };
+}
+
+// A session whose first turn quotes another Bullswarm task file provably
+// belongs to that task, so the cwd/time fallback must not hand it to this one.
+function namesOtherTask(entry, keys) {
+  if (!keys?.paths.length) return false;
+  return (entry.taskPaths ?? []).some((path) => /\/task-[^/]+\.md$/.test(path) && !keys.paths.includes(path));
+}
+
+function promptEntries(indexed, home) {
+  if (indexed) return indexed;
+  return parentFiles(home, null, null).map((filePath) => ({
+    file: filePath,
+    ...sessionPromptKeys(filePath),
+  }));
+}
+
+function taskTextMatches(entries, keys, startedAt, endedAt) {
+  return entries
+    .filter((entry) => promptMatchesTask(entry, keys))
+    .filter((entry) => overlapsIndex(
+      entry.firstAt !== undefined ? entry : { ...entry, ...edgeTimes(transcriptEdges(entry.file)) },
+      startedAt,
+      endedAt,
+    ));
+}
+
 /**
  * Read usage from Claude Code's durable JSONL transcript stores.
  *
- * @param {{sessionId?: string|null,cwd?: string|null,startedAt?: string|number|Date|null,endedAt?: string|number|Date|null,home?: string}} args
+ * Precedence: a unique session id; else a unique session whose first user
+ * turn quotes the attempt's task file or carries its exact text; else a
+ * unique cwd + time-window match. More than one candidate at any step is
+ * `ambiguous` — never a pick by recency or name.
+ *
+ * @param {{sessionId?: string|null,cwd?: string|null,startedAt?: string|number|Date|null,endedAt?: string|number|Date|null,home?: string,taskText?: string|null,taskFile?: string|null,taskPath?: string|null}} args
  */
 export function readTranscriptUsage({
   sessionId = null,
@@ -380,23 +475,55 @@ export function readTranscriptUsage({
   endedAt = null,
   home = homedir(),
   index = null,
+  taskText = null,
+  taskFile = null,
+  taskPath = null,
 } = {}) {
   const wantedId = typeof sessionId === 'string' && sessionId ? sessionId : null;
   const indexed = index?.provider === 'claude-code' ? index.entries : null;
+  const keys = attemptTaskKeys({ taskText, taskFile, taskPath });
+
+  if (wantedId) {
+    const files = indexed
+      ? indexed.filter((entry) => entry.sessionId === wantedId).map((entry) => entry.file)
+      : candidateFiles(home, cwd, wantedId);
+    const candidates = [];
+    for (const filePath of files) {
+      const parsed = parsedSession(filePath, { sessionId: wantedId, startedAt: null, endedAt: null });
+      if (parsed.sessionId === wantedId || sessionIdFromPath(filePath) === wantedId) candidates.push(filePath);
+    }
+    if (candidates.length > 1) return blankRecord('ambiguous');
+    if (candidates.length === 1) {
+      return chosenRecord(candidates[0], { sessionId: wantedId, startedAt, endedAt, confidence: 'exact', wantedId });
+    }
+    // A failed session lookup may still resolve through one unique task-text
+    // match; it never widens to a cwd/time guess.
+    if (!keys) return blankRecord('none');
+  }
+
+  let entries = null;
+  if (keys) {
+    entries = promptEntries(indexed, home);
+    const matches = taskTextMatches(entries, keys, startedAt, endedAt);
+    if (matches.length > 1) return blankRecord('ambiguous');
+    if (matches.length === 1) {
+      return chosenRecord(matches[0].file, { sessionId: null, startedAt, endedAt, confidence: 'task-text' });
+    }
+    if (wantedId) return blankRecord('none');
+  }
+
+  const excluded = new Set((entries ?? [])
+    .filter((entry) => namesOtherTask(entry, keys))
+    .map((entry) => entry.file));
   const files = indexed
-    ? indexed.filter((entry) => wantedId
-      ? entry.sessionId === wantedId
-      : (typeof cwd !== 'string' || cwd === ''
-        || entry.cwd === cwd || basename(dirname(entry.file)) === slugForCwd(cwd))
-        && overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
-    : candidateFiles(home, cwd, wantedId);
+    ? indexed.filter((entry) => (typeof cwd !== 'string' || cwd === ''
+      || entry.cwd === cwd || basename(dirname(entry.file)) === slugForCwd(cwd))
+      && overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
+    : candidateFiles(home, cwd, null);
   const candidates = [];
   for (const filePath of files) {
-    const parsed = parsedSession(filePath, { sessionId: wantedId, startedAt: null, endedAt: null });
-    if (wantedId) {
-      if (parsed.sessionId === wantedId || sessionIdFromPath(filePath) === wantedId) candidates.push({ filePath, parsed });
-      continue;
-    }
+    if (excluded.has(filePath)) continue;
+    const parsed = parsedSession(filePath, { sessionId: null, startedAt: null, endedAt: null });
     if (!cwdMatches(parsed, cwd, filePath)) continue;
     const first = timeMs(parsed.allFirstAt);
     const last = timeMs(parsed.allLastAt);
@@ -411,23 +538,12 @@ export function readTranscriptUsage({
 
   if (candidates.length === 0) return blankRecord('none');
   if (candidates.length > 1) return blankRecord('ambiguous');
-  const chosen = parsedSession(candidates[0].filePath, {
-    sessionId: wantedId ?? candidates[0].parsed.sessionId,
+  return chosenRecord(candidates[0].filePath, {
+    sessionId: candidates[0].parsed.sessionId,
     startedAt,
     endedAt,
-    confidence: wantedId ? 'exact' : 'window',
+    confidence: 'window',
   });
-  return {
-    tokens: chosen.tokens,
-    model: chosen.model ?? null,
-    sessionId: chosen.sessionId ?? wantedId,
-    cwd: chosen.cwd ?? null,
-    file: chosen.file,
-    firstAt: chosen.firstAt,
-    lastAt: chosen.lastAt,
-    requests: chosen.requests,
-    confidence: chosen.confidence,
-  };
 }
 
 export { blankTokens, claudeTokens };

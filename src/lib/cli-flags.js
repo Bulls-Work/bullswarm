@@ -67,10 +67,13 @@ const TABLE = {
   ],
   health: ['json'],
   pools: ['force', 'json'],
+  'pools resume': ['json'],
   assignments: ['json'],
   doctor: ['json'],
   home: [],
   'home snapshot': ['runs', 'recent', 'since', 'no-streams', 'json'],
+  'home prune': ['dry-run', 'yes', 'days', 'auto', 'trigger', 'json'],
+  'home status': ['json'],
   version: [],
   update: ['check', 'json'],
   release: ['dry-run'],
@@ -101,6 +104,7 @@ const TABLE = {
   'strategy reset-tier': ['yes'],
   'strategy set-reasoning': ['tier', 'level', 'pool', 'yes'],
   'strategy reset-reasoning': ['tier', 'pool', 'yes'],
+  'strategy set-pausing': ['json'],
   'strategy rungs': ['json', 'pool'],
   'strategy set-rung': ['model', 'reasoning', 'force'],
   'strategy configure': ['file', 'yes'],
@@ -149,7 +153,7 @@ const TABLE = {
   'workflow tui': ['json', 'all', 'show', 'cancel', 'overview', 'width', 'height'],
   'workflow watch': [
     'classic', 'interval', 'heartbeat', 'stall-after', 'next', 'after',
-    'since', 'jsonl', 'once', 'verbose',
+    'since', 'jsonl', 'once', 'verbose', 'until',
   ],
   'workflow events': ['after', 'json'],
   'workflow steer': ['message', 'json'],
@@ -157,8 +161,11 @@ const TABLE = {
   'workflow resume': ['foreground', 'watch', 'json'],
   'workflow action': [],
   'workflow action show': ['json'],
+  'workflow step': [],
+  'workflow step restart': ['pool', 'wait', 'json'],
   'workflow reindex': ['json', 'force'],
-  'workflow reprice': ['apply', 'dry-run', 'since', 'pool', 'all', 'json'],
+  'workflow reprice': ['apply', 'dry-run', 'since', 'pool', 'all', 'json', 'incremental', 'trigger', 'transcript-home', 'delay-ms'],
+
 
   // --- src/workflow/runs-cli.js -------------------------------------------
   // --from/--started-after and --to/--started-before are documented in the

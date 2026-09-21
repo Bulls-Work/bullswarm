@@ -99,7 +99,31 @@ test('Credits stay attached to the monthly row, while plan and disabled lines re
   assert.match(result.lines[1], /^mo\s+.*\s+1\.0%$/);
   assert.match(result.lines[2], /resets 28d10h · .* · 1 of 70 credits$/);
   assert.equal(result.lines[3], 'plan team · price unknown');
-  assert.equal(result.lines[4], 'disabled: echo');
+  // The pool's own spend follows its plan: no recorded amount is a dash, never
+  // a figure beside it.
+  assert.equal(result.lines[4], 'spent —');
+  assert.equal(result.lines[5], 'disabled: echo');
+});
+
+test('the pool spend line reads at least its recorded subtotal, and a whole amount plainly', () => {
+  // The facts object is the Run spend block's own (`spendFacts`), so the view
+  // only has to word it — never to re-derive the money.
+  const partial = budgetLines(budget({
+    apiFacts: {
+      apiText: 'at least $36.30', unmeasured: 12, running: 0,
+      suffix: '5 estimated · 12 unmeasured', apiKnownSubtotalUsd: 36.3,
+    },
+    tokenSource: 'transcript-summed',
+  }), { width: 120, ansi: false });
+  assert.match(partial.lines.join('\n'), /^spent at least \$36\.30 api · 12 unmeasured$/m);
+
+  const whole = budgetLines(budget({
+    apiFacts: {
+      apiText: '$12.50', unmeasured: 0, running: 0, suffix: '', apiKnownSubtotalUsd: 12.5,
+    },
+    tokenSource: 'provider-reported',
+  }), { width: 120, ansi: false });
+  assert.match(whole.lines.join('\n'), /^spent \$12\.50 api$/m);
 });
 
 test('Footer keeps the price declaration hint and names Home and Stats as the spend location', () => {

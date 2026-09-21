@@ -1256,8 +1256,11 @@ export function formatHoverLabel(payload = {}) {
   if (partial && value != null) {
     const priced = finite(payload.pricedAttempts);
     const attempts = finite(payload.attempts);
-    const coverage = priced != null && attempts != null ? ` (${priced}/${attempts} attempts priced)` : '';
-    valueText = `≈${formatValue(value, payload.unit)}${coverage}`;
+    const unmeasured = priced != null && attempts != null ? Math.max(0, attempts - priced) : null;
+    const coverage = unmeasured ? ` · ${unmeasured} unmeasured` : '';
+    valueText = unitName(payload.unit) === 'usd'
+      ? `at least ${formatValue(value, payload.unit)}${coverage}`
+      : `≈${formatValue(value, payload.unit)}${coverage}`;
   }
   if (value != null && unitName(payload.unit) === 'usd' && payload.subscriptionUsd != null) {
     valueText = formatMoneyPair({

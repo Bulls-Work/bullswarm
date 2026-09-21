@@ -27,6 +27,11 @@ The home is `$BULLSWARM_HOME` when that variable is a non-empty string, otherwis
 | `workflows/<runId>/` | durable workflow state, events, attempts |
 | `goals/<runId>/` | detached `workflow goal` launcher (`request.json`, `stdout.log`, `stderr.log`) |
 | `cache/` | OpenRouter and Epoch benchmark datapacks |
+| `maintenance/<job>.json` | the last result of each background job (`prune`, `reprice`): `at`, `trigger`, `ok`, and a one-line summary that `bullswarm home status` prints |
+| `pricing/reconcile.json` | the automatic reprice ledger: one entry per attempt it tried (tries, next retry, outcome) plus a per-run cursor, so a second pass repeats no work |
+| `pricing/transcript-index/<provider>.json` | cached transcript-store index the reprice pass updates incrementally |
+| `pricing/active.json`, `pricing.lock` | the running reprice pass (one at a time); the dashboard reads `active.json` for its `pricing … older records` note |
+| `calibration/<pool>.json` | meter samples attributed to runs; Home's `% measured` window share reads them |
 
 ```bash
 # Initialize the home with discovered agent CLIs and write state.json.
@@ -58,7 +63,8 @@ The file is version `1`. Every write is atomic (temp + rename). Every mutation g
 | Field | Meaning |
 |---|---|
 | `pools.<name>.enabled` | whether the pool is in the routing set. Test-fixture pools are opt-in (`enabled === true`); every other pool is opt-out (`enabled !== false`) |
-| `pools.<name>.quarantine` | `{ until, reason, kind }` or absent. `kind` is `auth` (default 10 minutes) or `quota` (the provider's reset). Expired quarantines auto-release on the next command that sweeps state |
+| `pools.<name>.quarantine` | a pause: `{ until, reason, kind }` or absent. `kind` is `auth` (default 10 minutes) or `quota`, which is written only on proof — the pool's meter at 95% or more on a running window, or a provider line naming a spent window and its reset — and also records `rule` (`meter` or `message`), `line`, `meter`, `meterWindow`, `resetsAt` and `pausedAt`. Expired pauses auto-release on the next command that sweeps state; `bullswarm pools resume <pool>` lifts one at once |
+| `retention` | `{ enabled, workspacesDays }`; see [Retention](#retention) |
 | `incumbents` | last successful pool per lane, so picks do not flap |
 | `decisionLog` | last 500 dispatch records (`ts`, `lane`, `picked`, `keepOnClaude`, `ok`, `why`, `wallSec`, `model`, `reasoning`, `usage`, `outFile`, `forecast`) |
 | `config.depthLimit` | recursion cap. Core sets `BULLSWARM_DEPTH` on children; callers cannot widen this via flags. Default `2` |
@@ -66,6 +72,34 @@ The file is version `1`. Every write is atomic (temp + rename). Every mutation g
 | `config.worktreeIsolation` | `agent-decides` (default), `off`, or `required`. Set by the setup wizard. `workflow goal --isolation` opts a run into per-worker worktrees regardless |
 
 `strategy` is added the first time you assign models, set reasoning, or apply a refresh. Do not hand-edit `state.json` while a command is running; use the `strategy` and `provider` verbs.
+
+## Retention
+
+The home stops growing forever. Isolated workflow actions work in disposable copies under `workflows/<runId>/workspaces/<action>`; once a run is old and finished, those copies are the only bulk left, and they are all Bullswarm removes.
+
+```json
+{ "retention": { "enabled": true, "workspacesDays": 7 } }
+```
+
+| Field | Meaning |
+|---|---|
+| `retention.enabled` | `true` (default) lets the automatic background prune run. `false` turns it off; `bullswarm home prune --yes` still works when you ask |
+| `retention.workspacesDays` | how many days after a run's own `finishedAt` its `workspaces/` copies are removed. A number greater than 0; default `7` |
+
+The block is optional; an absent key takes the default shown. A value of the wrong type is reported by `home status` and pauses the automatic prune until it is fixed — a background delete never runs on a policy it could not read. Edit the block while no `bullswarm` command is running.
+
+**What goes:** every direct child of `workflows/<runId>/workspaces/`, for runs that are `completed`, `partial`, `cancelled` or `failed`, older than the limit, with no kernel lease held. A git worktree is unregistered with `git worktree remove` before its files go, so no stale `.git/worktrees` entry is left behind.
+
+**What never goes:** `state.json`, `goal.json`, `events.jsonl`, `result*.json`, `report.json`, `rollup.json`, every `task-*`, `out-*`, `diff-*`, `stream-*` and `stdout-*` file, contracts, receipts, workspace baselines, `history/`, `runs/`, and anything of an `interrupted`, paused, waiting, running, legacy or unreadable run. A symlinked run directory, `workspaces` directory or workspace is skipped, and a symlink inside a copy is unlinked, never followed.
+
+```bash
+bullswarm home prune --dry-run          # list what would go, with bytes; changes nothing
+bullswarm home prune --yes              # remove it
+bullswarm home prune --yes --days 3     # this once, with a 3-day limit
+bullswarm home status                   # policy, bytes on disk, last prune and last reprice
+```
+
+Bare `home prune` only lists. The automatic prune is the same rule run as a detached background process (`home prune --auto`): it honours `enabled`, waits at least six hours after its last result, takes a one-at-a-time lock, and records what it did in `maintenance/prune.json`. It never blocks a kernel finalize or a dashboard paint.
 
 ## Strategy models and rungs
 
@@ -90,6 +124,7 @@ bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
 | `subscriptions` | `set-subscription` | `{ plan, monthlyPriceUsd, includedValueUsd, quotaWindow, resetsAt }` per pool; overrides the connector |
 | `policy` | `apply`, `refresh --apply`, `auto off` | auto-apply-on-refresh cadence |
 | `lastReport` | `refresh` / `show` | cached discovery report |
+| `pausing` | `set-pausing` | `"off"` stops every automatic pool pause — quota ('limit notices are retried, then move to another pool'), auth, the credential-group siblings an auth pause benches with it, and the soft bench; absent means on |
 
 Reasoning is a separate dimension from the model: the tier chooses which model runs, reasoning chooses how deeply it thinks. Precedence per attempt: action `reasoning` field → `--worker-reasoning` / `run --reasoning` → strategy per-pool → strategy per-tier → connector default → nothing. `default` means append nothing and let the worker CLI decide. A level a connector cannot express is clamped down, never up.
 

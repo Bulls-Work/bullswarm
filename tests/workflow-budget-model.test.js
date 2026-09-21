@@ -437,8 +437,8 @@ test('poolBudget: subscription is null unless a price was declared (B1)', () => 
   assert.equal(declared.subscription.monthlyPriceUsd, 200);
   assert.equal(declared.subscription.includedValueUsd, 1000);
   assert.equal(declared.subscription.windowDays, 7);
-  // 200 x 7 / 30, on the 30-day-month convention prices.js documents.
-  assert.equal(declared.subscription.windowUsd, 46.66666667);
+  // 200 x 7 / 30.4375, on the one exported month length prices.js documents.
+  assert.equal(declared.subscription.windowUsd, 45.99589322);
   assert.ok(declared.subscription.basis);
   // B1: the two kinds of money stay separate.
   assert.equal(declared.apiEquivalentUsd, 0.3);
@@ -562,7 +562,7 @@ test('budgetModel: a partial subscription total names the pools it does not cove
     rollups: indexOf(corpus()), now: NOW,
     prices: { 'claude-code': { monthlyPriceUsd: 200 } },
   });
-  assert.equal(model.totals.subscriptionUsd, 46.666667, 'totals round to the cent-and-then-some, like every other money total');
+  assert.equal(model.totals.subscriptionUsd, 45.995893, 'totals round to the cent-and-then-some, like every other money total');
   assert.deepEqual(model.totals.priced, ['claude-code']);
   assert.deepEqual(model.totals.unpriced, ['codex'], 'a partial total must never read as a whole one');
 });

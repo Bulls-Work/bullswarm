@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -275,22 +276,28 @@ test('a recorded CWD still filters candidates when no task path is available', (
   }
 });
 
-test('the OpenCode database fixture is opened read-only', () => {
+test('the OpenCode database is opened read-only: a store with no write permission is read and left byte-identical', () => {
+  // The real rows above, in a database file and directory nobody may write:
+  // an index and a session read still work, and nothing is created or changed.
   const store = createStore();
+  const dataDir = dirname(store.dbPath);
+  const digest = () => createHash('sha256').update(readFileSync(store.dbPath)).digest('hex');
+  const before = { hash: digest(), files: readdirSync(dataDir).sort() };
+  chmodSync(store.dbPath, 0o444);
+  chmodSync(dataDir, 0o555);
   try {
-    const before = readFileSync(store.dbPath);
     const index = buildTranscriptIndex({ databasePath: store.dbPath });
     assert.equal(index.provider, 'opencode');
-    assert.ok(index.entries.length > 0);
-    const representative = readTranscriptUsage({
-      databasePath: store.dbPath,
-      sessionId: SESSION_ID,
-    });
+    assert.equal(index.entries.length, 1);
+    assert.equal(index.entries[0].tokens.standardRead, 368554);
+    // The exported rows are the session's first three requests.
+    const representative = readTranscriptUsage({ databasePath: store.dbPath, sessionId: SESSION_ID });
     assert.equal(representative.confidence, 'exact');
     assert.equal(representative.model, 'gpt-5.6-luna');
     assert.equal(representative.tokens.standardRead, 20841);
-    assert.deepEqual(readFileSync(store.dbPath), before);
+    assert.deepEqual({ hash: digest(), files: readdirSync(dataDir).sort() }, before);
   } finally {
+    chmodSync(dataDir, 0o755);
     store.cleanup();
   }
 });

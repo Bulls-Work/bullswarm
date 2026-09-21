@@ -10,7 +10,18 @@ import { fileURLToPath } from 'node:url';
 export const PLAN_PRICES_SCHEMA = 'bullswarm.plan-prices.v1';
 const DEFAULT_FILE = fileURLToPath(new URL('../../data/plan-prices.json', import.meta.url));
 const cache = new Map();
-const DAYS_PER_MONTH = 30;
+
+/**
+ * The month length every pro-rated subscription amount is divided by.
+ *
+ * 30.4375 is the average Gregorian month — 365.25 / 12 — so a monthly price
+ * spread over a window returns the whole price when twelve windows of one
+ * month's days are summed. A flat 30-day month is 1.4% short: it prices a
+ * week 1.4% high, every week. One exported constant, so every surface
+ * (prices.js, subscription-cost.js, the Budget model) divides by the same
+ * number instead of each carrying its own month.
+ */
+export const DAYS_PER_MONTH = 30.4375;
 
 function object(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -311,8 +322,8 @@ export function planPriceFor(provider, plan, { file = null } = {}) {
 }
 
 /**
- * Pro-rate a declared monthly price over a window using the explicit 30-day
- * month convention. Accepts either the object returned by priceFor or a
+ * Pro-rate a declared monthly price over a window using the shared
+ * DAYS_PER_MONTH length. Accepts either the object returned by priceFor or a
  * monthly numeric value for small model callers.
  */
 export function subscriptionCostUsd(price, { days = 7 } = {}) {

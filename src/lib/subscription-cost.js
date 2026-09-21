@@ -11,13 +11,12 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { planPriceFor, priceFor } from './prices.js';
+import { DAYS_PER_MONTH, planPriceFor, priceFor } from './prices.js';
 import { meterHistoryIntervals } from '../meters/registry.js';
 
 export const CALIBRATION_SCHEMA = 'bullswarm.calibration.v1';
 export const MIN_CALIBRATION_SAMPLES = 3;
 export const MAX_CALIBRATION_SAMPLES = 500;
-export const MONTH_DAYS = 30.4375;
 
 function finite(value) {
   if (value == null || typeof value === 'boolean' || Array.isArray(value)) return null;
@@ -110,12 +109,15 @@ export function windowDays(window, resetsAt = null) {
   return Number.isFinite(days) && days > 0 ? days : null;
 }
 
-/** Price one quota window from a monthly plan price. */
+/**
+ * Price one quota window from a monthly plan price. The denominator is the
+ * one exported month length (prices.js DAYS_PER_MONTH), never a local one.
+ */
 export function windowPriceUsd(monthlyPriceUsd, window, resetsAt = null) {
   const monthly = nonNegative(monthlyPriceUsd);
   const days = windowDays(window, resetsAt);
   if (monthly == null || days == null) return null;
-  return monthly * days / MONTH_DAYS;
+  return monthly * days / DAYS_PER_MONTH;
 }
 
 /** Convert a measured/estimated percentage of a window into dollars. */

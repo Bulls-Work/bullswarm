@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  isFinishedRun,
+  runStatusMark,
   measuredTaskMinutes,
   cardDurationText,
   medianRunDuration,
@@ -79,13 +81,22 @@ test('Home model deduplicates today rows and builds measured licence rows', () =
   assert.deepEqual(rows, [{
     name: 'codex', workflowMinutes: 2, runMinutes: 1, apiUsd: 0.5,
     // The recorded subtotal and its coverage travel with the row so a
-    // partly-priced pool can show a lower bound instead of a dash. A fully
-    // priced pool's subtotal equals its strict amount.
-    apiKnownSubtotalUsd: 0.5, attempts: 0, pricedAttempts: 0,
+    // partly-priced pool can show a lower bound instead of a dash. This
+    // entry is a pre-0.35.2 one: it recorded the amount and no counts, so
+    // the counts stay absent rather than reading as "unpriced attempts".
+    apiKnownSubtotalUsd: 0.5, attempts: null, pricedAttempts: null,
+    countsIncomplete: true,
     subscriptionUsd: 0.1, subscriptionBasis: 'observed:meter-delta', subscriptionDeltaPct: 2,
     subscriptionWindow: 'weekly', tokenSource: 'provider-reported', worked: true,
-    ratePerMinute: 0.5, usedPct: 12, workflowPct: 1,
+    ratePerMinute: 0.5, window: 'weekly', usedPct: 12, workflowPct: 1,
   }]);
+  // The window-share line carries its own basis: no ledger attributes a drop
+  // to this synthetic run, so the pool's measured rate is a pace estimate —
+  // named as one by the renderer, never passed off as a measurement.
+  assert.equal(rows[0].weeklyShare, 1);
+  assert.equal(rows[0].shareBasis, 'pace');
+  assert.equal(rows[0].apiFacts.apiText, '$0.50');
+  assert.equal(rows[0].apiFacts.unmeasured, 0);
   assert.equal(poolRatePerMinute(null, { share: { ratePerMinute: 0.25 } }), 0.25);
 });
 
@@ -121,11 +132,14 @@ test('Home money shows a partly-priced run as the recorded subtotal, not a dash'
   assert.equal(info.apiUsd, null, 'the strict total stays strict');
   assert.equal(info.apiKnownSubtotalUsd, 9.523847);
   assert.deepEqual(info.apiCoverage, { priced: 3, attempts: 9 });
-  assert.match(recordMoneyPair(partial).text, /^\u2248 \$9\.52 api \u00b7 /);
-  assert.match(
-    recordMoneyPair(partial, { coverage: true }).text,
-    /^\u2248 \$9\.52 api \u00b7 3\/9 priced \u00b7 /,
-  );
+  // Six of the nine attempts were never priced, so the subtotal is a lower
+  // bound and reads in the Run spend block's own words.
+  assert.match(recordMoneyPair(partial).text, /^at least \$9\.52 api \u00b7 6 unmeasured \u00b7 /);
+  assert.equal(recordMoneyPair(partial).apiSlotText, 'at least $9.52 · 6 unmeasured');
+  // The suffix names only the classes the record can prove: this usage block
+  // never said how many of its three priced attempts were measured, so none
+  // of them is claimed as an estimate.
+  assert.equal(recordMoneyPair(partial).facts.suffix, '6 unmeasured');
   // A run whose attempts were all priced is untouched by the fallback.
   const whole = { runId: 'wf-whole', usage: { apiUsd: 9.760216, apiKnownSubtotalUsd: 9.760216, pricedAttempts: 5, attempts: 5 } };
   assert.match(recordMoneyPair(whole).text, /^~ \$9\.76 api estimated \u00b7 /);
@@ -241,4 +255,22 @@ test('Home model answers a pre-0.35.1 rollup row with the Run page\'s own figure
   const gone = todayTopRuns({ runs: [], days: [], rollups: [{ ...row, runId: 'wf-absent' }] }, nowMs, { limit: 3 });
   assert.equal(gone[0].minutes.active, null);
   assert.deepEqual(gone[0].steps, { done: null, total: null });
+});
+
+test('a reopened or live row is not finished, and each status takes the Run page header mark', () => {
+  // A reopened run's index row says running yet may still hold an old finish.
+  assert.equal(isFinishedRun({ status: 'running', finishedAt: '2026-09-20T09:00:00.000Z' }), false);
+  assert.equal(isFinishedRun({ status: 'running', finishedAt: null }), false);
+  assert.equal(isFinishedRun({ status: 'paused', finishedAt: '2026-09-20T09:00:00.000Z' }), false);
+  assert.equal(isFinishedRun({ unfinished: true, status: 'running' }), false);
+  for (const status of ['completed', 'failed', 'partial', 'cancelled', 'interrupted']) {
+    assert.equal(isFinishedRun({ status, finishedAt: '2026-09-20T09:00:00.000Z' }), true, status);
+  }
+  // Verification never changes the mark: completed is a tick either way.
+  assert.deepEqual(runStatusMark({ status: 'completed', verified: false }), { glyph: 'ok', tone: 'green' });
+  assert.deepEqual(runStatusMark({ status: 'completed', verified: true }), { glyph: 'ok', tone: 'green' });
+  for (const status of ['failed', 'partial', 'cancelled', 'interrupted']) {
+    assert.deepEqual(runStatusMark({ status }), { glyph: 'fail', tone: 'red' }, status);
+  }
+  assert.deepEqual(runStatusMark({ status: 'running' }), { glyph: 'ongoing', tone: 'amber' });
 });

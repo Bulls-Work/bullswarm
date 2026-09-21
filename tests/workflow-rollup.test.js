@@ -159,6 +159,22 @@ test('R1: an unfinished-looking state falls back to the injected now, never to D
   assert.deepEqual(record.requirements, { passed: 1, total: 2 }, 'requirements fall back to the durable ledger');
 });
 
+test('R1: a reopened run is re-indexed as running with no finish and no verdict', () => {
+  // A plan revision reopens a finished run: the kernel clears the finish and
+  // the result, and re-indexes the run from that state with no result.
+  const state = stateFixture({ status: 'running', finishedAt: null });
+  const record = rollupRecord(state, null, { now: Date.parse('2026-09-21T03:00:00.000Z') });
+  assert.equal(record.status, 'running');
+  assert.equal(record.finishedAt, null, 'a run that has not finished carries no finish time, not the injected now');
+  assert.equal(record.verified, false);
+  assert.equal(record.minutes.span, null, 'a live run has no proven span');
+  assert.equal(record.minutes.wall, null);
+
+  // The same run finishing again gets its finish back.
+  const done = rollupRecord(stateFixture({ status: 'completed', finishedAt: '2026-09-21T03:30:00.000Z' }), resultFixture({ finishedAt: '2026-09-21T03:30:00.000Z' }), { now: 0 });
+  assert.equal(done.finishedAt, '2026-09-21T03:30:00.000Z');
+});
+
 test('R1: unmeasurable minutes are null, never zero', () => {
   const record = rollupRecord(
     stateFixture({ startedAt: null, finishedAt: null, seconds: 0, attempts: [] }),

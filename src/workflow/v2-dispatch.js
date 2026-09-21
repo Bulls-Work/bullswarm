@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './v2-runtime.js';
 import { pickPool, isBenched, isFree, isQuarantined } from '../lib/route.js';
 import {
@@ -11,6 +11,7 @@ import {
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier, rungRecord } from '../lib/strategy.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { watchOnce } from '../lib/watch.js';
+import { MAX_THROTTLE_RETRIES, throttleBackoffMs } from '../lib/quota.js';
 import {
   expectedMinutesFromSpendModel, registerAssignment, releaseAssignment, updateAssignment,
   withLedger,
@@ -20,7 +21,7 @@ import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
-const MECHANICAL_KINDS = new Set(['auth', 'quota', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
+const MECHANICAL_KINDS = new Set(['auth', 'quota', 'throttle', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
 /** Kinds that make the SAME pool unusable, so a retry must move elsewhere. */
 const POOL_FATAL_KINDS = new Set(['auth', 'quota']);
 
@@ -77,6 +78,7 @@ function classifyFailure(verdict, pool = null) {
   // quarantine, but it is a healthy credential with an empty window, and only
   // it carries a real reset deadline.
   if (verdict?.failureKind === 'quota') return 'quota';
+  if (verdict?.failureKind === 'throttle' && !verdict?.quarantineHint) return 'throttle';
   if (verdict?.quarantineHint) return 'auth';
   if (verdict?.failureKind === 'stalled' || verdict?.meta?.stalled) return 'stalled';
   if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
@@ -446,6 +448,105 @@ export function durableAttemptHandoff(attempt, runDir, formatHandoff = handoffBl
 
 export { handoffBlock };
 
+// --- Caller-driven step restart ----------------------------------------------
+// `bullswarm workflow step restart <run> <step> [--pool <pool>]` never edits a
+// live kernel's state: like pause, it writes one intent next to the run. The
+// kernel stops that step's running attempt (stop kind `restarted`), puts the
+// step straight back in the queue, and the step's next attempt carries the
+// stopped attempt's durable handoff block — on the named pool when one was
+// given. The intent stays on disk until that next attempt starts, so a kernel
+// that dies in between still hands off (and pins the pool) on resume. Nothing
+// ever restarts a step automatically.
+
+const STEP_ID = /^[a-z0-9][a-z0-9-]*$/;
+const RESTART_FILE = /^restart-([a-z0-9][a-z0-9-]*)\.json$/;
+
+export function stepRestartPath(runDir, actionId) {
+  if (!STEP_ID.test(actionId ?? '')) throw new TypeError(`step id must be a kebab-case ID (got "${actionId}")`);
+  return join(runDir, `restart-${actionId}.json`);
+}
+
+function writeRestart(path, request) {
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(request, null, 2)}\n`);
+  renameSync(tmp, path);
+}
+
+/** Record a restart intent for one step. A newer request replaces an older one. */
+export function requestStepRestart(runDir, {
+  actionId, attemptId = null, pool = null, source = 'cli',
+  now = () => new Date().toISOString(), id = null,
+} = {}) {
+  const request = {
+    schemaVersion: 1,
+    id: id ?? `restart-${randomUUID().slice(0, 8)}`,
+    actionId, attemptId, pool: pool || null, source,
+    requestedAt: now(), appliedAt: null,
+  };
+  writeRestart(stepRestartPath(runDir, actionId), request);
+  return request;
+}
+
+/** Every restart intent in the run directory, oldest first. */
+export function readStepRestarts(runDir) {
+  let names = [];
+  try { names = readdirSync(runDir); } catch { return []; }
+  const requests = [];
+  for (const name of names) {
+    const match = RESTART_FILE.exec(name);
+    if (!match) continue;
+    try {
+      const request = JSON.parse(readFileSync(join(runDir, name), 'utf8'));
+      if (request?.actionId === match[1]) requests.push(request);
+    } catch { /* a half-written intent is read on the next poll */ }
+  }
+  return requests.sort((a, b) => String(a.requestedAt).localeCompare(String(b.requestedAt)));
+}
+
+/** The kernel has stopped and requeued the step; the intent now waits for its next attempt. */
+export function markStepRestartApplied(runDir, request, { at, attemptId = request.attemptId } = {}) {
+  const applied = { ...request, attemptId: attemptId ?? null, appliedAt: at };
+  writeRestart(stepRestartPath(runDir, request.actionId), applied);
+  return applied;
+}
+
+export function clearStepRestart(runDir, actionId) {
+  try { rmSync(stepRestartPath(runDir, actionId), { force: true }); } catch { /* already gone */ }
+}
+
+/**
+ * Put a restarted step back in the queue. The kernel calls this once the
+ * step's running attempt has stopped (or when no attempt was running, e.g. a
+ * resume after the kernel died). Returns {requeued, why, attemptId, stoppedPool}.
+ */
+export function requeueRestartedStep(state, request) {
+  const runtime = (state.actions ?? []).find((entry) => entry.id === request.actionId);
+  if (!runtime) return { requeued: false, why: `the plan has no step ${request.actionId}` };
+  if (runtime.status === 'succeeded') return { requeued: false, why: 'it finished before the restart took effect' };
+  if (runtime.status === 'removed') return { requeued: false, why: 'a plan revision removed it' };
+  if (runtime.status === 'running') return { requeued: false, why: 'its attempt is still running' };
+  const stopped = (request.attemptId ? (state.attempts ?? []).find((attempt) => attempt.id === request.attemptId) : null)
+    ?? (state.attempts ?? []).findLast((attempt) => attempt.actionId === request.actionId);
+  if (['cancelled', 'interrupted', 'failed', 'blocked'].includes(runtime.status)) {
+    Object.assign(runtime, { status: 'pending', finishedAt: null, lastFailure: null });
+  }
+  return { requeued: true, why: null, attemptId: stopped?.id ?? null, stoppedPool: stopped?.pool ?? null };
+}
+
+/**
+ * The applied restart intent for a step about to be dispatched, and the
+ * handoff block its next attempt carries (built from the stopped attempt's
+ * durable facts, exactly as a mechanical retry's would be).
+ */
+export function appliedStepRestart(state, runDir, actionId, formatHandoff = handoffBlock) {
+  const request = readStepRestarts(runDir).find((entry) => entry.actionId === actionId && entry.appliedAt);
+  if (!request) return null;
+  const stopped = request.attemptId
+    ? (state.attempts ?? []).find((attempt) => attempt.id === request.attemptId)
+    : (state.attempts ?? []).findLast((attempt) => attempt.actionId === actionId);
+  return { request, pool: request.pool ?? null, handoff: stopped ? durableAttemptHandoff(stopped, runDir, formatHandoff) : null };
+}
+
 /**
  * Append this attempt's decision to shared core state. Concurrent actions in
  * one workflow all write this file, so the whole read-modify-write happens
@@ -464,6 +565,7 @@ function appendDecision(bullswarmDir, record, {
       const until = quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now, {
         until: quarantine.until ?? null,
         kind,
+        evidence: quarantine.evidence ?? null,
       });
       // Siblings of a dead credential are benched inside the SAME locked
       // update, on the deadline quarantinePool just computed — one upstream,
@@ -581,6 +683,15 @@ export async function dispatchV2Action({
       : updateState);
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
+  const backoff = dependencies.sleep ?? ((ms) => new Promise((resolve) => {
+    const started = Date.now();
+    const tick = setInterval(() => {
+      if (Date.now() - started >= ms || shouldCancel?.()) {
+        clearInterval(tick);
+        resolve();
+      }
+    }, Math.min(250, Math.max(1, ms)));
+  }));
   const callerSilenceOverride = silenceTimeoutSec !== null && silenceTimeoutSec !== undefined;
   const envSilenceOverride = Number.isFinite(Number(parentEnv?.BULLSWARM_WORKER_SILENCE_SEC))
     && Number(parentEnv.BULLSWARM_WORKER_SILENCE_SEC) > 0;
@@ -629,6 +740,7 @@ export async function dispatchV2Action({
   const attempts = [];
   let correctionUsed = false;
   let retriesUsed = 0;
+  let throttleRetries = 0;
   let nextTask = taskText;
   let last = null;
   const tried = new Set();
@@ -843,6 +955,10 @@ export async function dispatchV2Action({
         attempts: (Array.isArray(ledgerAttempts) ? ledgerAttempts : [])
           .filter((attempt) => attempt?.id !== `${action.id}-${ordinal}`
             && (!attempt?.pool || attempt.pool === pool.name)),
+        onCapture: (capture, usage) => {
+          record.capture = clone(capture);
+          onAttempt?.('captured', clone({ ...record, ...(usage ? { usage } : {}) }));
+        },
       });
       // Capture before releasing the in-flight ledger entry or invoking the
       // worker-exit callback. Either can let a sibling begin editing this
@@ -890,7 +1006,12 @@ export async function dispatchV2Action({
       && (freeBudgetExempt
         ? hasUntriedPool
         : hasRetryBudget && (hasUntriedPool || canRetrySamePool));
-    const willRecover = canCorrectSchema || canRetryMechanically;
+    // A throttle that named a wait longer than THROTTLE_MAX_WAIT_MS is not
+    // sat out on the same pool: the attempt falls over instead (quota.js Q6).
+    const canRetryThrottle = kind === 'throttle'
+      && verdict?.throttleRetrySamePool !== false
+      && throttleRetries < MAX_THROTTLE_RETRIES;
+    const willRecover = canCorrectSchema || canRetryThrottle || canRetryMechanically;
     Object.assign(record, {
       finishedAt,
       status: verdict.ok
@@ -954,6 +1075,7 @@ export async function dispatchV2Action({
         pool: pool.name, reason: verdict.why, now: now(),
         until: verdict.quarantineUntil ?? null,
         kind: kind === 'quota' ? 'quota' : 'auth',
+        evidence: verdict.quotaPause ?? null,
         group: upstreamGroupOf(pool), groupPools: allPools,
       } : null,
     });
@@ -982,7 +1104,7 @@ export async function dispatchV2Action({
       replayPool = pool;
       continue;
     }
-    if (canRetryMechanically) {
+    if (canRetryMechanically || canRetryThrottle) {
       const facts = {
         pool: pool.name,
         model: record.model,
@@ -1006,6 +1128,13 @@ export async function dispatchV2Action({
         from: `${action.id}-${ordinal}`,
         bytes: Buffer.byteLength(block, 'utf8'),
       };
+    }
+    if (canRetryThrottle) {
+      throttleRetries += 1;
+      remaining.unshift(pool);
+      replayPool = pool;
+      await backoff(throttleBackoffMs(throttleRetries, { waitMs: verdict.throttleWaitMs }));
+      continue;
     }
     // Free transport failures do not spend the mechanical retry budget. The
     // selected pool was already removed above; continue only when an untried

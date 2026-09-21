@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { planPrices, planPriceFor, priceFor, subscriptionCostUsd } from '../src/lib/prices.js';
+import { DAYS_PER_MONTH, planPrices, planPriceFor, priceFor, subscriptionCostUsd } from '../src/lib/prices.js';
+import { windowDays, windowPriceUsd } from '../src/lib/subscription-cost.js';
 
 test('plan prices are parsed offline and a per-machine override wins', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-prices-'));
@@ -36,10 +37,28 @@ test('plan prices are parsed offline and a per-machine override wins', () => {
       updatedAt: '2026-09-16',
       basis: 'published plan price',
     });
-    assert.equal(subscriptionCostUsd({ monthlyPriceUsd: 30 }, { days: 7 }), 7);
+    // One month's days returns the monthly price itself, and a week is the
+    // monthly price over the shared month length — never over a flat 30.
+    assert.equal(subscriptionCostUsd({ monthlyPriceUsd: 30 }, { days: DAYS_PER_MONTH }), 30);
+    assert.equal(subscriptionCostUsd({ monthlyPriceUsd: 30 }, { days: 7 }), 6.89938398);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('the month length in prices.js is the one subscription-cost.js divides by', () => {
+  // 30.4375 is the average Gregorian month (365.25 / 12), the length that
+  // makes twelve months of pro-rated windows return the annual price.
+  assert.equal(DAYS_PER_MONTH, 365.25 / 12);
+  assert.equal(DAYS_PER_MONTH, 30.4375);
+  // The two modules' pro-rata divisions are the same arithmetic: a monthly
+  // window priced directly equals the monthly price pro-rated over the same
+  // number of days. A local month length in either module breaks this.
+  const reset = '2026-09-20T20:00:00.000Z';
+  const days = windowDays('monthly', reset);
+  assert.ok(days >= 30 && days <= 31, `a real month runs 30–31 days, got ${days}`);
+  assert.equal(windowPriceUsd(200, 'monthly', reset), 200 * days / DAYS_PER_MONTH);
+  assert.equal(subscriptionCostUsd(200, { days }), Math.round((200 * days / DAYS_PER_MONTH) * 1e8) / 1e8);
 });
 
 test('an undeclared plan yields null rather than a number', () => {

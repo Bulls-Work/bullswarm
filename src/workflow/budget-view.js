@@ -1,6 +1,7 @@
 import { cut } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 import { formatMoney } from '../lib/usage-basis.js';
+import { honestApiTotalText } from './spend-facts.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const COMMAND = 'bullswarm strategy set-subscription <pool> --monthly-usd <amount>';
@@ -182,6 +183,22 @@ function planLine(row, ansi) {
   return null;
 }
 
+/**
+ * The pool's recorded spend, in the Run spend block's own words: the whole
+ * amount at its usage basis, `at least $X api · N unmeasured` when the period
+ * holds attempts nobody priced, or a dash when nothing was recorded — never a
+ * figure beside that dash.
+ */
+function spendLine(row, ansi) {
+  const facts = row?.apiFacts ?? null;
+  const amount = finite(facts?.apiKnownSubtotalUsd);
+  const glyph = row?.tokenSource === 'transcript-summed' ? '≈'
+    : row?.tokenSource === 'estimated:utf8-bytes/4' ? '~' : '';
+  const whole = amount == null ? null : `${glyph}${formatMoney(amount)} api`;
+  const text = facts ? honestApiTotalText(facts, { whole, counts: 'unmeasured' }) : null;
+  return paint(`spent ${text ?? '—'}`, METER_COLORS.dim, ansi);
+}
+
 function windowsOf(row) {
   return (Array.isArray(row?.windows) ? row.windows : [])
     .filter((window) => finite(window?.usedPct) != null);
@@ -245,6 +262,7 @@ export function budgetLines(budget, { width = 120, ansi = true, nowMs = Date.now
     lines.push(...windowLines(row, metrics, ansi).map((line) => cut(line, cols)));
     const plan = planLine(row, ansi);
     if (plan) lines.push(cut(plan, cols));
+    lines.push(cut(spendLine(row, ansi), cols));
     if (index < rows.length - 1) lines.push('');
   }
   if (budget?.disabledPools?.length) {

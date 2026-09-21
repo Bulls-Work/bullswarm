@@ -23,7 +23,9 @@ import {
   measuredTaskMinutes,
   cardDurationText,
   medianRunDuration,
+  isFinishedRun,
   recordMoneyPair,
+  runStatusMark,
   todayDateLabel,
   todayLicenceRows,
   todayMinutesNumberText,
@@ -52,7 +54,8 @@ import {
   worstTokenSource,
   workflowRunLabel,
 } from './dashboard.js';
-import { apiMoney, apiMoneyText, formatMoney } from '../lib/usage-basis.js';
+import { apiMoney, formatMoney } from '../lib/usage-basis.js';
+import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 
 const BUDGET_WEEK_POOLS = 4;
 const WEEKDAY_LETTERS = Object.freeze(['S', 'M', 'T', 'W', 'T', 'F', 'S']);
@@ -142,8 +145,13 @@ function todayTableRow(row, width, { header = false } = {}) {
     todayMinutesNumberText(row?.workflowMinutes) ?? blank(),
     row?.workflowPct == null ? blank() : `${row.workflowPct.toFixed(1)}%`,
     todayMinutesNumberText(row?.runMinutes) ?? blank(),
-    row?.apiUsd == null && row?.subscriptionUsd == null && !row?.tokenSource ? blank()
-      : compactUsageBasisText({ apiUsd: row?.apiUsd, subscriptionUsd: row?.subscriptionUsd, tokenSource: row?.tokenSource, subscriptionBasis: row?.subscriptionBasis }, specs.api),
+    // The cell is fixed-width: the honest amount (`at least $X` when the
+    // pool's day holds unpriced attempts), billed against the subscription
+    // fact it has. The block's own footnote names the coverage counts.
+    row?.apiKnownSubtotalUsd == null && row?.apiUsd == null && row?.subscriptionUsd == null ? blank()
+      : [licenceApiText(row), licenceMoney(row?.subscriptionUsd)]
+        .filter((part) => part && part !== blank())
+        .join(' · ') || blank(),
   ];
   const widths = [specs.wf, specs.wfPct, specs.run, specs.api];
   let line = header ? 'pool'.padEnd(nameWidth) : todayPoolName(row?.name, nameWidth).padEnd(nameWidth);
@@ -173,14 +181,16 @@ function todayLicenceFootnotes(nowMs, width, desktop = false) {
   const date = dayKey(nowMs) ?? 'today';
   return (desktop
     ? [
-      'weekly share is measured worker-minutes against the pool window',
+      'weekly share is the calibration ledger drop when it recorded one, else a labelled pace estimate',
       '— means the real snapshot supplied no measurement',
+      'at least marks an API total that leaves unpriced attempts out of the sum',
       'API and subscription amounts keep their provider/estimate basis',
       'live window used share is on Budget',
     ]
     : [
-      'weekly share is measured worker-minutes against the pool window',
+      'weekly share is the ledger drop, else ≈ marks the pace estimate',
       '— means the real snapshot supplied no measurement',
+      'at least marks an API total with unpriced attempts',
       `money audit for ${date} uses recorded values only`,
       'live window used share is on Budget',
     ]).map((line) => todayPadded(line, width));
@@ -193,13 +203,11 @@ function cardStatusText(status) {
   return value || '—';
 }
 
-function cardMoneySlot(raw, value) {
-  const text = String(raw ?? '');
+/** A card's money slot: the pair's own words, never a second rendering. */
+function cardMoneySlot(raw) {
+  const text = String(raw ?? '').trim();
   if (!text || text.startsWith('api unknown') || text.startsWith('sub unknown')) return blank();
-  const amount = value?.usd == null ? null : formatMoney(value.usd, value.tokens ?? null);
-  if (amount == null || amount === '-') return blank();
-  const prefix = text.startsWith('≈ ') ? '≈ ' : text.startsWith('~ ') ? '~ ' : '';
-  return `${prefix}${amount}`;
+  return text.replace(/ api( ·|$)/, '$1');
 }
 
 function cardLines(card, width, { task = false } = {}) {
@@ -212,18 +220,11 @@ function cardLines(card, width, { task = false } = {}) {
   const steps = card.steps?.done != null && card.steps?.total != null
     ? `${card.steps.done}/${card.steps.total}` : '—';
   const money = card.money ?? recordMoneyPair(card.record ?? {});
-  const [apiRaw = '', subRaw = ''] = String(money.text ?? '').split(' · ');
-  // The card's API slot shows whatever the pair's API side says: the strict
-  // amount, or the recorded subtotal a partly-priced run really holds. The
-  // `≈` in front of it comes from the pair's own wording.
-  const apiAmount = apiMoney({
-    apiUsd: money.api?.usd ?? null,
-    apiKnownSubtotalUsd: money.apiKnownSubtotalUsd ?? null,
-    apiCoverage: money.apiCoverage ?? null,
-    tokenSource: money.tokenSource ?? null,
-  });
-  const api = cardMoneySlot(apiRaw, { usd: apiAmount?.usd ?? null, tokens: money.tokens });
-  const subscription = cardMoneySlot(subRaw, { ...money.subscription, tokens: money.tokens });
+  // Each slot is the pair's own wording — the whole amount with its estimate
+  // glyph, or `at least $X · N unmeasured` when the run holds attempts that
+  // were never priced. The card never re-derives an amount of its own.
+  const api = cardMoneySlot(money.apiSlotText ?? money.apiText);
+  const subscription = cardMoneySlot(money.subscriptionText);
   const content = [
     task ? ` ${project} · task · ${status}` : ` ${project} · ${status} · ${verdict}`,
     ` ${duration} · steps ${steps}`,
@@ -312,12 +313,44 @@ function licenceMoney(value, tokenSource = null) {
     : tokenSource === 'estimated:utf8-bytes/4' ? `~${formatted}` : formatted;
 }
 
+/**
+ * The licence row's API cell through the Run spend block's helper: the whole
+ * amount with its estimate glyph, or `at least $X · N unmeasured` when the
+ * pool's day holds attempts nobody priced. A row with no recorded amount is
+ * blank here, the way a dash reads in the column.
+ */
+function licenceApiText(row) {
+  const facts = row?.apiFacts ?? null;
+  if (!facts) return blank();
+  const text = honestApiTotalText(facts, {
+    api: null,
+    whole: licenceMoney(apiMoney(row), row?.tokenSource),
+    counts: 'unmeasured',
+  });
+  return text === 'api unknown' || text === '—' ? blank() : text;
+}
+
+/**
+ * The window-share cell: what the calibration ledger measured, when it
+ * attributes a real window drop to today's runs, else the pool's pace
+ * estimate, labelled as the estimate it is. No third number exists — an
+ * unknown share is a dash, never a guess beside it.
+ */
+function licenceShareText(row) {
+  const pct = finiteOrNull(row?.weeklyShare);
+  if (pct == null) return blank();
+  const value = `${pct.toFixed(1)}%`;
+  if (row?.shareBasis === 'measured') return `${value} measured`;
+  if (row?.shareBasis === 'pace') return `≈${value} pace estimate`;
+  return value;
+}
+
 /** One pool's licence facts in plain words, without padding. */
 function licenceRowText(row, width = null) {
   const name = width == null ? String(row?.name ?? '—') : todayPoolName(row?.name, Math.max(1, width));
   const worker = row?.workerMinutes == null ? blank() : Number(row.workerMinutes).toFixed(2);
-  const share = row?.weeklyShare == null ? blank() : `${Number(row.weeklyShare).toFixed(1)}%`;
-  const api = licenceMoney(apiMoney(row), row?.tokenSource);
+  const share = licenceShareText(row);
+  const api = licenceApiText(row);
   const subscription = licenceMoney(row?.subscriptionUsd);
   return `${name} · ${worker} · ${share} · ${api} · ${subscription}`;
 }
@@ -762,7 +795,10 @@ function breakdownCells(model, opts, { cellWidth }) {
         width: cellWidth,
         rowCount: chartRowCount(opts.height ?? 36),
         col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, chartBuckets.length))),
-        barW: 3, unit: '$', mark: partialSpend ? '≈'
+        // A chart that draws any subtotal is a lower bound throughout: the
+        // axis says `at least` in the Run spend block's own words rather than
+        // an `≈` that could read as a whole.
+        barW: 3, unit: '$', mark: partialSpend ? 'at least '
           : spendTokenSource === 'provider-reported' ? ''
             : spendTokenSource === 'transcript-summed' ? '≈'
               : spendTokenSource === 'estimated:utf8-bytes/4' ? '~' : '·',
@@ -819,19 +855,22 @@ function summaryBand(body, model, opts) {
   // coverage, so this line can never say `unknown` while the chart above it
   // draws three bars.
   const totals = projects?.totals ?? null;
-  const spentMoney = apiMoney({
-    apiUsd: totals?.apiEquivalentUsd ?? totals?.apiUsd ?? null,
-    apiKnownSubtotalUsd: totals?.apiKnownSubtotalUsd ?? null,
+  // The period's spend through the Run spend block's own helper: a partial
+  // scope reads `at least $X api · N unmeasured`, a whole one keeps its
+  // provider/estimate words. It can never say `unknown` while the chart
+  // above it draws three bars.
+  const spentFacts = spendFacts({
     attempts: totals?.attempts ?? null,
     pricedAttempts: totals?.pricedAttempts ?? null,
-    tokenSource: totals?.tokenSource ?? null,
+    measuredAttempts: totals?.measuredAttempts ?? null,
+    apiKnownSubtotalUsd: totals?.apiKnownSubtotalUsd ?? null,
+    subscriptionKnownSubtotalUsd: totals?.subscriptionKnownSubtotalUsd ?? null,
+    subscriptionPricedAttempts: totals?.subscriptionPricedAttempts ?? null,
   });
-  const money = spentMoney?.partial
-    ? [
-      apiMoneyText(spentMoney, null, null, { coverage: true }),
-      ...moneyText({ ...keys, apiUsd: null }).split(' · ').slice(1),
-    ].join(' · ')
-    : moneyText({ ...keys, apiUsd: spentMoney?.usd ?? null });
+  const wholePair = moneyText({ ...keys, apiUsd: totals?.apiUsd ?? keys.apiUsd ?? null });
+  const wholeApi = wholePair.split(' · ')[0];
+  const apiPart = spentFacts ? honestApiTotalText(spentFacts, { whole: wholeApi }) : wholeApi;
+  const money = [apiPart, ...wholePair.split(' · ').slice(1)].join(' · ');
   const share = runs ? shareText(verified / runs) : null;
   const named = (row) => (row?.name ? String(row.name) : blank());
   const figures = [
@@ -855,7 +894,6 @@ function summaryBand(body, model, opts) {
     pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
   }
   body.push('');
-  const apiPart = money.split(' · ')[0];
   const sentence = apiPart && !apiPart.includes('api unknown')
     ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${apiPart} of API-equivalent work`
     : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
@@ -908,7 +946,12 @@ function activeRunLines(model, opts, body, title = 'running') {
       (sum, pool) => (pool.sharePct == null ? sum : (sum ?? 0) + pool.sharePct),
       null,
     );
-    const money = moneyText(economics);
+    // A live run's own attempts answer for the money: `at least $X api · N
+    // unmeasured` while some attempt has no price yet, through the Run spend
+    // block's helper.
+    const pair = moneyText(economics);
+    const liveFacts = recordSpendFacts(run);
+    const money = [honestApiTotalText(liveFacts, { whole: pair.split(' · ')[0] }), ...pair.split(' · ').slice(1)].join(' · ');
     const cost = `${tint(draw == null ? blank() : formatDashboardValue(draw, 'percent'), 'purple')} · ${tint(money ?? blank(), 'purple')}`;
 
     const live = (run.state?.actions ?? []).filter((action) => action.status === 'running');
@@ -1001,37 +1044,57 @@ function homeDetails(model, opts, body) {
     const cellWidth = Math.floor(inner / 4);
     pushColumns(body, breakdownCells(model, opts, { cellWidth }), { width: width - 1, gap });
   }
-  if (!narrow) body.push(dimText(' spent per day carries the provider/transcript/estimate basis · share is measured worker-minutes · click a column for its Stats tab', width));
+  if (!narrow) body.push(dimText(' spent per day carries the provider/transcript/estimate basis and reads at least where a day holds unpriced attempts · share is the ledger drop, else a pace estimate · click a column for its Stats tab', width));
 
   summaryBand(body, model, opts);
 
   body.push('');
   body.push(rule('recent', 'history ›', width));
-  const recent = [...(model.rollups ?? [])]
+  // Finished runs only: a live run, and a run a plan revision reopened (its
+  // index row says running), sit in the running block above, whatever their
+  // failed steps or earlier finish.
+  const recent = (model.rollups ?? []).filter(isFinishedRun)
     .sort((a, b) => String(b.finishedAt ?? b.startedAt ?? '').localeCompare(String(a.finishedAt ?? a.startedAt ?? '')))
     .slice(0, narrow ? 3 : 5);
   if (!recent.length) {
     body.push(dimText(' no run has been rolled up yet · bullswarm workflow reindex backfills them', width));
   }
   // The duration cell carries the run's basis (`span` when the record proved
-  // no active interval) beside its money, so the desktop cell is five columns
-  // wider than the bare duration it replaced, not five columns of truncated money.
-  const durationWidth = narrow ? 16 : 21;
-  for (const record of recent) {
-    const ok = record.verified === true ? tint(glyphs().ok, 'green') : record.status === 'completed' ? dimText(glyphs().pending, 2) : tint(glyphs().fail, 'red');
-    // The same money rule the cards use: a partly-priced run shows the
-    // recorded subtotal marked `≈` rather than a dash that reads as free.
-    const money = recordMoneyPair(record).text;
+  // no active interval) beside its money, so the desktop cell is wider than
+  // the bare duration it replaced rather than five columns of truncated money.
+  // A partly-priced run's total also has to fit the coverage that makes it a
+  // lower bound (`at least $X · N unmeasured`), so the cell takes the width
+  // its own five records need, bounded so the goal keeps its own column.
+  const recentCells = recent.map((record) => {
+    const money = recordMoneyPair(record);
+    return {
+      record,
+      duration: recentDurationText(record),
+      // The phone has one short cell for the duration and the money, so it
+      // keeps the API phrase alone (`at least $9.52`); the counts it belongs
+      // to are named on the card above and in the period band below.
+      money: narrow ? money.apiSlotText ?? blank() : money.text ?? blank(),
+    };
+  });
+  const durationWidth = Math.max(
+    narrow ? 16 : 21,
+    ...recentCells.map((cell) => visibleLength(`${cell.duration} · ${cell.money}`)),
+  );
+  const moneyWidth = Math.min(durationWidth, narrow ? 21 : 44);
+  for (const { record, duration, money } of recentCells) {
+    // The Run page header's own mark for this status (runStatusMark).
+    const { glyph, tone } = runStatusMark(record);
+    const ok = tone ? tint(glyphs()[glyph], tone) : dimText(glyphs()[glyph], 2);
     body.row(compactRow([
       { text: ` ${ok}`, width: 2 },
       { text: strong(record.shortId ?? record.runId), width: 7 },
       {
-        text: cut(`${record.project ?? blank()} · ${String(record.goal ?? '').split('\n')[0]}`, Math.max(6, width - 34 - (durationWidth - 16))),
+        text: cut(`${record.project ?? blank()} · ${String(record.goal ?? '').split('\n')[0]}`, Math.max(6, width - 34 - (moneyWidth - 16))),
         grow: true,
         min: 6,
         gap: 2,
       },
-      { text: `${recentDurationText(record)} · ${money ?? blank()}`, width: durationWidth, align: 'right', gap: 2 },
+      { text: `${duration} · ${money}`, width: moneyWidth, align: 'right', gap: 2 },
       { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
     ], { width }), { kind: 'run', runId: record.runId });
   }

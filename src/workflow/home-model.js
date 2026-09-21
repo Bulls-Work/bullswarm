@@ -23,7 +23,9 @@ import {
 } from './dashboard.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 import { runClockText, runDurationFacts } from './run-model.js';
-import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
+import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
+import { readCalibration } from '../lib/subscription-cost.js';
+import { apiMoney, apiMoneyText, formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
 
 function taskToday(task, nowMs, { finished = false } = {}) {
   const at = finished ? (task?.endedAt ?? task?.finishedAt) : (task?.startedAt ?? task?.endedAt ?? task?.finishedAt);
@@ -245,12 +247,17 @@ function runStepCounts(record) {
   };
 }
 
+/** The home everything durable lives in: `$BULLSWARM_HOME`, else `~/.bullswarm`. */
+function bullswarmHome() {
+  const home = process.env.BULLSWARM_HOME?.trim();
+  return home && home.length ? home : join(homedir(), '.bullswarm');
+}
+
 /** `<BULLSWARM_HOME>/workflows/<runId>`, the directory the Run page opens. */
 function runDirectory(record) {
   if (record?.runDir) return String(record.runDir);
   if (!record?.runId) return null;
-  const home = process.env.BULLSWARM_HOME?.trim();
-  return join(home && home.length ? home : join(homedir(), '.bullswarm'), 'workflows', String(record.runId));
+  return join(bullswarmHome(), 'workflows', String(record.runId));
 }
 
 /**
@@ -338,38 +345,91 @@ function recordMoneyInput(record) {
     },
     apiKnownSubtotalUsd: apiUsd == null ? info.apiKnownSubtotalUsd ?? null : null,
     apiCoverage: info.apiCoverage ?? null,
+    facts: recordSpendFacts(record, attempts),
     tokenSource,
     tokens: record?.usage?.tokens ?? null,
   };
 }
 
 /**
- * A money pair whose API side says what it is: the whole amount when every
- * attempt was priced, else the recorded subtotal marked `≈`. `coverage`
- * adds `N/M priced` where the surface has room for it.
+ * A money pair whose API side says what it is. The whole amount when every
+ * attempt was priced (`≈ $9.52 api summed` while the priced attempts are
+ * estimates); `at least $X api · N unmeasured` when the scope holds attempts
+ * nobody priced — the Run spend block's own words, through its own helper;
+ * `api unknown`, with its unmeasured count, when nothing recorded an amount.
  */
-function moneyPairText(input, { coverage = false } = {}) {
+function moneyPairText(input) {
+  const { apiText, subscriptionText } = moneyPairParts(input);
+  return [apiText, subscriptionText].filter((part) => part != null && part !== '').join(' · ');
+}
+
+/**
+ * The pair as its two sides, each already honest.
+ *
+ * `apiText` is the money phrase (`at least $9.52 api · 3 unmeasured`);
+ * `apiSlotText` is the same phrase for a surface whose own label already
+ * says API (a card's `API …` slot); `subscriptionText` is unchanged.
+ */
+function moneyPairParts(input) {
+  const pair = formatMoneyPair(input);
+  const separator = pair.indexOf(' · ');
+  const subscriptionText = separator < 0 ? '' : pair.slice(separator + 3);
   const money = apiMoney({
     apiUsd: input?.api?.usd ?? null,
     apiKnownSubtotalUsd: input?.apiKnownSubtotalUsd ?? null,
     apiCoverage: input?.apiCoverage ?? null,
     tokenSource: input?.tokenSource ?? null,
   });
-  const pair = formatMoneyPair(input);
-  if (!money?.partial) return pair;
-  const [, ...subscriptionText] = pair.split(' · ');
-  return [apiMoneyText(money, null, input?.tokens ?? null, { coverage }), ...subscriptionText].join(' · ');
+  // The whole-scope label: the pair's own words for a complete amount, or the
+  // subtotal the record really holds, marked `≈`.
+  const wholeApi = money?.partial
+    ? apiMoneyText(money, null, input?.tokens ?? null, { coverage: false })
+    : (separator < 0 ? pair : pair.slice(0, separator));
+  const facts = input?.facts ?? null;
+  if (!facts) return { apiText: wholeApi, apiSlotText: wholeApi, subscriptionText };
+  // A card's slot is the amount with its own estimate glyph, and the whole
+  // honest phrase when a partial total has coverage words to carry.
+  const glyph = wholeApi.startsWith('≈ ') ? '≈ ' : wholeApi.startsWith('~ ') ? '~ ' : '';
+  const amount = finiteOrNull(money?.usd ?? input?.api?.usd);
+  const slotWhole = amount == null ? null : `${glyph}${formatMoney(amount, input?.tokens ?? null)}`;
+  return {
+    apiText: honestApiTotalText(facts, { whole: wholeApi }),
+    apiSlotText: honestApiTotalText(facts, { api: null, whole: slotWhole }),
+    subscriptionText,
+  };
 }
 
 /** The shared formatter is the source of truth for every Home card money pair. */
-function recordMoneyPair(record, { coverage = false } = {}) {
+function recordMoneyPair(record) {
   const input = recordMoneyInput(record);
-  return { ...input, text: moneyPairText(input, { coverage }) };
+  return { ...input, ...moneyPairParts(input), text: moneyPairText(input) };
 }
 
 function isActiveRun(record) {
   const status = runStatus(record);
   return record?.ongoing === true || ['running', 'active', 'planning', 'queued', 'waiting', 'paused'].includes(status);
+}
+
+/**
+ * The mark the Run page header gives a run's status (run-view.js runPage):
+ * completed/succeeded is the tick, failed/partial/cancelled/interrupted the
+ * cross, and any other status the ongoing dot. Verification is not part of
+ * it — the Run page never reads a completed run as pending — so a recent row
+ * takes the mark from here and cannot drift from the page it opens. The
+ * status is the record's own raw word, as the header reads it.
+ *
+ * @returns {{glyph: 'ok'|'fail'|'ongoing', tone: 'green'|'red'|'amber'|null}}
+ */
+function runStatusMark(record) {
+  const status = String(record?.status ?? recordState(record)?.lifecycle?.status ?? 'starting');
+  if (status === 'completed' || status === 'succeeded') return { glyph: 'ok', tone: 'green' };
+  if (['failed', 'partial', 'cancelled', 'interrupted'].includes(status)) return { glyph: 'fail', tone: 'red' };
+  return { glyph: 'ongoing', tone: status === 'running' ? 'amber' : null };
+}
+
+/** Finished runs only: a live or reopened run belongs to the running block. */
+function isFinishedRun(record) {
+  return record != null && record.unfinished !== true && !isActiveRun(record);
 }
 
 function runIdentity(record) {
@@ -506,6 +566,39 @@ function poolRatePerMinute(pool, budgetRow = null) {
     ?? budgetRow?.share?.ratePerMinute);
 }
 
+function poolWindow(pool, row = null) {
+  return pool?.spend?.pacing?.window ?? pool?.pacingWindow ?? row?.subscriptionWindow ?? null;
+}
+
+/**
+ * The window drop a calibration ledger attributes to the runs in `runIds`.
+ *
+ * A ledger sample is durable evidence: it names the run and attempt whose
+ * meter movement it observed (`appendCalibrationFromResult`), carries the
+ * observed `deltaPct`, and only eligible, conserved observations are stored.
+ * Summing the samples one pool's runs own is therefore a measurement of the
+ * share of the window that work consumed — never an extrapolation. Samples
+ * with no run attribution (a `bullswarm run` task, a study) stay out: they
+ * cannot be attributed to the row's scope, so they are not used.
+ *
+ * A ledger whose own window differs from the pool's is not this column's
+ * measurement and is refused rather than relabelled.
+ */
+function ledgerWindowShare(ledger, runIds, window = null) {
+  if (!ledger || !runIds?.size || !Array.isArray(ledger.samples)) return null;
+  if (window && ledger.window && ledger.window !== window) return null;
+  let pct = null;
+  let samples = 0;
+  for (const sample of ledger.samples) {
+    if (!sample?.runId || !runIds.has(String(sample.runId))) continue;
+    const delta = finiteOrNull(sample.deltaPct);
+    if (delta == null || delta <= 0) continue;
+    pct = (pct ?? 0) + delta;
+    samples += 1;
+  }
+  return pct == null ? null : { pct, samples };
+}
+
 function todayLicenceRows(model, today, nowMs) {
   const byName = new Map();
   const ensure = (name) => {
@@ -525,10 +618,19 @@ function todayLicenceRows(model, today, nowMs) {
     if (number == null || number < 0) return;
     row[key] = (row[key] ?? 0) + number;
   };
+  // Which of today's runs each pool's ledger may be attributed to: the run id
+  // a calibration sample carries is the workflow's own `wf-…` id.
+  const runIdsByPool = new Map();
   for (const record of today.workflows) {
+    const runId = record?.runId ?? null;
     for (const [name, entry] of Object.entries(record?.pools ?? {})) {
       const row = ensure(name);
       if (!row) continue;
+      if (runId != null) {
+        const ids = runIdsByPool.get(name) ?? new Set();
+        ids.add(String(runId));
+        runIdsByPool.set(name, ids);
+      }
       row.worked = true;
       addMinutes(row, 'workflowMinutes', entry?.minutes);
       // A v2 pool entry keeps its strict amount in `apiUsd` and leaves the
@@ -543,8 +645,17 @@ function todayLicenceRows(model, today, nowMs) {
       // lower bound instead of a dash that reads as "this pool was free".
       const subtotal = finiteOrNull(entry?.apiKnownSubtotalUsd) ?? cost;
       if (subtotal != null) row.apiKnownSubtotalUsd = (row.apiKnownSubtotalUsd ?? 0) + subtotal;
-      row.attempts = (row.attempts ?? 0) + (finiteOrNull(entry?.attempts) ?? 0);
-      row.pricedAttempts = (row.pricedAttempts ?? 0) + (finiteOrNull(entry?.pricedAttempts) ?? 0);
+      // Coverage counts travel only when the entry names them: a pre-0.35.2
+      // entry recorded a whole amount and no counts, and reading its missing
+      // `pricedAttempts` as zero would mark every legacy pool as having one
+      // unpriced attempt it never had.
+      const count = finiteOrNull(entry?.attempts);
+      const priced = finiteOrNull(entry?.pricedAttempts);
+      if (count != null) row.attempts = (row.attempts ?? 0) + count;
+      if (priced != null) row.pricedAttempts = (row.pricedAttempts ?? 0) + priced;
+      const measured = finiteOrNull(entry?.measuredAttempts);
+      if (measured != null) row.measuredAttempts = (row.measuredAttempts ?? 0) + measured;
+      if (subtotal != null && (count == null || priced == null)) row.countsIncomplete = true;
       const subscription = finiteOrNull(entry?.subscriptionUsd);
       if (subscription != null) row.subscriptionUsd = (row.subscriptionUsd ?? 0) + subscription;
       else row.subscriptionUnknown = true;
@@ -571,11 +682,19 @@ function todayLicenceRows(model, today, nowMs) {
     const row = byName.get(pool?.name);
     if (!row) continue;
     row.ratePerMinute = poolRatePerMinute(pool, budgetRows.get(pool.name));
+    row.window = poolWindow(pool, row);
     row.usedPct = finiteOrNull(pool?.usedPct);
   }
   for (const row of byName.values()) {
     row.ratePerMinute ??= poolRatePerMinute(null, budgetRows.get(row.name));
   }
+
+  // The calibration ledger lives in the same live home as the meter list, so
+  // it is consulted only when the caller supplied that list (`model.pools`):
+  // a pure-rollup render — the committed frames, a fixture — never reads a
+  // home it was not handed, and a home whose meters could not be read has no
+  // ledger to pair them with either.
+  const liveRead = pools.length > 0;
 
   // Keep the provider/config order stable (the frame is a report, not a
   // ranking), then append a pool that was recorded by a rollup but is absent
@@ -586,25 +705,56 @@ function todayLicenceRows(model, today, nowMs) {
     .sort((a, b) => (order.get(a.name) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.name) ?? Number.MAX_SAFE_INTEGER)
       || String(a.name).localeCompare(String(b.name)))
     .map((row) => {
+      const apiUsd = row.apiUnknown ? null : row.apiUsd;
+      const apiKnownSubtotalUsd = finiteOrNull(row.apiKnownSubtotalUsd);
+      // The window-share line, in one place and one basis at a time. The
+      // calibration ledger's measured drop wins when it attributes one to
+      // today's runs; otherwise the pool's own measured rate times today's
+      // worker-minutes is a pace estimate, and the renderer labels it as such;
+      // otherwise the share is unknown and reads as a dash — never a guess
+      // beside an unknown for the same thing.
+      const window = row.window ?? row.subscriptionWindow ?? null;
+      const measured = liveRead
+        ? ledgerWindowShare(readCalibration(row.name, { home: bullswarmHome() }), runIdsByPool.get(row.name), window)
+        : null;
+      const pacePct = row.ratePerMinute != null && row.workflowMinutes != null
+        ? row.ratePerMinute * row.workflowMinutes : null;
+      const share = measured
+        ? { pct: measured.pct, basis: 'measured', samples: measured.samples }
+        : pacePct != null
+          ? { pct: pacePct, basis: 'pace', samples: null }
+          : { pct: null, basis: null, samples: null };
       const output = {
         ...row,
-        apiUsd: row.apiUnknown ? null : row.apiUsd,
+        apiUsd,
         subscriptionUsd: row.subscriptionUnknown ? null : row.subscriptionUsd,
-        workflowPct: row.ratePerMinute != null && row.workflowMinutes != null
-          ? row.ratePerMinute * row.workflowMinutes : null,
+        workflowPct: pacePct,
       };
       // Keep the pre-0.35.1 enumerable shape stable for callers that persisted
       // this projection, while exposing the new plain-word licence facts as
       // ordinary readable properties to the Home renderer and new consumers.
       Object.defineProperties(output, {
         workerMinutes: { value: row.workflowMinutes, enumerable: false },
-        weeklyShare: {
-          value: row.ratePerMinute != null && row.workflowMinutes != null
-            ? row.ratePerMinute * row.workflowMinutes : null,
-          enumerable: false,
-        },
+        weeklyShare: { value: share.pct, enumerable: false },
+        shareBasis: { value: share.basis, enumerable: false },
+        shareSamples: { value: share.samples, enumerable: false },
         apiUnknown: { value: row.apiUnknown, enumerable: false },
         subscriptionUnknown: { value: row.subscriptionUnknown, enumerable: false },
+        // The API side of the row through the Run spend block's own helper:
+        // `at least $X` with its coverage when attempts went unpriced. A row
+        // whose entries never recorded the coverage counts keeps its whole
+        // amount unqualified, the way it always read.
+        apiFacts: {
+          value: spendFacts(row.countsIncomplete
+            ? { apiKnownSubtotalUsd }
+            : {
+              attempts: row.attempts,
+              pricedAttempts: row.pricedAttempts,
+              measuredAttempts: row.measuredAttempts ?? 0,
+              apiKnownSubtotalUsd,
+            }),
+          enumerable: false,
+        },
       });
       return output;
     });
@@ -688,5 +838,7 @@ export {
   recordMoneyInput,
   recordMoneyPair,
   isActiveRun,
+  isFinishedRun,
+  runStatusMark,
   todayTopRuns,
 };

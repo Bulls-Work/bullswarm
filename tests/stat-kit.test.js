@@ -412,16 +412,16 @@ test('a subtotal under the hover names the coverage that produced it', () => {
   // says which it is.
   assert.equal(
     formatHoverLabel({ kind: 'slice', bucketLabel: '20 Sep', series: 'codex', value: 8.28, share: 0.12, unit: 'usd', partial: true, pricedAttempts: 8, attempts: 11, tokenSource: 'unknown' }),
-    '20 Sep · codex · ≈$8.28 (8/11 attempts priced) · 12% of day',
+    '20 Sep · codex · at least $8.28 · 3 unmeasured · 12% of day',
   );
   assert.equal(
     formatHoverLabel({ kind: 'share', label: 'codex', value: 63.16, share: 0.21, unit: 'usd', partial: true, pricedAttempts: 57, attempts: 113 }),
-    'codex · ≈$63.16 (57/113 attempts priced) · 21% of panel',
+    'codex · at least $63.16 · 56 unmeasured · 21% of panel',
   );
-  // Without a coverage count the mark still says the figure is not a total.
+  // Without a coverage count the words still say the figure is not a total.
   assert.equal(
     formatHoverLabel({ kind: 'column', bucketLabel: '20 Sep', value: 171.3, share: 1, unit: 'usd', partial: true }),
-    '20 Sep · total · ≈$171.30 · 100% of day',
+    '20 Sep · total · at least $171.30 · 100% of day',
   );
 });
 

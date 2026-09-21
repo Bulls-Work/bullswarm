@@ -11,7 +11,7 @@ import { spawn } from 'node:child_process';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns, cmdReindex } from './runs-cli.js';
-import { newRunId, resolveRunId, listRuns, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine } from './short-id.js';
+import { newRunId, resolveRunId, listRuns, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine, v2RunnerLiveness } from './short-id.js';
 import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
@@ -23,7 +23,7 @@ import {
   pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run,
 } from './v2-runtime.js';
 import { formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
-import { prepareV2DispatchPools, workerSilenceTimeoutSec } from './v2-dispatch.js';
+import { prepareV2DispatchPools, requestStepRestart, workerSilenceTimeoutSec } from './v2-dispatch.js';
 import {
   createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, REVISION_CHANGE_KINDS, V2RevisionError,
 } from './v2-revision.js';
@@ -150,6 +150,8 @@ export async function cmdWorkflow(args, {
       return wfSteer(opts);
     case 'action':
       return wfAction(opts);
+    case 'step':
+      return wfStep(opts);
     default: {
       // Smart error: if the user typed a `runs` subcommand directly
       // under `workflow` (e.g. `workflow show jd3uki`), point them at
@@ -1727,6 +1729,20 @@ async function wfWatch(opts) {
     console.error('✗ --classic cannot combine with --next (--next only applies to event mode)');
     return 2;
   }
+  // --until is its own stopping rule and prints only trouble and the outcome.
+  let until = null;
+  if (opts.until != null) {
+    if (!['outcome', 'trouble'].includes(opts.until)) {
+      console.error(`✗ --until must be outcome or trouble (got "${opts.until}")`);
+      return 2;
+    }
+    const clash = ['next', 'once', 'classic', 'heartbeat'].filter((flag) => opts[flag] != null);
+    if (clash.length) {
+      console.error(`✗ --until cannot combine with ${clash.map((flag) => `--${flag}`).join(', ')}: it prints only trouble and the outcome`);
+      return 2;
+    }
+    until = opts.until;
+  }
   const intervalSec = Number(opts.interval ?? 2);
   // --heartbeat is opt-in: absent means no periodic line in event mode, and
   // the historical 60s in --once/--classic mode.
@@ -1771,6 +1787,7 @@ async function wfWatch(opts) {
       classic: opts.classic === true,
       jsonl: opts.jsonl === true,
       verbose: opts.verbose === true,
+      until,
     });
   } catch (err) {
     console.error(`✗ ${err.message}`);
@@ -1804,6 +1821,102 @@ function wfSteer(opts) {
     console.error(`✗ ${err.message}`);
     return 1;
   }
+}
+
+// --- workflow step restart ---------------------------------------------------
+// The caller's answer to a `looks stale` line. Nothing restarts on its own:
+// this writes the intent (see requestStepRestart in v2-dispatch.js), and the
+// run's live kernel stops the step's running attempt and queues it again with
+// the stopped attempt's handoff block, on --pool when given.
+
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'partial', 'cancelled', 'failed']);
+
+/**
+ * Request a restart of one running step and wait up to waitMs for its kernel
+ * to apply it. Resolves {code, status: restarted|refused|requested|error, ...};
+ * code is the exit code the CLI returns. poolNames, when given, is the set a
+ * --pool value must belong to.
+ */
+export async function restartV2Step({
+  bullswarmDir, token, stepId, pool = null, poolNames = null,
+  waitMs = 60_000, pollMs = 200, now = () => new Date().toISOString(),
+} = {}) {
+  const fail = (code, why, extra = {}) => ({ code, status: 'error', why, ...extra });
+  const resolved = resolveRunId(bullswarmDir, token);
+  if (!resolved) return fail(1, `no run found for "${token}"`);
+  let state;
+  try { state = JSON.parse(readFileSync(join(resolved.runDir, 'state.json'), 'utf8')); }
+  catch { return fail(1, `run "${token}" has no readable state.json`); }
+  if (isLegacyRunState(state)) return fail(2, `run "${token}" is not an autonomous V2 run`);
+  const id = state.shortId ?? state.runId;
+  const base = { runId: state.runId, shortId: state.shortId ?? null, step: stepId };
+  const status = state.lifecycle?.status ?? 'unknown';
+  if (TERMINAL_RUN_STATUSES.has(status)) {
+    return fail(1, `run ${id} already finished (${status}); nothing is running. Retry its unfinished steps with: bullswarm workflow resume ${id}`, base);
+  }
+  if (!(state.program?.actions ?? []).some((action) => action.id === stepId)) {
+    return fail(1, `run ${id} has no step "${stepId}"`, base);
+  }
+  const running = (state.attempts ?? []).findLast((attempt) => attempt.actionId === stepId && attempt.status === 'running');
+  if (!running) {
+    const stepStatus = (state.actions ?? []).find((action) => action.id === stepId)?.status ?? 'unknown';
+    return fail(1, `step ${stepId} is not running (${stepStatus}); restart stops a running attempt. `
+      + `To run it again: bullswarm workflow plan export ${id} --out plan.json, then bullswarm workflow plan revise ${id} --program plan.json --rerun ${stepId}`, base);
+  }
+  if (!v2RunnerLiveness(state, { runDir: resolved.runDir }).alive) {
+    return fail(1, `the kernel of ${id} is not running, so nothing can stop ${running.id}; `
+      + `bullswarm workflow resume ${id} restarts its interrupted steps with their handoff`, base);
+  }
+  if (pool && Array.isArray(poolNames) && !poolNames.includes(pool)) {
+    return fail(2, `unknown pool "${pool}"; configured pools: ${poolNames.join(', ') || 'none'}`, base);
+  }
+  const request = requestStepRestart(resolved.runDir, { actionId: stepId, attemptId: running.id, pool, now });
+  const outcome = { ...base, requestId: request.id, stoppedAttemptId: running.id, stoppedPool: running.pool ?? null, pool: request.pool };
+  const deadline = Date.now() + Math.max(0, waitMs);
+  for (;;) {
+    const answer = readEvents(resolved.runDir).findLast((event) => ['step.restarted', 'step.restart_refused'].includes(event.type)
+      && event.payload?.requestId === request.id);
+    if (answer?.type === 'step.restarted') return { code: 0, status: 'restarted', ...outcome, stoppedAttemptId: answer.payload.attemptId ?? running.id };
+    if (answer) return { code: 1, status: 'refused', why: answer.payload?.why ?? 'the kernel refused the restart', ...outcome };
+    if (Date.now() >= deadline) return { code: 0, status: 'requested', ...outcome };
+    await new Promise((done) => setTimeout(done, pollMs));
+  }
+}
+
+async function wfStep(opts) {
+  const path = opts.rest[0] === 'restart' ? ['workflow', 'step', 'restart'] : ['workflow', 'step'];
+  if (opts.help) { console.log(helpText(path)); return 0; }
+  const flagExit = flagErrors(opts, path);
+  if (flagExit !== null) return flagExit;
+  const [verb, token, stepId] = opts.rest;
+  if (verb !== 'restart' || !token || !stepId) { console.error(`usage: ${usageLine(['workflow', 'step', 'restart'])}`); return 2; }
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
+  const waitSec = opts.wait == null ? 60 : Number(opts.wait);
+  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  let poolNames = null;
+  if (opts.pool) {
+    try { poolNames = buildPools(BULLSWARM_DIR(), Date.now()).pools.map((pool) => pool.name); } catch { poolNames = null; }
+  }
+  const result = await restartV2Step({
+    bullswarmDir: BULLSWARM_DIR(), token, stepId, pool: opts.pool ?? null, poolNames, waitMs: waitSec * 1000,
+  });
+  const id = result.shortId ?? result.runId ?? token;
+  const payload = {
+    action: 'step-restart', ...result, code: undefined,
+    ...(result.status === 'error' ? {} : { next: { watch: `bullswarm workflow watch ${id} --until trouble` } }),
+  };
+  if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return result.code; }
+  if (result.status === 'error') { console.error(`✗ ${result.why}`); return result.code; }
+  if (result.status === 'refused') { console.error(`✗ ${stepId} in ${id} was not restarted: ${result.why}`); return result.code; }
+  const where = result.pool ? ` on ${result.pool}` : '';
+  if (result.status === 'restarted') {
+    console.log(`✓ restarted ${stepId} in ${id}: stopped ${result.stoppedAttemptId}${result.stoppedPool ? ` on ${result.stoppedPool}` : ''}; it runs again with its handoff${where}`);
+  } else {
+    console.log(`✓ restart requested for ${stepId} in ${id}; its kernel stops ${result.stoppedAttemptId} at its next control check and runs it again with its handoff${where}`);
+  }
+  console.log(`  watch    ${payload.next.watch}`);
+  return result.code;
 }
 
 // A V2 run keeps its graph in state.program.actions and its per-action
@@ -1879,6 +1992,7 @@ function wfAction(opts) {
 function workflowHelpPath(sub, opts) {
   if (!sub) return ['workflow'];
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
+  if (sub === 'step') return opts.rest[0] === 'restart' ? ['workflow', 'step', 'restart'] : ['workflow', 'step'];
   const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;
 }
@@ -1891,7 +2005,7 @@ function parseFlags(argv) {
     'suggested-plan', 'planner', 'program', 'summary', 'reason',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
-    'out', 'rerun', 'base-revision', 'wait', 'width', 'height',
+    'out', 'rerun', 'base-revision', 'wait', 'width', 'height', 'until', 'pool',
   ]);
   // A value flag with no value (end of argv, or the next token is another
   // flag) is a usage error, never a silent default: a bare --program must not

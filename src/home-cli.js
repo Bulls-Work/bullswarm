@@ -1,5 +1,8 @@
 // bullswarm home — safe, selective copies of a Bullswarm home.
 //
+// `home prune` and `home status` are the retention surface: what would go,
+// what went, and what background work (prune, the reprice reconciler) last did.
+//
 // A snapshot is intentionally assembled from the small, durable surfaces the
 // dashboard reads.  The live home is never modified: the copied history index
 // is cleared and rebuilt against the selected workflow directories only.
@@ -10,13 +13,23 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { flagName, unknownFlagExit } from './lib/cli-flags.js';
+import { flagName, knownFlags, unknownFlagExit } from './lib/cli-flags.js';
+import {
+  formatBytes, pruneHome, readMaintenanceResults, readRetentionPolicy,
+  recordPrune, runRetentionSweep, planRetention, WINDOW_REASON,
+} from './lib/retention.js';
 import { helpText, usageLine } from './help.js';
 import { listRuns, resolveRunId } from './workflow/short-id.js';
 import { cmdReindex } from './workflow/runs-cli.js';
 
-const VALUE_FLAGS = new Set(['runs', 'recent', 'since']);
-const BOOLEAN_FLAGS = new Set(['no-streams', 'json']);
+const VALUE_FLAGS = new Set(['runs', 'recent', 'since', 'days', 'trigger']);
+const BOOLEAN_FLAGS = new Set(['no-streams', 'json', 'dry-run', 'yes', 'auto']);
+// The central table (src/lib/cli-flags.js) is authoritative when it has a row
+// for the command; these are the flags home reads for the commands below.
+const OWN_FLAGS = {
+  'home prune': ['dry-run', 'yes', 'days', 'auto', 'trigger', 'json'],
+  'home status': ['json'],
+};
 const COPY_FILES = ['state.json', 'routing.json', 'providers.json'];
 const COPY_DIRS = [
   // assignments/ and runs/ are the single-task surfaces used by Runs/Home.
@@ -237,21 +250,6 @@ function directoryBytes(root) {
   return total;
 }
 
-function formatBytes(bytes) {
-  const value = Number(bytes);
-  if (!Number.isFinite(value)) return 'unknown';
-  if (value < 1024) return `${value} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let scaled = value;
-  let unit = 'B';
-  for (const candidate of units) {
-    scaled /= 1024;
-    unit = candidate;
-    if (scaled < 1024 || candidate === units.at(-1)) break;
-  }
-  return `${scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)} ${unit}`;
-}
-
 function ensureEmptyDestination(destination) {
   if (!existsSync(destination)) {
     mkdirSync(destination, { recursive: true });
@@ -336,6 +334,158 @@ function typedErrors(opts) {
   return problems;
 }
 
+function checkFlags(opts, path) {
+  const central = unknownFlagExit(opts._flags, path);
+  if (central !== null) return central;
+  // Until the central table carries a row for the command, home enforces its own.
+  if (knownFlags(path)) return null;
+  const allowed = OWN_FLAGS[path.join(' ')];
+  if (!allowed) return null;
+  const unknown = opts._flags.filter((name) => !allowed.includes(name) && name !== 'help');
+  if (!unknown.length) return null;
+  for (const name of unknown) console.error(`✗ unknown flag --${name}`);
+  console.error(`usage: ${usageLine(path)}`);
+  return 2;
+}
+
+function ago(iso, now = Date.now()) {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return 'at an unknown time';
+  const minutes = Math.max(0, Math.round((now - ms) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 2880) return `${Math.round(minutes / 60)}h ago`;
+  return `${Math.round(minutes / 1440)}d ago`;
+}
+
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+function printPrune(report) {
+  const days = report.policyDays;
+  const head = report.apply ? '✓ pruned' : '✓ dry run';
+  console.log(`${head} · workspaces of runs finished before ${report.cutoff} (${days}-day limit) · ${report.line}`);
+  if (!report.policy.enabled) {
+    const why = report.policy.invalid.length ? `invalid (${report.policy.invalid.join('; ')})` : 'disabled';
+    console.log(`  note: automatic retention is ${why}; this command still applies the limit when asked`);
+  }
+  for (const run of report.candidates) {
+    console.log(`  - ${run.shortId ?? '------'} ${run.runId} ${run.status} · finished ${run.ageDays}d ago · ${plural(run.workspaces.length, 'workspace')} · ${formatBytes(run.bytes)}`);
+    for (const workspace of run.workspaces) console.log(`      ${workspace.path}  ${workspace.kind}  ${formatBytes(workspace.bytes)}`);
+  }
+  const kept = [...report.skipped, ...report.skippedAtApply];
+  // Runs still inside the window are the routine case: one count, not a row each.
+  const routine = kept.filter((item) => item.reason === WINDOW_REASON);
+  const notable = kept.filter((item) => item.reason !== WINDOW_REASON);
+  if (routine.length) console.log(`  kept: ${plural(routine.length, 'run')} with workspaces still inside the ${days}-day limit`);
+  if (notable.length) {
+    console.log(`  kept: ${plural(notable.length, 'run')} left alone`);
+    for (const item of notable) console.log(`      ${item.runId} — ${item.reason}`);
+  }
+  for (const failure of report.failures) console.log(`  ✗ ${failure.runId}/${failure.workspace}: ${failure.error}`);
+  console.log('  never touched: state, results, reports, events, streams, task/out/diff files, history');
+  if (!report.apply && report.candidateWorkspaces) console.log('  re-run with --yes to remove these workspaces');
+}
+
+function cmdPrune(tail, bullswarmDir) {
+  const opts = parseSnapshotFlags(tail);
+  const flagExit = checkFlags(opts, ['home', 'prune']);
+  if (flagExit !== null) return flagExit;
+  const problems = typedErrors(opts);
+  let days = null;
+  if (opts.days != null && opts.days !== '') {
+    days = Number(opts.days);
+    if (!Number.isFinite(days) || days <= 0) problems.push(`--days must be a number greater than 0 (got "${opts.days}")`);
+  }
+  if (opts._positional.length) problems.push(`unexpected argument "${opts._positional[0]}"`);
+  if (opts['dry-run'] && opts.yes) problems.push('--dry-run and --yes cannot be combined');
+  if (opts.auto && (opts['dry-run'] || opts.yes || days != null)) problems.push('--auto takes only the configured policy; it cannot be combined with --dry-run, --yes or --days');
+  if (opts.trigger != null && !opts.auto) problems.push('--trigger only goes with --auto');
+  if (problems.length) {
+    for (const problem of problems) console.error(`✗ ${problem}`);
+    console.error(`usage: ${usageLine(['home', 'prune'])}`);
+    return 2;
+  }
+  try {
+    if (opts.auto) {
+      const report = runRetentionSweep({ bullswarmDir, trigger: opts.trigger ?? 'auto' });
+      if (opts.json) console.log(JSON.stringify(report, null, 2));
+      return report.ok === false ? 1 : 0;
+    }
+    const report = pruneHome({ bullswarmDir, apply: opts.yes === true, workspacesDays: days });
+    // A manual apply is recorded like the automatic one, so `home status`
+    // shows the last prune whoever ran it.
+    if (report.apply) recordPrune(bullswarmDir, report, { trigger: 'manual' });
+    if (opts.json) console.log(JSON.stringify(report, null, 2));
+    else printPrune(report);
+    return report.ok ? 0 : 1;
+  } catch (error) {
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: error.message }, null, 2));
+    else console.error(`✗ ${error.message}`);
+    return 1;
+  }
+}
+
+/** The read-only picture `home status` prints: policy, last results, what is on disk. */
+export function homeStatus(bullswarmDir, { now = Date.now() } = {}) {
+  const policy = readRetentionPolicy(bullswarmDir);
+  const plan = planRetention({ bullswarmDir, now });
+  const results = readMaintenanceResults(bullswarmDir);
+  return {
+    ok: true,
+    home: bullswarmDir,
+    retention: policy,
+    workspaces: {
+      scannedRuns: plan.scannedRuns,
+      runsWithWorkspaces: plan.runsWithWorkspaces,
+      bytes: plan.workspaceBytes,
+      reclaimableBytes: plan.reclaimableBytes,
+      reclaimableRuns: plan.candidates.length,
+      keptRuns: plan.skipped.length,
+    },
+    maintenance: results,
+  };
+}
+
+function cmdStatus(tail, bullswarmDir) {
+  const opts = parseSnapshotFlags(tail);
+  const flagExit = checkFlags(opts, ['home', 'status']);
+  if (flagExit !== null) return flagExit;
+  if (opts._positional.length) {
+    console.error(`✗ unexpected argument "${opts._positional[0]}"\nusage: ${usageLine(['home', 'status'])}`);
+    return 2;
+  }
+  const now = Date.now();
+  const status = homeStatus(bullswarmDir, { now });
+  if (opts.json) {
+    console.log(JSON.stringify(status, null, 2));
+    return 0;
+  }
+  const { retention, workspaces, maintenance } = status;
+  const state = retention.invalid.length
+    ? `paused — ${retention.invalid.join('; ')}`
+    : retention.enabled ? `on · workspaces of finished runs go after ${retention.workspacesDays} days` : 'off';
+  console.log(`home ${status.home}`);
+  console.log(`  retention        ${state}`);
+  console.log(`  workspaces       ${plural(workspaces.runsWithWorkspaces, 'run')} · ${formatBytes(workspaces.bytes)} on disk · ${formatBytes(workspaces.reclaimableBytes)} reclaimable now (${plural(workspaces.reclaimableRuns, 'run')})`);
+  const jobs = [['prune', 'last prune'], ['reprice', 'last reprice']];
+  const named = new Set(jobs.map(([job]) => job));
+  for (const job of Object.keys(maintenance)) if (!named.has(job)) jobs.push([job, `last ${job}`]);
+  for (const [job, label] of jobs) {
+    const record = maintenance[job];
+    const body = record
+      ? `${ago(record.at, now)} · ${record.trigger ?? 'unknown trigger'} · ${record.ok === false ? '✗ ' : ''}${record.line ?? 'no summary recorded'}`
+      : 'never';
+    console.log(`  ${label.padEnd(16)} ${body}`);
+    const removal = record?.lastRemoval;
+    if (removal && !record.removedWorkspaces) {
+      console.log(`  ${''.padEnd(16)} last removal ${ago(removal.at, now)}: ${plural(removal.workspaces, 'workspace')} from ${plural(removal.runs, 'run')} · ${formatBytes(removal.bytes)}`);
+    }
+  }
+  return 0;
+}
+
 export function cmdHome(args, { bullswarmDir = defaultHome() } = {}) {
   const [sub, ...tail] = args;
   if (flagName(sub)) return unknownFlagExit([flagName(sub)], ['home']);
@@ -343,6 +493,8 @@ export function cmdHome(args, { bullswarmDir = defaultHome() } = {}) {
     console.error(helpText(['home']));
     return 2;
   }
+  if (sub === 'prune') return cmdPrune(tail, bullswarmDir);
+  if (sub === 'status') return cmdStatus(tail, bullswarmDir);
   if (sub !== 'snapshot') {
     console.error(`✗ "home ${sub}" is not a subcommand.\n${helpText(['home'])}`);
     return 2;

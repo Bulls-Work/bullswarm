@@ -464,6 +464,27 @@ bullswarm home snapshot /tmp/bsw-snapshot --recent 3 --no-streams --json
 BULLSWARM_HOME=/tmp/bsw-snapshot bullswarm workflow tui --json
 ```
 
+### Keeping the home small
+
+Since 0.35.2 the home stops growing forever. The disposable `workspaces/`
+copies inside finished runs are removed seven days after each run's
+`finishedAt` by a detached background sweep that the kernel, watch completion
+and the dashboard start (at most every 6 hours, one at a time). Records,
+reports, streams and task/out markdown are never removed. The policy is
+`state.json.retention` (see [Retention](/reference/configuration#retention)).
+`home status` shows what the automatic jobs last did:
+
+```bash
+bullswarm home status
+# home /tmp/bsw-snapshot
+#   retention        on · workspaces of finished runs go after 7 days
+#   workspaces       0 runs · 0 B on disk · 0 B reclaimable now (0 runs)
+#   last prune       never
+#   last reprice     never
+
+bullswarm home prune --dry-run   # list what would go, with bytes; changes nothing
+```
+
 Budget's meter cells use the shared green (`#b6bd73`), amber (`#e9c880`), red
 (`#bf6c69`), and dark-track (`#3a3a3a`) palette. The other shared roles are
 `purple`, `orange`, `cyan`, `dim`, `others`, and a four-shade `heat` ramp. A
@@ -487,6 +508,109 @@ bullswarm workflow watch ab12cd --verbose
 
 A usage-limit failure prints whether or not `--verbose` is given: a `⚠ <actionId> usage limit on <pool>` line with the pause deadline, then a `↺ <actionId> now on <pool> · <model>` line once the retry lands on another pool.
 
+## Watch until trouble
+
+An agent that starts a run should start one background watch for that run and
+do nothing more about it until the watch exits:
+
+```bash
+# silent while work goes well; exits on the first trouble or at the outcome
+bullswarm workflow watch ab12cd --until trouble
+
+# the same lines, but only the outcome ends it
+bullswarm workflow watch ab12cd --until outcome
+```
+
+`--until` prints no attach line and no routine lines: no finished steps, no
+completed stages, no retries that recovered. It prints only trouble, then the
+outcome. Trouble is a step that failed or was blocked, a check that rejected a
+requirement, a rejected plan revision or planning attempt, a pause request or
+pause stop, a worker the kernel stopped as stalled, a step that looks stale,
+or steering left for the caller. With `--until trouble` the first trouble ends
+the watch (exit 0 while the run goes on) and prints the line to start again
+from. A real run on a copied home, where one of three steps had a worker that
+exits 1:
+
+```text
+$ bullswarm workflow watch p82z92 --until trouble
+✗ broken failed · process: verified content but non-zero exit · 9s
+⊘ later blocked · failed dependency
+next: bullswarm workflow watch p82z92 --until trouble --after 14 --since 2026-09-21T06:16:24.540Z
+
+$ bullswarm workflow watch p82z92 --until trouble --after 14 --since 2026-09-21T06:16:24.540Z
+outcome: partial · not verified
+reason: 2 of 3 steps did not succeed: broken failed (process), later blocked (dependency)
+  step broken: failed (process) — verified content but non-zero exit
+  step later: blocked (dependency) — failed dependency
+  ...
+next: bullswarm workflow runs result p82z92 --json --summary
+```
+
+The third step's success was never printed; the relaunch picked up at
+sequence 14 and ended at the outcome (exit 1, not delivered). Each exit is one
+wake: read it once, act, and start the `next:` line again. The raw `silent
+for` line does not print under `--until`. The stale score replaces it, because
+a step running a long command is not silent.
+
+## A step that looks stale
+
+For each running attempt the watcher scores four signals. It reads them from
+the attempt's persisted stream and from the modification times of the files
+the step owns:
+
+| Signal | Fires when | Weight |
+|---|---|---|
+| quiet | no event for 10 minutes while no command is in flight | 2 |
+| no file change | a writing step changed nothing for 20 minutes while at least 5 commands ran | 1 |
+| repeat | the same command 3 times in a row, no file change between | 1 |
+| wall | past 3× the router's expected minutes for the step's lane and effort | 1 |
+
+At a score of 2 it prints one line per attempt, for example `⚠ verify looks
+stale: quiet 12m with no command running`. The line wakes `--next` and `--until
+trouble`, whose exit adds the command that answers it:
+
+```text
+⚠ verify looks stale: quiet 12m with no command running
+next: bullswarm workflow watch euqrni --until trouble --after 33 --since 2026-09-19T22:13:49.637Z
+  or restart: bullswarm workflow step restart euqrni verify
+```
+
+Nothing restarts on its own. The score was replayed through every real
+attempt in a copied home: 128 finished attempts with streams, checked every
+15 seconds of each attempt's life. It flagged three. One was real: a codex
+step at 55 minutes against an expected 13, which had run the same command
+three times in a row, and which finished at 58 minutes. The other two were
+replay artifacts. Those streams had passed the 1 MiB cap, so their middle
+events were dropped from the saved file, and the replay saw a gap. A live
+watcher always has the newest events, because it also reads the `.tail`
+segment.
+
+`bullswarm workflow step restart <runId> <step> [--pool <pool>]` stops that
+step's running attempt, and only that one. The step goes back in the queue
+without passing through a finished state. Its next attempt gets the stopped
+attempt's `## Prior attempt on this step` handoff block, on `--pool` when one
+is given. The same run, on a copied home with two echo pools:
+
+```text
+$ bullswarm workflow step restart x3zdma slow-write --pool echo2
+✓ restarted slow-write in x3zdma: stopped slow-write-1 on echo; it runs again with its handoff on echo2
+  watch    bullswarm workflow watch x3zdma --until trouble
+```
+
+and in `bullswarm workflow watch x3zdma --verbose`:
+
+```text
+↻ slow-write restarted · stopped slow-write-1 on echo · runs again with its handoff on echo2
+↪ slow-write handed off from echo · 0 files · last said ""
+▶ slow-write started · echo2/echo-local · attempt 2
+✓ slow-write finished · 38s
+```
+
+The stopped attempt ends `cancelled` with `failureKind: restarted`, and its
+handoff reads `- Failure: restarted — stopped by the caller with workflow step
+restart (restart-48516b5d)`. The command exits 1 and changes nothing when the
+run is finished, the step is not running, or the run's kernel is not running.
+
 ## Wake on the next event
 
 Use `--next` when the caller is an agent that should sleep until something happens, instead of holding a follower open. It prints no attach line, exits after the first notable event, and — while the run continues — ends with the line to relaunch from.
@@ -507,6 +631,7 @@ Exit 0 while the run continues or when it delivered; exit 1 when it ended withou
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
+| `--until outcome\|trouble` | print only trouble lines and the outcome; `trouble` also exits at the first trouble line | off (follows until terminal or paused) |
 | `--next` | print no attach line; exit after the first notable event | off (follows until terminal or paused) |
 | `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the high-water mark |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall is not repeated | report every silent agent at attach |
@@ -518,7 +643,7 @@ Exit 0 while the run continues or when it delivered; exit 1 when it ended withou
 | `--classic` | the older heartbeat-based watcher instead of event mode | off |
 | `--interval <seconds>` | poll interval | 2 |
 
-Watching is read-only, and it never dispatches anything. `--classic` applies only to current-engine runs and cannot combine with `--next`.
+Watching is read-only, and it never dispatches anything. `--classic` applies only to current-engine runs and cannot combine with `--next`. `--until` cannot combine with `--next`, `--once`, `--classic` or `--heartbeat`.
 
 ## List and inspect runs
 
