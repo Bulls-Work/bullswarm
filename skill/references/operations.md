@@ -54,8 +54,8 @@ Use the compact summary in the status loop. Read the full envelope with `--json`
 Watch without waste. Start one `bullswarm workflow watch <shortId> --until
 trouble` per run in the background and do nothing about the run until it
 exits. It prints no attach line and no routine lines. It prints only trouble:
-failed or blocked steps, evidence that rejected a requirement, rejected plan
-revisions and planning attempts, pause requests and pause stops, stalled
+failed or blocked steps, a last verify round that left a requirement failing,
+rejected plan revisions and planning attempts, pause requests and pause stops, stalled
 workers, stale steps, and steering received. It exits on the first trouble line
 while the run goes on (exit 0). It also exits on the outcome: finished, paused,
 waiting, or interrupted, with the usual exit codes. Each exit is one wake: read
@@ -146,8 +146,8 @@ so a program states the nature once instead of re-deciding two routing fields:
 
 Resolution is per field: an explicit `lane` or `effort` on the action wins,
 then the kind table, then an optional program-level `defaults` object — which
-may set only `effort` and `reasoning`, since lane follows the individual action
-— then the per-lane default. A `kind` outside that closed list is a validation
+may set only `effort`, `reasoning`, `timeBox` and `verifyRounds`, since lane
+follows the individual action — then the per-lane default. A `kind` outside that closed list is a validation
 error, not a runtime failure: `workflow plan validate` exits 2 and nothing
 launches. A program using neither `kind` nor `defaults` validates and runs
 exactly as before.
@@ -178,6 +178,89 @@ high effort; `requirement-unchecked` fires when a requirement is in no action's
 prints the same lines at launch. Exit codes are unchanged, and the kernel stores
 them on the run, so `workflow runs show` lists them afterwards. `runs result`,
 `runs show`, and `workflow action show` print `kind` next to lane and effort.
+
+## The time box and the verify loop
+
+Two kernel behaviours act on every program run, and both stay out of your way
+until a step is late or a check fails.
+
+**The soft time box.** Each work and evidence step's task ends with a
+paragraph: the box in minutes, the start clock, a wrap-up point at 70% of the
+box, and an invitation to stop and write `## Done`, `## Not done` (one line per
+unfinished item, or `- none`) and `## Suggested next step`. The box is the
+action's `timeBox`, else `defaults.timeBox` (whole minutes, 0-240), else
+computed from this home's succeeded attempts: 1.5 x the median wall minutes for
+the pool and kind when the pair has at least 5, else for the kind, else 20,
+rounded to 5 and kept within 10-60. `opencode` attempts never feed the
+history. `timeBox: 0` leaves the paragraph out of that action; digests, planner
+turns and the scout never carry one. The box is worked out per attempt, so a
+retry on another pool gets its own clock. It is a guide: hard timeouts, stall
+detection, cancellation and routing are unchanged, and nothing stops at the
+box. `workflow action show <shortId> <step> --json` prints the attempt's
+`timeBox` record, and the Step page shows `box 20m` (`box 20m · ran 34m` when
+the attempt ran past it).
+
+**Early return.** When a step's `## Not done` section lists items, the step
+still succeeds. Its attempt records `returnedEarly: { count, items }`, the Step
+page and the Run timeline read `returned early · N not done`, and a full watch
+prints `◐ <step> returned early · N not done` instead of the finished line. The
+items are quoted in the tasks of the verifiers that judge the requirements the
+step affects. Nothing is retried and nothing fails: this is an honest partial
+report, and the caller reads it only when the run ends not verified.
+
+**The verify loop.** A program with an evidence step gets up to 3 verify
+rounds; `defaults.verifyRounds` (1-3, default 3, 1 = a single round) sets the
+cap. Round 1 judges every requirement. When a mandatory requirement fails or is
+blocked and rounds remain, the kernel adds one step through a kernel-source
+plan revision: `repair-<n>`, kind `implement`, given the failing requirements
+with the verifier's evidence, the not-done items and durable handoffs of the
+steps that affect them, and ownership of the union of those steps'
+`ownedFiles` (an unrestricted integrator among them makes the repair
+unrestricted, and it runs alone). Then it adds `verify-round-<n+1>`
+(`adversarial-acceptance`, on a pool other than the repair's when one is
+free). Round 2 re-checks the failures and does discovery: a regression in a
+file the repair touched, or the same defect elsewhere, is reported as a
+`Discovery:` concern and becomes an item the next repair must also handle.
+Round 3 is final closure: it re-checks what is still open and adds nothing.
+A requirement that passed carries forward and is judged again only when a
+repair changed a file its evidence names; evidence that names no file is
+workspace-wide and is re-opened by any repair that changed a file. There is
+never a fourth round, and `repair` stays a field a program cannot declare.
+
+The events are `workflow.verify-round` (`stage: started|finished`, with
+`round`, `of`, `passed`, `failed`, `discovery`, `next` = `repair`, `finish` or
+`caller`) and `workflow.repair` (`stage: started|finished`, `actionId`,
+`requirements`, `ownedFiles`, `changedFiles`, `recheck`; `finished` is written
+once the repair succeeded, while a failed repair ends the run `partial` with
+`stoppedBy: step-failed`). The Run page shows
+each round and each repair as its own phase (`verify · round 2 of 3 · 2 to
+re-check`, `repair · round 1 · 2 requirements`), and Home and Runs show
+`verify round 2/3` while a run is in its loop. `watch --until outcome` ends
+only at the run's final outcome; the run stays `running` between rounds.
+
+Plan revisions stay accepted throughout, and only the kernel counts rounds. A
+revision never adds, resets or refunds a round. Kernel steps are ordinary steps
+in `plan export`: keep, amend or rerun one and the loop continues; delete the
+step in progress and the loop stops (`stoppedBy: revision`) and the run
+finishes at the next boundary with the caller-decision block. Evidence from a
+verify step you added or reran belongs to the round the next boundary closes;
+it is not a round. `defaults.verifyRounds` in a revision sets the cap for the
+rest of the run, never below the rounds already closed; a revision that changes
+only the cap is accepted. Reopening a finished
+run keeps the record: a run stopped at `rounds` never gets another kernel
+round, so your own verify steps and the next boundary finalize it, while a run
+stopped at `step-failed` resumes its loop once that step succeeds.
+
+**What the loop hands back.** The run ends as soon as nothing is failing
+(`completed · verified`) or after round 3 (`completed · not verified · verify
+rounds 3/3`). The result then carries `callerDecision`: each requirement still
+failing, its latest evidence, and one suggested next step. Read it with
+`bullswarm workflow runs result <shortId> --json --summary`. It also carries
+`verifyRounds`, which lists per verify round and per repair its wall minutes,
+pools and cost (`$X`, `at least $X · N unmeasured`, or `—`); the fields are in
+`docs/reference/result.md`. Act on the decision block, not on the first failing
+evidence line you see in the stream: ordinary failing checks are the loop's job,
+and a hand-added fix step for one is the wrong move while rounds remain.
 
 ## Revising a live plan
 
@@ -328,7 +411,9 @@ requirement keeps its `why` for as long as the 4 KB budget allows; concerns and
 per-step detail shrink first. The `workflow.finished` event carries
 `unfinished` and `unreadSteering` counts. The reason line says what happened:
 `all 4 steps succeeded, but no step checked the requirements, so the result is
-not verified`, or `2 of 5 steps did not succeed: build-api failed (stalled), …`.
+not verified`, `2 of 5 steps did not succeed: build-api failed (stalled), …`, or
+`… but not verified after verify rounds 3/3: …`, which comes with the
+`callerDecision` block.
 
 Where a run used to wait, it now finishes:
 
@@ -561,7 +646,9 @@ document and writes nothing.
   request. Repeated invalidity ends planning before worker budget is spent.
 - Schema-invalid evidence receives a bounded correction in the same physical
   agent conversation. Schema-valid semantic failure updates the requirement
-  ledger and never starts an automatic repair loop.
+  ledger; on a program run the kernel then starts its own repair round (see
+  "The time box and the verify loop"), at most 3 verify rounds in all, and hands
+  the rest back in `callerDecision`. Nothing outside those rounds repairs.
 - Concerns remain evidence data. A passed requirement with concerns remains
   passed unless its requirement contract explicitly says otherwise.
 - Use cancellation only for a genuinely hung or no-longer-authorized run.

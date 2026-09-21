@@ -148,9 +148,11 @@ test('a reason quoting a long check finding cuts it between words and marks the 
   // used to end "It contains no menti".
   const finding = "README.md read directly (7 lines, 87 bytes): '# e2e-steady', 'A tiny text library.', '## capitalize(word)', 'Upper-cases the first letter.' It contains no mention of truncate and no usage example.";
   const s = scripted({}, { verify: { status: 'failed', evidence: [finding], concerns: [] } });
+  const response = initial([work('a'), check('verify', ['a'])]);
+  response.program.defaults = { verifyRounds: 1 };
   const run = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId: 'wf-handbk4-abcdef',
-    initialPlannerResponse: initial([work('a'), check('verify', ['a'])]),
+    initialPlannerResponse: response,
     dependencies: { dispatchV2Action: s.dispatch },
   });
   assert.equal(run.result.status, 'completed');

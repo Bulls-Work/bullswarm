@@ -32,6 +32,7 @@ import {
   todayMinutesText,
   todayTopRuns,
   todayRows,
+  verifyRoundLabel,
 } from './home-model.js';
 import {
   ageText,
@@ -927,6 +928,8 @@ function activeRunLines(model, opts, body, title = 'running') {
     const progress = planProgress(run, { assignments: model.assignments, nowMs });
     const elapsed = ageText(stateStartedAt(run.state), nowMs);
     const right = [
+      // In its repair loop a run reads `verify round 2/3` before its phase.
+      verifyRoundLabel(run.state),
       progress.phases ? `phase ${progress.phase}/${progress.phases}` : null,
       `${progress.done}/${progress.total}`,
       elapsed || null,

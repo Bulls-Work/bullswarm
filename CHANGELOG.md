@@ -145,6 +145,52 @@
 - tests: detached reprice and prune children never recreate a home that was
   deleted under them, and the OpenCode read-only test runs everywhere against
   the exported rows instead of skipping without a local database.
+- time box: every work and evidence step's task ends with a soft time box: the
+  box in minutes, the start clock, a wrap-up point at 70% of the box, and an
+  invitation to stop and report `## Done`, `## Not done` and `## Suggested next
+  step`. The box is the action's `timeBox` (whole minutes, 0-240), else
+  `defaults.timeBox`, else 1.5 × the median wall minutes of this home's
+  succeeded attempts for the pool and kind (5 or more attempts), else for the
+  kind, else 20, rounded to 5 and kept within 10-60; `opencode` attempts never
+  feed it, and `timeBox: 0` leaves the paragraph out. It is a guide: timeouts,
+  stall detection, cancellation and routing are unchanged and nothing stops at
+  the box. On the fixture home the (codex, implement) pair has a median of
+  18.86 minutes over 80 attempts, so its box is 30. In an experiment on one
+  task (two runs per arm) a 15-minute box ran 10m54s and 10m03s against 23m30s
+  and 48m44s without one, with honest partial reports: a direction, not a
+  measurement.
+- early return: a work step whose `## Not done` lists items still succeeds and
+  records `returnedEarly` with the count and the items. The Step page header and
+  the Run timeline row read `returned early · N not done`, the Step page shows
+  `box 20m · ran 34m` when an attempt ran past its box, `workflow watch` prints
+  `◐ <step> returned early · N not done`, and the items reach the verifiers with
+  the rest of the evidence.
+- verify rounds: a failed verify no longer waits for the caller. The kernel runs
+  a bounded repair loop of at most 3 verify rounds (`defaults.verifyRounds`
+  1-3, default 3, 1 = the old single round): round 1 judges every requirement,
+  each failure starts a kernel `repair-<n>` step built from the verifier's
+  evidence, the not-done items and the handoffs of the steps that affect it,
+  round 2 re-checks the failures and looks for regressions and the same defect
+  elsewhere, and round 3 is final closure. A requirement that passed carries
+  forward and is judged again only when a repair changed a file its evidence
+  names. There is never a fourth round and a program still cannot declare a
+  repair step; the planner contract allows `timeBox` and says the kernel adds
+  `repair-<n>` and `verify-round-<n>`.
+- verify rounds: the run ends `completed · verified`, or `completed · not
+  verified · verify rounds 3/3` with a caller-decision block (each requirement
+  still failing, its latest evidence and one suggested next step) in
+  `workflow runs result <run> --json --summary`. The result also lists each
+  verify round and each repair with its wall minutes, pool and cost. The Run
+  page, Home, Runs and `workflow watch` show each round and repair; the events
+  are `workflow.verify-round` and `workflow.repair`. A plan revision during the
+  loop is still accepted and never adds or refunds a round; its
+  `defaults.verifyRounds` sets the cap for the rest of the run, and a revision
+  that changes only the cap is accepted.
+- docs: the skill, its operations and program references, the program and result
+  references and `docs/design/step-economy-0.35.2/README.md` teach `timeBox`,
+  `verifyRounds`, the early-return report and the caller-decision block; the
+  skill's "Observe and judge" no longer tells the caller to hand-add a fix step
+  for an ordinary failed check.
 
 ## 0.35.1 — a calmer dashboard with honest active time
 

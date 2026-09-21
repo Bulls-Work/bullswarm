@@ -1,0 +1,828 @@
+// The kernel's bounded repair loop (docs/design/step-economy-0.35.2 §3).
+//
+// A failed verify no longer waits for the caller. At the boundary where every
+// live step has succeeded, the kernel closes the open verify round; when a
+// mandatory requirement failed and rounds remain, it adds one repair step
+// (`repair-<r>`) and, once that repair succeeds, one verify step
+// (`verify-round-<r+1>`) that re-checks what the repair could have changed.
+// There are at most `verifyLoop.max` rounds (1–3, default 3), never a fourth;
+// what is still failing after the last one is handed to the caller.
+//
+// Everything here is pure over the durable state, except that the caller may
+// hand in a text reader (repair reports) and a handoff builder (attempt
+// facts). The runtime applies the steps this module plans as kernel-source
+// plan revisions, so kernel steps are ordinary program steps.
+//
+// The loop's own record never uses the keys `verify`, `repair`, `decision`,
+// `result` or `completion`: the state validator rejects those legacy names.
+
+import { formatMoney } from '../lib/usage-basis.js';
+import { VERIFY_ROUNDS_DEFAULT } from './action-validator.js';
+import { removedActionIds } from './execution-policy.js';
+
+export const VERIFY_ROUNDS_MAX = 3;
+export const VERIFY_LOOP_STOPS = Object.freeze(['passed', 'rounds', 'revision', 'step-failed']);
+const DISCOVERY_CAP = 20;
+const DISCOVERY_CHARS = 300;
+const EVIDENCE_LINES = 6;
+const EVIDENCE_CHARS = 400;
+const CONCERN_LINES = 3;
+const CHANGED_FILES_CAP = 200;
+const EFFORT_RANK = Object.freeze({ low: 1, medium: 2, high: 3 });
+const DISCOVERY_PREFIX = /^\s*discovery\s*:\s*/i;
+/** The status of a declared requirement that no evidence step covers. */
+export const NOT_JUDGED_STATUS = 'not judged · no evidence step covers it';
+
+const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+
+export function createVerifyLoop(max = VERIFY_ROUNDS_DEFAULT) {
+  return { max: clampRounds(max), stoppedBy: null, rounds: [] };
+}
+
+function clampRounds(value) {
+  const number = Number.isInteger(value) ? value : VERIFY_ROUNDS_DEFAULT;
+  return Math.min(VERIFY_ROUNDS_MAX, Math.max(1, number));
+}
+
+function emptyRound(round, { verifyActionIds, toJudge, carried, at }) {
+  return {
+    round,
+    verifyActionIds: [...verifyActionIds],
+    startedAt: at,
+    closedAt: null,
+    toJudge: [...toJudge],
+    carried: [...carried],
+    passed: [],
+    failed: [],
+    discovery: [],
+    repairActionId: null,
+    repairRequirements: [],
+    repairOwnedFiles: [],
+    repairUnrestricted: false,
+    repairStartedAt: null,
+    repairFinishedAt: null,
+    changedFiles: null,
+  };
+}
+
+const loopOf = (state) => (state?.verifyLoop && typeof state.verifyLoop === 'object' ? state.verifyLoop : null);
+const definitionOf = (state, id) => (state?.program?.actions ?? []).find((action) => action.id === id) ?? null;
+const runtimeOf = (state, id) => (state?.actions ?? []).find((action) => action.id === id) ?? null;
+const isEvidence = (action) => (action?.evidenceFor ?? []).length > 0;
+
+function intentOrder(state, ids) {
+  const wanted = new Set(ids);
+  const ordered = (state?.intent?.requirements ?? []).map((requirement) => requirement.id).filter((id) => wanted.has(id));
+  for (const id of wanted) if (!ordered.includes(id)) ordered.push(id);
+  return ordered;
+}
+
+function liveActions(state) {
+  const removed = removedActionIds(state);
+  return (state?.program?.actions ?? []).filter((action) => !removed.has(action.id));
+}
+
+/** The repair steps the kernel added, by id (never recognised by name). */
+export function kernelRepairActionIds(state) {
+  return (loopOf(state)?.rounds ?? []).map((round) => round.repairActionId).filter(Boolean);
+}
+
+/** Every step the kernel added: repairs and the verify steps of rounds 2+. */
+export function kernelLoopActionIds(state) {
+  const rounds = loopOf(state)?.rounds ?? [];
+  return [
+    ...kernelRepairActionIds(state),
+    ...rounds.filter((round) => round.round > 1).flatMap((round) => round.verifyActionIds),
+  ];
+}
+
+/** The round an evidence step belongs to, latest first, or null. */
+function roundOfVerifyStep(state, actionId) {
+  return (loopOf(state)?.rounds ?? []).findLast((round) => round.verifyActionIds.includes(actionId)) ?? null;
+}
+
+function roundOfRepair(state, actionId) {
+  return (loopOf(state)?.rounds ?? []).find((round) => round.repairActionId === actionId) ?? null;
+}
+
+/**
+ * Round 1 opens when the first evidence step starts: it judges every
+ * requirement some live evidence step names. Returns the new round, or null
+ * when there is no loop or a round is already open or closed. It accounts for
+ * every other declared requirement too, through `notJudgedRequirements`: one
+ * no evidence step covers is not judged, never passed, and never a repair.
+ */
+export function openFirstRound(state, { at }) {
+  const loop = loopOf(state);
+  if (!loop || loop.rounds.length) return null;
+  const evidence = liveActions(state).filter(isEvidence);
+  if (!evidence.length) return null;
+  const toJudge = intentOrder(state, evidence.flatMap((action) => action.evidenceFor));
+  const round = emptyRound(1, { verifyActionIds: evidence.map((action) => action.id), toJudge, carried: [], at });
+  loop.rounds.push(round);
+  return round;
+}
+
+/**
+ * The declared requirements round 1 did not judge because no live evidence
+ * step names them, in intent order. Derived from round 1's `toJudge` and the
+ * ledger, so it needs no field of its own: a requirement counts only while it
+ * is still `pending` and no live evidence step covers it (one a revision
+ * later covers is judged like any other).
+ */
+export function notJudgedRequirements(state) {
+  const first = loopOf(state)?.rounds?.[0];
+  if (!first) return [];
+  const judged = new Set(first.toJudge);
+  const covered = new Set(liveActions(state).filter(isEvidence).flatMap((action) => action.evidenceFor));
+  const requirements = state?.ledger?.requirements ?? {};
+  return intentOrder(state, (state?.intent?.requirements ?? []).map((requirement) => requirement.id)
+    .filter((id) => !judged.has(id) && !covered.has(id) && requirements[id]?.status === 'pending'));
+}
+
+/**
+ * Mandatory requirements that fail at a boundary: `failed` or `blocked`
+ * (D4), and a requirement the round was asked to judge that is still
+ * `pending`. A requirement no evidence step judges is not the loop's: it goes
+ * to the caller as it always has.
+ */
+export function failingRequirements(state, round = null) {
+  const toJudge = new Set(round?.toJudge ?? []);
+  const requirements = state?.ledger?.requirements ?? {};
+  return intentOrder(state, Object.values(requirements)
+    .filter((requirement) => requirement.mandatory
+      && (requirement.status === 'failed' || requirement.status === 'blocked'
+        || (requirement.status === 'pending' && toJudge.has(requirement.id))))
+    .map((requirement) => requirement.id));
+}
+
+/**
+ * What the loop does at the boundary where every live step has succeeded.
+ * One of: close-round, add-repair, finish-repair, finish (with stoppedBy).
+ */
+export function nextLoopStep(state) {
+  const loop = loopOf(state);
+  if (!loop) return { step: 'finish', stoppedBy: null };
+  const current = loop.rounds.at(-1);
+  if (!current) return { step: 'finish', stoppedBy: loop.stoppedBy };
+  if (current.closedAt == null) return { step: 'close-round', round: current.round };
+  if (current.repairActionId) {
+    const runtime = runtimeOf(state, current.repairActionId);
+    if (!runtime || runtime.status === 'removed') return { step: 'finish', stoppedBy: 'revision' };
+    if (current.repairFinishedAt == null) {
+      return runtime.status === 'succeeded'
+        ? { step: 'finish-repair', round: current.round }
+        : { step: 'finish', stoppedBy: 'step-failed' };
+    }
+    // The repair is recorded and no next round opened: its re-check set was
+    // empty, or the budget was lowered below the next round.
+    return { step: 'finish', stoppedBy: loop.stoppedBy ?? 'passed' };
+  }
+  if (loop.stoppedBy === 'rounds' || loop.stoppedBy === 'revision') return { step: 'finish', stoppedBy: loop.stoppedBy };
+  const failing = failingRequirements(state);
+  if (!failing.length) return { step: 'finish', stoppedBy: 'passed' };
+  if (current.round >= loop.max) return { step: 'finish', stoppedBy: 'rounds' };
+  return { step: 'add-repair', round: current.round };
+}
+
+function currentEvidenceRecords(state, requirementId) {
+  const requirement = state?.ledger?.requirements?.[requirementId];
+  if (!requirement) return [];
+  return (state.ledger.evidence ?? []).filter((record) => record.requirementId === requirementId
+    && record.stale === false && record.inspectedRevision === requirement.workRevision);
+}
+
+// The latest semantic judgment a set of evidence steps recorded for one
+// requirement, stale or not: what a later round quotes after a repair made
+// the record stale.
+function latestJudgment(state, requirementId, sourceIds = null) {
+  const sources = sourceIds ? new Set(sourceIds) : null;
+  return (state?.ledger?.evidence ?? [])
+    .filter((record) => record.requirementId === requirementId
+      && (!sources || sources.has(record.sourceAction)))
+    .sort((a, b) => a.eventSequence - b.eventSequence)
+    .at(-1) ?? null;
+}
+
+/** `Discovery:` concerns a middle round's verifiers reported. */
+function discoveryItems(state, round) {
+  const sources = new Set(round.verifyActionIds);
+  const found = [];
+  for (const requirementId of intentOrder(state, Object.keys(state?.ledger?.requirements ?? {}))) {
+    for (const record of currentEvidenceRecords(state, requirementId)) {
+      if (!sources.has(record.sourceAction)) continue;
+      for (const concern of record.concerns ?? []) {
+        if (!DISCOVERY_PREFIX.test(concern)) continue;
+        const text = String(concern).replace(DISCOVERY_PREFIX, '').replace(/\s+/g, ' ').trim().slice(0, DISCOVERY_CHARS);
+        if (text) found.push({ requirementId, text });
+      }
+    }
+  }
+  return found.slice(0, DISCOVERY_CAP);
+}
+
+function roundKind(loop, round) {
+  if (round === 1) return 'first';
+  return round >= loop.max ? 'final' : 'middle';
+}
+
+/**
+ * Close the open round: what it passed, what fails now, and (middle rounds
+ * only) the discovery items the next repair must also handle. Mutates the
+ * round in place and returns the event payload.
+ */
+export function closeRound(state, { at }) {
+  const loop = loopOf(state);
+  const round = loop?.rounds.at(-1);
+  if (!round || round.closedAt != null) return null;
+  const live = new Set(liveActions(state).map((action) => action.id));
+  const removed = round.verifyActionIds.length > 0 && round.verifyActionIds.every((id) => !live.has(id));
+  round.closedAt = at;
+  round.passed = round.toJudge.filter((id) => state.ledger.requirements[id]?.status === 'passed');
+  round.failed = failingRequirements(state, round);
+  round.discovery = roundKind(loop, round.round) === 'middle' && !removed ? discoveryItems(state, round) : [];
+  if (removed) loop.stoppedBy = 'revision';
+  const notJudged = notJudgedRequirements(state);
+  const next = !round.failed.length ? 'finish'
+    : round.round < loop.max && !['rounds', 'revision'].includes(loop.stoppedBy) ? 'repair' : 'caller';
+  return {
+    round: round.round, of: loop.max, stage: 'finished',
+    passed: [...round.passed], failed: [...round.failed], discovery: round.discovery.length, next,
+    ...(round.round === 1 && notJudged.length ? { notJudged } : {}),
+    wallMinutes: phaseFacts(state, verifyPhaseAttempts(state, round)).wallMinutes,
+  };
+}
+
+function freeActionId(state, base) {
+  const taken = new Set((state?.program?.actions ?? []).map((action) => action.id));
+  if (!taken.has(base)) return base;
+  for (let k = 2; ; k += 1) if (!taken.has(`${base}-${k}`)) return `${base}-${k}`;
+}
+
+function highestEffort(actions, fallback) {
+  let best = null;
+  for (const action of actions) {
+    const rank = EFFORT_RANK[action?.effort] ?? 0;
+    if (rank && (!best || rank > EFFORT_RANK[best])) best = action.effort;
+  }
+  return best ?? fallback;
+}
+
+/** Live work steps (earlier repairs included) whose `affects` meets `ids`. */
+function affectingSteps(state, ids) {
+  const wanted = new Set(ids);
+  return liveActions(state).filter((action) => !isEvidence(action) && action.kind !== 'digest'
+    && (action.affects ?? []).some((id) => wanted.has(id)));
+}
+
+/**
+ * The repair step for the latest closed round: the failing requirements, the
+ * union of the affecting steps' owned files, and the highest effort among
+ * them. An unrestricted integrator among them (or no owner at all) makes the
+ * repair unrestricted too. Returns { action, record } where `record` is what
+ * the round records about it.
+ */
+export function planRepairStep(state) {
+  const loop = loopOf(state);
+  const round = loop?.rounds.at(-1);
+  if (!round) return null;
+  const failing = failingRequirements(state);
+  const affecting = affectingSteps(state, failing);
+  const integrator = affecting.some((action) => ['build', 'chore'].includes(action.lane) && !(action.ownedFiles ?? []).length);
+  const files = [...new Set(affecting.flatMap((action) => action.ownedFiles ?? []))].sort();
+  const unrestricted = integrator || !files.length;
+  const id = freeActionId(state, `repair-${round.round}`);
+  const live = new Set(liveActions(state).map((action) => action.id));
+  const ids = failing.join(', ');
+  return {
+    action: {
+      id,
+      purpose: `Repair after verify round ${round.round}: ${ids}`,
+      dependsOn: round.verifyActionIds.filter((actionId) => live.has(actionId)),
+      affects: [...failing],
+      ownedFiles: unrestricted ? [] : files,
+      prompt: `Kernel repair: make ${ids} pass. The kernel adds the failing evidence, discovery items, not-done items and handoffs below.`,
+      kind: 'implement',
+      effort: highestEffort(affecting, 'medium'),
+      evidenceFor: [],
+      inputs: [],
+      produces: [],
+    },
+    record: {
+      repairActionId: id,
+      repairRequirements: [...failing],
+      repairOwnedFiles: unrestricted ? [] : files,
+      repairUnrestricted: unrestricted,
+    },
+  };
+}
+
+/**
+ * The files repair r changed: the union of `changedFiles` over its attempts,
+ * or null when any attempt did not record the list (or recorded a truncated
+ * one) — unknown, never guessed.
+ */
+export function repairChangedFiles(state, actionId) {
+  const attempts = (state?.attempts ?? []).filter((attempt) => attempt.actionId === actionId && attempt.status !== 'running');
+  if (!attempts.length) return null;
+  const files = new Set();
+  for (const attempt of attempts) {
+    if (!Array.isArray(attempt.changedFiles)) return null;
+    if (Number.isInteger(attempt.changedFileCount) && attempt.changedFileCount > attempt.changedFiles.length) return null;
+    for (const file of attempt.changedFiles) files.add(file);
+  }
+  return [...files].sort().slice(0, CHANGED_FILES_CAP);
+}
+
+const FILE_EXTENSIONS = 'c|cc|cjs|conf|cpp|cs|css|csv|env|go|h|hpp|htm|html|ini|java|js|json|jsonl|jsx|kt|lock|md|mdx|mjs|php|pl|png|py|rb|rs|scss|sh|sql|svg|swift|toml|ts|tsx|txt|vue|xml|yaml|yml|zsh';
+const PATH_TOKEN = new RegExp(`(?:[\\w.-]+/)+[\\w.-]+|\\b[\\w-]+(?:\\.[\\w-]+)*\\.(?:${FILE_EXTENSIONS})\\b`, 'i');
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Evidence names `file` when its repository path appears, or its basename as
+// a whole word (a path or word boundary on both sides).
+function namesFile(text, file) {
+  if (text.includes(file)) return true;
+  const base = file.split('/').at(-1);
+  if (!base) return false;
+  return new RegExp(`(?:^|[^\\w./-])${escapeRegExp(base)}(?![\\w-]|\\.[\\w])`).test(text);
+}
+
+/**
+ * The re-check set after repair r: (1) the failing requirements the repair
+ * worked on, plus (2) every passed requirement whose current passing evidence
+ * (evidence and concern lines) names a file the repair changed. Evidence that
+ * names no file at all is workspace-wide, so any change re-opens it (D3);
+ * unknown changed files re-open every passed requirement. Every other passed
+ * requirement carries forward.
+ */
+export function recheckSet(state, round, changedFiles) {
+  const failing = intentOrder(state, round.repairRequirements ?? []);
+  const failingSet = new Set(failing);
+  const touched = [];
+  const carried = [];
+  for (const requirementId of intentOrder(state, Object.keys(state?.ledger?.requirements ?? {}))) {
+    if (failingSet.has(requirementId)) continue;
+    const requirement = state.ledger.requirements[requirementId];
+    if (requirement.status !== 'passed') continue;
+    const lines = currentEvidenceRecords(state, requirementId)
+      .filter((record) => record.status === 'passed')
+      .flatMap((record) => [...(record.evidence ?? []), ...(record.concerns ?? [])])
+      .map(String);
+    const text = lines.join('\n');
+    let reopen;
+    if (changedFiles == null) reopen = true;
+    else if (!changedFiles.length) reopen = false;
+    else if (!PATH_TOKEN.test(text)) reopen = true;
+    else reopen = changedFiles.some((file) => namesFile(text, file));
+    (reopen ? touched : carried).push(requirementId);
+  }
+  return { failing, touched, carried, toJudge: intentOrder(state, [...failing, ...touched]) };
+}
+
+/** The verify step of round r+1: re-checks `toJudge` after the repair. */
+export function planVerifyStep(state, { round, repairActionId, toJudge }) {
+  const loop = loopOf(state);
+  const firstRound = loop?.rounds?.[0];
+  const authored = (firstRound?.verifyActionIds ?? []).map((id) => definitionOf(state, id)).filter(Boolean);
+  const id = freeActionId(state, `verify-round-${round}`);
+  const ids = toJudge.join(', ');
+  return {
+    id,
+    purpose: `Verify round ${round} of ${loop.max}: re-check ${toJudge.length} requirement${toJudge.length === 1 ? '' : 's'}`,
+    dependsOn: [repairActionId],
+    affects: [],
+    ownedFiles: [],
+    prompt: `Re-check ${ids} after ${repairActionId}.`,
+    kind: 'adversarial-acceptance',
+    effort: highestEffort(authored, 'high'),
+    evidenceFor: [...toJudge],
+    inputs: [],
+    produces: [],
+  };
+}
+
+/** Open round r+1 for the kernel's verify step. */
+export function openNextRound(state, { verifyActionId, toJudge, carried, at }) {
+  const loop = loopOf(state);
+  const round = emptyRound(loop.rounds.length + 1, { verifyActionIds: [verifyActionId], toJudge, carried, at });
+  loop.rounds.push(round);
+  return round;
+}
+
+/**
+ * `defaults.verifyRounds` in a revision sets the budget for the rest of the
+ * run: 1–3, never below the rounds already closed. Absent leaves it alone.
+ * Pure: the budget the revision would set, or null when it changes nothing.
+ */
+export function revisedVerifyRounds(state, program) {
+  const loop = loopOf(state);
+  if (!loop || !program || typeof program !== 'object') return null;
+  const requested = program.defaults?.verifyRounds ?? program.verifyRounds;
+  if (!Number.isInteger(requested)) return null;
+  const closed = loop.rounds.filter((round) => round.closedAt != null).length;
+  const next = Math.max(closed, clampRounds(requested));
+  return next === loop.max ? null : next;
+}
+
+export function applyRevisionVerifyRounds(state, program) {
+  const next = revisedVerifyRounds(state, program);
+  if (next === null) return false;
+  loopOf(state).max = next;
+  return true;
+}
+
+// --- Task text --------------------------------------------------------------
+
+function clip(text, limit) {
+  const value = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (value.length <= limit) return value;
+  const head = value.slice(0, limit - 1);
+  const space = head.lastIndexOf(' ');
+  return `${(space > limit / 2 ? head.slice(0, space) : head).replace(/[\s,;:—-]+$/, '')}…`;
+}
+
+function listText(items, limit = 20) {
+  const shown = items.slice(0, limit);
+  return `${shown.join(', ')}${items.length > limit ? `, and ${items.length - limit} more` : ''}`;
+}
+
+/**
+ * The `### <step> · attempt <id>` block for one affecting step's durable
+ * handoff: the facts `handoffBlock` prints, without the failure line and the
+ * "unverified edits" line, because these attempts succeeded.
+ */
+export function repairHandoffBlock(facts = {}, { heading } = {}) {
+  const durationMs = Date.parse(facts.finishedAt) - Date.parse(facts.startedAt);
+  const duration = Number.isFinite(durationMs) ? `${Math.max(0, Math.round(durationMs / 1000))}s` : 'unknown';
+  const outputPath = facts.outputFile ?? facts.partialOutput ?? null;
+  const output = outputPath ? (facts.outputBytes != null ? `${outputPath} (${facts.outputBytes} bytes)` : outputPath) : 'none';
+  const changed = Array.isArray(facts.changedFiles) ? facts.changedFiles : [];
+  const lines = [
+    heading ?? '### step',
+    `- Pool: ${facts.pool ?? 'unknown'}`,
+    `- Model: ${facts.model ?? (facts.pool != null ? `${facts.pool} connector default` : 'unknown')}`,
+    `- Started: ${facts.startedAt ?? 'unknown'}`,
+    `- Finished: ${facts.finishedAt ?? 'unknown'}`,
+    `- Duration: ${duration}`,
+    `- Files changed inside this step's territory: ${changed.join(', ') || 'none'}`,
+    '- Diff stat at the moment it ended:',
+    '```',
+    facts.diffStatText || '(no diff)',
+    '```',
+    `- Diff snapshot: ${facts.diffFile ?? 'none taken'}`,
+    `- Final answer: ${output}`,
+    `- Stream file: ${facts.streamFile || 'no stream recorded'}`,
+  ];
+  const events = Array.isArray(facts.lastEvents) ? facts.lastEvents.slice(-3) : [];
+  if (events.length) {
+    lines.push('- Last response events:');
+    for (const event of events) {
+      const said = typeof event.summary === 'string' ? event.summary.replace(/\s+/g, ' ').trim() : '';
+      lines.push(`  - ${event.at ?? 'time unknown'}: ${said || '(no summary)'}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function lastSucceededAttempt(state, actionId) {
+  const runtime = runtimeOf(state, actionId);
+  return (state?.attempts ?? []).findLast((attempt) => attempt.actionId === actionId && attempt.status === 'succeeded'
+    && attempt.ordinal > (runtime?.supersededAttempts ?? 0))
+    ?? (state?.attempts ?? []).findLast((attempt) => attempt.actionId === actionId && attempt.status === 'succeeded')
+    ?? null;
+}
+
+/**
+ * The repair brief appended after a kernel repair's prompt: each failing
+ * requirement with the verifier's evidence, the discovery items of a middle
+ * round, the not-done items and the durable handoff of every step that
+ * affects them. `handoff(attempt, formatter)` builds a handoff from the
+ * attempt's durable files (the runtime passes durableAttemptHandoff).
+ */
+export function repairBrief(state, actionId, { handoff = null } = {}) {
+  const loop = loopOf(state);
+  const round = roundOfRepair(state, actionId);
+  if (!loop || !round) return null;
+  const sources = round.verifyActionIds;
+  const requirements = new Map((state.intent?.requirements ?? []).map((item) => [item.id, item]));
+  const lines = [
+    `## Kernel repair after verify round ${round.round} of ${loop.max}`,
+    'Make every requirement below pass. An independent verifier failed it; its evidence is quoted.',
+  ];
+  for (const id of round.repairRequirements) {
+    const judged = latestJudgment(state, id, sources) ?? latestJudgment(state, id);
+    const status = judged?.status && judged.status !== 'passed' ? judged.status : 'failed';
+    lines.push('', `### ${id} · ${status} in round ${round.round} (${judged?.sourceAction ?? sources.join(', ')})`);
+    lines.push(String(requirements.get(id)?.text ?? id));
+    const evidence = (judged?.evidence ?? []).slice(0, EVIDENCE_LINES).map((line) => clip(line, EVIDENCE_CHARS));
+    const concerns = (judged?.concerns ?? []).slice(0, CONCERN_LINES).map((line) => clip(line, EVIDENCE_CHARS));
+    if (evidence.length) lines.push('Evidence:', ...evidence.map((line) => `- ${line}`));
+    else lines.push(`Evidence: ${judged?.mechanicalFailure?.message ?? 'none recorded'}`);
+    if (concerns.length) lines.push('Concerns:', ...concerns.map((line) => `- ${line}`));
+  }
+  if (round.round >= 2 && round.discovery.length) {
+    lines.push('', `### Also fix: discovery items from verify round ${round.round}`);
+    for (const item of round.discovery) lines.push(`- ${item.requirementId}: ${item.text}`);
+  }
+  const affecting = affectingSteps(state, round.repairRequirements).filter((action) => action.id !== actionId);
+  const notDone = [];
+  for (const step of affecting) {
+    const early = lastSucceededAttempt(state, step.id)?.returnedEarly;
+    for (const item of early?.items ?? []) notDone.push(`- ${step.id}: ${item}`);
+  }
+  if (notDone.length) lines.push('', '### Not done in the steps that affect these requirements', ...notDone);
+  const blocks = [];
+  if (typeof handoff === 'function') {
+    for (const step of affecting) {
+      const attempt = lastSucceededAttempt(state, step.id);
+      if (!attempt) continue;
+      const built = handoff(attempt, (facts) => repairHandoffBlock(facts, { heading: `#### ${step.id} · attempt ${attempt.id}` }));
+      if (built?.block) blocks.push(built.block);
+    }
+  }
+  if (blocks.length) lines.push('', '### What those steps did', ...blocks.flatMap((block, index) => (index ? ['', block] : [block])));
+  lines.push(
+    '',
+    'Keep passing requirements passing. Do not weaken, skip or delete a test to make it pass. Run the focused tests and the goal\'s acceptance command. Under `## Done`, name each requirement id you fixed and the command that proves it.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * The per-round paragraph appended to an evidence task: round 1 asks for
+ * actionable failures, a middle round re-checks and looks for regressions and
+ * the same defect elsewhere, the final round only re-checks. Null for a run
+ * with one round, and for evidence steps outside the loop.
+ */
+export function roundBrief(state, actionId) {
+  const loop = loopOf(state);
+  const round = roundOfVerifyStep(state, actionId);
+  if (!loop || !round || loop.max < 2) return null;
+  if (round.round === 1) {
+    return `Verify round 1 of ${loop.max}. A requirement you fail starts a kernel repair built from your evidence, so make each failing line actionable: the file, the command you ran and what it printed.`;
+  }
+  const previous = loop.rounds[round.round - 2];
+  const repair = previous?.repairActionId ?? 'the repair';
+  const changed = previous?.changedFiles == null ? 'files it did not record' : previous.changedFiles.length ? listText(previous.changedFiles) : 'no files';
+  const quoted = [];
+  for (const id of round.toJudge) {
+    const judged = latestJudgment(state, id, previous?.verifyActionIds) ?? latestJudgment(state, id);
+    const was = previous?.failed?.includes(id) ? `failed in round ${previous.round}` : `passed in round ${previous?.round ?? round.round - 1}; ${repair} changed a file its evidence names`;
+    quoted.push(`- ${id} (${was}${judged?.sourceAction ? `, ${judged.sourceAction}` : ''}):`);
+    for (const line of (judged?.evidence ?? []).slice(0, 3)) quoted.push(`  > ${clip(line, EVIDENCE_CHARS)}`);
+  }
+  const carried = round.carried.length ? round.carried.join(', ') : 'none';
+  if (roundKind(loop, round.round) === 'middle') {
+    return [
+      `Verify round ${round.round} of ${loop.max}: re-check and discovery. ${repair} changed: ${changed}. Re-check each requirement below as the workspace is now; the previous round's failing evidence is quoted under each. Then look for (a) regressions the repair caused in the files it changed and (b) the same defect as each re-checked failure elsewhere. Report each finding as a concern starting \`Discovery:\` that names the file, on the requirement it threatens; a finding that breaks a requirement you judge makes it failed. Carried forward, not yours to judge: ${carried}.`,
+      ...quoted,
+    ].join('\n');
+  }
+  return [
+    `Verify round ${round.round} of ${loop.max}: final closure. Re-check only whether each requirement below now passes (previous evidence quoted). Do not look for new problems or add \`Discovery:\` concerns: nothing runs after this.`,
+    ...quoted,
+  ].join('\n');
+}
+
+// --- Display ----------------------------------------------------------------
+
+const TERMINAL_LIFECYCLE = new Set(['completed', 'partial', 'cancelled', 'failed']);
+
+/**
+ * The Run page phase name for a stage that is exactly one round's verify
+ * steps (`verify · round 2 of 3 · 2 to re-check`) or one repair
+ * (`repair · round 1 · 2 requirements`). Null otherwise, and for one-round
+ * runs, whose pages read as they always have.
+ */
+export function loopStageLabel(state, stage) {
+  const loop = loopOf(state);
+  const ids = stage?.actionIds ?? (stage?.actions ?? []).map((action) => action?.id).filter(Boolean);
+  if (!loop || loop.max < 2 || !ids.length) return null;
+  for (const round of loop.rounds) {
+    const verify = new Set(round.verifyActionIds);
+    if (ids.every((id) => verify.has(id))) {
+      const count = round.toJudge.length;
+      return round.round === 1
+        ? `verify · round 1 of ${loop.max} · ${count} to judge`
+        : `verify · round ${round.round} of ${loop.max} · ${count} to re-check`;
+    }
+    if (round.repairActionId && ids.length === 1 && ids[0] === round.repairActionId) {
+      const count = round.repairRequirements.length;
+      return `repair · round ${round.round} · ${count} requirement${count === 1 ? '' : 's'}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * `verify round 2/3` from the first repair until the run is terminal,
+ * numbering the round being worked toward (round 2 during `repair-1` and
+ * `verify-round-2`). Null before any repair and once the run is finished.
+ */
+export function verifyRoundLabel(state) {
+  const loop = loopOf(state);
+  if (!loop || TERMINAL_LIFECYCLE.has(state?.lifecycle?.status)) return null;
+  if (!loop.rounds.some((round) => round.repairActionId)) return null;
+  const last = loop.rounds.at(-1);
+  const toward = last.repairActionId ? last.round + 1 : last.round;
+  return `verify round ${Math.min(toward, loop.max)}/${loop.max}`;
+}
+
+/**
+ * The finished Run header's verdict for a run with a loop: `verified`,
+ * `not verified · verify rounds 3/3` when the loop handed failures back, or
+ * `not verified`. Null for runs without a loop and runs still going.
+ */
+export function loopVerdictText(state) {
+  const loop = loopOf(state);
+  if (!loop || !TERMINAL_LIFECYCLE.has(state?.lifecycle?.status)) return null;
+  const requirements = Object.values(state?.ledger?.requirements ?? {}).filter((requirement) => requirement.mandatory);
+  const verified = state.lifecycle.status === 'completed' && requirements.length > 0
+    && requirements.every((requirement) => requirement.status === 'passed');
+  if (verified) return 'verified';
+  const decision = callerDecisionRequirements(state);
+  return decision.length && loop.max > 1 ? `not verified · verify rounds ${loop.rounds.length}/${loop.max}` : 'not verified';
+}
+
+// --- Measurement and the caller's block --------------------------------------
+
+function attemptWindow(attempt) {
+  const start = Date.parse(attempt?.startedAt ?? '');
+  const end = Date.parse(attempt?.finishedAt ?? '');
+  if (!Number.isFinite(start)) return null;
+  return [start, Number.isFinite(end) && end >= start ? end : start];
+}
+
+function verifyPhaseAttempts(state, round) {
+  const ids = new Set(round.verifyActionIds);
+  const from = Date.parse(round.startedAt ?? '') || -Infinity;
+  const to = Date.parse(round.closedAt ?? '') || Infinity;
+  return (state?.attempts ?? []).filter((attempt) => {
+    if (!ids.has(attempt.actionId)) return false;
+    const started = Date.parse(attempt.startedAt ?? '');
+    return !Number.isFinite(started) || (started >= from && started <= to);
+  });
+}
+
+function repairPhaseAttempts(state, round) {
+  return (state?.attempts ?? []).filter((attempt) => attempt.actionId === round.repairActionId);
+}
+
+function attemptApiUsd(attempt) {
+  const value = attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd;
+  if (value == null || value === '' || typeof value === 'boolean') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+/**
+ * Wall minutes (the union of the attempts' intervals, so parallel steps count
+ * once), pools in start order, the priced API subtotal and the cost text in
+ * the Run spend block's vocabulary: `$X`, `at least $X · N unmeasured`, and a
+ * dash when nothing was priced.
+ */
+function phaseFacts(state, attempts) {
+  const windows = attempts.map(attemptWindow).filter(Boolean).sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let open = null;
+  for (const [start, end] of windows) {
+    if (!open || start > open[1]) { if (open) total += open[1] - open[0]; open = [start, end]; }
+    else open[1] = Math.max(open[1], end);
+  }
+  if (open) total += open[1] - open[0];
+  const pools = [];
+  for (const attempt of [...attempts].sort((a, b) => (Date.parse(a.startedAt ?? '') || 0) - (Date.parse(b.startedAt ?? '') || 0))) {
+    if (attempt.pool && !pools.includes(attempt.pool)) pools.push(attempt.pool);
+  }
+  let apiUsd = null;
+  let unmeasured = 0;
+  let running = 0;
+  for (const attempt of attempts) {
+    const usd = attemptApiUsd(attempt);
+    if (attempt.status === 'running') running += 1;
+    else if (usd == null) unmeasured += 1;
+    if (usd != null) apiUsd = (apiUsd ?? 0) + usd;
+  }
+  const counts = [running ? `${running} running` : null, unmeasured ? `${unmeasured} unmeasured` : null].filter(Boolean).join(' · ');
+  const cost = apiUsd == null ? '—'
+    : (running || unmeasured) ? `at least ${formatMoney(apiUsd)}${counts ? ` · ${counts}` : ''}`
+      : formatMoney(apiUsd);
+  return {
+    wallMinutes: windows.length ? Math.round(total / 6_000) / 10 : null,
+    pools,
+    apiUsd: apiUsd == null ? null : Math.round(apiUsd * 1e6) / 1e6,
+    unmeasured,
+    cost,
+  };
+}
+
+/** One entry per verify round and per repair, in the order they ran. */
+export function roundPhases(state) {
+  const phases = [];
+  for (const round of loopOf(state)?.rounds ?? []) {
+    const notJudged = round.round === 1 ? notJudgedRequirements(state) : [];
+    phases.push({
+      kind: 'verify', round: round.round, steps: [...round.verifyActionIds], judged: round.toJudge.length,
+      failed: [...round.failed], ...(notJudged.length ? { notJudged } : {}),
+      ...phaseFacts(state, verifyPhaseAttempts(state, round)),
+    });
+    if (round.repairActionId) {
+      phases.push({
+        kind: 'repair', round: round.round, steps: [round.repairActionId], requirements: [...round.repairRequirements],
+        ...phaseFacts(state, repairPhaseAttempts(state, round)),
+      });
+    }
+  }
+  return phases;
+}
+
+// Mandatory requirements still open once the last closed round left failures.
+function callerDecisionRequirements(state) {
+  const loop = loopOf(state);
+  const closed = (loop?.rounds ?? []).filter((round) => round.closedAt != null);
+  if (!closed.length || !closed.at(-1).failed.length) return [];
+  const requirements = state?.ledger?.requirements ?? {};
+  return intentOrder(state, Object.values(requirements)
+    .filter((requirement) => requirement.mandatory && requirement.status !== 'passed')
+    .map((requirement) => requirement.id));
+}
+
+const HEADING = /^ {0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
+const LIST_ITEM = /^ ?(?:[-*+]|\d{1,9}[.)])\s+(.*)$/;
+
+/** The first item (or first line) under the last `Suggested next step` heading. */
+export function firstSuggestedStep(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  let start = -1;
+  lines.forEach((line, index) => {
+    const heading = line.match(HEADING);
+    if (heading && /^suggested next steps?:?$/i.test(heading[1].trim())) start = index;
+  });
+  if (start < 0) return null;
+  for (const line of lines.slice(start + 1)) {
+    if (HEADING.test(line)) break;
+    const said = (line.match(LIST_ITEM)?.[1] ?? line).trim();
+    if (said && !/^(?:none|nothing|n\/a|-|—)\.?$/i.test(said)) return clip(said, 300);
+  }
+  return null;
+}
+
+/**
+ * The block a caller decides from: each still-failing mandatory requirement,
+ * its latest evidence line, and one suggested next step — the repair report's
+ * own `## Suggested next step` when the last repair covering it wrote one,
+ * else a concrete step — and every declared requirement no evidence step
+ * covers (`not judged`, mandatory or not; it never counts as passed). Null
+ * when nothing is left for the caller.
+ */
+export function callerDecision(state, { readText = null, token = null } = {}) {
+  const loop = loopOf(state);
+  const notJudged = new Set(notJudgedRequirements(state));
+  const ids = intentOrder(state, [...callerDecisionRequirements(state), ...notJudged]);
+  if (!loop || !ids.length) return null;
+  const runToken = token ?? state?.shortId ?? state?.runId ?? '<run>';
+  const lastVerify = loop.rounds.at(-1)?.verifyActionIds.at(-1) ?? 'the last verify step';
+  const requirements = ids.map((id) => {
+    if (notJudged.has(id)) {
+      const text = (state.intent?.requirements ?? []).find((requirement) => requirement.id === id)?.text ?? id;
+      return {
+        id, status: NOT_JUDGED_STATUS, round: 1, evidence: clip(text, 200),
+        next: `add an evidence step whose evidenceFor names ${id}, then judge it: bullswarm workflow plan export ${runToken} --out plan.json, edit it, then plan revise`,
+      };
+    }
+    const status = state.ledger.requirements[id].status;
+    const round = loop.rounds.findLast((entry) => entry.toJudge.includes(id) || entry.failed.includes(id))?.round ?? loop.rounds.length;
+    const judged = currentEvidenceRecords(state, id).at(-1) ?? latestJudgment(state, id);
+    const evidence = clip(String(judged?.evidence?.[0] ?? judged?.mechanicalFailure?.message ?? 'no evidence recorded').split(/\r?\n/, 1)[0], 200);
+    const repair = loop.rounds.findLast((entry) => entry.repairActionId && entry.repairRequirements.includes(id));
+    let next = null;
+    if (repair && typeof readText === 'function') {
+      const report = lastSucceededAttempt(state, repair.repairActionId)?.outputFile;
+      if (report) next = firstSuggestedStep(readText(report));
+    }
+    if (!next) {
+      const files = [...new Set(affectingSteps(state, [id]).flatMap((action) => action.ownedFiles ?? []))].slice(0, 3);
+      next = `add a step that fixes ${id}${files.length ? ` (owning ${files.join(', ')})` : ''} and rerun ${lastVerify}: bullswarm workflow plan export ${runToken} --out plan.json, edit it, then plan revise`;
+    }
+    return { id, status, round, evidence, next };
+  });
+  return { verifyRounds: `${loop.rounds.length}/${loop.max}`, requirements };
+}
+
+/** The two result keys: `verifyRounds` always, `callerDecision` when something is left for the caller. */
+export function verifyLoopResult(state, { readText = null, token = null } = {}) {
+  const loop = loopOf(state);
+  if (!loop) return null;
+  return {
+    verifyRounds: {
+      max: loop.max,
+      used: loop.rounds.length,
+      stoppedBy: loop.stoppedBy ?? null,
+      phases: roundPhases(state),
+    },
+    // A verified run has only the requirements no evidence step covers left.
+    callerDecision: callerDecision(state, { readText, token }),
+  };
+}
+
+export const __test = Object.freeze({ namesFile, PATH_TOKEN, phaseFacts, clone });

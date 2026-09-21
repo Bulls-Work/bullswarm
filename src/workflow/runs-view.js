@@ -6,7 +6,7 @@
 
 import { dayKey } from './history.js';
 import { historyLines } from './history-view.js';
-import { taskIdentity } from './home-model.js';
+import { taskIdentity, verifyRoundLabel } from './home-model.js';
 import { activeRunLines } from './home-view.js';
 import {
   clamp,
@@ -58,9 +58,11 @@ function dashboardRunLines(rows, selected, narrow, width) {
         ? `${finished}/${workerAttempts.length} workers`
         : `${row.stepsOk ?? 0}/${row.stepsTotal ?? 0} actions`;
     const concerns = legacy ? 0 : workflowConcernCount(row);
-    const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : humanWorkflowStatus(durableStatus, row.ongoing);
+    // In its repair loop a run's phase is the round it is working toward.
+    const loop = legacy ? null : verifyRoundLabel(state);
+    const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : loop && !narrow ? loop : humanWorkflowStatus(durableStatus, row.ongoing);
     const name = workflowRunLabel(row);
-    const phase = legacy ? 'legacy' : humanPhaseName(row.phase ?? 'starting');
+    const phase = legacy ? 'legacy' : loop ?? humanPhaseName(row.phase ?? 'starting');
     const economics = legacy ? null : runEconomics(row, [], Date.now());
     const spend = economics ? moneyText(economics) : null;
     const spendLabel = spend ?? (legacy ? null : 'cost unknown');

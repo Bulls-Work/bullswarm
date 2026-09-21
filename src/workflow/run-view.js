@@ -71,6 +71,8 @@ import {
   runTimelineFacts,
 } from './run-model.js';
 import { stepPageModel, turnCountsText } from './step-model.js';
+import { returnedEarlyText } from './time-box.js';
+import { loopVerdictText } from './verify-rounds.js';
 
 /** Lines of the goal the Preflight segment shows before an ellipsis. */
 const GOAL_PREVIEW_LINES = 5;
@@ -196,7 +198,7 @@ function paintPhaseRule(line, phase) {
   return out + source.slice(cursor);
 }
 
-function paintTimelineAttempt(line, attempt, { phone = false, duration = null } = {}) {
+function paintTimelineAttempt(line, attempt, { phone = false, duration = null, early = null } = {}) {
   const text = String(line ?? '');
   const glyph = attempt?.glyph;
   let out = text;
@@ -210,8 +212,13 @@ function paintTimelineAttempt(line, attempt, { phone = false, duration = null } 
   if (attempt?.status === 'running') out = out.replace(' · running', ` · ${tint('running', 'amber')}`);
   // The duration column is the clock the row prints at its right edge, which
   // alignRight put last; painting a field the row never shows left it plain.
+  // An early return follows the duration: `34m03s · returned early · 2 not done`.
+  const earlyTail = early ? ` · ${early}` : '';
+  const hasEarly = Boolean(earlyTail) && out.endsWith(earlyTail);
+  if (hasEarly) out = out.slice(0, -earlyTail.length);
   const clock = String(duration ?? '');
   if (clock && out.endsWith(clock)) out = `${out.slice(0, -clock.length)}${dimCell(clock)}`;
+  if (hasEarly) out = `${out}${dimCell(' · ')}${tint(early, 'amber')}`;
   return out;
 }
 
@@ -845,11 +852,18 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
         ? ` ${clock}  ${glyph} ${attempt.actionId} · ${pool}${runningText}`
         : ` ${clock}  ${glyph} ${attempt.actionId} · ${pool} · ${modelName} · ${effort}${runningText}`;
       const duration = attemptDurationText(attempt, { nowMs });
-      push(paintTimelineAttempt(alignRight(left, duration, safeWidth), {
+      // A succeeded attempt whose report listed `## Not done` items says so
+      // after its duration; a phone has no room there and gives it a row.
+      const early = returnedEarlyText(attempt);
+      const right = early && !phone ? `${duration} · ${early}` : duration;
+      push(paintTimelineAttempt(alignRight(left, right, safeWidth), {
         ...attempt, glyph,
-      }, { phone, duration }), {
+      }, { phone, duration, early: phone ? null : early }), {
         segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId, milestone: true,
       });
+      if (early && phone) {
+        push(`        ${tint(early, 'amber')}`, { segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId });
+      }
     }
   };
   phases.forEach((phase, index) => {
@@ -1808,14 +1822,22 @@ function runPage(model, opts, body) {
   const rollup = runRollupFor(model);
   const headerFacts = runHeaderFacts(row, { nowMs, rollup });
   const status = headerFacts.status;
+  // A finished run with a repair loop says its verdict beside its status:
+  // `completed · verified`, or `completed · not verified · verify rounds 3/3`.
+  const loopVerdict = loopVerdictText(state);
   const glyph = status === 'completed' || status === 'succeeded' ? glyphs().ok
     : ['failed', 'partial', 'cancelled', 'interrupted'].includes(status) ? glyphs().fail : glyphs().ongoing;
   const activeGlyph = status === 'running' && Number(opts.spinnerFrame) > 0
     ? spinnerGlyph(opts.spinnerFrame)
     : glyph;
+  // On a phone the verdict takes its own row when the header cannot hold it
+  // whole: a cut `verify rounds 3…` would hide the count the caller needs.
+  const verdictOwnRow = Boolean(loopVerdict) && phone
+    && ` ${activeGlyph} ${headerFacts.shortId} · ${status} · ${loopVerdict}`.length > width;
+  const statusText = loopVerdict && !verdictOwnRow ? `${status} · ${loopVerdict}` : status;
   const runStatusParts = [
     `${activeGlyph} ${headerFacts.shortId}`,
-    status,
+    statusText,
     `${headerFacts.done} of ${headerFacts.total} steps done`,
     headerFacts.running.length ? `${headerFacts.running.length} running (${headerFacts.running.join(', ')})` : null,
     headerFacts.waiting.length ? `${headerFacts.waiting.length} waiting (${headerFacts.waiting.join(', ')})` : null,
@@ -1832,7 +1854,7 @@ function runPage(model, opts, body) {
     ).join(' · ');
     const shortDone = [
       `${activeGlyph} ${headerFacts.shortId}`,
-      status,
+      statusText,
       `${headerFacts.done} of ${headerFacts.total} steps`,
       headerFacts.running.length ? `${headerFacts.running.length} running` : null,
     ].filter(Boolean).join(' · ');
@@ -1859,6 +1881,7 @@ function runPage(model, opts, body) {
     return header;
   }
 
+  if (verdictOwnRow) body.push(cut(` ${loopVerdict}`, width));
   const goalSource = headerFacts.goal.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const goalLines = wrapLines(goalSource, Math.max(1, width - 2));
   if (goalLines.length) {

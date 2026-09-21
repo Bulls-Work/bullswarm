@@ -30,6 +30,7 @@ import { discardEvidence } from './ledger.js';
 import { deliverSteering } from './steering.js';
 import { deriveV2LiveStages } from './v2-presentation.js';
 import { v2LiveProgramRuntime, validateV2DurableState } from './v2-state.js';
+import { revisedVerifyRounds } from './verify-rounds.js';
 
 export const V2_REVISION_SCHEMA_VERSION = 'bullswarm.workflow.revision.v1';
 const PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
@@ -221,7 +222,9 @@ export function planV2Revision(state, request, { pendingSteeringIds = [] } = {})
 
   const pending = new Set(pendingSteeringIds);
   const steeringIds = (Array.isArray(request.steeringIds) ? request.steeringIds : []).filter((id) => pending.has(id));
-  if (![...added, ...amended, ...restored, ...removed, ...rerun].length && !steeringIds.length) {
+  // A budget-only revision is a change: the loop reads defaults.verifyRounds at commit.
+  const roundsChange = revisedVerifyRounds(state, request.program) !== null;
+  if (![...added, ...amended, ...restored, ...removed, ...rerun].length && !steeringIds.length && !roundsChange) {
     return { ok: false, issues: ['the revision changes nothing: every action matches the live plan and no finished step is named in rerun'] };
   }
   return {

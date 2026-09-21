@@ -244,6 +244,8 @@ function headerIdentityLine(header, { phone, nowMs = null }) {
       const verdict = phone ? shortVerdict(header.verdictText) : header.verdictText;
       parts.push(paintStatus(verdict, header.succeeded ? 'verified' : 'failed'));
     }
+    // A phone says it on its own row (headerLines); line 1 has no room left.
+    if (!phone && header.earlyText) parts.push(tint(header.earlyText, 'amber'));
     if (!phone && header.attemptText) parts.push(dimCell(header.attemptText));
   }
   return `${mark} ${parts.filter(Boolean).join(' · ')}`;
@@ -265,8 +267,9 @@ function headerClockText(header, { phone }) {
       header.startedClock && header.finishedClock ? `${header.startedClock}→${header.finishedClock}` : null,
     ]);
   }
-  if (header.running) return countList([header.startedClock ? `started ${header.startedClock} HKT` : null, header.dateText]);
+  if (header.running) return countList([header.boxText, header.startedClock ? `started ${header.startedClock} HKT` : null, header.dateText]);
   return countList([
+    header.boxText,
     header.clockText,
     header.startedClock && header.finishedClock ? `${header.startedClock} → ${header.finishedClock} HKT` : null,
     header.dateText,
@@ -301,6 +304,10 @@ function headerLines(presentation, { width, phone }) {
   const clock = headerClockText(header, { phone });
   if (phone) lines.push(` ${oneLine(countList([meta, clock ? dimCell(clock) : null]))}`);
   else lines.push(alignRight(` ${meta}`, clock ? dimCell(clock) : '', width));
+  // The phone's time-box row: `returned early · 2 not done · box 20m · ran 34m`.
+  if (phone && (header.earlyText || header.boxText)) {
+    lines.push(` ${countList([header.earlyText && !header.running ? tint(header.earlyText, 'amber') : null, header.boxText ? dimCell(header.boxText) : null])}`);
+  }
   if (!phone && header.route) lines.push(` ${dimCell('route')}  ${oneLine(header.route)}`);
   return lines;
 }

@@ -800,3 +800,46 @@ test('the Step v2 record quotes the transcript frames the code renders, beside t
     assert.match(frames.get(`0.35.2-detail-tool-open-${width}.txt`).join('\n'), /seq \d+ · 2026-09-19T17:51:12\.686Z/);
   }
 });
+
+test('the Step header says an early return and the box, and `ran` only past the box, at 55 and 200 columns', () => {
+  const boxed = (over = {}) => {
+    const attempt = {
+      ...finishedAttempt(),
+      timeBox: { minutes: 20, wrapUpMinutes: 14, source: 'pair', n: 80, medianMinutes: 18.86, startClock: '01:21:52' },
+      returnedEarly: { count: 2, items: ['the phone frame', 'the watch line'] },
+      ...over,
+    };
+    const state = stateFor({ actionId: 'step-view', actionStatus: 'succeeded', lifecycleStatus: 'completed', attempts: [attempt], resultFile: 'finished-result.json' });
+    return stepPageModel({ runId: state.runId, shortId: state.shortId, runDir: fixtureDir, state, pools: [poolFor('codex')] }, { nowMs: fixedNow });
+  };
+  // wallSec 2361 is 39m21s: past a 20-minute box, so the header says both.
+  const model = boxed();
+  assert.equal(model.presentation.header.earlyText, 'returned early · 2 not done');
+  assert.equal(model.presentation.header.boxText, 'box 20m · ran 39m');
+  const wide = render(model, 200).map(plain);
+  assert.match(wide[0], /^ ✓ step-view · ste\S* · succeeded · .* · returned early · 2 not done/);
+  assert.equal(wide[0].length <= 200, true);
+  const metaRow = wide.find((line) => line.includes('box 20m · ran 39m'));
+  assert.ok(metaRow, wide.slice(0, 4).join('\n'));
+  assert.match(metaRow, /codex · gpt-5\.6-luna · medium effort +box 20m · ran 39m · 39m/);
+  const phone = render(model, 55).map(plain);
+  assert.doesNotMatch(phone[0], /returned early/, 'line 1 of a phone has no room for it');
+  const phoneRow = phone.find((line) => line.includes('returned early'));
+  assert.equal(phoneRow, ' returned early · 2 not done · box 20m · ran 39m');
+  assert.ok(phone.every((line) => line.length <= 55), phone.filter((line) => line.length > 55).join('\n'));
+  // The early text is amber, the box dim.
+  const raw = render(model, 55).join('\n');
+  assert.ok(raw.includes(`${rgb(METER_COLORS.amber)}returned early · 2 not done`), 'amber early text');
+  // Inside its box: `box 45m` alone; no early return: no early text.
+  const inside = boxed({ timeBox: { minutes: 45, wrapUpMinutes: 32, source: 'program', n: null, medianMinutes: null, startClock: '01:21:52' }, returnedEarly: undefined });
+  assert.equal(inside.presentation.header.boxText, 'box 45m');
+  assert.equal(inside.presentation.header.earlyText, null);
+  for (const width of [55, 200]) {
+    const lines = render(inside, width).map(plain);
+    assert.ok(lines.some((line) => /(^| )box 45m( ·|$)/.test(line)), `${width}: ${lines.slice(0, 4).join(' | ')}`);
+    assert.equal(lines.some((line) => /returned early|ran \d+m/.test(line)), false, `${width}: nothing to say past the box`);
+  }
+  // No box recorded (every attempt before 0.35.2): the header is unchanged.
+  const before = render(makeModels().finished, 200).map(plain);
+  assert.equal(before.some((line) => /box \d+m|returned early/.test(line)), false);
+});

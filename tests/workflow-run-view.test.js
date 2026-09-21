@@ -624,3 +624,30 @@ test('each timeline attempt row opens the Step page on that attempt; the phase r
     assert.equal(latest.presentation.header.attemptText, 'attempt 3 of 3');
   }
 });
+
+test('a Run timeline row says `returned early · N not done` after its duration, on its own row at 55 columns', () => {
+  const row = rowFixture();
+  row.state.attempts.unshift({
+    id: 'audit-1', actionId: 'audit', ordinal: 1, status: 'succeeded', pool: 'codex', model: 'gpt-test',
+    startedAt: '2026-09-20T11:55:00.000Z', finishedAt: '2026-09-20T11:57:30.000Z', wallSec: 150,
+    routing: { lane: 'build', effort: 'low' },
+    timeBox: { minutes: 20, wrapUpMinutes: 14, source: 'fallback', n: null, medianMinutes: null, startClock: '19:55:00' },
+    returnedEarly: { count: 2, items: ['the phone frame', 'the watch line'] },
+  });
+  row.state.actions[0].attempts = 1;
+  const panel = workflowPanelModel(row);
+  const wide = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW }).lines;
+  const wideAudit = wide.filter((line) => line.actionId === 'audit');
+  assert.equal(wideAudit.length, 1, 'one row per attempt at 200 columns');
+  assert.match(visible(wideAudit[0].text), /^ \d{2}:\d{2} {2}✓ audit · codex · gpt-test · low +2m30s · returned early · 2 not done$/);
+  assert.equal(visible(wideAudit[0].text).length, 200);
+  assert.ok(wideAudit[0].text.includes(`${rgb(METER_COLORS.amber)}returned early · 2 not done`), 'the early text is amber');
+  const phone = workflowTimelineLines(panel, 55, 0, { goalPreview: false, nowMs: NOW }).lines;
+  const phoneAudit = phone.filter((line) => line.actionId === 'audit').map((line) => visible(line.text));
+  assert.equal(phoneAudit.length, 2, phoneAudit.join('\n'));
+  assert.match(phoneAudit[0], /^ \d{2}:\d{2} {2}✓ audit · codex +2m30s$/);
+  assert.equal(phoneAudit[1], '        returned early · 2 not done');
+  assert.ok(phone.every((line) => visible(line.text).length <= 55));
+  // The report attempt did not return early: its rows carry no such text.
+  assert.equal(wide.concat(phone).some((line) => line.actionId === 'report' && /returned early/.test(visible(line.text))), false);
+});

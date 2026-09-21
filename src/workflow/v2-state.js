@@ -65,7 +65,29 @@ const ATTEMPT_FIELDS = new Set([
   // never changed (src/lib/watch.js `attemptCapture`). Absent on attempts
   // recorded before 0.35.2 and on attempts whose worker never exited.
   'capture',
+  // The soft time box written into this attempt's task (time-box.js), and the
+  // `## Not done` items a succeeded work attempt reported. Absent on attempts
+  // that had no box (`timeBox: 0`, digests) and on every attempt recorded
+  // before 0.35.2; `returnedEarly` is absent when nothing was left undone.
+  'timeBox', 'returnedEarly',
+  // The repository paths the diff snapshot attributed to this attempt (at
+  // most 200; `changedFileCount` is the full count). Read by the repair
+  // loop's carry-forward rule and the durable handoff. Absent on attempts
+  // recorded before 0.35.2 and on attempts with no snapshot.
+  'changedFiles',
 ]);
+const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
+const ATTEMPT_TIME_BOX_SOURCES = new Set(['program', 'pair', 'kind', 'fallback']);
+const ATTEMPT_RETURNED_EARLY_FIELDS = new Set(['count', 'items']);
+// The kernel's repair loop (verify-rounds.js). None of these keys may be a
+// legacy autonomous field name: noUnknown rejects those.
+const VERIFY_LOOP_FIELDS = new Set(['max', 'stoppedBy', 'rounds']);
+const VERIFY_ROUND_FIELDS = new Set([
+  'round', 'verifyActionIds', 'startedAt', 'closedAt', 'toJudge', 'carried', 'passed', 'failed', 'discovery',
+  'repairActionId', 'repairRequirements', 'repairOwnedFiles', 'repairUnrestricted', 'repairStartedAt',
+  'repairFinishedAt', 'changedFiles',
+]);
+const VERIFY_LOOP_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed']);
 const ATTEMPT_SESSION_FIELDS = new Set([
   'pool', 'model', 'sessionId', 'generation', 'startedAt', 'lastUsedAt',
 ]);
@@ -560,6 +582,11 @@ function validateAdvisories(advisories) {
 // state is later checked against.
 export function v2LiveProgramRuntime(state, { enforceRoutingPolicy = true } = {}) {
   return {
+    // Kernel repairs run after the verify that failed their requirement, so
+    // the evidence-ancestor rule skips them (the loop record names them).
+    kernelRepairActionIds: Array.isArray(state.verifyLoop?.rounds)
+      ? state.verifyLoop.rounds.map((round) => round?.repairActionId).filter((id) => typeof id === 'string' && id)
+      : [],
     requirements: state.intent.requirements.map(({ id, mandatory }) => ({ id, mandatory })),
     knownActions: [],
     knownArtifacts: [],
@@ -876,8 +903,82 @@ function validateAttempts(attempts, program) {
     if (attempt.outputSamples !== undefined) validateOutputSamples(attempt.outputSamples, `state.attempts[${index}].outputSamples`);
     validateOutputRecovery(attempt, `state.attempts[${index}]`);
     if (attempt.bytes !== undefined) validateAttemptBytes(attempt.bytes, `state.attempts[${index}].bytes`);
+    if (attempt.timeBox !== undefined) validateAttemptTimeBox(attempt.timeBox, `state.attempts[${index}].timeBox`);
+    if (attempt.returnedEarly !== undefined) validateReturnedEarly(attempt.returnedEarly, `state.attempts[${index}].returnedEarly`);
+    if (attempt.changedFiles !== undefined && (!Array.isArray(attempt.changedFiles) || attempt.changedFiles.length > 200
+      || attempt.changedFiles.some((file) => typeof file !== 'string' || !file))) fail(`state.attempts[${index}].changedFiles must list at most 200 paths`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
+  }
+}
+
+function validateAttemptTimeBox(box, at) {
+  object(box, at);
+  noUnknown(box, ATTEMPT_TIME_BOX_FIELDS, at);
+  positiveInteger(box.minutes, `${at}.minutes`);
+  nonNegativeInteger(box.wrapUpMinutes, `${at}.wrapUpMinutes`);
+  if (!ATTEMPT_TIME_BOX_SOURCES.has(box.source)) fail(`${at}.source must be program|pair|kind|fallback`);
+  if (box.n !== null) nonNegativeInteger(box.n, `${at}.n`);
+  if (box.medianMinutes !== null && (!Number.isFinite(box.medianMinutes) || box.medianMinutes < 0)) fail(`${at}.medianMinutes must be null or a non-negative finite number`);
+  if (typeof box.startClock !== 'string' || !/^\d{2}:\d{2}:\d{2}$/.test(box.startClock)) fail(`${at}.startClock must be HH:MM:SS`);
+}
+
+function validateReturnedEarly(early, at) {
+  object(early, at);
+  noUnknown(early, ATTEMPT_RETURNED_EARLY_FIELDS, at);
+  positiveInteger(early.count, `${at}.count`);
+  if (!Array.isArray(early.items) || early.items.length > 20 || early.items.length > early.count
+    || early.items.some((item) => typeof item !== 'string' || !item)) fail(`${at}.items must list at most 20 non-empty strings`);
+}
+
+function idArray(value, at) {
+  if (!Array.isArray(value) || value.some((id) => typeof id !== 'string' || !ID_RE.test(id))) fail(`${at} must be an array of ids`);
+  if (new Set(value).size !== value.length) fail(`${at} must not repeat an id`);
+}
+
+// Optional: absent on runs accepted before 0.35.2 and on non-program runs.
+// Rounds are numbered 1.. in order, and there are never more than three.
+function validateVerifyLoop(loop, state) {
+  if (loop === undefined) return;
+  object(loop, 'state.verifyLoop');
+  noUnknown(loop, VERIFY_LOOP_FIELDS, 'state.verifyLoop');
+  if (!isProgramWorkflow(state)) fail('state.verifyLoop requires a program workflow');
+  if (!Number.isInteger(loop.max) || loop.max < 1 || loop.max > 3) fail('state.verifyLoop.max must be 1, 2 or 3');
+  if (loop.stoppedBy !== null && !VERIFY_LOOP_STOPS.has(loop.stoppedBy)) fail('state.verifyLoop.stoppedBy must be null|passed|rounds|revision|step-failed');
+  if (!Array.isArray(loop.rounds)) fail('state.verifyLoop.rounds must be an array');
+  if (loop.rounds.length > 3) fail('state.verifyLoop.rounds must hold at most three rounds');
+  const requirementIds = new Set(state.intent.requirements.map((requirement) => requirement.id));
+  const known = (ids, at) => { for (const id of ids) if (!requirementIds.has(id)) fail(`${at} references unknown requirement ${id}`); };
+  for (const [index, round] of loop.rounds.entries()) {
+    const at = `state.verifyLoop.rounds[${index}]`;
+    object(round, at);
+    noUnknown(round, VERIFY_ROUND_FIELDS, at);
+    if (round.round !== index + 1) fail(`${at}.round must be ${index + 1}`);
+    idArray(round.verifyActionIds, `${at}.verifyActionIds`);
+    timestamp(round.startedAt, `${at}.startedAt`);
+    if (round.startedAt === null) fail(`${at}.startedAt is required`);
+    timestamp(round.closedAt, `${at}.closedAt`);
+    for (const field of ['toJudge', 'carried', 'passed', 'failed', 'repairRequirements']) {
+      idArray(round[field], `${at}.${field}`);
+      known(round[field], `${at}.${field}`);
+    }
+    if (!Array.isArray(round.discovery) || round.discovery.length > 20) fail(`${at}.discovery must list at most 20 items`);
+    for (const [itemIndex, item] of round.discovery.entries()) {
+      object(item, `${at}.discovery[${itemIndex}]`);
+      noUnknown(item, new Set(['requirementId', 'text']), `${at}.discovery[${itemIndex}]`);
+      if (!requirementIds.has(item.requirementId)) fail(`${at}.discovery[${itemIndex}].requirementId is unknown`);
+      requiredString(item.text, `${at}.discovery[${itemIndex}].text`);
+    }
+    if (round.repairActionId !== null && (typeof round.repairActionId !== 'string' || !ID_RE.test(round.repairActionId))) fail(`${at}.repairActionId must be null or an id`);
+    if (!Array.isArray(round.repairOwnedFiles) || round.repairOwnedFiles.some((file) => typeof file !== 'string' || !file)) fail(`${at}.repairOwnedFiles must be an array of paths`);
+    if (typeof round.repairUnrestricted !== 'boolean') fail(`${at}.repairUnrestricted must be a boolean`);
+    timestamp(round.repairStartedAt, `${at}.repairStartedAt`);
+    timestamp(round.repairFinishedAt, `${at}.repairFinishedAt`);
+    if (round.changedFiles !== null && (!Array.isArray(round.changedFiles) || round.changedFiles.length > 200
+      || round.changedFiles.some((file) => typeof file !== 'string' || !file))) fail(`${at}.changedFiles must be null or at most 200 paths`);
+    if (round.repairActionId === null && (round.repairRequirements.length || round.repairStartedAt || round.repairFinishedAt)) fail(`${at} records a repair without repairActionId`);
+    if (round.repairActionId !== null && round.closedAt === null) fail(`${at} cannot start a repair before the round closes`);
+    if (index < loop.rounds.length - 1 && round.closedAt === null) fail(`${at} must be closed before round ${index + 2} opens`);
   }
 }
 
@@ -1015,7 +1116,7 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner', 'advisories', 'pause', 'revisions']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner', 'advisories', 'pause', 'revisions', 'verifyLoop']), 'state');
   // Optional: written by a live kernel so readers can tell a running run from
   // one whose process died. Absent on a state no kernel has owned yet.
   if (state.runner !== undefined && state.runner !== null) {
@@ -1061,6 +1162,7 @@ function validateState(state) {
     if (entry.decisionSequence < 1) fail(`state.steering[${index}].decisionSequence must be positive`);
   }
   validateAdvisories(state.advisories);
+  validateVerifyLoop(state.verifyLoop, state);
   validateCounters(state.budget, 'state.budget');
   object(state.cancellation, 'state.cancellation');
   noUnknown(state.cancellation, new Set(['requested', 'requestedAt', 'reason', 'source', 'requesterPid']), 'state.cancellation');

@@ -657,7 +657,7 @@ test('CLI: detached program returns negative evidence durably without another pl
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
+    writeFileSync(programPath, JSON.stringify({ ...cliProgram('skip-work'), defaults: { verifyRounds: 1 } }));
     const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const launch = JSON.parse(launched.stdout);

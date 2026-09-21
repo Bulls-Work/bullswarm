@@ -20,9 +20,9 @@ const action = (id, options = {}) => ({
   prompt: `Implement ${id} and run its focused checks.`, lane: 'build', effort: 'low',
   evidenceFor: [], inputs: [], produces: [], ...options,
 });
-const program = (actions) => ({
+const program = (actions, defaults = null) => ({
   schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Execute the graph and return its results.',
-  program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
+  program: { schemaVersion: 'bullswarm.workflow.program.v2', actions, ...(defaults ? { defaults } : {}) },
 });
 
 function fixture(t, settings = {}) {
@@ -57,10 +57,10 @@ function dispatcher(handler) {
   };
 }
 
-function run(f, actions, handler, dependencies = {}) {
+function run(f, actions, handler, dependencies = {}, defaults = null) {
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [],
-    initialPlannerResponse: program(actions),
+    initialPlannerResponse: program(actions, defaults),
     dependencies: {
       dispatchV2Action: dispatcher(handler),
       captureWorkspaceManifest: () => { throw new Error('shared program must never scan a manifest'); },
@@ -173,7 +173,7 @@ test('negative evidence is reported without an automatic gap round or a verified
       requirements: { deliver: { status: 'failed', evidence: ['The gate found an unfinished item.'], concerns: ['Needs another edit.'] } },
     }));
     return { verdict: { ok: true, structured: options.outputValidator('') } };
-  });
+  }, {}, { verifyRounds: 1 });
   assert.equal(result.result.status, 'completed');
   assert.equal(result.result.verified, false);
   assert.equal(result.result.requirements[0].status, 'failed');

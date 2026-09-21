@@ -8,6 +8,7 @@ import { finiteOrNull } from '../lib/num.js';
 import { formatMoney } from '../lib/usage-basis.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
+import { loopStageLabel } from './verify-rounds.js';
 import { cut, progressBar } from './dash-kit.js';
 import {
   blank,
@@ -471,12 +472,18 @@ function planStages(row) {
     const panel = workflowPanelModel(row);
     const definitions = new Map((panel.state.program?.actions ?? []).map((action) => [action.id, action]));
     const states = new Map((panel.state.actions ?? []).map((action) => [action.id, action]));
-    const stages = (panel.stages ?? []).map((stage) => ({
-      ...stage,
-      actions: (stage.actionIds ?? [])
-        .map((id) => ({ ...definitions.get(id), ...states.get(id) }))
-        .filter((action) => action?.id),
-    })).filter((stage) => stage.actions.length);
+    const stages = (panel.stages ?? []).map((stage) => {
+      // A stage that is exactly one verify round or one repair is named by
+      // the loop (`verify · round 2 of 3 · 2 to re-check`).
+      const loopLabel = loopStageLabel(panel.state, stage);
+      return {
+        ...stage,
+        ...(loopLabel ? { loopLabel } : {}),
+        actions: (stage.actionIds ?? [])
+          .map((id) => ({ ...definitions.get(id), ...states.get(id) }))
+          .filter((action) => action?.id),
+      };
+    }).filter((stage) => stage.actions.length);
     if (stages.length) return { stages, dependencyGroups: panel.dependencyGroups };
   } catch { /* a torn state falls through to the action graph below */ }
   const levels = planLevels(row).filter((level) => level.length);
@@ -530,6 +537,7 @@ function planStageName(stage, index) {
  * level stays the compact `five writers` that the plan row is read at.
  */
 function planStageStepsName(stage, index) {
+  if (stage?.loopLabel) return stage.loopLabel;
   const names = (stage?.actions ?? [])
     .map((action) => String(action?.id ?? '').trim())
     .filter(Boolean);

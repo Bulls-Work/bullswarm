@@ -34,12 +34,23 @@ export const ACTION_KINDS = Object.freeze(Object.keys(KIND_DEFAULTS));
 // requirement no step checks. Advisories never affect validity, exit codes, or
 // dispatch.
 export const PROGRAM_ADVISORY_CODES = Object.freeze(['all-writers-high', 'docs-at-high', 'requirement-unchecked']);
-const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions', 'defaults']);
-const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning']);
+// `verifyRounds` at the top level is the normalized form this validator
+// returns (see the end of validateActionProgram); accepting it back keeps an
+// accepted program valid when it is validated a second time.
+const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions', 'defaults', 'verifyRounds']);
+const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning', 'timeBox', 'verifyRounds']);
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
   'kind', 'lane', 'effort', 'evidenceFor', 'inputs', 'produces', 'reasoning',
+  'timeBox',
 ]);
+// The soft time box, in whole minutes; 0 leaves the paragraph out. A guide
+// written into the task, never a limit the kernel enforces (time-box.js).
+export const TIME_BOX_MAX_MINUTES = 240;
+// How many verify rounds the kernel may run before it hands failures back.
+export const VERIFY_ROUNDS_DEFAULT = 3;
+const VERIFY_ROUNDS_MAX = 3;
+const isTimeBox = (value) => Number.isInteger(value) && value >= 0 && value <= TIME_BOX_MAX_MINUTES;
 
 // Only reject direct response instructions. Product-inspection prompts often
 // mention output, JSON, and schemas together; proximity alone says nothing
@@ -210,8 +221,9 @@ function normalizeOwnedFiles(value, at, issues) {
 }
 
 // Program-level fallbacks an author may set once instead of repeating on
-// every action. Deliberately only `effort` and `reasoning`: lane follows the
-// nature of the individual action, so there is no program-wide lane.
+// every action: `effort`, `reasoning` and `timeBox` fold onto each action;
+// `verifyRounds` is the run's own budget. Lane follows the nature of the
+// individual action, so there is no program-wide lane.
 function programDefaults(program, issues) {
   const raw = program.defaults;
   if (raw === undefined) return {};
@@ -221,7 +233,7 @@ function programDefaults(program, issues) {
   }
   const defaults = {};
   for (const key of Object.keys(raw)) if (!PROGRAM_DEFAULT_FIELDS.has(key)) {
-    issues.push(`program.defaults.${key} is not allowed; only effort and reasoning`);
+    issues.push(`program.defaults.${key} is not allowed; only effort, reasoning, timeBox and verifyRounds`);
   }
   if (raw.effort !== undefined) {
     if (EFFORTS.has(raw.effort)) defaults.effort = raw.effort;
@@ -231,7 +243,27 @@ function programDefaults(program, issues) {
     if (isReasoningLevel(raw.reasoning)) defaults.reasoning = raw.reasoning;
     else issues.push('program.defaults.reasoning must be low|medium|high|xhigh|max|default');
   }
+  if (raw.timeBox !== undefined) {
+    if (isTimeBox(raw.timeBox)) defaults.timeBox = raw.timeBox;
+    else issues.push(`program.defaults.timeBox must be a whole number of minutes from 0 to ${TIME_BOX_MAX_MINUTES}`);
+  }
+  if (raw.verifyRounds !== undefined) {
+    if (Number.isInteger(raw.verifyRounds) && raw.verifyRounds >= 1 && raw.verifyRounds <= VERIFY_ROUNDS_MAX) defaults.verifyRounds = raw.verifyRounds;
+    else issues.push('program.defaults.verifyRounds must be 1, 2 or 3');
+  }
   return defaults;
+}
+
+// The normalized top-level `verifyRounds`, when an accepted program is
+// validated again. It must agree with `defaults.verifyRounds` when both are
+// present.
+function normalizedVerifyRounds(program, defaults, issues) {
+  if (program.verifyRounds === undefined) return;
+  if (!(Number.isInteger(program.verifyRounds) && program.verifyRounds >= 1 && program.verifyRounds <= VERIFY_ROUNDS_MAX)) {
+    issues.push('program.verifyRounds must be 1, 2 or 3');
+  } else if (defaults.verifyRounds !== undefined && defaults.verifyRounds !== program.verifyRounds) {
+    issues.push('program.verifyRounds must match program.defaults.verifyRounds');
+  } else defaults.verifyRounds = program.verifyRounds;
 }
 
 function runtimeRequirements(runtime, issues) {
@@ -401,6 +433,7 @@ export function validateActionProgram(program, runtime = {}) {
   const rawActions = Array.isArray(program.actions) ? program.actions : [];
   if (Array.isArray(program.actions) && program.actions.length === 0) issues.push('actions must be a non-empty array');
   const defaults = programDefaults(program, issues);
+  normalizedVerifyRounds(program, defaults, issues);
   const actions = [];
   const knownActions = knownActionRecords(runtime, issues);
   const knownById = new Map();
@@ -449,6 +482,10 @@ export function validateActionProgram(program, runtime = {}) {
     if (action.reasoning !== undefined && !isReasoningLevel(action.reasoning)) {
       issues.push(`${at}.reasoning must be low|medium|high|xhigh|max|default`);
     }
+    // Folded like effort, so `plan export` shows the box each step was given.
+    if (action.timeBox !== undefined && !isTimeBox(action.timeBox)) {
+      issues.push(`${at}.timeBox must be a whole number of minutes from 0 to ${TIME_BOX_MAX_MINUTES}`);
+    } else if (action.timeBox === undefined && defaults.timeBox !== undefined) action.timeBox = defaults.timeBox;
     if (LANES.has(routing.lane)) action.lane = routing.lane;
     if (EFFORTS.has(routing.effort)) action.effort = routing.effort;
     if (routing.reasoning !== null) action.reasoning = routing.reasoning;
@@ -579,9 +616,13 @@ export function validateActionProgram(program, runtime = {}) {
       }
     }
   }
+  // The one exemption the repair loop needs: a kernel repair affects a
+  // requirement and runs after the verify that failed it, so no evidence
+  // step has to depend on it (docs/design/step-economy-0.35.2 §3.4).
+  const kernelRepairs = new Set(Array.isArray(runtime.kernelRepairActionIds) ? runtime.kernelRepairActionIds : []);
   for (const action of actions) {
     if (action.evidenceFor.length) for (const requirement of action.evidenceFor) {
-      for (const work of [...knownActions, ...actions].filter((candidate) => !candidate.evidenceFor.length && candidate.affects.includes(requirement))) {
+      for (const work of [...knownActions, ...actions].filter((candidate) => !candidate.evidenceFor.length && candidate.affects.includes(requirement) && !kernelRepairs.has(candidate.id))) {
         if (!ancestors(action.id, byId).has(work.id)) issues.push(`${action.id} evidence for "${requirement}" must depend on work action "${work.id}"`);
       }
     }
@@ -606,7 +647,13 @@ export function validateActionProgram(program, runtime = {}) {
     }
   }
   if (issues.length) throw new ActionValidationError(issues);
-  return { schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, actions: actions.map(clone) };
+  // `verifyRounds` is returned beside the actions (never folded onto them):
+  // the runtime copies it into the run's verify-loop budget.
+  return {
+    schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,
+    actions: actions.map(clone),
+    ...(defaults.verifyRounds !== undefined ? { verifyRounds: defaults.verifyRounds } : {}),
+  };
 }
 
 export const validateProgram = validateActionProgram;

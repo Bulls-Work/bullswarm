@@ -73,6 +73,14 @@ author the graph.
   `implement`, or split it into an `architecture` action plus a writer that
   records its report. Never set `defaults.effort` to `high`, and do not
   restate `lane` or `effort` on an action that has a `kind`.
+- **Time box.** Every step's task carries a soft time box with a wrap-up point
+  and an invitation to stop and report `## Done`, `## Not done` and
+  `## Suggested next step`. The kernel computes the box from this home's
+  history; set `timeBox` (minutes) on an action, or `defaults.timeBox`, when you
+  know better, and `timeBox: 0` to leave it out of one step. It is a guide,
+  never a timeout. A step that lists items under `## Not done` still succeeds
+  and reads `returned early · N not done`; write prompts as an ordered list of
+  items so an early return leaves a clean cut.
 - **Prompts are self-contained.** Each names the absolute workspace path
   (nothing is substituted), the outcome, the relevant files, the dependency
   outputs to read, and the concrete checks to run.
@@ -124,8 +132,8 @@ bullswarm workflow watch <shortId> --until trouble
 Start it in the background right after launch, then leave the run alone. It
 prints nothing while work goes well: no attach line, no line per finished
 step. It exits on the first trouble, or on the run's outcome. Trouble is a step
-that failed or was blocked, a check that rejected a requirement, a rejected
-plan revision, a pause, a stalled worker, a step that looks stale, or steering
+that failed or was blocked, a last verify round that left a requirement
+failing, a rejected plan revision, a pause, a stalled worker, a step that looks stale, or steering
 left for you.
 
 Each exit is one wake. Read the output in one tool call, then act:
@@ -149,12 +157,19 @@ A trouble line is a decision point:
 | Line | What it means | What to do |
 |---|---|---|
 | `✗ <step> failed …` / `⊘ <step> blocked …` | the step did not succeed | read its output (`bullswarm workflow action show <shortId> <step>` names `outputFile`); revise the plan (section 4), or let the run finish and retry |
-| `◆ <step> evidence · <id> failed` | a check rejected a requirement | a plan problem: add a step that fixes what the evidence names (see below) |
+| `✗ verify round <r> of <max> · <k> failed · your decision` | the loop is done and left requirements failing | read the caller-decision block (see below) |
 | `× plan revision rejected …` | your revision was not applied | fix the issues it lists and revise again |
 | `⚠ <step> stalled on <pool> …` | the kernel stopped a silent worker | nothing: it retries on another pool or hands the step back |
 | `⧖ pause requested …` | someone paused the run | `bullswarm workflow resume <shortId>` when it should go on |
 | `⧖ steering received · …` | a person left guidance for you | decide what it means and revise the plan |
 | `⚠ <step> looks stale: <reasons>` | the step may be stuck | see below |
+
+A check that rejects a requirement while rounds remain is not trouble: the
+kernel repairs it and the watch stays quiet. A full watch (without `--until
+trouble`) prints one line per round, `◆ verify round 2 of 3 · 3 to re-check`,
+`✗ verify round 1 of 3 · 2 failed · repair next`, `↻ repair round 1 · 2
+requirements · repair-1`, and `◐ <step> returned early · N not done` for a step
+that succeeded with unfinished items.
 
 ### A step that looks stale
 
@@ -186,7 +201,8 @@ Then start the watch again.
 ### When it finishes
 
 `outcome:` gives `completed`, `partial` or `cancelled` and whether the run is
-verified; `reason:` says why in one line. `completed` means every step
+verified (`completed · not verified · verify rounds 3/3` means the loop ran to
+its end); `reason:` says why in one line. `completed` means every step
 succeeded. `verified` means every mandatory requirement passed its check,
 which can still miss bugs. Anything short of verified is followed by what is
 left: `step <id>: <status> (<kind>) — <why>` for each unfinished step,
@@ -207,10 +223,35 @@ retryable it prints `nothing to retry`, starts nothing, and exits 1. A step
 whose pools were all paused shows `its pool is back at <time>`; resuming
 before then fails it again at once.
 
-A failed check is a plan problem, not a retry. When the check step reports a
-requirement failed, keep the same run: export the plan, add a step that fixes
-what the evidence names, and add that step's id to the check's `dependsOn`.
-The changed check runs again after the fix, and the run finishes again.
+A failed check is not yours to repair first. When a check rejects a mandatory
+requirement, the kernel runs a bounded loop of at most 3 verify rounds: it adds
+a `repair-<n>` step built from the verifier's evidence, the not-done items and
+the handoffs of the steps that affect the requirement, then a
+`verify-round-<n>` step that re-checks it. Round 1 judges everything; round 2
+re-checks the failures and looks for regressions; round 3 is final closure. A
+requirement that passed is judged again only when a repair touched a file its
+evidence names. Do not hand-add a fix step for an ordinary failing check, and
+do not revise the plan to fake a second round: the kernel counts the rounds, and
+a revision never adds or refunds one. The steps it adds show in `plan export`;
+keep them as they are. `defaults.verifyRounds` (1-3, default 3) sets the cap; in
+a revision it sets it for the rest of the run.
+
+The run ends as soon as nothing is failing (`completed · verified`) or after
+round 3 (`completed · not verified · verify rounds 3/3`). In the second case
+act on the **caller-decision block**, and only on it:
+
+```bash
+bullswarm workflow runs result <shortId> --json --summary
+```
+
+`callerDecision` lists each requirement still failing, the round that last
+judged it, the first line of its latest evidence, and one suggested `next`
+step. Choose one: take the work over, or add a step that fixes what `next`
+names through a plan revision (section 4) and let the changed check run again.
+`verifyRounds` in the same output gives each verify round and each repair its
+wall minutes, pool and cost, so you can see what the loop spent. Every step's
+`returnedEarly` items are in `action show`; a step that returned early left
+its unfinished work in `## Not done`, which is where a manual fix starts.
 
 Then read the real outputs and artifacts and probe the important edge cases
 yourself. Shared files remain after failure or cancellation. Exit 0 can mean
