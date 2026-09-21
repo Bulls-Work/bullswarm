@@ -7,13 +7,13 @@
 import { asciiGlyphsPreferred, glyphs } from '../lib/glyphs.js';
 import { finiteOrNull } from '../lib/num.js';
 import { dayKey } from './history.js';
-import { METER_COLORS, meterBar, paceWord, untilText } from './usage-view.js';
+import { meterBar, paceWord, untilText } from './usage-view.js';
 import {
   chartRowCount,
-  columnBars,
   compactRow,
   cut,
   formatDashboardValue,
+  niceStep,
   periodToggle,
   progressBar,
   rule,
@@ -51,30 +51,27 @@ import {
   tokenSourceOf,
   usageBasisText,
   visibleLength,
-  worstTokenSource,
   workflowRunLabel,
 } from './dashboard.js';
 import { apiMoney, formatMoney } from '../lib/usage-basis.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 
 const BUDGET_WEEK_POOLS = 4;
-const WEEKDAY_LETTERS = Object.freeze(['S', 'M', 'T', 'W', 'T', 'F', 'S']);
-// The licence block's five slots, in plain words: the header names them, and a
-// column too narrow for the whole sentence wraps the last three under the first.
-const LICENCE_HEADER = 'licence · pool · worker-minutes · weekly share · API · subscription';
-const LICENCE_HEADER_LINES = Object.freeze([
-  'licence · pool · worker-minutes',
-  '         weekly share · API · subscription',
-]);
-const LICENCE_MIN_WIDTH = 40;
-// A card's own fields need this much before the box clips them; three cards
-// that do not fit beside the licence column stack instead.
-const MIN_CARD_WIDTH = 36;
-// The licence block needs this much room beside it before the cards keep their
-// own column: below it the cards take the whole width and the licence block
-// reads under them, which is what 120–159 columns draws.
-const LICENCE_BESIDE_WIDTH = 160;
-const CARD_GAP = '  ';
+// From this width up the Today band and the period band are each two halves
+// of equal width; below it the page is one column: cards, licences, running,
+// budget, chart, by pool, by model, by project.
+const HALVES_WIDTH = 110;
+const HALF_GAP = 2;
+// Rows a breakdown section shows before it counts the rest as `+N more`.
+const BREAKDOWN_ROWS = 4;
+// The weekly-quota bar in the licence table: this wide when there is room, and
+// never narrower than the minimum before a column is dropped instead.
+const QUOTA_BAR_MAX = 10;
+const QUOTA_BAR_MIN = 4;
+const TABLE_GAP = 2;
+const DAY_NAMES = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+const MONTH_NAMES = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+const EIGHTHS = Object.freeze(['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']);
 
 function taskIdText(task) {
   const raw = String(task?.id ?? task?.taskFile ?? 'task');
@@ -260,44 +257,48 @@ function taskCardModel(task) {
   };
 }
 
-/** How many cards flow side by side in `width` columns without clipping. */
-function cardColumnsFor(count, width) {
-  if (count <= 1) return 1;
-  const needed = count * MIN_CARD_WIDTH + (count - 1) * CARD_GAP.length;
-  return width >= needed ? count : 1;
+/** Two halves of equal width for a band `width` wide, and the gutter between. */
+function bandHalves(width) {
+  const half = Math.max(1, Math.floor((width - HALF_GAP) / 2));
+  return { half, gap: Math.max(HALF_GAP, width - half * 2) };
 }
 
 /**
- * The cards as part rows, `columns` across. Each painted line carries the
- * action of the card it belongs to, so a click lands on that card's run.
+ * Two stacks of `{ text, action }` lines painted side by side, the right one
+ * starting at the same column on every row. A stack that ends first leaves
+ * blanks, so the taller one keeps its rows; each line keeps its own action,
+ * so a click or a hover lands on the card, pool or chart it belongs to.
  */
-function cardGridLines(cards, width, columns) {
-  const count = Math.max(1, Math.min(columns, cards.length));
-  const lines = [];
-  for (let start = 0; start < cards.length; start += count) {
-    const slice = cards.slice(start, start + count);
-    const base = Math.max(1, Math.floor((width - CARD_GAP.length * (slice.length - 1)) / slice.length));
-    const widths = slice.map((card, index) => (index === slice.length - 1
-      ? Math.max(1, width - (base + CARD_GAP.length) * (slice.length - 1))
-      : base));
-    const rendered = slice.map((card, index) => cardLines(card, widths[index], { task: card.task }));
-    const height = Math.max(...rendered.map((entry) => entry.length));
-    for (let row = 0; row < height; row += 1) {
-      const parts = [];
-      rendered.forEach((entry, index) => {
-        const card = slice[index];
-        parts.push({
-          text: entry[row] ?? ' '.repeat(widths[index]),
-          action: card.task
-            ? { kind: 'task', taskId: card.id }
-            : { kind: 'run', runId: card.record?.runId ?? card.id },
-        });
-        if (index < rendered.length - 1) parts.push({ text: CARD_GAP });
-      });
-      lines.push(parts);
+function pushHalves(body, left, right, { half, gap }) {
+  const rows = Math.max(left.length, right.length);
+  for (let index = 0; index < rows; index += 1) {
+    const l = left[index] ?? { text: '' };
+    const r = right[index] ?? { text: '' };
+    const leftText = cut(String(l.text ?? ''), half);
+    const rightText = cut(String(r.text ?? ''), half);
+    const parts = [{ text: leftText, action: l.action ?? null }];
+    if (visibleLength(rightText)) {
+      parts.push({ text: ' '.repeat(half - visibleLength(leftText) + gap) });
+      parts.push({ text: rightText, action: r.action ?? null });
     }
+    body.parts(parts);
   }
-  return lines;
+}
+
+/** Stacked lines, full width: each clickable line keeps its own action. */
+function pushStack(body, lines) {
+  for (const line of lines) {
+    if (line.action) body.row(line.text, line.action);
+    else body.push(line.text);
+  }
+}
+
+/** A card's painted lines, each carrying the action of the run it opens. */
+function cardRows(card, width) {
+  const action = card.task
+    ? { kind: 'task', taskId: card.id }
+    : { kind: 'run', runId: card.record?.runId ?? card.id };
+  return cardLines(card, width, { task: card.task }).map((text) => ({ text, action }));
 }
 
 function licenceMoney(value, tokenSource = null) {
@@ -331,68 +332,191 @@ function licenceApiText(row) {
 }
 
 /**
- * The window-share cell: what the calibration ledger measured, when it
- * attributes a real window drop to today's runs, else the pool's pace
- * estimate, labelled as the estimate it is. No third number exists — an
- * unknown share is a dash, never a guess beside it.
+ * A money figure as a table cell: two decimals behind the estimate glyph the
+ * figure's basis earns, and no `$` — the column header carries the unit. A
+ * partly-priced subtotal is always `≈`, whatever the worst token source says.
+ * A recorded fraction of a cent reads `<0.01`, never a free-looking `0.00`.
  */
-function licenceShareText(row) {
+function tableMoney(value, tokenSource = null) {
+  const money = value && typeof value === 'object' ? value : { usd: value, partial: false };
+  const usd = finiteOrNull(money?.usd);
+  if (usd == null) return null;
+  const glyph = money.partial || tokenSource === 'transcript-summed' ? '≈'
+    : tokenSource === 'estimated:utf8-bytes/4' ? '~' : '';
+  return { usd, glyph };
+}
+
+const tableMoneyText = (money) => (money == null ? null
+  : `${money.glyph}${money.usd > 0 && money.usd < 0.005 ? '<0.01' : money.usd.toFixed(2)}`);
+
+/** The rougher of two estimate glyphs, for a total over both. */
+const worseGlyph = (a, b) => (a === '~' || b === '~' ? '~' : a === '≈' || b === '≈' ? '≈' : '');
+
+/**
+ * One pool's licence facts as table cells, from the model's own fields:
+ *
+ *   agent min     `workerMinutes`, the pool entry's `minutes` summed over
+ *                 today's finished workflows: the wall time their attempts ran
+ *                 on this pool (the model's worker-minutes);
+ *   weekly quota  `weeklyShare`, the percent of the pool's weekly window that
+ *                 work used: the calibration ledger's measured drop, or the
+ *                 pool's pace estimate (its measured %/minute rate times the
+ *                 minutes), which is marked `≈`; unknown stays unknown;
+ *   API $         the API-equivalent price, `≈` when some attempts went
+ *                 unpriced and the figure is the priced attempts' subtotal;
+ *   unpriced      the attempts that subtotal leaves out;
+ *   plan $        the subscription money the rollups recorded.
+ *
+ * A null cell is unknown and paints as a dim dash.
+ */
+function licenceCells(row) {
+  const minutes = finiteOrNull(row?.workerMinutes);
   const pct = finiteOrNull(row?.weeklyShare);
-  if (pct == null) return blank();
-  const value = `${pct.toFixed(1)}%`;
-  if (row?.shareBasis === 'measured') return `${value} measured`;
-  if (row?.shareBasis === 'pace') return `≈${value} pace estimate`;
-  return value;
+  const api = row?.apiFacts ? tableMoney(apiMoney(row), row?.tokenSource) : null;
+  const plan = tableMoney(row?.subscriptionUsd);
+  const unpriced = row?.countsIncomplete || finiteOrNull(row?.attempts) == null
+    ? null : finiteOrNull(row?.apiFacts?.unmeasured);
+  return {
+    minutes,
+    minutesText: minutes == null ? null : minutes.toFixed(1),
+    pct,
+    quotaText: pct == null ? null : `${row?.shareBasis === 'pace' ? '≈' : ''}${pct.toFixed(1)}%`,
+    api,
+    apiText: tableMoneyText(api),
+    unpriced,
+    unpricedText: unpriced == null ? null : String(unpriced),
+    plan,
+    planText: tableMoneyText(plan),
+  };
 }
 
-/** One pool's licence facts in plain words, without padding. */
-function licenceRowText(row, width = null) {
-  const name = width == null ? String(row?.name ?? '—') : todayPoolName(row?.name, Math.max(1, width));
-  const worker = row?.workerMinutes == null ? blank() : Number(row.workerMinutes).toFixed(2);
-  const share = licenceShareText(row);
-  const api = licenceApiText(row);
-  const subscription = licenceMoney(row?.subscriptionUsd);
-  return `${name} · ${worker} · ${share} · ${api} · ${subscription}`;
-}
+/**
+ * The licence table's columns. `drop` orders what goes when the half cannot
+ * hold them all: the highest first, and a column no pool measured before any
+ * column that carries a number. The pool name is never dropped.
+ */
+const LICENCE_COLUMNS = Object.freeze([
+  Object.freeze({ key: 'pool', head: 'pool', drop: 0 }),
+  Object.freeze({ key: 'minutes', head: 'agent min', text: 'minutesText', drop: 3 }),
+  Object.freeze({ key: 'quota', head: 'weekly quota', text: 'quotaText', drop: 2, bar: true }),
+  Object.freeze({ key: 'api', head: 'API $', text: 'apiText', drop: 1 }),
+  Object.freeze({ key: 'unpriced', head: 'unpriced', text: 'unpricedText', drop: 5 }),
+  Object.freeze({ key: 'plan', head: 'plan $', text: 'planText', drop: 4 }),
+]);
 
-function licenceLine(row, width) {
-  return todayPadded(licenceRowText(row, width), width);
-}
-
-/** The header sentence, wrapped when the column cannot hold it in one row. */
-function licenceHeaderLines(width) {
-  return width != null && width < visibleLength(LICENCE_HEADER)
-    ? LICENCE_HEADER_LINES : [LICENCE_HEADER];
-}
-
-/** The measured width a licence column wants: its words, never its own noise. */
-function licenceColumnWidth(rows) {
-  const widest = LICENCE_HEADER_LINES.reduce(
-    (most, line) => Math.max(most, visibleLength(line)),
-    LICENCE_MIN_WIDTH,
-  );
-  return rows.reduce((most, row) => Math.max(most, visibleLength(licenceRowText(row))), widest);
-}
-
-/** The licence block as its own column of rows, for the desktop band. */
-function licenceColumnLines(rows, width) {
-  const lines = licenceHeaderLines(width).map((line) => ({ text: todayPadded(line, width) }));
-  if (!rows.length) lines.push({ text: todayPadded('none measured in the real snapshot', width) });
-  for (const row of rows) {
-    lines.push({
-      text: todayPadded(licenceRowText(row, width), width),
-      action: { kind: 'page', page: 'budget', pool: row.name },
+/** The total row's cells: a column is summed only when every row knows it. */
+function licenceTotals(cells) {
+  const all = (key) => cells.length > 1 && cells.every((cell) => cell[key] != null);
+  const money = (key) => {
+    if (!all(key)) return null;
+    return tableMoneyText({
+      usd: cells.reduce((sum, cell) => sum + cell[key].usd, 0),
+      glyph: cells.reduce((glyph, cell) => worseGlyph(glyph, cell[key].glyph), ''),
     });
-  }
-  return lines;
+  };
+  const totals = {
+    // Each pool's weekly quota is its own window: a sum of their percents
+    // measures nothing, so the quota column never has a total.
+    minutesText: all('minutes') ? cells.reduce((sum, cell) => sum + cell.minutes, 0).toFixed(1) : null,
+    apiText: money('api'),
+    unpricedText: all('unpriced') ? String(cells.reduce((sum, cell) => sum + cell.unpriced, 0)) : null,
+    planText: money('plan'),
+  };
+  return Object.values(totals).some((value) => value != null) ? totals : null;
 }
 
-function licenceBlock(rows, { width }, body) {
-  for (const line of licenceHeaderLines(width)) body.push(todayPadded(line, width));
-  if (!rows.length) body.push(todayPadded('none measured in the real snapshot', width));
-  for (const row of rows) {
-    body.row(licenceLine(row, width), { kind: 'page', page: 'budget', pool: row.name });
+/**
+ * The `── licences · today ──` block: a rule in the same style as the page's
+ * other blocks, one header row naming each column and its unit, one row per
+ * pool that worked today with its name in the colour the `by pool` bars use,
+ * numbers right-aligned so their decimals line up, a total row where a column
+ * is known for every pool, and one dim legend line. A half too narrow for
+ * every column shrinks the quota bar first and then drops whole columns —
+ * never a number cut short. Returns `{ text, action }` lines `width` wide.
+ */
+function licenceTableLines(rows, width) {
+  const lines = [{ text: rule('licences · today', null, width) }];
+  if (!rows.length) {
+    lines.push({ text: dimText(' no measured pool work today', width) });
+    return lines;
   }
+  const content = Math.max(1, width - 1);
+  const cells = rows.map(licenceCells);
+  const totals = licenceTotals(cells);
+  const textsOf = (column) => [
+    ...cells.map((cell) => cell[column.text]),
+    ...(totals ? [totals[column.text]] : []),
+  ];
+  const known = (column) => column.key === 'pool' || cells.some((cell) => cell[column.text] != null);
+  const valueWidth = (column) => textsOf(column).reduce((most, text) => Math.max(most, visibleLength(text ?? blank())), 0);
+  const anyBar = cells.some((cell) => cell.pct != null);
+  const names = rows.map((row) => String(row?.name ?? blank()));
+  const nameWidth = Math.max(4, ...names.map((name) => name.length), totals ? 5 : 0);
+
+  // Widest first: every column with the longest bar, then a shorter bar, then
+  // one column fewer — the least useful, an all-unknown one before any other.
+  let kept = LICENCE_COLUMNS.filter((column) => column.key !== 'unpriced'
+    || cells.some((cell) => (cell.unpriced ?? 0) > 0));
+  const widthOf = (column, bar) => {
+    if (column.key === 'pool') return nameWidth;
+    const value = valueWidth(column);
+    return Math.max(column.head.length, column.bar && anyBar && bar ? bar + 1 + value : value);
+  };
+  const total = (columns, bar) => columns.reduce((sum, column, index) => sum + (index ? TABLE_GAP : 0) + widthOf(column, bar), 0);
+  let bar = QUOTA_BAR_MAX;
+  for (;;) {
+    bar = QUOTA_BAR_MAX;
+    while (bar > QUOTA_BAR_MIN && total(kept, bar) > content) bar -= 1;
+    if (total(kept, bar) <= content || kept.length <= 2) break;
+    const rank = (column) => column.drop + (known(column) ? 0 : 10);
+    const victim = kept.reduce((worst, column) => (rank(column) > rank(worst) ? column : worst), kept[0]);
+    kept = kept.filter((column) => column !== victim);
+  }
+  if (kept.some((column) => column.bar) && total(kept, bar) > content) bar = 0;
+  // The quota bar takes whatever the kept columns leave, up to its cap.
+  const spare = content - total(kept, bar);
+  if (bar > 0 && spare > 0) bar = Math.min(QUOTA_BAR_MAX, bar + spare);
+  const widths = kept.map((column) => widthOf(column, bar));
+  // Names only give way when even the two narrowest columns cannot fit.
+  const over = total(kept, bar) - content;
+  if (over > 0) widths[0] = Math.max(1, widths[0] - over);
+
+  const dash = dimText(blank(), 1);
+  const paintRow = (values) => ` ${values.map((value, index) => {
+    const text = value ?? dash;
+    const fill = ' '.repeat(Math.max(0, widths[index] - visibleLength(text)));
+    return `${index ? ' '.repeat(TABLE_GAP) : ''}${index ? `${fill}${text}` : `${text}${fill}`}`;
+  }).join('')}`.replace(/ +$/, '');
+
+  lines.push({ text: dimText(paintRow(kept.map((column) => column.head)), width) });
+  rows.forEach((row, at) => {
+    const cell = cells[at];
+    const values = kept.map((column, index) => {
+      if (column.key === 'pool') {
+        const name = cut(names[at], widths[index]);
+        return tint(name, seriesColor(names[at]));
+      }
+      const text = cell[column.text];
+      if (text == null) return null;
+      if (!column.bar || !bar || cell.pct == null) return text;
+      // One track length for every row, so the bars compare and the
+      // percents still line up at the column's right edge.
+      const track = tint(progressBar(cell.pct / 100, bar), seriesColor(names[at]));
+      return `${track} ${text.padStart(valueWidth(column))}`;
+    });
+    lines.push({ text: paintRow(values), action: { kind: 'page', page: 'budget', pool: row.name } });
+  });
+  if (totals) {
+    lines.push({ text: paintRow(kept.map((column) => (column.key === 'pool' ? 'total' : totals[column.text] ?? ''))) });
+  }
+  const legend = ['≈ ~ estimates (~ is rougher)', `${blank()} not measured`, 'a pool row opens Budget'];
+  let legendText = ` ${legend.join(' · ')}`;
+  while (visibleLength(legendText) > width && legend.length > 1) {
+    legend.pop();
+    legendText = ` ${legend.join(' · ')}`;
+  }
+  lines.push({ text: dimText(legendText, width) });
+  return lines;
 }
 
 /** The approved Home today band: finished work on the left, licence draw right. */
@@ -490,7 +614,12 @@ function legacyHomeTodayBand(model, opts, body) {
   return { workflowCount, taskCount, verified };
 }
 
-/** Home's today block: three cards, beside the plain-words licence block. */
+/**
+ * Home's today block. From 110 columns up it is two equal halves: the top
+ * three runs stacked on the left, each card as wide as its half, and the
+ * licence table on the right. Below that the cards stack full width and the
+ * table reads under them.
+ */
 function homeTodayBand(model, opts, body) {
   const width = Number(opts.width) || 120;
   const narrow = opts.narrow ?? width < 100;
@@ -513,51 +642,15 @@ function homeTodayBand(model, opts, body) {
   const date = todayDateLabel(today.date, { year: !narrow });
   body.push(todayPadded(`Home · Today · ${date} · top ${cards.length} runs (active first)`, width));
   const licenceRows = todayLicenceRows(model, today, nowMs);
-  if (!cards.length) body.push(todayPadded('no runs captured in the real snapshot', width));
-  if (width >= LICENCE_BESIDE_WIDTH) {
-    // The owner's desktop note: the top three runs and licence usage share the
-    // same rows. The licence column takes only the width its own words need,
-    // so the cards keep the rest — side by side when three of them fit there,
-    // stacked when they do not.
-    const gap = 2;
-    const licenceWidth = Math.max(LICENCE_MIN_WIDTH, Math.min(Math.floor(width / 2), licenceColumnWidth(licenceRows)));
-    const cardsWidth = Math.max(1, width - licenceWidth - gap);
-    const cardRows = cardGridLines(cards, cardsWidth, cardColumnsFor(cards.length, cardsWidth));
-    const licenceLines = licenceColumnLines(licenceRows, licenceWidth);
-    const rows = Math.max(cardRows.length, licenceLines.length);
-    for (let row = 0; row < rows; row += 1) {
-      const parts = [...(cardRows[row] ?? [{ text: ' '.repeat(cardsWidth) }])];
-      parts.push({ text: ' '.repeat(gap) });
-      parts.push(licenceLines[row] ?? { text: ' '.repeat(licenceWidth) });
-      body.parts(parts);
-    }
-  } else if (width >= 120) {
-    // 120–159 columns: the three cards flow across the whole width, each about
-    // (width − 4)/3 wide, and the licence block reads under them at the same
-    // width instead of squeezing the cards into a column beside it. A card's
-    // own fields are cut with `…`, never clipped.
-    if (cards.length) {
-      for (const parts of cardGridLines(cards, width, cardColumnsFor(cards.length, width))) body.parts(parts);
-      body.push('');
-    }
-    licenceBlock(licenceRows, opts, body);
+  const noCards = { text: dimText(' no runs captured in the real snapshot', width) };
+  if (width >= HALVES_WIDTH) {
+    const halves = bandHalves(width);
+    const left = cards.length ? cards.flatMap((card) => cardRows(card, halves.half)) : [noCards];
+    pushHalves(body, left, licenceTableLines(licenceRows, halves.half), halves);
   } else {
-    if (cards.length) {
-      // The phone stacks one card per row and keeps the licence block under
-      // it; a 100–119 column terminal still flows the cards across the width.
-      if (narrow) {
-        for (const card of cards) {
-          for (const line of cardLines(card, width, { task: card.task })) {
-            body.row(line, { kind: card.task ? 'task' : 'run', ...(card.task
-              ? { taskId: card.id } : { runId: card.record?.runId ?? card.id }) });
-          }
-        }
-      } else {
-        for (const parts of cardGridLines(cards, width, cardColumnsFor(cards.length, width))) body.parts(parts);
-      }
-      body.push('');
-    }
-    licenceBlock(licenceRows, opts, body);
+    pushStack(body, cards.length ? cards.flatMap((card) => cardRows(card, width)) : [noCards]);
+    body.push('');
+    pushStack(body, licenceTableLines(licenceRows, width));
   }
   const uniqueRows = (kind, key) => {
     const seen = new Set();
@@ -741,82 +834,248 @@ function budgetWeekLines(body, model, { width, narrow, nowMs }) {
   }
 }
 
-function breakdownCells(model, opts, { cellWidth }) {
-  const { period } = opts;
-  const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
-  const spend = model.stats?.spendPerDay ?? null;
-  const rows = 4;
-  // A day's recorded figure, through the shared money rule: the strict total
-  // when every attempt in it was priced, else the sum over the attempts that
-  // were. A partly-priced day has no strict total, and charting nothing there
-  // would say the day cost nothing, which the rollups contradict. A day's
-  // `tokenSource` is the worst of its attempts, so it may only blank a whole
-  // figure — never the subtotal the priced attempts really recorded.
-  const bucketSpend = (bucket) => apiMoney(bucket);
-  const spendTokenSource = (spend?.buckets ?? []).reduce((source, bucket) => (
-    bucketSpend(bucket) == null
-      ? source
-      : worstTokenSource(source, tokenSourceOf(bucket?.tokenSource, bucketSpend(bucket).usd))
-  ), null) ?? tokenSourceOf(spend?.tokenSource, spend?.total ?? spend?.apiKnownSubtotalUsd);
-  const barOf = (share, role, label, width) => {
-    const value = Number(share);
-    const raw = shareText(share) ?? blank();
-    const text = raw.padStart(4);
-    const bars = Math.max(3, width - visibleLength(label) - visibleLength(text) - 2);
-    const bar = Number.isFinite(value) ? tint(progressBar(value, bars), role) : ' '.repeat(bars);
-    return `${label} ${bar} ${text}`;
-  };
-  const listCell = (label, key, role, tab) => {
-    const list = (breakdown[key] ?? []).slice(0, rows);
-    const nameWidth = Math.min(
-      Math.max(6, Math.floor(cellWidth / 2)),
-      list.reduce((most, row) => Math.max(most, String(row.name ?? '?').length), 6),
-    );
+/** The local midnight `days` after the day `ms` falls on. */
+function dayStart(ms, days = 0) {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + days);
+  return date.getTime();
+}
+
+/**
+ * The chart's slots, oldest first. A day period has one slot for every day in
+ * it, today included, so a day nothing ran on is a drawn zero rather than a
+ * missing column; `All time` keeps the model's weekly buckets. A slot is
+ * `{ from, usd, partial, source, unpriced, unknown }`: `usd` null with
+ * `unknown` set is a day whose runs recorded no price at all.
+ */
+function spendSlots(spend, periodId, nowMs) {
+  const buckets = spend?.buckets ?? [];
+  const slotOf = (bucket, from) => {
+    const money = bucket ? apiMoney(bucket) : null;
+    const ran = (bucket?.runs ?? 0) > 0;
+    const attempts = finiteOrNull(bucket?.attempts);
+    const priced = finiteOrNull(bucket?.pricedAttempts);
     return {
-      action: { kind: 'tab', tab },
-      rows: [
-        dimText(label, cellWidth),
-        ...(list.length
-          ? list.map((row) => barOf(row.minutesShare, seriesColor(row.name ?? '?') ?? role, cut(String(row.name ?? '?'), nameWidth).padEnd(nameWidth), cellWidth))
-          : [dimText('no finished run in this period', cellWidth)]),
-      ],
+      from,
+      usd: money ? money.usd : ran ? null : 0,
+      partial: Boolean(money?.partial),
+      source: money ? tokenSourceOf(bucket?.tokenSource, money.usd) : null,
+      unpriced: money?.partial && attempts != null && priced != null ? Math.max(0, attempts - priced) : 0,
+      unknown: !money && ran,
     };
   };
-  const buckets = spend?.buckets ?? [];
-  const chartBuckets = buckets.filter((bucket) => bucketSpend(bucket) != null);
-  // A chart that draws any subtotal is a lower bound throughout, so the whole
-  // axis carries the `≈` mark rather than one bar claiming to be exact.
-  const partialSpend = chartBuckets.some((bucket) => bucketSpend(bucket).partial);
-  const chart = chartBuckets.length
-    ? columnBars(
-      [{ name: 'spent', values: chartBuckets.map((bucket) => bucketSpend(bucket).usd), color: METER_COLORS.cyan }],
-      chartBuckets.map((bucket) => WEEKDAY_LETTERS[bucket.weekday] ?? String(bucket.label ?? '').slice(-2)),
-      {
-        width: cellWidth,
-        rowCount: chartRowCount(opts.height ?? 36),
-        col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, chartBuckets.length))),
-        // A chart that draws any subtotal is a lower bound throughout: the
-        // axis says `at least` in the Run spend block's own words rather than
-        // an `≈` that could read as a whole.
-        barW: 3, unit: '$', mark: partialSpend ? 'at least '
-          : spendTokenSource === 'provider-reported' ? ''
-            : spendTokenSource === 'transcript-summed' ? '≈'
-              : spendTokenSource === 'estimated:utf8-bytes/4' ? '~' : '·',
-        totals: false, colors: meterAnsi(),
-      },
-    )
-    : [dimText((spend?.buckets ?? []).length
-      ? 'no finished run recorded an estimate'
-      : 'no finished run in this period', cellWidth)];
+  if (spend?.bucketBy === 'week') return buckets.map((bucket) => slotOf(bucket, bucket.from));
+  const days = periodId === '30d' ? 30 : 7;
+  const byKey = new Map(buckets.map((bucket) => [String(bucket.key ?? dayKey(bucket.from)), bucket]));
+  return Array.from({ length: days }, (_, index) => {
+    const from = dayStart(nowMs, index - (days - 1));
+    return slotOf(byKey.get(dayKey(from)) ?? null, from);
+  });
+}
+
+/**
+ * Three or four ticks from $0, a whole number of dollars apart: the step is
+ * the nice number that reaches the tallest day in three intervals or fewer,
+ * and at least two intervals are drawn so the axis always has three labels.
+ */
+function spendTicks(max) {
+  const top = Number(max) > 0 ? Number(max) : 1;
+  const step = Math.max(1, niceStep(top, 3).step);
+  const intervals = Math.max(2, Math.ceil(Number((top / step).toPrecision(12))));
+  return Array.from({ length: intervals + 1 }, (_, index) => index * step);
+}
+
+/** A tick in whole dollars; `~` marks an axis whose bars are approximate. */
+function tickText(value, mark) {
+  const dollars = `$${Math.round(value).toLocaleString('en-US')}`;
+  return value === 0 ? dollars : `${mark}${dollars}`;
+}
+
+/**
+ * Labels under the columns: every one when they fit, else as many as fit in
+ * `room` cells — the newest always among them.
+ */
+function slotLabelLine(slots, { cell, weekly, room }) {
+  const labels = slots.map((slot) => {
+    const date = new Date(slot.from);
+    return !weekly && slots.length <= 7
+      ? DAY_NAMES[date.getDay()]
+      : `${date.getDate()} ${MONTH_NAMES[date.getMonth()]}`;
+  });
+  let line = '';
+  let free = 0;
+  const place = (index) => {
+    const label = labels[index];
+    const at = index * cell + Math.max(0, Math.floor((cell - label.length) / 2));
+    if (at < free || at + label.length > room) return;
+    line = `${line}${' '.repeat(at - line.length)}${label}`;
+    free = at + label.length + 1;
+  };
+  if (labels.every((label) => label.length < cell)) labels.forEach((_, index) => place(index));
+  else {
+    // Too many columns to name each: name the newest, then every column the
+    // gaps leave room for, counting back so the latest day is always named.
+    const widest = Math.max(...labels.map((label) => label.length)) + 1;
+    const every = Math.max(1, Math.ceil(widest / Math.max(1, cell)));
+    const picks = [];
+    for (let index = slots.length - 1; index >= 0; index -= every) picks.unshift(index);
+    for (const index of picks) place(index);
+  }
+  return line;
+}
+
+/**
+ * The spent-per-day chart, `width` wide: one bar per slot from a $0 baseline,
+ * a tick every few rows labelled in whole dollars (`~$400` when the bars are
+ * approximate — an estimate, or a day with unpriced attempts left out — and
+ * `$400` when every bar is a provider-reported whole), the day under each
+ * bar, and at most one dim line saying what the bars leave out.
+ */
+function spendChartLines(model, opts, width) {
+  const spend = model.stats?.spendPerDay ?? null;
+  const period = PERIOD_ITEMS.find((item) => item.id === opts.period) ?? PERIOD_ITEMS[0];
+  const weekly = spend?.bucketBy === 'week';
+  const slots = spendSlots(spend, period.id, opts.nowMs ?? Date.now());
+  const drawn = slots.filter((slot) => slot.usd != null && slot.usd > 0);
+  if (!drawn.length) {
+    return [dimText(slots.some((slot) => slot.unknown)
+      ? ' no finished run recorded an estimate'
+      : ' no finished run in this period', width)];
+  }
+  const approximate = drawn.some((slot) => slot.partial || slot.source !== 'provider-reported');
+  const mark = approximate ? '~' : '';
+  const ticks = spendTicks(Math.max(...drawn.map((slot) => slot.usd)));
+  const top = ticks.at(-1);
+  const intervals = ticks.length - 1;
+  const perTick = Math.max(2, Math.round(chartRowCount(opts.height ?? 36) / intervals));
+  const rows = intervals * perTick;
+  const gutter = Math.max(...ticks.map((tick) => tickText(tick, mark).length));
+  const ascii = asciiGlyphsPreferred();
+  const plot = Math.max(slots.length, width - gutter - 3);
+  const cell = Math.max(1, Math.floor(plot / slots.length));
+  const barWidth = cell <= 2 ? 1 : Math.max(1, Math.min(8, Math.round(cell * 0.6)));
+  const lead = Math.max(0, Math.floor((cell - barWidth) / 2));
+  // A day that spent anything keeps at least one eighth, so it never reads
+  // as the zero a day with no run draws.
+  const eighths = slots.map((slot) => (slot.usd > 0
+    ? Math.max(1, Math.round((slot.usd / top) * rows * 8)) : 0));
+  const lines = [];
+  for (let row = rows; row >= 1; row -= 1) {
+    const tick = row % perTick === 0 ? ticks[row / perTick] : null;
+    const axis = tick == null ? (ascii ? '|' : '│') : (ascii ? '|' : '┤');
+    let line = ` ${(tick == null ? '' : tickText(tick, mark)).padStart(gutter)} ${dimText(axis, 1)}`;
+    slots.forEach((slot, index) => {
+      const filled = Math.max(0, Math.min(8, eighths[index] - (row - 1) * 8));
+      const glyph = filled ? (ascii ? (filled >= 4 ? '#' : '.') : EIGHTHS[filled - 1]) : null;
+      let painted = glyph ? tint(glyph.repeat(barWidth), 'cyan') : ' '.repeat(barWidth);
+      // A day whose runs recorded no price at all is unknown, not zero.
+      if (!glyph && row === 1 && slot.unknown) painted = `${dimText(blank(), 1)}${' '.repeat(barWidth - 1)}`;
+      line += `${' '.repeat(lead)}${painted}${' '.repeat(Math.max(0, cell - lead - barWidth))}`;
+    });
+    lines.push(line.replace(/ +$/, ''));
+  }
+  const baseline = `${ascii ? '+' : '┼'}${(ascii ? '-' : '─').repeat(cell * slots.length)}`;
+  lines.push(` ${tickText(0, mark).padStart(gutter)} ${dimText(baseline, baseline.length)}`);
+  lines.push(`${' '.repeat(gutter + 3)}${slotLabelLine(slots, { cell, weekly, room: Math.max(cell * slots.length, plot) })}`);
+  const unpriced = slots.reduce((sum, slot) => sum + slot.unpriced, 0);
+  const unknownDays = slots.filter((slot) => slot.unknown).length;
+  const notes = [
+    unpriced ? `~ bars leave ${unpriced} unpriced attempt${unpriced === 1 ? '' : 's'} out` : null,
+    unknownDays ? `${blank()} no price recorded` : null,
+  ].filter(Boolean);
+  if (notes.length) lines.push(dimText(` ${notes.join(' · ')}`, width));
+  return lines;
+}
+
+/**
+ * One breakdown section, `width` wide: its dim label, then up to four rows of
+ * name, bar and figure across the whole width, then `+N more` when the period
+ * holds more. Pools and models read their share of the period's agent
+ * minutes; projects read their run count, the bar that count's share.
+ */
+function breakdownSection(label, list, { width, role, runs = false, nameWidth }) {
+  const shown = list.slice(0, BREAKDOWN_ROWS);
+  const more = list.length - shown.length;
+  const allRuns = list.reduce((sum, row) => sum + (finiteOrNull(row.runs) ?? 0), 0);
+  const figures = shown.map((row) => (runs
+    ? (finiteOrNull(row.runs) == null ? null : String(row.runs))
+    : shareText(row.minutesShare)));
+  const figureWidth = Math.max(4, ...figures.map((text) => visibleLength(text ?? blank())));
+  const bars = Math.max(3, width - 1 - nameWidth - 1 - figureWidth - 1);
+  const rows = shown.map((row, index) => {
+    const name = String(row.name ?? '?');
+    const share = runs
+      ? (allRuns > 0 ? (finiteOrNull(row.runs) ?? 0) / allRuns : null)
+      : finiteOrNull(row.minutesShare);
+    const bar = share == null ? ' '.repeat(bars) : tint(progressBar(share, bars), seriesColor(name) ?? role);
+    const figure = (figures[index] ?? blank()).padStart(figureWidth);
+    return ` ${cut(name, nameWidth).padEnd(nameWidth)} ${bar} ${figure}`;
+  });
+  return [
+    dimText(` ${label}`, width),
+    ...(rows.length ? rows : [dimText(' no finished run in this period', width)]),
+    ...(more > 0 ? [dimText(` +${more} more`, width)] : []),
+  ];
+}
+
+/**
+ * The period band's cells: the spent-per-day chart, then `by pool`,
+ * `by model` and `by project`, each `{ action, rows }` and `cellWidth` wide.
+ * The breakdowns share one name column, so their bars start together.
+ */
+function breakdownCells(model, opts, { cellWidth }) {
+  const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
+  const spend = model.stats?.spendPerDay ?? null;
+  const lists = {
+    pools: breakdown.pools ?? [], models: breakdown.models ?? [], projects: breakdown.projects ?? [],
+  };
+  const longest = Object.values(lists)
+    .flatMap((list) => list.slice(0, BREAKDOWN_ROWS))
+    .reduce((most, row) => Math.max(most, String(row.name ?? '?').length), 6);
+  const nameWidth = Math.min(longest, Math.max(6, Math.floor((cellWidth - 1) * 0.45)));
+  const section = (label, key, role, tab, runs = false) => ({
+    action: { kind: 'tab', tab },
+    rows: breakdownSection(label, lists[key], { width: cellWidth, role, runs, nameWidth }),
+  });
   return [
     {
       action: { kind: 'trend', metric: 'spend' },
-      rows: [dimText(`spent per ${spend?.bucketBy === 'week' ? 'week' : 'day'}`, cellWidth), ...chart],
+      rows: [
+        dimText(` spent per ${spend?.bucketBy === 'week' ? 'week' : 'day'}`, cellWidth),
+        ...spendChartLines(model, opts, cellWidth),
+      ],
     },
-    listCell('by pool', 'pools', 'green', 'pools'),
-    listCell('by model', 'models', 'purple', 'models'),
-    listCell('by project', 'projects', 'orange', 'projects'),
-  ].map((cell) => ({ ...cell, period }));
+    // The Stats tab each section opens: its `pool`, `model` and `project`
+    // views (STATS_TABS in dashboard.js).
+    section('by pool · share of agent minutes', 'pools', 'green', 'pool'),
+    section('by model · share of agent minutes', 'models', 'purple', 'model'),
+    section('by project · runs', 'projects', 'orange', 'project', true),
+  ];
+}
+
+/**
+ * The period band under its toggle: the chart in the left half and the three
+ * breakdowns stacked in the right one, a blank row between them; below 110
+ * columns the four read one under another. Each line keeps its cell's action,
+ * so a click on the chart opens the spend trend and one on a section its tab.
+ */
+function periodBand(model, opts, body) {
+  const { width } = opts;
+  const split = width >= HALVES_WIDTH;
+  const halves = split ? bandHalves(width) : null;
+  const [chart, ...sections] = breakdownCells(model, opts, { cellWidth: split ? halves.half : width });
+  const linesOf = (cell) => cell.rows.map((text) => ({ text, action: cell.action }));
+  const stacked = sections.flatMap((cell, index) => [
+    ...(index ? [{ text: '' }] : []),
+    ...linesOf(cell),
+  ]);
+  if (split) pushHalves(body, linesOf(chart), stacked, halves);
+  else {
+    pushStack(body, linesOf(chart));
+    body.push('');
+    pushStack(body, stacked);
+  }
 }
 
 /**
@@ -1027,24 +1286,7 @@ function homeDetails(model, opts, body) {
     const head = rule(period.label.toLowerCase(), null, Math.max(4, width - visibleLength(toggle.text) - 2));
     body.kit({ text: `${head} ${toggle.text} `, regions: toggle.regions.map((region) => ({ ...region, x: region.x + visibleLength(head) + 1 })) });
   }
-  if (narrow) {
-    for (const cell of breakdownCells(model, opts, { cellWidth: width - 1 })) {
-      const base = body.lines.length;
-      const rows = cell.rows;
-      for (const line of rows) body.push(` ${cut(line, width - 1)}`);
-      if (cell.action) {
-        for (let row = base + 1; row <= body.lines.length; row += 1) {
-          body.regions.push({ x1: 1, x2: width, y: row, action: cell.action });
-        }
-      }
-    }
-  } else {
-    const gap = 2;
-    const inner = Math.max(4, width - 1 - gap * 3);
-    const cellWidth = Math.floor(inner / 4);
-    pushColumns(body, breakdownCells(model, opts, { cellWidth }), { width: width - 1, gap });
-  }
-  if (!narrow) body.push(dimText(' spent per day carries the provider/transcript/estimate basis and reads at least where a day holds unpriced attempts · share is the ledger drop, else a pace estimate · click a column for its Stats tab', width));
+  periodBand(model, opts, body);
 
   summaryBand(body, model, opts);
 
@@ -1109,11 +1351,8 @@ export {
   cardMoneySlot,
   cardLines,
   taskCardModel,
-  cardGridLines,
-  cardColumnsFor,
-  licenceRowText,
-  licenceLine,
-  licenceBlock,
+  licenceCells,
+  licenceTableLines,
   homeDetails,
   medianRunText,
   recentDurationText,
@@ -1128,6 +1367,9 @@ export {
   paceOnly,
   budgetWeekLines,
   breakdownCells,
+  spendChartLines,
+  spendTicks,
+  periodBand,
   summaryBand,
   activeRunLines,
   taskIdText,

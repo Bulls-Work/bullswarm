@@ -3516,12 +3516,49 @@ test('every clickable atom runs the same action its key runs', async () => {
     session.press('2');
     assert.equal(header(), byClick);
 
-    // A Home licence row opens Budget for that pool — the row's own page
-    // action, and the only money destination Home has left now that the period
-    // band and its spend tiles are gone.
+    // A Home licence table row opens Budget for that pool — the row's own
+    // page action, now in the right half of the Today band.
     session.press(ESC_KEY);
-    clickOn(session, 'relay · ');
+    clickOn(session, ' relay  ');
     assert.match(header(), /^ Budget · /);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('Home halves keep their clicks and hovers: a card opens its run, the chart its trend, a breakdown its Stats tab', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home, { columns: 120, rows: 90 });
+    const header = () => frameHeader(lastFrame(session.output));
+    const half = Math.floor((120 - 2) / 2);
+    // Hovering a card's row lights that card's words and nothing in the
+    // licence table beside it.
+    const rows = paintedRows(lastFrame(session.output));
+    const cardRow = rows.findIndex((line) => line.startsWith('│ ') && line.slice(half).includes('relay'));
+    assert.ok(cardRow >= 0, `no card row beside the relay licence row:\n${rows.join('\n')}`);
+    session.press(`\x1b[<35;4;${cardRow + 1}M`);
+    const lit = lastFrame(session.output).split('\n')[cardRow];
+    const litSpans = [...lit.matchAll(/\x1b\[7m([^\x1b]*)/g)].map((match) => match[1]).join('');
+    assert.ok(litSpans.trim(), `the hovered card row is not lit: ${JSON.stringify(lit)}`);
+    assert.doesNotMatch(litSpans, /relay|agent min/, 'the hover spilled into the licence table');
+    session.press('\x1b[<35;1;2M');
+    for (const [needle, expected] of [
+      ['spent per day', /^ Stats · spending/],
+      ['by pool', /^ Stats · pool/],
+      ['by model', /^ Stats · model/],
+      ['by project', /^ Stats · project/],
+    ]) {
+      session.press(ESC_KEY);
+      assert.match(header(), /^ bullswarm · home/);
+      clickOn(session, needle);
+      assert.match(header(), expected, `clicking ${needle} did not open its page`);
+    }
+    // A card's own box opens its run, as Enter on it does.
+    session.press(ESC_KEY);
+    const where = clickOn(session, '┌─ sibling-run');
+    assert.ok(where.x <= half, 'the card is not in the left half');
+    const byClick = header();
+    assert.doesNotMatch(byClick, /^ bullswarm · home/, 'clicking a card did not open its run');
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -3879,20 +3916,23 @@ function fidelityModel() {
 
 const FIDELITY_SIZES = [[120, 40], [55, 26], [200, 50]];
 
-test('phone Home keeps one plain licence row per pool that worked today', () => {
+test('phone Home keeps one licence table row per pool that worked today', () => {
   const f = fidelityModel();
   try {
     const names = ['claude-code:acme', 'claude-code', 'codex', 'grok'];
     f.model.budget.rows = names.map((name, index) => ({ name, usedPct: 70 - index, elapsedPct: 60 }));
     for (const width of [55, 60]) {
       const text = plain(renderDashboardPage(f.model, { page: 'home', width, height: 150 }).lines.join('\n'));
-      // The licence block is one row of five plain-word slots per pool that
-      // worked today, with the measured worker-minutes and no abbreviation.
-      const licence = text.split('licence · pool · worker-minutes')[1].split('── running')[0];
-      // The share has no measured rate behind it, so it stays a dash, and the
-      // money keeps the whole amount this legacy entry recorded: an entry
-      // with no coverage counts must not be read as unpriced attempts.
-      assert.match(licence, /relay · 40\.00 · — · ~\$0\.42 · —/, licence);
+      // The licence table is one row per pool that worked today, under one
+      // header that names each column and its unit.
+      const licence = text.split('── licences · today')[1].split('── running')[0];
+      assert.match(licence, /^ pool +agent min +/m, licence);
+      // The share has no measured rate behind it, so it stays a dash (or its
+      // all-dash column gives way on the phone), and the money keeps the whole
+      // amount this legacy entry recorded: an entry with no coverage counts
+      // must not be read as unpriced attempts.
+      assert.match(licence, /^ relay +40\.0 +(— +)?~0\.42( +—)?$/m, licence);
+      assert.doesNotMatch(licence, /unpriced/, licence);
       assert.doesNotMatch(licence, /wf % \(est\.\)|run min/, 'the licence row uses no abbreviations');
       assert.doesNotMatch(licence, /more metered pool|codex/, licence);
       // Every metered pool is still named, with its whole percent, in the
@@ -3963,11 +4003,12 @@ test('Home today band and every live step keep their rows readable on a phone', 
     const lines = paintedRows(frame.lines.join('\n')).map(plain);
     const today = lines.slice(lines.findIndex((line) => /^Home · Today/.test(line)),
       lines.findIndex((line) => /── running/.test(line))).filter((line) => line.trim());
-    // The cards stack one per row at 54 columns, and the licence block keeps
-    // its five plain-word slots on the phone.
+    // The cards stack one per row at 54 columns, and the licence table keeps
+    // its header row on the phone.
     assert.equal(today.filter((line) => /^┌─ /.test(line)).length, 3, today.join('\n'));
     assert.ok(today.some((line) => /· completed · verified/.test(line)), today.join('\n'));
-    assert.ok(today.some((line) => /^licence · pool · worker-minutes/.test(line)), today.join('\n'));
+    assert.ok(today.some((line) => /^── licences · today/.test(line)), today.join('\n'));
+    assert.ok(today.some((line) => /^ pool +agent min +.*API \$/.test(line)), today.join('\n'));
     for (const id of ['first-live-action', 'second-live-action']) {
       const row = lines.find((line) => line.includes(id));
       assert.ok(row, `missing ${id}`);
@@ -3975,8 +4016,10 @@ test('Home today band and every live step keep their rows readable on a phone', 
     }
     for (const line of lines) {
       assert.ok([...line].length <= 54, line);
-      // Every inline API-equivalent figure carries its usage-basis marker.
-      for (const match of line.matchAll(/\$/g)) {
+      // Every inline API-equivalent figure carries its usage-basis marker; a
+      // column header that names the unit (`API $`) is not a figure, and the
+      // spend chart's `$0` baseline is the axis origin, exact by definition.
+      for (const match of line.replace(/\$0 ┼/, '   ┼').matchAll(/\$(?=\s?\d)/g)) {
         // A figure carries its basis: an estimate glyph, or the spend block's
         // own `at least` where the scope holds attempts nobody priced.
         assert.match(line.slice(Math.max(0, match.index - 10), match.index), /[≈~]\s*$|at least\s*$/, line);
@@ -4282,10 +4325,10 @@ test('Home today lists only pools that worked today', () => {
   ], assignments: [], rungs: [] };
   const model = dashboardModel(null, { usage, rollups, nowMs });
   const text = plain(renderDashboardPage(model, { page: 'home', width: 120, height: 70, nowMs }).lines.join('\n'));
-  // The licence block counts the pools with measured work today; the metered
+  // The licence table counts the pools with measured work today; the metered
   // pools that did nothing keep their meters in the budget block below it.
-  const block = text.split('licence · pool · worker-minutes')[1].split('── running')[0];
-  assert.match(block, /worked-low · 4\.00/);
+  const block = text.split('── licences · today')[1].split('── running')[0];
+  assert.match(block, / worked-low +4\.0\b/, block);
   assert.doesNotMatch(block, /idle-high|idle-mid/);
 });
 
@@ -4340,31 +4383,30 @@ test('Home today matches the approved 55/120 cards with a licence row per pool',
     // Three cards, most recently finished first, each with project · status ·
     // verdict, active minutes, steps and the strict money pair. A finished
     // task is not a card: its row lives on Runs.
-    // Three boxes: side by side at 120, stacked at 55.
+    // Three boxes, stacked: in the left half at 120, full width at 55.
     assert.equal((band.join('\n').match(/┌─ /g) ?? []).length, 3, band.join('\n'));
+    assert.ok(band.every((line) => (line.match(/┌─ /g) ?? []).length <= 1), band.join('\n'));
     assert.match(band.join('\n'), /bulldemo · completed · verified/);
-    // The middle card's second column is clipped at 120, so only its own
-    // fields are asserted whole.
     assert.match(band.join('\n'), /bullswarm · completed · not verifi/);
     assert.match(band.join('\n'), /API — · subscription —/);
     assert.match(band.join('\n'), /API ~ \$0\.16 · subscription —/);
     assert.doesNotMatch(band.join('\n'), /task1/);
 
-    // The licence block is one row of five plain-word slots per pool that
-    // worked today, in the order the pools are named.
-    // At 55 columns the five-slot header wraps over two rows; the slots are
-    // the same five words at both widths.
-    for (const slot of ['licence · pool · worker-minutes', 'weekly share · API · subscription']) {
-      assert.ok(band.join('\n').replace(/\s+/g, ' ').includes(slot), `${width}: the licence header lost ${slot}`);
-    }
+    // The licence table is one row per pool that worked today, in the order
+    // the pools are named, under one header row that carries the units.
+    const table = band.join('\n');
+    assert.match(table, /── licences · today/);
+    assert.match(table, / pool +agent min +weekly quota +API \$/, table);
     // The share is the pool's own measured rate times today's worker-minutes:
-    // a pace estimate, and it says so. A pre-0.35.2 entry carries no coverage
-    // counts, so its whole amount stays unqualified rather than reading as a
-    // lower bound the records never claimed.
-    assert.match(band.join('\n'), /acme · 84\.00 · ≈2\.9% pace estimate · ~\$0\.16 · —/);
-    assert.match(band.join('\n'), /codex · 161\.80 · ≈2\.1% pace estimate · ~\$0\.03 · —/);
-    assert.match(band.join('\n'), /grok · 26\.00 · ≈4\.3% pace estimate · ~\$0\.01 · —/);
-    assert.match(band.join('\n'), /opencode · 634\.60 · — · — · —/);
+    // a pace estimate, marked `≈`, beside its bar. A pre-0.35.2 entry carries
+    // no coverage counts, so its whole amount stays unqualified rather than
+    // reading as a lower bound the records never claimed.
+    assert.match(table, / acme +84\.0 +[▏▇░]+ +≈2\.9% +~0\.16\b/, table);
+    assert.match(table, / codex +161\.8 +[▏▇░]+ +≈2\.1% +~0\.03\b/, table);
+    assert.match(table, / grok +26\.0 +[▏▇░]+ +≈4\.3% +~0\.01\b/, table);
+    assert.match(table, / opencode +634\.6 +— +—/, table);
+    const order = ['acme', 'codex', 'grok', 'opencode'].map((name) => band.findIndex((line) => new RegExp(` ${name} +\\d`).test(line)));
+    assert.deepEqual([...order].sort((a, b) => a - b), order, `${width}: pools out of order`);
     if (width === 120) {
       assert.match(band.join('\n'), /First today goal/);
       assert.match(band.join('\n'), /Second today goal/);

@@ -10,7 +10,8 @@ import {
   homeDetails,
   homePage,
   homeTodayBand,
-  licenceRowText,
+  licenceCells,
+  licenceTableLines,
   medianRunText,
   recentDurationText,
   stepBarText,
@@ -24,6 +25,7 @@ import { reopenV2RunForRetry, runV2AutonomousWorkflow } from '../src/workflow/v2
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 import { runPage } from '../src/workflow/run-view.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
+import { seriesColor } from '../src/workflow/dash-kit.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 
 // The fixture's clocks were recorded in Hong Kong and the expectations quote
@@ -45,6 +47,11 @@ const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 function visible(value) {
   return String(value ?? '').replace(ANSI, '');
 }
+
+const rgbEscape = (hex) => {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `\x1b[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
+};
 
 function bodyBuilder() {
   const body = {
@@ -145,7 +152,15 @@ test('Home view renders a measured live step bar and active section without over
   assert.ok(body.lines.every((line) => visible(line).length <= 55));
 });
 
-test('Home real snapshot flows the top cards by width with the licence words plain', () => {
+/** Where a band's two halves sit: each `half` wide, the right one at `right` (0-based). */
+function halvesOf(width) {
+  const half = Math.floor((width - 2) / 2);
+  return { half, right: width - half };
+}
+
+const HALF_WIDTHS = [55, 110, 120, 160, 200];
+
+test('Home Today band: three stacked cards on the left half, the licence table on the right from 110 columns', () => {
   const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
@@ -154,50 +169,103 @@ test('Home real snapshot flows the top cards by width with the licence words pla
     rollups: readRollups(snapshot), days: [],
     tasks: { inflight: [], finished: [] }, budget: null, stats: null,
   };
-  for (const width of [55, 120, 200]) {
+  const pools = todayLicenceRows(model, todayRows(model, nowMs), nowMs).map((row) => row.name);
+  assert.deepEqual(pools, ['claude-code', 'claude-code:acme', 'codex', 'grok']);
+  for (const width of HALF_WIDTHS) {
     const body = bodyBuilder();
     homePage(model, { width, narrow: width < 100, nowMs, period: '7d' }, body);
-    assert.ok(body.lines.length > 0, `${width}: Home rendered no lines`);
-    assert.ok(body.lines.every((line) => visible(line).length <= width), `${width}: line overflow`);
-    const text = body.lines.map(visible).join('\n');
-    assert.match(text, /Home · Today/);
-    assert.match(text, /licence · pool · worker-minutes/);
-    assert.match(text, /weekly share · API · subscription/);
-    assert.doesNotMatch(text, /wf % \(est\.\)|run min|API · sub\s*$/m);
-    // The today band only: everything between its header and the running block.
-    const lines = body.lines.map(visible);
+    const raw = body.lines;
+    const lines = raw.map(visible);
+    assert.ok(lines.every((line) => [...line].length <= width), `${width}: line overflow`);
     const start = lines.findIndex((line) => line.startsWith('Home · Today'));
     const end = lines.findIndex((line, index) => index > start && line.startsWith('── running'));
     assert.ok(start >= 0 && end > start, `${width}: today band missing`);
-    const band = lines.slice(start, end).filter((line) => line.trim());
-    const cardTops = band.map((line, index) => (line.includes('┌─ ') ? index : -1)).filter((index) => index >= 0);
-    assert.equal((band.join('\n').match(/┌─ /g) ?? []).length, 3, `${width}: three cards\n${band.join('\n')}`);
-    const cardBottom = band.reduce((last, line, index) => (line.includes('┘') ? index : last), 0);
-    const licenceAt = band.findIndex((line) => line.includes('licence · pool · worker-minutes'));
-    assert.ok(licenceAt >= 0, `${width}: the licence header is missing`);
-    if (width >= 160) {
-      // Owner note (a): the three cards and the licence block share their rows,
-      // and a licence row is painted on the same row as a card's own border.
-      assert.ok(licenceAt >= cardTops[0] && licenceAt <= cardBottom,
-        `${width}: the licence header is not on the cards' rows\n${band.join('\n')}`);
-      assert.ok(band.some((line) => /[┌└│]/.test(line) && line.includes('claude-code · 171.30')),
-        `${width}: no licence row shares a row with a card\n${band.join('\n')}`);
-      assert.ok(band.some((line) => line.includes('┐  ┌')), `${width}: the top cards did not flow side by side`);
-    } else if (width >= 120) {
-      // 120–159 columns: the cards take the whole width, side by side, and the
-      // licence block reads below them at the same width. Each card is about
-      // (width − 4)/3 wide and a field too long for it ends in `…`.
-      assert.ok(licenceAt > cardBottom, `${width}: the licence block is not below the cards`);
-      assert.equal(cardTops.length, 1, `${width}: the three cards did not share a row\n${band.join('\n')}`);
-      assert.equal((band[cardTops[0]].match(/┌─ /g) ?? []).length, 3, `${width}: ${band[cardTops[0]]}`);
-      const firstBox = band[cardTops[0]].indexOf('┌');
-      const firstClose = band[cardTops[0]].indexOf('┐');
-      assert.equal(firstClose - firstBox + 1, Math.floor((width - 4) / 3), `${width}: card width\n${band[cardTops[0]]}`);
-      assert.match(band.join('\n'), /…/, `${width}: a card field was clipped without an ellipsis`);
+    const band = lines.slice(start + 1, end);
+    const bandRaw = raw.slice(start + 1, end);
+    const shown = band.join('\n');
+    // Three cards, stacked one per row at every width: never side by side.
+    const cardTops = band.flatMap((line, index) => (line.startsWith('┌─ ') ? [index] : []));
+    assert.equal(cardTops.length, 3, `${width}: three stacked cards\n${shown}`);
+    assert.ok(band.every((line) => (line.match(/┌─ /g) ?? []).length <= 1), `${width}: cards side by side\n${shown}`);
+    const cardBottom = band.reduce((last, line, index) => (line.includes('┘') ? index : last), -1);
+    const ruleAt = band.findIndex((line) => line.includes('── licences · today'));
+    const headerAt = band.findIndex((line) => /\bpool {2,}agent min {2,}/.test(line));
+    assert.ok(ruleAt >= 0 && headerAt === ruleAt + 1, `${width}: the table has no rule and header\n${shown}`);
+    const { half, right } = width >= 110 ? halvesOf(width) : { half: width, right: 0 };
+    if (width >= 110) {
+      // The left half holds the cards, each exactly as wide as the half; the
+      // right half holds the table, opening on the first card's row.
+      for (const top of cardTops) assert.equal(band[top].indexOf('┐') + 1, half, `${width}: card width\n${band[top]}`);
+      assert.equal(ruleAt, cardTops[0], `${width}: the table does not share the cards' rows\n${shown}`);
+      assert.equal(band[ruleAt].indexOf('── licences · today'), right, `${width}: the rule is not at the right half\n${band[ruleAt]}`);
+      assert.ok(right - half >= 2, `${width}: gutter under 2`);
+      assert.ok(band.every((line) => line.slice(half, right).trim() === ''), `${width}: the gutter is painted\n${shown}`);
     } else {
-      assert.ok(licenceAt > cardBottom, `${width}: the phone did not stack the licence block below the cards`);
-      assert.equal(cardTops.length, 3, `${width}: the phone stacks one card per row\n${band.join('\n')}`);
+      // One column: the cards full width, and the table under them.
+      assert.equal(band[cardTops[0]].length, width, `${width}: the card is not full width`);
+      assert.ok(ruleAt > cardBottom, `${width}: the table is not below the cards\n${shown}`);
+      assert.equal(band[ruleAt].indexOf('── licences · today'), 0);
     }
+    // One header row, units in it; each pool row right-aligns its numbers so
+    // the decimals line up under the header's right edge.
+    const header = band[headerAt].slice(right);
+    // No pool in this snapshot has a measured quota or a plan price: those
+    // all-dash columns are the first to go when the half is too narrow.
+    assert.match(header, /^ pool {2,}agent min {2,}(weekly quota {2,})?API \$ {2,}unpriced( {2,}plan \$)?$/, `${width}: ${header}`);
+    if (width <= 120) assert.doesNotMatch(header, /weekly quota|plan \$/, `${width}: ${header}`);
+    const minutesEnd = header.indexOf('agent min') + 'agent min'.length;
+    const apiEnd = header.indexOf('API $') + 'API $'.length;
+    const tableRows = band.slice(headerAt + 1).map((line) => line.slice(right));
+    for (const name of [...pools, 'total']) {
+      const row = tableRows.find((line) => line.startsWith(` ${name} `));
+      assert.ok(row, `${width}: no row for ${name}\n${tableRows.join('\n')}`);
+      assert.equal(row[minutesEnd - 2], '.', `${width}: ${name} minutes decimal\n${header}\n${row}`);
+      assert.equal(row[apiEnd - 3], '.', `${width}: ${name} API decimal\n${header}\n${row}`);
+      assert.doesNotMatch(row, /\$/, `${width}: a cell repeats the unit\n${row}`);
+    }
+    assert.match(tableRows.find((line) => line.startsWith(' codex ')), /^ codex +964\.5 +(— +)?≈36\.30 +25( +—)?$/);
+    // The total row sums every column each pool knows.
+    assert.match(tableRows.find((line) => line.startsWith(' total ')), /^ total +1270\.4 +≈171\.30 +26$/);
+    // Pool names wear the same colour the `by pool` bars do.
+    for (const name of pools) {
+      assert.ok(bandRaw.some((line) => line.includes(`${rgbEscape(seriesColor(name))}${name}\x1b[0m`)),
+        `${width}: ${name} is not painted in its pool colour`);
+    }
+    // A dim legend under the table names the glyphs.
+    assert.ok(bandRaw.some((line) => line.includes('\x1b[2m') && visible(line).includes('≈ ~ estimates')), `${width}: no legend`);
+  }
+});
+
+test('Home licence table puts a dim dash in unknown cells and drops the least useful column before cutting a number', () => {
+  const rows = [
+    { name: 'claude-code', subscriptionUsd: 2.63, tokenSource: 'provider-reported', apiUsd: 108.68, attempts: 4, pricedAttempts: 4 },
+    { name: 'codex', subscriptionUsd: null, tokenSource: 'estimated:utf8-bytes/4', apiUsd: 0.00379, attempts: 2, pricedAttempts: 2 },
+  ].map((row, index) => Object.defineProperties(row, {
+    workerMinutes: { value: index ? null : 248.13 },
+    weeklyShare: { value: index ? null : 2.9 },
+    shareBasis: { value: index ? null : 'pace' },
+    apiFacts: { value: { apiKnownSubtotalUsd: row.apiUsd, unmeasured: 0 } },
+  }));
+  const wide = licenceTableLines(rows, 99);
+  const text = wide.map((line) => visible(line.text));
+  assert.match(text[1], /^ pool +agent min +weekly quota +API \$ +plan \$$/);
+  // A known share draws its bar in the pool's colour and its pace-estimate glyph.
+  assert.match(text[2], /^ claude-code +248\.1 +▏?░+ ≈2\.9% +108\.68 +2\.63$/);
+  // Unknown cells are a dim dash; a fraction of a cent keeps its estimate glyph.
+  assert.match(text[3], /^ codex +— +— +~<0\.01 +—$/);
+  assert.ok(wide[3].text.includes('\x1b[2m—\x1b[0m'), 'the unknown cells are not dim');
+  // Each pool row opens Budget on that pool.
+  assert.deepEqual(wide.filter((line) => line.action).map((line) => line.action.pool), ['claude-code', 'codex']);
+  for (const width of [55, 54, 40, 30]) {
+    const narrow = licenceTableLines(rows, width).map((line) => visible(line.text));
+    assert.ok(narrow.every((line) => line.length <= width), `${width}:\n${narrow.join('\n')}`);
+    // Whatever was dropped, the numbers that remain are whole.
+    for (const figure of ['108.68', '248.1']) {
+      if (narrow[1].includes(figure === '108.68' ? 'API $' : 'agent min')) {
+        assert.ok(narrow.some((line) => line.includes(figure)), `${width}: ${figure} was cut\n${narrow.join('\n')}`);
+      }
+    }
+    assert.match(narrow[1], /API \$/, `${width}: the API column went before a less useful one`);
   }
 });
 
@@ -208,10 +276,10 @@ test('Home restores the period band and the recent list below the budget block',
   const model = dashboardModel(null, {
     rollups: readRollups(snapshot), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
   });
-  for (const width of [55, 120, 200]) {
+  for (const width of HALF_WIDTHS) {
     const frame = renderDashboardPage(model, { page: 'home', width, height: 400, nowMs, period: '7d' });
     const lines = frame.lines.map(visible);
-    assert.ok(lines.every((line) => line.length <= width), `${width}: line overflow`);
+    assert.ok(lines.every((line) => [...line].length <= width), `${width}: line overflow`);
     const budget = lines.findIndex((line) => line.includes('── budget · this week'));
     const band = lines.findIndex((line) => line.includes('── last 7 days'));
     const recent = lines.findIndex((line) => line.includes('── recent'));
@@ -219,16 +287,33 @@ test('Home restores the period band and the recent list below the budget block',
     assert.ok(recent > band, `${width}: the recent list is not below the period band`);
     const head = lines.findIndex((line) => line.includes('spent per day'));
     assert.ok(head > band && head < recent, `${width}: no spent-per-day chart in the band`);
-    if (width >= 120) {
-      assert.match(lines[head], /spent per day.*by pool.*by model.*by project/,
-        `${width}: the four breakdown columns did not share a row`);
-    } else {
-      assert.doesNotMatch(lines[head], /by pool/, `${width}: the phone kept four columns on one row`);
-      for (const heading of ['by pool', 'by model', 'by project']) {
-        assert.ok(lines.slice(head, recent).some((line) => line.trim().startsWith(heading)),
-          `${width}: the phone lost the ${heading} column`);
+    assert.equal(lines[head].indexOf('spent per day'), 1, `${width}: the chart is not in the left half`);
+    // The three breakdowns, one under another, in their order.
+    const labelAt = (heading) => lines.findIndex((line, index) => index >= head && index < recent && line.includes(heading));
+    const at = ['by pool', 'by model', 'by project'].map(labelAt);
+    assert.ok(at.every((index) => index >= 0) && at[0] < at[1] && at[1] < at[2], `${width}: ${at}`);
+    const dayRow = lines.findIndex((line, index) => index > head && /\bMon\b.*\bSun\b/.test(line));
+    if (width >= 110) {
+      // The right half holds all three, stacked, each starting at that half's
+      // first column, the first beside the chart's own label.
+      const { right } = halvesOf(width);
+      assert.equal(at[0], head, `${width}: by pool does not open beside the chart`);
+      for (const index of at) {
+        assert.equal(lines[index].search(/by (pool|model|project)/), right + 1, `${width}: ${lines[index]}`);
       }
+      // Each section fills its half: its rows reach the page's right edge.
+      const poolRow = lines[at[0] + 1];
+      assert.ok(poolRow.length >= width - 1, `${width}: the by pool row does not use the half\n${poolRow}`);
+    } else {
+      // One column: chart first, then the three sections under it, flush left.
+      assert.ok(at[0] > dayRow, `${width}: by pool is not under the chart`);
+      for (const index of at) assert.equal(lines[index].search(/by (pool|model|project)/), 1, `${width}: ${lines[index]}`);
     }
+    // Each section shows at most four rows, then `+N more`.
+    const sectionRows = (from, to) => lines.slice(from + 1, to).map((line) => (width >= 110 ? line.slice(halvesOf(width).right) : line))
+      .filter((line) => line.trim() && !line.includes('+'));
+    assert.equal(sectionRows(at[0], at[1]).length, 4, `${width}: by pool rows`);
+    assert.match(lines.slice(at[0], at[1]).join('\n'), /\+1 more/, `${width}: by pool does not count the rest`);
     for (const label of ['Workflows:', 'Favourite pool:', 'Favourite model:', 'Spent:', 'Median run:', 'Busiest project:']) {
       assert.ok(lines.slice(band, recent).some((line) => line.includes(label)), `${width}: the summary lost ${label}`);
     }
@@ -243,8 +328,52 @@ test('Home restores the period band and the recent list below the budget block',
       ['7d', '30d', 'all'],
       `${width}: the toggle lost a period`,
     );
+    // A click on the chart opens the spend trend; one on a section its tab.
+    const actionAt = (row, x) => frame.regions.find((region) => region.y === row + 1 && region.x1 <= x && x <= region.x2)?.action;
+    assert.deepEqual(actionAt(head + 2, 3), { kind: 'trend', metric: 'spend' }, `${width}: the chart lost its click`);
+    const x = width >= 110 ? halvesOf(width).right + 3 : 3;
+    assert.deepEqual(actionAt(at[0] + 1, x), { kind: 'tab', tab: 'pool' }, `${width}: by pool lost its click`);
+    assert.deepEqual(actionAt(at[2] + 1, x), { kind: 'tab', tab: 'project' }, `${width}: by project lost its click`);
     const recentRows = lines.slice(recent + 1).filter((line) => /ago\s*$/.test(line.trimEnd()));
     assert.equal(recentRows.length, width >= 100 ? 5 : 3, `${width}: the recent list has ${recentRows.length} rows`);
+  }
+});
+
+test('Home spend chart: one bar a day for seven days from a $0 axis, whole-dollar ticks marked only with ~', () => {
+  const snapshot = SNAPSHOT;
+  const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+  const model = dashboardModel(null, {
+    rollups: readRollups(snapshot), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
+  });
+  for (const width of HALF_WIDTHS) {
+    const frame = renderDashboardPage(model, { page: 'home', width, height: 400, nowMs, period: '7d' });
+    const lines = frame.lines.map(visible);
+    const head = lines.findIndex((line) => line.includes('spent per day'));
+    const chartWidth = width >= 110 ? halvesOf(width).half : width;
+    const left = lines.slice(head + 1).map((line) => line.slice(0, chartWidth).trimEnd());
+    const dayRow = left.findIndex((line) => /\bSun\b/.test(line));
+    assert.ok(dayRow > 0, `${width}: no day labels\n${left.slice(0, 20).join('\n')}`);
+    // Seven day labels, oldest first, today last: every day of the period,
+    // the days nothing ran on included.
+    assert.deepEqual(left[dayRow].trim().split(/\s+/), ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], `${width}`);
+    const chart = left.slice(0, dayRow);
+    const ticks = chart.flatMap((line) => [...line.matchAll(/(~?\$[\d,]+)\s[┤┼]/g)].map((match) => match[1]));
+    assert.ok(ticks.length >= 3 && ticks.length <= 4, `${width}: ${ticks.length} axis labels: ${ticks}`);
+    // The axis starts at $0 on the baseline, and no label carries cents or words.
+    assert.equal(ticks.at(-1), '$0', `${width}: the axis does not start at $0`);
+    assert.match(chart.at(-1), /\$0 ┼─+$/, `${width}: ${chart.at(-1)}`);
+    for (const tick of ticks.slice(0, -1)) assert.match(tick, /^~\$\d[\d,]*$/, `${width}: ${tick}`);
+    const band = lines.slice(head, head + dayRow + 3).join('\n');
+    assert.doesNotMatch(band, /at least/, `${width}: the chart says at least`);
+    assert.doesNotMatch(chart.join('\n'), /\$\d+\.\d/, `${width}: an axis label has cents`);
+    // Bars stand on the days that spent: Fri 18, Sat 19 and Sun 20 Sep.
+    const columnOf = (name) => left[dayRow].indexOf(name) + 1;
+    const baseRow = chart.length - 2;
+    for (const [name, drawn] of [['Mon', false], ['Thu', false], ['Fri', true], ['Sat', true], ['Sun', true]]) {
+      assert.equal(/[▁-█]/.test(chart[baseRow][columnOf(name)] ?? ' '), drawn, `${width}: ${name} bar\n${chart.join('\n')}`);
+    }
+    // One dim line under the chart says what the bars leave out.
+    assert.equal(left[dayRow + 1].trim(), '~ bars leave 66 unpriced attempts out', `${width}`);
   }
 });
 
@@ -347,8 +476,13 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     assert.equal(measured.shareBasis, 'measured');
     assert.equal(measured.weeklyShare, 1.5, 'only the run\'s own attributed drop counts');
     assert.equal(measured.shareSamples, 1);
-    const measuredLine = licenceRowText(measured);
-    assert.match(measuredLine, /^codex · 60\.00 · 1\.5% measured · at least \$12\.00 · 1 unmeasured · —$/);
+    // The table's cells: a measured share has no estimate glyph, and the
+    // partly-priced API subtotal keeps its `≈` with the attempt it leaves out.
+    const cellsOf = (row) => {
+      const cells = licenceCells(row);
+      return [cells.minutesText, cells.quotaText, cells.apiText, cells.unpricedText, cells.planText];
+    };
+    assert.deepEqual(cellsOf(measured), ['60.0', '1.5%', '≈12.00', '1', null]);
 
     // The same pool with no ledger attributed to it: the pace estimate, named
     // as the estimate it is.
@@ -356,7 +490,7 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     const pace = shareRow(shareModel());
     assert.equal(pace.shareBasis, 'pace');
     assert.equal(Math.round(pace.weeklyShare * 100) / 100, 1.2);
-    assert.match(licenceRowText(pace), /^codex · 60\.00 · ≈1\.2% pace estimate · at least \$12\.00 · 1 unmeasured · —$/);
+    assert.deepEqual(cellsOf(pace), ['60.0', '≈1.2%', '≈12.00', '1', null]);
 
     // A pure-rollup render (no live pool list — the committed frames) never
     // reads a ledger it was not handed, even with a home in the environment.
@@ -372,7 +506,7 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     const noPools = shareRow(shareModel({ pools: [] }));
     assert.equal(noPools.shareBasis, null, 'a render without a meter list consults no ledger');
     assert.equal(noPools.weeklyShare, null);
-    assert.match(licenceRowText(noPools), /^codex · 60\.00 · — · at least \$12\.00 · 1 unmeasured · —$/);
+    assert.deepEqual(cellsOf(noPools), ['60.0', null, '≈12.00', '1', null]);
 
     // A pool whose rate was never measured, with no ledger either, keeps the
     // dash: no third basis, and never a guessed number beside the unknown.
@@ -382,7 +516,7 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     }));
     assert.equal(unrated.shareBasis, null);
     assert.equal(unrated.weeklyShare, null);
-    assert.match(licenceRowText(unrated), /^codex · 60\.00 · — · at least \$12\.00 · 1 unmeasured · —$/);
+    assert.deepEqual(cellsOf(unrated), ['60.0', null, '≈12.00', '1', null]);
 
     // A monthly ledger is not the weekly column's measurement: refused, so the
     // row falls back to its own window's pace estimate rather than relabelling
@@ -420,6 +554,22 @@ test('Home card hit regions cover each run for Enter and click navigation', () =
   ]);
   assert.equal(frame.cursorAction?.kind, 'run');
   assert.ok(frame.regions.some((region) => region.action?.kind === 'run'));
+  // Stacked in the left half, each card is clickable (and hovers) across its
+  // own box and nowhere else; each licence row in the right half opens Budget.
+  for (const width of [120, 200]) {
+    const { half, right } = halvesOf(width);
+    const page = renderDashboardPage(model, { page: 'home', width, height: 60, nowMs });
+    const first = Math.min(...page.regions.filter((region) => region.action?.kind === 'run').map((region) => region.y));
+    const cards = page.regions.filter((region) => region.action?.kind === 'run' && region.y < first + 15);
+    assert.equal(cards.length, 15, `${width}: five rows per card`);
+    assert.ok(cards.every((region) => region.x1 === 1 && region.x2 === half), `${width}: ${JSON.stringify(cards[0])}`);
+    assert.deepEqual(page.runRows.map((row) => row.y), [page.runRows[0].y, page.runRows[0].y + 5, page.runRows[0].y + 10]);
+    const licence = page.regions.filter((region) => region.action?.kind === 'page' && region.action.page === 'budget'
+      && region.y > 1 && region.y < first + 15);
+    assert.deepEqual(licence.map((region) => region.action.pool), ['claude-code', 'claude-code:acme', 'codex', 'grok']);
+    assert.ok(licence.every((region) => region.x1 === right + 1 && region.x2 <= width), `${width}: ${JSON.stringify(licence[0])}`);
+    assert.ok(licence.every((region) => region.y >= first + 2), `${width}: a licence row is above its header`);
+  }
 });
 
 test('Home shows a partly-priced period as the subtotal the rollups really hold', () => {
@@ -441,24 +591,22 @@ test('Home shows a partly-priced period as the subtotal the rollups really hold'
   assert.match(text, /recorded at least \$299\.87 api · 66 unmeasured of API-equivalent work/);
   assert.doesNotMatch(text, /recorded no API-equivalent estimate/);
 
-  // All three recorded days are charted — 18 and 20 Sep are subtotals — and the
-  // axis says `at least`, so every bar is read as a lower bound.
-  const band = text.split('── last 7 days')[1].split('── recent')[0];
-  assert.match(band, /at least \$160\.00/, band);
-  assert.equal((band.match(/███/g) ?? []).length > 0, true);
-  assert.equal(band.split('\n').at(-3).trim().startsWith('┼'), false);
+  // All three recorded days are charted — 18 and 20 Sep are subtotals — so the
+  // axis marks its figures `~` and one dim line counts what the bars leave
+  // out. The words `at least` never appear on the chart.
+  const band = text.split('── last 7 days')[1].split('Workflows:')[0];
+  assert.match(band, /~\$200 ┤/, band);
+  assert.match(band, /\$0 ┼/, band);
+  assert.doesNotMatch(band, /at least/, band);
+  assert.match(band, /~ bars leave 66 unpriced attempts out/, band);
+  assert.equal((band.match(/████/g) ?? []).length > 0, true);
 
-  // A pool whose attempts were only partly priced shows the lower bound and
-  // the count of attempts that produced it.
-  assert.match(text, /codex · 964\.50 · — · at least \$36\.30 · 25 unmeasured/);
+  // A pool whose attempts were only partly priced shows the subtotal, marked
+  // `≈`, and the count of attempts it leaves out.
+  assert.match(text, /codex +964\.5 +(— +)?≈36\.30 +25\b/);
   // A run with no strict total shows its own recorded lower bound on its card.
   assert.match(text, /API at least \$9\.52 · 6 unmeasured/);
 });
-
-const rgbEscape = (hex) => {
-  const value = Number.parseInt(hex.slice(1), 16);
-  return `\x1b[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
-};
 
 test('Home recent lists finished runs only: a reopened or live run sits in running, whatever its failed steps', () => {
   const finished = (shortId, extra) => ({

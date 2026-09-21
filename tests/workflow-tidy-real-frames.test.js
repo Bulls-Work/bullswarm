@@ -56,21 +56,33 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   // never a whole-scope total it does not have.
   assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /at least \$299\.87 api · 66 unmeasured/);
   assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Coverage · 66 of 149 attempts recorded no price/);
-  // Home's own totals line and spend axis say the same thing.
-  assert.match(frames.get('real-home-200.txt').join('\n'), /Spent: at least \$299\.87 api · 66 unmeasured/);
-  assert.match(frames.get('real-home-200.txt').join('\n'), /at least \$160\.00/);
+  // Home's own totals line keeps the spend block's words; the chart under it
+  // marks its axis `~` from $0, in whole dollars, and never says `at least`.
+  const home200 = frames.get('real-home-200.txt');
+  assert.match(home200.join('\n'), /Spent: at least \$299\.87 api · 66 unmeasured/);
+  const chart200 = home200.slice(home200.findIndex((line) => line.includes('spent per day')),
+    home200.findIndex((line) => line.includes('Workflows:')));
+  assert.match(chart200.join('\n'), /~\$200 ┤/);
+  assert.match(chart200.join('\n'), /\$0 ┼/);
+  assert.doesNotMatch(chart200.join('\n'), /at least|\$\d+\.\d/);
+  assert.match(chart200.join('\n'), / Mon +Tue +Wed +Thu +Fri +Sat +Sun/);
   assert.match(frames.get('real-stats-model-200.txt').join('\n'), /── Model worker-minutes ─/);
 
-  // 120 columns: the top three cards flow side by side across the width, each
-  // about (width − 4)/3 wide, and the licence block reads below them.
-  const home120 = frames.get('real-home-120.txt');
-  const cardTops = home120.map((line, index) => (line.includes('┌─ ') ? index : -1)).filter((index) => index >= 0);
-  const licenceAt = home120.findIndex((line) => line.includes('licence · pool · worker-minutes'));
-  assert.equal(cardTops.length, 1, home120.join('\n'));
-  assert.equal((home120[cardTops[0]].match(/┌─ /g) ?? []).length, 3, home120[cardTops[0]]);
-  assert.equal(home120[cardTops[0]].indexOf('┐') - home120[cardTops[0]].indexOf('┌') + 1, Math.floor((120 - 4) / 3));
-  assert.ok(licenceAt > cardTops[0], 'the 120-column licence block did not move below the cards');
-  assert.match(home120.join('\n'), /…/, 'a 120-column card field was clipped without an ellipsis');
+  // 120 and 200 columns: the Today band is two equal halves, the three cards
+  // stacked in the left one, each as wide as the half, and the licence table
+  // in the right one, opening on the first card's row.
+  for (const [width, lines] of [[120, frames.get('real-home-120.txt')], [200, home200]]) {
+    const half = Math.floor((width - 2) / 2);
+    const cardTops = lines.map((line, index) => (line.startsWith('┌─ ') ? index : -1)).filter((index) => index >= 0);
+    const ruleAt = lines.findIndex((line) => line.includes('── licences · today'));
+    assert.equal(cardTops.length, 3, lines.join('\n'));
+    assert.ok(cardTops.every((index) => (lines[index].match(/┌─ /g) ?? []).length === 1), `${width}: cards side by side`);
+    assert.ok(cardTops.every((index) => lines[index].indexOf('┐') + 1 === half), `${width}: card width`);
+    assert.equal(ruleAt, cardTops[0], `${width}: the table does not share the cards' rows`);
+    assert.equal(lines[ruleAt].indexOf('── licences'), width - half, `${width}: the table is not in the right half`);
+    assert.match(lines[ruleAt + 1], / pool +agent min +.*API \$/);
+    assert.match(lines.join('\n'), /…/, `a ${width}-column card field was clipped without an ellipsis`);
+  }
 
   // 200 columns: the plan boxes drop both the number's period and the counts
   // that repeat the glyph, and the v2 phase rule ends on its own tally.
