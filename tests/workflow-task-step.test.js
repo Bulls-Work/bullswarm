@@ -173,11 +173,23 @@ test('dashboard task route uses the Step toggle and Esc leaves the task page', a
     await settle();
     assert.match(plain(output.text.slice(beforeOpen)), /build task · key-task/);
     assert.match(plain(output.text.slice(beforeOpen)), /── result · succeeded/);
+    // A standalone task gets the same page: the top bar ends on the toggle.
+    const opened = output.text.slice(beforeOpen);
+    assert.match(plain(opened), / Home  Runs  Budget  Stats  Fleet +overview · detail/);
+    assert.match(opened, /\x1b\[7moverview\x1b\[0m · detail/);
     const beforeToggle = output.text.length;
     input.press('v');
     await settle();
     // 80 columns stacks like the phone, whose footer keeps the short hint.
     assert.match(plain(output.text.slice(beforeToggle)), /v overview/);
+    assert.match(output.text.slice(beforeToggle), /overview · \x1b\[7mdetail\x1b\[0m/);
+    // A click on `overview` in the top bar switches back (79 painted columns:
+    // the toggle's 17 cells end one short of the edge).
+    const beforeClick = output.text.length;
+    input.press('\x1b[<0;62;1M');
+    await settle();
+    assert.match(output.text.slice(beforeClick), /\x1b\[7moverview\x1b\[0m · detail/);
+    assert.match(plain(output.text.slice(beforeClick)), /v detail/);
     const beforeBack = output.text.length;
     input.press('\x1b');
     await settle();

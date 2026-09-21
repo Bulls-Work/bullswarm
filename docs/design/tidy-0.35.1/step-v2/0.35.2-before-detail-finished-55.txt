@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ step-model · va7k9a · succeeded · verified · 1–57/2…
+ sample purpose for va7k9a aute commodo proident
+ ullamco cupidatat magna
+ codex · gpt-5.6-luna · medium · 49m07s · 01:50→02:39
+
+── result · verified by the workflow 6/6 ──────────────
+ sample report magna exercitation.
+ sample sint: sample exercitation nisi consequat cillum
+ anim id exercitation culpa ut veniam exercitation…
+ changed src/dir-01/file-267.js
+         tests/file-268.test.js
+ files       wf-mu8ni8o4-f9baaf/ task · out · stream ·…
+ task     tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ output   tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ stream   tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ diff     tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ result   tests/fixtures/home-351/workflows/wf-mu8ni8o4
+
+── detail · today's capture-order log · all · 325 even…
+ seq 1 · 2026-09-19T17:50:31.709Z · stdout · item.comp…
+  kind response · status completed · eventId — · turnId
+  — · toolCallId — · provider timestamp — · duration —
+  · usage — · parent/subagent —/— · arguments — ·
+  result —
+  summary: sample response for step-model-1 incididunt
+  id consequat tempor labore qui pariatur mollit
+  laborum eiusmod dolore et et fugiat proident.
+ seq 2 · 2026-09-19T17:50:35.490Z · stdout · item.star…
+  kind command_execution · status running · eventId — ·
+  turnId — · toolCallId — · provider timestamp — ·
+  duration — · usage — · parent/subagent —/— ·
+  arguments — · result —
+  summary: sample command for step-model-1 mollit ea
+  occaecat commodo occaecat magna occaecat culpa
+  laboris qui eiusmod irure sint nulla sit ea velit
+  ullamco commodo excepteur nulla consequat
+ seq 3 · 2026-09-19T17:50:35.491Z · stdout · item.comp…
+  kind command_execution · status completed · eventId —
+  · turnId — · toolCallId — · provider timestamp — ·
+  duration — · usage — · parent/subagent —/— ·
+  arguments — · result —
+  summary: sample command for step-model-1 mollit ea
+  occaecat commodo occaecat magna occaecat culpa
+  laboris qui eiusmod irure sint nulla sit ea velit
+  ullamco commodo excepteur nulla consequat
+ seq 4 · 2026-09-19T17:50:46.904Z · stdout · item.star…
+  kind command_execution · status running · eventId — ·
+  turnId — · toolCallId — · provider timestamp — ·
+  duration — · usage — · parent/subagent —/— ·
+  arguments — · result —
+  summary: sample command for step-model-1 lorem ut
+  minim commodo sint commodo cupidatat aliqua excepteur
+  enim exercitation pariatur esse quis ullamco ea magna
+  non tempor quis esse adipiscing
+ seq 5 · 2026-09-19T17:50:46.905Z · stdout · item.comp…
+  kind command_execution · status completed · eventId —
+  · turnId — · toolCallId — · provider timestamp — ·
+  duration — · usage — · parent/subagent —/— ·
+ [ back ]  Enter event · v overview · t filter · ? help

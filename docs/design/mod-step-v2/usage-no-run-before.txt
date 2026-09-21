@@ -1,0 +1,16 @@
+Claude Code v2.1.278 · tmux 120x40 · BULLSWARM_HOME fixture copy · no ongoing run
+
+No ongoing workflow run. `bullswarm workflow goal` launches one.
+Pools · used/elapsed · pace
+claude-code
+claude-code:w
+codex
+grok
+command-code
+[ usage ] [ close ]
+
+After `u` in the pre-fix session the Usage page opened, but its footer was:
+
+[ ● usage ] [ close ]
+
+There was no `back` control on the no-run Usage page.

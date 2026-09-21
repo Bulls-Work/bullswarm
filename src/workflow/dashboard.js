@@ -67,7 +67,7 @@ import { finiteOrNull } from '../lib/num.js';
 import { openSetupTui as openSetupControlCentre } from '../setup.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepModel } from './task-step.js';
-import { renderStepPage, stepFooterText } from './step-view.js';
+import { renderStepPage, stepFooterText, stepViewToggle } from './step-view.js';
 
 const ESC = '\x1b[';
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -1188,11 +1188,23 @@ const underline = (text) => `\x1b[4m${text}\x1b[24m`;
  * read. Help remains available from the bottom nav and the `?` key, but is
  * intentionally not a top-level tab.
  */
-function pageTabs(page, width) {
+function pageTabs(page, width, { stepView = 'overview' } = {}) {
   const active = TAB_OF_PAGE[page] ?? (page === 'help' ? null : page);
   const hidden = [];
   if (width < 38) hidden.push('fleet');
-  return tabsRow(PAGE_TABS, { active, width, hidden });
+  if (page !== 'step' && page !== 'task') return tabsRow(PAGE_TABS, { active, width, hidden });
+  // The Step page's top bar ends on its one view toggle (step-v2 rule 14):
+  // `overview · detail`, right-aligned, the tabs giving way before it does.
+  const toggle = stepViewToggle(stepView);
+  const toggleWidth = visibleLength(toggle.text);
+  const tabs = tabsRow(PAGE_TABS, { active, width: Math.max(1, width - toggleWidth - 2), hidden });
+  const gap = width - visibleLength(tabs.text) - toggleWidth - 1;
+  if (gap < 1) return tabs;
+  const at = visibleLength(tabs.text) + gap;
+  return {
+    text: `${tabs.text}${' '.repeat(gap)}${toggle.text}`,
+    regions: tabs.regions.concat(toggle.regions.map((region) => ({ ...region, x: region.x + at }))),
+  };
 }
 
 /**
@@ -1255,7 +1267,8 @@ function navParts(model, { page, width, selectedRunId, stepView = 'overview', st
       items.push({ key: null, label: `1.${selected.shortId ?? '------'}`, mark: true, tight: false, action: { kind: 'run', runId: selected.runId } });
     }
     const prefix = items.map((item) => button(item)).join(' ');
-    const view = stepDetail === true ? 'detail' : stepView === 'detail' ? 'detail' : 'overview';
+    // `stepDetail` is the open row under the cursor now; the view is the toggle's.
+    const view = stepView === 'detail' || (stepDetail === true && stepView == null) ? 'detail' : 'overview';
     const hint = stepFooterText(null, { phone: narrow, view });
     const available = Math.max(1, width - prefix.length - 2);
     const parts = [{ text: ' ' }];
@@ -1843,6 +1856,8 @@ function helpPage(model, opts, body) {
   row('bar', 'a breakdown bar opens its Stats tab · a trend bar opens its day');
   row('pool', 'a pool name or meter opens Budget on it');
   row('step', 'a plan glyph or step row opens the step');
+  row('view', narrow ? 'overview · detail on the Step top bar' : 'overview · detail on the Step top bar switches the view');
+  row('turn', narrow ? 'a turn head opens it · click for detail' : 'a Step turn head opens the turn · the `click for detail` line opens detail');
   row('run', 'a run row or nav button opens the run');
 
   body.push('');
@@ -1850,6 +1865,7 @@ function helpPage(model, opts, body) {
   row('e · c · y', 'edit the fleet · stop this workflow · y confirms it');
   row('/ · a · i', 'filter · active/all · install (on Runs)');
   row('o · v · t', 'planner · technical · phases (on Run) · Stats By Pool/By Model');
+  row('v · t · f', narrow ? 'Step: overview · detail · filter · follow' : 'Step: overview · detail (the top-bar toggle) · filter · follow');
   row(DASHBOARD_KEYS.copy.keys, 'copy the screen · OSC 52, else pbcopy/wl-copy');
   row(DASHBOARD_KEYS.detach.keys, 'quit to the shell; workflows keep running');
   row('under 100', 'Fleet leaves the tab row until f opens it');
@@ -1958,7 +1974,7 @@ export function renderDashboardPage(model, options = {}) {
   else header = runPage(model, { ...opts, bodyHeight }, body);
 
   const frame = frameBuilder();
-  frame.kit(pageTabs(page, width));
+  frame.kit(pageTabs(page, width, { stepView: opts.stepView === 'detail' ? 'detail' : 'overview' }));
   if (page === 'runs' || page === 'history') {
     const padding = Math.max(0, (body.anchor?.history ?? 1) - 1 + bodyHeight - body.lines.length);
     for (let index = 0; index < padding; index += 1) body.push('');
@@ -2274,6 +2290,9 @@ export async function runDashboard(bullswarmDir, {
     stepFollow: true,
     stepFilter: 'all',
     stepToolPage: 0,
+    // Where the overview's latest-turns window ends once the reader stops
+    // following; null slides it with every new turn.
+    stepWindowEnd: null,
     runPlanBoxes: false,
     runFollow: true,
     spinnerFrame: 0,
@@ -2451,6 +2470,7 @@ export async function runDashboard(bullswarmDir, {
     stepFollow: ui.stepFollow,
     stepFilter: ui.stepFilter,
     stepToolPage: ui.stepToolPage,
+    stepWindowEnd: ui.stepWindowEnd,
     planBoxes: ui.runPlanBoxes,
     runFollow: ui.runFollow,
   });
@@ -2485,6 +2505,14 @@ export async function runDashboard(bullswarmDir, {
       usage, integration, installResult, rollups, days, prices,
       period: ui.period, metric: ui.metric, meterHistory,
     });
+    // The overview's latest-turns window slides while the reader follows the
+    // step; once they stop, it stays where the last frame left it.
+    if (ui.page === 'step' || ui.page === 'task') {
+      if (ui.stepFollow) ui.stepWindowEnd = null;
+      else if (ui.stepWindowEnd == null && Number.isInteger(lastFrameResult?.anchor?.step?.windowEnd)) {
+        ui.stepWindowEnd = lastFrameResult.anchor.step.windowEnd;
+      }
+    }
     const frame = renderDashboardPage(model, pageOptions());
     regions = frame.regions;
     writeFrame(frame.lines.join('\n'));
@@ -2658,8 +2686,8 @@ export async function runDashboard(bullswarmDir, {
     message = null;
     return paint();
   };
-  /** Opens the Step page on one action, in the phase that holds it. */
-  const openStep = (actionId, runId = null) => {
+  /** Opens the Step page on one action and, when named, one exact attempt. */
+  const openStep = (actionId, runId = null, attemptOrdinal = null) => {
     if (runId && runId !== selectedRunId) selectedRunId = runId;
     const row = detailRow(bullswarmDir, selectedRunId);
     if (!row.legacy) {
@@ -2683,10 +2711,11 @@ export async function runDashboard(bullswarmDir, {
     ui.stepTurnIndex = null;
     ui.stepSection = 'activity';
     ui.stepSelectedEventIndex = null;
-    ui.stepAttemptOrdinal = null;
+    ui.stepAttemptOrdinal = Number.isInteger(attemptOrdinal) && attemptOrdinal > 0 ? attemptOrdinal : null;
     ui.stepFollow = true;
     ui.stepFilter = 'all';
     ui.stepToolPage = 0;
+    ui.stepWindowEnd = null;
     bodyScroll = 0;
     paint();
   };
@@ -2711,7 +2740,58 @@ export async function runDashboard(bullswarmDir, {
     ui.stepAttemptOrdinal = null;
     ui.stepFollow = true;
     ui.stepFilter = 'all';
+    ui.stepToolPage = 0;
+    ui.stepWindowEnd = null;
     message = null;
+    return paint();
+  };
+  /**
+   * Keep the Step page's cursor row on screen: the transcript is a long page,
+   * so a cursor that walks past the window scrolls it along.
+   */
+  const revealStepCursor = () => {
+    const frame = paint();
+    const y = frame?.anchor?.step?.cursor;
+    if (!Number.isInteger(y) || !frame?.body) return frame;
+    const offset = frame.body.offset ?? 0;
+    const capacity = Math.max(1, (frame.body.end ?? 1) - offset);
+    let next = null;
+    if (y <= offset) next = y - 1;
+    // An opened row keeps a few of its fields in view under it.
+    else if (y > offset + capacity - (ui.stepDetail ? Math.min(6, capacity - 1) : 0)) next = y - Math.max(1, ui.stepDetail ? 3 : capacity);
+    if (next == null) return frame;
+    bodyScroll = Math.max(0, next);
+    return paint();
+  };
+  /**
+   * The Step page's `overview · detail` toggle, from `v`, the top bar or the
+   * fold line. Detail opens on the turn the overview's cursor was on (the
+   * newest, unless the reader moved), or at the top from the fold line.
+   */
+  const setStepView = (view, { fromFold = false } = {}) => {
+    const next = view === 'detail' ? 'detail' : 'overview';
+    const stepAnchor = lastFrameResult?.anchor?.step ?? null;
+    const cursorTurn = Number.isInteger(ui.stepTurnIndex) ? ui.stepTurnIndex : null;
+    ui.stepView = next;
+    ui.stepDetail = false;
+    ui.stepExpandedTurn = null;
+    ui.stepToolPage = 0;
+    ui.stepSection = 'activity';
+    if (next === 'overview') {
+      ui.stepSelectedEventIndex = null;
+      if (ui.stepTurnIndex === -1) ui.stepTurnIndex = null;
+      bodyScroll = 0;
+      return paint();
+    }
+    const head = !fromFold && cursorTurn != null && cursorTurn >= 0
+      ? (stepAnchor?.rows ?? []).find((row) => row.kind === 'turn' && row.turnIndex === cursorTurn)
+      : null;
+    ui.stepSelectedEventIndex = head?.index ?? null;
+    bodyScroll = 0;
+    const frame = paint();
+    const y = frame?.anchor?.step?.cursor;
+    if (!head || !Number.isInteger(y)) return frame;
+    bodyScroll = Math.max(0, y - 2);
     return paint();
   };
   /** Opens a page, reading whatever that page needs the first time. */
@@ -3015,8 +3095,33 @@ export async function runDashboard(bullswarmDir, {
     if (action.kind === 'page') return openPage(action.page, { pool: action.pool ?? null });
     if (action.kind === 'run') return openRun(action.runId);
     if (action.kind === 'task') return openTask(action.taskId);
-    if (action.kind === 'step') return openStep(action.actionId, action.runId ?? null);
+    if (action.kind === 'step') return openStep(action.actionId, action.runId ?? null, action.attemptOrdinal ?? null);
     if (action.kind === 'fold') return toggleFold(action.runId ?? selectedRunId);
+    if (action.kind === 'stepView') return setStepView(action.view, { fromFold: action.fromFold === true });
+    if (action.kind === 'stepTurn') {
+      // A click on a turn head is Enter on that turn (step-v2 rule 14).
+      const head = (lastFrameResult?.anchor?.step?.rows ?? [])
+        .find((row) => row.kind === 'turn' && row.turnIndex === action.turnIndex);
+      ui.stepSection = 'activity';
+      ui.stepTurnIndex = action.turnIndex;
+      ui.stepExpandedTurn = ui.stepExpandedTurn === action.turnIndex ? null : action.turnIndex;
+      ui.stepToolPage = 0;
+      ui.stepSelectedEventIndex = head?.index ?? ui.stepSelectedEventIndex;
+      ui.stepFollow = false;
+      return paint();
+    }
+    if (action.kind === 'stepTool') {
+      // A click on a transcript row selects it and opens its captured fields;
+      // a second click closes them, as Enter does.
+      ui.stepSection = 'activity';
+      if (ui.stepSelectedEventIndex != null && Number(ui.stepSelectedEventIndex) === Number(action.eventIndex)) ui.stepDetail = !ui.stepDetail;
+      else {
+        ui.stepSelectedEventIndex = action.eventIndex;
+        ui.stepDetail = true;
+      }
+      ui.stepFollow = false;
+      return revealStepCursor();
+    }
     if (action.kind === 'back') return moveOut();
     if (action.kind === 'install') return runInstall();
     if (action.kind === 'tab') return showTab(action.tab);
@@ -3055,7 +3160,8 @@ export async function runDashboard(bullswarmDir, {
   // Chart columns, tiles, meters, tabs and toggles are click targets too, but
   // reverse-painting a chart row destroys its colours and tells the reader
   // nothing a cursor would not.
-  const HOVER_KINDS = new Set(['run', 'step', 'task']);
+  // A Step turn head and a transcript row are list rows too.
+  const HOVER_KINDS = new Set(['run', 'step', 'task', 'stepTurn', 'stepTool']);
   const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2
     && region.action && HOVER_KINDS.has(region.action.kind));
   // A stacked chart paints its total-column hit region before its per-slice
@@ -3462,15 +3568,55 @@ export async function runDashboard(bullswarmDir, {
           return;
         }
         const turns = step.activity?.turns ?? [];
+        const stepAnchor = lastFrameResult?.anchor?.step ?? null;
         if (ui.stepView === 'overview' && turns.length) {
-          const current = Number.isInteger(ui.stepTurnIndex)
+          // The stops are what the overview shows: the fold line (-1), then the
+          // window's turns. The cursor starts on the newest of them.
+          const shown = stepAnchor?.view === 'overview'
+            ? (stepAnchor.rows ?? []).map((row) => (row.kind === 'fold' ? -1 : row.turnIndex)).filter(Number.isInteger)
+            : [];
+          const stops = shown.length ? shown : turns.map((turn) => turn.index);
+          const current = Number.isInteger(ui.stepTurnIndex) && stops.includes(ui.stepTurnIndex)
             ? ui.stepTurnIndex
-            : Number.isInteger(step.activity?.expandedTurn) ? step.activity.expandedTurn : (delta > 0 ? -1 : turns.length);
-          const next = clamp(current + delta, 0, turns.length - 1);
+            : Number.isInteger(stepAnchor?.cursorTurn) && stops.includes(stepAnchor.cursorTurn)
+              ? stepAnchor.cursorTurn
+              : stops.at(-1);
+          // Down from the newest turn a pinned window shows slides it one turn
+          // onto the turns that arrived since.
+          const windowEnd = stepAnchor?.windowEnd;
+          if (delta > 0 && current === stops.at(-1) && Number.isInteger(windowEnd) && windowEnd < turns.length) {
+            ui.stepWindowEnd = windowEnd + 1;
+            ui.stepTurnIndex = windowEnd;
+            ui.stepSelectedEventIndex = turns[windowEnd]?.responseIndex ?? null;
+            ui.stepFollow = false;
+            ui.stepToolPage = 0;
+            return;
+          }
+          const next = stops[clamp(stops.indexOf(current) + delta, 0, stops.length - 1)];
           ui.stepTurnIndex = next;
-          ui.stepSelectedEventIndex = turns[next]?.responseIndex ?? null;
+          ui.stepSelectedEventIndex = next >= 0 ? turns[next]?.responseIndex ?? null : null;
           ui.stepFollow = false;
           ui.stepToolPage = 0;
+          return;
+        }
+        if (ui.stepView === 'detail') {
+          // The transcript's stops: each turn head and each tool row, in page
+          // order. With no cursor yet it starts on the first (Down) or last
+          // (Up) row on screen.
+          const stops = stepAnchor?.view === 'detail' ? (stepAnchor.rows ?? []).filter((row) => row.index != null) : [];
+          if (!stops.length) return;
+          const at = ui.stepSelectedEventIndex == null ? -1
+            : stops.findIndex((row) => Number(row.index) === Number(ui.stepSelectedEventIndex));
+          let target;
+          if (at < 0) {
+            const top = lastFrameResult?.body?.offset ?? 0;
+            const end = lastFrameResult?.body?.end ?? Infinity;
+            const inView = stops.filter((row) => row.y > top && row.y <= end);
+            target = (delta > 0 ? inView[0] : inView.at(-1)) ?? (delta > 0 ? stops[0] : stops.at(-1));
+          } else target = stops[clamp(at + delta, 0, stops.length - 1)];
+          ui.stepSelectedEventIndex = target.index;
+          ui.stepFollow = false;
+          ui.stepDetail = false;
           return;
         }
         if (!activityIndices.length) return;
@@ -3480,8 +3626,8 @@ export async function runDashboard(bullswarmDir, {
         ui.stepFollow = false;
         ui.stepDetail = false;
       };
-      if (keyPressed('up', key)) { moveSelection(-1); return paint(); }
-      if (keyPressed('down', key)) { moveSelection(1); return paint(); }
+      if (keyPressed('up', key)) { moveSelection(-1); return ui.stepSection === 'attempts' ? paint() : revealStepCursor(); }
+      if (keyPressed('down', key)) { moveSelection(1); return ui.stepSection === 'attempts' ? paint() : revealStepCursor(); }
       if (key === '\t' || key === '\x1b[Z') {
         const at = STEP_SECTIONS.indexOf(ui.stepSection);
         const delta = key === '\x1b[Z' ? -1 : 1;
@@ -3491,10 +3637,22 @@ export async function runDashboard(bullswarmDir, {
         return paint();
       }
       if (key === '\r' || key === '\n') {
+        if (ui.stepSection === 'activity' && ui.stepView === 'overview' && ui.stepTurnIndex === -1) {
+          // Enter on `turns 1–N · … · click for detail` opens the transcript.
+          return setStepView('detail', { fromFold: true });
+        }
+        if (ui.stepSection === 'activity' && ui.stepView === 'detail') {
+          // Enter opens (or closes) every captured field of the row under the
+          // cursor; with no cursor yet it first lands on the row on screen.
+          if (ui.stepSelectedEventIndex == null) moveSelection(1);
+          else ui.stepDetail = !ui.stepDetail;
+          return revealStepCursor();
+        }
         if (ui.stepSection === 'activity' && ui.stepView === 'overview' && step.activity?.turns?.length) {
+          const cursorTurn = lastFrameResult?.anchor?.step?.cursorTurn;
           const target = Number.isInteger(ui.stepTurnIndex)
             ? ui.stepTurnIndex
-            : Number.isInteger(step.activity?.expandedTurn) ? step.activity.expandedTurn : 0;
+            : Number.isInteger(cursorTurn) && cursorTurn >= 0 ? cursorTurn : step.activity.turns.length - 1;
           ui.stepTurnIndex = target;
           ui.stepExpandedTurn = ui.stepExpandedTurn === target ? null : target;
           ui.stepToolPage = 0;
@@ -3505,13 +3663,7 @@ export async function runDashboard(bullswarmDir, {
         }
         return paint();
       }
-      if (key === 'v' || key === 'V') {
-        ui.stepView = ui.stepView === 'detail' ? 'overview' : 'detail';
-        ui.stepDetail = false;
-        ui.stepExpandedTurn = null;
-        ui.stepToolPage = 0;
-        return paint();
-      }
+      if (key === 'v' || key === 'V') return setStepView(ui.stepView === 'detail' ? 'overview' : 'detail');
       // An expanded turn shows the newest three tool rows; Space and the page
       // keys walk that window back through the older ones before Space falls
       // through to its follow toggle.

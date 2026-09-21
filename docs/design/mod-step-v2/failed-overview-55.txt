@@ -1,0 +1,32 @@
+Step
+✗ verify · va7k9a · failed · not verified
+sample purpose for va7k9a sit esse adipiscing
+claude-code · claude-opus-5 · high · 13m21s ·
+03:50→04:04 HKT
+route  evidence: independent of codex (they produced
+the judged work) · surplus 8.1, 5h used 0% · preferred
+over busier: codex (2 in flight) · picked over
+claude-code:acme, grok, codex
+── result · failed · not verified (0/1 requirements) ──
+delegate exited before the requirement was verified
+files  run wf-mu8ni8o4-f9baaf · task · output · stream
+(0 events) · diff
+Enter on result: the full report, 0.3 KB
+── activity · [overview] · detail · 0 turns ──
+event stream unavailable
+── task · analyze · adversarial-acceptance ──
+sample prompt for va7k9a amet ea culpa elit elit qui a…
+after  extract · stream-contract · step-model ·
+step-view · docs · integrate
+Enter on task: full text 0.9 KB · kernel wrapper 4.7 KB
+── cost ──
+API rate  $7.98  10.0M tokens · Anthropic rate card, 19
+Sep
+  9.8M cache read
+  174 input
+  53k output
+claude-code plan  —  no meter reading for this attempt
+  $200/mo
+  weekly window
+measured from the claude-code provider report
+v detail (every turn in full)

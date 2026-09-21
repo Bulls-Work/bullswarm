@@ -23,6 +23,7 @@ import {
 } from '../src/workflow/run-model.js';
 import { historicalProjection } from '../scripts/render-tidy-0.35.1-frames.mjs';
 import { seriesColor } from '../src/workflow/dash-kit.js';
+import { stepPageModel } from '../src/workflow/step-model.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 import { readEvents } from '../src/workflow/events.js';
 import { readdirSync } from 'node:fs';
@@ -54,6 +55,8 @@ const realRuns = {
   g6d6q2: join(realHome, 'wf-mu6mv62z-cdcd5d'),
   euqrni: join(realHome, 'wf-mu8thu2e-27c504'),
   va7k9a: join(realHome, 'wf-mu8ni8o4-f9baaf'),
+  // gbnq62 — `verify` ran three times: grok, then claude-code twice.
+  gbnq62: join(realHome, 'wf-mu8j2hjn-58b8ec'),
 };
 
 const minutesBetween = (from, to) => (Date.parse(to) - Date.parse(from)) / 60_000;
@@ -588,4 +591,36 @@ test('a narrow page gives up the fold line\'s counts before its `click to expand
   assert.equal(fold(55), 'phases 3–9 · 7 steps · 2h39m · 1 ✗ · click to expand');
   assert.equal(fold(45), 'phases 3–9 · 2h39m · 1 ✗ · click to expand');
   assert.equal(fold(40), 'phases 3–9 · 1 ✗ · click to expand');
+});
+
+test('each timeline attempt row opens the Step page on that attempt; the phase rule still opens the latest', () => {
+  // Run gbnq62: `verify` ran three times (grok 01:13, claude-code 01:58 and 03:01).
+  const row = realRow(realRuns.gbnq62);
+  const verifyAttempts = row.state.attempts.filter((attempt) => attempt.actionId === 'verify');
+  assert.deepEqual(verifyAttempts.map((attempt) => [attempt.ordinal, attempt.pool]), [[1, 'grok'], [2, 'claude-code'], [3, 'claude-code']]);
+  for (const width of [55, 200]) {
+    const body = bodyBuilder();
+    runPage({ row, assignments: [], pools: [] }, {
+      width, bodyHeight: 200, narrow: width < 100, nowMs: NOW, spinnerFrame: 0, focus: 0, foldOpen: true,
+    }, body);
+    const regions = body.regions.filter((region) => region.action?.kind === 'step' && region.action.actionId === 'verify');
+    const attemptRows = regions.filter((region) => /✓ verify · /.test(visible(body.lines[region.y - 1])));
+    assert.deepEqual(attemptRows.map((region) => region.action.attemptOrdinal), [1, 2, 3], `${width}: one region per attempt row, in order`);
+    assert.match(visible(body.lines[attemptRows[0].y - 1]), /✓ verify · grok\b/, `${width}: the first row is the grok attempt`);
+    for (const region of attemptRows) assert.equal(region.action.runId, row.runId);
+    // Every other row naming the step (the phase rule) carries no attempt, so
+    // it opens the latest one, as before.
+    const rest = regions.filter((region) => !attemptRows.includes(region));
+    assert.ok(rest.length >= 1, `${width}: the phase rule is a step region too`);
+    for (const region of rest) assert.equal(Object.hasOwn(region.action, 'attemptOrdinal'), false);
+
+    // The action a click sends opens the page on that attempt.
+    const first = stepPageModel({ row, assignments: [], pools: [] }, {
+      actionId: attemptRows[0].action.actionId, attemptOrdinal: attemptRows[0].action.attemptOrdinal, nowMs: NOW,
+    });
+    assert.equal(first.presentation.header.attemptText, 'attempt 1 of 3');
+    assert.equal(first.presentation.header.pool, 'grok');
+    const latest = stepPageModel({ row, assignments: [], pools: [] }, { actionId: rest[0].action.actionId, nowMs: NOW });
+    assert.equal(latest.presentation.header.attemptText, 'attempt 3 of 3');
+  }
 });

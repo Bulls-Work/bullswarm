@@ -190,6 +190,7 @@ function schemaEnums() {
     outputStrategies: split(schema.outputExtraction?.strategy),
     cwdModes: [...new Set([...split(schema.spawn?.cwdMode), 'pwd'])],
     meterTypes: split(schema.meter?.type),
+    toolKinds: [...new Set(Object.values(schema.eventStream?.toolKinds ?? {}).flatMap(split))],
   };
 }
 
@@ -282,6 +283,18 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
         }
       }
     }
+  }
+  const toolKinds = pool.eventStream?.toolKinds;
+  if (toolKinds !== undefined) {
+    if (!toolKinds || typeof toolKinds !== 'object' || Array.isArray(toolKinds)) {
+      errors.push('eventStream.toolKinds: must be an object of tool name → kind');
+    } else {
+      for (const [tool, kind] of Object.entries(toolKinds)) {
+        if (!enums.toolKinds.includes(kind)) errors.push(`eventStream.toolKinds.${tool}: must be ${enums.toolKinds.join(', ')}`);
+      }
+    }
+  } else if (pool.eventStream !== undefined) {
+    warnings.push('eventStream.toolKinds: no tool kinds declared; the Step page counts every tool as other');
   }
 
   const hasModel = (typeof pool.model === 'string' && pool.model !== '')

@@ -1,5 +1,35 @@
 # bullswarm changelog
 
+## 0.35.2 — the Step page reads like a transcript
+
+- step: detail is now a scrollable transcript of every turn in order: the full
+  response followed by one row per command or tool call; opening a turn or
+  tool row still reaches every captured event field, argument, result and exit.
+- step: overview opens on the latest ten turns on desktop and five on phones,
+  newest at the bottom, with one `turns 1–N · … · click for detail` line for
+  earlier work; a followed live window slides until the reader moves it.
+- step: `overview · detail` is one visible, clickable top-bar toggle; `v`, the
+  footer and Help name the same views, and standalone tasks use the same page.
+- step: clicking a turn head toggles it exactly like Enter, and hover lights
+  only the turn's text rather than its padding or desktop side column.
+- run: each timeline attempt row opens Step on that exact attempt; step and
+  phase rows that name no attempt continue to open the latest one.
+- grok: `tool_call_update` captures merge into the `tool_call` with the same id,
+  so a call has one named row and one count instead of extra nameless `agent`
+  rows, while every update remains reachable from transcript detail.
+- providers: every shipped connector declares `eventStream.toolKinds`, mapping
+  its tool vocabulary to command, read, search, edit or other; the Step model
+  contains no provider-specific tool-name table.
+- design: the Step v2 record adds transcript, latest-turn-window and toggle
+  rules with before/after frames at 55 and 200 columns; committed real text and
+  colour frames are regenerated from scrubbed fixtures.
+- mod: the Claude Code Step pane draws the same v2 header, turns, result, task,
+  cost, phone order, colours, transcript toggle and latest-turn window from
+  `action show --json`, for workflow steps and standalone tasks alike.
+- mod: Usage opens with `u` or a click even with no workflow running, and back
+  returns to idle; validated temporary chunks carry large Step records within
+  hook limits and are removed immediately.
+
 ## 0.35.1 — a calmer dashboard with honest active time
 
 - durations: Home, Runs, Run, Step, and Stats use the union-based

@@ -37,6 +37,18 @@
     "args": ["--output-format", "stream-json", "--verbose", "--forward-subagent-text"],
     "modelPaths": ["model", "message.model"],
     "silenceThresholdSec": 600,
+    "$comment-toolKinds": "Claude Code 2.1 tool names (the tool_use `name`). Bash, Read, Write and ToolSearch appear in the real capture under tests/fixtures/home-351; the rest are the same CLI's built-in tools. ToolSearch, WebFetch, TodoWrite, Task and every MCP tool count as other.",
+    "toolKinds": {
+      "Bash": "command",
+      "Read": "read",
+      "Write": "edit",
+      "Edit": "edit",
+      "MultiEdit": "edit",
+      "NotebookEdit": "edit",
+      "Glob": "search",
+      "Grep": "search",
+      "WebSearch": "search"
+    },
     "rules": [
       {
         "rootMatch": { "path": "type", "equals": "assistant" },

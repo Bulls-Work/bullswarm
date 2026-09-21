@@ -33,6 +33,7 @@ import {
   type BullswarmAssignmentRecord,
 } from './runs'
 import { strip } from './strip'
+import type { StepMode } from './step'
 import { parseVerdict, verdictContext } from './verdict'
 
 const COMMAND = 'bullswarm'
@@ -144,6 +145,8 @@ export function register(on: On, options: PluginOptions = {}) {
   let paneOffset = 0
   /** The open step as `action show` reports it, and the head of its task file. */
   let step: BullswarmStep | null = null
+  let stepMode: StepMode = 'overview'
+  let expandedStepTurn: number | null = null
   /** The pool × tier rungs, read while the pane is open; the pane's pools section expands to show them. */
   let rungs: BullswarmRung[] = []
   /** The pane shows the pools page instead of the run while this is set. */
@@ -172,6 +175,37 @@ export function register(on: On, options: PluginOptions = {}) {
     if (r.exitCode !== 0)
       throw new Error(r.stderr.trim().split('\n')[0] || `${argv[1]} exited ${r.exitCode}`)
     return parse(r.stdout)
+  }
+
+  /**
+   * `action show` can exceed Claude's process-output limit because the Step
+   * record intentionally carries the complete transcript. Keep that exact
+   * model, but let the child split it into sub-limit files inside a validated
+   * temporary directory instead of parsing truncated stdout.
+   */
+  async function readLargeJson<T>(h: Host, argv: readonly string[], parse: (s: string) => T): Promise<T> {
+    const made = await h.run(['mktemp', '-d', '-t', 'bullswarm-step'], { timeoutMs: POOLS_TIMEOUT_MS })
+    const dir = made.stdout.trim()
+    if (made.exitCode !== 0 || !/^\/(?:private\/)?(?:tmp|var\/folders)\/(?:.+\/)?bullswarm-step\.[A-Za-z0-9]+$/.test(dir)) {
+      throw new Error(made.stderr.trim().split('\n')[0] || 'could not create a safe Step transport directory')
+    }
+    try {
+      const shown = await h.run(
+        ['/bin/sh', '-c', 'bullswarm "$@" > "$BULLSWARM_STEP_DIR/step.json" && /usr/bin/split -b 3000000 "$BULLSWARM_STEP_DIR/step.json" "$BULLSWARM_STEP_DIR/part-"', 'bullswarm-step', ...argv.slice(1)],
+        { timeoutMs: POOLS_TIMEOUT_MS, env: { BULLSWARM_STEP_DIR: dir } },
+      )
+      if (shown.exitCode !== 0) throw new Error(shown.stderr.trim().split('\n')[0] || `${argv[1]} exited ${shown.exitCode}`)
+      let text = ''
+      for (const first of 'abcdefghijklmnopqrstuvwxyz') {
+        for (const second of 'abcdefghijklmnopqrstuvwxyz') {
+          try { text += await h.read(`${dir}/part-${first}${second}`) }
+          catch { return parse(text) }
+        }
+      }
+      return parse(text)
+    } finally {
+      await h.run(['/bin/rm', '-rf', '--', dir], { timeoutMs: POOLS_TIMEOUT_MS }).catch(() => undefined)
+    }
   }
 
   async function refresh(h: Host): Promise<BullswarmPool[]> {
@@ -205,6 +239,8 @@ export function register(on: On, options: PluginOptions = {}) {
       if (next !== selectedShortId) {
         selectedActionId = null
         step = null
+        stepMode = 'overview'
+        expandedStepTurn = null
         outputTail = null
         promptPreview = []
         paneOffset = 0
@@ -260,7 +296,7 @@ export function register(on: On, options: PluginOptions = {}) {
     outputTail = null
     if (selectedActionId) {
       try {
-        step = await readJson(h, ['bullswarm', 'workflow', 'action', 'show', id, selectedActionId, '--json'], text =>
+        step = await readLargeJson(h, ['bullswarm', 'workflow', 'action', 'show', id, selectedActionId, '--json'], text =>
           parseStep(text, Date.now()),
         )
       } catch (error) {
@@ -385,7 +421,7 @@ export function register(on: On, options: PluginOptions = {}) {
       rungs: async () => readJson(host ?? built, ['bullswarm', 'strategy', 'rungs', '--json'], parseRungs),
       step: async (shortId, actionId) => {
         const h = host ?? built
-        return readJson(h, ['bullswarm', 'workflow', 'action', 'show', shortId, actionId, '--json'], text =>
+        return readLargeJson(h, ['bullswarm', 'workflow', 'action', 'show', shortId, actionId, '--json'], text =>
           parseStep(text, Date.now()),
         )
       },
@@ -788,6 +824,8 @@ export function register(on: On, options: PluginOptions = {}) {
         detail,
         action,
         step,
+        stepMode,
+        expandedStepTurn,
         promptPreview,
         outputTail,
         pools,
@@ -806,10 +844,14 @@ export function register(on: On, options: PluginOptions = {}) {
         select: shortId => {
           paneOffset = 0
           poolsPage = false
+          stepMode = 'overview'
+          expandedStepTurn = null
           if (h) void openPane(h, shortId)
         },
         openAction: actionId => {
           selectedActionId = actionId
+          stepMode = 'overview'
+          expandedStepTurn = null
           paneOffset = 0
           if (h) {
             settle(h)
@@ -821,8 +863,26 @@ export function register(on: On, options: PluginOptions = {}) {
           selectedActionId = null
           outputTail = null
           step = null
+          stepMode = 'overview'
+          expandedStepTurn = null
           paneOffset = 0
           if (h) settle(h)
+        },
+        toggleStep: () => {
+          stepMode = stepMode === 'overview' ? 'detail' : 'overview'
+          expandedStepTurn = null
+          paneOffset = 0
+          if (h) h.invalidate('ui.render')
+        },
+        setStepMode: mode => {
+          stepMode = mode
+          expandedStepTurn = null
+          paneOffset = 0
+          if (h) h.invalidate('ui.render')
+        },
+        expandStepTurn: turnIndex => {
+          expandedStepTurn = expandedStepTurn === turnIndex ? null : turnIndex
+          if (h) h.invalidate('ui.render')
         },
         setRungsBy: by => {
           rungsBy = by

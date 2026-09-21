@@ -1215,10 +1215,11 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
     }).lines.join('\n');
 
     // The tab row is the first row of every page, the active tab inverted.
+    // The Step page's top bar also ends on its `overview · detail` toggle.
     for (const name of DASHBOARD_PAGE_NAMES) {
       assert.deepEqual(
         tabNames(page(name)),
-        ['Home', 'Runs', 'Budget', 'Stats', 'Fleet'],
+        ['Home', 'Runs', 'Budget', 'Stats', 'Fleet', ...(name === 'step' || name === 'task' ? ['overview · detail'] : [])],
         `${name} painted the wrong tab row`,
       );
     }
@@ -1725,11 +1726,24 @@ test('Step keyboard controls select, filter, follow, open detail, and jump secti
     const collapsed = plain(session.press(ESC_KEY));
     assert.match(collapsed, /── activity · /);
     assert.doesNotMatch(collapsed, /^▶ 1 /m);
-    // v switches the activity block to the capture-order log and back; the
-    // toggle names what each view holds and lives in the footer hints.
-    assert.match(plain(session.press('v')), /── detail · today's capture-order log/);
-    assert.match(plain(lastFrame(session.output)), /v overview \(turns\)/);
-    assert.match(plain(session.press('v')), /v detail \(every event\)/);
+    // v switches the activity block to the transcript and back (step-v2 rule
+    // 12); the footer names what each view holds, and the top bar marks it.
+    const transcript = plain(session.press('v'));
+    assert.match(transcript, /── transcript · 1 turn · /);
+    assert.match(transcript, /08:02:02  \$ run tests\s+1s/);
+    assert.match(plain(lastFrame(session.output)), /v overview \(latest turns\)/);
+    // Enter on the tool row opens every field its two captures carried.
+    session.press('\x1b[B'); // the cursor lands on the turn head
+    session.press('\x1b[B'); // then on the `run tests` row
+    const opened = plain(session.press('\r'));
+    assert.match(opened, /kind command_execution · status running · eventId evt-2/);
+    assert.match(opened, /toolCallId call-1 · tool shell/);
+    assert.match(opened, /^ +"command": "npm test" +│/m);
+    assert.match(opened, /status failed · eventId evt-3/);
+    assert.match(opened, /duration 1000/);
+    assert.match(opened, /^ +result +│.*\n +exit 1 +│/m);
+    assert.doesNotMatch(plain(session.press(ESC_KEY)), /"command": "npm test"/, 'Esc closes the open row');
+    assert.match(plain(session.press('v')), /v detail \(every turn in full\)/);
 
     // The section jumps land in the merged blocks of the five-block order.
     session.press('o');
@@ -1770,19 +1784,183 @@ test('Up and Down on the Step page move one inverse cursor row through the turns
 
     session.press('\r'); // the run page opens the phase's first step
     assert.match(frameHeader(lastFrame(session.output)), /scan · aaa111 · succeeded/);
-    assert.deepEqual(cursorRows(lastFrame(session.output)), [], 'no cursor before the reader moves');
+    // Step-v2 rule 13: the overview opens with the cursor on the newest turn.
+    const opening = cursorRows(lastFrame(session.output));
+    assert.equal(opening.length, 1, 'one cursor when the page opens');
+    assert.match(plain(opening[0][1]), /^ +3  \d{2}:\d{2}  third answer/);
 
-    const seen = [];
-    for (const [number, text] of [[1, 'first answer'], [2, 'second answer'], [3, 'third answer']]) {
-      const rows = cursorRows(session.press('\x1b[B'));
-      assert.equal(rows.length, 1, `Down to turn ${number}: ${rows.map(([, row]) => plain(row)).join(' | ')}`);
+    const seen = [opening[0][0]];
+    for (const [number, text] of [[2, 'second answer'], [1, 'first answer']]) {
+      const rows = cursorRows(session.press('\x1b[A'));
+      assert.equal(rows.length, 1, `Up to turn ${number}: ${rows.map(([, row]) => plain(row)).join(' | ')}`);
       assert.match(plain(rows[0][1]), new RegExp(`^ +${number}  \\d{2}:\\d{2}  ${text}`));
       seen.push(rows[0][0]);
     }
-    assert.ok(seen[0] < seen[1] && seen[1] < seen[2], `the cursor moved down the page: ${seen}`);
-    const up = cursorRows(session.press('\x1b[A'));
-    assert.equal(up.length, 1);
-    assert.equal(up[0][0], seen[1], 'Up moves the cursor back one turn');
+    assert.ok(seen[0] > seen[1] && seen[1] > seen[2], `the cursor moved up the page: ${seen}`);
+    const down = cursorRows(session.press('\x1b[B'));
+    assert.equal(down.length, 1);
+    assert.equal(down[0][0], seen[1], 'Down moves the cursor back one turn');
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('Step overview · detail: the latest-turns window, the fold line, the top-bar toggle, turn-head clicks and tool rows', async () => {
+  // Step-v2 rules 12–14 driven through the real shell with keys and SGR mouse
+  // presses on a twelve-turn step: the overview shows the newest ten turns, the
+  // fold line and the top-bar toggle open the transcript, a click on a turn
+  // head is Enter on it, and Enter on a transcript row opens its fields.
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    const events = [];
+    for (let turn = 1; turn <= 12; turn += 1) {
+      const at = (offset) => new Date(Date.parse('2026-08-29T00:02:00.000Z') + (turn * 10 + offset) * 1000).toISOString();
+      events.push({ at: at(0), source: 'codex', providerType: 'item.completed', kind: 'response', status: 'completed', summary: `answer ${turn}` });
+      events.push({ at: at(1), source: 'codex', providerType: 'item.started', kind: 'command_execution', status: 'running', summary: `run check ${turn}`, toolCallId: `call-${turn}`, arguments: { command: `check ${turn}` } });
+      events.push({ at: at(3), source: 'codex', providerType: 'item.completed', kind: 'command_execution', status: 'completed', summary: `run check ${turn}`, toolCallId: `call-${turn}`, result: `exit 0 (check ${turn})`, durationMs: 2000 });
+    }
+    writeFileSync(join(dir, 'stream-scan-attempt-1.jsonl'), events.map((event, index) => JSON.stringify({ seq: index + 1, ...event })).join('\n'));
+    const session = shellSession(home, { token: 'wf-alpha', columns: 120, rows: 40 });
+    session.press('\r'); // the run page opens the phase's first step
+    const rows = () => paintedRows(lastFrame(session.output)).map(plain);
+    const raw = () => lastFrame(session.output).split('\n');
+    const left = (line) => line.split(' │ ')[0].trimEnd();
+    const heads = () => rows().map((line) => left(line).match(/^[ ▶]{0,2}(\d+) {2}\d\d:\d\d {2}answer/)?.[1]).filter(Boolean).map(Number);
+    const cursorText = () => raw().slice(1, -1).filter((line) => line.includes('\x1b[7m')).map((line) => left(plain(line)));
+
+    // Rule 13: the newest ten turns under one fold line; the cursor on the newest.
+    assert.match(frameHeader(lastFrame(session.output)), /scan · aaa111 · succeeded/);
+    assert.deepEqual(heads(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.ok(rows().some((line) => left(line) === ' turns 1–2 · 2 commands · click for detail'), rows().join('\n'));
+    assert.deepEqual(cursorText(), [' 12  08:04  answer 12 · 1 command']);
+    // Rule 14: the top bar carries the toggle with the current view marked.
+    assert.match(rows()[0], /^ Home  Runs  Budget  Stats  Fleet +overview · detail$/);
+    assert.match(raw()[0], /\x1b\[7moverview\x1b\[0m · detail/);
+
+    // Hovering a turn head lights its own words only: not the padding, not the
+    // right column across the divider.
+    const fiveAt = rows().findIndex((line) => left(line).startsWith('  5  '));
+    session.press(`\x1b[<35;4;${fiveAt + 1}M`);
+    const lit = raw()[fiveAt];
+    assert.match(lit, /\x1b\[7m/);
+    assert.equal(plain(lit), rows()[fiveAt], 'the hover keeps the text');
+    assert.doesNotMatch(lit.split('│').slice(1).join('│'), /\x1b\[7m/, 'the right column is not lit');
+    const leftRaw = lit.split('│')[0];
+    const lastOff = leftRaw.lastIndexOf('\x1b[27m');
+    assert.ok(lastOff > 0, 'the light closes inside the activity column');
+    assert.equal(plain(leftRaw.slice(lastOff)).trim(), '', 'the light ends with the words, not the padding');
+    assert.ok(plain(leftRaw.slice(0, lastOff)).trimEnd().endsWith('answer 5 · 1 command'), JSON.stringify(leftRaw));
+    session.press('\x1b[<35;1;3M'); // off the row
+
+    // Rule 14: a click on a turn head toggles it like Enter.
+    clickOn(session, 'answer 5');
+    assert.ok(rows().some((line) => /^▶ 5  08:02  answer 5/.test(line)), rows().join('\n'));
+    assert.ok(rows().some((line) => /08:02:51  \$ run check 5\s+2s/.test(left(line))), rows().join('\n'));
+    clickOn(session, 'answer 5');
+    assert.equal(rows().some((line) => /^▶ 5 /.test(line)), false, 'a second click collapses it');
+
+    // Rule 14: `detail` in the top bar opens the transcript and marks it.
+    clickOn(session, 'detail');
+    assert.ok(rows().some((line) => /^── transcript · 12 turns · /.test(line)), rows().join('\n'));
+    assert.match(raw()[0], /overview · \x1b\[7mdetail\x1b\[0m/);
+    assert.match(rows().at(-1), /v overview \(latest turns\)/);
+    // Rule 12: every turn, each expanded — the response, its counts, its rows.
+    assert.deepEqual(heads().slice(0, 3), [1, 2, 3]);
+    assert.ok(rows().some((line) => /^ {12}08:02:11  \$ run check 1\s+2s$/.test(left(line))), rows().join('\n'));
+    clickOn(session, 'overview');
+    assert.deepEqual(heads(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.match(rows().at(-1), /v detail \(every turn in full\)/);
+
+    // Rule 13: Up walks the window's turns, then lands on the fold line; Enter
+    // there opens the transcript at its top. The cursor is still on turn 5,
+    // where the click left it.
+    assert.deepEqual(cursorText(), ['  5  08:02  answer 5 · 1 command']);
+    for (let press = 0; press < 2; press += 1) session.press('\x1b[A');
+    assert.deepEqual(cursorText(), ['  3  08:02  answer 3 · 1 command']);
+    session.press('\x1b[A');
+    assert.deepEqual(cursorText(), [' turns 1–2 · 2 commands · click for detail']);
+    session.press('\r');
+    assert.ok(rows().some((line) => /^── transcript · 12 turns · /.test(line)), 'Enter on the fold line opens detail');
+    assert.equal(heads()[0], 1, 'the transcript opens at its top');
+
+    // Rule 12: the cursor walks the rows; Enter on a tool row opens every field
+    // its two captures carried — arguments and the result in full.
+    session.press('\x1b[B');
+    assert.deepEqual(cursorText(), ['  1  08:02  answer 1']);
+    session.press('\x1b[B');
+    assert.match(cursorText()[0], /^ {12}08:02:11  \$ run check 1/);
+    session.press('\r');
+    const opened = rows().map(left).join('\n');
+    assert.match(opened, /seq 2 · 2026-08-29T00:02:11\.000Z · codex · item\.started/);
+    assert.match(opened, /"command": "check 1"/);
+    assert.match(opened, /seq 3 · .* item\.completed/);
+    assert.match(opened, /^ +exit 0 \(check 1\)$/m);
+    session.press('\r');
+    assert.doesNotMatch(rows().map(left).join('\n'), /"command": "check 1"/, 'Enter again closes the row');
+    // A click on another tool row selects it and opens its fields.
+    clickOn(session, 'run check 2');
+    assert.match(rows().map(left).join('\n'), /"command": "check 2"/);
+    assert.match(cursorText()[0], /\$ run check 2/);
+
+    // The fold line is a click target too.
+    session.press('v');
+    assert.deepEqual(heads(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    clickOn(session, 'click for detail');
+    assert.ok(rows().some((line) => /^── transcript · 12 turns · /.test(line)), 'a click on the fold line opens detail');
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('while following a running step the latest-turns window slides; once the reader stops it stays put', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    // The first step is still running, so its stream grows under the page.
+    const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    Object.assign(state.actions[0], { status: 'running', finishedAt: null });
+    Object.assign(state.attempts[0], { status: 'running', finishedAt: null });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const stream = join(dir, 'stream-scan-attempt-1.jsonl');
+    const turnEvents = (turn) => {
+      const at = (offset) => new Date(Date.parse('2026-08-29T00:02:00.000Z') + (turn * 10 + offset) * 1000).toISOString();
+      return [
+        { seq: turn * 3, at: at(0), source: 'codex', providerType: 'item.completed', kind: 'response', status: 'completed', summary: `answer ${turn}` },
+        { seq: turn * 3 + 1, at: at(1), source: 'codex', providerType: 'item.started', kind: 'command_execution', status: 'running', summary: `run check ${turn}`, toolCallId: `call-${turn}` },
+        { seq: turn * 3 + 2, at: at(3), source: 'codex', providerType: 'item.completed', kind: 'command_execution', status: 'completed', summary: `run check ${turn}`, toolCallId: `call-${turn}`, durationMs: 2000 },
+      ].map((event) => JSON.stringify(event)).join('\n');
+    };
+    const write = (count) => writeFileSync(stream, `${Array.from({ length: count }, (_, index) => turnEvents(index + 1)).join('\n')}\n`);
+    write(12);
+    const session = shellSession(home, { token: 'wf-alpha', columns: 120, rows: 40 });
+    session.press('\r');
+    const rows = () => paintedRows(lastFrame(session.output)).map(plain).map((line) => line.split(' │ ')[0].trimEnd());
+    const heads = () => rows().map((line) => line.match(/^[ ▶]{0,2}(\d+) {2}\d\d:\d\d {2}answer/)?.[1]).filter(Boolean).map(Number);
+    const repaint = () => { session.press('e'); session.press('e'); }; // errors, then back to all
+    assert.match(frameHeader(lastFrame(session.output)), /scan · aaa111 · running/);
+    assert.deepEqual(heads(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+    // Following: two new turns slide the window.
+    write(14);
+    repaint();
+    assert.deepEqual(heads(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    assert.ok(rows().includes(' turns 1–4 · 4 commands · click for detail'), rows().join('\n'));
+
+    // Up stops following: the window stays where the reader left it, and the
+    // turns that arrive are named below it.
+    session.press('\x1b[A');
+    write(16);
+    repaint();
+    assert.deepEqual(heads(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    assert.ok(rows().includes(' turns 15–16 · f to follow'), rows().join('\n'));
+    // Down past the newest shown turn slides the window onto them, one turn.
+    session.press('\x1b[B');
+    session.press('\x1b[B');
+    assert.deepEqual(heads(), [6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert.ok(rows().includes(' turn 16 · f to follow'), rows().join('\n'));
+    // `f` follows again: the window is the newest ten.
+    session.press('f');
+    assert.deepEqual(heads(), [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    assert.equal(rows().some((line) => / · f to follow$/.test(line)), false);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -4262,6 +4440,33 @@ function foldFixture() {
 const timelineRows = (screen) => paintedRows(screen).filter((row) => /^ ?(── |\d{2}:\d{2}  |phases \d|click to )/.test(row));
 const FOLD_LINE = 'phases 3–9 · 7 steps · 2h39m · 1 ✗ · click to expand';
 
+// Run gbnq62 ran `verify` three times. An attempt row opens that attempt;
+// the phase rule, which names no attempt, still opens the latest.
+for (const columns of [55, 200]) {
+  test(`a Run timeline attempt row opens its own attempt on the Step page at ${columns} columns`, async () => {
+    const { home, cleanup } = foldFixture();
+    try {
+      const open = (needle) => {
+        const session = shellSession(home, { token: 'wf-mu8j2hjn-58b8ec', columns, rows: 120 });
+        clickOn(session, needle);
+        return session;
+      };
+      const first = open('verify · grok');
+      const firstHeader = paintedRows(lastFrame(first.output)).slice(0, 6).join('\n');
+      assert.match(firstHeader, /✓ verify · gbnq62/);
+      assert.match(firstHeader, /^ grok · grok-4\.6 · high/m);
+      if (columns >= 100) assert.match(firstHeader, /attempt 1 of 3/);
+      assert.equal(await first.quit(), 0);
+
+      const rule = open('7 · verify');
+      const ruleHeader = paintedRows(lastFrame(rule.output)).slice(0, 6).join('\n');
+      assert.match(ruleHeader, /^ claude-code · claude-opus-5 · high/m);
+      if (columns >= 100) assert.match(ruleHeader, /attempt 3 of 3/);
+      assert.equal(await rule.quit(), 0);
+    } finally { cleanup(); }
+  });
+}
+
 for (const columns of [55, 200]) {
   for (const how of ['click', 'Enter']) {
     test(`the Run timeline's fold line opens and closes on a ${how} at ${columns} columns`, async () => {
@@ -4309,4 +4514,3 @@ for (const columns of [55, 200]) {
     });
   }
 }
-

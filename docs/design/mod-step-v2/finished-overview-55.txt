@@ -1,0 +1,54 @@
+Step
+✓ step-model · va7k9a · succeeded · verified
+sample purpose for va7k9a aute commodo proident ullamco
+cupidatat magna
+codex · gpt-5.6-luna · medium · 49m07s · 01:50→02:39
+HKT
+route  expiring soon: codex resets in 8h28m, surplus
+11.8 over 5% of the week left → urgency 236 · picked
+over command-code, grok
+── result · succeeded · verified by the workflow (6/6
+requirements) ──
+sample report magna exercitation.
+sample sint: sample exercitation nisi consequat cillum…
+sample ex amet pariatur lorem incididunt ex mollit ex…
+changed  src/dir-01/file-267.js
+changed  tests/file-268.test.js
+files  run wf-mu8ni8o4-f9baaf · task · output · stream
+(325 events) · diff
+Enter on result: the full report, 1.3 KB
+── activity · [overview] · detail · 15 turns ──
+turns 1–10 · 95 commands · 25 edits · click for detail
+11  02:26  sample response for step-model-1 sit et
+voluptate ipsum ad do non consequat esse et exc…
+6 commands · 2 edits
+12  02:31  sample response for step-model-1 aute aliqua
+esse voluptate reprehenderit culpa officia…
+1 command
+13  02:31  sample response for step-model-1 laborum
+magna cillum esse laboris sunt et labore enim…
+7 commands
+14  02:35  sample response for step-model-1 incididunt
+nisi aliqua id culpa officia voluptate temp…
+11 commands · 8 edits
+15  02:39  sample report magna exercitation. sample
+sint: - sample exercitation nisi consequat cil…
+→ the report, shown under result
+── task · build · implement ──
+sample prompt for va7k9a lorem aute ipsum exercitation…
+owns  file-267.js · file-268.test.js
+after  extract · stream-contract
+affects  requirement 3 · requirement 6
+Enter on task: full text 2.4 KB · kernel wrapper 1.8 KB
+── cost ──
+API rate  $0.96  36.0M tokens · OpenAI rate card, 20
+Sep
+  35.2M cache read
+  713k input
+  58k output
+  37k reasoning
+codex plan  —  no meter reading for this attempt
+  $100/mo
+  weekly window
+measured from the codex transcript
+v detail (every turn in full)

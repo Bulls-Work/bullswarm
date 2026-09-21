@@ -40,10 +40,10 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   }
   assert.match(frames.get('real-run-running-120.txt').join('\n'), /running/i);
   assert.match(frames.get('real-run-finished-120.txt').join('\n'), /completed/i);
-  // Step v2 moved the toggle out of the header and into the footer hints, and
-  // names what each view holds (step-v2 record, rule 1 and the key list).
-  assert.match(frames.get('real-step-overview-running-120.txt').join('\n'), /v detail \(every event\)/);
-  assert.match(frames.get('real-step-detail-failed-120.txt').join('\n'), /── detail · today's capture-order log/);
+  // Step v2 exposes the view toggle in the top bar and names the destination
+  // in the footer (step-v2 record, rules 12–14).
+  assert.match(frames.get('real-step-overview-running-120.txt').join('\n'), /v detail \(every turn in full\)/);
+  assert.match(frames.get('real-step-detail-failed-120.txt').join('\n'), /── transcript · 2 turns · 17 cmds · 0 edits · 0 err .* showing all/);
   // A single task renders through the same Step header: identity, short id,
   // verdict — no `Step ` prefix (requirement 5, step-v2 record rule 1). 0.35.1
   // names it as the Runs list does: `<lane> task · <8-char id>`.

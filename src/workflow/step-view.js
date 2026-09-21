@@ -4,10 +4,10 @@
 // result → activity → task → cost so the answer is on top. Every string here
 // comes from step-model.js; a missing field prints as a dash, never as prose.
 
-import { cut, rule, seriesColor } from './dash-kit.js';
+import { cut, periodToggle, rule, seriesColor } from './dash-kit.js';
 import { blank, dimText, inverseText, strong, tint, visibleLength } from './dashboard.js';
 import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
-import { stepClockText } from './step-model.js';
+import { stepClockText, turnCountsText } from './step-model.js';
 
 const DIVIDER = ' │ ';
 const GUTTER = 12;
@@ -379,11 +379,8 @@ function turnHead(turn, { mark }) {
 const TOOL_ROW_LIMIT = 3;
 
 function toolRowCategory(tool) {
-  if (tool?.command === true) return 'command';
-  const kind = String(tool?.kind ?? '').trim().toLowerCase().replace(/[_-]+/g, ' ');
-  if (['write', 'edit', 'multiedit', 'notebookedit', 'file change', 'apply patch', 'write file', 'edit file'].includes(kind)) {
-    return 'edit';
-  }
+  if (tool?.command === true || tool?.category === 'command') return 'command';
+  if (tool?.category === 'edit') return 'edit';
   return 'tool';
 }
 
@@ -437,6 +434,25 @@ export function toolRowWindow(turn, {
   };
 }
 
+/**
+ * One tool row: clock · kind · summary, as an expanded turn draws it — `$`
+ * before a command, the duration its pair measured at the right edge, and a
+ * spinner while it is still running.
+ */
+function toolRowLine(tool, { width, spinnerFrame = 0 }) {
+  const room = Math.max(1, width - GUTTER);
+  const indent = ' '.repeat(GUTTER);
+  if (tool.inFlight) {
+    const elapsed = tool.durationText ? `${dimCell(tool.durationText)}  ` : '';
+    return fit(`${indent}${tint(spinnerGlyph(spinnerFrame), 'amber')} ${tint('running', 'amber')} ${elapsed}${tool.text}`, width);
+  }
+  const durationText = tool.durationText;
+  const label = tool.command ? `${dimCell('$')} ${tool.text}` : tool.text;
+  const labelRoom = Math.max(8, room - (durationText ? visibleLength(durationText) + 3 : 0));
+  const labelLine = `${indent}${dimCell(tool.clock ?? '—:—:—')}  ${fit(label, labelRoom)}`;
+  return durationText ? alignRight(labelLine, dimCell(durationText), width) : fit(labelLine, width);
+}
+
 function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, following = false, running = false }) {
   const room = Math.max(1, width - GUTTER);
   const indent = ' '.repeat(GUTTER);
@@ -458,19 +474,7 @@ function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, foll
     if (window.earlierCount) {
       rows.push(`${indent}${dimCell(`↑ ${window.earlierCount} earlier ${toolRowNoun(window.earlierRows)} · Space page up`)}`);
     }
-    const shownTools = window.rows;
-    for (const tool of shownTools) {
-      if (tool.inFlight) {
-        const elapsed = tool.durationText ? `${dimCell(tool.durationText)}  ` : '';
-        rows.push(fit(`${indent}${tint(spinnerGlyph(spinnerFrame), 'amber')} ${tint('running', 'amber')} ${elapsed}${tool.text}`, width));
-        continue;
-      }
-      const durationText = tool.durationText;
-      const label = tool.command ? `${dimCell('$')} ${tool.text}` : tool.text;
-      const labelRoom = Math.max(8, room - (durationText ? visibleLength(durationText) + 3 : 0));
-      const labelLine = `${indent}${dimCell(tool.clock ?? '—:—:—')}  ${fit(label, labelRoom)}`;
-      rows.push(durationText ? alignRight(labelLine, dimCell(durationText), width) : fit(labelLine, width));
-    }
+    for (const tool of window.rows) rows.push(toolRowLine(tool, { width, spinnerFrame }));
     return rows;
   }
   const body = wrap(oneLine(turn.text), room);
@@ -521,6 +525,53 @@ function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, foll
   return rows;
 }
 
+/** The overview shows the newest turns: ten on the desk, five on the phone. */
+export function overviewTurnLimit(width) {
+  return Math.max(20, Number(width) || 120) < 100 ? 5 : 10;
+}
+
+/**
+ * The overview's window over the turns: the newest `limit`, newest at the
+ * bottom. While a running step is followed the window slides with each new
+ * turn; otherwise it ends where the reader left it (`windowEnd`).
+ */
+export function overviewWindow(turns, { limit = 10, windowEnd = null, following = false } = {}) {
+  const list = Array.isArray(turns) ? turns : [];
+  const size = Math.max(1, Number(limit) || 10);
+  const pinned = Number.isInteger(windowEnd) && !following
+    ? Math.max(Math.min(size, list.length), Math.min(windowEnd, list.length))
+    : list.length;
+  const start = Math.max(0, pinned - size);
+  return { shown: list.slice(start, pinned), hidden: list.slice(0, start), end: pinned };
+}
+
+/**
+ * The one dim line that stands for the turns above the window:
+ * `turns 1–48 · 312 commands · 20 edits · click for detail`. Its counts are
+ * the hidden turns' own, non-zero classes only, in the turn rows' order.
+ */
+export function foldLineText(hidden, width = Infinity) {
+  const list = Array.isArray(hidden) ? hidden : [];
+  if (!list.length) return null;
+  const summary = { commands: 0, filesRead: 0, searches: 0, edits: 0, otherTools: 0, errors: 0 };
+  const otherKinds = [];
+  for (const turn of list) {
+    for (const field of Object.keys(summary)) summary[field] += Number(turn?.summary?.[field]) || 0;
+    for (const kind of turn?.otherKinds ?? []) if (!otherKinds.includes(kind)) otherKinds.push(kind);
+  }
+  const counts = turnCountsText(summary, { otherKinds });
+  const first = list[0].number;
+  const last = list.at(-1).number;
+  const range = first === last ? `turn ${first}` : `turns ${first}–${last}`;
+  // A narrow column drops count segments from the end, never the affordance.
+  const segments = counts === 'no tools' ? [] : counts.split(' · ');
+  for (let keep = segments.length; keep >= 0; keep -= 1) {
+    const text = countList([range, ...segments.slice(0, keep), 'click for detail']);
+    if (visibleLength(text) <= width || keep === 0) return text;
+  }
+  return null;
+}
+
 function activityLines(presentation, {
   width,
   phone,
@@ -529,26 +580,41 @@ function activityLines(presentation, {
   spinnerFrame = 0,
   toolPage = 0,
   cursorTurn = null,
+  windowEnd = null,
+  limit = 10,
 }) {
   const activity = presentation.activity;
   const title = `activity · ${activityTitle(presentation, { phone, view, compact })}`;
   const lines = [];
+  const marks = [];
   if (!activity.available) {
     lines.push(paintRule(rule(title, null, width)));
     lines.push(fit(` ${dimCell(`${activity.reason ?? 'event stream unavailable'}.`)}`, width));
     lines.push(fit(` ${dimCell('turns, tools, and event timing cannot be reconstructed.')}`, width));
-    return lines;
+    return { lines, marks, windowEnd: null };
   }
   // One filter control, and the follow marker only while the step runs
   // (rule 9): a finished page has nothing to follow.
   const suffix = phone ? null : `showing ${filterLabel(presentation, view)} · t to change`;
-  lines.push(activityRule(title, suffix, width, { following: activity.running && activity.following }));
-  if (phone && activity.running) lines.push(fit(` ${dimCell('↑ earlier turns')}`, width));
+  const following = Boolean(activity.running && activity.following);
+  lines.push(activityRule(title, suffix, width, { following }));
   if (!activity.turns.length) {
     lines.push(fit(` ${dimCell(`no response turns captured · ${activity.events} atomic events`)}`, width));
-    return lines;
+    return { lines, marks, windowEnd: null };
   }
-  for (const turn of activity.turns) {
+  // Rule 13: the newest turns, and one line for the rest that opens detail.
+  const window = overviewWindow(activity.turns, { limit, windowEnd, following });
+  const fold = foldLineText(window.hidden, width - 1);
+  if (fold) {
+    const line = fit(` ${dimCell(fold)}`, width);
+    marks.push({ line: lines.length, kind: 'fold' });
+    lines.push(cursorTurn === -1 ? inverseText(line) : line);
+  }
+  // The cursor starts on the newest turn the window shows.
+  const cursor = Number.isInteger(cursorTurn) && (cursorTurn === -1 || window.shown.some((turn) => turn.index === cursorTurn))
+    ? cursorTurn
+    : window.shown.at(-1)?.index ?? null;
+  for (const turn of window.shown) {
     const rows = turnRowLines(turn, {
       width,
       phone,
@@ -558,12 +624,20 @@ function activityLines(presentation, {
       running: Boolean(activity.running),
     });
     // The cursor row: the head row of the turn Up/Down selected, inverse.
+    marks.push({ line: lines.length, kind: 'turn', turnIndex: turn.index, index: turn.responseIndex ?? null, number: turn.number });
     rows.forEach((row, index) => {
       const line = fit(row, width);
-      lines.push(index === 0 && turn.index === cursorTurn ? inverseText(line) : line);
+      lines.push(index === 0 && turn.index === cursor ? inverseText(line) : line);
     });
   }
-  return lines;
+  // A window the reader stopped on keeps its place; turns that arrived since
+  // are named below it rather than silently hidden.
+  const newer = activity.turns.slice(window.end);
+  if (newer.length) {
+    const range = newer.length === 1 ? `turn ${newer[0].number}` : `turns ${newer[0].number}–${newer.at(-1).number}`;
+    lines.push(fit(` ${dimCell(`${range} · f to follow`)}`, width));
+  }
+  return { lines, marks, windowEnd: window.end, cursor };
 }
 
 function nowLines(presentation, { width, nowMs = null }) {
@@ -783,7 +857,7 @@ function costLines(presentation, { width, phone }) {
   return lines;
 }
 
-// --- detail: today's capture-order log -----------------------------------
+// --- detail: the transcript ------------------------------------------------
 
 function technicalValue(value) {
   if (value == null) return blank();
@@ -791,58 +865,159 @@ function technicalValue(value) {
   try { return JSON.stringify(value); } catch { return String(value); }
 }
 
-function detailLines(step, presentation, { width, phone, view, selectedEventIndex = null }) {
-  const activity = step.activity ?? {};
-  const filter = filterLabel(presentation, view);
-  const events = activity.visibleDetailEvents ?? activity.visibleEvents ?? [];
-  const suffix = phone ? null : `showing ${filter} · t to change`;
-  const lines = [activityRule(`detail · today's capture-order log · ${filter} · ${events.length} events`, suffix, width, { following: false })];
-  if (!activity.available) {
-    lines.push(fit(` ${activity.reason ?? 'event stream unavailable'}.`, width));
-    lines.push(fit(' every technical field is unavailable without a structured stream.', width));
-    return lines;
+/** A captured value in full, its own line breaks kept: strings as written, objects as JSON. */
+function fullValueLines(value) {
+  if (value == null) return [];
+  let text;
+  if (typeof value === 'string') text = value;
+  else {
+    try { text = JSON.stringify(value, null, 2); } catch { text = String(value); }
   }
-  if (!events.length) {
-    lines.push(fit(` no captured events for today · filters ${filter}`, width));
-    return lines;
+  return String(text ?? '').replace(/\r\n/g, '\n').split('\n').map((line) => line.replace(/\s+$/, ''));
+}
+
+/** Wrap a block of lines, keeping their breaks; a long line wraps at `room`. */
+function blockRows(lines, room) {
+  const rows = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const lead = /^\s*/.exec(line)[0].slice(0, Math.max(0, room - 8));
+    for (const piece of wrap(line.slice(lead.length), Math.max(1, room - lead.length))) rows.push(`${lead}${piece}`);
   }
-  for (const event of events) {
-    const head = countList([
-      `seq ${technicalValue(event.seq)}`,
-      event.at ? oneLine(String(event.at)) : null,
-      technicalValue(event.source),
-      technicalValue(event.providerType),
-    ]);
-    const headLine = fit(` ${head}`, width);
-    // Detail navigation selects the atomic event itself.  Keep the cursor on
-    // the compact event header (the row a reader moves through), rather than
-    // repainting its technical fields or changing any displayed text.
-    lines.push(Number.isInteger(selectedEventIndex) && Number(event.index) === selectedEventIndex
-      ? inverseText(headLine)
-      : headLine);
-    const fields = [
-      ['kind', technicalValue(event.kind)],
-      ['status', technicalValue(event.status)],
-      ['eventId', technicalValue(event.eventId)],
-      ['turnId', technicalValue(event.turnId)],
-      ['toolCallId', technicalValue(event.toolCallId)],
-      ['provider timestamp', technicalValue(event.providerAt)],
-      ['duration', technicalValue(event.durationMs)],
-      ['usage', technicalValue(event.usage)],
-      ['parent/subagent', `${technicalValue(event.parentId)}/${technicalValue(event.subagentId)}`],
-      ['arguments', technicalValue(event.arguments)],
-      ['result', technicalValue(event.result)],
-    ];
-    const halves = phone ? [fields] : [fields.slice(0, 6), fields.slice(6)];
-    for (const half of halves) {
-      const row = half.map(([name, value]) => `${name} ${value}`).join(' · ');
-      for (const piece of wrap(row, Math.max(1, width - 2))) lines.push(fit(`  ${piece}`, width));
+  return rows;
+}
+
+/**
+ * Every field an atomic event row of the 0.35.1 detail log printed, for one
+ * captured event, with its arguments, result and summary in full.
+ */
+function eventFieldLines(event, { width, indent }) {
+  const pad = ' '.repeat(indent);
+  const room = Math.max(8, width - indent - 2);
+  const lines = [];
+  const head = countList([
+    `seq ${technicalValue(event.seq)}`,
+    event.at ? oneLine(String(event.at)) : null,
+    technicalValue(event.source),
+    technicalValue(event.providerType),
+  ]);
+  lines.push(fit(`${pad}${dimCell(head)}`, width));
+  const fields = [
+    ['kind', technicalValue(event.kind)],
+    ['status', technicalValue(event.status)],
+    ['eventId', technicalValue(event.eventId)],
+    ['turnId', technicalValue(event.turnId)],
+    ['toolCallId', technicalValue(event.toolCallId)],
+    ['tool', technicalValue(event.toolName)],
+    ['provider timestamp', technicalValue(event.providerAt)],
+    ['duration', technicalValue(event.durationMs)],
+    ['usage', technicalValue(event.usage)],
+    ['parent/subagent', `${technicalValue(event.parentId)}/${technicalValue(event.subagentId)}`],
+  ];
+  const row = fields.map(([name, value]) => `${name} ${value}`).join(' · ');
+  for (const piece of wrap(row, room)) lines.push(fit(`${pad}  ${piece}`, width));
+  for (const [name, value] of [['arguments', event.arguments], ['result', event.result], ['summary', event.summary]]) {
+    const body = blockRows(fullValueLines(value), room - 2);
+    if (!body.length) {
+      lines.push(fit(`${pad}  ${name} ${blank()}`, width));
+      continue;
     }
-    for (const piece of wrap(`summary: ${technicalValue(event.summary ?? 'summary unavailable')}`, Math.max(1, width - 2))) {
-      lines.push(fit(`  ${piece}`, width));
-    }
+    lines.push(fit(`${pad}  ${name}`, width));
+    for (const piece of body) lines.push(fit(`${pad}    ${piece}`, width));
   }
   return lines;
+}
+
+/** The fields of every captured event a row stands for, under that row. */
+function openedLines(indices, events, { width, phone }) {
+  const byIndex = events instanceof Map ? events : new Map();
+  const indent = phone ? 1 : GUTTER;
+  const lines = [];
+  const found = (indices ?? []).map((index) => byIndex.get(Number(index))).filter(Boolean);
+  if (!found.length) {
+    lines.push(fit(`${' '.repeat(indent)}${dimCell('no captured event behind this row')}`, width));
+    return lines;
+  }
+  for (const event of found) lines.push(...eventFieldLines(event, { width, indent }));
+  return lines;
+}
+
+/** A turn's response in full, its own line breaks kept (rule 12). */
+function responseRows(text, room) {
+  const rows = blockRows(fullValueLines(String(text ?? '')), room);
+  return rows.length ? rows : ['response summary unavailable'];
+}
+
+function toolRowMatches(tool, filter) {
+  if (filter === 'errors') return Boolean(tool.error);
+  return true;
+}
+
+/**
+ * Rule 12: the detail view is the transcript. Every turn in order, each
+ * expanded — the response in full, then one row per command or tool call —
+ * and the page scrolls like any other. The cursor walks the turn heads and
+ * tool rows; Enter opens every captured field of the row under it.
+ */
+function transcriptLines(step, presentation, {
+  width,
+  phone,
+  view,
+  compact,
+  spinnerFrame = 0,
+  selectedIndex = null,
+  opened = false,
+}) {
+  const activity = presentation.activity;
+  const filter = filterLabel(presentation, view);
+  const title = `transcript · ${activityTitle(presentation, { phone, view, compact })}`;
+  const suffix = phone ? null : `showing ${filter} · t to change`;
+  const lines = [activityRule(title, suffix, width, { following: Boolean(activity.running && activity.following) })];
+  const marks = [];
+  if (!activity.available) {
+    lines.push(fit(` ${dimCell(`${activity.reason ?? 'event stream unavailable'}.`)}`, width));
+    lines.push(fit(` ${dimCell('turns, tools, and event timing cannot be reconstructed.')}`, width));
+    return { lines, marks, cursor: null };
+  }
+  const events = new Map((step?.activity?.events ?? []).map((event) => [Number(event.index), event]));
+  const room = Math.max(1, width - GUTTER);
+  const indent = ' '.repeat(GUTTER);
+  let cursor = null;
+  const push = (line, mark = null, indices = null) => {
+    const selected = mark && mark.index != null && selectedIndex != null && Number(mark.index) === Number(selectedIndex);
+    if (mark) marks.push({ ...mark, line: lines.length });
+    if (selected) cursor = lines.length;
+    lines.push(selected ? inverseText(fit(line, width)) : fit(line, width));
+    if (selected && opened) lines.push(...openedLines(indices, events, { width, phone }));
+  };
+  const toolRows = (rows) => {
+    for (const tool of rows.filter((row) => toolRowMatches(row, filter))) {
+      push(toolRowLine(tool, { width, spinnerFrame }), { kind: 'tool', index: tool.index }, tool.eventIndices);
+    }
+  };
+  const prelude = activity.prelude;
+  if (prelude && (filter !== 'errors' || prelude.toolRows.some((tool) => tool.error))) {
+    const head = `${' '.repeat(3)}  ${dimCell(prelude.clock ?? '—:—')}  ${dimCell(`before the first response · ${prelude.countsText}`)}`;
+    push(head, { kind: 'prelude', index: prelude.index }, prelude.headEventIndices);
+    toolRows(prelude.toolRows);
+  }
+  if (!activity.turns.length) {
+    lines.push(fit(` ${dimCell(`no response turns captured · ${activity.events} atomic events`)}`, width));
+    return { lines, marks, cursor };
+  }
+  for (const turn of activity.turns) {
+    const rows = turn.toolRows ?? [];
+    if (filter === 'tools' && !rows.length) continue;
+    if (filter === 'errors' && !rows.some((tool) => tool.error)) continue;
+    const body = responseRows(turn.text, room);
+    push(`${turnHead(turn, { mark: ' ' })}${body[0]}`, {
+      kind: 'turn', turnIndex: turn.index, index: turn.responseIndex ?? null, number: turn.number,
+    }, turn.headEventIndices);
+    for (const line of body.slice(1)) lines.push(fit(`${indent}${line}`, width));
+    lines.push(fit(`${indent}${dimCounts(turn.countsText)}`, width));
+    toolRows(rows);
+  }
+  return { lines, marks, cursor };
 }
 
 // --- the page -------------------------------------------------------------
@@ -853,12 +1028,32 @@ export function stepFooterText(presentation, { phone, view }) {
   const follow = ' · f follow';
   if (view === 'detail') {
     return phone
-      ? 'Enter event · v overview · t filter · ? help'
-      : `Enter event detail · Esc close · v overview (turns) · t filter${follow} · ? help`;
+      ? 'Enter open · v overview · t filter · ? help'
+      : `Enter open tool call · Esc close · v overview (latest turns) · t filter${follow} · ? help`;
   }
   return phone
     ? 'Enter turn · v detail · t filter · ? help'
-    : `Enter expand turn · Esc close · v detail (every event) · t filter${follow} · ? help`;
+    : `Enter expand turn · Esc close · v detail (every turn in full) · t filter${follow} · ? help`;
+}
+
+/**
+ * Rule 14: the Step page's top bar carries `overview · detail`, the current
+ * view inverted like the active tab, each word a click region that switches
+ * to its view (`v` toggles the same state).
+ */
+export function stepViewToggle(view) {
+  return periodToggle([
+    { id: 'overview', label: 'overview' },
+    { id: 'detail', label: 'detail' },
+  ], {
+    active: view === 'detail' ? 'detail' : 'overview',
+    action: (item) => ({ kind: 'stepView', view: item.id }),
+  });
+}
+
+/** The column's own text cells on a row: a hover lights words, not padding. */
+function textExtent(line, width) {
+  return Math.min(width, visibleLength(String(line ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\s+$/, '')));
 }
 
 /** Render the Step page: one header, then the blocks the design record fixes. */
@@ -874,7 +1069,7 @@ export function renderStepPage(step, opts = {}, body) {
     body.push(fit(' step presentation unavailable', width));
     return fit(` Step ${step?.identity?.actionId ?? 'step'}`, width);
   }
-  const view = opts.stepDetail === true
+  const view = opts.stepDetail === true && opts.stepView == null && opts.view == null
     ? 'detail'
     : (opts.stepView ?? opts.view ?? step.view ?? 'overview') === 'detail' ? 'detail' : 'overview';
   const layout = stepLayout(width);
@@ -890,12 +1085,15 @@ export function renderStepPage(step, opts = {}, body) {
 
   const columnWidth = layout.twoColumn ? layout.right : width;
   const activityWidth = layout.twoColumn ? layout.left : width;
-  const activityColumn = view === 'detail'
-    ? detailLines(step, presentation, {
+  const activity = view === 'detail'
+    ? transcriptLines(step, presentation, {
       width: activityWidth,
       phone,
       view,
-      selectedEventIndex: opts.stepSelectedEventIndex,
+      compact: phone || width < 160,
+      spinnerFrame: opts.spinnerFrame ?? 0,
+      selectedIndex: Number.isInteger(opts.stepSelectedEventIndex) ? opts.stepSelectedEventIndex : null,
+      opened: opts.stepDetail === true,
     })
     : activityLines(presentation, {
       width: activityWidth,
@@ -904,10 +1102,12 @@ export function renderStepPage(step, opts = {}, body) {
       compact: phone || width < 160,
       spinnerFrame: opts.spinnerFrame ?? 0,
       toolPage: opts.stepToolPage ?? opts.stepToolPageIndex ?? opts.toolPage ?? opts.toolPageIndex ?? 0,
-      // Only a turn the reader moved to is the cursor; an untouched page
-      // draws no cursor, so turn 1 reads as plain text.
+      // The cursor starts on the newest turn; -1 is the fold line above them.
       cursorTurn: Number.isInteger(opts.stepTurnIndex) ? opts.stepTurnIndex : null,
+      windowEnd: Number.isInteger(opts.stepWindowEnd) ? opts.stepWindowEnd : null,
+      limit: overviewTurnLimit(width),
     });
+  const activityColumn = activity.lines;
   const resultColumn = resultLines(presentation, { width: columnWidth, phone: phone || !layout.twoColumn, detail: view === 'detail' });
   const taskColumn = taskLines(presentation, { width: columnWidth, phone: phone || !layout.twoColumn });
   const costColumn = costLines(presentation, { width: columnWidth, phone: phone || !layout.twoColumn });
@@ -915,10 +1115,12 @@ export function renderStepPage(step, opts = {}, body) {
   body.anchor ??= {};
   body.anchor.step ??= {};
   const anchor = body.anchor.step;
+  let activityRow = null;
 
   if (layout.twoColumn) {
     // Desktop: activity left, result → task → cost right.
     const right = resultColumn.concat([''], taskColumn, [''], costColumn);
+    activityRow = (body.lines?.length ?? 0) + 1;
     anchor.activity = 2;
     anchor.result = 2;
     anchor.task = resultColumn.length + 2;
@@ -932,6 +1134,7 @@ export function renderStepPage(step, opts = {}, body) {
     for (const line of first) body.push(fit(line, width));
     body.push('');
     anchor.activity = first.length + 3;
+    activityRow = (body.lines?.length ?? 0) + 1;
     for (const line of activityColumn) body.push(fit(line, width));
     body.push('');
     anchor.task = first.length + activityColumn.length + 4;
@@ -939,6 +1142,31 @@ export function renderStepPage(step, opts = {}, body) {
     body.push('');
     anchor.cost = first.length + activityColumn.length + taskColumn.length + 5;
     for (const line of costColumn) body.push(fit(line, width));
+  }
+  // Where the activity's rows landed in the body: the fold line, every turn
+  // head and (in detail) every tool row, as 1-based body rows, so the shell
+  // can walk them with the cursor and keep the cursor in view.
+  anchor.view = view;
+  anchor.rows = activity.marks.map((mark) => ({ ...mark, y: activityRow + mark.line }));
+  anchor.cursor = activity.cursor == null ? null
+    : view === 'detail' ? activityRow + activity.cursor
+      : anchor.rows.find((row) => (activity.cursor === -1 ? row.kind === 'fold' : row.turnIndex === activity.cursor))?.y ?? null;
+  anchor.cursorTurn = view === 'overview' ? activity.cursor ?? null : null;
+  anchor.windowEnd = activity.windowEnd ?? null;
+  // Click regions: a turn head toggles its turn like Enter (rule 14, hover-lit
+  // on its text only), the fold line opens detail, and a transcript tool row
+  // opens its captured fields.
+  if (Array.isArray(body.regions)) {
+    for (const row of anchor.rows) {
+      const line = activityColumn[row.line];
+      const x2 = textExtent(line, activityWidth);
+      if (x2 < 1) continue;
+      const action = row.kind === 'fold' ? { kind: 'stepView', view: 'detail', fromFold: true }
+        : row.kind === 'turn' && view === 'overview' ? { kind: 'stepTurn', turnIndex: row.turnIndex }
+          : view === 'detail' && row.index != null ? { kind: 'stepTool', eventIndex: row.index }
+            : null;
+      if (action) body.regions.push({ x1: 1, x2, y: row.y, action });
+    }
   }
   // Compatibility jumps map the retired sections into the merged blocks.
   anchor.outcome = anchor.result;

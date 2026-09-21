@@ -52,6 +52,12 @@
       "--json"
     ],
     "silenceThresholdSec": 600,
+    "$comment-toolKinds": "Item types of `codex exec --json` (codex-cli 0.154.0): command_execution and file_change in the real captures under tests/fixtures, web_search in the same item vocabulary. mcp_tool_call and todo_list count as other.",
+    "toolKinds": {
+      "command_execution": "command",
+      "file_change": "edit",
+      "web_search": "search"
+    },
     "rules": [
       {
         "rootMatch": {

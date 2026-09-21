@@ -259,6 +259,86 @@ function renderRealFrames(snapshot, colour) {
   return frames;
 }
 
+// The Step v2 record's 0.35.2 rules 12–14 (the transcript, the latest-turns
+// window, the one toggle) quote these frames: the 15-turn `step-model` step of
+// run va7k9a, finished and at its mid-attempt instant, at the record's widths.
+export const STEP_V2_DIR = new URL('../docs/design/tidy-0.35.1/step-v2/', import.meta.url);
+export const TRANSCRIPT_WIDTHS = Object.freeze([55, 200]);
+const TRANSCRIPT_SCREEN = 60;
+
+/**
+ * The page as tall as it is: an overview frame shows the whole page, a detail
+ * frame its first 60-row screen (the transcript scrolls like any page).
+ */
+function wholePage(model, options) {
+  const probe = renderDashboardPage(model, { ...options, height: 400 });
+  const cap = options.stepView === 'detail' ? TRANSCRIPT_SCREEN : Infinity;
+  const height = Math.min(cap, Math.max(12, probe.body.total + 3));
+  return renderDashboardPage(model, { ...options, height }).lines.map(plain);
+}
+
+/** The first tool row of turn `turnNumber`, by its start event index. */
+function toolRowIndex(row, options, turnNumber) {
+  const probe = renderDashboardPage(dashboardModel(row, { runs: [row] }), { ...options, page: 'step', stepView: 'detail', height: 400 });
+  const rows = probe.anchor?.step?.rows ?? [];
+  const head = rows.findIndex((entry) => entry.kind === 'turn' && entry.number === turnNumber);
+  return rows.slice(head + 1).find((entry) => entry.kind === 'tool')?.index ?? null;
+}
+
+/**
+ * Render the transcript frames from the scrubbed real home. `before: true`
+ * renders the two screens the 0.35.1 code drew (overview and detail), which
+ * the record keeps beside the new ones; it is run once, before the change.
+ */
+export function buildTranscriptFrames({ snapshot = SNAPSHOT, before = false } = {}) {
+  const cwd = process.cwd();
+  const tz = process.env.TZ;
+  const home = relative(REPO, resolve(cwd, snapshot)) || '.';
+  process.chdir(REPO);
+  process.env.TZ = FRAME_TZ;
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+    const stepRun = rows.find((row) => row.shortId === 'va7k9a');
+    if (!stepRun) throw new Error('required real run va7k9a is absent');
+    const running = historicalProjection(stepRun, 'step-model', 1, 'running');
+    const frames = new Map();
+    for (const width of TRANSCRIPT_WIDTHS) {
+      const base = (row) => ({
+        page: 'step', width, selectedRunId: row.runId, stepAttemptOrdinal: 1, ...selection(row, 'step-model'),
+      });
+      const finished = { ...base(stepRun), nowMs };
+      const model = dashboardModel(stepRun, { runs: [stepRun], nowMs });
+      const prefix = before ? '0.35.2-before' : '0.35.2';
+      frames.set(`${prefix}-overview-finished-${width}.txt`, wholePage(model, { ...finished, stepView: 'overview' }));
+      frames.set(`${prefix}-detail-finished-${width}.txt`, wholePage(model, { ...finished, stepView: 'detail' }));
+      if (before) continue;
+      // Enter on the first tool row of turn 2: its captured fields open under it.
+      const index = toolRowIndex(stepRun, finished, 2);
+      const opened = { ...finished, stepView: 'detail', stepSelectedEventIndex: index, stepDetail: true };
+      const probe = renderDashboardPage(model, { ...opened, height: 400 });
+      const cursor = probe.anchor?.step?.cursor ?? 1;
+      frames.set(`0.35.2-detail-tool-open-${width}.txt`, wholePage(model, { ...opened, bodyScroll: Math.max(0, cursor - 3) }));
+      frames.set(`0.35.2-overview-running-${width}.txt`, wholePage(
+        dashboardModel(running.row, { runs: [running.row], nowMs: running.nowMs }),
+        { ...base(running.row), nowMs: running.nowMs, stepView: 'overview' },
+      ));
+    }
+    for (const [name, lines] of frames) assertWidth(name, Number(name.match(/-(\d+)\.txt$/)?.[1]), lines);
+    return frames;
+  } finally {
+    process.chdir(cwd);
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
+}
+
+export function writeTranscriptFrames(options = {}) {
+  const frames = buildTranscriptFrames(options);
+  for (const [name, lines] of frames) writeFileSync(new URL(name, STEP_V2_DIR), `${lines.join('\n')}\n`);
+  return frames;
+}
+
 export function writeRealFrames(options = {}) {
   const frames = buildRealFrames({ ...options, colour: false });
   mkdirSync(FRAME_DIR, { recursive: true });
@@ -282,6 +362,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   const snapshot = args.find((arg) => !arg.startsWith('--')) ?? SNAPSHOT;
   if (only !== '--colour') {
     process.stdout.write(`rendered ${writeRealFrames({ snapshot }).size} real frames\n`);
+    // The Step v2 record's 0.35.2 frames; the `before` set is kept as drawn.
+    process.stdout.write(`rendered ${writeTranscriptFrames({ snapshot }).size} transcript frames\n`);
   }
   if (only !== '--plain') {
     process.stdout.write(`rendered ${writeColourFrames({ snapshot }).size} colour frames\n`);

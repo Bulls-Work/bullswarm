@@ -23,6 +23,7 @@ import {
 import { formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
 import { finiteOrNull } from '../lib/num.js';
 import { isFreeModel } from '../lib/usage.js';
+import { loadTemplates, ownsPoolName, providerDirs } from '../lib/providers.js';
 
 const START_STATUSES = new Set([
   'started', 'start', 'running', 'pending', 'in_progress', 'in-progress', 'queued',
@@ -380,28 +381,104 @@ function isComplete(event) {
   return COMPLETE_STATUSES.has(status) || /\.completed$|_completed$|^complete|^result$/.test(String(event?.providerType ?? '').toLowerCase());
 }
 
-// Connectors capture the same operation under their own kind strings: codex
-// emits item kinds (`command_execution`, `file_change`, `web_search`),
-// claude-code emits the raw tool name (`Bash`, `Read`, `Write`, `Edit`,
-// `Glob`, `Grep`, `ToolSearch`, ...) and `tool` for every tool_result, and
-// grok emits its own tool names (`read_file`, `run_terminal_command`, `grep`,
-// `list_dir`, ...). Normalising the real kinds into the three operation
-// categories the page shows keeps the summary honest for every provider, and
-// it is matched case-insensitively because a kind is raw capture text.
-const TOOL_KIND_CATEGORIES = new Map(Object.entries({
-  command: ['bash', 'run_terminal_command', 'command_execution', 'shell', 'exec'],
-  read: ['read', 'read_file', 'glob', 'grep', 'search', 'file_read', 'list_dir'],
-  edit: ['write', 'edit', 'multiedit', 'notebookedit', 'file_change', 'apply_patch', 'write_file', 'edit_file'],
-}).flatMap(([category, kinds]) => kinds.map((kind) => [kind, category])));
+// Each connector declares how its captured tool names map to the Step page's
+// finite operation kinds. Provider quirks stay in connector.json, not here.
+const TOOL_KINDS = new Set(['command', 'read', 'edit', 'search', 'other']);
+let connectorToolKinds = null;
+
+function declaredToolKinds() {
+  if (connectorToolKinds) return connectorToolKinds;
+  let templates = {};
+  try { templates = loadTemplates(providerDirs('')); } catch { templates = {}; }
+  const byProvider = new Map();
+  const every = new Map();
+  for (const [name, template] of Object.entries(templates)) {
+    const map = new Map();
+    for (const [tool, kind] of Object.entries(template?.eventStream?.toolKinds ?? {})) {
+      const key = String(tool).trim().toLowerCase();
+      if (!key || !TOOL_KINDS.has(kind)) continue;
+      map.set(key, kind);
+      if (!every.has(key)) every.set(key, kind);
+    }
+    byProvider.set(name, map);
+  }
+  connectorToolKinds = { byProvider, every };
+  return connectorToolKinds;
+}
+
+export function toolKindsForPool(pool) {
+  const { byProvider, every } = declaredToolKinds();
+  const owner = [...byProvider.keys()]
+    .filter((name) => ownsPoolName(name, pool))
+    .sort((a, b) => b.length - a.length)[0];
+  return owner ? byProvider.get(owner) : every;
+}
+
+function withToolKinds(events, pool) {
+  const kinds = toolKindsForPool(pool);
+  return events.map((event) => {
+    const toolKind = kinds.get(String(event?.kind ?? '').trim().toLowerCase()) ?? 'other';
+    return event && typeof event === 'object' ? { ...event, toolKind } : event;
+  });
+}
 
 // A provider that reports a tool result as its own event names it `tool`
-// (claude-code's tool_result). A result answers a call, so it is never an
-// operation of its own.
+// (claude-code's tool_result, grok's tool_call_update). A result answers a
+// call, so it is never an operation of its own.
 const TOOL_RESULT_KINDS = new Set(['tool']);
 
+function eventIsUnnamedCapture(event) {
+  return event?.kind === 'agent' && !validId(event?.toolName) && !eventIsResponse(event);
+}
+
 function toolKindCategory(event) {
-  const kind = String(event?.kind ?? '').trim().toLowerCase();
-  return TOOL_KIND_CATEGORIES.get(kind) ?? null;
+  const declared = event?.toolKind ?? toolKindsForPool(null).get(String(event?.kind ?? '').trim().toLowerCase()) ?? null;
+  return declared && declared !== 'other' ? declared : null;
+}
+
+export function toolCallUpdates(events = []) {
+  const calls = new Map();
+  const closed = new Set();
+  const updates = new Map();
+  events.forEach((event, position) => {
+    const id = validId(event?.toolCallId);
+    if (!id || eventIsResponse(event)) return;
+    const index = event.index ?? position;
+    const call = calls.get(id);
+    const opens = isStart(event) && !isComplete(event);
+    if (call == null || (closed.has(id) && opens && validId(event?.toolName))) {
+      if (!isComplete(event) || isStart(event)) {
+        calls.set(id, index);
+        closed.delete(id);
+      }
+      return;
+    }
+    if (!closed.has(id) && isComplete(event) && !isStart(event)) {
+      closed.add(id);
+      return;
+    }
+    updates.set(index, call);
+  });
+  return updates;
+}
+
+function callUpdatesByCall(entries = []) {
+  const byCall = new Map();
+  for (const [update, call] of entries ?? []) byCall.set(call, [...(byCall.get(call) ?? []), update]);
+  return byCall;
+}
+
+function unlinkedCaptures(events, merged, updatesOf) {
+  const linked = new Set([...updatesOf.values()].flat());
+  return events.filter((event) => merged.has(event.index) && !linked.has(event.index)).map((event) => event.index);
+}
+
+function mergedCaptures(events = []) {
+  const merged = new Set(toolCallUpdates(events).keys());
+  events.forEach((event, position) => {
+    if (eventIsUnnamedCapture(event)) merged.add(event.index ?? position);
+  });
+  return merged;
 }
 
 /**
@@ -420,6 +497,7 @@ export function pairActivityEvents(events = []) {
   const starts = new Map();
   const used = new Set();
   const pairs = [];
+  const updates = toolCallUpdates(indexedEvents);
   const pairOf = (start, complete, id) => {
     const providerDuration = finiteMs(complete?.durationMs) ?? finiteMs(start?.durationMs);
     const capturedDuration = providerDuration == null
@@ -444,7 +522,7 @@ export function pairActivityEvents(events = []) {
   };
   for (const event of indexedEvents) {
     const id = validId(event?.toolCallId);
-    if (!id) continue;
+    if (!id || updates.has(event.index)) continue;
     if (isStart(event) && !isComplete(event)) {
       const queue = starts.get(id) ?? [];
       queue.push(event.index);
@@ -464,7 +542,7 @@ export function pairActivityEvents(events = []) {
   // event that carried an id keeps whatever the id path decided for it.
   const openByKind = new Map();
   for (const event of indexedEvents) {
-    if (used.has(event.index) || validId(event?.toolCallId)) continue;
+    if (used.has(event.index) || validId(event?.toolCallId) || eventIsUnnamedCapture(event)) continue;
     const kind = String(event?.kind ?? '').toLowerCase();
     if (!kind) continue;
     const queue = openByKind.get(kind) ?? [];
@@ -486,7 +564,7 @@ export function pairActivityEvents(events = []) {
   // an operation. A result whose call was never captured still counts once, on
   // its own, rather than disappearing.
   const openCalls = indexedEvents.filter((event) => (
-    !used.has(event.index) && isStart(event) && !isComplete(event)
+    !used.has(event.index) && isStart(event) && !isComplete(event) && !eventIsUnnamedCapture(event)
   ));
   for (const event of indexedEvents) {
     if (used.has(event.index) || validId(event?.toolCallId)) continue;
@@ -514,11 +592,10 @@ function eventIsTool(event) {
   const kind = String(event?.kind ?? '').toLowerCase();
   const providerType = String(event?.providerType ?? '').toLowerCase();
   return kind === 'tool'
-    || kind === 'command_execution'
     || kind === 'command'
     || kind === 'tool_call'
     || providerType.includes('tool')
-    || providerType.includes('command_execution')
+    || toolKindCategory(event) != null
     || eventHasToolDetails(event);
 }
 
@@ -599,16 +676,18 @@ const ENVELOPE_KINDS = new Set(['result', 'usage']);
  * event-based: an event with an error status is an error, whatever it paired
  * with.
  */
-function eventKindSummary(events = [], pairs = null) {
+function eventKindSummary(events = [], pairs = null, merged = null) {
   const summary = {
     commands: 0,
     filesRead: 0,
+    searches: 0,
     edits: 0,
     otherTools: 0,
     errors: 0,
     total: 0,
   };
   const relevant = pairs ?? pairActivityEvents(events);
+  const partOfCall = merged ?? mergedCaptures(events);
   const paired = new Set();
   const units = [];
   for (const pair of relevant) {
@@ -618,7 +697,7 @@ function eventKindSummary(events = [], pairs = null) {
     if (start) units.push(start);
   }
   for (const event of events) {
-    if (event && typeof event === 'object' && !paired.has(event.index)
+    if (event && typeof event === 'object' && !paired.has(event.index) && !partOfCall.has(event.index)
       && !eventIsResponse(event) && !ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase())) {
       units.push(event);
     }
@@ -628,6 +707,7 @@ function eventKindSummary(events = [], pairs = null) {
     const category = toolKindCategory(event);
     if (category === 'command') summary.commands += 1;
     else if (category === 'read') summary.filesRead += 1;
+    else if (category === 'search') summary.searches += 1;
     else if (category === 'edit') summary.edits += 1;
     else summary.otherTools += 1;
   }
@@ -635,6 +715,7 @@ function eventKindSummary(events = [], pairs = null) {
     if (eventIsError(event)) summary.errors += 1;
   }
   summary.text = `${summary.commands} commands · ${summary.filesRead} files read · ${summary.edits} edits · ${summary.errors} errors`;
+  if (summary.searches > 0) summary.text += ` · ${summary.searches} searches`;
   if (summary.otherTools > 0) summary.text += ` · ${summary.otherTools} other tools`;
   return summary;
 }
@@ -693,8 +774,9 @@ export function groupActivityTurns(events = [], { pairs = null } = {}) {
     current.eventIndices.push(event.index);
   }
   const pairedEvents = pairs ?? pairActivityEvents(events);
+  const merged = mergedCaptures(events);
   for (const turn of turns) {
-    turn.summary = eventKindSummary(turn.atomicEvents, pairedEvents);
+    turn.summary = eventKindSummary(turn.atomicEvents, pairedEvents, merged);
     turn.summaryText = turn.summary.text;
     turn.responseText = responseTextOf(turn.responseClosed ? turn.response : null, turn.responseChunks);
     // The row prints the turn's own text: a finished response's wording, or the
@@ -706,7 +788,7 @@ export function groupActivityTurns(events = [], { pairs = null } = {}) {
     turn.responseIndex = turn.response?.index ?? null;
     turn.expanded = false;
   }
-  return { turns, prelude, responseCount: turns.length };
+  return { turns, prelude, responseCount: turns.length, merged };
 }
 
 function sameLocalDay(value, nowMs) {
@@ -733,11 +815,11 @@ function normalizeFilter(value) {
 // The `turns` lens narrows the atomic log to the rows the overview shows: the
 // response each turn prints, plus any event the provider tagged with its own
 // turn id. A streamed chunk is part of a turn's text, never a turn of its own.
-function visibleEventIndices(events, filter, turnResponseIndices) {
+function visibleEventIndices(events, filter, turnResponseIndices, merged = new Set()) {
   return events
     .filter((event) => {
       if (filter === 'errors') return eventIsError(event);
-      if (filter === 'tools') return eventIsTool(event);
+      if (filter === 'tools') return eventIsTool(event) && !merged.has(event.index);
       if (filter === 'turns') return turnResponseIndices.has(event.index) || validId(event?.turnId) != null;
       return true;
     })
@@ -807,6 +889,7 @@ function selectedEventDetail(events, selectedIndex, pairs) {
 }
 
 function activityModel(parsed, {
+  pool = null,
   filter = 'all',
   follow = true,
   selectedIndex = null,
@@ -816,20 +899,21 @@ function activityModel(parsed, {
   running = false,
 } = {}) {
   const normalizedFilter = normalizeFilter(filter);
-  const events = parsed.events ?? [];
+  const events = withToolKinds(parsed.events ?? [], pool);
   const pairs = pairActivityEvents(events);
   const grouped = groupActivityTurns(events, { pairs });
   const turnResponseIndices = new Set(
     grouped.turns.map((turn) => turn.responseIndex).filter((index) => index != null),
   );
-  const visible = visibleEventIndices(events, normalizedFilter, turnResponseIndices);
+  const merged = grouped.merged;
+  const visible = visibleEventIndices(events, normalizedFilter, turnResponseIndices, merged);
   const selected = selectedIndex != null && visible.includes(Number(selectedIndex))
     ? Number(selectedIndex)
     : follow ? visible.at(-1) ?? null : null;
   const filterCounts = {
     all: events.length,
     turns: visibleEventIndices(events, 'turns', turnResponseIndices).length,
-    tools: events.filter(eventIsTool).length,
+    tools: events.filter((event) => eventIsTool(event) && !merged.has(event.index)).length,
     errors: events.filter(eventIsError).length,
   };
   const minimap = minimapFor(events, selected, visible);
@@ -845,14 +929,14 @@ function activityModel(parsed, {
       : running && follow && grouped.turns.length ? grouped.turns.length - 1 : null;
   for (const turn of grouped.turns) turn.expanded = turn.index === selectedTurn;
   const todayEvents = events.filter((event) => sameLocalDay(event.at, nowMs));
-  const todayVisible = visibleEventIndices(todayEvents, normalizedFilter, turnResponseIndices);
+  const todayVisible = visibleEventIndices(todayEvents, normalizedFilter, turnResponseIndices, merged);
   const todayEventByIndex = new Map(todayEvents.map((event) => [event.index, event]));
   const visibleDetailEvents = todayVisible
     .map((index) => todayEventByIndex.get(index))
     .filter(Boolean);
   const overviewRows = [];
   if (grouped.prelude.length) {
-    const preludeSummary = eventKindSummary(grouped.prelude, pairs);
+    const preludeSummary = eventKindSummary(grouped.prelude, pairs, merged);
     overviewRows.push({ type: 'summary', turnIndex: null, prelude: true, summary: preludeSummary });
   }
   for (const turn of grouped.turns) {
@@ -866,6 +950,7 @@ function activityModel(parsed, {
     overviewRows.push({ type: 'response', turnIndex: turn.index, turn, event: turn.response });
     if (turn.expanded) {
       for (const event of turn.atomicEvents) {
+        if (merged.has(event.index)) continue;
         if (normalizedFilter !== 'all' && normalizedFilter !== 'turns') {
           if (normalizedFilter === 'errors' && !eventIsError(event)) continue;
           if (normalizedFilter === 'tools' && !eventIsTool(event)) continue;
@@ -894,6 +979,8 @@ function activityModel(parsed, {
     visibleEvents: visible.map((index) => events.find((event) => event.index === index)).filter(Boolean),
     visibleEventIndices: visible,
     pairs,
+    mergedCaptures: [...merged],
+    toolCallUpdates: [...toolCallUpdates(events)],
     minimap,
     minimapBuckets: minimap.buckets,
     filter: normalizedFilter,
@@ -1443,10 +1530,10 @@ function tokenSourceNoun(tokenSource, pool) {
   return null;
 }
 
-const TOOL_CATEGORIES = new Set(['command', 'read', 'edit']);
+const TOOL_CATEGORIES = new Set(['command', 'read', 'search', 'edit']);
 
 /** The distinct kinds behind a turn's `other tools` count, in capture order. */
-function otherToolKindNames(atomicEvents, allPairs = null) {
+function otherToolKindNames(atomicEvents, allPairs = null, merged = null) {
   const eventIndexes = new Set((atomicEvents ?? []).map((event) => event?.index));
   const pairs = allPairs ?? pairActivityEvents(atomicEvents);
   const pairedCompletions = new Set(pairs
@@ -1455,7 +1542,8 @@ function otherToolKindNames(atomicEvents, allPairs = null) {
   const names = [];
   for (const event of atomicEvents ?? []) {
     const kind = String(event.kind ?? '').trim().toLowerCase();
-    if (eventIsResponse(event) || ENVELOPE_KINDS.has(kind) || TOOL_RESULT_KINDS.has(kind)) continue;
+    if (eventIsResponse(event) || ENVELOPE_KINDS.has(kind) || TOOL_RESULT_KINDS.has(kind) || eventIsUnnamedCapture(event)) continue;
+    if (merged?.has(event.index)) continue;
     // A completion is already represented by the paired call in the count;
     // it must not introduce a second, uncategorised display name.
     if (pairedCompletions.has(event.index)) continue;
@@ -1476,6 +1564,7 @@ export function turnCountsText(summary, { otherKinds = [] } = {}) {
   const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
   if (summary?.commands) parts.push(plural(summary.commands, 'command'));
   if (summary?.filesRead) parts.push(`${plural(summary.filesRead, 'file')} read`);
+  if (summary?.searches) parts.push(`${summary.searches} ${summary.searches === 1 ? 'search' : 'searches'}`);
   if (summary?.edits) parts.push(plural(summary.edits, 'edit'));
   if (summary?.otherTools) {
     parts.push(otherKinds.length === 1
@@ -1599,13 +1688,11 @@ export function toolSummaryText(kind, summary) {
   return inner;
 }
 
-function toolKindWords(kind) {
+function toolKindWords(kind, category = null) {
+  if (category === 'command') return 'command';
   const raw = textOrNull(kind);
   if (!raw) return 'tool';
-  const normalized = raw.toLowerCase().replace(/[_-]+/g, ' ');
-  if (normalized === 'command execution' || normalized === 'shell' || normalized === 'run terminal command') return 'command';
-  if (normalized === 'file change') return 'file change';
-  return normalized;
+  return raw.toLowerCase().replace(/[_-]+/g, ' ');
 }
 
 function changeKindWords(kind) {
@@ -1656,15 +1743,14 @@ export function eventToolSummary(event) {
     ? toolSummaryText(category, event.summary)
     : null;
   if (summary) {
-    // The connector can only address a scalar path declaratively. It captures
-    // the first Codex change path there and preserves the complete `changes`
-    // array in `arguments`; name that scalar honestly when the array is absent.
-    if (String(kind ?? '').toLowerCase() === 'file_change' && !/^(?:add|edit|delete)\s/.test(summary)) {
+    // An edit whose captured arguments name no change says so in front of its
+    // scalar summary, regardless of which connector supplied it.
+    if (category === 'edit' && !/^(?:add|edit|delete)\s/.test(summary)) {
       return `edit ${summary}`;
     }
     return summary;
   }
-  return toolKindWords(kind ?? category);
+  return toolKindWords(kind, category);
 }
 
 function truncateCells(value, limit = 40) {
@@ -1681,7 +1767,49 @@ function runningAgeText(durationMs) {
   return `${Math.floor(seconds / 60)}m`;
 }
 
-function stepTurns(activity, { outText = null, expandedTurn = null, nowMs = Date.now() } = {}) {
+/**
+ * One row per operation, not per capture: a started/completed pair is the
+ * command it ran, with the duration the pair measured. A capture whose partner
+ * never arrived still prints, on its own. `eventIndices` names every captured
+ * event the row stands for, so the detail view can open all of their fields.
+ */
+function toolRowsOf(events, {
+  pairByStart, paired, byIndex = new Map(), inFlight = [], merged = new Set(), updatesOf = new Map(),
+}) {
+  return events
+    .filter((event) => !eventIsResponse(event) && !ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase()))
+    .filter((event) => !merged.has(event.index))
+    .map((event) => {
+      const pair = pairByStart.get(event.index) ?? null;
+      if (!pair && paired.has(event.index)) return null;
+      const inFlightTool = inFlight.find((tool) => tool.event.index === event.index) ?? null;
+      const durationMs = inFlightTool?.durationMs ?? pair?.durationMs ?? event.durationMs ?? null;
+      return {
+        index: event.index,
+        eventIndices: [event.index, ...(updatesOf.get(event.index) ?? []), ...(pair ? [pair.completeIndex] : [])],
+        clock: stepTimeSecText(event.at),
+        kind: textOrNull(event.kind),
+        category: toolKindCategory(event) ?? 'other',
+        command: toolKindCategory(event) === 'command',
+        error: eventIsError(event) || Boolean(pair && byIndex.has(pair.completeIndex) && eventIsError(byIndex.get(pair.completeIndex))),
+        text: inFlightTool?.text ?? eventToolSummary(event),
+        durationMs,
+        durationText: durationMs != null && durationMs >= 1000 ? stepClockText(durationMs) : null,
+        inFlight: Boolean(inFlightTool),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(a.inFlight) - Number(b.inFlight) || a.index - b.index);
+}
+
+/** The captured events a row of no tool stands for: envelopes, and a turn's response. */
+function envelopeIndices(events) {
+  return events
+    .filter((event) => ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase()))
+    .map((event) => event.index);
+}
+
+function stepTurns(activity, { outText = null, expandedTurn = null, nowMs = Date.now(), allTools = false } = {}) {
   const turns = activity?.turns ?? [];
   const last = turns.at(-1) ?? null;
   const reportEquality = last && outText != null
@@ -1689,13 +1817,16 @@ function stepTurns(activity, { outText = null, expandedTurn = null, nowMs = Date
     : false;
   const pairs = activity?.pairs ?? [];
   const pairByStart = new Map(pairs.map((pair) => [pair.startIndex, pair]));
+  const byIndex = new Map((activity?.events ?? []).map((event) => [event.index, event]));
   const paired = new Set();
   for (const pair of pairs) {
     paired.add(pair.startIndex);
     paired.add(pair.completeIndex);
   }
+  const merged = new Set(activity?.mergedCaptures ?? []);
+  const updatesOf = callUpdatesByCall(activity?.toolCallUpdates);
   return turns.map((turn) => {
-    const baseCountsText = turnCountsText(turn.summary, { otherKinds: otherToolKindNames(turn.atomicEvents, pairs) });
+    const baseCountsText = turnCountsText(turn.summary, { otherKinds: otherToolKindNames(turn.atomicEvents, pairs, merged) });
     const isLast = turn === last;
     const resultMarked = Boolean(isLast && reportEquality);
     const expanded = expandedTurn != null && turn.index === expandedTurn;
@@ -1704,6 +1835,7 @@ function stepTurns(activity, { outText = null, expandedTurn = null, nowMs = Date
       && !ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase())
       && isInFlightStart(event)
       && !pairByStart.has(event.index)
+      && !merged.has(event.index)
       && toolKindCategory(event) != null
     ));
     const inFlight = inFlightEvents.map((event) => {
@@ -1729,35 +1861,52 @@ function stepTurns(activity, { outText = null, expandedTurn = null, nowMs = Date
       countsText,
       resultMarked,
       expanded,
-      // One row per operation, not per capture: a started/completed pair is the
-      // command it ran, with the duration the pair measured. A capture whose
-      // partner never arrived still prints, on its own.
-      toolRows: expanded ? turn.atomicEvents
-        .filter((event) => !eventIsResponse(event) && !ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase()))
-        .map((event) => {
-          const pair = pairByStart.get(event.index) ?? null;
-          if (!pair && paired.has(event.index)) return null;
-          const inFlightTool = inFlight.find((tool) => tool.event.index === event.index) ?? null;
-          const durationMs = inFlightTool?.durationMs ?? pair?.durationMs ?? event.durationMs ?? null;
-          return {
-            index: event.index,
-            clock: stepTimeSecText(event.at),
-            kind: textOrNull(event.kind),
-            command: toolKindCategory(event) === 'command',
-            text: inFlightTool?.text ?? eventToolSummary(event),
-            durationMs,
-            durationText: durationMs != null && durationMs >= 1000 ? stepClockText(durationMs) : null,
-            inFlight: Boolean(inFlightTool),
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => Number(a.inFlight) - Number(b.inFlight) || a.index - b.index) : [],
+      // The overview lists the rows of the one open turn; the detail view is
+      // the transcript, so every turn carries its rows there.
+      toolRows: expanded || allTools ? toolRowsOf(turn.atomicEvents, {
+        pairByStart, paired, byIndex, inFlight, merged, updatesOf,
+      }) : [],
+      // The response (its closing event and every streamed chunk) and the
+      // envelope captures (usage, result) belong to the turn head.
+      headEventIndices: [
+        ...(turn.eventIndices ?? []).filter((index) => !turn.atomicEvents.some((event) => event.index === index)),
+        ...envelopeIndices(turn.atomicEvents),
+        ...unlinkedCaptures(turn.atomicEvents, merged, updatesOf),
+      ],
+      otherKinds: otherToolKindNames(turn.atomicEvents, pairs, merged),
       atomicCount: turn.atomicEvents.length,
       summary: turn.summary,
       summaryText: turn.summaryText,
       responseIndex: turn.responseIndex,
     };
   });
+}
+
+/**
+ * Captures before the first response belong to no turn. The transcript still
+ * shows them, one row per tool, so no captured event is out of reach.
+ */
+function preludeRows(activity) {
+  const events = activity?.prelude ?? [];
+  if (!events.length) return null;
+  const pairs = activity?.pairs ?? [];
+  const pairByStart = new Map(pairs.map((pair) => [pair.startIndex, pair]));
+  const paired = new Set(pairs.flatMap((pair) => [pair.startIndex, pair.completeIndex]));
+  const merged = new Set(activity?.mergedCaptures ?? []);
+  const updatesOf = callUpdatesByCall(activity?.toolCallUpdates);
+  return {
+    index: events[0].index,
+    clock: stepTimeText(events[0].at),
+    countsText: turnCountsText(eventKindSummary(events, pairs, merged), { otherKinds: otherToolKindNames(events, pairs, merged) }),
+    toolRows: toolRowsOf(events, {
+      pairByStart,
+      paired,
+      byIndex: new Map((activity?.events ?? []).map((event) => [event.index, event])),
+      merged,
+      updatesOf,
+    }),
+    headEventIndices: [...envelopeIndices(events), ...unlinkedCaptures(events, merged, updatesOf)],
+  };
 }
 
 function stepPresentation({
@@ -1822,7 +1971,9 @@ function stepPresentation({
         outText,
         expandedTurn: activity?.expandedTurn ?? null,
         nowMs,
+        allTools: activity?.view === 'detail',
       }),
+      prelude: preludeRows(activity),
       totals: activityTotals(activity?.turns ?? []),
       filter: activity?.filter ?? 'all',
       running,
@@ -1888,7 +2039,7 @@ function requirementWords(id) {
 }
 
 function activityTotals(turns) {
-  const totals = { commands: 0, filesRead: 0, edits: 0, otherTools: 0, errors: 0 };
+  const totals = { commands: 0, filesRead: 0, searches: 0, edits: 0, otherTools: 0, errors: 0 };
   for (const turn of turns) {
     for (const field of Object.keys(totals)) totals[field] += finiteOrNull(turn?.summary?.[field]) ?? 0;
   }
@@ -2127,6 +2278,7 @@ export function stepPageModel(input, {
     : parsedStream.events;
   const activity = selected
     ? activityModel({ ...parsedStream, events: captured }, {
+      pool: selected?.pool ?? null,
       filter: filter ?? activityFilter,
       follow: followState,
       selectedIndex: selectedEventIndex,

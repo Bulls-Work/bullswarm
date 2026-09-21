@@ -275,15 +275,22 @@ test('a recorded CWD still filters candidates when no task path is available', (
   }
 });
 
-test('the real OpenCode database is opened read-only when present', { skip: !existsSync('/home/dev/.local/share/opencode/opencode.db') }, () => {
-  const index = buildTranscriptIndex({ databasePath: '/home/dev/.local/share/opencode/opencode.db' });
-  assert.equal(index.provider, 'opencode');
-  assert.ok(index.entries.length > 0);
-  const representative = readTranscriptUsage({
-    databasePath: '/home/dev/.local/share/opencode/opencode.db',
-    sessionId: 'ses_fa7933856ffeObmn5v5n9sRGzu',
-  });
-  assert.equal(representative.confidence, 'exact');
-  assert.equal(representative.model, 'gpt-5.6-luna');
-  assert.equal(representative.tokens.standardRead, 368554);
+test('the OpenCode database fixture is opened read-only', () => {
+  const store = createStore();
+  try {
+    const before = readFileSync(store.dbPath);
+    const index = buildTranscriptIndex({ databasePath: store.dbPath });
+    assert.equal(index.provider, 'opencode');
+    assert.ok(index.entries.length > 0);
+    const representative = readTranscriptUsage({
+      databasePath: store.dbPath,
+      sessionId: SESSION_ID,
+    });
+    assert.equal(representative.confidence, 'exact');
+    assert.equal(representative.model, 'gpt-5.6-luna');
+    assert.equal(representative.tokens.standardRead, 20841);
+    assert.deepEqual(readFileSync(store.dbPath), before);
+  } finally {
+    store.cleanup();
+  }
 });

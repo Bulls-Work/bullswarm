@@ -14,8 +14,8 @@ import type {
 } from '../types'
 import type { OverviewLine } from './overview'
 import { METER_AMBER, METER_GREEN, METER_RED, meterBar, poolRows, severityColor } from './pool-rows'
-import { ageOf, glyphOf, timingOf } from './runs'
-import { shapeStep, type StepMode, type StepPaneRow } from './step'
+import { ageOf } from './runs'
+import { shapeStep, taskStepPane, type StepMode, type StepPaneRow } from './step'
 
 export type PaneUi = Pick<ElementTable<'terminal' | 'desktop'>, 'Box' | 'Text' | 'Button'>
 
@@ -65,6 +65,7 @@ export type PaneActions = {
   openAction: (actionId: string) => void
   /** Optional until the host wires the pane's v/Enter controls to state. */
   toggleStep?: () => void
+  setStepMode?: (mode: StepMode) => void
   expandStepTurn?: (turnIndex: number) => void
   /** Moves the overview's window to its top or bottom. */
   scrollTo: (where: 'start' | 'end') => void
@@ -103,9 +104,8 @@ const PROBE_ROWS = 8
 const toneColor = (tone: OverviewLine['tone']): string | undefined =>
   tone === 'ok' ? 'green' : tone === 'fail' ? 'red' : tone === 'running' ? 'cyan' : undefined
 
-const shortModel = (m: string | null): string => (m ? m.split('/').pop() ?? m : '')
-
 type AssignmentRecord = BullswarmAssignment & {
+  id?: string
   startedAt?: string
   project?: string
   projectName?: string
@@ -177,6 +177,7 @@ export function paneView(
   const run = model.selected
   const rule = '─'.repeat(Math.max(1, Math.min(kit.columns, 120)))
   const nameOf = (pool: string | null) => (pool ? (model.names.get(pool) ?? pool) : '')
+  const looseTask = standaloneTask(model.assignments)
 
   // Compact: a phone terminal or a short inline pane. One header row, one
   // nav row with [Top] [End] beside it and no [close] (the frame's ✕ does
@@ -191,7 +192,9 @@ export function paneView(
       onPress={() => actions.select(r.shortId)}
     />
   ))
-  const backButton = model.action ? <Button key="back" hotkey="b" label="back" onPress={actions.back} /> : null
+  const backButton = model.action || model.poolsPage
+    ? <Button key="back" hotkey="b" label="back" onPress={actions.back} />
+    : null
   const usageButton = (
     <Button key="usage" hotkey="u" label={model.poolsPage ? '● usage' : 'usage'} onPress={actions.openPools} />
   )
@@ -298,28 +301,12 @@ export function paneView(
     return frame(header, compact ? [...noteRows, ...pageRows] : pageRows, footer)
   }
 
-  if (!run && !model.step) {
-    const task = standaloneTask(model.assignments)
-    const elapsed = task
-      ? timingOf(task) || ageOf((task as AssignmentRecord).startedAt ?? null, model.nowMs) || 'unknown'
-      : ''
-    const taskRows = task ? (
-      <Box key="standalone-task" flexDirection="column">
-        <Text bold color="cyan">Single task in flight</Text>
-        <Text wrap="truncate-end">
-          {task.lane || 'unknown lane'} · {nameOf(task.pool)}{task.model ? ` · ${shortModel(task.model)}` : ''}
-        </Text>
-        <Text dimColor wrap="truncate-end">
-          {assignmentWork(task)} · elapsed {elapsed}
-        </Text>
-      </Box>
-    ) : (
-      <Text key="empty" dimColor>No ongoing workflow run. `bullswarm workflow goal` launches one.</Text>
-    )
+  if (!run && !model.step && !looseTask) {
     return {
       tree: (
         <Box flexDirection="column">
-          {taskRows}
+          <Text key="empty" dimColor>No ongoing workflow run. `bullswarm workflow goal` launches one.</Text>
+          {model.error ? <Text key="idle-error" color={METER_RED}>{model.error}</Text> : null}
           {poolsSection}
           {switcher}
         </Box>
@@ -328,13 +315,14 @@ export function paneView(
     }
   }
 
-  if (model.action || model.step) {
+  if (model.action || model.step || looseTask) {
     // The Step model is shaped without UI concerns. This branch only maps
     // rows to the Claude engine's Text/Button elements.
     const page = model.step
+    const assignment = looseTask as AssignmentRecord | null
     const a = model.action ?? {
-      id: page?.id ?? 'task',
-      status: page?.status ?? 'unknown',
+      id: page?.id ?? assignment?.id ?? assignmentWork(assignment!),
+      status: page?.status ?? (assignment ? 'running' : 'unknown'),
       attempts: page?.attempt ? 1 : 0,
       startedAt: page?.attempt?.startedAt ?? null,
       finishedAt: page?.attempt?.finishedAt ?? null,
@@ -343,18 +331,45 @@ export function paneView(
       latest: null,
     }
     const st = model.step
-    const at = st?.attempt ?? null
-    const g = glyphOf(at?.status ?? a.status)
-    const shaped = shapeStep(st ?? page, {
+    const stepOptions = {
       mode: model.stepMode,
       expandedTurn: model.expandedStepTurn,
-      promptPreview: model.promptPreview,
+      promptPreview: model.promptPreview.length ? model.promptPreview : assignment?.description ? [assignment.description] : [],
       outputTail: model.outputTail,
-    })
+      width,
+    }
+    const shaped = st ?? page ? shapeStep(st ?? page, stepOptions) : taskStepPane(assignment, stepOptions)
+    const poolColor = (pool: string): string => {
+      const colors = ['#a99cf0', '#70b7c7', '#d596c7', '#86b98a', '#d39b72']
+      let hash = 0
+      for (const char of pool) hash = ((hash * 31) + char.charCodeAt(0)) >>> 0
+      return colors[hash % colors.length]!
+    }
+    const toneProps = (tone: StepPaneRow['tone'], pool?: string): { color?: string; bold?: boolean; dimColor?: boolean } => {
+      if (tone === 'good') return { color: METER_GREEN }
+      if (tone === 'bad') return { color: METER_RED }
+      if (tone === 'running') return { color: METER_AMBER }
+      if (tone === 'strong') return { bold: true }
+      if (tone === 'pool') return { color: poolColor(pool ?? '') }
+      if (tone === 'dim') return { dimColor: true }
+      return {}
+    }
     const rowText = (entry: StepPaneRow): RenderElement[] => {
-      const color = entry.tone === 'good' ? 'green' : entry.tone === 'bad' ? 'red' : entry.tone === 'running' ? 'cyan' : undefined
       const lines = wrapText(entry.text, width)
-      if (entry.kind === 'section') return lines.map((line, index) => <Text key={`${entry.key}-${String(index)}`} bold color={color}>{line}</Text>)
+      if (entry.segments && lines.length === 1) return [
+        <Text key={entry.key} wrap="truncate-end">
+          {entry.segments.map((part, index) => <Text key={`${entry.key}-part-${String(index)}`} {...toneProps(part.tone, part.pool)}>{part.text}</Text>)}
+        </Text>,
+      ]
+      if (entry.kind === 'section') return lines.map((line, index) => {
+        const leading = line.startsWith('──')
+        const trailing = line.endsWith('──')
+        const body = line.slice(leading ? 2 : 0, trailing ? -2 : undefined)
+        return <Text key={`${entry.key}-${String(index)}`} {...toneProps(entry.tone)}><Text dimColor>{leading ? '──' : ''}</Text>{body}<Text dimColor>{trailing ? '──' : ''}</Text></Text>
+      })
+      if (entry.kind === 'fold' && entry.opensDetail) return [
+        <Button key={entry.key} plain label={entry.text} onPress={() => actions.setStepMode?.('detail')} />,
+      ]
       if (entry.kind === 'response' && entry.expandable) {
         const [first, ...rest] = lines
         return [
@@ -368,31 +383,33 @@ export function paneView(
           ...rest.map((line, index) => <Text key={`${entry.key}-continuation-${String(index)}`} dimColor>{line}</Text>),
         ]
       }
-      return lines.map((line, index) => <Text key={`${entry.key}-${String(index)}`} dimColor={entry.tone === 'dim'} color={color}>{line}</Text>)
+      return lines.map((line, index) => <Text key={`${entry.key}-${String(index)}`} {...toneProps(entry.tone)}>{line}</Text>)
     }
     const rows: RenderElement[] = shaped.rows.flatMap(rowText)
 
     const header: RenderElement[] = [
-      <Text key="h0" wrap="truncate-end">
-        <Text color={g.color} bold>
-          {g.glyph} {a.id}
-        </Text>
-        <Text dimColor> · {run ? `run ${run.shortId}` : 'single task'}</Text>
-      </Text>,
+      <Box key="h0" flexDirection="row" justifyContent="space-between">
+        <Text bold>Step </Text>
+        <Box flexDirection="row">
+          <Button key="overview" plain label={shaped.mode === 'overview' ? '● overview' : 'overview'} onPress={() => actions.setStepMode?.('overview')} />
+          <Text dimColor> · </Text>
+          <Button key="detail" plain label={shaped.mode === 'detail' ? '● detail' : 'detail'} onPress={() => actions.setStepMode?.('detail')} />
+        </Box>
+      </Box>,
     ]
     if (!compact) header.push(nav)
     if (model.error) header.push(plain('err', model.error, 'red'))
     // The hint sits whole above the nav, as the usage page's note does.
-    const hint = wrapText(run ? `bullswarm workflow action show ${run.shortId} ${a.id}` : 'bullswarm run task · read-only Step view', width)
+    const hint = wrapText(shaped.runId ? `bullswarm workflow action show ${shaped.runId} ${a.id}` : 'bullswarm run task · read-only Step view', width)
     const stepModeButton = (
       <Button
         key="step-mode"
         hotkey="v"
-        label={shaped.toggleLabel}
+        label="v"
         onPress={() => actions.toggleStep?.()}
       />
     )
-    const stepModeFooter = <Box key="step-mode-footer" flexDirection="row" gap={1}>{stepModeButton}<Text dimColor>{shaped.mode === 'overview' ? '[Enter expand turn]' : '[capture order]'}</Text></Box>
+    const stepModeFooter = <Box key="step-mode-footer" flexDirection="row" gap={1}>{stepModeButton}<Text dimColor>{shaped.toggleHint.replace(/^v\s+/, '')}</Text></Box>
     const footer: RenderElement[] = compact
       ? [stepModeFooter, switcher]
       : [...hint.map((l, k) => dim(`f${String(k)}`, l)), stepModeFooter, switcher]

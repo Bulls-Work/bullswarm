@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ step-model · va7k9a · succeeded · verified by the workflow (6/6 requirements) · attempt 1 of 1 · 1–57/1507
+ sample purpose for va7k9a aute commodo proident ullamco cupidatat magna
+ codex · gpt-5.6-luna · medium effort · reasoning max                                                                                                           49m07s · 01:50 → 02:39 HKT · 20 Sep 2026
+ route  expiring soon: codex resets in 8h28m, surplus 11.8 over 5% of the week left → urgency 236 · picked over command-code, grok
+
+── detail · today's capture-order log · all · 325 events ────────────────────────────────────── showing all · t to change ────────── │ ── result · succeeded · verified 6/6 ────────────────────────────
+ seq 1 · 2026-09-19T17:50:31.709Z · stdout · item.completed                                                                          │  sample report magna exercitation.
+  kind response · status completed · eventId — · turnId — · toolCallId — · provider timestamp —                                      │  sample sint: sample exercitation nisi consequat cillum anim id
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │  exercitation culpa ut veniam exercitation fugiat ex sint nulla…
+  summary: sample response for step-model-1 incididunt id consequat tempor labore qui pariatur mollit laborum eiusmod dolore et et   │  changed  src/dir-01/file-267.js
+  fugiat proident.                                                                                                                   │           tests/file-268.test.js
+ seq 2 · 2026-09-19T17:50:35.490Z · stdout · item.started                                                                            │  files    tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf
+  kind command_execution · status running · eventId — · turnId — · toolCallId — · provider timestamp —                               │           task · out · stream (325 events) · diff
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │  task     tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/ta
+  summary: sample command for step-model-1 mollit ea occaecat commodo occaecat magna occaecat culpa laboris qui eiusmod irure sint   │  output   tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/ou
+  nulla sit ea velit ullamco commodo excepteur nulla consequat                                                                       │  stream   tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/st
+ seq 3 · 2026-09-19T17:50:35.491Z · stdout · item.completed                                                                          │  diff     tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/di
+  kind command_execution · status completed · eventId — · turnId — · toolCallId — · provider timestamp —                             │  result   tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/re
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │  Enter on result: the full report, 1.3 KB
+  summary: sample command for step-model-1 mollit ea occaecat commodo occaecat magna occaecat culpa laboris qui eiusmod irure sint   │
+  nulla sit ea velit ullamco commodo excepteur nulla consequat                                                                       │ ── task · implement · build lane ────────────────────────────────
+ seq 4 · 2026-09-19T17:50:46.904Z · stdout · item.started                                                                            │  sample prompt for va7k9a lorem aute ipsum exercitation deserunt
+  kind command_execution · status running · eventId — · turnId — · toolCallId — · provider timestamp —                               │  reprehenderit exercitation sit laborum consectetur exercitation
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │  dolore nostrud aute cupidatat sed amet commodo deserunt anim es…
+  summary: sample command for step-model-1 lorem ut minim commodo sint commodo cupidatat aliqua excepteur enim exercitation pariatur │  owns    file-267.js · file-268.test.js
+  esse quis ullamco ea magna non tempor quis esse adipiscing                                                                         │  after   extract · stream-contract
+ seq 5 · 2026-09-19T17:50:46.905Z · stdout · item.completed                                                                          │  affects requirement 3 · requirement 6
+  kind command_execution · status completed · eventId — · turnId — · toolCallId — · provider timestamp —                             │  Enter on task: full text 2.4 KB · kernel wrapper 5.1 KB
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │
+  summary: sample command for step-model-1 lorem ut minim commodo sint commodo cupidatat aliqua excepteur enim exercitation pariatur │ ── cost ─────────────────────────────────────────────────────────
+  esse quis ullamco ea magna non tempor quis esse adipiscing                                                                         │  API rate    $0.96   36.0M tokens · OpenAI rate card, 20 Sep
+ seq 6 · 2026-09-19T17:50:58.747Z · stdout · item.started                                                                            │              35.2M cache read · 713k input · 58k output
+  kind command_execution · status running · eventId — · turnId — · toolCallId — · provider timestamp —                               │              37k reasoning
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │  codex plan  —       no meter reading for this attempt
+  summary: sample command for step-model-1 id laboris ullamco minim dolore deserunt et duis minim adipiscing qui irure dolore ea     │              $100/mo · weekly window
+  voluptate proident labore ullamco dolore ea et dolor cupidatat                                                                     │  measured from the codex transcript
+ seq 7 · 2026-09-19T17:50:58.783Z · stdout · item.completed                                                                          │
+  kind command_execution · status completed · eventId — · turnId — · toolCallId — · provider timestamp —                             │
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │
+  summary: sample command for step-model-1 id laboris ullamco minim dolore deserunt et duis minim adipiscing qui irure dolore ea     │
+  voluptate proident labore ullamco dolore ea et dolor cupidatat                                                                     │
+ seq 8 · 2026-09-19T17:51:06.218Z · stdout · item.completed                                                                          │
+  kind response · status completed · eventId — · turnId — · toolCallId — · provider timestamp —                                      │
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │
+  summary: sample response for step-model-1 sunt eiusmod commodo tempor enim amet nisi dolore nulla laborum ad non amet minim ea et  │
+  amet qui duis labore elit commodo aliqua irure consequat amet veniam excepteur.                                                    │
+ seq 9 · 2026-09-19T17:51:12.686Z · stdout · item.started                                                                            │
+  kind command_execution · status running · eventId — · turnId — · toolCallId — · provider timestamp —                               │
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │
+  summary: sample command for step-model-1 do duis sed incididunt commodo enim labore reprehenderit tempor nostrud officia eiusmod   │
+  laborum in lorem magna irure elit exercitation reprehenderit                                                                       │
+ seq 10 · 2026-09-19T17:51:24.881Z · stdout · item.completed                                                                         │
+  kind command_execution · status completed · eventId — · turnId — · toolCallId — · provider timestamp —                             │
+  duration — · usage — · parent/subagent —/— · arguments — · result —                                                                │
+  summary: sample command for step-model-1 do duis sed incididunt commodo enim labore reprehenderit tempor nostrud officia eiusmod   │
+  laborum in lorem magna irure elit exercitation reprehenderit                                                                       │
+ seq 11 · 2026-09-19T17:51:28.798Z · stdout · item.started                                                                           │
+  kind command_execution · status running · eventId — · turnId — · toolCallId — · provider timestamp —                               │
+ [ back ] [ ● 1.va7k9a ]   Enter event detail · Esc close · v overview (turns) · t filter · f follow · ? help

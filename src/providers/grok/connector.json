@@ -29,6 +29,15 @@
       "streaming-json"
     ],
     "silenceThresholdSec": 600,
+    "$comment-toolKinds": "Tool names as grok 1.0.13 captured them in real streams (2026-09-19 and 2026-09-21 verify attempts): run_terminal_command, read_file, write, search_replace, grep, list_dir. todo_write, web_fetch and get_command_or_subagent_output were captured too and count as other.",
+    "toolKinds": {
+      "run_terminal_command": "command",
+      "read_file": "read",
+      "write": "edit",
+      "search_replace": "edit",
+      "grep": "search",
+      "list_dir": "search"
+    },
     "rules": [
       {
         "rootMatch": {
@@ -65,12 +74,14 @@
           "path": "type",
           "equals": "tool_call_update"
         },
+        "$comment-kind": "An update carries no tool name, so it is captured as a tool result (`tool`, the kind claude-code's tool_result has) rather than the decoder's nameless `agent`; the Step page folds it into the tool_call with the same toolCallId.",
         "idPaths": [
           "toolCallId"
         ],
         "kindPaths": [
           "toolName"
         ],
+        "kind": "tool",
         "toolCallIdPaths": [
           "toolCallId"
         ],

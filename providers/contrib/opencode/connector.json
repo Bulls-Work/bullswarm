@@ -17,6 +17,16 @@
     "format": "jsonl",
     "args": ["--format", "json"],
     "silenceThresholdSec": 600,
+    "$comment-toolKinds": "opencode 1.18.31 built-in tool ids (the tool_use `part.tool`). todowrite, webfetch, task, skill, lsp, question and plan_exit count as other.",
+    "toolKinds": {
+      "bash": "command",
+      "read": "read",
+      "write": "edit",
+      "edit": "edit",
+      "apply_patch": "edit",
+      "glob": "search",
+      "grep": "search"
+    },
     "failureTypes": ["error"],
     "rules": [
       { "rootMatch": { "path": "type", "equals": "tool_use" }, "idPaths": ["part.callID", "part.id"], "kindPaths": ["part.tool"], "summaryPaths": ["part.state.input.command", "part.state.input.file_path", "part.state.input.path", "part.state.title"], "statusPath": "part.state.status" },

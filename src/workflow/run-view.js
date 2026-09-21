@@ -1933,8 +1933,17 @@ function runPage(model, opts, body) {
     const text = (cursorSegment && line?.header && line.segment === cursorSegment) || (foldCursor && line?.fold)
       ? inverseText(plain) : plain;
     if (line?.fold) body.row(text, { kind: 'fold', ...(row?.runId ? { runId: row.runId } : {}) });
-    else if (line?.actionId) body.row(text, { kind: 'step', actionId: line.actionId, ...(row?.runId ? { runId: row.runId } : {}) });
-    else body.push(text);
+    else if (line?.actionId) {
+      // An attempt row opens the Step page on that attempt, not the latest:
+      // the first of three `verify` rows is `attempt 1 of 3`.
+      const ordinal = Number(line.attempt?.ordinal);
+      body.row(text, {
+        kind: 'step',
+        actionId: line.actionId,
+        ...(Number.isInteger(ordinal) && ordinal > 0 ? { attemptOrdinal: ordinal } : {}),
+        ...(row?.runId ? { runId: row.runId } : {}),
+      });
+    } else body.push(text);
   }
   markStepRows(body, body.lines.slice(timelineStart), workflowPanelModel(row), row?.runId ?? null);
   return header;

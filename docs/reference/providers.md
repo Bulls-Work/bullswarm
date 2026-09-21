@@ -200,6 +200,14 @@ append these optional fields when a provider path resolves. The decoder bounds
 and redacts structured values before they reach the stream; an absent value is
 omitted, not guessed from a neighbouring summary.
 
+`eventStream.toolKinds` declares how captured tool names are counted on the
+Step page. It is an object whose keys are the values resolved by `kindPaths`
+(matched case-insensitively) and whose values are `command`, `read`, `search`,
+`edit`, or `other`. A connector owns its vocabulary; core workflow code keeps
+no provider-specific tool-name table. An undeclared name remains visible and
+counts as `other`. Validation warns when an event stream declares no map and
+rejects values outside those five kinds.
+
 | Field | Meaning and boundary |
 | --- | --- |
 | `eventId` | The provider's event identity, when one exists. |

@@ -41,6 +41,19 @@
       "model"
     ],
     "silenceThresholdSec": 600,
+    "$comment-toolKinds": "command-code 1.54.2 tool names (its own tool-name registry; `event.toolName`). todo_write, web_fetch, the task_* and monitor_* tools count as other.",
+    "toolKinds": {
+      "shell_command": "command",
+      "powershell": "command",
+      "read_file": "read",
+      "read_multiple_files": "read",
+      "write_file": "edit",
+      "edit_file": "edit",
+      "grep": "search",
+      "glob": "search",
+      "read_directory": "search",
+      "web_search": "search"
+    },
     "rules": [
       {
         "rootMatch": {

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { stepPageModel } from '../src/workflow/step-model.js';
-import { renderStepPage, toolRowWindow } from '../src/workflow/step-view.js';
+import { foldLineText, overviewWindow, renderStepPage, stepViewToggle, toolRowWindow } from '../src/workflow/step-view.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 import { seriesColor } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
@@ -146,11 +146,19 @@ test('real Step frames paint the approved cells and keep response prose plain', 
     assert.ok(raw.includes('\x1b[2m──\x1b[0m'), `${width}: rule dashes are dim`);
     const pool = model.presentation.header.pool;
     assert.ok(raw.includes(`${rgb(seriesColor(pool))}${pool}${reset}`), `${width}: a pool keeps its series colour`);
+    // Turn 1 sits in the transcript (every turn, rule 12); the overview opens
+    // on the newest turns, so its oldest shown turn carries plain prose there.
     const response = model.presentation.activity.turns[0]?.text;
     assert.ok(response, 'real snapshot has a first response');
-    const at = raw.indexOf(response);
-    assert.ok(at >= 0, `${width}: first response is present`);
-    assert.equal(raw.slice(at, at + response.length).includes('\x1b['), false, `${width}: response text is plain`);
+    const transcript = render(model, width, { stepView: 'detail' }).join('\n');
+    const at = transcript.indexOf(response);
+    assert.ok(at >= 0, `${width}: first response is present in the transcript`);
+    assert.equal(transcript.slice(at, at + response.length).includes('\x1b['), false, `${width}: response text is plain`);
+    const turns = model.presentation.activity.turns;
+    const oldestShown = turns.at(-(width < 100 ? 5 : 10)).text.slice(0, 24);
+    const lead = raw.indexOf(oldestShown);
+    assert.ok(lead >= 0, `${width}: the window's oldest turn is present`);
+    assert.equal(raw.slice(lead, lead + oldestShown.length).includes('\x1b['), false, `${width}: overview prose is plain`);
   }
 });
 
@@ -164,10 +172,12 @@ test('the turn Up/Down selected is the one inverse row on real Step frames, in A
   const inverseRows = (lines) => lines.map((line, index) => [index, line]).filter(([, line]) => line.includes('\x1b[7m'));
   const check = (width) => {
     const untouched = render(model, width);
-    // An untouched page has no cursor, so turn 1's response stays plain.
-    assert.deepEqual(inverseRows(untouched), [], `${width}: a cursor was drawn before any Up/Down`);
+    // Step-v2 rule 13: the overview opens with the cursor on the newest turn.
+    const opening = inverseRows(untouched);
+    assert.equal(opening.length, 1, `${width}: one cursor when the page opens`);
+    assert.match(plain(opening[0][1]), new RegExp(`^ +${turns.at(-1).number}  `), `${width}: ${plain(opening[0][1])}`);
     const at = [];
-    for (const stepTurnIndex of [0, 1]) {
+    for (const stepTurnIndex of [turns.length - 2, turns.length - 1]) {
       const lines = render(model, width, { stepTurnIndex });
       const rows = inverseRows(lines);
       assert.equal(rows.length, 1, `${width}/${stepTurnIndex}: ${rows.map(([, line]) => plain(line)).join(' | ')}`);
@@ -188,7 +198,7 @@ test('the turn Up/Down selected is the one inverse row on real Step frames, in A
   try {
     process.env.BULLSWARM_ASCII = '1';
     for (const width of [55, 200]) {
-      const lines = render(model, width, { stepTurnIndex: 1 });
+      const lines = render(model, width, { stepTurnIndex: turns.length - 2 });
       assert.equal(inverseRows(lines).length, 1, `ascii ${width}: the cursor survives ASCII mode`);
       const codes = lines.join('\n').match(/\x1b\[[0-9;?]*[A-Za-z]/g) ?? [];
       assert.ok(codes.every((code) => /^\x1b\[(?:0|1|2|7|22|27)m$/.test(code)), codes.join(','));
@@ -199,36 +209,49 @@ test('the turn Up/Down selected is the one inverse row on real Step frames, in A
   }
 });
 
-test('the selected event in Step detail is one inverse event row, in ASCII mode too', () => {
+test('the transcript cursor is one inverse tool row, and Enter opens its captured fields, in ASCII mode too', () => {
   const state = JSON.parse(readFileSync(join(realClaudeRun, 'state.json'), 'utf8'));
   const model = stepPageModel({
     runId: state.runId, shortId: state.shortId, runDir: realClaudeRun, state,
   }, { actionId: 'accept', attemptOrdinal: 5, nowMs: fixedNow, follow: false, view: 'detail' });
-  const events = model.activity.visibleDetailEvents;
-  assert.ok(events.length >= 3, 'the real detail stream has events to select');
+  // Every turn carries its tool rows in the detail view (rule 12).
+  const tools = model.presentation.activity.turns.flatMap((turn) => turn.toolRows);
+  assert.ok(tools.length >= 3, 'the real transcript has tool rows to select');
   const inverseRows = (lines) => lines
     .map((line, index) => [index, line])
     .filter(([, line]) => line.includes('\x1b[7m'));
   const check = (width) => {
-    const untouched = render(model, width, { stepDetail: true, stepFollow: false });
-    assert.deepEqual(inverseRows(untouched), [], `${width}: detail has no cursor before navigation`);
-    const selected = (event) => render(model, width, {
-      stepDetail: true, stepFollow: false, stepSelectedEventIndex: event.index,
+    const untouched = render(model, width, { stepView: 'detail' });
+    assert.deepEqual(inverseRows(untouched), [], `${width}: the transcript has no cursor before navigation`);
+    const selected = (tool, opened = false) => render(model, width, {
+      stepView: 'detail', stepSelectedEventIndex: tool.index, stepDetail: opened,
     });
-    const first = selected(events[2]);
-    const second = selected(events[3]);
+    const first = selected(tools[1]);
+    const second = selected(tools[2]);
     const firstRows = inverseRows(first);
     const secondRows = inverseRows(second);
     assert.equal(firstRows.length, 1, `${width}: ${firstRows.map(([, line]) => plain(line)).join(' | ')}`);
     assert.equal(secondRows.length, 1, `${width}: ${secondRows.map(([, line]) => plain(line)).join(' | ')}`);
     const [firstIndex, firstLine] = firstRows[0];
     const [secondIndex, secondLine] = secondRows[0];
-    assert.ok(firstLine.startsWith('\x1b[7m'), `${width}: cursor starts at the event row`);
-    assert.match(plain(firstLine), new RegExp(`^ seq ${events[2].seq} · `), `${width}: ${plain(firstLine)}`);
-    assert.match(plain(secondLine), new RegExp(`^ seq ${events[3].seq} · `), `${width}: ${plain(secondLine)}`);
-    assert.ok(secondIndex > firstIndex, `${width}: the cursor moves down with the next event (${firstIndex}, ${secondIndex})`);
-    assert.deepEqual(first.map(plain), untouched.map(plain), `${width}: first cursor changed detail text`);
-    assert.deepEqual(second.map(plain), untouched.map(plain), `${width}: second cursor changed detail text`);
+    assert.ok(firstLine.startsWith('\x1b[7m'), `${width}: the cursor starts at the row's first cell`);
+    // The row is clock · kind · summary, as the expanded overview turn draws it.
+    assert.match(plain(firstLine), new RegExp(`^ {12}${tools[1].clock}  `), `${width}: ${plain(firstLine)}`);
+    assert.match(plain(secondLine), new RegExp(`^ {12}${tools[2].clock}  `), `${width}: ${plain(secondLine)}`);
+    assert.ok(secondIndex > firstIndex, `${width}: the cursor moves down with the next row (${firstIndex}, ${secondIndex})`);
+    assert.deepEqual(first.map(plain), untouched.map(plain), `${width}: the cursor changed transcript text`);
+    // Enter opens every captured field of the row's events under it, nothing
+    // the 0.35.1 atomic rows showed is lost: the same field names, in full.
+    const opened = selected(tools[1], true).map(plain);
+    const openedText = opened.join('\n');
+    assert.equal(opened.length > untouched.length, true, `${width}: the open row added its fields`);
+    const byIndex = new Map(model.activity.events.map((event) => [event.index, event]));
+    for (const index of tools[1].eventIndices) {
+      assert.match(openedText, new RegExp(`seq ${byIndex.get(index).seq} · `), `${width}: event ${index} opened`);
+    }
+    for (const name of ['kind', 'status', 'eventId', 'turnId', 'toolCallId', 'provider timestamp', 'duration', 'usage', 'parent/subagent', 'arguments', 'result', 'summary']) {
+      assert.ok(openedText.includes(name), `${width}: the open row names ${name}`);
+    }
     return secondIndex;
   };
   const positions = [55, 200].map(check);
@@ -238,9 +261,9 @@ test('the selected event in Step detail is one inverse event row, in ASCII mode 
   try {
     process.env.BULLSWARM_ASCII = '1';
     const selected = render(model, 55, {
-      stepDetail: true, stepFollow: false, stepSelectedEventIndex: events[2].index,
+      stepView: 'detail', stepSelectedEventIndex: tools[1].index, stepDetail: true,
     }).join('\n');
-    assert.match(selected, /\x1b\[7m seq \d+ · /, 'ASCII mode keeps the inverse event row');
+    assert.match(selected, /\x1b\[7m {12}(?:\x1b\[[0-9;]*m)*\d\d:\d\d:\d\d/, 'ASCII mode keeps the inverse tool row');
     const codes = selected.match(/\x1b\[[0-9;?]*[A-Za-z]/g) ?? [];
     assert.ok(codes.every((code) => /^\x1b\[(?:0|1|2|7|22|27)m$/.test(code)), codes.join(','));
   } finally {
@@ -288,12 +311,14 @@ test('running, finished, and failed Step frames stay width-bounded in both views
       // the direct body no longer spends a scrollable row on it.
       const wider = width >= 120;
       assert.doesNotMatch(direct.map(plain).join('\n'), view === 'overview'
-        ? (wider ? /v detail \(every event\)/ : /v detail/)
-        : (wider ? /v overview \(turns\)/ : /v overview/));
+        ? (wider ? /v detail \(every turn in full\)/ : /v detail/)
+        : (wider ? /v overview \(latest turns\)/ : /v overview/));
       const dashboard = renderDashboardFrame(model, width, { stepView: view }).join('\n');
       assert.match(dashboard, view === 'overview'
-        ? (wider ? /v detail \(every event\)/ : /v detail/)
-        : (wider ? /v overview \(turns\)/ : /v overview/));
+        ? (wider ? /v detail \(every turn in full\)/ : /v detail/)
+        : (wider ? /v overview \(latest turns\)/ : /v overview/));
+      // Rule 14: the top bar carries the toggle, the current view inverted.
+      assert.match(dashboard.split('\n')[0], /overview · detail$/);
       writeFileSync(join(frameDir, `rendered-${state}-${view}-${width}.txt`), `${lines.map(plain).join('\n')}\n`);
     }
   }
@@ -335,9 +360,9 @@ test('running activity leads with the now block and keeps the filter control', (
   assert.match(filtered.map(plain).join('\n'), /showing tools/);
   assert.match(filtered.map(plain).join('\n'), /now · 7 events · 3 cmds · 0 edits · 0 err/);
 
-  const detailModel = stepPageModel(base.modelInput, { nowMs: fixedNow, selectedEventIndex: 6, follow: false });
-  const detail = render(detailModel, 55, { stepDetail: true, stepSelectedEventIndex: 6, stepFollow: false });
-  assert.match(detail.map(plain).join('\n'), /detail · today's capture-order log · all · 7 events/);
+  const detailModel = stepPageModel(base.modelInput, { nowMs: fixedNow, selectedEventIndex: 6, follow: false, view: 'detail' });
+  const detail = render(detailModel, 55, { stepView: 'detail', stepDetail: true, stepSelectedEventIndex: 6, stepFollow: false });
+  assert.match(detail.map(plain).join('\n'), /── transcript · 2 turns · showing all/);
   assert.match(detail.map(plain).join('\n'), /seq 7 · 2026-09-19T17:51/);
   assert.match(detail.map(plain).join('\n'), /eventId|toolCallId|duration/i);
 
@@ -395,9 +420,11 @@ test('expanded turns pin the newest tool window and fold earlier rows first', ()
 });
 
 test('the earlier-row fold noun agrees for commands, edits, and mixed tools', () => {
+  const categories = { command_execution: 'command', file_change: 'edit' };
   const rows = (items) => items.map((entry, index) => ({
     index,
     kind: entry.kind,
+    category: categories[entry.kind] ?? 'other',
     command: entry.kind === 'command_execution',
     text: entry.text,
     inFlight: false,
@@ -530,5 +557,184 @@ test('estimated figures always carry a basis marker and never become bare dollar
       const before = text.slice(Math.max(0, match.index - 2), match.index);
       assert.ok(before.includes('~') || before.includes('≈'), `bare dollar in ${text.slice(Math.max(0, match.index - 15), match.index + 8)}`);
     }
+  }
+});
+
+// Step-v2 rules 12–14 (0.35.2): the transcript, the latest-turns window and
+// the one toggle, on the 31-turn real claude-code attempt.
+function realClaudeModel(options = {}) {
+  const state = JSON.parse(readFileSync(join(realClaudeRun, 'state.json'), 'utf8'));
+  return stepPageModel({
+    runId: state.runId, shortId: state.shortId, runDir: realClaudeRun, state,
+  }, { actionId: 'accept', attemptOrdinal: 5, nowMs: fixedNow, ...options });
+}
+
+/** A body like the shell's: lines, click regions, anchors. */
+function regionBody() {
+  return { lines: [], regions: [], push(line = '') { this.lines.push(String(line)); } };
+}
+
+test('the overview opens on the newest ten turns on the desk and five on the phone, under one fold line', () => {
+  const model = realClaudeModel();
+  const turns = model.presentation.activity.turns;
+  assert.equal(turns.length, 31);
+  for (const [width, limit] of [[200, 10], [55, 5]]) {
+    // The activity column only: on the desk the right column follows the divider.
+    const lines = render(model, width).map(plain).map((line) => (width >= 160 ? line.slice(0, 132).trimEnd() : line));
+    const heads = lines.map((line) => line.match(/^ {0,2}(\d+) {2}\d\d:\d\d {2}/)?.[1]).filter(Boolean).map(Number);
+    const newest = turns.slice(-limit).map((turn) => turn.number);
+    assert.deepEqual(heads, newest, `${width}: the window is the newest ${limit} turns, newest at the bottom`);
+    // One dim line above them stands for the rest, with their own counts.
+    const hidden = turns.slice(0, -limit);
+    const fold = lines.find((line) => /^ turns 1–\d+ · /.test(line));
+    assert.ok(fold, `${width}: the fold line is drawn`);
+    assert.match(fold, new RegExp(`^ turns 1–${hidden.at(-1).number} · .*click for detail$`));
+    const sum = (field) => hidden.reduce((total, turn) => total + (turn.summary?.[field] ?? 0), 0);
+    if (width === 200) assert.ok(fold.includes(`${sum('commands')} commands`), fold);
+    assert.ok(lines.indexOf(fold) < lines.findIndex((line) => line.startsWith(`${String(newest[0]).padStart(3)}  `)),
+      `${width}: the fold line sits above the window`);
+  }
+  // The fold line's text is dim meta, and zero classes never print.
+  const raw = render(model, 200).join('\n');
+  assert.match(raw, /\x1b\[2mturns 1–21 · [^\x1b]*click for detail\x1b\[0m/);
+  assert.doesNotMatch(render(model, 200).map(plain).find((line) => line.startsWith(' turns 1–')), / 0 /);
+});
+
+test('the fold line keeps `click for detail`, dropping counts to fit, and names a single turn', () => {
+  const turn = (number, summary, otherKinds = []) => ({ number, summary, otherKinds });
+  const hidden = [
+    turn(1, { commands: 300, filesRead: 0, edits: 12, otherTools: 0, errors: 0 }),
+    turn(2, { commands: 12, filesRead: 4, edits: 8, otherTools: 2, errors: 1 }, ['web search']),
+  ];
+  assert.equal(foldLineText(hidden), 'turns 1–2 · 312 commands · 4 files read · 20 edits · 2 web search · 1 error · click for detail');
+  assert.equal(foldLineText(hidden, 50), 'turns 1–2 · 312 commands · click for detail');
+  assert.equal(foldLineText(hidden, 10), 'turns 1–2 · click for detail');
+  assert.equal(foldLineText([turn(1, {})]), 'turn 1 · click for detail');
+  // Searches count in the fold as they do in each turn row (gbnq62 verify: 17 searches were missing).
+  assert.equal(foldLineText([turn(1, { commands: 3, filesRead: 35, searches: 17, errors: 1 })]), 'turn 1 · 3 commands · 35 files read · 17 searches · 1 error · click for detail');
+  assert.equal(foldLineText([]), null);
+});
+
+test('the window slides while a running step is followed and stays put once the reader stops', () => {
+  const turns = Array.from({ length: 14 }, (_, index) => ({ index, number: index + 1 }));
+  const numbers = (window) => window.shown.map((turn) => turn.number);
+  assert.deepEqual(numbers(overviewWindow(turns, { limit: 10, following: true })), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  // Two more turns arrive: following slides the window, a pinned one does not.
+  const grown = turns.concat([{ index: 14, number: 15 }, { index: 15, number: 16 }]);
+  assert.deepEqual(numbers(overviewWindow(grown, { limit: 10, following: true })), [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  const pinned = overviewWindow(grown, { limit: 10, windowEnd: 14, following: false });
+  assert.deepEqual(numbers(pinned), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  assert.deepEqual(pinned.hidden.map((turn) => turn.number), [1, 2, 3, 4]);
+  assert.equal(pinned.end, 14);
+  // Following again wins over the pin; a short step shows every turn.
+  assert.deepEqual(numbers(overviewWindow(grown, { limit: 10, windowEnd: 14, following: true })).at(-1), 16);
+  assert.deepEqual(numbers(overviewWindow(turns.slice(0, 3), { limit: 5 })), [1, 2, 3]);
+});
+
+test('the overview cursor can sit on the fold line, and turn heads and the fold are click regions lit on their text only', () => {
+  const model = realClaudeModel();
+  for (const width of [55, 200]) {
+    const body = regionBody();
+    renderStepPage(model, { width, nowMs: fixedNow, stepView: 'overview' }, body);
+    const anchor = body.anchor.step;
+    const fold = anchor.rows.find((row) => row.kind === 'fold');
+    const heads = anchor.rows.filter((row) => row.kind === 'turn');
+    assert.equal(heads.length, width < 100 ? 5 : 10);
+    // The cursor starts on the newest turn.
+    assert.equal(anchor.cursorTurn, 30);
+    assert.equal(anchor.cursor, heads.at(-1).y);
+    // A click on a turn head is Enter on it; on the fold line it opens detail.
+    const regionAt = (y) => body.regions.find((region) => region.y === y);
+    assert.deepEqual(regionAt(fold.y).action, { kind: 'stepView', view: 'detail', fromFold: true });
+    for (const head of heads) {
+      const region = regionAt(head.y);
+      assert.deepEqual(region.action, { kind: 'stepTurn', turnIndex: head.turnIndex });
+      const text = plain(body.lines[head.y - 1]);
+      // Text only: the region ends where the turn head's own words end, never
+      // on the padding or across the divider into the right column.
+      const own = width >= 160 ? text.slice(0, 132) : text;
+      assert.equal(region.x1, 1);
+      assert.equal(region.x2, own.replace(/\s+$/, '').length, `${width}: ${text}`);
+    }
+    const onFold = render(model, width, { stepTurnIndex: -1 });
+    const inverse = onFold.filter((line) => line.includes('\x1b[7m'));
+    assert.equal(inverse.length, 1, `${width}: one cursor on the fold line`);
+    assert.match(plain(inverse[0]), /^ turns 1–\d+ · /);
+  }
+});
+
+test('the transcript lists every turn in full with one row per tool, and every row is a click region', () => {
+  const model = realClaudeModel({ view: 'detail' });
+  const turns = model.presentation.activity.turns;
+  const body = regionBody();
+  renderStepPage(model, { width: 200, nowMs: fixedNow, stepView: 'detail' }, body);
+  const lines = body.lines.map(plain);
+  assert.match(lines.find((line) => line.startsWith('── transcript ·')), /── transcript · 31 turns · /);
+  const anchor = body.anchor.step;
+  assert.equal(anchor.view, 'detail');
+  assert.deepEqual(anchor.rows.filter((row) => row.kind === 'turn').map((row) => row.number), turns.map((turn) => turn.number));
+  const toolRows = anchor.rows.filter((row) => row.kind === 'tool');
+  assert.equal(toolRows.length, turns.reduce((total, turn) => total + turn.toolRows.length, 0));
+  // The last turn is printed in full here, not pointed at the result card.
+  assert.equal(lines.some((line) => line.includes('→ the report, shown under result')), false);
+  assert.ok(lines.some((line) => line.includes(turns.at(-1).text.split('\n')[0].slice(0, 40))));
+  // Rows are head → text → counts → tools, in turn order down the page.
+  const ys = anchor.rows.map((row) => row.y);
+  assert.deepEqual(ys, [...ys].sort((a, b) => a - b));
+  for (const row of anchor.rows) {
+    const region = body.regions.find((entry) => entry.y === row.y);
+    assert.deepEqual(region.action, { kind: 'stepTool', eventIndex: row.index });
+  }
+  // No row falls outside the activity column.
+  assert.ok(body.regions.every((region) => region.x2 <= 132));
+});
+
+test('the transcript filter narrows to tool turns or error rows', () => {
+  const model = realClaudeModel({ view: 'detail', activityFilter: 'errors' });
+  const turns = model.presentation.activity.turns;
+  const lines = render(model, 200, { stepView: 'detail' }).map(plain);
+  const errorRows = turns.flatMap((turn) => turn.toolRows.filter((tool) => tool.error));
+  const shownHeads = lines.filter((line) => /^ {0,2}\d+ {2}\d\d:\d\d {2}/.test(line));
+  assert.equal(shownHeads.length, turns.filter((turn) => turn.toolRows.some((tool) => tool.error)).length);
+  const toolLines = lines.filter((line) => /^ {12}\d\d:\d\d:\d\d  /.test(line));
+  assert.equal(toolLines.length, errorRows.length);
+});
+
+test('the top-bar toggle marks the current view and each word switches to its view', () => {
+  for (const view of ['overview', 'detail']) {
+    const toggle = stepViewToggle(view);
+    assert.equal(plain(toggle.text), 'overview · detail');
+    const inverse = /\x1b\[7m(.*?)\x1b\[0m/.exec(toggle.text)?.[1];
+    assert.equal(inverse, view);
+    assert.deepEqual(toggle.regions.map((region) => region.action), [
+      { kind: 'stepView', view: 'overview' },
+      { kind: 'stepView', view: 'detail' },
+    ]);
+    assert.deepEqual(toggle.regions.map((region) => [region.x, region.width]), [[1, 8], [12, 6]]);
+  }
+});
+
+test('the Step v2 record quotes the transcript frames the code renders, beside the 0.35.1 frames it replaced', async () => {
+  const { buildTranscriptFrames, STEP_V2_DIR, TRANSCRIPT_WIDTHS } = await import('../scripts/render-tidy-0.35.1-frames.mjs');
+  const frames = buildTranscriptFrames();
+  const committed = (name) => readFileSync(new URL(name, STEP_V2_DIR), 'utf8').replace(/\n$/, '').split('\n');
+  assert.equal(frames.size, 8);
+  for (const [name, lines] of frames) {
+    assert.deepEqual(committed(name), lines, `${name} on disk is stale — rerun scripts/render-tidy-0.35.1-frames.mjs`);
+  }
+  for (const width of TRANSCRIPT_WIDTHS) {
+    const before = committed(`0.35.2-before-overview-finished-${width}.txt`).join('\n');
+    const after = frames.get(`0.35.2-overview-finished-${width}.txt`).join('\n');
+    // Before: every turn, the toggle only in the footer. After: the window,
+    // its fold line and the top-bar toggle.
+    assert.match(before, /^ {0,2}1 {2}01:50 {2}/m);
+    assert.match(before, width < 100 ? /v detail/ : /v detail \(every event\)/);
+    assert.equal(before.split('\n')[0], ' Home  Runs  Budget  Stats  Fleet');
+    assert.doesNotMatch(after, /^ {0,2}1 {2}01:50 {2}/m);
+    assert.match(after, /^ turns 1–(5|10) · .*click for detail/m);
+    assert.match(after.split('\n')[0], /overview · detail$/);
+    assert.match(committed(`0.35.2-before-detail-finished-${width}.txt`).join('\n'), /detail · today's capture-order log/);
+    assert.match(frames.get(`0.35.2-detail-finished-${width}.txt`).join('\n'), /── transcript · 15 turns/);
+    assert.match(frames.get(`0.35.2-detail-tool-open-${width}.txt`).join('\n'), /seq \d+ · 2026-09-19T17:51:12\.686Z/);
   }
 });

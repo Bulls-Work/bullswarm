@@ -7,7 +7,7 @@ description: Follow a live Bullswarm run without polling, list and inspect past 
 
 After this page you can follow a live run without polling in a loop, list and inspect runs by id, read a finished run's result, use the dashboard and its keys, and fix a terminal that cannot draw the status glyphs.
 
-## The 0.35.1 dashboard layout
+## The 0.35 dashboard layout
 
 The dashboard keeps the same evidence sources while making the primary pages
 quicker to scan. Run, phase, Home, Runs, Stats, and Step summary durations use
@@ -26,20 +26,29 @@ The pages are arranged as follows.
 | **Run** | The header says `done of total steps`, names running/waiting ids, and shows `active of span` minutes plus the start/finish clock. The plan is phase-only boxes on desktop (named step groups, never `Parallel work`) and a glyph strip on phones; `p` toggles the phone boxes. The live block is the selected running attempt's latest stream turn (or the last finished turn), and the spend block reports known API/plan subtotals with measured, estimated, running, and unmeasured coverage. The timeline has one phase rule with start → end, active duration and done/total, then one `clock · glyph · step · pool · model · effort` row per attempt; filler `started`/`completed` rows, licence bars, `so far`, and ETA rows are gone. |
 | **Step** | One header, then turns, result, task and cost. Line 1 of the header is the verdict (step · run · status · independent verification · attempt), line 2 the purpose, line 3 `pool · model · effort · reasoning` beside one clock, then the route sentence. At 160 columns the activity holds the left column and the result, task and cost cards stack on the right; below that the page stacks result → activity → task → cost. |
 
-The Step activity view is **turns by default**. Press `v` to switch between the
-turn overview and the every-event detail log; the footer hints name the other
-view once (`v detail (every event)` / `v overview (turns)`). A turn is one
-response and the tools that led to it: the row carries its number, the response
-clock, up to two lines of the response, and only the non-zero counts (`35
-commands`, `14 commands · 3 edits`, `no tools`), counting a started/completed
-pair once and mapping each provider's raw tool kinds to those categories (codex
-`command_execution`/`file_change`, Claude Code `Bash`/`Read`/`Write`/`Edit`,
-grok `run_terminal_command`/`read_file`/`grep`); a tool that fits no category is
-still counted, named when it is the only kind. Select a turn with `↑`/`↓` and press `Enter` to expand its
-full response and its tool rows in place; `Esc` collapses it. Detail is the
-capture-order log for the current day, with filters (`t` cycles turns → tools →
-errors → all), every technical field that was captured, and full artifact
-paths. `f` and `Space` keep the selection following the tail.
+The Step top bar carries one visible `overview · detail` toggle; the current
+view is marked. Click either word or press `v`. The footer says `v detail
+(every turn in full)` in overview and `v overview (latest turns)` in detail,
+and standalone tasks use the same page.
+
+Overview opens on the newest ten turns at desktop width and newest five below
+100 columns, newest at the bottom and selected. One dim line above the window
+summarizes every earlier turn, for example `turns 1–48 · 312 commands · 20
+edits · click for detail`; click it or select it and press Enter to open the
+transcript at the top. While following a running step the window slides as
+turns arrive. Once you move, it stays put and names newer turns below it; `f`
+follows again. Rows use only non-zero connector-declared counts: commands,
+files read, searches, edits, other tools and errors. Click a turn head or press
+Enter to expand it.
+
+Detail is the transcript: every turn in order and expanded, with the response
+text in full and then each command or tool call as `clock · kind · summary`.
+The page scrolls normally. Select a turn head or tool row and press Enter (or
+click a transcript row) to open every capture behind it: ids, provider time,
+duration, usage, parent/subagent, arguments, result and summary. Progress and
+completion captures with one call id share one row, so every capture stays
+reachable without counting an operation twice. `t` filters the transcript;
+`tools` keeps turns with tools and `errors` keeps error rows and their turns.
 
 An individual `bullswarm run` task uses the same Step model and view through a
 task-record adapter. It has the same header, blocks, `v` toggle, turn
@@ -148,8 +157,9 @@ The shared keyboard table is:
 
 Page-specific controls include `/` (filter), `a` (active/all), and `i`
 (install) on Runs; `v` to switch the Step between its turn overview and the
-every-event detail log; `Enter` to expand a selected turn and `Esc` to collapse
-it; `t` to cycle the Step's activity filter and `f` to follow its tail (which
+full-turn transcript; `Enter` to expand a selected overview turn or open every
+captured field behind a transcript row, and `Esc` to close it; `t` cycles the
+Step's activity filter and `f` follows its tail (which
 otherwise opens Fleet); `v` on Stats
 Spending to switch `By Pool` / `By Model`; and `e` on Fleet to open setup.
 On Run, `p` toggles the compact plan boxes and `Space` toggles following the
@@ -274,15 +284,15 @@ money pair for every attempt; they are not an inferred transcript.
 
 ### Turns are the unit
 
-The overview prints one row per turn: the turn's number, the capture clock of
-its response, up to two lines of that response, and only the non-zero tool
-counts (`35 commands`, `14 commands · 3 edits`, `no tools`). On the desk the
-counts sit at the end of the second line; on the phone they take their own row.
-The started and completed halves of one operation count once, classed by the
-real event kind through a table that normalises every provider's tool names
-(codex `command_execution`, Claude Code `Bash`, grok `run_terminal_command` all
-count as commands), and never inferred from command prose. When the `other
-tools` class is a single kind the row names it (`2 grep`). A still-streaming
+The overview prints the latest ten turns on a desk or five on a phone, preceded
+by one `turns 1–N · … · click for detail` line when earlier turns exist. Each
+turn shows its number, response clock, up to two lines of response, and only
+non-zero tool counts (`35 commands`, `14 commands · 3 edits`, `no tools`). On
+the desk counts end the second line; on the phone they take their own row. The
+started and completed halves of one operation count once. Each provider's
+connector maps its tool names to command, read, search, edit or other; the core
+has no provider-name table and never infers a kind from command prose. When the
+`other tools` class is a single kind the row names it. A still-streaming
 response is one turn whose text is the chunks captured so far; a chunk is never
 a row of its own. The last turn is the result: its row reads `→ the report,
 shown under result` instead of printing the report twice.
@@ -304,12 +314,13 @@ unavailable`. While the step is running and the page is following, the current
 turn is expanded by default, so the newest tool rows are on screen without a
 keypress; `f` stops the follow and leaves the page where you put it.
 
-Press `v` for detail: the current-day capture-order log with every technical
-field (seq, capture time, source, provider type, kind, status, event/turn/tool
-identifiers, provider timestamp, duration, usage, parent/subagent, arguments,
-result, summary) and the full artifact paths. Missing optional fields are
-labelled as unavailable. Without a structured stream the page says `event
-stream unavailable`; task or answer prose never creates synthetic activity.
+Press `v` for the transcript. Every turn is expanded in order: full response,
+counts, then one row per command or tool call. Enter on a head or tool row opens
+every captured technical field (seq, time, source, provider type, kind, status,
+ids, provider timestamp, duration, usage, parent/subagent, arguments, result
+and summary). Missing optional fields are labelled unavailable. Without a
+structured stream the page says `event stream unavailable`; prose never
+creates synthetic activity.
 
 ### Money in plain words
 
@@ -355,9 +366,9 @@ Every missing layer has a named state rather than a blank that looks complete:
 
 | Key | Does on Step |
 | --- | --- |
-| `v` | switch between the turn overview (the default) and the every-event detail log |
-| `↑`/`↓` | select the next or previous turn (overview) or captured event (detail) |
-| `Enter` | expand or collapse the selected turn, or the selected event's detail |
+| `v` | switch between the latest-turn overview (the default) and full-turn transcript |
+| `↑`/`↓` | select the next or previous turn head or tool row |
+| `Enter` | expand/collapse an overview turn, open a transcript row's captured fields, or open the fold line in detail |
 | `t` | cycle the activity filter: turns → tools → errors → all |
 | `f` | follow or stop following the activity tail |
 | `Space` | page an expanded turn's tool window back through its older rows, or toggle the follow when no turn is expanded |

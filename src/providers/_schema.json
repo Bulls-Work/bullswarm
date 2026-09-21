@@ -59,6 +59,10 @@
       "provider model-id paths in priority order"
     ],
     "silenceThresholdSec": 600,
+    "toolKinds": {
+      "provider tool name": "command|read|edit|search|other"
+    },
+    "$comment-toolKinds": "Optional. How this provider's tool names map to the kinds the Step page counts: command (a shell command), read (a file's contents), edit (a write, edit or patch), search (grep, glob, a directory listing or a web search), other. A key is the tool name the connector captures as the event kind (its kindPaths value), matched case-insensitively; a name the map does not list counts as other and is named on the turn row. Every provider owns its own vocabulary here; src/workflow/step-model.js keeps no table of tool names.",
     "rules": [
       {
         "rootMatch": {
