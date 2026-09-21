@@ -37,9 +37,12 @@ deprecated alias for `--orchestrator <pool> --orchestrator-strict`.
 Observe and consume:
 
 ```bash
+bullswarm workflow watch <shortId> --until trouble                     # the standard: one background watch per run
+bullswarm workflow watch <shortId> --until trouble --after <sequence> --since <iso-timestamp>
+bullswarm workflow watch <shortId> --until outcome                     # trouble lines print; only the outcome ends it
 bullswarm workflow watch <shortId> --next
-bullswarm workflow watch <shortId> --next --after <sequence> --since <iso-timestamp>
 bullswarm workflow watch <shortId>
+bullswarm workflow step restart <shortId> <step> [--pool <pool>]       # your answer to a `looks stale` line
 bullswarm workflow tui <shortId>
 bullswarm workflow tui --json <shortId>
 bullswarm workflow events --json <shortId> --after 0
@@ -48,17 +51,32 @@ bullswarm workflow runs result <shortId> --json --summary
 
 Use the compact summary in the status loop. Read the full envelope with `--json` alone when the run is failed or partial, or before judging evidence.
 
-V2 watch prints one attach line, then one line per notable event, and stays
-silent while work is merely in progress. Launch
-`bullswarm workflow watch <shortId> --next` in a background terminal, act on the
-printed event when it exits, and relaunch until the outcome line reports a
-pause or a terminal status. Every `--next` exit that leaves the run going ends
-with `next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`;
-relaunch with those exact `--after` and `--since` values so events committed
-while no watcher was attached are printed rather than skipped and an
-already-reported stall does not fire again (its recovery still prints). With
-`--jsonl` that line is absent: take `--after` from the `sequence` field carried
-by every emitted object. `--heartbeat` is opt-in for V2 (legacy still
+Watch without waste. Start one `bullswarm workflow watch <shortId> --until
+trouble` per run in the background and do nothing about the run until it
+exits. It prints no attach line and no routine lines. It prints only trouble:
+failed or blocked steps, evidence that rejected a requirement, rejected plan
+revisions and planning attempts, pause requests and pause stops, stalled
+workers, stale steps, and steering received. It exits on the first trouble line
+while the run goes on (exit 0). It also exits on the outcome: finished, paused,
+waiting, or interrupted, with the usual exit codes. Each exit is one wake: read
+it in one tool call, act, and start the printed
+`next: bullswarm workflow watch <shortId> --until trouble --after <sequence> --since <iso>`
+again. Do not poll between wakes, do not read the run directory, and do not
+send a status reply per step. `--until outcome` prints the same lines but ends
+only at the outcome. `--until` cannot combine with `--next`, `--once`,
+`--classic` or `--heartbeat`. Under `--until`, the raw `silent for` line is
+replaced by the stale score, because a long command is not silence.
+
+Without `--until`, V2 watch prints one attach line, then one line per notable
+event, and stays silent while work is merely in progress. `--next` prints no
+attach line, exits after the first poll that printed a notable event (a
+finished step included), and ends with
+`next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`.
+Relaunch with those exact `--after` and `--since` values. Events committed
+while no watcher was attached are then printed rather than skipped, and an
+already-reported stall or stale step does not fire again (a stall's recovery
+still prints). With `--jsonl` that line is absent: take `--after` from the
+`sequence` field carried by every emitted object. `--heartbeat` is opt-in for V2 (legacy still
 defaults to 60s). `--stall-after` (default 300s) reports a silent running
 agent. A usage-limit failure always prints, verbose or not: `⚠ ... usage
 limit on <pool> · paused until <deadline> · retrying on another pool`, then
@@ -239,6 +257,44 @@ needed; only `resume` continues the run. `resume` before the kernel reached the
 pause withdraws the request (`workflow.unpaused`) and the run never stops.
 `cancel` on a paused run finalizes it inline. A pause on a finished run is
 refused.
+
+### Stale steps and `step restart`
+
+For each running attempt the watcher computes a stale score. It uses the
+attempt's persisted event stream (`stream-<step>-attempt-<n>.jsonl` and its
+`.tail` segment) and the modification times of the step's `ownedFiles`:
+
+| Signal | Fires when | Weight |
+|---|---|---|
+| quiet | no event for 10 minutes while no command is in flight (a command still running is excluded; without an event stream it is plain output silence) | 2 |
+| no file change | a step that writes (it owns files or is `build`, and is not a check) changed no file for 20 minutes while at least 5 commands ran | 1 |
+| repeat | the same command 3 times in a row with no file change between | 1 |
+| wall | running longer than 3× the router's expected minutes for its lane and effort (`routing.forecast.expectedMinutes`) | 1 |
+
+At a score of 2 the watcher prints `⚠ <step> looks stale: <reasons>` once per
+attempt. The line wakes `--next` and `--until trouble`, and the human `next:`
+block adds `or restart: bullswarm workflow step restart <shortId> <step>`. The
+`attempt.stale` JSONL object carries `reasons`, `score` and `staleSince`.
+Nothing restarts automatically.
+
+`bullswarm workflow step restart <shortId> <step> [--pool <pool>] [--wait <seconds>] [--json]`
+writes `restart-<step>.json` next to the run. The live kernel applies it within
+about a second. It stops that step's running attempt only; the attempt ends
+`cancelled` with `failureKind: restarted`. The step goes straight back to
+pending, never through a terminal state, and the kernel emits `step.restarted`.
+The next attempt carries the stopped attempt's `## Prior attempt on this step`
+handoff block (pool, times, files changed, diff stat, output so far, last
+response events), the same block a mechanical retry carries. `--pool` pins
+that next attempt to one configured pool; when that pool cannot run the step,
+the step fails with no eligible pool rather than moving elsewhere. The intent
+file is removed once the next attempt starts, so a kernel that dies in between
+still hands off on resume. The command exits 1 and writes nothing when the run
+is finished, the step is not running, or the kernel is not running (`resume`
+restarts interrupted steps with their handoff). A step that finished before the
+kernel took the request is refused (`step.restart_refused`, exit 1). In a
+shared workspace the stopped attempt's edits stay. In an isolated one, its
+workspace is retained for review and the new attempt starts fresh with the
+handoff.
 
 ### Steering in a caller-planned run
 
@@ -495,7 +551,9 @@ document and writes nothing.
   for QA.
 - A worker silent for `BULLSWARM_WORKER_SILENCE_SEC` (default 60 minutes) is
   stopped as `stalled`. Shorter silence is evidence to inspect, not proof of a
-  hang: check the TUI or JSON activity and stall fields before cancelling.
+  hang. The watcher's `looks stale` line gives its reasons; restart that one
+  step with `bullswarm workflow step restart <shortId> <step>` rather than
+  cancelling the run.
 - `ownedFiles` naming a directory or a glob is refused at `plan validate` and
   at launch, and so is a pinned pool that cannot run a step's lane and effort.
   Both used to fail only after launch.

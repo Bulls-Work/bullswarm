@@ -163,7 +163,9 @@ test('dashboard task route uses the Step toggle and Esc leaves the task page', a
   }] }));
   const input = new FakeInput();
   const output = new FakeOutput();
-  const dashboard = runDashboard(home, { input, output, refreshMs: 100000, spinnerMs: 100000 });
+  const dashboard = runDashboard(home, {
+    input, output, refreshMs: 100000, spinnerMs: 100000, autoReprice: false, autoPrune: false,
+  });
   try {
     await settle();
     input.press('r');

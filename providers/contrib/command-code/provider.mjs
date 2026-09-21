@@ -6,7 +6,7 @@
 // Command Code's persisted sessions contain authoritative usage on assistant
 // message rows. Historical Bullswarm attempts used connector.json's
 // --no-session flag, so their checkpoint files do not carry that usage and
-// remain unknown; future persisted sessions are indexed by the transcript
+// remain unknown; since 0.35.2 persisted sessions are indexed by the transcript
 // reader below. Live streams carry usage too: connector.json's
 // eventStream.usage rule reads the final `result` line (inclusive inputTokens
 // minus the cache classes), proven on 2026-09-20 against

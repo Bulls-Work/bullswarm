@@ -6,7 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
-import { normalizeAttempt, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { normalizeAttempt, preferredUsage, recordAttemptCapture, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { readGoalProject } from '../src/workflow/goal.js';
 import { readRollup, readRollupIndex, readRollups, rollupIndexPath } from '../src/workflow/rollup.js';
 
@@ -790,4 +790,164 @@ test('a rollup that cannot be indexed never costs a finished run its result', as
   // `workflow reindex` has everything it needs to repair the index later.
   assert.ok(readRollup(finished.runDir), 'the run still holds its own record');
   assert.equal(readFileSync(join(f.bullswarmDir, 'history'), 'utf8'), 'not a directory\n', 'nothing clobbered the blocking file');
+});
+
+// ── attempt.capture ─────────────────────────────────────────────────────────
+
+const CAPTURED_TOKENS = {
+  standardRead: 2, cacheRead: 3, cacheWrite5m: null, cacheWrite1h: null, cacheWrite: null,
+  output: 5, reasoning: 4, totalKnown: 14,
+};
+const capturedUsage = (sessionId) => ({
+  model: 'gpt-5.6-luna', sessionId, tokens: { ...CAPTURED_TOKENS }, tokenSource: 'provider-reported',
+});
+const captureBlock = (sessionId, overrides = {}) => ({
+  capturedAt: '2026-08-31T01:00:01.500Z', source: 'event-stream',
+  providerSessionId: sessionId, sessionSource: 'provider-stream', model: 'gpt-5.6-luna',
+  tokens: { ...CAPTURED_TOKENS }, tokenSource: 'provider-reported', providerCostUsd: 0.5,
+  exitCode: 0, signal: null, ...overrides,
+});
+
+// Every attempt reports a provider capture at worker exit, then finishes with a
+// weaker (estimated) usage and a different capture that must not win.
+function captureDispatch(f, onDisk) {
+  return async (options) => {
+    const files = options.paths(1);
+    const runDir = dirname(files.taskFile);
+    const startedAt = '2026-08-31T01:00:01.000Z';
+    const base = {
+      ordinal: 1, pool: 'relay', model: 'gpt-5.6-luna', startedAt, taskFile: files.taskFile, outFile: files.outFile, routing: {},
+      session: { pool: 'relay', model: 'gpt-5.6-luna', sessionId: `generated-${options.action.id}`, generation: 1 },
+    };
+    options.onAttempt?.('started', { ...base, status: 'running' });
+    const sessionId = `provider-${options.action.id}`;
+    options.onAttempt?.('captured', { ...base, status: 'running', capture: captureBlock(sessionId), usage: capturedUsage(sessionId) });
+    // The capture is on disk before the verdict exists: a kernel that dies
+    // now still has what the provider reported.
+    onDisk.set(options.action.id, deserializeV2DurableState(readFileSync(join(runDir, 'state.json'), 'utf8')));
+    // A second capture of the same attempt is ignored: the first is immutable.
+    options.onAttempt?.('captured', { ...base, status: 'running', capture: captureBlock('rewritten', { exitCode: 7 }), usage: null });
+    let verdict;
+    if (options.action.id === 'preflight-scout') {
+      const report = [
+        'TREE:\n- report.md', 'MANIFEST:\n- Node.js', 'TEST STATUS:\n- tests pass',
+        'UNITS OF WORK:\n- report', 'SHARED FILES:\n- none', 'RISKS:\n- none',
+        'Additional repository facts '.repeat(8),
+      ].join('\n');
+      writeFileSync(files.outFile, report);
+      verdict = { ok: true, structured: { value: report }, outFile: files.outFile, meta: { exitCode: 0 } };
+    } else if (options.action.id === 'workflow-planner') {
+      const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
+      writeFileSync(candidatePath, JSON.stringify(programResponse()));
+      verdict = { ok: true, structured: options.outputValidator(''), outFile: files.outFile, meta: { exitCode: 0 } };
+    } else if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      writeFileSync(files.outFile, 'wrote report.md');
+      verdict = { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } };
+    } else {
+      const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['report.md contains READY'], concerns: [] } } };
+      writeFileSync(options.taskText.match(/exact durable path: '([^']+)'/)?.[1], JSON.stringify(evidence));
+      writeFileSync(files.outFile, 'inspected');
+      verdict = { ok: true, structured: options.outputValidator(''), outFile: files.outFile, meta: { exitCode: 0 } };
+    }
+    // The finished record carries a weaker (estimated) usage and a different
+    // capture; neither may replace what the provider reported.
+    const record = {
+      ...base, status: 'succeeded', finishedAt: '2026-08-31T01:00:02.000Z', failureKind: null, why: null, wallSec: 1,
+      capture: captureBlock('finished-copy', { exitCode: 9 }),
+      usage: {
+        model: 'gpt-5.6-luna', sessionId: null, tokenSource: 'estimated:utf8-bytes/4',
+        tokens: { ...CAPTURED_TOKENS, standardRead: 90, totalKnown: 99 },
+        subscription: { pool: 'relay', window: 'weekly', deltaPct: null, usd: null, basis: 'unknown:no-meter' },
+      },
+    };
+    options.onAttempt?.('finished', record, verdict);
+    return { ok: true, status: 'succeeded', attempts: [record], verdict };
+  };
+}
+
+test('an attempt is durable with its capture at worker exit and keeps provider-reported usage through finish', async () => {
+  const f = setup();
+  const onDisk = new Map();
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-capture-abcdef', dependencies: { dispatchV2Action: captureDispatch(f, onDisk) } });
+  assert.equal(result.result.status, 'completed');
+
+  const early = onDisk.get('write-report').attempts.find((attempt) => attempt.actionId === 'write-report');
+  assert.equal(early.status, 'running');
+  assert.equal(early.finishedAt, null);
+  assert.deepEqual(early.capture, captureBlock('provider-write-report'));
+  assert.equal(early.usage.tokenSource, 'provider-reported');
+  // The provider-confirmed id replaces the generated conversation id.
+  assert.equal(early.session.sessionId, 'provider-write-report');
+  // Not counted yet: the run totals move once, at finish.
+  assert.equal(onDisk.get('write-report').usage.total, 14, 'only the planner turn is counted so far');
+  assert.equal(onDisk.get('workflow-planner').planner.attempts[0].capture.providerSessionId, 'provider-workflow-planner');
+
+  const attempts = result.state.attempts;
+  assert.equal(attempts.length, 2);
+  for (const attempt of attempts) {
+    assert.deepEqual(attempt.capture, captureBlock(`provider-${attempt.actionId}`), 'the first capture is immutable');
+    assert.equal(attempt.usage.tokenSource, 'provider-reported', 'an estimate never downgrades provider-reported usage');
+    assert.deepEqual(attempt.usage.tokens, CAPTURED_TOKENS);
+    assert.equal(attempt.usage.subscription.basis, 'unknown:no-meter', 'the meter-side block still comes from the finished record');
+    assert.equal(attempt.session.sessionId, `provider-${attempt.actionId}`);
+  }
+  const planner = result.state.planner.attempts[0];
+  assert.deepEqual(planner.capture, captureBlock('provider-workflow-planner'));
+  assert.equal(planner.usage.tokenSource, 'provider-reported');
+  // Three attempts, each counted once with its provider-reported total.
+  assert.equal(result.state.usage.total, 42);
+  const reread = deserializeV2DurableState(readFileSync(join(result.runDir, 'state.json'), 'utf8'));
+  assert.deepEqual(reread.attempts.map((attempt) => attempt.capture.providerSessionId), ['provider-write-report', 'provider-inspect-report']);
+});
+
+test('a preflight scout attempt records its capture the same way', async () => {
+  const f = setup({ scout: true });
+  const onDisk = new Map();
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-capscout-abcdef', dependencies: { dispatchV2Action: captureDispatch(f, onDisk) } });
+  assert.equal(result.result.status, 'completed');
+  const early = onDisk.get('preflight-scout').preflight.scout.attempts[0];
+  assert.equal(early.status, 'running');
+  assert.deepEqual(early.capture, captureBlock('provider-preflight-scout'));
+  const scout = result.state.preflight.scout.attempts[0];
+  assert.deepEqual(scout.capture, captureBlock('provider-preflight-scout'));
+  assert.equal(scout.usage.tokenSource, 'provider-reported');
+  // Scout, planner and two workers, each counted once.
+  assert.equal(result.state.usage.total, 56);
+});
+
+test('preferredUsage upgrades an estimate but never downgrades provider-reported counters', () => {
+  const estimated = { tokenSource: 'estimated:utf8-bytes/4', tokens: { totalKnown: 99 } };
+  const summed = { tokenSource: 'transcript-summed', tokens: { totalKnown: 20 }, subscription: { basis: 'observed:meter-delta' } };
+  const reported = capturedUsage('s1');
+  assert.deepEqual(preferredUsage(estimated, summed), summed);
+  assert.deepEqual(preferredUsage(null, estimated), estimated);
+  assert.deepEqual(preferredUsage(reported, null), reported);
+  const kept = preferredUsage(reported, summed);
+  assert.equal(kept.tokenSource, 'provider-reported');
+  assert.deepEqual(kept.tokens, CAPTURED_TOKENS);
+  assert.deepEqual(kept.subscription, { basis: 'observed:meter-delta' });
+  const attempt = { status: 'running' };
+  assert.equal(recordAttemptCapture(attempt, { capture: captureBlock('s1'), usage: reported }), true);
+  assert.equal(recordAttemptCapture(attempt, { capture: captureBlock('s2'), usage: estimated }), false);
+  assert.equal(attempt.capture.providerSessionId, 's1');
+  assert.equal(attempt.usage.tokenSource, 'provider-reported');
+});
+
+test('the state schema accepts a capture only in its documented shape', async () => {
+  const f = setup();
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-capschema-abcdef', dependencies: { dispatchV2Action: captureDispatch(f, new Map()) } });
+  const text = readFileSync(join(result.runDir, 'state.json'), 'utf8');
+  const withCapture = (capture) => {
+    const state = JSON.parse(text);
+    state.attempts[0].capture = capture;
+    state.planner.attempts[0].capture = capture;
+    return JSON.stringify(state);
+  };
+  assert.doesNotThrow(() => deserializeV2DurableState(withCapture(captureBlock('ok'))));
+  assert.doesNotThrow(() => deserializeV2DurableState(withCapture(captureBlock(null, { sessionSource: null, tokens: null, tokenSource: 'unknown', providerCostUsd: null }))));
+  assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { tokens: null }))), /present exactly when tokenSource is provider-reported/);
+  assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { tokenSource: 'estimated:utf8-bytes/4' }))), /tokenSource is invalid/);
+  assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { guessedUsd: 1 }))), /guessedUsd/);
+  assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { providerCostUsd: -1 }))), /must not be negative/);
 });

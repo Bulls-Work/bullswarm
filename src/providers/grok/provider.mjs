@@ -7,7 +7,10 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
-import { readTranscriptUsage as readGrokTranscriptUsage } from '../../lib/transcripts/grok.js';
+import {
+  buildTranscriptIndex as buildGrokTranscriptIndex,
+  readTranscriptUsage as readGrokTranscriptUsage,
+} from '../../lib/transcripts/grok.js';
 
 export const name = 'grok';
 export const displayName = 'Grok';
@@ -216,4 +219,9 @@ export async function readUsage(pool, ctx = {}) {
 
 export function readTranscriptUsage(args = {}) {
   return readGrokTranscriptUsage(args);
+}
+
+// One pass over the store serves every lookup of a bulk reprice.
+export function buildTranscriptIndex(args = {}) {
+  return buildGrokTranscriptIndex(args);
 }

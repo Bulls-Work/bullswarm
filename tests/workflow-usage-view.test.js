@@ -277,8 +277,15 @@ test('poolSummaryLines colours the pace by severity and the work in cyan', () =>
   const [quarantined] = poolSummaryLines([
     { name: 'alpha', enabled: true, usedPct: 91, elapsedPct: 60, pace: null, incumbentLane: [], quarantine: { until: NOW + 60_000, reason: 'quota', kind: 'auto' } },
   ]);
-  assert.ok(quarantined.includes('quarantined'));
+  // A paused pool names its deadline and, for a quota pause, its proof.
+  assert.match(strip(quarantined), /paused until .+ · auth$/);
   assert.ok(quarantined.includes('\x1b[38;2;191;108;105m'), 'red state word');
+  const [metered] = poolSummaryLines([
+    { name: 'alpha', enabled: true, usedPct: 96, elapsedPct: 60, pace: null, incumbentLane: [], quarantine: {
+      until: NOW + 60_000, kind: 'quota', rule: 'meter', meterWindow: { window: 'weekly', usedPct: 96 },
+    } },
+  ], [], { width: 200 });
+  assert.match(strip(metered), /paused until .+ · meter weekly 96%$/);
 });
 
 test('poolSummaryLines clips a row to the width it is given', () => {

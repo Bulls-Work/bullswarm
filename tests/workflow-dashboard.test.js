@@ -894,6 +894,8 @@ test('interactive TUI repaints spinner frames in place without clearing the scre
     const output = new FakeOutput();
     const running = runDashboard(home, {
       token: 'abc234', input, output, refreshMs: 60_000, spinnerMs: 50,
+      // No detached reprice/prune child against this temporary home.
+      autoReprice: false, autoPrune: false,
     });
     await new Promise((resolve) => setTimeout(resolve, 130));
     input.emit('data', Buffer.from('q'));
@@ -1625,6 +1627,8 @@ function shellSession(home, {
   const output = new FakeOutput(columns, rows);
   const running = runDashboard(home, {
     input, output, refreshMs, token, homeDir, openSetupTui,
+    // No detached reprice/prune child against this temporary home.
+    autoReprice: false, autoPrune: false,
   });
   // A key press answers with the screen the reader now sees. The painter
   // writes only the rows that changed, so the raw slice after a press is a
@@ -3619,6 +3623,9 @@ test('phone Home keeps one plain licence row per pool that worked today', () => 
       // The licence block is one row of five plain-word slots per pool that
       // worked today, with the measured worker-minutes and no abbreviation.
       const licence = text.split('licence · pool · worker-minutes')[1].split('── running')[0];
+      // The share has no measured rate behind it, so it stays a dash, and the
+      // money keeps the whole amount this legacy entry recorded: an entry
+      // with no coverage counts must not be read as unpriced attempts.
       assert.match(licence, /relay · 40\.00 · — · ~\$0\.42 · —/, licence);
       assert.doesNotMatch(licence, /wf % \(est\.\)|run min/, 'the licence row uses no abbreviations');
       assert.doesNotMatch(licence, /more metered pool|codex/, licence);
@@ -3704,7 +3711,9 @@ test('Home today band and every live step keep their rows readable on a phone', 
       assert.ok([...line].length <= 54, line);
       // Every inline API-equivalent figure carries its usage-basis marker.
       for (const match of line.matchAll(/\$/g)) {
-        assert.match(line.slice(Math.max(0, match.index - 2), match.index), /[≈~]/, line);
+        // A figure carries its basis: an estimate glyph, or the spend block's
+        // own `at least` where the scope holds attempts nobody priced.
+        assert.match(line.slice(Math.max(0, match.index - 10), match.index), /[≈~]\s*$|at least\s*$/, line);
       }
     }
   } finally { f.cleanup(); }
@@ -4082,9 +4091,13 @@ test('Home today matches the approved 55/120 cards with a licence row per pool',
     for (const slot of ['licence · pool · worker-minutes', 'weekly share · API · subscription']) {
       assert.ok(band.join('\n').replace(/\s+/g, ' ').includes(slot), `${width}: the licence header lost ${slot}`);
     }
-    assert.match(band.join('\n'), /acme · 84\.00 · 2\.9% · ~\$0\.16 · —/);
-    assert.match(band.join('\n'), /codex · 161\.80 · 2\.1% · ~\$0\.03 · —/);
-    assert.match(band.join('\n'), /grok · 26\.00 · 4\.3% · ~\$0\.01 · —/);
+    // The share is the pool's own measured rate times today's worker-minutes:
+    // a pace estimate, and it says so. A pre-0.35.2 entry carries no coverage
+    // counts, so its whole amount stays unqualified rather than reading as a
+    // lower bound the records never claimed.
+    assert.match(band.join('\n'), /acme · 84\.00 · ≈2\.9% pace estimate · ~\$0\.16 · —/);
+    assert.match(band.join('\n'), /codex · 161\.80 · ≈2\.1% pace estimate · ~\$0\.03 · —/);
+    assert.match(band.join('\n'), /grok · 26\.00 · ≈4\.3% pace estimate · ~\$0\.01 · —/);
     assert.match(band.join('\n'), /opencode · 634\.60 · — · — · —/);
     if (width === 120) {
       assert.match(band.join('\n'), /First today goal/);

@@ -11,8 +11,9 @@ import {
   recordPoolStrike, clearPoolStrikes, sweepBenches, BENCH_COOLDOWN_MS, BENCH_AFTER_STRIKES,
   acquireStateLock, releaseStateLock, stateLockPath, STATE_LOCK_STALE_MS,
   assertDepthAllowed, currentDepth, childDepthEnv, DEPTH_ENV,
-  migratePoolNameHome,
+  migratePoolNameHome, resumePool, setPausing, pausingEnabled,
 } from '../src/lib/state.js';
+import { decideQuotaPause } from '../src/lib/quota.js';
 import { buildPools } from '../src/lib/config.js';
 import { getMeterReading } from '../src/meters/registry.js';
 
@@ -375,6 +376,11 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
 
 // --- upstream siblings ------------------------------------------------------
 
+/** A decideQuotaPause() proof from a provider line that names its reset. */
+function spentWindow(now, line = "You've hit your session limit · resets in 2 hours", meter = null) {
+  return decideQuotaPause({ text: line, meter, pausing: true, now, timeZone: 'UTC' });
+}
+
 const GROUP = 'relay:relay.example';
 const relayPools = () => ([
   { name: 'relay', enabled: true, connector: { credentialGroup: GROUP } },
@@ -429,7 +435,10 @@ test('a quota quarantine never spreads, and a sibling deadline is never shortene
   // A sibling already out on its own 3-hour quota reset keeps that deadline:
   // a borrowed 10-minute auth window must not put it back to work early.
   const ownReset = now + 3 * 3600_000;
-  quarantinePool(s, 'relay', 'usage limit reached', now, { until: ownReset, kind: 'quota' });
+  quarantinePool(s, 'relay', 'usage limit reached', now, {
+    kind: 'quota', evidence: spentWindow(now, 'Error: usage limit reached · resets in 3 hours'),
+  });
+  assert.equal(s.pools.relay.quarantine.until, ownReset);
   const benched = quarantineUpstreamSiblings(s, relayPools(), {
     pool: 'relay:c', group: GROUP, reason: 'upstream auth failure', now, until: now + 10 * 60_000, kind: 'auth',
   });
@@ -515,4 +524,156 @@ test('a bench is written beside the quarantine and neither touches the other', (
     const pool = pools.find((p) => p.name === 'opencode');
     if (pool) assert.deepEqual(pool.bench, reloaded.pools.opencode.bench);
   } finally { cleanup(); }
+});
+
+// --- the quota pause rule (quota.js Q6) and resume --------------------------
+
+const TRANSIENT = 'Error: Rate limit exceeded. Please wait a moment and try again.';
+
+test('a quota pause without proof is refused: nothing written, null returned', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-21T06:30:00Z');
+  s.incumbents.build = 'claude-code';
+  assert.equal(quarantinePool(s, 'claude-code', 'rate limited (transient)', now, {
+    until: now + 90 * 60_000, kind: 'quota',
+  }), null);
+  // The 2026-09-21 case: a transient line, the meter at 78% weekly / 48% 5h.
+  const transient = decideQuotaPause({
+    text: TRANSIENT,
+    meter: {
+      captured_at: '2026-09-21T06:20:00Z',
+      five_hour: { utilization: 48, resets_at: '2026-09-21T08:00:00Z' },
+      seven_day: { utilization: 78, resets_at: '2026-09-24T12:00:00Z' },
+    },
+    pausing: true,
+    now,
+  });
+  assert.equal(transient.pause, false);
+  assert.equal(quarantinePool(s, 'claude-code', transient.why, now, {
+    until: now + 90 * 60_000, kind: 'quota', evidence: transient,
+  }), null);
+  assert.equal(s.pools['claude-code']?.quarantine, undefined);
+  assert.equal(s.incumbents.build, 'claude-code', 'a refused pause keeps incumbency');
+});
+
+test('a proven quota pause stores the provider line, the meter reading, the rule and the reset', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-21T06:30:00Z');
+  const meter = {
+    captured_at: '2026-09-21T06:20:00Z',
+    five_hour: { utilization: 48, resets_at: '2026-09-21T08:00:00Z' },
+    seven_day: { utilization: 96, resets_at: '2026-09-24T12:00:00Z' },
+  };
+  const evidence = decideQuotaPause({ text: TRANSIENT, meter, pausing: true, now, timeZone: 'UTC' });
+  const until = quarantinePool(s, 'claude-code', 'ignored when evidence says why', now, {
+    until: now + 60_000, kind: 'quota', evidence,
+  });
+  assert.equal(until, Date.parse('2026-09-24T12:00:00Z'), 'the reset the proof names, not the caller');
+  assert.deepEqual(s.pools['claude-code'].quarantine, {
+    until,
+    reason: evidence.why,
+    kind: 'quota',
+    rule: 'meter',
+    line: TRANSIENT,
+    meter: {
+      readAt: '2026-09-21T06:20:00.000Z',
+      windows: [
+        { window: '5h', usedPct: 48, resetsAt: '2026-09-21T08:00:00.000Z' },
+        { window: 'weekly', usedPct: 96, resetsAt: '2026-09-24T12:00:00.000Z' },
+      ],
+    },
+    meterWindow: { window: 'weekly', usedPct: 96, resetsAt: '2026-09-24T12:00:00.000Z' },
+    resetsAt: '2026-09-24T12:00:00.000Z',
+    pausedAt: '2026-09-21T06:30:00.000Z',
+  });
+  // An explicit spent window with a reset pauses until exactly that reset.
+  const message = spentWindow(now);
+  assert.equal(quarantinePool(s, 'codex', message.why, now, { kind: 'quota', evidence: message }), now + 2 * 3600_000);
+  assert.equal(s.pools.codex.quarantine.rule, 'message');
+  // It auto-releases at its reset like every quarantine (S1).
+  assert.deepEqual(sweepQuarantines(s, now + 2 * 3600_000), ['codex']);
+});
+
+test('automatic pausing off refuses every pause: quota, auth, siblings and the bench', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-21T06:30:00Z');
+  assert.equal(pausingEnabled(s), true, 'on by default');
+  assert.equal(setPausing(s, false), false);
+  assert.equal(s.strategy.pausing, 'off');
+  // Quota: even a spent window with a reset names no pause.
+  assert.equal(quarantinePool(s, 'claude-code', 'x', now, { kind: 'quota', evidence: spentWindow(now) }), null);
+  // Auth: a dead credential is not benched either.
+  assert.equal(quarantinePool(s, 'grok', 'auth signature', now, { kind: 'auth' }), null);
+  // The credential-group siblings of an auth pause are part of the switch.
+  assert.equal(quarantinePool(s, 'relay:c', 'upstream auth failure', now, { kind: 'auth' }), null);
+  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), {
+    pool: 'relay:c', group: GROUP, reason: 'upstream auth failure', now, until: now + 10 * 60_000, kind: 'auth',
+  }), []);
+  // The soft bench takes a pool out of service too, so a strike never benches.
+  assert.equal(recordPoolStrike(s, 'codex', 'stall', now), null);
+  assert.equal(recordPoolStrike(s, 'codex', 'stall', now), null);
+  assert.deepEqual(Object.keys(s.pools), [], 'nothing was written at all');
+  assert.equal(setPausing(s, true), true);
+  assert.equal('pausing' in s.strategy, false, 'on is the default, stored as absence');
+  assert.equal(quarantinePool(s, 'claude-code', 'x', now, { kind: 'quota', evidence: spentWindow(now) }), now + 2 * 3600_000);
+  assert.equal(quarantinePool(s, 'grok', 'auth signature', now, { kind: 'auth' }), now + 10 * 60_000);
+});
+
+test('a pause in place before the switch was turned off still lifts with resume', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-21T06:30:00Z');
+  quarantinePool(s, 'grok', 'auth signature', now);
+  recordPoolStrike(s, 'grok', 'stall', now);
+  recordPoolStrike(s, 'grok', 'stall', now);
+  setPausing(s, false);
+  // Nothing new is written while off; what was already there is untouched and
+  // still liftable (`bullswarm pools resume <pool>` keeps working).
+  assert.equal(quarantinePool(s, 'claude-code', 'x', now, { kind: 'quota', evidence: spentWindow(now) }), null);
+  assert.equal(s.pools['claude-code'], undefined);
+  assert.equal(s.pools.grok.quarantine.kind, 'auth');
+  assert.equal(s.pools.grok.bench.count, 2);
+  const lifted = resumePool(s, 'grok', now + 60_000);
+  assert.equal(lifted.quarantine.kind, 'auth');
+  assert.equal(lifted.bench.count, 2);
+  assert.deepEqual(s.pools.grok, {});
+  assert.equal(s.decisionLog.at(-1).kind, 'pool-resume');
+});
+
+test('resume lifts a quota pause at once and logs what it lifted', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-21T06:30:00Z');
+  const evidence = spentWindow(now);
+  quarantinePool(s, 'claude-code', evidence.why, now, { kind: 'quota', evidence });
+  const lifted = resumePool(s, 'claude-code', now + 60_000);
+  assert.equal(lifted.quarantine.rule, 'message');
+  assert.equal(lifted.bench, null);
+  assert.equal(s.pools['claude-code'].quarantine, undefined);
+  assert.deepEqual(s.decisionLog.at(-1), {
+    ts: '2026-09-21T06:31:00.000Z',
+    kind: 'pool-resume',
+    source: 'pools resume',
+    pool: 'claude-code',
+    lifted: {
+      quarantine: { kind: 'quota', until: '2026-09-21T08:30:00.000Z', reason: evidence.why },
+    },
+  });
+});
+
+test('resume lifts an auth pause and an active bench; an unpaused pool is untouched', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-21T06:30:00Z');
+  quarantinePool(s, 'grok', 'auth signature', now);
+  recordPoolStrike(s, 'grok', 'stall', now);
+  recordPoolStrike(s, 'grok', 'stall', now);
+  const lifted = resumePool(s, 'grok', now);
+  assert.equal(lifted.quarantine.kind, 'auth');
+  assert.equal(lifted.bench.count, 2);
+  assert.deepEqual(s.pools.grok, {});
+  assert.deepEqual(s.decisionLog.at(-1).lifted.bench, { until: '2026-09-21T06:40:00.000Z', reason: 'stall' });
+  const before = s.decisionLog.length;
+  assert.deepEqual(resumePool(s, 'grok', now), { quarantine: null, bench: null });
+  recordPoolStrike(s, 'codex', 'stall', now);
+  assert.deepEqual(resumePool(s, 'codex', now), { quarantine: null, bench: null }, 'a counted strike is not a pause');
+  assert.equal(s.pools.codex.bench.count, 1);
+  assert.equal(s.decisionLog.length, before, 'nothing lifted, nothing logged');
 });

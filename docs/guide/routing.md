@@ -107,7 +107,7 @@ otherwise it says `no retry left`.
 
 ## Evidence steps keep normal routing
 
-An evidence or acceptance step is never pushed onto the free pool: the free tier is switched off for it, and it routes on pace like any other action. It does get one preference — **a pool that wrote the work being judged is chosen last**. While any other eligible pool exists, the writer is not selected; when it is the only one left, it runs and the reason says so rather than failing the step.
+An evidence or acceptance step is never pushed onto the free pool: the free tier is switched off for it, and it routes on pace like any other action. It does get one preference — **a model family that wrote the work being judged is chosen last**. Accounts of the same provider family are the same writer. While another eligible family exists, the writer is not selected; when it is the only one left, it runs and the reason says so rather than failing the step. Expiring quota outranks this tie-breaker: an urgent writer can run the evidence step, with `independence waived: <pool> resets in <clock>` in the route reason.
 
 The reason **names the writers it ranked below the winner**, so a surprising pick is explainable. Without the names it read only `normal routing`, which on run `is9aaa` hid why `grok` was preferred over an urgent `claude-code:acme`.
 
@@ -145,9 +145,11 @@ Two preferences apply only among pools that survived the steps above. An explici
 
 The agent CLI that invoked Bullswarm competes as a pool like any other, and `keepOnClaude: true` in a verdict means it won or nothing else was eligible. It is never protected: it has to win on merit. `--no-caller` removes it from the field, so the task must go to a delegate or fail.
 
-## Quarantine on a usage limit
+## Throttles and exhausted windows
 
-A provider reporting a usage limit is its own failure kind, `quota`, never `process` or `auth`. The attempt is killed immediately even if the CLI would otherwise hang, and the pool is benched until the reset the message named — falling back to its cached 5-hour `resets_at`, then to 30 minutes. The pool is excluded from every later dispatch until that deadline, the action is re-dispatched on another pool, and it is never retried on the one that hit the limit. Detection is shape-gated to lines that look like a provider notice, so an agent writing *about* rate limits is not quarantined.
+A limit notice pauses a pool for quota (failure kind `quota`, never `process` or `auth`) only on proof: the pool's own meter reads 95% or more on a window that is still running, or the provider's line says a usage window is spent *and* names its reset. The attempt is killed immediately even if the CLI would otherwise hang, the pool is paused until that window's reset, and the action moves elsewhere. The pause record keeps the rule, the provider line and the meter reading, so `bullswarm pools` can say why; `bullswarm pools resume <pool>` lifts it and `bullswarm strategy set-pausing off` turns every automatic pool pause off (quota, auth and the sibling bench) while routing's own meter gating stays.
+
+Every other limit notice — `Rate limit exceeded. Please wait a moment and try again.`, `429 Too Many Requests`, an overload, a window phrase with no reset — is failure kind `throttle`: the dispatcher retries the same pool up to twice, after 20 s and then 60 s (or after the wait the provider named), without a pause or a mechanical-retry charge; after that the attempt moves to another pool and the pool stays in service. A throttle that names a wait longer than 15 minutes skips the same-pool retry and moves at once. A single `bullswarm run` records the throttle without a pause but does not retry it. Detection is shape-gated to provider notices, so an agent writing *about* rate limits does not trigger either path.
 
 ## Quarantine on an upstream auth failure
 
@@ -155,7 +157,7 @@ A relayed credential fails upstream, not in the CLI. When a provider's event str
 
 ## How the decision shows its work
 
-`bullswarm pools` prints one line per pool: `cost=`, `lanes=`, the meter it is paced from, `surplus=`, `inflight=`, the 5-hour column as `5h=<reading>%-><projected>%` with `(<n>% elapsed)`, `free=<model>` when its model costs nothing, then `ready`, `disabled`, `QUARANTINED until …`, `BENCHED until … (<reason>, <n> strikes)`, `NEAR-5H-LIMIT`, `BURST-GATED`, or `resets in … EXPIRING-SOON urgency=<n>`. A pool carrying an uncounted-out strike prints `strikes=<n>(<reason>)` beside `ready`. `pools` names no lane and therefore no effort tier, so when free-ness differs per tier the column names each one — `free=medium:opencode/union-alpha`. A stale meter held after a failed poll is marked `[stale · <status-or-kind>, retry in <time>]`; `pools --json` carries the same `meterError` and `meterHoldUntil` fields.
+`bullswarm pools` prints one line per pool: `cost=`, `lanes=`, the meter it is paced from, `surplus=`, `inflight=`, the 5-hour column as `5h=<reading>%-><projected>%` with `(<n>% elapsed)`, `free=<model>` when its model costs nothing, then `ready`, `disabled`, `PAUSED until … · <why> · lift now: bullswarm pools resume <pool>`, `BENCHED until … (<reason>, <n> strikes)`, `NEAR-5H-LIMIT`, `BURST-GATED`, or `resets in … EXPIRING-SOON urgency=<n>`. A pool carrying an uncounted-out strike prints `strikes=<n>(<reason>)` beside `ready`. `pools` names no lane and therefore no effort tier, so when free-ness differs per tier the column names each one — `free=medium:opencode/union-alpha`. A stale meter held after a failed poll is marked `[stale · <status-or-kind>, retry in <time>]`; `pools --json` carries the same `meterError` and `meterHoldUntil` fields.
 
 ```text
 answerer       cost=3 lanes=analyze/build/chore unmetered surplus=0 inflight=0 ready

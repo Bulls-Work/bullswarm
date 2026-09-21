@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   activeRunLines,
@@ -8,6 +10,7 @@ import {
   homeDetails,
   homePage,
   homeTodayBand,
+  licenceRowText,
   medianRunText,
   recentDurationText,
   stepBarText,
@@ -15,8 +18,13 @@ import {
   todayTaskLine,
   todayWorkflowLine,
 } from '../src/workflow/home-view.js';
-import { readRollups } from '../src/workflow/rollup.js';
+import { todayLicenceRows, todayRows } from '../src/workflow/home-model.js';
+import { readRollupIndex, readRollups } from '../src/workflow/rollup.js';
+import { reopenV2RunForRetry, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
+import { runPage } from '../src/workflow/run-view.js';
+import { METER_COLORS } from '../src/workflow/usage-view.js';
+import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 
 // The fixture's clocks were recorded in Hong Kong and the expectations quote
 // them as HKT, so this file reads them there on any machine (CI runs in UTC).
@@ -287,6 +295,117 @@ test('Home labels the median and recent-run durations with the basis they were m
   assert.equal(recentDurationText({ minutes: {} }), '—');
 });
 
+/** A pool, a finished workflow on it, and the licence row the two produce. */
+function shareRow(model, now = NOW) {
+  return todayLicenceRows(model, todayRows(model, now), now)[0];
+}
+
+function shareModel({ pools = null } = {}) {
+  const workflow = {
+    runId: 'wf-today', shortId: 'today1', finishedAt: TODAY, status: 'completed',
+    pools: {
+      codex: {
+        minutes: 60, apiKnownSubtotalUsd: 12, attempts: 4, pricedAttempts: 3,
+        measuredAttempts: 2, subscriptionWindow: 'weekly', tokenSource: 'provider-reported',
+      },
+    },
+  };
+  return {
+    runs: [], assignments: [], rollups: [workflow], days: [],
+    tasks: { inflight: [], finished: [] }, budget: null, stats: null,
+    pools: pools ?? [{ name: 'codex', usedPct: 12, spend: { pacing: { ratePerMinute: 0.02, window: 'weekly' } } }],
+  };
+}
+
+test('Home window-share shows the ledger drop when one exists, the labelled pace estimate otherwise', () => {
+  // A temporary home holding one calibration ledger. The ledger's sample is
+  // attributed to the day's run, so the share it names is a measurement —
+  // never an extrapolation from the pool's rate.
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-home-share-'));
+  const previousHome = process.env.BULLSWARM_HOME;
+  const ledger = join(home, 'calibration', 'codex.json');
+  try {
+    mkdirSync(join(home, 'calibration'), { recursive: true });
+    writeFileSync(ledger, `${JSON.stringify({
+      schema: 'bullswarm.calibration.v1',
+      pool: 'codex',
+      window: 'weekly',
+      samples: [
+        { at: '2026-09-20T09:00:00.000Z', apiUsd: 6, deltaPct: 1.5, runId: 'wf-today', attemptId: 'build-1' },
+        // Another run's drop is not this row's measurement, and a task with no
+        // run attribution can never be one either.
+        { at: '2026-09-20T09:30:00.000Z', apiUsd: 9, deltaPct: 4, runId: 'wf-elsewhere', attemptId: 'verify-1' },
+        { at: '2026-09-20T10:00:00.000Z', apiUsd: 3, deltaPct: 2, attemptId: 'e4704acb-9bd3-45e0-8d7a-ff168eebd0ff' },
+      ],
+      usdPerPct: 2.6,
+      sampleCount: 3,
+      updatedAt: '2026-09-20T10:00:00.000Z',
+    })}\n`);
+    process.env.BULLSWARM_HOME = home;
+
+    const measured = shareRow(shareModel());
+    assert.equal(measured.shareBasis, 'measured');
+    assert.equal(measured.weeklyShare, 1.5, 'only the run\'s own attributed drop counts');
+    assert.equal(measured.shareSamples, 1);
+    const measuredLine = licenceRowText(measured);
+    assert.match(measuredLine, /^codex · 60\.00 · 1\.5% measured · at least \$12\.00 · 1 unmeasured · —$/);
+
+    // The same pool with no ledger attributed to it: the pace estimate, named
+    // as the estimate it is.
+    rmSync(ledger);
+    const pace = shareRow(shareModel());
+    assert.equal(pace.shareBasis, 'pace');
+    assert.equal(Math.round(pace.weeklyShare * 100) / 100, 1.2);
+    assert.match(licenceRowText(pace), /^codex · 60\.00 · ≈1\.2% pace estimate · at least \$12\.00 · 1 unmeasured · —$/);
+
+    // A pure-rollup render (no live pool list — the committed frames) never
+    // reads a ledger it was not handed, even with a home in the environment.
+    writeFileSync(ledger, `${JSON.stringify({
+      schema: 'bullswarm.calibration.v1',
+      pool: 'codex',
+      window: 'weekly',
+      samples: [{ at: '2026-09-20T09:00:00.000Z', apiUsd: 6, deltaPct: 1.5, runId: 'wf-today', attemptId: 'build-1' }],
+      usdPerPct: null,
+      sampleCount: 1,
+      updatedAt: '2026-09-20T09:00:00.000Z',
+    })}\n`);
+    const noPools = shareRow(shareModel({ pools: [] }));
+    assert.equal(noPools.shareBasis, null, 'a render without a meter list consults no ledger');
+    assert.equal(noPools.weeklyShare, null);
+    assert.match(licenceRowText(noPools), /^codex · 60\.00 · — · at least \$12\.00 · 1 unmeasured · —$/);
+
+    // A pool whose rate was never measured, with no ledger either, keeps the
+    // dash: no third basis, and never a guessed number beside the unknown.
+    rmSync(ledger);
+    const unrated = shareRow(shareModel({
+      pools: [{ name: 'codex', usedPct: 12, spend: { pacing: { ratePerMinute: null, window: 'weekly' } } }],
+    }));
+    assert.equal(unrated.shareBasis, null);
+    assert.equal(unrated.weeklyShare, null);
+    assert.match(licenceRowText(unrated), /^codex · 60\.00 · — · at least \$12\.00 · 1 unmeasured · —$/);
+
+    // A monthly ledger is not the weekly column's measurement: refused, so the
+    // row falls back to its own window's pace estimate rather than relabelling
+    // another window's drop as weekly.
+    writeFileSync(ledger, `${JSON.stringify({
+      schema: 'bullswarm.calibration.v1',
+      pool: 'codex',
+      window: 'monthly',
+      samples: [{ at: '2026-09-20T09:00:00.000Z', apiUsd: 6, deltaPct: 9, runId: 'wf-today', attemptId: 'build-1' }],
+      usdPerPct: null,
+      sampleCount: 1,
+      updatedAt: '2026-09-20T09:00:00.000Z',
+    })}\n`);
+    const wrongWindow = shareRow(shareModel());
+    assert.equal(wrongWindow.shareBasis, 'pace');
+    assert.notEqual(wrongWindow.weeklyShare, 9);
+  } finally {
+    if (previousHome === undefined) delete process.env.BULLSWARM_HOME;
+    else process.env.BULLSWARM_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('Home card hit regions cover each run for Enter and click navigation', () => {
   const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
@@ -315,21 +434,160 @@ test('Home shows a partly-priced period as the subtotal the rollups really hold'
     .lines.map(visible).join('\n');
 
   // 83 of the period's 149 attempts carried a price. The strict total stays
-  // unknown, so the page states the recorded subtotal and its coverage rather
-  // than the `api unknown` this data used to print.
-  assert.match(text, /Spent: ≈ \$299\.87 api · 83\/149 priced/);
-  assert.match(text, /recorded ≈ \$299\.87 api of API-equivalent work/);
+  // unknown, so the page states the recorded subtotal as the lower bound it
+  // is, in the Run spend block's own words, rather than the `api unknown`
+  // this data used to print.
+  assert.match(text, /Spent: at least \$299\.87 api · 66 unmeasured/);
+  assert.match(text, /recorded at least \$299\.87 api · 66 unmeasured of API-equivalent work/);
   assert.doesNotMatch(text, /recorded no API-equivalent estimate/);
 
   // All three recorded days are charted — 18 and 20 Sep are subtotals — and the
-  // axis carries the `≈` that says every bar is a lower bound.
+  // axis says `at least`, so every bar is read as a lower bound.
   const band = text.split('── last 7 days')[1].split('── recent')[0];
-  assert.match(band, /≈\$160\.00/, band);
+  assert.match(band, /at least \$160\.00/, band);
   assert.equal((band.match(/███/g) ?? []).length > 0, true);
   assert.equal(band.split('\n').at(-3).trim().startsWith('┼'), false);
 
-  // A pool whose attempts were only partly priced still shows what it recorded.
-  assert.match(text, /codex · 964\.50 · — · ≈\$36\.30/);
-  // A run with no strict total shows its own recorded subtotal on its card.
-  assert.match(text, /API ≈ \$9\.52 · subscription —/);
+  // A pool whose attempts were only partly priced shows the lower bound and
+  // the count of attempts that produced it.
+  assert.match(text, /codex · 964\.50 · — · at least \$36\.30 · 25 unmeasured/);
+  // A run with no strict total shows its own recorded lower bound on its card.
+  assert.match(text, /API at least \$9\.52 · 6 unmeasured/);
+});
+
+const rgbEscape = (hex) => {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `\x1b[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
+};
+
+test('Home recent lists finished runs only: a reopened or live run sits in running, whatever its failed steps', () => {
+  const finished = (shortId, extra) => ({
+    runId: `wf-${shortId}`, shortId, project: 'bullswarm', goal: `${shortId} goal`,
+    startedAt: '2026-09-20T08:00:00.000Z', finishedAt: '2026-09-20T09:00:00.000Z',
+    minutes: { active: 10 }, pools: {}, ...extra,
+  });
+  const model = emptyModel();
+  model.rollups = [
+    // A plan revision reopened this run after a step failed: its index row says
+    // running yet still carries the finish of its earlier life, and it is the
+    // newest by that finish.
+    finished('reopn1', { status: 'running', verified: false, finishedAt: '2026-09-20T11:30:00.000Z' }),
+    finished('livrun', { status: 'running', finishedAt: null }),
+    finished('nover1', { status: 'completed', verified: false, finishedAt: '2026-09-20T10:00:00.000Z' }),
+    finished('verif1', { status: 'completed', verified: true, finishedAt: '2026-09-20T09:50:00.000Z' }),
+    finished('faild1', { status: 'failed', verified: false, finishedAt: '2026-09-20T09:40:00.000Z' }),
+    finished('partl1', { status: 'partial', verified: false, finishedAt: '2026-09-20T09:30:00.000Z' }),
+  ];
+  model.runs = [{
+    runId: 'wf-reopn1', shortId: 'reopn1', status: 'running',
+    state: { lifecycle: { status: 'running', startedAt: '2026-09-20T08:00:00.000Z' }, intent: { goal: 'reopn1 goal' }, actions: [], attempts: [] },
+  }];
+  const body = bodyBuilder();
+  homePage(model, { width: 200, narrow: false, nowMs: NOW, period: '7d' }, body);
+  const raw = body.lines;
+  const lines = raw.map(visible);
+  const running = lines.findIndex((line) => line.includes('── running'));
+  const recent = lines.findIndex((line) => line.includes('── recent'));
+  assert.ok(running >= 0 && recent > running, 'the running block sits above the recent list');
+  const inRunning = lines.slice(running, recent).join('\n');
+  const inRecent = lines.slice(recent + 1).filter((line) => /ago\s*$/.test(line.trimEnd()));
+  assert.match(inRunning, /reopn1/, 'the reopened run is in the running block');
+  assert.ok(inRecent.every((line) => !/reopn1|livrun/.test(line)), `a live or reopened run is in recent: ${inRecent.join('\n')}`);
+  assert.deepEqual(inRecent.map((line) => line.match(/(nover1|verif1|faild1|partl1)/)?.[1]), ['nover1', 'verif1', 'faild1', 'partl1'],
+    'the finished runs follow, newest finish first');
+
+  // Each mark is the one the Run page header gives that status, so a
+  // completed-not-verified run is a green tick here as it is there.
+  const recentRaw = raw.slice(recent + 1);
+  const rowFor = (id) => recentRaw.find((line) => visible(line).includes(id));
+  const glyphOf = (line) => visible(line).trim()[0];
+  const cases = [['nover1', 'completed', METER_COLORS.green], ['verif1', 'completed', METER_COLORS.green],
+    ['faild1', 'failed', METER_COLORS.red], ['partl1', 'partial', METER_COLORS.red]];
+  for (const [id, status, color] of cases) {
+    const state = createV2State(createV2GoalDocument({
+      goal: 'g', cwd: '/tmp/repository', requirements: [{ id: 'report', text: 'A report exists.', mandatory: true }],
+      settings: { scout: false, executionMode: 'program' },
+    }), { runId: `wf-${status}`, shortId: 'mark01' });
+    state.lifecycle = { status, startedAt: '2026-09-20T08:00:00.000Z', finishedAt: '2026-09-20T09:00:00.000Z', resultFile: null };
+    const page = runPage({ row: { runId: state.runId, shortId: state.shortId, status, state, events: [], assignments: [], pools: [] },
+      assignments: [], pools: [] }, {
+      width: 120, bodyHeight: 20, narrow: false, nowMs: NOW, spinnerFrame: 0, focus: 0,
+    }, bodyBuilder());
+    const pageGlyph = visible(page).trim()[0];
+    const row = rowFor(id);
+    assert.equal(glyphOf(row), pageGlyph, `${id}: same glyph as the Run page for ${status}`);
+    assert.ok(page.includes(`${rgbEscape(color)}${pageGlyph}`), `${id}: the Run page paints ${pageGlyph} ${color}`);
+    assert.ok(row.includes(`${rgbEscape(color)}${pageGlyph}`), `${id}: Home paints ${pageGlyph} ${color} too`);
+  }
+  assert.notEqual(glyphOf(rowFor('nover1')), '○', 'a completed-not-verified run never reads as pending');
+});
+
+test('a run the kernel reopens is indexed with no finish and drops out of Home recent', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-home-reopen-'));
+  try {
+    const bullswarmDir = join(root, 'home');
+    const workspace = join(root, 'repo');
+    mkdirSync(workspace); mkdirSync(bullswarmDir);
+    const work = (id) => ({
+      id, purpose: `Deliver ${id}`, dependsOn: [], affects: ['deliver'], ownedFiles: [`${id}.txt`],
+      prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+    });
+    // Step `a` stalls on its first try, so the run finishes partial with a
+    // failed step; step `b` succeeds.
+    let calls = 0;
+    const dispatchV2Action = async (options) => {
+      const files = options.paths(1);
+      const record = {
+        ordinal: 1, pool: 'fixture', model: 'fixture', status: 'running',
+        startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile,
+      };
+      writeFileSync(files.taskFile, options.taskText);
+      options.onAttempt?.('started', record);
+      calls += 1;
+      if (options.action.id === 'a' && calls === 1) {
+        const why = 'stalled: the worker wrote nothing for 60 min and was stopped';
+        Object.assign(record, { status: 'failed', finishedAt: new Date().toISOString(), failureKind: 'stalled', why });
+        options.onAttempt?.('finished', record);
+        return { attempts: [record], ok: false, status: 'failed', failureKind: 'stalled', verdict: { ok: false, why, meta: { exitCode: null } } };
+      }
+      writeFileSync(join(options.targetDir, `${options.action.id}.txt`), 'done');
+      writeFileSync(files.outFile, `delivered ${options.action.id}`);
+      Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString() });
+      options.onAttempt?.('finished', record);
+      return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
+    };
+    const runId = 'wf-hreopn1-abcdef';
+    const first = await runV2AutonomousWorkflow({
+      bullswarmDir, pools: [], runId, dependencies: { dispatchV2Action },
+      goalDocument: createV2GoalDocument({
+        goal: 'Deliver the requested files', cwd: workspace,
+        requirements: [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }],
+        settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 2 },
+      }),
+      initialPlannerResponse: {
+        schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
+        program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [work('a'), work('b')] },
+      },
+    });
+    assert.equal(first.result.status, 'partial');
+    const recentText = () => {
+      const nowMs = Date.now();
+      const model = dashboardModel(null, { rollups: readRollups(bullswarmDir), nowMs, runs: [], period: '7d', usage: { pools: [], assignments: [] } });
+      const lines = renderDashboardPage(model, { page: 'home', width: 200, height: 400, nowMs, period: '7d' }).lines.map(visible);
+      return lines.slice(lines.findIndex((line) => line.includes('── recent'))).join('\n');
+    };
+    const finishedRow = readRollupIndex(bullswarmDir).find((record) => record.runId === runId);
+    assert.equal(finishedRow.status, 'partial');
+    assert.ok(finishedRow.finishedAt, 'a finished run is indexed with its finish');
+    assert.match(recentText(), new RegExp(first.state.shortId), 'the finished run is listed as recent');
+
+    const reopened = reopenV2RunForRetry({ bullswarmDir, runId });
+    assert.equal(reopened.status, 'reopened');
+    const reopenedRow = readRollupIndex(bullswarmDir).find((record) => record.runId === runId);
+    assert.equal(reopenedRow.status, 'running');
+    assert.equal(reopenedRow.finishedAt, null, 'the re-indexed row carries no finish or outcome');
+    assert.doesNotMatch(recentText(), new RegExp(first.state.shortId), 'a reopened run is not a finished run');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -18,7 +18,8 @@
 //               does.  Its `elapsedMinutes` is measured, never estimated.
 
 import { glyphs } from '../lib/glyphs.js';
-import { formatUsageBasis } from '../lib/usage-basis.js';
+import { formatMoney, formatUsageBasis } from '../lib/usage-basis.js';
+import { poolUsageAggregate, spendFacts } from './spend-facts.js';
 import { compactRow, cut, formatDashboardValue, rule } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 
@@ -176,8 +177,44 @@ function apiEstimate(value, tokenSource, { compact = false } = {}) {
   return info.text === 'cost unknown' ? '(cost unknown)' : compact ? info.text : `(${info.text} API)`;
 }
 
+/**
+ * The scope's money in the Runs list's own words.
+ *
+ * A whole scope keeps the estimate label it always had. A scope holding
+ * attempts nobody priced reads `at least $X · N unmeasured` — the Run spend
+ * block's own wording, through its own helper — so the row can never pass a
+ * lower bound off as the whole sum. Nothing recorded stays `(cost unknown)`.
+ */
+function apiEstimateFor(info, { compact = false } = {}) {
+  const whole = apiEstimate(info?.value ?? null, info?.tokenSource, { compact });
+  const facts = info?.facts ?? null;
+  const amount = finite(facts?.apiKnownSubtotalUsd);
+  if (amount == null || !(facts.unmeasured > 0 || facts.running > 0)) return whole;
+  const counted = [
+    facts.running > 0 ? `${facts.running} running` : null,
+    facts.unmeasured > 0 ? `${facts.unmeasured} unmeasured` : null,
+  ].filter(Boolean).join(' · ');
+  const text = `at least ${formatMoney(amount)}${counted ? ` · ${counted}` : ''}`;
+  return compact ? text : `(${text})`;
+}
+
 function recordCostInfo(run) {
-  if (!run || typeof run !== 'object') return costInfo(null, 'unknown');
+  const empty = { ...costInfo(null, 'unknown'), known: null, facts: null, counts: { attempts: 0, priced: 0, measured: 0, running: 0 } };
+  if (!run || typeof run !== 'object') return empty;
+  // The rollup's own usage aggregate carries the counts that say whether an
+  // amount is whole; the direct fields below only say how much it is.
+  const usageFacts = spendFacts(run.usage);
+  const countsOf = (facts) => {
+    const attempts = finite(facts?.attempts) ?? 0;
+    const unmeasured = finite(facts?.unmeasured) ?? 0;
+    const running = finite(facts?.running) ?? 0;
+    return {
+      attempts,
+      priced: Math.max(0, attempts - unmeasured - running),
+      measured: finite(facts?.measured) ?? 0,
+      running,
+    };
+  };
   const direct = [
     run.apiEquivalentUsd,
     run.apiEquivalent?.usd,
@@ -190,18 +227,38 @@ function recordCostInfo(run) {
   ];
   for (const value of direct) {
     const number = finite(value);
-    if (number != null) return costInfo(number, run.tokenSource);
+    if (number != null) {
+      return {
+        ...costInfo(number, run.tokenSource),
+        known: number,
+        facts: usageFacts ?? spendFacts({ apiKnownSubtotalUsd: number }),
+        counts: usageFacts ? countsOf(usageFacts) : { attempts: 0, priced: 0, measured: 0, running: 0 },
+      };
+    }
   }
-  const pools = run.pools;
-  if (!pools || typeof pools !== 'object' || Array.isArray(pools)) return costInfo(null, run.tokenSource);
-  let total = null;
+  const aggregate = poolUsageAggregate(run.pools);
+  if (!aggregate) return { ...costInfo(null, run.tokenSource), known: null, facts: null, counts: empty.counts };
   let tokenSource = Object.hasOwn(TOKEN_SOURCE_RANK, run.tokenSource) ? run.tokenSource : null;
-  for (const entry of Object.values(pools)) {
-    const value = finite(entry?.apiEquivalentUsd ?? entry?.costUsd ?? entry?.estimatedUsd);
-    if (value != null) total = (total ?? 0) + value;
-    tokenSource = worstTokenSource(tokenSource, tokenSourceOf(entry?.tokenSource, value));
+  for (const entry of Object.values(run.pools ?? {})) {
+    tokenSource = worstTokenSource(tokenSource, tokenSourceOf(entry?.tokenSource, finite(entry?.apiUsd ?? entry?.costUsd)));
   }
-  return costInfo(total, tokenSource);
+  // A legacy entry's missing coverage counts must not be read as "nothing was
+  // priced": the aggregate only carries them when every entry named them.
+  const counts = aggregate.complete
+    ? { attempts: aggregate.attempts ?? 0, priced: aggregate.priced ?? 0, measured: aggregate.measured ?? 0, running: 0 }
+    : { attempts: 0, priced: 0, measured: 0, running: 0 };
+  const facts = usageFacts ?? spendFacts({
+    attempts: aggregate.complete ? aggregate.attempts : null,
+    pricedAttempts: aggregate.complete ? aggregate.priced : null,
+    measuredAttempts: aggregate.measured,
+    apiKnownSubtotalUsd: aggregate.known,
+  });
+  return {
+    ...costInfo(aggregate.known, tokenSource),
+    known: aggregate.known,
+    facts,
+    counts,
+  };
 }
 
 // Rows show `minutes.active`, the union of the run's attempt intervals. A
@@ -362,22 +419,48 @@ function daySpend(day, runs) {
   return total;
 }
 
+/**
+ * The day's spend, with the coverage that produced it.
+ *
+ * The day's stated `spendUsd` sums only the strict whole-scope amounts its
+ * runs recorded, so a day holding one partly-priced run and one whole run
+ * states the whole run's amount and looks complete. The rows themselves know
+ * better: when any of them leaves attempts unpriced, the view sums their
+ * recorded amounts and the count of attempts that are missing, so the day
+ * rule reads `at least $X · N unmeasured` instead of a total it does not
+ * have.
+ */
 function daySpendInfo(day, runs) {
   const stated = finite(day?.spendUsd ?? day?.apiEquivalentUsd ?? day?.spend);
-  let tokenSource = tokenSourceOf(day?.tokenSource, stated);
-  if (stated != null) {
-    for (const run of runs.filter((entry) => !isTask(entry) && !isLegacy(entry))) {
-      tokenSource = worstTokenSource(tokenSource, recordCostInfo(run).tokenSource);
-    }
-    return costInfo(stated, tokenSource);
+  const entries = runs
+    .filter((run) => !isTask(run) && !isLegacy(run))
+    .map((run) => recordCostInfo(run));
+  const partial = entries.some((info) => info.facts != null
+    && (info.facts.unmeasured > 0 || info.facts.running > 0));
+  if (stated != null && !partial) {
+    let tokenSource = tokenSourceOf(day?.tokenSource, stated);
+    for (const info of entries) tokenSource = worstTokenSource(tokenSource, info.tokenSource);
+    return { ...costInfo(stated, tokenSource), facts: spendFacts({ apiKnownSubtotalUsd: stated }) };
   }
   let total = null;
-  for (const run of runs.filter((entry) => !isTask(entry) && !isLegacy(entry))) {
-    const info = recordCostInfo(run);
+  let known = null;
+  let attempts = 0;
+  let priced = 0;
+  let measured = 0;
+  let tokenSource = tokenSourceOf(day?.tokenSource, stated);
+  for (const info of entries) {
     tokenSource = worstTokenSource(tokenSource, info.tokenSource);
     if (info.value != null) total = (total ?? 0) + info.value;
+    if (info.known != null) known = (known ?? 0) + info.known;
+    attempts += info.counts?.attempts ?? 0;
+    priced += info.counts?.priced ?? 0;
+    measured += info.counts?.measured ?? 0;
   }
-  return costInfo(total, tokenSource);
+  return {
+    ...costInfo(total, tokenSource),
+    known,
+    facts: spendFacts({ attempts, pricedAttempts: priced, measuredAttempts: measured, apiKnownSubtotalUsd: known }),
+  };
 }
 
 function dayCount(day, runs) {
@@ -480,7 +563,7 @@ function runRow(run, width, ansi, { durationWidth = null } = {}) {
   // cost-shaped field a caller may have attached instead of pricing a
   // read-only row by accident.
   const cost = isLegacy(run) ? costInfo(null, 'unknown') : recordCostInfo(run);
-  const estimate = isLegacy(run) ? null : apiEstimate(cost.value, cost.tokenSource, { compact: phone });
+  const estimate = isLegacy(run) ? null : apiEstimateFor(cost, { compact: phone });
   const mark = resultMark(run);
   const duration = displayedDuration(run);
   const durationCells = Math.max(1, Math.trunc(Number(durationWidth) || 0), visible(duration).length);
@@ -619,7 +702,7 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
     // reader needs.
     const inFlight = workflowRows.length > 0 && workflowRows.every((run) => unfinishedRun(run));
     const spend = onlyLegacy ? costInfo(null, 'unknown') : daySpendInfo(day, runs);
-    const money = onlyLegacy || inFlight ? null : apiEstimate(spend.value, spend.tokenSource);
+    const money = onlyLegacy || inFlight ? null : apiEstimateFor(spend);
     const basis = money ?? (inFlight ? 'no result recorded yet' : 'estimate unavailable (no recorded API-equivalent cost)');
     const title = bold(dateLabel(day.date), ansi);
     const right = `${summary} · ${money ? tint(money, 'orange', ansi) : tint(basis, 'dim', ansi)}`;

@@ -5,6 +5,7 @@
 // dashboard clicks with. Every renderer is pure — strings in, strings out —
 // so the pages can be tested without a terminal; only loadUsage reads disk.
 
+import { pauseWord } from '../lib/quota.js';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { listAssignments } from '../lib/assignments.js';
 import { rungsFor } from '../lib/strategy.js';
@@ -301,7 +302,7 @@ export function poolSummaryLines(pools, assignments = [], { width = 120, ansi = 
       const elapsed = pool.elapsedPct == null ? '' : `/${String(Math.round(pool.elapsedPct)).padStart(2)}%`;
       const refused = quotaRefusalText(pool);
       const state = pool.quarantine
-        ? { word: 'quarantined', color: METER_COLORS.red }
+        ? { word: pauseWord(pool.quarantine) ?? 'paused', color: METER_COLORS.red }
         : refused
           ? { word: refused, color: METER_COLORS.red }
         : { word: paceText(pool), color: severityColor(pool.usedPct) };

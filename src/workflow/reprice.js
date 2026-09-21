@@ -6,8 +6,9 @@
 // atomically writes the changed state/result and then uses the same rollup
 // writer as the normal finish and `workflow reindex` paths.
 
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { loadProviders } from '../lib/providers.js';
 import { projectName } from '../lib/project.js';
@@ -21,6 +22,7 @@ import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
 import { isTerminalWorkflowStatus } from './status.js';
 import { helpText, usageLine } from '../help.js';
+import { reconcilePricing } from './reconcile.js';
 
 export const REPRICE_RETENTION_CAVEAT =
   'provider transcripts are pruned. Attempts older than the retention window will resolve to unknown, and the honest dashboard consequence is a visible gap in the history chart, not a silent zero.';
@@ -70,6 +72,30 @@ function defaultBullswarmDir() {
   return process.env.BULLSWARM_HOME?.trim() || join(homedir(), '.bullswarm');
 }
 
+// Task files are bounded prompts; anything larger is not a task file.
+const TASK_TEXT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The text of an attempt's task file, read only from `dir` — the run (or
+ * single-task) directory of the home being priced. The recorded absolute path
+ * can name another home (a snapshot copy keeps its source's paths), so it is
+ * used as a match key and never followed.
+ */
+export function taskTextIn(dir, taskFile) {
+  if (typeof dir !== 'string' || !dir || typeof taskFile !== 'string' || !taskFile) return null;
+  const path = join(dir, basename(taskFile));
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > TASK_TEXT_MAX_BYTES) return null;
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Transcript match confidences that carry a trustworthy measurement. */
+export const MATCHED_CONFIDENCES = new Set(['exact', 'window', 'task-text']);
+
 function blankTokens() {
   return {
     standardRead: null,
@@ -83,7 +109,7 @@ function blankTokens() {
   };
 }
 
-function sourceOf(usage) {
+export function sourceOf(usage) {
   return TOKEN_SOURCES.has(usage?.tokenSource) ? usage.tokenSource : 'unknown';
 }
 
@@ -137,7 +163,7 @@ function subscriptionFor({ home, poolName, connector, oldSubscription }) {
   };
 }
 
-function attemptEntries(state) {
+export function attemptEntries(state) {
   const entries = [];
   const push = (attempt, actionId, fallbackOrdinal = 1) => {
     if (!attempt || typeof attempt !== 'object') return;
@@ -154,10 +180,19 @@ function attemptEntries(state) {
   return entries;
 }
 
-function taskRecord(entry) {
+export function taskRecord(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
   if (entry.kind === 'run' || entry.source === 'run') return true;
   return entry.source == null && entry.picked != null && entry.outFile != null;
+}
+
+// Early single-task records kept only `outFile`. Its task file sits beside
+// it under the same stamp (`out-<stamp>.md` ↔ `task-<stamp>.md`).
+function taskFileOf(entry) {
+  if (typeof entry?.taskFile === 'string' && entry.taskFile) return entry.taskFile;
+  const outFile = typeof entry?.outFile === 'string' ? entry.outFile : '';
+  const name = basename(outFile);
+  return name.startsWith('out-') ? join(dirname(outFile), `task-${name.slice('out-'.length)}`) : null;
 }
 
 function taskTimes(entry) {
@@ -169,7 +204,7 @@ function taskTimes(entry) {
   return { startedAt, endedAt };
 }
 
-function taskEntries(state) {
+export function taskEntries(state) {
   return (Array.isArray(state?.decisionLog) ? state.decisionLog : [])
     .map((entry, index) => ({
       task: entry,
@@ -183,6 +218,7 @@ function taskEntries(state) {
         model: entry.model ?? null,
         ...taskTimes(entry),
         cwd: entry.cwd ?? null,
+        taskFile: taskFileOf(entry),
         project: entry.project ?? entry.projectName ?? null,
         session: entry.session ?? null,
         usage: entry.usage ?? null,
@@ -275,7 +311,12 @@ function attachSubscription(usage, { home, poolName, connector, oldSubscription,
   };
 }
 
-function candidateFor({ attempt, state, connectors, home, transcriptHome, readTranscriptUsage }) {
+/**
+ * Price one attempt from its durable record. Provider-reported usage is only
+ * re-carded; everything else is looked up in the provider's transcripts by
+ * session id, then task text, then cwd + time window.
+ */
+export function candidateFor({ attempt, state, connectors, home, transcriptHome, readTranscriptUsage, taskText = null }) {
   const oldUsage = attempt.usage && typeof attempt.usage === 'object' ? attempt.usage : null;
   const oldSource = sourceOf(oldUsage);
   const poolName = attempt.pool ?? oldUsage?.subscription?.pool ?? null;
@@ -326,13 +367,14 @@ function candidateFor({ attempt, state, connectors, home, transcriptHome, readTr
       startedAt: attempt.startedAt ?? null,
       endedAt,
       taskFile: attempt.taskFile ?? null,
+      taskText,
       home: transcriptHome,
     });
   } catch {
     transcript = null;
   }
   const confidence = transcript?.confidence ?? 'none';
-  const matched = confidence === 'exact' || confidence === 'window';
+  const matched = MATCHED_CONFIDENCES.has(confidence);
   const transcriptCwd = matched && typeof transcript?.cwd === 'string' && transcript.cwd
     ? transcript.cwd : null;
   const derivedProject = oldProject === 'unknown' && transcriptCwd
@@ -381,7 +423,8 @@ function allAttempts(state) {
   return attemptEntries(state).map((entry) => entry.attempt);
 }
 
-function stateUsage(state) {
+/** Aggregate run usage recomputed from every attempt (never additive). */
+export function stateUsage(state) {
   const attempts = allAttempts(state);
   const aggregate = aggregateAttemptUsage(attempts);
   const byPool = {};
@@ -418,7 +461,7 @@ function stateUsage(state) {
 // accepts the pre-publication `ready-to-finalize` state. Reprice therefore
 // refreshes only usage-bearing fields in an existing envelope and leaves its
 // status, verdict, reason, requirements, and evidence intact.
-function refreshExistingResult(result, state) {
+export function refreshExistingResult(result, state) {
   const refreshed = clone(result) ?? {};
   const attempts = allAttempts(state);
   const totals = aggregateAttemptUsage(attempts);
@@ -448,15 +491,20 @@ function refreshExistingResult(result, state) {
 }
 
 function parseArgs(args) {
-  const opts = { apply: false, json: false, since: null, pool: null, all: false };
-  const values = new Set(['since', 'pool']);
+  const opts = {
+    apply: false, json: false, since: null, pool: null, all: false,
+    incremental: false, trigger: null, 'transcript-home': null, 'delay-ms': null,
+  };
+  const values = new Set(['since', 'pool', 'trigger', 'transcript-home', 'delay-ms']);
+  const switches = new Set(['apply', 'dry-run', 'json', 'all', 'incremental']);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--apply') opts.apply = true;
     else if (arg === '--dry-run') opts.apply = false;
     else if (arg === '--json') opts.json = true;
     else if (arg === '--all') opts.all = true;
-    else if (arg === '--since' || arg === '--pool') {
+    else if (arg === '--incremental') opts.incremental = true;
+    else if (values.has(typeof arg === 'string' ? arg.slice(2) : '') && arg.startsWith('--')) {
       if (index + 1 >= args.length || String(args[index + 1]).startsWith('--')) {
         throw new Error(`${arg} requires a value`);
       }
@@ -464,7 +512,7 @@ function parseArgs(args) {
     } else if (typeof arg === 'string' && arg.startsWith('--')) {
       const equals = arg.indexOf('=');
       const name = arg.slice(2, equals > 0 ? equals : undefined);
-      if (!values.has(name) && name !== 'apply' && name !== 'dry-run' && name !== 'json' && name !== 'all') {
+      if (!values.has(name) && !switches.has(name)) {
         throw new Error(`unknown flag --${name} for workflow reprice`);
       }
       if (equals > 0) opts[name] = arg.slice(equals + 1);
@@ -476,6 +524,16 @@ function parseArgs(args) {
   if (opts.since != null && sinceMs == null) throw new Error(`--since must be an ISO-compatible date: ${opts.since}`);
   if (opts.pool != null && !String(opts.pool).trim()) throw new Error('--pool must be a non-empty pool name');
   if (opts.all && opts.since != null) throw new Error('--all cannot be combined with --since');
+  if (opts.incremental && (opts.all || opts.since != null || opts.pool != null)) {
+    throw new Error('--incremental prices every unmeasured attempt; it takes no --since, --all or --pool');
+  }
+  if (!opts.incremental && (opts.trigger != null || opts['delay-ms'] != null)) {
+    throw new Error('--trigger and --delay-ms apply only to --incremental');
+  }
+  if (opts['delay-ms'] != null && !/^\d{1,6}$/.test(String(opts['delay-ms']))) {
+    throw new Error('--delay-ms must be a whole number of milliseconds up to 999999');
+  }
+  if (opts.trigger != null && !/^[a-z][a-z0-9-]*$/.test(opts.trigger)) throw new Error('--trigger must be a kebab-case name');
   return { ...opts, sinceMs };
 }
 
@@ -562,6 +620,50 @@ function rowForCandidate({ runId, shortId = null, actionId, attemptId, ordinal, 
   };
 }
 
+/** Connectors and provider entries for pricing, loaded once per invocation. */
+export function loadPricingProviders(bullswarmDir, { connectors = null, providers = null } = {}) {
+  let connectorMap = connectors;
+  let providerEntries = Array.isArray(providers) ? providers : providers?.providers ?? null;
+  if (!connectorMap || !providerEntries) {
+    try {
+      const loaded = loadProviders(bullswarmDir, { packaged: true });
+      connectorMap ??= loaded.connectors;
+      providerEntries ??= loaded.providers;
+    } catch {
+      connectorMap ??= {};
+      providerEntries ??= [];
+    }
+  }
+  return { connectors: connectorMap, providers: providerEntries };
+}
+
+/**
+ * Persist a repriced run with the same primitives as the normal finish path:
+ * recompute aggregate usage, refresh (never regenerate) an existing result
+ * envelope, write state/result atomically inside `runDir`, then the rollup.
+ */
+export function writeRepricedRun(runDir, state, existingResult, { finishedAt, stateChanged = true, cwd = undefined, project = undefined } = {}) {
+  let result = existingResult;
+  if (stateChanged) {
+    state.usage = stateUsage(state);
+    result = existingResult && isTerminalWorkflowStatus(state.lifecycle?.status)
+      ? refreshExistingResult(existingResult, state)
+      : createV2ResultEnvelope({
+        ...state,
+        usage: { total: state.usage.total, byPool: state.usage.byPool },
+      }, { finishedAt });
+    // A copied home can retain an absolute resultFile from the source home.
+    // Never follow that path: reprice writes only inside the run directory it
+    // is currently operating on.
+    writeJsonAtomic(join(runDir, 'state.json'), state);
+    writeJsonAtomic(join(runDir, 'result.json'), result);
+  }
+  // The normal finish path and `workflow reindex` both use these exact
+  // primitives; reprice deliberately does not duplicate index logic.
+  writeRunRollup(runDir, state, result, { now: timeMs(finishedAt) ?? Date.now(), cwd, project });
+  return result;
+}
+
 /**
  * Reprice terminal V2 workflow attempts.
  *
@@ -582,18 +684,7 @@ export function repriceRuns({
   const beganAt = Date.now();
   const sinceMs = since == null ? null : timeMs(since);
   if (since != null && sinceMs == null) throw new Error(`--since must be an ISO-compatible date: ${since}`);
-  let connectorMap = connectors;
-  let providerEntries = Array.isArray(providers) ? providers : providers?.providers ?? null;
-  if (!connectorMap || !providerEntries) {
-    try {
-      const loaded = loadProviders(bullswarmDir, { packaged: true });
-      connectorMap ??= loaded.connectors;
-      providerEntries ??= loaded.providers;
-    } catch {
-      connectorMap ??= {};
-      providerEntries ??= [];
-    }
-  }
+  const { connectors: connectorMap, providers: providerEntries } = loadPricingProviders(bullswarmDir, { connectors, providers });
   const effectiveReader = readTranscriptUsage === defaultReadTranscriptUsage
     ? indexedTranscriptReader({ home: transcriptHome, providers: providerEntries, bullswarmDir })
     : readTranscriptUsage;
@@ -641,6 +732,7 @@ export function repriceRuns({
           home: bullswarmDir,
           transcriptHome,
           readTranscriptUsage: effectiveReader,
+          taskText: taskTextIn(run.runDir, attempt.taskFile),
         });
       } catch (error) {
         runFailed = error;
@@ -694,26 +786,9 @@ export function repriceRuns({
     const stateChanged = JSON.stringify(state) !== original;
     if (!stateChanged && !minutesChanged) continue;
     try {
-      let result = existingResult;
-      if (stateChanged) {
-        state.usage = stateUsage(state);
-        result = existingResult && isTerminalWorkflowStatus(state.lifecycle?.status)
-          ? refreshExistingResult(existingResult, state)
-          : createV2ResultEnvelope({
-            ...state,
-            usage: { total: state.usage.total, byPool: state.usage.byPool },
-          }, { finishedAt });
-        // A copied home can retain an absolute resultFile from the source home.
-        // Never follow that path: reprice writes only inside the run directory it
-        // is currently operating on.
-        const resultPath = join(run.runDir, 'result.json');
-        writeJsonAtomic(join(run.runDir, 'state.json'), state);
-        writeJsonAtomic(resultPath, result);
-      }
-      // The normal finish path and `workflow reindex` both use these exact
-      // primitives; reprice deliberately does not duplicate index logic.
-      writeRunRollup(run.runDir, state, result, {
-        now: timeMs(finishedAt) ?? Date.now(),
+      writeRepricedRun(run.runDir, state, existingResult, {
+        finishedAt,
+        stateChanged,
         cwd: runRows.find(({ candidate }) => candidate.cwd)?.candidate.cwd,
         project: runRows.find(({ candidate }) => candidate.projectChanged)?.candidate.project,
       });
@@ -738,11 +813,18 @@ export function repriceRuns({
       try {
         candidate = candidateFor({
           attempt: entry.attempt,
-          state: { runId: `task:${entry.attemptId}`, lifecycle: { finishedAt: entry.attempt.finishedAt }, intent: { cwd: entry.attempt.cwd } },
+          // A single task records `endedAt`; without it the transcript window
+          // would be open-ended.
+          state: {
+            runId: `task:${entry.attemptId}`,
+            lifecycle: { finishedAt: entry.attempt.finishedAt ?? entry.attempt.endedAt ?? null },
+            intent: { cwd: entry.attempt.cwd },
+          },
           connectors: connectorMap,
           home: bullswarmDir,
           transcriptHome,
           readTranscriptUsage: effectiveReader,
+          taskText: taskTextIn(join(bullswarmDir, 'runs'), entry.attempt.taskFile),
         });
       } catch (error) {
         report.failures.push({ runId: entry.attemptId, error: error.message });
@@ -805,18 +887,39 @@ export function cmdReprice(args = [], {
     error(`✗ ${err.message}`);
     return 2;
   }
+  const home = opts['transcript-home'] ?? transcriptHome;
+  if (opts.incremental) {
+    // The automatic path, run by hand or as the dashboard's detached child:
+    // it always applies, and only to attempts that are still unmeasured.
+    // A watch-triggered child waits for the finished task's record (written
+    // just after the watch returns) and for the provider to flush its log.
+    const delay = Number(opts['delay-ms'] ?? 0);
+    if (delay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+    let pass;
+    try {
+      pass = reconcilePricing({ bullswarmDir, transcriptHome: home, connectors, providers, trigger: opts.trigger ?? 'manual' });
+    } catch (err) {
+      error(`✗ ${err.message}`);
+      return 1;
+    }
+    if (opts.json) log(JSON.stringify({ type: 'reconcile', ...pass }));
+    else if (pass.status === 'busy') log('another pricing pass is running; nothing to do');
+    else if (pass.status !== 'complete') log(`nothing to price: ${pass.reason}`);
+    else log(`✓ ${pass.line} · ${(pass.elapsedMs / 1000).toFixed(1)}s`);
+    return pass.failures?.length ? 1 : 0;
+  }
   let report;
   try {
     const effectiveSince = opts.all
       ? null
       : opts.since ?? new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
     const liveReader = readTranscriptUsage === defaultReadTranscriptUsage
-      ? indexedTranscriptReader({ home: transcriptHome, bullswarmDir, providers })
+      ? indexedTranscriptReader({ home, bullswarmDir, providers })
       : readTranscriptUsage;
     const streamRows = readTranscriptUsage === defaultReadTranscriptUsage;
     report = repriceRuns({
       bullswarmDir,
-      transcriptHome,
+      transcriptHome: home,
       apply: opts.apply,
       since: effectiveSince,
       pool: opts.pool,

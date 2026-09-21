@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { finiteOrNull } from '../lib/num.js';
 import { formatMoney } from '../lib/usage-basis.js';
+import { honestApiTotalText, recordSpendFacts } from './spend-facts.js';
 import { asciiGlyphsPreferred, glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { v2RunnerLiveness } from './short-id.js';
@@ -1354,9 +1355,21 @@ function runLiveRows(panel, { width, nowMs, limit = 3 }) {
   return rows;
 }
 
+/**
+ * The run's money in the spend block's own words: `at least $X api · N
+ * unmeasured` while an attempt has no price yet, the recorded estimate
+ * otherwise. The legacy cells below share the v2 spend block's vocabulary
+ * instead of growing a second one.
+ */
+function runMoneyText(row, economics) {
+  const pair = moneyText(economics);
+  const facts = recordSpendFacts(row);
+  return [honestApiTotalText(facts, { whole: pair.split(' · ')[0] }), ...pair.split(' · ').slice(1)].join(' · ');
+}
+
 /** The `so far` cell: the steps, the time, the spend and what is not measured. */
 function runSoFarRows(row, panel, progress, economics, { width, nowMs }) {
-  const money = moneyText(economics);
+  const money = runMoneyText(row, economics);
   const elapsed = activeMinutesText(runDurationFacts(panel.row, { nowMs }).activeMinutes);
   const label = (name, value) => `${name.padEnd(9)}${value}`;
   return [
@@ -1682,7 +1695,7 @@ function legacyRunPage(model, opts, body) {
     // under it, then what is live — and leaves the timeline the rest.
     body.push(rule('licence this run used', null, width));
     for (const line of runBudgetRows(economics, { width: width - 2 })) body.push(` ${cut(line, width - 1)}`);
-    const money = moneyText(economics);
+    const money = runMoneyText(row, economics);
     body.push(cut(` so far ${tint(money, 'purple')} · ${economics.measuredAttempts} of ${economics.attempts} attempts measured · ${stepTally(row)} · ${activeMinutesText(runDuration.activeMinutes)}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
     body.push('');
     body.push(rule('live', null, width));

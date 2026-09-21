@@ -131,7 +131,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `eventStream.rules`, `silenceThresholdSec`, `modelPaths`, `args`, `format` | watcher progress and silence detection |
 | `eventStream.usage` (`match`, `mode`, `fields`, optional `inclusive`) | provider-reported usage extraction; the watcher prefers this before transcript and byte fallback |
 | `eventStream.capture.responseBytes`, `capture.fileBytes` (both optional positive integers) | the per-attempt stream sink (`src/lib/attempt-stream.js`). Core defaults are 64000 bytes per persisted `response` event and 1048576 bytes per stream file; set either only when this CLI's answers or event volume make the default the wrong size. Omit the block and a connector still gets a persisted stream with no code |
-| `authSignatures`, `quotaSignatures` | verdict classification and quarantine. Generic phrases stay core defaults; list only this CLI's own |
+| `authSignatures`, `quotaSignatures`, `throttleSignatures` | verdict classification. An auth hit pauses the pool for 10 minutes; a limit notice pauses it for quota only on proof — the notice names a spent window and its reset, or the pool's meter reads 95% or more on a running window. Every other limit notice, throttle wording included, gets a bounded same-pool retry and never pauses the pool. Generic phrases stay core defaults; list only this CLI's own |
 | `modelProfiles[]` (`match`, `tier`, `qualityRank`, `pricing`, `pricingSource`, `pricingUpdatedAt`, `autoRecommend`, `free`, `benchmark`) | rungs, the spend model, benchmarks |
 | `reasoning.flag` or `args`, `levels`, `defaults`, `skipModels` | the reasoning precedence chain ([Configuration](/reference/configuration)) |
 | `meter.type` (`none`, `declared`, `reader`), `meter.window` | the pool builder's meter ladder: a `readUsage` reading first, then a declared meter, then unmetered |
@@ -286,11 +286,12 @@ normalizes fresh input as
 `inputTokens` as an additional cache class. `sessions/` hook logs and
 `history.jsonl` are operational history, not authoritative token ledgers.
 
-The shipped Bullswarm connector currently invokes Command Code with
-`--no-session`. Therefore the historical attempts studied for 0.35.2 have
-checkpoint files but no usage-bearing `<session-id>.jsonl` transcript and
-cannot be backfilled from those checkpoints. Future attempts recover only
-when a matching, persisted JSONL transcript actually exists; otherwise the
+Since 0.35.2 the shipped Bullswarm connector leaves Command Code sessions
+enabled, so each new attempt can retain a usage-bearing
+`<session-id>.jsonl` transcript. Historical attempts made with `--no-session`
+have checkpoint files but cannot be backfilled from those checkpoints. An
+attempt recovers only when a matching, persisted JSONL transcript actually
+exists; otherwise the
 reader returns null usage with `reason: "no matching command-code transcript"`
 or, for a matching file with no usage rows,
 `reason: "command-code transcripts record no token usage"`. This is an honest

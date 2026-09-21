@@ -67,7 +67,7 @@ const top = rich({
     { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, and Grok' },
     { name: 'run', desc: 'dispatch one bounded task' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
-    { name: 'pools', desc: 'show routing pools, meters, in-flight load, and quarantine state' },
+    { name: 'pools', desc: 'show routing pools, meters, in-flight load, and pauses; pools resume lifts one' },
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
     { name: 'strategy', desc: 'discover models and manage tier assignments' },
     { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
@@ -138,13 +138,15 @@ const setupText = rich({
 
 const homeText = rich({
   usage: 'bullswarm home <command> [options]',
-  purpose: 'Create a compact, safe copy of the Bullswarm home for dashboard tests, '
-    + 'bug reports, and reproducible inspection. The source home is read-only; use '
-    + '`home snapshot` to keep only the workflow runs you need instead of copying '
-    + 'the entire workflow archive.',
+  purpose: 'Keep the Bullswarm home small and inspectable. `home snapshot` makes a compact, '
+    + 'safe copy for dashboard tests and bug reports (the source home is read-only); '
+    + '`home prune` removes the disposable workspace copies of old finished runs; '
+    + '`home status` shows the retention policy and what background maintenance last did.',
   argsTitle: 'Commands',
   args: [
     { name: 'snapshot <dest>', desc: 'copy routing, meters, providers, the single-task ledger, and a selected set of workflow run directories' },
+    { name: 'prune', desc: 'list (--dry-run) or remove (--yes) the workspaces/ copies inside finished runs older than the retention limit' },
+    { name: 'status', desc: 'retention policy, workspace bytes on disk, and the last result of each background job (prune, reprice)' },
   ],
   options: [],
   safety: [
@@ -154,8 +156,55 @@ const homeText = rich({
   ],
   examples: [
     { cmd: 'bullswarm home snapshot /tmp/bsw-snapshot --recent 3 --no-streams --json', note: 'make a small dashboard fixture from the current home' },
+    { cmd: 'bullswarm home prune --dry-run', note: 'list the workspaces that would go and how many bytes they hold' },
+    { cmd: 'bullswarm home status', note: 'retention policy and the last prune / reprice results' },
   ],
-  next: 'bullswarm home snapshot <dest> --help for selection and stream-retention options.',
+  next: 'bullswarm home snapshot <dest> --help for selection and stream-retention options; bullswarm home prune --help for the retention rules.',
+});
+
+const homePruneText = rich({
+  usage: 'bullswarm home prune [--dry-run|--yes] [--days <n>] [--json]  (background: --auto [--trigger <name>])',
+  purpose: 'Remove the disposable `workspaces/` copies inside finished workflow runs older than '
+    + 'the retention limit. `state.json.retention` sets the limit — `{ "enabled": true, '
+    + '"workspacesDays": 7 }` are the defaults — and the same rule runs automatically in the '
+    + 'background after runs finish and when the dashboard opens. With neither --dry-run nor '
+    + '--yes the command only lists.',
+  options: [
+    { flag: '--dry-run', desc: 'list the workspaces that would be removed and their bytes; change nothing', default: 'on unless --yes is given' },
+    { flag: '--yes', desc: 'remove them; each run is leased and rechecked first, git worktrees are unregistered before their files go', default: 'list only' },
+    { flag: '--days <n>', desc: 'use this age limit instead of state.json.retention.workspacesDays for this command', default: 'the configured limit, 7 if unset' },
+    { flag: '--auto', desc: 'what the background job runs: honours retention.enabled, waits out the last result (6 hours), takes the prune lock, applies, records the result', default: 'off' },
+    { flag: '--trigger <name>', desc: 'label recorded with an --auto result (kernel, dashboard, watch)', default: 'auto' },
+    { flag: '--json', desc: 'print the policy, candidates with paths and bytes, skipped runs, removed counts and failures as JSON', default: 'human summary' },
+  ],
+  safety: [
+    'only `workflows/<run>/workspaces/<action>` is removed; state, results, reports, events, streams, task/out/diff files, contracts, receipts and history are never touched',
+    'only completed, partial, cancelled or failed runs qualify, measured from their own finishedAt; interrupted, paused, running, legacy and unreadable runs are kept, and so is any run whose kernel lease is held',
+    'a symlinked run directory, workspaces directory or workspace is skipped; a symlink inside a copy is unlinked, never followed',
+    'the result is recorded under <home>/maintenance/prune.json and shown by `bullswarm home status`',
+  ],
+  examples: [
+    { cmd: 'bullswarm home prune --dry-run --json', note: 'machine-readable list of what would go, with bytes' },
+    { cmd: 'bullswarm home prune --yes --days 3', note: 'remove workspaces of runs finished more than 3 days ago' },
+  ],
+  next: 'bullswarm home status to see the last prune result.',
+});
+
+const homeStatusText = rich({
+  usage: 'bullswarm home status [--json]',
+  purpose: 'Show the home\'s retention policy, how many bytes the workspaces/ copies hold and how many '
+    + 'are reclaimable now, and the last recorded result of each background job (prune, reprice) with '
+    + 'its time and trigger. Read-only.',
+  options: [
+    { flag: '--json', desc: 'print the policy, workspace totals and every recorded job result as JSON', default: 'human summary' },
+  ],
+  safety: [
+    'never writes the home; results come from <home>/maintenance/<job>.json',
+  ],
+  examples: [
+    { cmd: 'bullswarm home status', note: 'is the background prune on, and when did it last run' },
+  ],
+  next: 'bullswarm home prune --dry-run to list what is reclaimable.',
 });
 
 const homeSnapshotText = rich({
@@ -414,10 +463,16 @@ const healthText = rich({
 });
 
 const poolsText = rich({
-  usage: 'bullswarm pools [--force] [--json]',
+  usage: 'bullswarm pools [resume <pool>] [--force] [--json]',
   purpose: 'Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, '
     + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and '
-    + 'quarantine/burst-gate status. The 5-hour column reads `5h=<reading>%` alone when '
+    + 'pause/burst-gate status. A paused pool reads `PAUSED until <time> · <why> · lift now: '
+    + 'bullswarm pools resume <pool>`: a quota pause names its proof — the pool\'s own meter at '
+    + '95% or more on a running window, or a provider line that says the usage window is spent '
+    + 'and names its reset — with the exact provider line and the meter reading it was decided '
+    + 'on; an auth pause names the auth failure. A transient rate limit never pauses a pool. '
+    + 'When `bullswarm strategy set-pausing off` is in effect the output opens with '
+    + '`automatic pausing: off`. The 5-hour column reads `5h=<reading>%` alone when '
     + 'nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is '
     + 'expected to push the window further; routing decides on the right-hand number. '
     + 'A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run: '
@@ -436,8 +491,29 @@ const poolsText = rich({
     'always writes state.json after sweeping expired quarantines back into service, even in --json mode',
     'reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours)',
   ],
-  examples: [{ cmd: 'bullswarm pools --force' }],
+  examples: [
+    { cmd: 'bullswarm pools --force' },
+    { cmd: 'bullswarm pools resume claude-code', note: 'lift that pool\'s pause now' },
+  ],
   next: 'bullswarm assignments to see which run and action each in-flight entry belongs to.',
+});
+
+const poolsResumeText = rich({
+  usage: 'bullswarm pools resume <pool> [--json]',
+  purpose: 'Lift a pool\'s pause at once: its quota or auth pause and any active bench. The lift is '
+    + 'appended to the decision log in state.json with what it lifted, and a synthetic 100% '
+    + 'quota-refusal meter marker is dropped with it so the next meter read is live.',
+  args: [{ name: '<pool>', desc: 'exact pool name from bullswarm pools' }],
+  options: [
+    { flag: '--json', desc: 'machine-readable { pool, resumed, lifted: { quarantine, bench, refusalMeterMarker } }', default: 'one human-readable line' },
+  ],
+  safety: [
+    'writes state.json under the state lock; a pool with nothing to lift is left untouched and exits 0',
+    'an unknown pool name exits 2 and writes nothing',
+    'the pool may pause again on its next limit notice if the rule still proves it spent',
+  ],
+  examples: [{ cmd: 'bullswarm pools resume claude-code' }],
+  next: 'bullswarm pools to confirm the pool reads ready.',
 });
 
 const assignmentsText = rich({
@@ -497,6 +573,7 @@ const strategyText = rich({
     { name: 'reset-tier', desc: 'return one tier from an explicit allow-list to automatic routing' },
     { name: 'set-reasoning', desc: 'set how hard one effort tier thinks, globally or for one pool' },
     { name: 'reset-reasoning', desc: 'return reasoning depth to the connector defaults' },
+    { name: 'set-pausing', desc: 'turn every automatic pool pause on (default) or off' },
     { name: 'configure', desc: 'atomically apply an agent-authored JSON strategy file' },
     { name: 'refresh', desc: 'discover models and recommend tiers (recommend is an alias)' },
     { name: 'apply', desc: 'approve the last discovered recommendations' },
@@ -512,7 +589,7 @@ const strategyText = rich({
     { flag: '--json', desc: 'machine-readable output where the subcommand supports it' },
   ],
   safety: [
-    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning/set-rung all mutate ~/.bullswarm/state.json',
+    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning/set-rung/set-pausing all mutate ~/.bullswarm/state.json',
     'refresh (and a cold show) perform live discovery calls against every installed agent CLI and the public OpenRouter model API',
   ],
   examples: [
@@ -610,6 +687,29 @@ const strategyResetReasoningText = rich({
   ],
   examples: [{ cmd: 'bullswarm strategy reset-reasoning --tier low --yes' }],
   next: 'Use strategy routes --json to confirm the level each tier now resolves to.',
+});
+
+const strategySetPausingText = rich({
+  usage: 'bullswarm strategy set-pausing <on|off> [--json]',
+  purpose: 'Turn every automatic pool pause on or off. On (the default), a limit notice pauses a '
+    + 'pool only when the pool\'s own meter reads 95% or more on a window still running, or the '
+    + 'provider line says a usage window is spent and names its reset; every other rate limit is '
+    + 'transient and is retried. A dead credential pauses its pool with the pools that share that '
+    + 'credential. Off, nothing is paused or benched by a command: a limit notice is retried, a '
+    + 'failure moves the attempt to another pool, and routing still reads meters.',
+  args: [{ name: '<on|off>', desc: 'new state, stored as strategy.pausing in state.json' }],
+  options: [
+    { flag: '--json', desc: 'print { pausing: "on"|"off" }', default: 'one human-readable line' },
+  ],
+  safety: [
+    'writes state.json under the state lock; new limit notices follow the switch at once',
+    'a pause already in place stays until its reset; bullswarm pools resume <pool> lifts it',
+  ],
+  examples: [
+    { cmd: 'bullswarm strategy set-pausing off', note: 'no pool is paused or benched automatically' },
+    { cmd: 'bullswarm strategy set-pausing on', note: 'back to the strict default rule' },
+  ],
+  next: 'bullswarm pools shows whether pausing is off and why any pool is paused.',
 });
 
 const strategyRungsText = rich({
@@ -844,7 +944,8 @@ const workflowText = rich({
     { name: 'runs ...', desc: 'search ongoing and historical workflow instances' },
     { name: 'reindex', desc: 'backfill the run-rollup history index, including minimal legacy records' },
     { name: 'tui [runId]', desc: 'open the dashboard (Home, Runs, Run, Step, Budget, Stats, Fleet, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
-    { name: 'watch <runId>', desc: 'follow low-noise progress until terminal' },
+    { name: 'watch <runId>', desc: 'follow low-noise progress until terminal; --until outcome|trouble prints only what needs you' },
+    { name: 'step restart <runId> <step>', desc: 'stop a running step and run it again with its handoff, optionally on another pool; nothing restarts on its own' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
@@ -855,7 +956,7 @@ const workflowText = rich({
       + 'stdout are TTYs; non-interactive callers receive this help text instead',
     'goal dispatches real coding-agent CLI processes and writes durable state under '
       + '~/.bullswarm/workflows/<runId>/',
-    'capabilities, tui, watch, events, and action show are read-only; cancel, steer, plan submit, '
+    'capabilities, tui, watch, events, and action show are read-only; cancel, steer, step restart, plan submit, '
       + 'and runs delete are the exceptions — see their own --help',
     'legacy authored-graph runs are read-only; driving commands fail closed before dispatch',
     'plan contract, plan validate, plan show, and plan export are read-only; plan submit and plan revise write the accepted program into the run and relaunch its kernel when none is running',
@@ -1226,7 +1327,7 @@ const workflowReindexText = rich({
 });
 
 const workflowRepriceText = rich({
-  usage: 'bullswarm workflow reprice [--apply] [--since <date>|--all] [--pool <name>] [--json]',
+  usage: 'bullswarm workflow reprice [--apply] [--since <date>|--all] [--pool <name>] [--json] | --incremental [--json]',
   purpose: 'Recompute historical workflow attempt token and money records from provider totals or durable transcripts. '
     + 'The command builds one lightweight transcript-store index, reads only matched transcripts in full, and is a dry run unless --apply is passed.',
   args: [],
@@ -1237,15 +1338,21 @@ const workflowRepriceText = rich({
     { flag: '--all', desc: 'scan all retained attempts instead of the default 30-day window; cannot combine with --since', default: 'off' },
     { flag: '--pool <name>', desc: 'only attempts dispatched to this exact pool', default: 'all pools' },
     { flag: '--json', desc: 'emit one JSON row per decided attempt followed by a JSON summary', default: 'human table rows and summary' },
+    { flag: '--incremental', desc: 'the automatic pass, run by hand: price only attempts still unknown or estimated, skip what the ledger already tried, and apply', default: 'off' },
+    { flag: '--transcript-home <dir>', desc: 'read provider transcripts (.codex, .claude…) under this directory instead of the home directory', default: 'the home directory' },
+    { flag: '--trigger <name>', desc: 'with --incremental: the name recorded for the pass in bullswarm home status', default: 'manual' },
+    { flag: '--delay-ms <n>', desc: 'with --incremental: wait this long before the pass (used by the detached child a finished task starts)', default: '0' },
   ],
   safety: [
     'dry-run is read-only; --apply writes only the copied/current BULLSWARM_HOME selected by the caller',
     'ambiguous or missing transcripts become unknown with null API cost instead of a guessed zero',
     'provider transcripts may be pruned, so old attempts can remain unknown',
+    '--incremental never downgrades: a missing or ambiguous match leaves the attempt as it was, and $BULLSWARM_HOME/pricing/reconcile.json records the try',
   ],
   examples: [
     { cmd: 'bullswarm workflow reprice --json', note: 'preview the last 30 days' },
     { cmd: 'bullswarm workflow reprice --all --pool codex --apply', note: 'apply every retained Codex match' },
+    { cmd: 'bullswarm workflow reprice --incremental', note: 'price what the automatic pass has not yet priced, now' },
   ],
   next: 'bullswarm workflow runs result <runId> --json to inspect the rewritten totals.',
 });
@@ -1308,7 +1415,7 @@ const workflowTuiText = rich({
 });
 
 const workflowWatchText = rich({
-  usage: 'bullswarm workflow watch <runId> [--classic] [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next [--after <sequence>] [--since <iso-timestamp>]] [--jsonl] [--once] [--verbose]',
+  usage: 'bullswarm workflow watch <runId> [--until outcome|trouble] [--classic] [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next [--after <sequence>] [--since <iso-timestamp>]] [--jsonl] [--once] [--verbose]',
   purpose: "Follow one V2 run by printing one attach line, then one line per notable event "
     + '(action finished/failed/blocked/cancelled, evidence, stage completion, stall/recovery, planning, '
     + 'cancellation) and staying silent while work is merely in progress. A usage-limit failure always '
@@ -1323,9 +1430,16 @@ const workflowWatchText = rich({
     + '`--since`; pass those two values back on the relaunch so events committed while no watcher was '
     + 'attached are printed instead of skipped and an already-reported stall does not fire again. '
     + '`--heartbeat` is opt-in for event mode; `--classic` keeps the historical 60s heartbeat by '
-    + 'default. Distinct from the full-screen tui and the machine-oriented events replay.',
+    + 'default. A running step whose stale score crosses the threshold (quiet with no command running, no '
+    + 'file change while commands continue, the same command repeated, wall time over 3x the expected '
+    + 'minutes) prints one `⚠ <step> looks stale: <reasons>` line; nothing is stopped, the caller decides '
+    + '(`workflow step restart`). `--until outcome` prints only trouble lines (failed, rejected, paused, '
+    + 'stalled, stale, steering) and the outcome, and exits at the outcome; `--until trouble` also exits '
+    + 'at the first trouble line with a `next:` relaunch line. Distinct from the full-screen tui and the '
+    + 'machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
+    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first failed, rejected, paused, stalled, stale or steering line; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
     { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; V2 runs only; cannot combine with --next', default: 'off (event mode)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
     { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off in event mode, 60 with --classic' },
@@ -1343,9 +1457,11 @@ const workflowWatchText = rich({
     '--next exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running',
     'for a V2 run, a --next exit that leaves the run going ends with `next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`; pause, terminal and interrupted exits keep their own outcome/next lines',
     '--classic --next is rejected with exit 2: --next only applies to event mode',
+    '--until trouble exits 0 at a trouble line while the run continues, printing `next: bullswarm workflow watch <shortId> --until trouble --after <sequence> --since <iso>` and, for a stale step, `or restart: bullswarm workflow step restart <shortId> <step>`',
     'a legacy authored-graph run exits 2 with the legacy line before any polling; nothing drives it',
   ],
   examples: [
+    { cmd: 'bullswarm workflow watch ab12cd --until trouble', note: 'the standard background watch: one per run, silent until something needs you' },
     { cmd: 'bullswarm workflow watch ab12cd --next', note: 'print the next notable event and exit; relaunch until outcome reports a pause or a terminal status' },
     { cmd: 'bullswarm workflow watch ab12cd --next --after 42 --since 2026-09-08T10:15:00.000Z', note: 'the relaunch: copy both values from the `next:` line the previous exit printed' },
     { cmd: 'bullswarm workflow watch ab12cd --stall-after 120 --heartbeat 30' },
@@ -1412,6 +1528,45 @@ const workflowActionShowText = rich({
   safety: ['read-only'],
   examples: [{ cmd: 'bullswarm workflow action show ab12cd act-3' }],
   next: 'bullswarm workflow watch <runId> or bullswarm workflow tui <runId> to see actions in context.',
+});
+
+const workflowStepText = rich({
+  usage: 'bullswarm workflow step <command> ...',
+  purpose: 'Act on one step of a running workflow.',
+  argsTitle: 'Commands',
+  args: [{ name: 'restart <runId> <step>', desc: 'stop the running step and run it again with its handoff' }],
+  options: [],
+  safety: ['restart stops a running agent; see its own --help'],
+  examples: [{ cmd: 'bullswarm workflow step restart ab12cd write-report' }],
+  next: 'bullswarm workflow step restart <runId> <step> after a watch line says the step looks stale.',
+});
+
+const workflowStepRestartText = rich({
+  usage: 'bullswarm workflow step restart <runId> <step> [--pool <pool>] [--wait <seconds>] [--json]',
+  purpose: "Stop one running step's attempt and put the step back in the queue. Its next attempt "
+    + 'carries the stopped attempt\'s handoff block (pool, time, files changed, diff stat, output and '
+    + 'last words) exactly like a mechanical retry, on --pool when given. This is the caller\'s answer to '
+    + 'a `looks stale` watch line: nothing ever restarts a step on its own.',
+  args: [
+    { name: '<runId>', desc: 'shortId or runId of a running workflow' },
+    { name: '<step>', desc: 'the running step (action id)' },
+  ],
+  options: [
+    { flag: '--pool <pool>', desc: 'run the next attempt on this configured pool only; it fails with no eligible pool rather than move elsewhere', default: 'normal routing' },
+    { flag: '--wait <seconds>', desc: 'how long to wait for the kernel to stop the attempt and requeue the step', default: '60' },
+    { flag: '--json', desc: 'machine-readable result', default: 'human text' },
+  ],
+  safety: [
+    'stops the running agent process of that step only; the rest of the run carries on',
+    'writes one intent next to the run (restart-<step>.json); the live kernel applies it within about a second and removes it when the next attempt starts',
+    'exits 1 when the run is finished, the step is not running, or its kernel is not running (resume restarts interrupted steps with their handoff)',
+    'in a shared workspace the stopped attempt\'s edits stay; in an isolated one its workspace is retained for review and the next attempt starts fresh with the handoff',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow step restart ab12cd write-report', note: 'same routing, with the handoff' },
+    { cmd: 'bullswarm workflow step restart ab12cd write-report --pool codex', note: 'move it to another pool' },
+  ],
+  next: 'bullswarm workflow watch <runId> --until trouble to follow the restarted step.',
 });
 
 // --- workflow runs ----------------------------------------------------------
@@ -1626,12 +1781,14 @@ const HELP = {
   },
   run: { _text: runText },
   health: { _text: healthText },
-  pools: { _text: poolsText },
+  pools: { _text: poolsText, resume: { _text: poolsResumeText } },
   assignments: { _text: assignmentsText },
   doctor: { _text: doctorText },
   home: {
     _text: homeText,
     snapshot: { _text: homeSnapshotText },
+    prune: { _text: homePruneText },
+    status: { _text: homeStatusText },
   },
   version: { _text: versionText },
   update: { _text: updateText },
@@ -1645,6 +1802,7 @@ const HELP = {
     'set-model': { _text: strategySetModelText },
     'reset-tier': { _text: strategyResetTierText },
     'set-reasoning': { _text: strategySetReasoningText },
+    'set-pausing': { _text: strategySetPausingText },
     rungs: { _text: strategyRungsText },
     'set-rung': { _text: strategySetRungText },
     'reset-reasoning': { _text: strategyResetReasoningText },
@@ -1698,6 +1856,10 @@ const HELP = {
     action: {
       _text: workflowActionText,
       show: { _text: workflowActionShowText },
+    },
+    step: {
+      _text: workflowStepText,
+      restart: { _text: workflowStepRestartText },
     },
     runs: runsHelp(),
   },

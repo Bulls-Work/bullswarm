@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { artifactBesideTask, watchOnce, argvWithModel, runDelegate, BoundedCapture } from '../src/lib/watch.js';
+import { artifactBesideTask, attemptCapture, watchOnce, argvWithModel, runDelegate, BoundedCapture, providerErrorRecords } from '../src/lib/watch.js';
 import { parseQuotaResetAt } from '../src/lib/quota.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 
@@ -175,13 +175,14 @@ test('event-stream tool output mentioning auth signatures does not kill a health
   }
 });
 
-test('event-stream semantic provider auth error still fails and quarantines', async () => {
+test('a provider auth failure on its own error channel still fails and quarantines', async () => {
   const ctx = makeCtx();
   try {
-    const rows = [{ type: 'response', id: 'r1', text: 'Error: unauthorized. Please login again.' }];
     const streamed = {
       name: 'fixture-events',
-      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      spawn: {
+        cmd: [process.execPath, '-e', "process.stderr.write('Error: unauthorized. Please login again.\\n')"],
+      },
       authSignatures: ['unauthorized'],
       outputExtraction: { strategy: 'event-stream' },
       eventStream: {
@@ -198,10 +199,10 @@ test('event-stream semantic provider auth error still fails and quarantines', as
   }
 });
 
-test('exact failed-to-authenticate provider response is error-shaped and quarantines', async () => {
+test('a declared provider failure event naming auth is upstream auth: fail and quarantine', async () => {
   const ctx = makeCtx();
   try {
-    const rows = [{ type: 'response', id: 'r1', text: 'Failed to authenticate: OAuth session expired and could not be refreshed' }];
+    const rows = [{ type: 'error', error: { message: 'Failed to authenticate: OAuth session expired and could not be refreshed' } }];
     const streamed = {
       name: 'fixture-events',
       spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
@@ -209,13 +210,15 @@ test('exact failed-to-authenticate provider response is error-shaped and quarant
       outputExtraction: { strategy: 'event-stream' },
       eventStream: {
         format: 'jsonl',
+        failureTypes: ['error'],
         output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
       },
     };
     const verdict = await watchOnce(streamed, 'Do the task.', ctx.dir, ctx.paths);
     assert.equal(verdict.ok, false);
+    assert.equal(verdict.failureKind, 'auth');
     assert.equal(verdict.quarantineHint, true);
-    assert.match(verdict.why, /auth\/throttle signature/);
+    assert.match(verdict.why, /upstream auth failure: "failed to authenticate"/);
   } finally {
     ctx.cleanup();
   }
@@ -629,10 +632,11 @@ test('a stream-json usage limit kills a hanging CLI and quarantines until the pa
       parseQuotaResetAt(SESSION_LIMIT, { now: Date.now() }),
     ]);
     assert.ok(acceptable.has(v.quarantineUntil), `unexpected deadline ${v.quarantineUntil}`);
-    assert.equal(
-      v.why,
-      `usage limit: "${SESSION_LIMIT}" · pool paused until ${new Date(v.quarantineUntil).toISOString()}`,
-    );
+    // The why is the Q6 decision in plain words: the proof, the line, the reset.
+    assert.equal(v.quotaPause.rule, 'message');
+    assert.equal(v.quotaPause.line, SESSION_LIMIT);
+    assert.equal(v.why, v.quotaPause.why);
+    assert.match(v.why, /^usage window spent: provider said "You've hit your session limit · resets 8:20pm \(Asia\/Hong_Kong\)" · paused until .+ \(the reset it named\)/);
     assert.equal(v.meta.signal, 'SIGTERM', 'the hanging child was terminated, not waited out');
     assert.equal(v.meta.timedOut, false);
     assert.ok(elapsedMs < 6000, `expected a prompt kill, took ${elapsedMs}ms`);
@@ -687,7 +691,7 @@ test('a substantive report discussing usage limits still passes', async () => {
   }
 });
 
-test('a plain-stdout connector reports a usage limit as quota, not auth', async () => {
+test('a plain-stdout rate limit is a transient throttle, not auth and not a pause', async () => {
   const ctx = makeCtx();
   try {
     const plain = {
@@ -696,13 +700,15 @@ test('a plain-stdout connector reports a usage limit as quota, not auth', async 
       authSignatures: ['unauthorized', 'rate limit'],
       outputExtraction: { strategy: 'stdout' },
     };
-    const before = Date.now();
     const v = await watchOnce(plain, 'Do the work.', ctx.dir, ctx.paths);
     assert.equal(v.ok, false);
-    assert.equal(v.failureKind, 'quota', 'a throttle is not a broken credential');
-    assert.equal(v.quarantineSource, 'message');
-    assert.ok(v.quarantineUntil >= before + 2 * 60 * 60_000 - 5000);
-    assert.ok(v.quarantineUntil <= Date.now() + 2 * 60 * 60_000);
+    // `rate limit exceeded` names no spent window (quota.js Q6): a reset two
+    // hours out is a wait too long to sit out on this pool, never a pause.
+    assert.equal(v.failureKind, 'throttle', 'a throttle is not a broken credential');
+    assert.equal(v.quarantineHint, undefined);
+    assert.equal(v.quarantineUntil, undefined);
+    assert.equal(v.throttleRetrySamePool, false);
+    assert.equal(v.quotaPause.rule, 'transient');
     assert.doesNotMatch(v.why, /auth\/throttle signature/);
   } finally {
     ctx.cleanup();
@@ -1123,4 +1129,365 @@ test('watchOnce writes the live out-*.md tail as events arrive', async () => {
   } finally {
     ctx.cleanup();
   }
+});
+
+// ── attempt.capture: what the provider reported, taken at worker exit ────────
+
+const CAPTURE_REPORT = 'Completed the requested implementation, updated the affected files, and verified the full local test suite successfully with no remaining failures.';
+
+test('the capture is handed over at worker exit, before the end meter read and the transcript lookup', async () => {
+  const ctx = makeCtx();
+  try {
+    const order = [];
+    const captures = [];
+    const connector = streamJsonConnector(rowsScript([
+      { type: 'assistant', message: { content: [{ type: 'text', text: CAPTURE_REPORT }] } },
+      { type: 'result', result: CAPTURE_REPORT },
+    ]));
+    const verdict = await watchOnce(connector, 'Implement and verify the change.', ctx.dir, ctx.paths, {
+      home: ctx.dir,
+      poolName: 'fixture-claude',
+      snapshotPool: async () => { order.push('meter'); return null; },
+      readTranscriptUsage: () => { order.push('transcript'); return null; },
+      onCapture: (capture, usage) => { order.push('capture'); captures.push(capture); assert.equal(usage, null); },
+    });
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.deepEqual(order, ['meter', 'capture', 'meter', 'transcript']);
+    // No counters in the stream: the capture says unknown, never an estimate,
+    // while the verdict keeps its labelled byte estimate as before.
+    assert.equal(captures.length, 1);
+    assert.equal(captures[0].tokenSource, 'unknown');
+    assert.equal(captures[0].tokens, null);
+    assert.equal(captures[0].providerCostUsd, null);
+    assert.equal(captures[0].providerSessionId, null);
+    assert.equal(captures[0].sessionSource, null);
+    assert.equal(captures[0].exitCode, 0);
+    assert.equal(captures[0].signal, null);
+    assert.equal(captures[0].source, 'event-stream');
+    assert.ok(Number.isFinite(Date.parse(captures[0].capturedAt)));
+    assert.equal(verdict.meta.usage.tokenSource, 'estimated:utf8-bytes/4');
+    assert.deepEqual(verdict.meta.capture, captures[0]);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('usage-finalized says once whether a transcript reader could price the attempt later', async () => {
+  const ctx = makeCtx();
+  try {
+    const connector = streamJsonConnector(rowsScript([
+      { type: 'assistant', message: { content: [{ type: 'text', text: CAPTURE_REPORT }] } },
+      { type: 'result', result: CAPTURE_REPORT },
+    ]));
+    const seen = [];
+    const run = (extra) => watchOnce(connector, 'Implement and verify the change.', ctx.dir, ctx.paths, {
+      home: ctx.dir, poolName: 'fixture-claude', snapshotPool: async () => null,
+      onUsageFinalized: (facts) => seen.push(facts), ...extra,
+    });
+    // A pool with a reader: a detached pass may find its transcript later.
+    assert.equal((await run({ readTranscriptUsage: () => null })).ok, true);
+    // A pool no provider keeps a transcript for: nothing later could price it.
+    assert.equal((await run({ providers: [] })).ok, true);
+    assert.deepEqual(seen.map((facts) => [facts.usage.tokenSource, facts.transcriptReader, facts.poolName]), [
+      ['estimated:utf8-bytes/4', true, 'fixture-claude'],
+      ['estimated:utf8-bytes/4', false, 'fixture-claude'],
+    ]);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a capture carries provider counters, provider cost and the provider session id', async () => {
+  const ctx = makeCtx();
+  try {
+    const captures = [];
+    const connector = streamJsonConnector(rowsScript([
+      { type: 'assistant', message: { content: [{ type: 'text', text: CAPTURE_REPORT }] } },
+      {
+        type: 'result', result: CAPTURE_REPORT, session_id: 'session-capture-1', total_cost_usd: 0.61388,
+        usage: { input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 9, output_tokens_details: { thinking_tokens: 4 } },
+      },
+    ]));
+    connector.eventStream.usage = [{
+      match: { path: 'type', equals: 'result' },
+      mode: 'last',
+      fields: {
+        sessionId: 'session_id', costUsd: 'total_cost_usd', standardRead: 'usage.input_tokens',
+        cacheRead: 'usage.cache_read_input_tokens', output: 'usage.output_tokens',
+        reasoning: 'usage.output_tokens_details.thinking_tokens',
+      },
+      inclusive: { output: ['reasoning'] },
+    }];
+    connector.conversation = { newArgs: ['--session-id', '{sessionId}'] };
+    connector.spawn.cmd.push('--'); // the appended session flags go to the script, not node
+    const usages = [];
+    const verdict = await watchOnce(connector, 'Implement and verify the change.', ctx.dir, ctx.paths, {
+      conversation: { sessionId: 'bullswarm-assigned-1', resume: false },
+      onCapture: (capture, usage) => { captures.push(capture); usages.push(usage); },
+    });
+    assert.equal(verdict.ok, true, verdict.why);
+    // The provider-reported usage envelope rides along, already the record
+    // the verdict ends with (minus the end-of-attempt meter accounting).
+    assert.equal(usages[0].tokenSource, 'provider-reported');
+    assert.equal(usages[0].sessionId, 'session-capture-1');
+    assert.deepEqual(usages[0].tokens, verdict.meta.usage.tokens);
+    assert.equal(captures[0].tokenSource, 'provider-reported');
+    assert.deepEqual(captures[0].tokens, {
+      standardRead: 2, cacheRead: 3, cacheWrite5m: null, cacheWrite1h: null, cacheWrite: null,
+      output: 5, reasoning: 4, totalKnown: 14,
+    });
+    assert.equal(captures[0].providerCostUsd, 0.61388);
+    // The stream's own id outranks the one Bullswarm put on the command line.
+    assert.equal(captures[0].providerSessionId, 'session-capture-1');
+    assert.equal(captures[0].sessionSource, 'provider-stream');
+    assert.deepEqual(verdict.meta.usage.tokens, captures[0].tokens);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a capture names the session id Bullswarm handed the CLI only when the argv carried it', () => {
+  const connector = { name: 'fixture', eventStream: { format: 'jsonl' }, conversation: { newArgs: ['--session-id', '{sessionId}'] } };
+  const conversation = { sessionId: 'assigned-1', resume: false };
+  const handed = attemptCapture(connector, { exitCode: 1, signal: null, reportedUsage: null }, { conversation, at: '2026-09-21T00:00:00.000Z' });
+  assert.equal(handed.providerSessionId, 'assigned-1');
+  assert.equal(handed.sessionSource, 'bullswarm-assigned');
+  assert.equal(handed.exitCode, 1);
+  const notHanded = attemptCapture({ ...connector, conversation: { followUp: { cmd: ['x', '{sessionId}'] } } }, { exitCode: 0 }, { conversation });
+  assert.equal(notHanded.providerSessionId, null);
+  assert.equal(notHanded.sessionSource, null);
+  // A stream that reported only its session id reported no counters.
+  const idOnly = attemptCapture(connector, { exitCode: 0, reportedUsage: { sessionId: 'provider-1' } }, { conversation });
+  assert.equal(idOnly.providerSessionId, 'provider-1');
+  assert.equal(idOnly.tokenSource, 'unknown');
+  assert.equal(idOnly.tokens, null);
+  // A killed worker reports its signal and no exit code.
+  const killed = attemptCapture(connector, { exitCode: null, signal: 'SIGTERM' }, {});
+  assert.deepEqual([killed.exitCode, killed.signal, killed.source], [null, 'SIGTERM', 'event-stream']);
+});
+
+test('a capture sink that throws never costs the attempt its verdict', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(connector, 'Do the thing.', ctx.dir, ctx.paths, {
+      timeoutSec: 60,
+      onCapture: () => { throw new Error('kernel lease lost'); },
+    });
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.equal(verdict.meta.capture.source, 'exit-status');
+    assert.equal(verdict.meta.capture.exitCode, 0);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('command-code is spawned without --no-session so its transcript persists', () => {
+  const commandCode = JSON.parse(readFileSync(join(REPO_ROOT, 'providers/contrib/command-code/connector.json'), 'utf8'));
+  const argv = argvWithModel(commandCode, { taskFile: '/tmp/task.md', cwd: '/tmp' });
+  assert.equal(argv.includes('--no-session'), false);
+  assert.deepEqual(argv.slice(0, 2), ['command-code', '-p']);
+  assert.ok(argv.includes('--output-format'));
+});
+
+// quota.js Q6 end to end: a real child prints the provider's own line, and
+// the verdict carries the pause decision the quarantine will record.
+
+const REAL_TRANSIENT = 'Error: Rate limit exceeded. Please wait a moment and try again.';
+
+function limitChild(line) {
+  return {
+    name: 'fixture-limit',
+    spawn: { cmd: [process.execPath, '-e', `console.log(${JSON.stringify(line)}); setTimeout(() => {}, 60000);`] },
+    authSignatures: ['unauthorized'],
+    outputExtraction: { strategy: 'stdout' },
+  };
+}
+
+function limitHome({ usedPct = 48, pausing = null } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-watch-limit-'));
+  mkdirSync(join(home, 'meters'), { recursive: true });
+  const ahead = (h) => new Date(Date.now() + h * 3600_000).toISOString();
+  writeFileSync(join(home, 'meters', 'fixture-limit.json'), JSON.stringify({
+    captured_at: new Date().toISOString(), pool: 'fixture-limit',
+    five_hour: { utilization: 48, resets_at: ahead(2) },
+    seven_day: { utilization: usedPct, resets_at: ahead(50) },
+  }));
+  if (pausing) writeFileSync(join(home, 'state.json'), JSON.stringify({ strategy: { pausing } }));
+  return home;
+}
+
+test('the real transient line is a throttle with no pause while the meter reads below 95%', async () => {
+  const ctx = makeCtx();
+  const home = limitHome({ usedPct: 78 });
+  try {
+    const v = await watchOnce(limitChild(REAL_TRANSIENT), 'Do the work.', ctx.dir, ctx.paths, {
+      bullswarmDir: home, poolName: 'fixture-limit',
+    });
+    assert.equal(v.failureKind, 'throttle');
+    assert.equal(v.quarantineHint, undefined);
+    assert.equal(v.quotaPause.rule, 'transient');
+    assert.equal(v.quotaPause.line, REAL_TRANSIENT);
+    assert.match(v.why, /^rate limited \(transient\): "Error: Rate limit exceeded\. Please wait a moment and try again\." · pool not paused \(meter 5h 48% · weekly 78%, below 95%/);
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('the same line pauses when the pool\'s own meter reads 96%, until that window resets', async () => {
+  const ctx = makeCtx();
+  const home = limitHome({ usedPct: 96 });
+  try {
+    const v = await watchOnce(limitChild(REAL_TRANSIENT), 'Do the work.', ctx.dir, ctx.paths, {
+      bullswarmDir: home, poolName: 'fixture-limit',
+    });
+    assert.equal(v.failureKind, 'quota');
+    assert.equal(v.quarantineHint, true);
+    assert.equal(v.quotaPause.rule, 'meter');
+    assert.equal(v.quotaPause.meterWindow.usedPct, 96);
+    assert.equal(v.quarantineUntil, v.quotaPause.until);
+    assert.equal(v.quarantineSource, 'meter');
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('with automatic pausing off even a spent window with a reset is retried, not paused', async () => {
+  const ctx = makeCtx();
+  const home = limitHome({ usedPct: 100, pausing: 'off' });
+  try {
+    const v = await watchOnce(limitChild("You've hit your session limit · resets in 2 hours"), 'Do the work.', ctx.dir, ctx.paths, {
+      bullswarmDir: home, poolName: 'fixture-limit',
+    });
+    assert.equal(v.failureKind, 'throttle');
+    assert.equal(v.quarantineHint, undefined);
+    assert.equal(v.quotaPause.rule, 'off');
+    assert.match(v.why, /pool not paused: automatic pausing is off/);
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// --- the provider's error channel (W7) -------------------------------------
+// The false positive of 2026-09-21: a pool was paused with the reason
+// `usage limit: "Codex's `usage_credits_required` is spent-credit wording, not
+// a throttle …"` — a sentence from the agent's OWN reply. The classifiers read
+// the provider's channel only: its stderr, its error events and its terminal
+// record.
+
+const AGENT_QUOTE = "Codex's `usage_credits_required` is spent-credit wording, not a throttle";
+
+/** A codex-shaped stream: the phrase is both a quota and an auth signature. */
+function codexShaped(rows) {
+  return {
+    name: 'fixture-codex',
+    spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+    authSignatures: ['usage_credits_required'],
+    quotaSignatures: ['usage_credits_required', 'usage limit'],
+    outputExtraction: { strategy: 'event-stream' },
+    eventStream: {
+      format: 'jsonl',
+      rules: [
+        { rootMatch: { path: 'type', equals: 'item.completed' }, idPaths: ['item.id'], kindPaths: ['item.type'], kindMap: { agent_message: 'response' }, summaryPaths: ['item.text'], status: 'completed' },
+      ],
+      output: [{ match: { path: 'type', equals: 'item.completed' }, path: 'item.text', mode: 'last' }],
+    },
+  };
+}
+
+test('a quota-shaped sentence in the agent\'s own reply never pauses a pool', async () => {
+  const ctx = makeCtx();
+  try {
+    const report = [
+      '## Completed',
+      '',
+      `${AGENT_QUOTE}, so the matcher was audited and the message channel left alone.`,
+      '',
+      '- Read src/lib/quota.js and confirmed the classifier reads only the provider error channel.',
+      '- Ran the focused watcher suite: every check passed with no failures.',
+    ].join('\n');
+    const v = await watchOnce(codexShaped([
+      { type: 'item.completed', item: { id: 'a1', type: 'agent_message', text: report } },
+      { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 5 } },
+    ]), 'Audit the matcher.', ctx.dir, ctx.paths);
+    assert.equal(v.ok, true, v.why);
+    assert.equal(v.failureKind, undefined);
+    assert.equal(v.quarantineHint, undefined);
+    assert.equal(v.quotaPause, undefined);
+    assert.equal(v.meta.signal, null, 'a healthy agent must not be signalled');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('the same sentence on the provider\'s error event is classified, not ignored', async () => {
+  const ctx = makeCtx();
+  try {
+    const v = await watchOnce(codexShaped([
+      { type: 'error', message: `${AGENT_QUOTE}, so this request was refused.` },
+    ]), 'Audit the matcher.', ctx.dir, ctx.paths);
+    assert.equal(v.ok, false);
+    // The phrase names no reset, so it is a transient throttle (quota.js Q6):
+    // the attempt backs off here and then moves on, and the pool is not paused.
+    assert.equal(v.failureKind, 'throttle');
+    assert.equal(v.quarantineHint, undefined);
+    // The provider's own record carries the words, so the pause reason names
+    // the sentence rather than dropping a failure the provider did report.
+    assert.match(v.quotaPause.line, /usage_credits_required/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('with automatic pausing off a dead credential is a provider failure, not a bench', async () => {
+  const ctx = makeCtx();
+  const authChild = () => ({
+    name: 'fixture-auth',
+    spawn: { cmd: [process.execPath, '-e', "process.stderr.write('Error: unauthorized. Please login again.\\n'); process.exit(1)"] },
+    authSignatures: ['unauthorized'],
+    outputExtraction: { strategy: 'stdout' },
+  });
+  const on = limitHome({ pausing: null });
+  const off = limitHome({ pausing: 'off' });
+  try {
+    const benched = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
+      bullswarmDir: on, poolName: 'fixture-limit',
+    });
+    assert.equal(benched.quarantineHint, true, 'on: the dead credential asks for a bench');
+    assert.doesNotMatch(benched.why, /automatic pausing is off/);
+
+    const moving = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
+      bullswarmDir: off, poolName: 'fixture-limit',
+    });
+    assert.equal(moving.quarantineHint, undefined, 'off: no verdict asks for a pause');
+    assert.equal(moving.failureKind, 'provider', 'off: a mechanical failure that retries elsewhere');
+    assert.match(moving.why, /auth\/throttle signature: "unauthorized" · automatic pausing is off, pool not paused/);
+  } finally {
+    ctx.cleanup();
+    rmSync(on, { recursive: true, force: true });
+    rmSync(off, { recursive: true, force: true });
+  }
+});
+
+test('the error-channel scan keeps provider records and drops agent prose', () => {
+  const kept = providerErrorRecords([
+    '{"type":"item.completed","item":{"id":"a1","type":"agent_message","text":"usage_credits_required is spent-credit wording"}}',
+    '{"type":"error","error":{"message":"auth_unavailable: no auth available"}}',
+    '{"type":"result","result":"You\'ve hit your session limit · resets 8:20pm"}',
+    'plain prose mentioning rate limit exceeded',
+  ].join('\n'), ['error']);
+  assert.match(kept, /auth_unavailable: no auth available/, 'an error event is evidence');
+  assert.match(kept, /You've hit your session limit · resets 8:20pm/, 'the terminal record is evidence');
+  assert.doesNotMatch(kept, /agent_message/, 'an agent message is not a provider record');
+  assert.doesNotMatch(kept, /plain prose/, 'non-JSON transport lines are not provider records');
+  // A terminal record that mirrors the agent's own reply is the reply, not the
+  // provider's report (Claude Code writes the final message into `result`).
+  const mirrored = providerErrorRecords(
+    '{"type":"result","result":"Completed the audit and verified every check passed."}',
+    [],
+    { agentText: 'Completed the audit and verified every check passed.\nMore detail follows.' },
+  );
+  assert.equal(mirrored, '', 'a mirrored reply is not evidence');
 });

@@ -48,9 +48,14 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   // verdict — no `Step ` prefix (requirement 5, step-v2 record rule 1). 0.35.1
   // names it as the Runs list does: `<lane> task · <8-char id>`.
   assert.match(frames.get('real-task-120.txt').join('\n'), /analyze task · 3155fb3c · succeeded/);
-  // The partly-priced period publishes its recorded subtotal, marked, with the
-  // coverage that produced it — never a whole-scope total it does not have.
-  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /≈ \$299\.87 api · 83\/149 priced/);
+  // The partly-priced period publishes its recorded subtotal as the lower
+  // bound it is, in the spend block's words, with the count that produced it —
+  // never a whole-scope total it does not have.
+  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /at least \$299\.87 api · 66 unmeasured/);
+  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Coverage · 66 of 149 attempts recorded no price/);
+  // Home's own totals line and spend axis say the same thing.
+  assert.match(frames.get('real-home-200.txt').join('\n'), /Spent: at least \$299\.87 api · 66 unmeasured/);
+  assert.match(frames.get('real-home-200.txt').join('\n'), /at least \$160\.00/);
   assert.match(frames.get('real-stats-model-200.txt').join('\n'), /── Model worker-minutes ─/);
 
   // 120 columns: the top three cards flow side by side across the width, each

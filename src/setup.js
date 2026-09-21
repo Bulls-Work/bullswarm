@@ -293,6 +293,14 @@ export function upgradeConnectorMetadata(bullswarmDir, {
           changed = true;
         }
       }
+      if (Array.isArray(packaged.throttleSignatures)) {
+        const existing = Array.isArray(installed.throttleSignatures) ? installed.throttleSignatures : [];
+        const merged = [...new Set([...existing, ...packaged.throttleSignatures])];
+        if (!Array.isArray(installed.throttleSignatures) || JSON.stringify(merged) !== JSON.stringify(existing)) {
+          installed.throttleSignatures = merged;
+          changed = true;
+        }
+      }
       if (installed.model == null && packaged.model != null) {
         installed.model = packaged.model;
         changed = true;

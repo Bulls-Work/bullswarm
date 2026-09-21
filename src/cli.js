@@ -13,14 +13,17 @@ import {
 import {
   loadState, quarantinePool, quarantineUpstreamSiblings, sweepBenches, sweepQuarantines,
   updateState, assertDepthAllowed, childDepthEnv, upstreamGroupOf, recordPoolStrike,
+  pausingEnabled, resumePool, setPausing,
 } from './lib/state.js';
-import { buildPools, buildPoolsLive } from './lib/config.js';
+import { describePoolPause, dropQuotaRefusalSnapshot } from './lib/quota.js';
+import { buildPools, buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { runUpdate } from './lib/update.js';
 import { cmdWorkflow } from './workflow/cli.js';
+import { scheduleReconcile } from './workflow/reconcile.js';
 import { DEFAULT_EFFORT_BY_LANE } from './workflow/action-validator.js';
 import {
   applyStrategyRecommendations, cmdStrategy, maybeRefreshStrategy,
@@ -160,7 +163,119 @@ export function meterSourceLabel(pool, nowMs = Date.now()) {
   return `${source}${resetTag}`;
 }
 
+/**
+ * A pool's status word and, when it is out of service, why — in plain words.
+ * A pause names its deadline, its proof (the provider line and the meter
+ * reading it was decided on) and the command that lifts it.
+ */
+export function poolStatusText(p, now = Date.now(), { timeZone = null } = {}) {
+  if (!p.enabled) return 'disabled';
+  if (p.quarantine) {
+    return `PAUSED ${describePoolPause(p.name, p.quarantine, { now, timeZone }).replace(/^paused /, '')}`;
+  }
+  if (isBenched(p, now)) {
+    return `BENCHED until ${new Date(Number(p.bench.until)).toLocaleTimeString()} `
+      + `(${p.bench.reason ?? '?'}, ${p.bench.count ?? '?'} strikes) · lift now: bullswarm pools resume ${p.name}`;
+  }
+  const burst = p.burstGate ? ' BURST-GATED' : '';
+  const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
+  // A soft bench (S6) is not a quarantine: the pool is alive but was not
+  // producing. A first strike is counted without taking it out, so say that
+  // too — otherwise a pool one stall from the bench looks perfectly healthy.
+  const strikes = p.bench && Number(p.bench.count ?? 0) > 0
+    ? ` strikes=${p.bench.count}(${p.bench.reason ?? '?'})`
+    : '';
+  return `ready${burst}${nearLimit}${strikes}`;
+}
+
+/**
+ * `bullswarm pools resume <pool>`: lift a pause at once. The lift is written
+ * to the decision log (state.js resumePool), and a synthetic 100% refusal
+ * meter marker goes with it so routing reads the live meter next.
+ */
+function cmdPoolsResume(opts) {
+  const pool = opts.rest[1];
+  if (!pool || opts.rest.length > 2) {
+    console.error(`usage: ${usageLine(['pools', 'resume'])}`);
+    return 2;
+  }
+  const home = getBullswarmDir();
+  const known = new Set(Object.keys(loadConnectors(home, { packaged: true })));
+  let lifted = null;
+  let knownInState = false;
+  updateState(home, (fresh) => {
+    knownInState = Boolean(fresh.pools?.[pool]);
+    if (!known.has(pool) && !knownInState) return false;
+    lifted = resumePool(fresh, pool, Date.now());
+    return Boolean(lifted.quarantine || lifted.bench);
+  });
+  if (!known.has(pool) && !knownInState) {
+    console.error(`✗ unknown pool "${pool}" — bullswarm pools lists them`);
+    return 2;
+  }
+  const marker = dropQuotaRefusalSnapshot(home, pool);
+  const result = {
+    pool,
+    resumed: Boolean(lifted?.quarantine || lifted?.bench),
+    lifted: {
+      quarantine: lifted?.quarantine ?? null,
+      bench: lifted?.bench ?? null,
+      refusalMeterMarker: marker,
+    },
+  };
+  if (opts.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  if (!result.resumed && !marker) {
+    console.log(`${pool} was not paused; nothing to lift`);
+    return 0;
+  }
+  const parts = [];
+  if (lifted?.quarantine) parts.push(`lifted this pause: ${describePoolPause(null, lifted.quarantine)}`);
+  if (lifted?.bench) parts.push(`lifted the bench (${lifted.bench.reason ?? '?'}, ${lifted.bench.count ?? '?'} strikes)`);
+  if (marker) parts.push('dropped the 100% quota-refusal meter marker; the next meter read is live');
+  console.log(`${pool} resumed — ${parts.join('; ')}`);
+  return 0;
+}
+
+/**
+ * `bullswarm strategy set-pausing <on|off>`: the automatic-pausing switch,
+ * stored as `strategy.pausing` in state.json. Off means no pool is ever paused
+ * or benched on a command's own judgement — quota, auth and the credential
+ * group a dead credential would bench with it — while routing still reads
+ * meters and a failed attempt still moves to another pool (quota.js Q7).
+ */
+function cmdStrategySetPausing(args) {
+  const opts = parseArgs(args);
+  const flagExit = unknownFlagExit(opts._flags, ['strategy', 'set-pausing']);
+  if (flagExit !== null) return flagExit;
+  const value = String(opts.rest[0] ?? '').toLowerCase();
+  if (!['on', 'off'].includes(value) || opts.rest.length > 1) {
+    console.error(`usage: ${usageLine(['strategy', 'set-pausing'])}`);
+    return 2;
+  }
+  let on = true;
+  updateState(getBullswarmDir(), (fresh) => {
+    on = setPausing(fresh, value === 'on');
+  });
+  if (opts.json) {
+    console.log(JSON.stringify({ pausing: on ? 'on' : 'off' }, null, 2));
+  } else {
+    console.log(on
+      ? 'automatic pausing is on: a pool pauses only on proof (quota: its meter at 95% or the provider naming a spent window and its reset; auth: a dead credential) and its credential-group siblings bench with it'
+      : 'automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); limit notices are retried and a failed attempt moves to another pool · bullswarm strategy set-pausing on restores it');
+  }
+  return 0;
+}
+
 async function cmdPools(opts) {
+  if (opts.rest[0] === 'resume') return cmdPoolsResume(opts);
+  if (opts.rest.length) {
+    console.error(`✗ unknown pools subcommand "${opts.rest[0]}"`);
+    console.error(`usage: ${usageLine(['pools'])}`);
+    return 2;
+  }
   const now = Date.now();
   const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
     packaged: true,
@@ -195,9 +310,16 @@ async function cmdPools(opts) {
   // process's own memory: work another Bullswarm started still shows here —
   // plus the spend rates that turn that load into a projected utilization.
   attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
+  const pausing = pausingEnabled(state);
+  for (const p of pools) {
+    if (p.quarantine) p.pauseWhy = describePoolPause(p.name, p.quarantine, { now });
+  }
   if (opts.json) {
-    console.log(JSON.stringify({ pools }, null, 2));
+    console.log(JSON.stringify({ pausing: pausing ? 'on' : 'off', pools }, null, 2));
     return 0;
+  }
+  if (!pausing) {
+    console.log('automatic pausing: off · nothing is paused or benched by a command (quota, auth or siblings) · bullswarm strategy set-pausing on');
   }
   for (const p of pools) {
     const src = p.meterSource;
@@ -211,7 +333,6 @@ async function cmdPools(opts) {
     const meter = src === 'none'
       ? 'unmetered'
       : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${meterSourceLabel(p, now)}]`;
-    const burst = p.burstGate ? ' BURST-GATED' : '';
     // 5h is a gate, never a pace (doctrine M3): show the reading and whether
     // routing now deprioritizes this pool for it. When in-flight work makes
     // the projection differ from the reading, both are shown — routing decides
@@ -227,7 +348,6 @@ async function cmdPools(opts) {
     const fiveHour = readingPct == null
       ? (projectedPct == null ? '' : ` 5h=?->${projectedPct}%${clock}`)
       : ` 5h=${readingPct}%${projectedPct != null && projectedPct !== readingPct ? `->${projectedPct}%` : ''}${clock}`;
-    const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
     // R11: a pacing window about to reset is quota about to be lost, so say
     // when it closes and how urgent what is left has become. Pools whose
     // window is not closing soon print nothing extra.
@@ -247,19 +367,7 @@ async function cmdPools(opts) {
       : freeTiers.length
         ? ` free=${freeTiers.map(([tier, model]) => `${tier}:${model}`).join(',')}`
         : '';
-    // A soft bench (S6) is not a quarantine: the pool is alive but was not
-    // producing. A first strike is counted without taking it out, so say that
-    // too — otherwise a pool one stall from the bench looks perfectly healthy.
-    const strikes = p.bench && !isBenched(p, now) && Number(p.bench.count ?? 0) > 0
-      ? ` strikes=${p.bench.count}(${p.bench.reason ?? '?'})`
-      : '';
-    const status = !p.enabled
-      ? 'disabled'
-      : p.quarantine
-        ? `QUARANTINED until ${new Date(p.quarantine.until).toLocaleTimeString()} (${p.quarantine.reason})`
-        : isBenched(p, now)
-          ? `BENCHED until ${new Date(Number(p.bench.until)).toLocaleTimeString()} (${p.bench.reason ?? '?'}, ${p.bench.count ?? '?'} strikes)`
-          : `ready${burst}${nearLimit}${strikes}`;
+    const status = poolStatusText(p, now);
     console.log(
       `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour}${free} ${status}${expiringNote}`,
     );
@@ -598,6 +706,13 @@ async function cmdRun(opts) {
       // reset when the provider's message named no reset time of its own.
       bullswarmDir: getBullswarmDir(),
       poolName: connector.name,
+      // A task that finished without measured usage is priced by a detached
+      // reconciler pass once its record and the provider's log are written.
+      onUsageFinalized: ({ usage, transcriptReader }) => {
+        if (transcriptReader && (usage?.tokenSource === 'unknown' || usage?.tokenSource === 'estimated:utf8-bytes/4')) {
+          scheduleReconcile({ bullswarmDir: getBullswarmDir(), trigger: 'watch', throttleMs: 0, delayMs: 30_000 });
+        }
+      },
       runId: null,
       attemptId: ledgerEntry?.id ?? `run-${stamp}`,
       startedAt,
@@ -633,10 +748,13 @@ async function cmdRun(opts) {
     } else if (verdict.quarantineHint) {
       // A usage limit carries its own deadline (the reset the provider named);
       // an auth failure keeps the flat re-probe window.
+      // A quota pause lands only with its proof (quota.js Q6); without one
+      // quarantinePool refuses it and the pool stays in service.
       const kind = verdict.failureKind === 'quota' ? 'quota' : 'auth';
       const until = quarantinePool(fresh, connector.name, verdict.why, now, {
         until: verdict.quarantineUntil ?? null,
         kind,
+        evidence: verdict.quotaPause ?? null,
       });
       verdict.quarantinedUntil = fresh.pools[connector.name]?.quarantine?.until;
       // A relayed credential is shared: the pools that front the same upstream
@@ -978,6 +1096,7 @@ function topLevelHelpPath(verb, opts) {
   if (verb === undefined) return [];
   if (verb === '--version') return ['version'];
   if (OWN_PARSER.has(verb)) return null;
+  if (verb === 'pools' && opts.rest[0] === 'resume') return ['pools', 'resume'];
   if (verb === 'integrate') {
     const sub = opts.rest[0] ?? 'status';
     return ['status', 'install', 'remove', 'retire-legacy'].includes(sub)
@@ -1070,6 +1189,7 @@ export async function main(argv) {
     case 'runs':
       return cmdWorkflow(['runs', ...tail], { runsAlias: ['runs'] });
     case 'strategy':
+      if (tail[0] === 'set-pausing') return cmdStrategySetPausing(tail.slice(1));
       return cmdStrategy(bareStrategyDashboard ? ['tui'] : tail, {
         bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
       });

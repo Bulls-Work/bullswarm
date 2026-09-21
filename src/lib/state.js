@@ -6,6 +6,14 @@
 //       pool benched 30 minutes stayed benched while it had recovered).
 //       The deadline is 10 minutes unless the caller knows the real one — a
 //       usage limit supplies its announced reset time and kind 'quota'.
+//       A quota pause is only written with proof (quota.js Q6): the
+//       decideQuotaPause() evidence travels with it and is stored on the
+//       record. `strategy.pausing: "off"` (quota.js Q7) refuses EVERY
+//       automatic pause — quota, auth, the credential-group siblings that
+//       bench with an auth pause, and the soft bench a strike would write —
+//       which is why it is checked here, at the one place all of them are
+//       written. `resumePool` (`bullswarm pools resume`) lifts any pause at
+//       once.
 //   S2. Incumbency per lane persists so picks don't flap between runs.
 //   S3. Every run appends to the decision log — routing telemetry is the
 //       substrate for burn-rate learning later.
@@ -24,6 +32,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWriteFileSync } from './fsjson.js';
+import { pausingEnabled, quotaPauseProven } from './quota.js';
 
 export const RENAMED_POOL_FROM = 'opencode2';
 export const RENAMED_POOL_TO = 'opencode';
@@ -372,6 +381,42 @@ export const DEFAULT_STATE = {
   },
 };
 
+/**
+ * Home retention (`state.json.retention`). Absent keys take these defaults.
+ * It is deliberately not part of DEFAULT_STATE: an untouched home never gains a
+ * `retention` block just because something loaded and saved its state.
+ */
+export const DEFAULT_RETENTION = Object.freeze({ enabled: true, workspacesDays: 7 });
+
+/**
+ * The effective retention policy of a loaded state. A value of the wrong type
+ * is reported in `invalid` and pauses the AUTOMATIC prune (`enabled: false`):
+ * a destructive background job never runs on a policy it could not read. The
+ * days still fall back to the default so an explicit `home prune` has a limit.
+ */
+export function resolveRetention(state) {
+  const raw = state?.retention;
+  const invalid = [];
+  let enabled = DEFAULT_RETENTION.enabled;
+  let workspacesDays = DEFAULT_RETENTION.workspacesDays;
+  if (raw != null && (typeof raw !== 'object' || Array.isArray(raw))) {
+    invalid.push('retention must be an object');
+  } else if (raw) {
+    if (raw.enabled !== undefined) {
+      if (typeof raw.enabled === 'boolean') enabled = raw.enabled;
+      else invalid.push('retention.enabled must be true or false');
+    }
+    if (raw.workspacesDays !== undefined) {
+      if (typeof raw.workspacesDays === 'number' && Number.isFinite(raw.workspacesDays) && raw.workspacesDays > 0) {
+        workspacesDays = raw.workspacesDays;
+      } else {
+        invalid.push('retention.workspacesDays must be a number greater than 0');
+      }
+    }
+  }
+  return { enabled: invalid.length ? false : enabled, workspacesDays, invalid };
+}
+
 export function loadState(bullswarmDir, { skipMigration = false } = {}) {
   const p = join(bullswarmDir, 'state.json');
   if (!skipMigration && homeMigrationNeeded(bullswarmDir)) migratePoolNameHome(bullswarmDir);
@@ -489,23 +534,104 @@ export function updateState(bullswarmDir, mutator, opts = {}) {
 
 // --- quarantine -----------------------------------------------------------
 
+/**
+ * Take a pool out of service until a deadline.
+ *
+ * kind 'auth' (the default) is the flat 10-minute re-probe unless `until`
+ * says otherwise. kind 'quota' is refused — nothing written, null returned —
+ * unless `evidence` is a decideQuotaPause() result that proves the pause
+ * (quota.js Q6); the pause then lasts exactly until the reset that evidence
+ * names, and the record keeps the provider line, the meter reading and the
+ * rule so every surface can say why.
+ *
+ * `strategy.pausing: "off"` (quota.js Q7) refuses EVERY pause, auth included:
+ * with the switch off no command takes a pool out of service on its own
+ * judgement. The refusals live at this choke point, so every caller —
+ * dispatch, a single run, the sibling bench — is covered by one check.
+ *
+ * @returns {number|null} the deadline, or null when the pause was refused
+ */
 export function quarantinePool(state, poolName, reason, now = Date.now(), {
-  until = null, kind = 'auth',
+  until = null, kind = 'auth', evidence = null,
 } = {}) {
+  if (!pausingEnabled(state)) return null;
+  if (kind === 'quota') {
+    if (!quotaPauseProven(evidence, now)) return null;
+    state.pools[poolName] ??= {};
+    state.pools[poolName].quarantine = {
+      until: Number(evidence.until),
+      reason: evidence.why ?? reason,
+      kind,
+      rule: evidence.rule,
+      line: evidence.line ?? null,
+      meter: evidence.meter ?? null,
+      meterWindow: evidence.meterWindow ?? null,
+      resetsAt: evidence.resetsAt ?? new Date(Number(evidence.until)).toISOString(),
+      pausedAt: new Date(now).toISOString(),
+    };
+    dropIncumbency(state, poolName);
+    return Number(evidence.until);
+  }
   // Re-probe window: 10 minutes by default (not 30) with automatic release.
-  // A quota failure knows better: it passes the reset time the provider
-  // announced (or its cached meter reset), so the pool comes back exactly when
-  // it has quota again instead of being probed into a second failure.
   const deadline = Number.isFinite(until) && until > now ? until : now + 10 * 60_000;
   state.pools[poolName] ??= {};
   state.pools[poolName].quarantine = { until: deadline, reason, kind };
+  dropIncumbency(state, poolName);
+  return deadline;
+}
+
+function dropIncumbency(state, poolName) {
   // A quarantined pool cannot hold incumbency: it isn't serving work, and
   // keeping the flag would lock the lane against its return.
   for (const [lane, name] of Object.entries(state.incumbents ?? {})) {
     if (name === poolName) delete state.incumbents[lane];
   }
-  return deadline;
 }
+
+/**
+ * Lift a pool's pause at once (`bullswarm pools resume <pool>`): its
+ * quarantine, quota or auth, and an active bench. The lift is appended to the
+ * decision log with what it lifted. A pool with nothing to lift is untouched.
+ *
+ * @returns {{quarantine: object|null, bench: object|null}} what was lifted
+ */
+export function resumePool(state, poolName, now = Date.now(), { source = 'pools resume' } = {}) {
+  const record = state.pools?.[poolName];
+  const quarantine = record?.quarantine ?? null;
+  const bench = record?.bench?.until != null ? record.bench : null;
+  if (!quarantine && !bench) return { quarantine: null, bench: null };
+  delete record.quarantine;
+  if (bench) delete record.bench;
+  state.decisionLog ??= [];
+  state.decisionLog.push({
+    ts: new Date(now).toISOString(),
+    kind: 'pool-resume',
+    source,
+    pool: poolName,
+    lifted: {
+      ...(quarantine ? {
+        quarantine: {
+          kind: quarantine.kind ?? 'auth',
+          until: Number.isFinite(Number(quarantine.until)) ? new Date(Number(quarantine.until)).toISOString() : null,
+          reason: quarantine.reason ?? null,
+        },
+      } : {}),
+      ...(bench ? { bench: { until: new Date(Number(bench.until)).toISOString(), reason: bench.reason ?? null } } : {}),
+    },
+  });
+  if (state.decisionLog.length > 500) state.decisionLog = state.decisionLog.slice(-500);
+  return { quarantine, bench };
+}
+
+/** Turn automatic pausing on or off (`bullswarm strategy set-pausing on|off`). */
+export function setPausing(state, on) {
+  state.strategy ??= {};
+  if (on) delete state.strategy.pausing;
+  else state.strategy.pausing = 'off';
+  return pausingEnabled(state);
+}
+
+export { pausingEnabled };
 
 /**
  * The credential group a pool view or a bare connector declares:
@@ -528,7 +654,9 @@ export function upstreamGroupOf(pool) {
  * sibling pools of the same group and burned both attempts on the same dead
  * credential, blocking every dependent action. Quota is deliberately NOT
  * shared: a sibling with its own window still has work in it (Q1), so only an
- * auth quarantine spreads.
+ * auth quarantine spreads. With `strategy.pausing: "off"` (Q7) no sibling is
+ * benched at all: the fan-out is part of the same automatic pausing the switch
+ * turns off.
  *
  * @param {object[]} pools pool views (or bare connectors) to consider
  * @returns {string[]} the pools benched here, in list order
@@ -536,6 +664,7 @@ export function upstreamGroupOf(pool) {
 export function quarantineUpstreamSiblings(state, pools, {
   pool, group, reason, now = Date.now(), until = null, kind = 'auth',
 } = {}) {
+  if (!pausingEnabled(state)) return [];
   if (kind !== 'auth' || !group || !pool) return [];
   const benched = [];
   for (const candidate of pools ?? []) {
@@ -601,10 +730,16 @@ export const BENCH_REASONS = new Set(['stall', 'provider', 'empty', 'probe']);
 /**
  * Record one qualifying failure against a pool.
  *
+ * With `strategy.pausing: "off"` (quota.js Q7) nothing is recorded and no
+ * deadline is ever written: a bench takes a pool out of service exactly like a
+ * quarantine, so the switch covers it too, and not counting strikes means a
+ * later `set-pausing on` starts clean.
+ *
  * @returns {number|null} the bench deadline when this strike benched the pool,
  *                        null when it was only counted.
  */
 export function recordPoolStrike(state, poolName, reason, now = Date.now()) {
+  if (!pausingEnabled(state)) return null;
   state.pools ??= {};
   state.pools[poolName] ??= {};
   const prior = state.pools[poolName].bench ?? null;

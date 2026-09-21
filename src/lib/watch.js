@@ -18,6 +18,18 @@
 //       with a quarantine hint, not the generic `provider` kind. A dead
 //       credential fails every following attempt on that pool in seconds; a
 //       verdict that carries no hint sends the next attempt straight back.
+//   W7. Quota and auth signatures are matched against the PROVIDER'S ERROR
+//       CHANNEL only: stderr, the events the provider flags as errors, and its
+//       terminal `result` record. Never the assistant's reply, a tool result,
+//       or the extracted answer — on 2026-09-21 a pool was paused with the
+//       reason `usage limit: "Codex's \`usage_credits_required\` is
+//       spent-credit wording, not a throttle …"`, a sentence from an agent's
+//       OWN REPORT quoting a quota signature. A connector with no declared
+//       event stream has no provider events to separate, so its own transport
+//       is the channel and the shape gate (quota.js Q2) decides what counts.
+//       With `strategy.pausing: "off"` (quota.js Q7) no verdict asks for a
+//       pause at all; an auth failure is reported as the `provider` failure it
+//       also is, so the attempt still moves to another pool.
 
 import { spawn, execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync, realpathSync, existsSync } from 'node:fs';
@@ -28,8 +40,9 @@ import { judgeContent } from './verify.js';
 import * as usageLib from './usage.js';
 import { createAgentEventDecoder } from './agent-events.js';
 import { captureLimits, createAttemptStreamSink } from './attempt-stream.js';
-import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
-import { findUpstreamAuthFailure } from './auth-signatures.js';
+import { ERROR_SHAPED_LINE, decideQuotaPause, findQuotaFailure, readPausing } from './quota.js';
+import { spawnRetentionSweep } from './retention.js';
+import { JSON_ERROR_EVENT_LINE, findUpstreamAuthFailure } from './auth-signatures.js';
 import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoning.js';
 import {
   getMeterReading,
@@ -95,6 +108,69 @@ function decoderUsageForEstimate(connector, reportedUsage) {
     };
   }
   return reportedUsage;
+}
+
+function selectedModelFor(connector, opts, observed) {
+  return opts.model ?? observed?.detectedModel ?? observed?.reportedUsage?.model ?? connector.model ?? (() => {
+    const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
+    return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
+  })();
+}
+
+const CAPTURE_TOKEN_FIELDS = [
+  'standardRead', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'cacheWrite', 'output', 'reasoning', 'totalKnown',
+];
+
+/**
+ * The attempt's `capture` block: what the provider itself said when the worker
+ * exited, built from the decoded stream alone — no transcript, meter or rate
+ * card is consulted, so it is ready the instant the process ends. Token
+ * classes are canonical (exclusive) and present only when the provider
+ * reported counters; a stream with no counters is `unknown`, never an
+ * estimate. The session id is the provider's own when the stream carries
+ * one, else the id Bullswarm handed the CLI on its command line.
+ */
+export function attemptCapture(connector, exit = {}, options = {}) {
+  return captureAtExit(connector, exit, options).capture;
+}
+
+// The capture plus, when the provider reported counters, the canonical usage
+// envelope priced from them (the same record watchOnce ends with, minus the
+// meter-side subscription block that needs the end snapshot).
+function captureAtExit(connector, exit = {}, {
+  model = null, conversation = null, at = new Date().toISOString(),
+} = {}) {
+  const reported = exit?.reportedUsage && typeof exit.reportedUsage === 'object' ? exit.reportedUsage : null;
+  const usage = reported ? usageLib.estimateInvocationUsage({
+    connector,
+    model,
+    subscription: null,
+    reportedUsage: decoderUsageForEstimate(connector, reported),
+  }) : null;
+  const counted = usage?.tokenSource === 'provider-reported'
+    && CAPTURE_TOKEN_FIELDS.some((field) => field !== 'totalKnown' && finiteNonNegative(usage.tokens?.[field]) != null);
+  const reportedSessionId = typeof reported?.sessionId === 'string' && reported.sessionId ? reported.sessionId : null;
+  const template = conversation?.resume ? connector?.conversation?.resumeArgs : connector?.conversation?.newArgs;
+  const assignedSessionId = typeof conversation?.sessionId === 'string' && conversation.sessionId
+    && Array.isArray(template) && template.some((arg) => String(arg).includes('{sessionId}'))
+    ? conversation.sessionId
+    : null;
+  const capture = {
+    capturedAt: at,
+    source: connector?.eventStream?.format === 'jsonl' ? 'event-stream' : 'exit-status',
+    providerSessionId: reportedSessionId ?? assignedSessionId,
+    sessionSource: reportedSessionId ? 'provider-stream' : assignedSessionId ? 'bullswarm-assigned' : null,
+    model: model ?? null,
+    tokens: counted
+      ? Object.fromEntries(CAPTURE_TOKEN_FIELDS.map((field) => [field, finiteNonNegative(usage.tokens[field])]))
+      : null,
+    tokenSource: counted ? 'provider-reported' : 'unknown',
+    providerCostUsd: finiteNonNegative(reported?.costUsd),
+    exitCode: Number.isInteger(exit?.exitCode) ? exit.exitCode : null,
+    signal: typeof exit?.signal === 'string' && exit.signal ? exit.signal : null,
+  };
+  if (counted) usage.sessionId = capture.providerSessionId;
+  return { capture, usage: counted ? usage : null };
 }
 
 async function safeSnapshot(snapshotPool, poolName, home, now, source = 'cache') {
@@ -551,6 +627,36 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     // Assistant prose only. Tool results are quoted file/command output and
     // routinely contain limit wording that says nothing about OUR quota.
     let responseText = '';
+    // W7: the provider's own records about its own failure — the events it
+    // declares as failures and its terminal `result`. Together with stderr
+    // (and, for a connector with no event stream, its own transport) this is
+    // the whole error channel; nothing the agent wrote ever enters it.
+    const eventStreamed = connector.outputExtraction?.strategy === 'event-stream';
+    const declaredFailureTypes = new Set((connector.eventStream?.failureTypes ?? []).map(String));
+    let providerRecords = '';
+    const noteProviderRecord = (text) => {
+      const value = typeof text === 'string' ? text.trim() : '';
+      if (!value) return;
+      providerRecords = `${providerRecords}${value.slice(0, ERROR_RECORD_MAX_CHARS)}\n`
+        .slice(-ERROR_CHANNEL_MAX_CHARS);
+    };
+    // A provider that mirrors the agent's final message into its terminal
+    // record (Claude Code's `result`) is repeating the agent's own words: that
+    // text is a reply, not a provider report, and the gate must not be fooled
+    // by it. A genuine limit notice shares no such opening.
+    const mirrorsReply = (text) => mirrorsAgentReply(text, responseText);
+    const errorChannelText = (full = false) => {
+      if (!eventStreamed) return `${stdoutCapture.tail(4000)}\n${stderrCapture.tail(4000)}`.trim();
+      return [
+        stderrCapture.tail(4000),
+        providerErrorRecords(
+          full ? stdoutCapture.text() : stdoutCapture.tail(PROVIDER_ERROR_SCAN_CHARS),
+          declaredFailureTypes,
+          { agentText: responseText },
+        ),
+        providerRecords,
+      ].filter(Boolean).join('\n');
+    };
     const attemptStream = resolveAttemptStream(connector, opts);
     const liveOutFile = opts.outFile ?? null;
     let lastLiveOutput = null;
@@ -578,8 +684,12 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
           && !event.summary.endsWith('\u2026')) {
           responseText = `${responseText}${event.summary}\n`.slice(-8000);
         }
-        if ((connector.eventStream?.failureTypes ?? []).includes(event?.providerType)) {
+        const recordText = typeof fullSummary === 'string' ? fullSummary : event?.summary;
+        if (declaredFailureTypes.has(String(event?.providerType ?? ''))) {
           providerFailureText ??= typeof event?.summary === 'string' ? event.summary : null;
+          noteProviderRecord(recordText);
+        } else if (event?.kind === 'result' && !mirrorsReply(recordText)) {
+          noteProviderRecord(recordText);
         }
         attemptStream?.event(event, fullSummary);
         persistLiveOutput();
@@ -596,28 +706,19 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     });
     const stopOnFatalSignature = () => {
       if (fatalSignature) return;
-      // Structured stdout is an agent transcript. It routinely contains file
-      // contents, grep matches, and shell output, so matching fatal words in
-      // that transport can kill a healthy agent merely for reading auth code.
-      // Provider diagnostics on stderr remain safe to terminate on. Plain-text
-      // connectors retain the legacy combined-stream fast-fail behavior.
-      const eventStreamed = connector.outputExtraction?.strategy === 'event-stream';
-      const transport = eventStreamed
-        ? stderrCapture.tail(4000)
-        : `${stdoutCapture.tail(4000)}\n${stderrCapture.tail(4000)}`;
-      // Quota is classified BEFORE auth and is read from the semantic channels
-      // too: a provider that exhausted its window answers with the limit
-      // notice as its own response/result and may never exit on its own. Some
-      // connectors list a usage phrase (codex `usage_credits_required`) among
-      // their auth signatures — a throttle must still be reported as quota.
-      const quotaTransport = eventStreamed
-        ? [stderrCapture.tail(4000), responseText, (eventDecoder?.output() ?? '').slice(-4000)].join('\n')
-        : transport.slice(-4000);
-      const quota = findQuotaFailure(connector, quotaTransport);
+      // W7: the provider's error channel, never the agent's words. Structured
+      // stdout is an agent transcript — a reply or a tool result that quotes a
+      // limit phrase is not evidence about this pool's quota or credential
+      // (2026-09-21: a report quoting `usage_credits_required` paused one).
+      const channel = errorChannelText();
+      // Quota is classified BEFORE auth. Some connectors list a usage phrase
+      // (codex `usage_credits_required`) among their auth signatures — a
+      // throttle must still be reported as quota.
+      const quota = findQuotaFailure(connector, channel);
       if (quota) {
         fatalSignature = { kind: 'quota', ...quota };
       } else {
-        const authHit = matchAuthSignature(connector, transport.slice(-4000));
+        const authHit = matchAuthSignature(connector, channel);
         if (authHit) fatalSignature = { kind: 'auth', signature: authHit, line: null, context: null };
       }
       if (!fatalSignature) return;
@@ -700,8 +801,23 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         reportedUsage: eventDecoder?.usage() ?? null,
       };
     };
+    // Called synchronously the moment the worker is gone, before anything
+    // slow (meter reads, transcript lookup) can run, so the caller can make
+    // what the provider reported durable first. A failing sink never costs
+    // the attempt its verdict.
+    let exitReported = false;
+    const reportExit = (exitCode, signal, finishedStream, extra = {}) => {
+      if (exitReported || typeof opts.onDelegateExit !== 'function') return;
+      exitReported = true;
+      try {
+        opts.onDelegateExit({
+          exitCode, signal, reportedUsage: finishedStream.reportedUsage, detectedModel, ...extra,
+        });
+      } catch { /* the capture is best effort; the verdict still resolves */ }
+    };
     child.on('error', (err) => {
       const finishedStream = finishStream();
+      reportExit(null, null, finishedStream, { spawnError: true });
       const streamStats = finishedStream.streamStats;
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
@@ -725,6 +841,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerFailureType,
         providerFailureAt,
         providerFailureText,
+        errorChannel: errorChannelText(true),
         spawnError: true,
         ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
@@ -732,6 +849,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     child.on('close', (code, signal) => {
       if (opts.processGroup && (cancelled || timedOut || stalled || fatalSignature || opts.shouldCancel?.())) stopChild('SIGKILL');
       const finishedStream = finishStream();
+      reportExit(code, signal, finishedStream);
       const streamStats = finishedStream.streamStats;
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
@@ -748,6 +866,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerFailureType,
         providerFailureAt,
         providerFailureText,
+        errorChannel: errorChannelText(true),
         ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
     });
@@ -794,31 +913,138 @@ function matchLikelyAuthFailure(connector, text) {
   const lineStart = lower.lastIndexOf('\n', index) + 1;
   const lineEnd = lower.indexOf('\n', index);
   const line = lower.slice(lineStart, lineEnd < 0 ? lower.length : lineEnd).trim();
-  // A semantic result may legitimately discuss auth handling. Require the
-  // matched line to look like a provider failure instead of source/report text.
+  // A provider error event is a machine record of a failure and counts as
+  // error-shaped however it reads (auth-signatures.js A2); anything else must
+  // look like a provider failure rather than report or source text.
+  if (JSON_ERROR_EVENT_LINE.test(line)) return hit;
   return ERROR_SHAPED_LINE.test(line) ? hit : null;
 }
 
 /**
- * How much of each raw stream a provider-stream failure is judged on, at each
- * end. A transcript runs to megabytes; a provider failure is always in the
- * head (it failed before working) or the tail (it failed after working).
+ * How much of the raw stdout an error-channel scan reads in the live path (the
+ * verdict-time read uses the whole capture). A provider failure is at the
+ * failure point, so the tail is where its record is.
  */
-const PROVIDER_ERROR_SCAN_CHARS = 12000;
+const PROVIDER_ERROR_SCAN_CHARS = 64 * 1024;
+/** Longest single provider record kept as evidence. */
+const ERROR_RECORD_MAX_CHARS = 4000;
+/** Bound on the concatenated error channel. */
+const ERROR_CHANNEL_MAX_CHARS = 8000;
+/**
+ * Characters compared to tell a provider's terminal record from the agent's
+ * own reply it mirrors (Claude Code's `result` repeats the final message).
+ */
+const MIRRORED_REPLY_CHARS = 60;
+
+function declaredFailureSet(declared) {
+  return declared instanceof Set ? declared : new Set((declared ?? []).map(String));
+}
 
 /**
- * The text an upstream auth failure is looked for in: the raw streams, not the
- * extracted output. Event-stream extraction keeps only the connector's
- * declared text parts, so the `{"type":"error",…}` event carrying the upstream
- * body never reaches `extractOutput`'s result at all.
+ * Does `text` open the same way as something the agent itself wrote? A
+ * provider that mirrors the agent's final message into its terminal record
+ * (Claude Code's `result`) is repeating the agent's own words, and the gate
+ * must not be fooled by the copy. A genuine limit notice shares no opening.
  */
-function providerErrorText(obs) {
-  const bounded = (value) => {
-    const text = String(value ?? '');
-    if (text.length <= PROVIDER_ERROR_SCAN_CHARS * 2) return text;
-    return `${text.slice(0, PROVIDER_ERROR_SCAN_CHARS)}\n${text.slice(-PROVIDER_ERROR_SCAN_CHARS)}`;
+export function mirrorsAgentReply(text, agentText) {
+  const head = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, MIRRORED_REPLY_CHARS);
+  return Boolean(head) && String(agentText ?? '').replace(/\s+/g, ' ').includes(head);
+}
+
+/**
+ * A record type a CLI uses for its OWN summary of the finished turn: Claude
+ * Code and Command Code write `result`, Codex writes `turn.completed`, grok
+ * writes `end`. The agent's own events are `assistant` / `item.completed` /
+ * `message_end` / `text`, never one of these — that separation is what makes
+ * the record evidence and a reply not.
+ */
+const TERMINAL_RECORD_TYPE =
+  /^(?:result|turn[._](?:completed|failed|end)|run[._](?:end|complete[d]?)|end|done)$/i;
+
+/** Longest string leaf of a terminal record that still enters the channel. */
+const TERMINAL_RECORD_MAX_STRINGS = 6;
+
+/**
+ * Keys whose values are identifiers or enums, never the provider's words. The
+ * token itself is still available through the record's raw line.
+ */
+const RECORD_META_KEYS = new Set([
+  'type', 'subtype', 'kind', 'status', 'level', 'severity', 'code', 'id', 'uuid',
+  'model', 'sessionid', 'session_id', 'thread_id', 'requestid', 'request_id', 'timestamp', 'at',
+]);
+
+/** Bounded string leaves of a provider record, in order. */
+function providerRecordStrings(value) {
+  const out = [];
+  const walk = (node, depth) => {
+    if (out.length >= TERMINAL_RECORD_MAX_STRINGS || depth > 4) return;
+    if (typeof node === 'string') {
+      const text = node.trim();
+      if (text) out.push(text);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child, depth + 1);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    for (const [key, child] of Object.entries(node)) {
+      if (RECORD_META_KEYS.has(key.toLowerCase())) continue;
+      walk(child, depth + 1);
+    }
   };
-  return `${bounded(obs.stdout)}\n${bounded(obs.stderr)}`;
+  walk(value, 0);
+  return out;
+}
+
+/**
+ * Is this decoded JSONL line a record the PROVIDER flagged as its own failure?
+ * Top-level markers only: an `error` field nested inside a tool result is the
+ * tool talking, and an assistant message is never a provider failure record.
+ */
+export function isProviderErrorRecord(value, declared = []) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const type = typeof value.type === 'string' ? value.type : '';
+  if (declaredFailureSet(declared).has(type)) return true;
+  if (value.is_error === true || value.isError === true || value.status === 'error') return true;
+  if (typeof value.subtype === 'string' && /error|fail/i.test(value.subtype)) return true;
+  if (/^(?:error|error[._-]|stream[._-]error|turn[._-]failed)/i.test(type)) return true;
+  return value.error != null && (typeof value.error === 'object' || typeof value.error === 'string');
+}
+
+/**
+ * The records in `text` the provider itself wrote about this attempt: the
+ * events it flags as errors and its terminal summary. Each is reduced to the
+ * provider's own strings — so a pause records the sentence the provider wrote,
+ * not a JSON blob — and a terminal record's strings that repeat the agent's
+ * reply are dropped (the CLI mirrors the final message into `result`). Raw
+ * error lines are kept as well, because an upstream body is a machine record
+ * of a failure whatever it reads like. Only complete lines that parse as JSON
+ * objects are read, so an agent's prose cannot enter the error channel (W7).
+ */
+export function providerErrorRecords(text, declared = [], { agentText = '' } = {}) {
+  const types = declaredFailureSet(declared);
+  const kept = [];
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length < 2 || trimmed.length > ERROR_RECORD_MAX_CHARS || trimmed[0] !== '{') continue;
+    let value;
+    try { value = JSON.parse(trimmed); } catch { continue; }
+    const failure = isProviderErrorRecord(value, types);
+    if (!failure && !TERMINAL_RECORD_TYPE.test(typeof value?.type === 'string' ? value.type : '')) {
+      continue;
+    }
+    // The raw record comes first for an error event: an upstream body is a
+    // machine record of a failure, and the auth table is matched against it
+    // (auth-signatures.js A1/A2). Its own strings follow, so a signature the
+    // raw line cannot carry still has the provider's words to match.
+    if (failure) kept.push(trimmed);
+    for (const leaf of providerRecordStrings(value)) {
+      if (!failure && mirrorsAgentReply(leaf, agentText)) continue;
+      kept.push(leaf);
+    }
+  }
+  return kept.join('\n').slice(-ERROR_CHANNEL_MAX_CHARS);
 }
 
 /**
@@ -862,11 +1088,26 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     } catch { /* retain the stale cache, which yields no observed delta */ }
   }
   const startCursor = cursorFor(startSnapshot, new Date(startedAt).toISOString());
+  let capture = null;
   const obs = await runDelegate(connector, paths.taskFile, targetDir, {
     ...opts,
     streamFile: opts.streamFile ?? paths.streamFile ?? artifactBesideTask(paths.taskFile, 'stream', '.jsonl'),
     stdoutFile: opts.stdoutFile ?? paths.stdoutFile,
     outFile: opts.outFile ?? paths.outFile,
+    // Worker exit: hand the caller what the provider reported before the
+    // end meter read and the transcript lookup below, either of which can
+    // take long enough for the kernel to die in between.
+    onDelegateExit: (exit) => {
+      const captured = captureAtExit(connector, exit, {
+        model: selectedModelFor(connector, opts, exit),
+        conversation: opts.conversation ?? null,
+      });
+      capture = captured.capture;
+      opts.onCapture?.(
+        JSON.parse(JSON.stringify(capture)),
+        captured.usage ? JSON.parse(JSON.stringify(captured.usage)) : null,
+      );
+    },
   });
   const endedAt = Date.now();
   let endSnapshot = await safeSnapshot(snapshotPool, poolName, home, endedAt, 'cache');
@@ -929,6 +1170,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         ...opts,
         argv: followUpCommand,
         conversation: null,
+        onDelegateExit: null,
         attemptStream: null,
         streamFile: originalStreamFile ? `${originalStreamFile}.follow-up` : null,
         stdoutFile: originalStdoutFile ? `${originalStdoutFile}.follow-up` : null,
@@ -947,10 +1189,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     }
   }
   writeFileSync(paths.outFile, output);
-  const selectedModel = opts.model ?? obs.detectedModel ?? obs.reportedUsage?.model ?? connector.model ?? (() => {
-    const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
-    return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
-  })();
+  const selectedModel = selectedModelFor(connector, opts, obs);
   let usage = usageLib.estimateInvocationUsage({
     taskText,
     outputText: output,
@@ -970,8 +1209,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // optional hook. Ambiguous or missing transcript matches are ignored so the
   // byte estimate remains visible for the live attempt; `workflow reprice`
   // applies the stricter unknown policy to historical records.
+  let transcriptReaderFound = false;
   if (usage.tokenSource === 'estimated:utf8-bytes/4' || usage.tokenSource === 'unknown') {
     const reader = await resolveTranscriptReader(opts, poolName, home);
+    transcriptReaderFound = Boolean(reader);
     if (reader) {
       try {
         const transcript = await reader({
@@ -980,9 +1221,13 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
           cwd: resolve(targetDir),
           startedAt: new Date(startedAt).toISOString(),
           endedAt: new Date(endedAt).toISOString(),
+          // The delegate's first message quotes this path (or carries this
+          // text), which resolves parallel attempts in one cwd.
+          taskFile: paths.taskFile,
+          taskText,
           home: transcriptHome,
         });
-        const exact = transcript?.confidence === 'exact' || transcript?.confidence === 'window';
+        const exact = ['exact', 'window', 'task-text'].includes(transcript?.confidence);
         const hasTokens = transcript?.tokens && typeof transcript.tokens === 'object'
           && Object.values(transcript.tokens).some((value) => finiteNonNegative(value) != null);
         if (exact && hasTokens) {
@@ -1131,6 +1376,23 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     } catch { /* calibration is best effort; the attempt record is durable */ }
   }
 
+  // Usage is final. A caller that prices unmeasured work later (a single run
+  // starts the detached reconciler) is told once; nothing here waits for it.
+  if (typeof opts.onUsageFinalized === 'function') {
+    try {
+      opts.onUsageFinalized({
+        usage,
+        poolName: poolName ?? null,
+        // False when the pool's provider keeps no transcript a later pass could read.
+        transcriptReader: transcriptReaderFound,
+        taskFile: paths.taskFile ?? null,
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date(endedAt).toISOString(),
+      });
+    } catch { /* pricing is best effort */ }
+  }
+  if (opts.bullswarmDir) spawnRetentionSweep({ bullswarmDir: opts.bullswarmDir, trigger: 'watch' });
+
   // Gate order matters:
   //   timeout / spawn failure -> fail (nothing to trust)
   //   a provider error event naming an upstream auth phrase -> fail + auth +
@@ -1138,34 +1400,56 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   //     a throttle keeps its own kind and its real reset deadline (W5).
   //   a quota-shaped usage-limit line -> fail + quarantine until the reset
   //     (checked before auth: a throttle is not a broken credential).
-  //   an error-shaped auth signature in the extracted semantic response ->
-  //     fail + quarantine hint (raw structured tool output is not evidence of
-  //     provider auth health).
+  //   an error-shaped auth signature on the provider's error channel ->
+  //     fail + quarantine hint (an agent's report ABOUT auth work is not
+  //     evidence of provider auth health — W7).
   //   else content judge decides; exit code only modulates flags.
-  const head = output.slice(0, 2000);
+  // W7: every signature below is matched against the PROVIDER'S ERROR CHANNEL
+  // — stderr, the provider's own error events and its terminal record — never
+  // the assistant's reply, a tool result or the extracted answer.
+  const errorChannel = obs.errorChannel ?? '';
   const fatalKind = obs.fatalSignature?.kind ?? null;
   const quotaFailure = fatalKind === 'quota'
-    ? { signature: obs.fatalSignature.signature, line: obs.fatalSignature.line, context: obs.fatalSignature.context }
-    : fatalKind === null ? findQuotaFailure(connector, head) : null;
+    ? {
+        signature: obs.fatalSignature.signature,
+        line: obs.fatalSignature.line,
+        context: obs.fatalSignature.context,
+        transient: obs.fatalSignature.transient === true,
+        waitMs: obs.fatalSignature.waitMs ?? null,
+      }
+    : fatalKind === null ? findQuotaFailure(connector, errorChannel, { now: endedAt }) : null;
   const authHit = fatalKind === 'auth'
     ? obs.fatalSignature.signature
-    : quotaFailure ? null : matchLikelyAuthFailure(connector, head);
-  // Read from the transport, and only once the provider itself declared a
-  // stream failure: an upstream credential dies inside the error event, where
-  // the semantic-output gates above can never see it (2026-09-11 — three pool
-  // names fronting one dead Relay OAuth pool, re-picked attempt after attempt
-  // because a stream error carried no quarantine hint).
+    : quotaFailure ? null : matchLikelyAuthFailure(connector, errorChannel);
+  // Read from the provider's error channel, and only once the provider itself
+  // declared a stream failure: an upstream credential dies inside the error
+  // event, where the semantic-output gates above can never see it (2026-09-11
+  // — three pool names fronting one dead Relay OAuth pool, re-picked attempt
+  // after attempt because a stream error carried no quarantine hint).
   const upstreamAuth = obs.providerFailureType
-    ? findUpstreamAuthFailure(connector, providerErrorText(obs))
+    ? findUpstreamAuthFailure(connector, errorChannel)
     : null;
-  const quotaDeadline = quotaFailure
-    ? quotaQuarantineUntil({
-        text: quotaFailure.context ?? quotaFailure.line ?? '',
-        pool: connector.name ?? null,
-        bullswarmDir: opts.bullswarmDir ?? null,
+  // Q7: with automatic pausing off no pool is paused, so no verdict asks for
+  // one. The failure keeps an honest kind and the attempt still moves on —
+  // an auth failure is then reported as the generic provider failure it also
+  // is, a mechanical retry, rather than a bench.
+  const pausing = opts.pausing ?? (home ? readPausing(home) : true);
+  // quota.js Q6 — the one pause rule: the pool's own meter at >= 95% on a
+  // running window, or a provider line that says a usage window is spent AND
+  // names its reset. Every other limit notice is transient: retried, never a
+  // pause. The decision (line, meter reading, reset) travels on the verdict
+  // so the quarantine that records it can say why.
+  const quotaPause = quotaFailure
+    ? decideQuotaPause({
+        connector,
+        failure: quotaFailure,
+        pool: poolName,
+        bullswarmDir: home,
         now: endedAt,
+        pausing,
       })
     : null;
+  const quotaDeadline = quotaPause?.pause ? { until: quotaPause.until, source: quotaPause.rule } : null;
 
   let verdict;
   let structured = null;
@@ -1210,12 +1494,14 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   } else if (upstreamAuth && !quotaFailure) {
     // The phrase is sliced so the whole sentence stays inside the 160-character
     // budget every `why` is held to, with the matched phrase named in full for
-    // anything short enough to be a real signature.
+    // anything short enough to be a real signature. With pausing off the pool
+    // is not benched, so the failure is reported as what it mechanically is.
     verdict = {
       ok: false,
-      failureKind: 'auth',
-      quarantineHint: true,
-      why: `upstream auth failure: "${String(upstreamAuth.signature).slice(0, 110)}" (provider stream error)`,
+      failureKind: pausing ? 'auth' : 'provider',
+      ...(pausing ? { quarantineHint: true } : {}),
+      why: `upstream auth failure: "${String(upstreamAuth.signature).slice(0, 110)}" (provider stream error)`
+        + (pausing ? '' : ' · automatic pausing is off, pool not paused'),
     };
   } else if (obs.providerFailureType) {
     if (recoveredOutputUsable) {
@@ -1226,6 +1512,15 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     } else {
       verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
     }
+  } else if (quotaFailure && !quotaPause.pause) {
+    verdict = {
+      ok: false,
+      failureKind: 'throttle',
+      throttleWaitMs: quotaFailure.waitMs ?? null,
+      throttleRetrySamePool: quotaPause.retrySamePool,
+      quotaPause,
+      why: quotaPause.why,
+    };
   } else if (quotaFailure) {
     verdict = {
       ok: false,
@@ -1233,11 +1528,16 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       quarantineHint: true,
       quarantineUntil: quotaDeadline.until,
       quarantineSource: quotaDeadline.source,
-      why: `usage limit: "${(quotaFailure.line ?? quotaFailure.signature).slice(0, 160)}" `
-        + `· pool paused until ${new Date(quotaDeadline.until).toISOString()}`,
+      quotaPause,
+      why: quotaPause.why,
     };
   } else if (authHit) {
-    verdict = { ok: false, why: `auth/throttle signature: "${authHit}"`, quarantineHint: true };
+    verdict = {
+      ok: false,
+      why: `auth/throttle signature: "${authHit}"`
+        + (pausing ? '' : ' · automatic pausing is off, pool not paused'),
+      ...(pausing ? { quarantineHint: true } : { failureKind: 'provider' }),
+    };
   } else if (typeof opts.outputValidator === 'function') {
     try {
       const checked = opts.outputValidator(output);
@@ -1292,7 +1592,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       connector,
       subscription: subscriptionConfig,
       nowMs: endedAt,
-      resetAtMs: quotaDeadline?.source === 'message' ? quotaDeadline.until : null,
+      resetAtMs: quotaDeadline?.until ?? null,
       reason: quotaFailure?.line ?? quotaFailure?.signature ?? verdict.why,
     });
   }
@@ -1354,6 +1654,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       ...(outputTruncated ? { outputTruncated: true, ...(outputSource ? { outputSource } : {}) } : {}),
       ...(obs.streamFile ? { streamFile: obs.streamFile } : {}),
       usage,
+      ...(capture ? { capture } : {}),
       // The level this attempt actually ran at, exactly as resolved. Reported
       // even when nothing was appended, so a record can say WHY it was silent.
       reasoning: reasoningRecord(opts.reasoning ?? null),

@@ -61,10 +61,24 @@ const ATTEMPT_FIELDS = new Set([
   // last used. Absent on attempts whose connector has no conversation support
   // and on every attempt recorded before measured usage capture existed.
   'session',
+  // What the provider reported the moment the worker exited, written once and
+  // never changed (src/lib/watch.js `attemptCapture`). Absent on attempts
+  // recorded before 0.35.2 and on attempts whose worker never exited.
+  'capture',
 ]);
 const ATTEMPT_SESSION_FIELDS = new Set([
   'pool', 'model', 'sessionId', 'generation', 'startedAt', 'lastUsedAt',
 ]);
+const ATTEMPT_CAPTURE_FIELDS = new Set([
+  'capturedAt', 'source', 'providerSessionId', 'sessionSource', 'model',
+  'tokens', 'tokenSource', 'providerCostUsd', 'exitCode', 'signal',
+]);
+const CAPTURE_TOKEN_FIELDS = new Set([
+  'standardRead', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'cacheWrite', 'output', 'reasoning', 'totalKnown',
+]);
+const CAPTURE_SOURCES = new Set(['event-stream', 'exit-status']);
+const CAPTURE_SESSION_SOURCES = new Set(['provider-stream', 'bullswarm-assigned']);
+const CAPTURE_TOKEN_SOURCES = new Set(['provider-reported', 'unknown']);
 const ATTEMPT_HANDOFF_FIELDS = new Set(['from', 'bytes']);
 const ATTEMPT_NOTE_FIELDS = new Set(['at', 'kind', 'text']);
 // Output samples are `[atMs, bytes]` pairs. The cap keeps live state small
@@ -95,7 +109,7 @@ const PLANNER_ATTEMPT_FIELDS = new Set([
   'taskFile', 'outputFile', 'failureKind', 'why', 'usage', 'continued',
   'lastActivityAt', 'lastEventAt', 'outputBytesObserved', 'lastAgentEvent', 'wallSec',
   'outputTruncated', 'outputSource',
-  'cwd', 'project',
+  'cwd', 'project', 'capture',
 ]);
 const PRESENTATION_STAGE_FIELDS = new Set([
   'id', 'label', 'revision', 'actionIds', 'startedAt', 'completedAt',
@@ -435,6 +449,7 @@ function validatePlanner(planner) {
     for (const field of ['lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.planner.attempts[${index}].${field}`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.planner.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
     validateOutputRecovery(attempt, `state.planner.attempts[${index}]`);
+    if (attempt.capture !== undefined) validateAttemptCapture(attempt.capture, `state.planner.attempts[${index}].capture`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.planner.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.planner.attempts[${index}].lastAgentEvent must be null or an object`);
   }
@@ -519,6 +534,7 @@ function validatePreflight(preflight) {
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.preflight.scout.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.preflight.scout.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
     validateOutputRecovery(attempt, `state.preflight.scout.attempts[${index}]`);
+    if (attempt.capture !== undefined) validateAttemptCapture(attempt.capture, `state.preflight.scout.attempts[${index}].capture`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.preflight.scout.attempts[${index}].lastAgentEvent must be null or an object`);
   }
   if (preflight.scout.status === 'succeeded' && !preflight.scout.outputFile) fail('successful state.preflight.scout requires outputFile');
@@ -759,6 +775,38 @@ function validateAttemptSession(session, at) {
   }
 }
 
+// Only what the provider said: token classes appear exactly when the provider
+// reported counters, and an attempt whose stream carried none is `unknown`.
+function validateAttemptCapture(capture, at) {
+  object(capture, at);
+  noUnknown(capture, ATTEMPT_CAPTURE_FIELDS, at);
+  timestamp(capture.capturedAt, `${at}.capturedAt`);
+  if (capture.capturedAt === null) fail(`${at}.capturedAt is required`);
+  if (!CAPTURE_SOURCES.has(capture.source)) fail(`${at}.source is invalid`);
+  for (const field of ['providerSessionId', 'model', 'signal']) {
+    if (capture[field] !== undefined) nullableString(capture[field], `${at}.${field}`);
+  }
+  if (capture.sessionSource !== undefined && capture.sessionSource !== null
+    && !CAPTURE_SESSION_SOURCES.has(capture.sessionSource)) fail(`${at}.sessionSource is invalid`);
+  if (!CAPTURE_TOKEN_SOURCES.has(capture.tokenSource)) fail(`${at}.tokenSource is invalid`);
+  if (capture.tokens !== undefined && capture.tokens !== null) {
+    object(capture.tokens, `${at}.tokens`);
+    noUnknown(capture.tokens, CAPTURE_TOKEN_FIELDS, `${at}.tokens`);
+    for (const [field, value] of Object.entries(capture.tokens)) {
+      nullableFiniteNumber(value, `${at}.tokens.${field}`);
+      if (value != null && value < 0) fail(`${at}.tokens.${field} must not be negative`);
+    }
+  }
+  if ((capture.tokenSource === 'provider-reported') !== (capture.tokens != null)) {
+    fail(`${at}.tokens are present exactly when tokenSource is provider-reported`);
+  }
+  nullableFiniteNumber(capture.providerCostUsd, `${at}.providerCostUsd`);
+  if (capture.providerCostUsd != null && capture.providerCostUsd < 0) fail(`${at}.providerCostUsd must not be negative`);
+  if (capture.exitCode !== undefined && capture.exitCode !== null && !Number.isInteger(capture.exitCode)) {
+    fail(`${at}.exitCode must be null or an integer`);
+  }
+}
+
 function validateAttemptNotes(notes, at) {
   if (!Array.isArray(notes)) fail(`${at} must be an array`);
   for (const [index, note] of notes.entries()) {
@@ -823,6 +871,7 @@ function validateAttempts(attempts, program) {
       if (attempt.handoff.bytes !== undefined) nonNegativeInteger(attempt.handoff.bytes, `state.attempts[${index}].handoff.bytes`);
     }
     if (attempt.session !== undefined && attempt.session !== null) validateAttemptSession(attempt.session, `state.attempts[${index}].session`);
+    if (attempt.capture !== undefined) validateAttemptCapture(attempt.capture, `state.attempts[${index}].capture`);
     if (attempt.notes !== undefined) validateAttemptNotes(attempt.notes, `state.attempts[${index}].notes`);
     if (attempt.outputSamples !== undefined) validateOutputSamples(attempt.outputSamples, `state.attempts[${index}].outputSamples`);
     validateOutputRecovery(attempt, `state.attempts[${index}]`);

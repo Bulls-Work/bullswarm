@@ -152,20 +152,29 @@ export function readTranscriptUsage({
   }
 }
 
-/** Build each provider store index once for a bulk repricing invocation. */
+/**
+ * Build each provider store index once for a bulk repricing invocation.
+ * `only` limits the build to the named providers; `previous` maps a provider
+ * name to its earlier index so a provider that supports it rereads only the
+ * transcripts that changed.
+ */
 export function buildTranscriptIndexes({
   home = homedir(),
   providers = null,
   bullswarmDir = null,
+  only = null,
+  previous = null,
 } = {}) {
   const entries = resolveEntries(providers, { home, bullswarmDir });
+  const wanted = only ? new Set(only) : null;
   const indexes = {};
   for (const owner of entries) {
     const key = providerName(owner);
     const build = owner?.module?.buildTranscriptIndex;
     if (!key || typeof build !== 'function' || indexes[key]) continue;
+    if (wanted && !wanted.has(key)) continue;
     try {
-      indexes[key] = build({ home });
+      indexes[key] = build({ home, previous: previous?.[key] ?? null });
     } catch {
       indexes[key] = null;
     }
@@ -173,18 +182,32 @@ export function buildTranscriptIndexes({
   return indexes;
 }
 
+/** The provider that owns a pool's transcripts, after historical aliases. */
+export function transcriptOwnerName(pool, { home = homedir(), providers = null, bullswarmDir = null } = {}) {
+  const entries = resolveEntries(providers, { home, bullswarmDir });
+  return resolveOwner(entries, pool)?.name ?? null;
+}
+
+/** Whether a provider can index its store (and so be read in bulk cheaply). */
+export function canIndexTranscripts(name, { home = homedir(), providers = null, bullswarmDir = null } = {}) {
+  const entries = resolveEntries(providers, { home, bullswarmDir });
+  const owner = entries.find((entry) => providerName(entry) === name);
+  return typeof owner?.module?.buildTranscriptIndex === 'function';
+}
+
 export function indexedTranscriptReader({
   home = homedir(),
   providers = null,
   bullswarmDir = null,
+  indexes = null,
 } = {}) {
   const entries = resolveEntries(providers, { home, bullswarmDir });
-  const indexes = buildTranscriptIndexes({ home, providers: entries, bullswarmDir });
+  const built = indexes ?? buildTranscriptIndexes({ home, providers: entries, bullswarmDir });
   return (args = {}) => readTranscriptUsage({
     ...args,
     home: args.home ?? home,
     providers: entries,
-    index: indexes[resolveOwner(entries, args.provider)?.name] ?? null,
+    index: built[resolveOwner(entries, args.provider)?.name] ?? null,
   });
 }
 

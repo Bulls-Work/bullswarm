@@ -22,8 +22,9 @@
 //   B5. Every figure with no source is null, never 0, and the model says
 //       which ones are null.
 
-import { planPriceFor, priceFor, subscriptionCostUsd } from '../lib/prices.js';
+import { DAYS_PER_MONTH, planPriceFor, priceFor, subscriptionCostUsd } from '../lib/prices.js';
 import { formatDashboardValue } from './dash-kit.js';
+import { spendFacts } from './spend-facts.js';
 import { periodRange } from './stats-model.js';
 import { poolWindows } from './usage-view.js';
 
@@ -31,8 +32,10 @@ const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
 
 // The lengths of the windows a pool can be paced by (src/meters/framework.js
-// normalizePacingWindow resolves to exactly these two, or null).
-const WINDOW_MS = { weekly: 7 * DAY_MS, monthly: 30 * DAY_MS };
+// normalizePacingWindow resolves to exactly these two, or null). The monthly
+// one is the shared month length, so a window's start and the pro-rated money
+// over it are divided by the same constant (prices.js DAYS_PER_MONTH).
+const WINDOW_MS = { weekly: 7 * DAY_MS, monthly: DAYS_PER_MONTH * DAY_MS };
 const WINDOW_LABELS = Object.freeze({ '5h': '5-hour', '7d': '7-day', mo: 'monthly' });
 const MODEL_WINDOW_FIELDS = Object.freeze([
   ['opus', 'seven_day_opus'],
@@ -221,12 +224,45 @@ function workerMinutesOf(record, pool = null) {
   return total;
 }
 
+function poolEntriesOf(record, pool = null) {
+  return pool != null
+    ? [poolEntry(record, pool)]
+    : Object.values(record?.pools ?? {});
+}
+
 /** The recorded API-equivalent estimate, on one pool or across all of them. */
 function apiEquivalentOf(record, pool = null) {
-  if (pool != null) return finite(poolEntry(record, pool)?.costUsd);
   let total = null;
-  for (const entry of Object.values(record?.pools ?? {})) total = add(total, finite(entry?.costUsd));
+  for (const entry of poolEntriesOf(record, pool)) total = add(total, finite(entry?.apiUsd ?? entry?.costUsd));
   return total;
+}
+
+/**
+ * A record's money with the coverage that produced it.
+ *
+ * `strict` is the whole-scope amount (every attempt priced) and stays null
+ * when the scope is partial; `known` is the sum over the attempts that were
+ * priced, which the rollup always keeps. The counts travel with them so a
+ * surface can read a partial total as the lower bound it is.
+ */
+function apiMoneyOf(record, pool = null) {
+  let strict = null;
+  let known = null;
+  let attempts = 0;
+  let priced = 0;
+  let measured = 0;
+  for (const entry of poolEntriesOf(record, pool)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const amount = finite(entry.apiUsd ?? entry.costUsd);
+    const subtotal = finite(entry.apiKnownSubtotalUsd) ?? amount;
+    if (amount != null) strict = add(strict, amount);
+    if (subtotal != null) known = add(known, subtotal);
+    const count = Math.max(0, Math.trunc(finite(entry.attempts) ?? 0));
+    attempts += count;
+    priced += Math.max(0, Math.trunc(finite(entry.pricedAttempts) ?? (amount != null ? count : 0)));
+    measured += Math.max(0, Math.trunc(finite(entry.measuredAttempts) ?? 0));
+  }
+  return { strict, known, attempts, priced, measured };
 }
 
 // ------------------------------------------------------------------- pacing
@@ -478,26 +514,31 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
   // says which: money over the page's period (so it lines up with the
   // pro-rated subscription figure), the share over the meter's own window.
   let apiEquivalentUsd = null;
+  let apiKnownSubtotalUsd = null;
   let tokenSource = null;
   let periodMinutes = null;
   let runsOnPool = 0;
   let attempts = 0;
+  let pricedAttempts = 0;
   let measured = 0;
   const perRunMinutes = [];
   for (const record of records) {
     const minutes = workerMinutesOf(record, name);
-    const cost = apiEquivalentOf(record, name);
+    const money = apiMoneyOf(record, name);
+    const cost = money.strict;
     const entry = poolEntry(record, name);
-    const source = tokenSourceOf(entry?.tokenSource, cost);
+    const source = tokenSourceOf(entry?.tokenSource, cost ?? money.known);
     if (record?.pools && Object.hasOwn(record.pools, name)) runsOnPool += 1;
     if (entry) {
       const count = Math.max(0, Math.trunc(Number(entry.attempts) || 0));
       attempts += count;
+      pricedAttempts += money.priced;
       measured += measuredAttempts(source, count);
       tokenSource = worstTokenSource(tokenSource, source);
     }
     if (minutes != null) { periodMinutes = add(periodMinutes, minutes); perRunMinutes.push(minutes); }
     apiEquivalentUsd = add(apiEquivalentUsd, cost);
+    apiKnownSubtotalUsd = add(apiKnownSubtotalUsd, money.known);
   }
   tokenSource ??= 'unknown';
 
@@ -548,7 +589,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
       checkedAt: price.checkedAt ?? null,
       windowDays,
       // B1. Money at the declared subscription rate, pro-rated over the
-      // window on the 30-day-month convention prices.js documents.
+      // window with the exported month length prices.js documents.
       windowUsd: windowDays == null ? null : subscriptionCostUsd(price, { days: windowDays }),
     }
     : null;
@@ -598,6 +639,15 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     rateNote,
     subscription,
     apiEquivalentUsd: round(apiEquivalentUsd, 6),
+    apiKnownSubtotalUsd: round(apiKnownSubtotalUsd, 6),
+    // The pool's spend through the Run spend block's own helper: `at least $X`
+    // with the coverage when the period holds attempts nobody priced.
+    apiFacts: spendFacts({
+      attempts,
+      pricedAttempts,
+      measuredAttempts: measured,
+      apiKnownSubtotalUsd,
+    }),
     tokenSource,
     apiEquivalentBasis: tokenSource === 'provider-reported'
       ? 'provider-reported totals, summed over the period'
@@ -607,6 +657,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
           ? 'UTF-8 byte estimates, summed over the period'
           : 'no usage measurement recorded for the period',
     attempts,
+    pricedAttempts,
     measuredAttempts: measured,
     estimatedAttempts: tokenSource === 'estimated:utf8-bytes/4' ? Math.max(0, attempts - measured) : 0,
     fits,
@@ -688,11 +739,13 @@ export function budgetModel(pools, {
     pools: rows.length,
     metered: rows.filter((row) => row.usedPct != null).length,
     apiEquivalentUsd: null,
+    apiKnownSubtotalUsd: null,
     tokenSource: null,
     subscriptionUsd: null,
     workflowMinutes: null,
     runs: 0,
     attempts: 0,
+    pricedAttempts: 0,
     measuredAttempts: 0,
     estimatedAttempts: 0,
     priced: [],
@@ -700,10 +753,12 @@ export function budgetModel(pools, {
   };
   for (const row of rows) {
     totals.apiEquivalentUsd = add(totals.apiEquivalentUsd, row.apiEquivalentUsd);
+    totals.apiKnownSubtotalUsd = add(totals.apiKnownSubtotalUsd, row.apiKnownSubtotalUsd);
     totals.tokenSource = worstTokenSource(totals.tokenSource, row.tokenSource);
     totals.workflowMinutes = add(totals.workflowMinutes, row.share.workflowMinutes);
     totals.runs += row.runs;
     totals.attempts += row.attempts;
+    totals.pricedAttempts += row.pricedAttempts;
     totals.measuredAttempts += row.measuredAttempts;
     totals.estimatedAttempts += row.estimatedAttempts;
     // B1. The subscription total sums pools with a resolved monthly price and
@@ -717,13 +772,20 @@ export function budgetModel(pools, {
     }
   }
   totals.apiEquivalentUsd = round(totals.apiEquivalentUsd, 6);
+  totals.apiKnownSubtotalUsd = round(totals.apiKnownSubtotalUsd, 6);
+  totals.apiFacts = spendFacts({
+    attempts: totals.attempts,
+    pricedAttempts: totals.pricedAttempts,
+    measuredAttempts: totals.measuredAttempts,
+    apiKnownSubtotalUsd: totals.apiKnownSubtotalUsd,
+  });
   totals.tokenSource ??= 'unknown';
   totals.subscriptionUsd = round(totals.subscriptionUsd, 6);
   totals.workflowMinutes = round(totals.workflowMinutes, 2);
 
   const notes = [
     'apiEquivalentUsd carries the worst usage basis across the attempts, not an invoice',
-    'subscription money is the declared price or detected plan price pro-rated over the window on a 30-day month',
+    'subscription money is the declared price or detected plan price pro-rated over the window with the exported month length (365.25/12 days)',
     `${totals.measuredAttempts} of ${totals.attempts} attempts measured · the rest are byte estimates`,
   ];
   if (totals.unpriced.length) {

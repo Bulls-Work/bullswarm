@@ -461,10 +461,12 @@ test('a pool row shows the recorded subtotal instead of the missing-total reason
   const text = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false })
     .lines.map(visible).join('\n');
   const sub = CLAUDE_RESULT.total_cost_usd.toFixed(2);
-  assert.match(text, new RegExp(`codex[^\\n]*≈ \\$${sub} api 50%`), 'the partial pool prints its recorded subtotal');
+  // The cell has room for the amount and its share, so it keeps the Run spend
+  // block's `at least` marker and the page's Coverage note names the count.
+  assert.match(text, new RegExp(`codex[^\\n]*at least \\$${sub} 50%`), 'the partial pool prints its recorded subtotal');
   assert.doesNotMatch(text, /codex [^\n]*cost not recorded/);
-  // The page says once what a subtotal is; the panel cell keeps its columns.
-  assert.match(text, /Coverage · 2 of 3 attempts carried a price; spend over them is a subtotal, marked ≈\./);
+  // The page says once what a subtotal is, in the same words.
+  assert.match(text, /Coverage · 1 of 3 attempts recorded no price; every spend total over this scope reads at least \$X · 1 unmeasured\./);
   // The whole-scope pool keeps the strict form and no coverage prose.
   assert.match(text, /acme[^\n]*\$[\d.]+ api 50%/);
 });
@@ -478,7 +480,7 @@ test('the hover over a subtotal names the coverage that produced it', () => {
   const hovered = visible(statsLines(stats, {
     width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false, slice: row.action,
   }).lines[2]);
-  assert.match(hovered, /codex · ≈\$[\d.]+ \(1\/2 attempts priced\) · [\d.]+% of panel/);
+  assert.match(hovered, /codex · at least \$[\d.]+ · 1 unmeasured · [\d.]+% of panel/);
 });
 
 test('a day whose attempts were only partly priced draws its recorded subtotal', () => {
@@ -486,16 +488,19 @@ test('a day whose attempts were only partly priced draws its recorded subtotal',
   const view = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false });
   const chart = view.lines.slice(5, 20).map(visible);
   assert.ok(chart.some((line) => /[█▇▆▅▄▃▂▁]/.test(line)), 'the partial day has a bar');
+  // The axis is a lower bound throughout, and says so in the same words.
+  assert.match(chart.join('\n'), /at least \$[\d.]+/, 'the axis reads at least');
   const column = view.regions.find((region) => region.action.payload?.kind === 'column');
   assert.ok(column, 'the day is a hit region');
   assert.equal(column.action.payload.partial, true);
   const hovered = chartAxisReadout(statsLines(stats, {
     width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false, slice: { ...column.action, kind: 'column' },
   }), 200).text;
-  assert.match(hovered, /≈\$[\d.]+ \(2\/3 attempts priced\) · 100% of the day/);
-  // The summary carries the period's recorded sum, named as a subtotal.
+  assert.match(hovered, /at least \$[\d.]+ · 1 unmeasured · 100% of the day/);
+  // The summary carries the period's recorded sum as the lower bound it is,
+  // with the count of attempts it leaves out.
   const summary = visible(view.lines[4]);
-  assert.match(summary, /≈ \$[\d.]+ api · 2\/3 priced/);
+  assert.match(summary, /at least \$[\d.]+ api · 1 unmeasured/);
 });
 
 test('duration rows name the span an index without active unions falls back to', () => {

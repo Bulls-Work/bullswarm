@@ -118,6 +118,33 @@ Snapshot destinations carry a small marker so `workflow tui --json` includes
 the complete copied catalogue by default; ordinary homes retain the usual
 ongoing-only default and need `--all` for historical runs.
 
+### home prune
+
+List or remove retained isolated-workspace copies from old terminal runs. Bare
+`home prune` and `--dry-run` are read-only; deletion requires `--yes`.
+
+```bash
+bullswarm home prune --dry-run
+bullswarm home prune --yes --days 7
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--dry-run` | list eligible workspaces and bytes without removing them | on unless `--yes` is passed |
+| `--yes` | remove the listed workspace copies | off |
+| `--days <n>` | override `state.json.retention.workspacesDays` for this command | `7` |
+| `--json` | machine-readable plan/result | human rows and summary |
+
+Internal `--auto` and `--trigger` flags run the same guarded sweep from the
+kernel, watch completion, or dashboard. Records, reports, streams, task/output
+files, running/interrupted runs, and live kernel workspaces are never removed.
+
+### home status
+
+Print the effective retention policy, bytes currently held under workflow
+`workspaces/`, and the last recorded `prune` and `reprice` maintenance results.
+`--json` emits the same facts as a machine-readable object.
+
 ## integrate
 
 Manage the packaged Bullswarm skill and a short recursion-safe awareness rule inside each installed coding agent's global configuration.
@@ -280,7 +307,7 @@ Reads every `out-*` file under `~/.bullswarm/runs/`. If any pool quarantine has 
 
 ## pools
 
-Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, pace surplus, in-flight assignment count, projected 5-hour utilization, and quarantine/burst-gate status.
+Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, pace surplus, in-flight assignment count, projected 5-hour utilization, and pause/burst-gate status. `bullswarm pools resume <pool>` lifts a pause.
 
 The 5-hour column reads `5h=<reading>%` alone when nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is expected to push the window further; routing decides on the right-hand number. A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run. A pool whose weekly window resets within 24 hours, or whose monthly window resets within 3 days, ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON urgency=<n>`.
 
@@ -300,6 +327,41 @@ the bench does not read as perfectly healthy. The second strike benches it for a
 10-minute cooldown, after which it returns automatically; a success clears the
 count.
 
+A paused pool says why in plain words, with its deadline, its proof, the exact
+provider line, the meter reading the decision was made on, and the command that
+lifts it:
+
+```text
+claude-code    cost=4 lanes=analyze/build/chore unmetered surplus=- inflight=0 5h=?->26% PAUSED until 20:00 · usage window spent, meter read weekly 96% (>= 95%) · provider: "Error: Rate limit exceeded. Please wait a moment and try again." · meter then: 5h 26% · weekly 96% · lift now: bullswarm pools resume claude-code
+```
+
+An auth pause reads `PAUSED until <time> · auth: <reason> · lift now: bullswarm pools resume <pool>`.
+
+A limit notice pauses a pool for quota only on one of two proofs:
+
+- **meter** — the pool's own meter reads 95% or more on a window that is still
+  running (5h, weekly or monthly). The pause lasts until that window resets.
+  A synthetic 100% refusal marker never counts as a reading.
+- **message** — the provider's line says a usage window is spent *and* names
+  when it resets (`You've hit your session limit · resets 7pm (Asia/Hong_Kong)`).
+  The pause lasts until that reset.
+
+Anything else — `Error: Rate limit exceeded. Please wait a moment and try again.`,
+`429 Too Many Requests`, an overload, a 5xx, a timeout, or a window phrase with no
+reset — is transient: the attempt backs off and retries on the same pool, then
+moves to another pool for that attempt only. The pool is never paused for it.
+
+Quota and auth signatures are matched against the provider's own error channel:
+its stderr, the events it flags as errors, and its terminal `result` record.
+Never an assistant's reply or a tool result — a report that *quotes* a limit
+phrase is not evidence about the pool.
+
+`bullswarm strategy set-pausing off` turns every automatic pause off — quota,
+auth, and the credential-group siblings an auth pause benches with it, plus the
+soft bench a second strike writes; `pools` then opens with
+`automatic pausing: off`. Routing is untouched: meters are still read and a
+failed attempt still moves to another pool.
+
 ```bash
 # Bypass the meter cache and re-read live usage for every pool.
 bullswarm pools --force
@@ -308,7 +370,7 @@ bullswarm pools --force
 | Flag | Meaning | Default |
 |---|---|---|
 | `--force` | bypass the meter cache and re-read live usage for every pool | off (cached meter readings reused within their TTL) |
-| `--json` | machine-readable pool array, each entry carrying `inflight`, `spend` rates, `pacingWindow`, `paceResetsAt`, `resetSource` (`provider` \| `declared` \| `null`), and projected percentages | human-readable aligned table |
+| `--json` | machine-readable `{ pausing, pools }`; each pool carries `inflight`, `spend` rates, `pacingWindow`, `paceResetsAt`, `resetSource` (`provider` \| `declared` \| `null`), projected percentages, and — when paused — `quarantine` (`until`, `kind`, `reason`, and for quota `rule`, `line`, `meter`, `meterWindow`, `resetsAt`, `pausedAt`) plus the plain-words `pauseWhy` | human-readable aligned table |
 
 `--json` is also where the per-window numbers behind the `Budget` page live.
 Each entry's `meterSnapshot` is the provider's own reply: `captured_at` (how
@@ -325,6 +387,25 @@ fields Budget detects a price from (`plan_type`, `subscription_type`,
 ```
 
 Always writes `state.json` after sweeping expired quarantines, even in `--json` mode. Reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours).
+
+### pools resume
+
+Lift a pool's pause at once: its quota or auth pause and any active bench.
+
+```bash
+# Put claude-code back into service now.
+bullswarm pools resume claude-code
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | machine-readable `{ pool, resumed, lifted: { quarantine, bench, refusalMeterMarker } }` | one human-readable line |
+
+The lift is appended to the decision log in `state.json` as a `pool-resume`
+entry naming what it lifted. A synthetic 100% quota-refusal meter snapshot is
+dropped with it, so routing reads the live meter next. A pool with nothing to
+lift is left untouched and the command exits 0; an unknown pool exits 2. The
+pool can pause again on its next limit notice if the rule still proves it spent.
 
 ## assignments
 
@@ -350,7 +431,7 @@ Open the provider/model strategy control center on a terminal, or run a subcomma
 bullswarm strategy inventory --json
 ```
 
-`--json` is accepted on subcommands that support it. `refresh` / `apply` / `assign` / `clear-assignment` / `exclude-model` / `include-model` / `set-subscription` / `set-reasoning` / `reset-reasoning` / `set-rung` all mutate `state.json`. `refresh` (and a cold `show`) perform live discovery against every installed agent CLI and the public OpenRouter model API.
+`--json` is accepted on subcommands that support it. `refresh` / `apply` / `assign` / `clear-assignment` / `exclude-model` / `include-model` / `set-subscription` / `set-reasoning` / `reset-reasoning` / `set-rung` / `set-pausing` all mutate `state.json`. `refresh` (and a cold `show`) perform live discovery against every installed agent CLI and the public OpenRouter model API.
 
 Concepts (rungs, allow-lists, autopilot) are in [Configuration](/reference/configuration).
 
@@ -510,6 +591,31 @@ bullswarm strategy reset-reasoning --tier low --yes
 | `--yes` | required approval | none |
 
 With no `--tier` and no `--pool` this clears every configured reasoning level at once. `--tier` alone also removes that tier from every per-pool override.
+
+### set-pausing
+
+Turn every automatic pool pause on (the default) or off. The switch is stored as
+`strategy.pausing` in `state.json` (`"off"`; absent means on).
+
+```bash
+# Never pause or bench a pool automatically; limit notices are retried, then fall over.
+bullswarm strategy set-pausing off
+# Back to the strict default rule.
+bullswarm strategy set-pausing on
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print `{ "pausing": "on" \| "off" }` | one human-readable line |
+
+On, a pool pauses for quota only when its own meter reads 95% or more on a
+running window, or the provider says a usage window is spent and names its
+reset (see [pools](#pools)), and a dead credential pauses its pool together
+with the pools that share that credential. Off, nothing is paused or benched by
+a command: a limit notice is retried on the same pool, then the attempt moves
+to another pool, and a failed attempt still moves on. Routing still reads
+meters. A pause already in place stays until its reset; `bullswarm pools
+resume <pool>` lifts it.
 
 ### configure
 
@@ -1046,6 +1152,9 @@ bullswarm workflow reprice --all --json
 
 # Reprice only attempts started on or after a date for one exact pool, then persist.
 bullswarm workflow reprice --since 2026-09-18 --pool claude-code:acme --apply
+
+# Run the same incremental pass the kernel and dashboard use automatically.
+bullswarm workflow reprice --incremental
 ```
 
 | Flag | Meaning | Default |
@@ -1055,8 +1164,12 @@ bullswarm workflow reprice --since 2026-09-18 --pool claude-code:acme --apply
 | `--since <date>` | include attempts whose `startedAt` is on or after this date, inclusively | all terminal attempts |
 | `--pool <name>` | exact pool-name filter | all pools |
 | `--json` | stream one JSON object per attempt and finish with a summary object | human rows plus an attempt-count and elapsed-time summary |
+| `--incremental` | apply only still-unknown or byte-estimated attempts not closed by the retry ledger | off; manual full reprice |
+| `--transcript-home <dir>` | read provider transcript stores beneath this home | current user home |
+| `--trigger <name>` | label an incremental pass in `home status` | `manual` |
+| `--delay-ms <n>` | delay an incremental pass; used by detached completion hooks | `0` |
 
-Only terminal V2 runs are scanned; ongoing and legacy runs are skipped. A
+Only terminal V2 runs are scanned; ongoing and legacy runs are skipped.
 The command indexes each provider store once from bounded file heads and tails,
 then reads only matched transcripts in full. A provider-reported attempt keeps
 its measured tokens and is repriced. Other
@@ -1064,6 +1177,13 @@ attempts call the provider transcript hook: an exact or time-window match is
 `transcript-summed`, while an absent or ambiguous match becomes `unknown` with
 null token totals and API cost. Historical repricing reads calibration but never
 appends a sample.
+
+The automatic incremental reconciler shares these matching and pricing
+primitives. It runs at quiet/final kernel boundaries and in detached children
+started after watch completion and after the dashboard's first paint. Its
+per-attempt ledger prevents repeated work; changed transcript stores or a new
+reader version reopen unresolved attempts. Provider-reported capture is never
+downgraded by a later transcript sum.
 
 The human table columns are `run`, `action`, `try`, `pool`, `match`, `tokens`,
 `api`, and `subscription`; `-` represents null. With `--json`, the result is:
@@ -1152,6 +1272,9 @@ Follow one V2 run by printing one attach line, then one line per notable event, 
 # Print the next notable event and exit; relaunch until outcome reports pause or terminal.
 bullswarm workflow watch ab12cd --next
 bullswarm workflow watch ab12cd --next --after 42 --since 2026-09-08T10:15:00.000Z
+
+# Standard background observer: silent until caller attention is needed.
+bullswarm workflow watch ab12cd --until trouble
 ```
 
 | Flag | Meaning | Default |
@@ -1161,13 +1284,34 @@ bullswarm workflow watch ab12cd --next --after 42 --since 2026-09-08T10:15:00.00
 | `--heartbeat <seconds>` | print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1 | off in event mode, `60` with `--classic` |
 | `--stall-after <seconds>` | report a running agent as silent after this many seconds without activity; must be >= 1 | `300` |
 | `--next` | print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status | off (follows until terminal or pause) |
+| `--until <outcome\|trouble>` | print only trouble and outcome lines; `trouble` exits at the first failed, rejected, paused, stalled, stale, or steering line | off |
 | `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall does not fire again | report every agent silent past `--stall-after` at attach |
 | `--jsonl` | emit one JSON object per line instead of human text; every object carries `sequence`; the `next:` relaunch line is not printed | off (human text) |
 | `--once` | print a single current snapshot and exit immediately instead of following | off |
 | `--verbose` | include started, retry, and steering-delivered lines in event mode, and per-agent action detail with `--classic` | off (compact) |
 
-Read-only. Exits 0 if the run reaches a delivered status (or on `--once`), 1 if it reaches a non-delivered terminal status. `--next` exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running. `--classic --next` is rejected with exit 2.
+Read-only. Exits 0 if the run reaches a delivered status (or on `--once`), 1 if it reaches a non-delivered terminal status. `--next` exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running. `--until trouble` prints a cursor-bearing relaunch line and, for stale work, the exact `workflow step restart` command. `--until` cannot combine with `--next`, `--once`, `--classic`, or `--heartbeat`.
+
+### step restart
+
+Stop one currently running step and put it straight back in the queue with the
+stopped attempt's durable handoff. Nothing restarts automatically.
+
+```bash
+bullswarm workflow step restart ab12cd write-report
+bullswarm workflow step restart ab12cd write-report --pool codex
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--pool <pool>` | strictly pin the next attempt to this configured pool | normal routing |
+| `--wait <seconds>` | wait for the live kernel to stop and requeue the step | `60` |
+| `--json` | machine-readable result | human confirmation |
+
+The command refuses finished runs, non-running steps, unknown pools, and dead
+kernels without writing an intent. Shared-workspace edits remain in place;
+isolated workspaces are retained for review and the new attempt starts fresh.
 
 ### events
 

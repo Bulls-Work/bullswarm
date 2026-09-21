@@ -7,7 +7,10 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
-import { readTranscriptUsage as readCodexTranscriptUsage } from '../../lib/transcripts/codex.js';
+import {
+  buildTranscriptIndex as buildCodexTranscriptIndex,
+  readTranscriptUsage as readCodexTranscriptUsage,
+} from '../../lib/transcripts/codex.js';
 
 export const name = 'codex';
 export const displayName = 'Codex';
@@ -280,4 +283,9 @@ export async function readUsage(pool, ctx = {}) {
 
 export function readTranscriptUsage(args = {}) {
   return readCodexTranscriptUsage(args);
+}
+
+// One pass over the store serves every lookup of a bulk reprice.
+export function buildTranscriptIndex(args = {}) {
+  return buildCodexTranscriptIndex(args);
 }

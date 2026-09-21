@@ -12,7 +12,16 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { edgeTimes, overlapsIndex, transcriptEdges } from './indexing.js';
+import {
+  attemptTaskKeys,
+  edgeTimes,
+  incrementalEntries,
+  overlapsIndex,
+  promptKeys,
+  promptMatchesTask,
+  scanHeadRows,
+  transcriptEdges,
+} from './indexing.js';
 
 const TOKEN_FIELDS = [
   'input_tokens',
@@ -171,8 +180,50 @@ function walkRollouts(root) {
   return files;
 }
 
-export function buildTranscriptIndex({ home = homedir() } = {}) {
-  const entries = walkRollouts(join(codexRoot(home), 'sessions')).map((filePath) => {
+// The first user turn is every user message before the agent's first reply.
+// Codex injects its own context as user/developer messages too; those are
+// kept, because a quoted path or a whole-text hash can only match the
+// delegate's real prompt.
+function promptStep(row, texts) {
+  const payload = row?.payload && typeof row.payload === 'object' ? row.payload : {};
+  if (row?.type === 'response_item') {
+    if (payload.type === 'message' && payload.role === 'user') {
+      const text = (Array.isArray(payload.content) ? payload.content : [])
+        .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+        .join('\n');
+      if (text.trim()) texts.push(text);
+      return false;
+    }
+    if (payload.type === 'message' && (payload.role === 'developer' || payload.role === 'system')) return false;
+    return true;
+  }
+  return row?.type === 'event_msg' && (payload.type === 'agent_message' || payload.type === 'agent_reasoning');
+}
+
+function promptTexts(filePath, headRows = null) {
+  const texts = [];
+  if (Array.isArray(headRows)) {
+    for (const row of headRows) if (promptStep(row, texts)) return texts;
+  }
+  const scanned = [];
+  scanHeadRows(filePath, (row) => promptStep(row, scanned));
+  return scanned;
+}
+
+/** First-user-turn keys for one rollout (paths it quotes, text hashes). */
+export function rolloutPromptKeys(filePath, headRows = null) {
+  return promptKeys(promptTexts(filePath, headRows));
+}
+
+/**
+ * Index every transcript's identity, cwd, edge times and first-turn keys.
+ * `previous` (an earlier index of the same home) lets unchanged files be
+ * reused; `changedFiles` names the files read this time and `grownFrom`
+ * the previous last timestamp of each one that only grew.
+ */
+export function buildTranscriptIndex({ home = homedir(), previous = null } = {}) {
+  const reusable = previous?.provider === 'codex' && previous?.home === home ? previous : null;
+  const { entries, changedFiles, grownFrom } = incrementalEntries(walkRollouts(join(codexRoot(home), 'sessions')), reusable, (filePath) => {
     const edge = transcriptEdges(filePath);
     const rows = edge.head;
     const meta = rows.find((row) => row.type === 'session_meta')?.payload ?? {};
@@ -182,9 +233,10 @@ export function buildTranscriptIndex({ home = homedir() } = {}) {
       sessionId: meta.session_id ?? meta.id ?? sessionIdFromPath(filePath),
       cwd: context.cwd ?? meta.cwd ?? null,
       ...edgeTimes(edge),
+      ...rolloutPromptKeys(filePath, rows),
     };
   });
-  return { provider: 'codex', home, entries };
+  return { provider: 'codex', home, entries, changedFiles, grownFrom };
 }
 
 function parseRollout(filePath, {
@@ -321,48 +373,8 @@ export function parseCodexStdout(input, { file = null, confidence = 'exact' } = 
   };
 }
 
-/**
- * Read usage from Codex's durable rollout stores.
- *
- * @param {{sessionId?: string|null,cwd?: string|null,startedAt?: string|number|Date|null,endedAt?: string|number|Date|null,home?: string}} args
- */
-export function readTranscriptUsage({
-  sessionId = null,
-  cwd = null,
-  startedAt = null,
-  endedAt = null,
-  home = homedir(),
-  index = null,
-} = {}) {
-  const wantedId = typeof sessionId === 'string' && sessionId ? sessionId : null;
-  const indexed = index?.provider === 'codex' ? index.entries : null;
-  const files = indexed
-    ? indexed.filter((entry) => wantedId
-      ? entry.sessionId === wantedId
-      : (typeof cwd !== 'string' || cwd === '' || entry.cwd === cwd)
-        && overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
-    : walkRollouts(join(codexRoot(home), 'sessions'));
-  const candidates = [];
-  for (const filePath of files) {
-    const nameMatches = wantedId && (filePath.endsWith(`-${wantedId}.jsonl`) || filePath.endsWith(`${wantedId}.jsonl`));
-    // Do not seed the parsed identity with the requested id while discovering
-    // candidates: otherwise every rollout would appear to match the request.
-    const parsed = parseRollout(filePath, { sessionId: null, startedAt: null, endedAt: null });
-    if (wantedId) {
-      if (nameMatches || parsed.sessionId === wantedId) candidates.push({ filePath, parsed });
-      continue;
-    }
-    if (!cwdMatches(parsed, cwd) || !overlaps(parsed, startedAt, endedAt)) continue;
-    candidates.push({ filePath, parsed });
-  }
-  if (candidates.length === 0) return blankRecord('none');
-  if (candidates.length > 1) return blankRecord('ambiguous');
-  const chosen = parseRollout(candidates[0].filePath, {
-    sessionId: wantedId ?? candidates[0].parsed.sessionId,
-    startedAt,
-    endedAt,
-    confidence: wantedId ? 'exact' : 'window',
-  });
+function chosenRecord(filePath, { sessionId, startedAt, endedAt, confidence }) {
+  const chosen = parseRollout(filePath, { sessionId, startedAt, endedAt, confidence });
   return {
     tokens: chosen.tokens,
     model: chosen.model,
@@ -374,6 +386,112 @@ export function readTranscriptUsage({
     requests: chosen.requests,
     confidence: chosen.confidence,
   };
+}
+
+// A rollout whose first turn quotes another Bullswarm task file provably
+// belongs to that task, so the cwd/time fallback must not hand it to this one.
+function namesOtherTask(entry, keys) {
+  if (!keys?.paths.length) return false;
+  return (entry.taskPaths ?? []).some((path) => /\/task-[^/]+\.md$/.test(path) && !keys.paths.includes(path));
+}
+
+function promptEntries(indexed, home) {
+  if (indexed) return indexed;
+  return walkRollouts(join(codexRoot(home), 'sessions')).map((filePath) => ({
+    file: filePath,
+    ...rolloutPromptKeys(filePath),
+  }));
+}
+
+function taskTextMatches(entries, keys, startedAt, endedAt) {
+  return entries
+    .filter((entry) => promptMatchesTask(entry, keys))
+    .filter((entry) => overlapsIndex(
+      entry.firstAt !== undefined ? entry : { ...entry, ...edgeTimes(transcriptEdges(entry.file)) },
+      startedAt,
+      endedAt,
+    ));
+}
+
+/**
+ * Read usage from Codex's durable rollout stores.
+ *
+ * Precedence: a unique provider session id; else a unique rollout whose first
+ * user turn quotes the attempt's task file or carries its exact text; else a
+ * unique cwd + time-window match. More than one candidate at any step is
+ * `ambiguous` — never a pick by recency or name.
+ *
+ * @param {{sessionId?: string|null,cwd?: string|null,startedAt?: string|number|Date|null,endedAt?: string|number|Date|null,home?: string,taskText?: string|null,taskFile?: string|null,taskPath?: string|null}} args
+ */
+export function readTranscriptUsage({
+  sessionId = null,
+  cwd = null,
+  startedAt = null,
+  endedAt = null,
+  home = homedir(),
+  index = null,
+  taskText = null,
+  taskFile = null,
+  taskPath = null,
+} = {}) {
+  const wantedId = typeof sessionId === 'string' && sessionId ? sessionId : null;
+  const indexed = index?.provider === 'codex' ? index.entries : null;
+  const keys = attemptTaskKeys({ taskText, taskFile, taskPath });
+
+  if (wantedId) {
+    const files = indexed
+      ? indexed.filter((entry) => entry.sessionId === wantedId).map((entry) => entry.file)
+      : walkRollouts(join(codexRoot(home), 'sessions'));
+    const candidates = [];
+    for (const filePath of files) {
+      const nameMatches = filePath.endsWith(`-${wantedId}.jsonl`) || filePath.endsWith(`${wantedId}.jsonl`);
+      // Do not seed the parsed identity with the requested id while discovering
+      // candidates: otherwise every rollout would appear to match the request.
+      const parsed = parseRollout(filePath, { sessionId: null, startedAt: null, endedAt: null });
+      if (nameMatches || parsed.sessionId === wantedId) candidates.push(filePath);
+    }
+    if (candidates.length > 1) return blankRecord('ambiguous');
+    if (candidates.length === 1) {
+      return chosenRecord(candidates[0], { sessionId: wantedId, startedAt, endedAt, confidence: 'exact' });
+    }
+    // A failed session lookup may still resolve through one unique task-text
+    // match; it never widens to a cwd/time guess.
+    if (!keys) return blankRecord('none');
+  }
+
+  let entries = null;
+  if (keys) {
+    entries = promptEntries(indexed, home);
+    const matches = taskTextMatches(entries, keys, startedAt, endedAt);
+    if (matches.length > 1) return blankRecord('ambiguous');
+    if (matches.length === 1) {
+      return chosenRecord(matches[0].file, { sessionId: null, startedAt, endedAt, confidence: 'task-text' });
+    }
+    if (wantedId) return blankRecord('none');
+  }
+
+  const excluded = new Set((entries ?? [])
+    .filter((entry) => namesOtherTask(entry, keys))
+    .map((entry) => entry.file));
+  const files = indexed
+    ? indexed.filter((entry) => (typeof cwd !== 'string' || cwd === '' || entry.cwd === cwd)
+      && overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
+    : walkRollouts(join(codexRoot(home), 'sessions'));
+  const candidates = [];
+  for (const filePath of files) {
+    if (excluded.has(filePath)) continue;
+    const parsed = parseRollout(filePath, { sessionId: null, startedAt: null, endedAt: null });
+    if (!cwdMatches(parsed, cwd) || !overlaps(parsed, startedAt, endedAt)) continue;
+    candidates.push({ filePath, parsed });
+  }
+  if (candidates.length === 0) return blankRecord('none');
+  if (candidates.length > 1) return blankRecord('ambiguous');
+  return chosenRecord(candidates[0].filePath, {
+    sessionId: candidates[0].parsed.sessionId,
+    startedAt,
+    endedAt,
+    confidence: 'window',
+  });
 }
 
 export { blankTokens, tokenRecord };

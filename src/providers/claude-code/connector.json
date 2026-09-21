@@ -23,12 +23,14 @@
     "not logged in",
     "please run /login"
   ],
-  "$comment-quotaSignatures": "usage-limit phrases: classified `quota`, quarantined until the reset the message names. DEFAULT_QUOTA_SIGNATURES (src/lib/quota.js) apply on top of these.",
+  "$comment-quotaSignatures": "spent-window phrases (observed: `You've hit your session limit · resets 7pm (Asia/Hong_Kong)`): classified `quota`, pool paused until the reset the message names. DEFAULT_WINDOW_SIGNATURES (src/lib/quota.js) apply on top of these.",
   "quotaSignatures": [
     "hit your session limit",
     "hit your limit",
     "hit your usage limit"
   ],
+  "$comment-throttleSignatures": "empty on purpose: no claude-specific transient throttle wording has been observed; the generic throttle phrasings (rate limit exceeded, too many requests) come from DEFAULT_THROTTLE_SIGNATURES in src/lib/quota.js and are retried on this pool after a short backoff, never paused.",
+  "throttleSignatures": [],
   "outputExtraction": {
     "strategy": "event-stream"
   },

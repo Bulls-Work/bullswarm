@@ -106,6 +106,16 @@
 //       quarantine, exhaustion, the 5h wall or last-mile ordering. Evidence steps do
 //       normal routing (and prefer a pool that did not write the evidence) so
 //       a free model cannot judge its own work unless it is the only option.
+//  R13. Expiring quota outranks verifier independence, and independence is
+//       judged by model family, not by pool account: claude-code and
+//       claude-code:acme are one writer (modelFamilyOf — the provider id, the
+//       pool name up to its first colon). On an evidence step an urgent (R11)
+//       independent pool wins first; with none, an urgent pool whose family
+//       wrote the judged work takes the step rather than let its quota expire,
+//       and the reason opens `independence waived: <pool> resets in <clock>`.
+//       With nothing urgent, independence stays the tie-breaker it was under
+//       R12. (Observed on run is9aaa: grok took an evidence step over an urgent
+//       claude-code:acme that had written the work.)
 
 import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS } from '../meters/framework.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
@@ -215,6 +225,20 @@ export function isFree(pool) {
   const connector = pool?.connector ?? pool;
   const model = pool?.modelPolicy?.model ?? pool?.freeModel ?? connector?.model ?? null;
   return isFreeModel(connector, model);
+}
+
+/**
+ * R13: the model family a pool (or bare pool name) writes with — its provider
+ * id, which is the pool name up to the first colon (`claude-code:acme` is
+ * `claude-code`), or null when nothing names it. A provider that fronts
+ * several vendors' models is one family here: routing is not told which model
+ * wrote the judged work.
+ */
+export function modelFamilyOf(pool) {
+  const raw = (typeof pool === 'string' ? [pool] : [
+    pool?.connector?.profile?.providerId, pool?.provider, pool?.name, pool?.connector?.name,
+  ]).find((value) => typeof value === 'string' && value.trim());
+  return raw ? raw.trim().split(':', 1)[0].toLowerCase() : null;
 }
 
 /**
@@ -733,8 +757,12 @@ export function pickPool(lane, pools, opts = {}) {
   } = opts;
 
   const candidateMins = num(candidateMinutes);
-  const writerPools = new Set(
-    Array.isArray(evidence?.writerPools) ? evidence.writerPools : [],
+  // R13: a writer is a model family, not a pool account — the work
+  // claude-code wrote is not independently judged by claude-code:acme.
+  const writerFamilies = new Set(
+    (Array.isArray(evidence?.writerPools) ? evidence.writerPools : [])
+      .map((name) => modelFamilyOf(pools.find((p) => p?.name === name) ?? name))
+      .filter(Boolean),
   );
 
   if (!LANES.includes(lane)) {
@@ -795,8 +823,9 @@ export function pickPool(lane, pools, opts = {}) {
       urgencyRank: expiring.state === 'urgent' ? 0 : expiring.state === 'draining' ? 2 : 1,
       // R12: a free model gets its own tier, after the last-mile ordering key.
       freeRank: isFree(p) ? 0 : 1,
-      // Evidence prefers a pool that did not write the work it is judging.
-      writerRank: writerPools.has(p.name) ? 1 : 0,
+      // Evidence prefers a pool whose model family did not write the work it
+      // is judging (R13).
+      writerRank: writerFamilies.has(modelFamilyOf(p)) ? 1 : 0,
       // R7/R10: near-limit status is a soft ordering penalty only when some
       // other eligible pool is behind pace. The comparison is filled after all
       // entries exist so "another" really means another candidate.
@@ -818,15 +847,20 @@ export function pickPool(lane, pools, opts = {}) {
     entry.tier = entry.nearPenalty ? 1 : 0;
   }
 
-  // R8 before R7 before R12/R11 before R2: forecasts past the wall sort last,
-  // then the soft near-limit penalty, then evidence/free tiers, then urgent <
-  // normal < draining, then the group's own score. The candidate list is
-  // reported in this exact preference order.
+  // R13: on an evidence step expiring quota outranks verifier independence —
+  // urgent independent pools, then urgent writers, then the rest with
+  // independence as today's tie-breaker. Every pool is 0 on other steps.
+  const evidenceTier = (e) => (evidence ? (e.urgencyRank === 0 ? 0 : 2) + e.writerRank : 0);
+
+  // R8 before R7 before R13/R12/R11 before R2: forecasts past the wall sort
+  // last, then the soft near-limit penalty, then evidence/free tiers, then
+  // urgent < normal < draining, then the group's own score. The candidate
+  // list is reported in this exact preference order.
   scored.sort(
     (a, b) =>
       (a.overLimit ? 1 : 0) - (b.overLimit ? 1 : 0) ||
       a.tier - b.tier ||
-      a.writerRank - b.writerRank ||
+      evidenceTier(a) - evidenceTier(b) ||
       (evidence ? 1 : a.freeRank) - (evidence ? 1 : b.freeRank) ||
       a.urgencyRank - b.urgencyRank ||
       (a.urgencyRank === 0
@@ -948,7 +982,12 @@ export function pickPool(lane, pools, opts = {}) {
     // a configured effort assignment, both of which are resolved inside
     // `selectable` below. A draining pool is the mirror image: out of
     // selection until nothing else is left.
-    const urgentSet = evidenceBase.filter((e) => e.urgencyRank === 0);
+    // R13: urgency is read across writers too. An urgent independent pool
+    // still wins; with none, an urgent writer takes the evidence step rather
+    // than let its quota expire, and the reason says independence was waived.
+    const urgentAll = headroomSet.filter((e) => e.urgencyRank === 0);
+    const urgentIndependent = urgentAll.filter((e) => e.writerRank === 0);
+    const urgentSet = urgentIndependent.length ? urgentIndependent : urgentAll;
     const notDraining = evidenceBase.filter((e) => e.urgencyRank !== 2);
     const selectable =
       freeSet.length ? freeSet
@@ -994,13 +1033,23 @@ export function pickPool(lane, pools, opts = {}) {
       winnerEntry = selectable[0];
     }
   }
-  evidenceOnlyWriter = Boolean(evidence) && winnerEntry?.writerRank === 1;
+  const writerWon = Boolean(evidence) && winnerEntry?.writerRank === 1;
+  // R13: a writer beat an eligible independent pool only because its quota
+  // is about to expire; otherwise it won because nothing else was eligible.
+  const independenceWaived = writerWon
+    && winnerEntry.urgencyRank === 0
+    && open.some((e) => e.writerRank === 0);
+  evidenceOnlyWriter = writerWon && !independenceWaived;
   // R12 visibility: the pools that produced the work this evidence step is
   // judging and were therefore ranked below the winner. Without them the
   // reason said only "normal routing", which hid why an urgent writer lost
   // (seen on run is9aaa: grok picked over an urgent claude-code:acme).
-  const deprioritizedWriters = evidence && !evidenceOnlyWriter
+  const deprioritizedWriters = evidence && !writerWon
     ? scored.filter((e) => e !== winnerEntry && e.writerRank === 1)
+    : [];
+  // R13 visibility: the independent pools an urgent writer was preferred to.
+  const passedIndependent = independenceWaived
+    ? scored.filter((e) => e.writerRank === 0)
     : [];
   // R8c visibility: pools that would have won on raw pace and lost only
   // because of the work they are already carrying. Empty unless a caller
@@ -1020,6 +1069,8 @@ export function pickPool(lane, pools, opts = {}) {
     pinned: Boolean(strictPool) && winnerEntry.pool.name === strictPool,
     evidence,
     evidenceOnlyWriter,
+    independenceWaived,
+    passedIndependent,
     deprioritizedWriters,
     skippedFree,
     benchedOut,
@@ -1113,6 +1164,8 @@ function routingReason(
     pinned = false,
     evidence = null,
     evidenceOnlyWriter = false,
+    independenceWaived = false,
+    passedIndependent = [],
     deprioritizedWriters = [],
     skippedFree = [],
     benchedOut = [],
@@ -1136,6 +1189,19 @@ function routingReason(
     // eligible" when the operator had pinned that pool themselves).
     base = `pinned to ${winnerEntry.pool.name} (--worker-pool)`;
     baseDetail = detail || null;
+  } else if (independenceWaived) {
+    // R13: the pool judging the work shares a model family with its writer,
+    // and the only reason is the clock on its quota. Say so first, then the
+    // urgency arithmetic and the independent pools it was preferred to.
+    base = `independence waived: ${winnerEntry.pool.name} resets in ${
+      formatResetsIn(winnerEntry.expiring.minutesToReset)
+    }`;
+    baseDetail = [
+      urgencyArithmetic(winnerEntry, [note, inflight].filter(Boolean).join(', ')),
+      passedIndependent.length
+        ? `independent but not urgent: ${passedIndependent.map((e) => e.pool.name).join(', ')}`
+        : null,
+    ].filter(Boolean).join(' · ');
   } else if (evidenceOnlyWriter) {
     base = `evidence step: only the writer pool ${winnerEntry.pool.name} is eligible`;
   } else if (deprioritizedWriters.length) {
@@ -1230,13 +1296,20 @@ function routingReason(
  * rounded value for anything that needs it.
  */
 function urgencyClause(entry, detail) {
-  const { minutesToReset, windowLeftFraction, urgency, window } = entry.expiring;
+  return (
+    `expiring soon: ${entry.pool.name} resets in ${formatResetsIn(entry.expiring.minutesToReset)}, `
+    + urgencyArithmetic(entry, detail)
+  );
+}
+
+/** `surplus 7.8 over 1.2% of the week left → urgency 650, forecast 91.0%`. */
+function urgencyArithmetic(entry, detail) {
+  const { windowLeftFraction, urgency, window } = entry.expiring;
   const word = window === 'monthly' ? 'month' : 'week';
   const left = tenth(windowLeftFraction * 100);
   const tail = detail ? ` (${detail})` : '';
   return (
-    `expiring soon: ${entry.pool.name} resets in ${formatResetsIn(minutesToReset)}, `
-    + `surplus ${tenth(entry.effective)} over ${left}% of the ${word} left `
+    `surplus ${tenth(entry.effective)} over ${left}% of the ${word} left `
     + `→ urgency ${Math.round(urgency)}, forecast ${pacingPctText(entry)}${tail}`
   );
 }

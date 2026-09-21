@@ -20,6 +20,21 @@ process.env.BULLSWARM_UNICODE = '1';
 // an affected user, so a contributor may well have it in their shell.
 delete process.env.BULLSWARM_ASCII;
 
+test('the watch quota line names the proof the pause was recorded with (quota.js Q6)', () => {
+  const now = Date.parse('2026-09-21T06:30:00Z');
+  const until = new Date(now + 3600_000).toISOString();
+  const line = renderWatchEvent({
+    type: 'attempt.quota', actionId: 'write-report', pool: 'claude-code', until, willRetry: true,
+    proof: 'meter weekly 96% (>= 95%) · provider: "Error: Rate limit exceeded. Please wait a moment and try again."',
+  }, { now });
+  assert.match(line, /^⚠ write-report usage limit on claude-code · paused until \S+ · meter weekly 96% \(>= 95%\) · provider: "Error: Rate limit exceeded\. Please wait a moment and try again\." · retrying on another pool$/);
+  // A record written without evidence keeps the old line.
+  assert.match(
+    renderWatchEvent({ type: 'attempt.quota', actionId: 'a', pool: 'p', until, willRetry: false }, { now }),
+    /^⚠ a usage limit on p · paused until \S+ · no retry left$/,
+  );
+});
+
 test('watch renders one handoff line naming the file count and last response', () => {
   const line = renderWatchEvent({
     type: 'attempt.handoff',

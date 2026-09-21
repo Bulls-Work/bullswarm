@@ -28,7 +28,10 @@ import {
 import {
   consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, v2RetryPlan,
 } from './v2-outcome.js';
-import { attemptArtifactsOnDisk, dispatchV2Action, durableAttemptHandoff } from './v2-dispatch.js';
+import {
+  appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
+  markStepRestartApplied, readStepRestarts, requeueRestartedStep,
+} from './v2-dispatch.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
 import {
@@ -39,7 +42,11 @@ import { deliverSteering, peekSteering, readSteering } from './steering.js';
 import { enforcesOwnership, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { buildWorkspaceReport, captureWorkspaceStatus } from './workspace-report.js';
 import { acquireKernelLease, processIdentity, liveWorker, stopWorker } from './v2-process.js';
+import { reconcileRunState } from './reconcile.js';
 import { meterLedgerAttribution } from '../lib/subscription-cost.js';
+import { spawnRetentionSweep } from '../lib/retention.js';
+import { preferredUsage } from './usage-preference.js';
+export { preferredUsage } from './usage-preference.js';
 
 const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const ACTIVE_RUNS = new Set();
@@ -511,6 +518,8 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     ...(record.handoff !== undefined ? { handoff: clone(record.handoff) } : {}),
     ...(record.outputTruncated !== undefined ? { outputTruncated: record.outputTruncated } : {}),
     ...(record.outputSource !== undefined ? { outputSource: record.outputSource } : {}),
+    // What the provider reported at worker exit (recordAttemptCapture).
+    ...(record.capture !== undefined ? { capture: clone(record.capture) } : {}),
   };
 }
 
@@ -529,6 +538,31 @@ const SUBSCRIPTION_BASIS_ORDER = new Map([
   ['observed:meter-delta', 5],
   ['observed:meter-ledger', 6],
 ]);
+
+// The `captured` dispatch stage: the worker has exited and its stream is
+// decoded, but the verdict (meters, transcripts, verification) is still
+// being assembled. Record what the provider reported now, once — the first
+// capture is immutable — and let the caller persist it. The attempt stays
+// running and its usage is not yet added to the run totals; `finished` does
+// that exactly once.
+export function recordAttemptCapture(attempt, record) {
+  if (!attempt || !record?.capture || typeof record.capture !== 'object' || attempt.capture) return false;
+  attempt.capture = clone(record.capture);
+  if (record.usage) attempt.usage = preferredUsage(attempt.usage ?? null, record.usage);
+  const confirmed = attempt.capture.sessionSource === 'provider-stream' ? attempt.capture.providerSessionId : null;
+  if (confirmed && attempt.session && typeof attempt.session === 'object') attempt.session.sessionId = confirmed;
+  return true;
+}
+
+// The `finished` record replaces the attempt's fields; the capture taken at
+// worker exit, the session id the provider confirmed in it, and any
+// provider-reported usage it carried survive that.
+function settleFinishedAttempt(attempt, prior) {
+  if (prior.capture) attempt.capture = prior.capture;
+  attempt.usage = preferredUsage(prior.usage ?? null, attempt.usage ?? null);
+  const confirmed = prior.capture?.sessionSource === 'provider-stream' ? prior.capture.providerSessionId : null;
+  if (confirmed && attempt.session && typeof attempt.session === 'object') attempt.session.sessionId = confirmed;
+}
 
 function worstBasis(current, next, order) {
   if (!next || !order.has(next)) return current ?? null;
@@ -1167,6 +1201,7 @@ async function runV2Kernel({
   const writeResultAtomic = dependencies.writeResultAtomic ?? writeJsonAtomic;
   const writeCompletionReceipt = dependencies.writeCompletionReceipt ?? writeJsonAtomic;
   const now = dependencies.now ?? (() => new Date().toISOString());
+  const reconcileCurrentRun = dependencies.reconcileCurrentRun ?? reconcileRunState;
   const runsRoot = join(bullswarmDir, 'workflows');
   mkdirSync(runsRoot, { recursive: true });
   const resuming = Boolean(resumeRunId);
@@ -1257,6 +1292,12 @@ async function runV2Kernel({
     };
     serializeV2DurableState(state);
     writeJsonAtomic(statePath(runDir), state);
+  };
+  // Price this run's finished attempts that reported no usage, in memory.
+  // Pricing never fails, pauses or ends a run; the caller persists.
+  const priceFinishedAttempts = () => {
+    try { return reconcileCurrentRun(state, { runDir, bullswarmDir })?.changed ?? 0; }
+    catch { return 0; }
   };
   const emit = (type, payload = {}) => {
     lease.assertOwner();
@@ -1416,15 +1457,17 @@ async function runV2Kernel({
           };
           durable.attempts.push(current);
           emit('preflight.scout_attempt_started', { ordinal: current.ordinal, pool: current.pool, model: current.model });
+        } else if (stage === 'captured') {
+          if (recordAttemptCapture(current, record)) persist();
         } else {
           Object.assign(current, {
             status: record.status, finishedAt: record.finishedAt, outputFile: record.outFile,
             failureKind: record.failureKind ?? null, why: record.why ?? null,
-            usage: clone(record.usage ?? null), wallSec: record.wallSec ?? null,
+            usage: preferredUsage(current.usage ?? null, record.usage ?? null), wallSec: record.wallSec ?? null,
             ...(record.outputTruncated !== undefined ? { outputTruncated: record.outputTruncated } : {}),
             ...(record.outputSource !== undefined ? { outputSource: record.outputSource } : {}),
           });
-          addUsage(state, record);
+          addUsage(state, { ...record, usage: current.usage });
           emit('preflight.scout_attempt_finished', {
             ordinal: current.ordinal,
             status: current.status,
@@ -1572,16 +1615,19 @@ async function runV2Kernel({
             outputFile: record.outFile, continued: record.continued === true,
           });
           emit('planner.attempt_started', { turn, ordinal: currentAttemptId, pool: record.pool, model: record.model, reasoning: clone(record.reasoning ?? null) });
+        } else if (stage === 'captured') {
+          if (recordAttemptCapture(state.planner.attempts.find((item) => item.ordinal === currentAttemptId), record)) persist();
         } else {
           const attempt = state.planner.attempts.find((item) => item.ordinal === currentAttemptId);
           if (attempt) Object.assign(attempt, {
             status: record.status, finishedAt: record.finishedAt, outputFile: record.outFile,
-            failureKind: record.failureKind ?? null, why: record.why ?? null, usage: clone(record.usage ?? null),
+            failureKind: record.failureKind ?? null, why: record.why ?? null,
+            usage: preferredUsage(attempt.usage ?? null, record.usage ?? null),
             wallSec: record.wallSec ?? null,
             ...(record.outputTruncated !== undefined ? { outputTruncated: record.outputTruncated } : {}),
             ...(record.outputSource !== undefined ? { outputSource: record.outputSource } : {}),
           });
-          addUsage(state, record);
+          addUsage(state, attempt ? { ...record, usage: attempt.usage } : record);
           emit('planner.attempt_finished', {
             turn,
             ordinal: currentAttemptId,
@@ -1713,9 +1759,12 @@ async function runV2Kernel({
         && attempt.ordinal > (runtime.supersededAttempts ?? 0)
         && ['interrupted', 'failed'].includes(attempt.status))
       : null;
-    const durablePriorHandoff = durablePriorAttempt
+    // A caller restart (workflow step restart) hands the next attempt the
+    // stopped attempt's handoff and, when the caller named one, its pool.
+    const restart = receipt ? null : appliedStepRestart(state, runDir, action.id, handoffBlock);
+    const durablePriorHandoff = restart?.handoff ?? (durablePriorAttempt
       ? durableAttemptHandoff(durablePriorAttempt, runDir, handoffBlock)
-      : null;
+      : null);
     const dispatchedTaskText = durablePriorHandoff
       ? `${taskText}\n\n${durablePriorHandoff.block}`
       : taskText;
@@ -1726,9 +1775,9 @@ async function runV2Kernel({
       targetDir,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
-      preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
+      preferredPool: restart?.pool ?? state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
-      strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
+      strictPool: restart?.pool ?? state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
       // The program author's per-action override outranks the run-wide level.
       reasoningOverride: action.reasoning ?? null,
       runReasoning: state.config.workerRouting?.reasoning ?? null,
@@ -1773,6 +1822,11 @@ async function runV2Kernel({
               },
             } : {}),
           });
+          // The restart is delivered once its attempt has started.
+          if (restart) clearStepRestart(runDir, action.id);
+        } else if (stage === 'captured') {
+          lease.assertOwner();
+          if (recordAttemptCapture(workerAttempt(), record)) persist();
         } else {
           lease.assertOwner();
           // An attempt stopped by a plan revision or a pause is not a failure of
@@ -1785,10 +1839,12 @@ async function runV2Kernel({
           });
           const attempt = state.attempts.find((item) => item.id === currentAttemptId);
           if (attempt) {
+            const prior = { capture: attempt.capture, usage: attempt.usage };
             Object.assign(attempt, normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal: attempt.ordinal }));
+            settleFinishedAttempt(attempt, prior);
             observeAttemptBytes(attempt, { authorPrompt: dispatchedBytes.authorPrompt, requirements: observedRequirementBytes });
           }
-          addUsage(state, record);
+          addUsage(state, attempt ? { ...record, usage: attempt.usage } : record);
           emit('attempt.finished', {
             actionId: action.id,
             attemptId: currentAttemptId,
@@ -1874,6 +1930,14 @@ async function runV2Kernel({
       // Stopped on purpose (a plan revision replaced it, or pause --now): the
       // step is cancelled here and the revision or pause decides what follows.
       const stop = interrupted ? null : stopRequested.get(action.id) ?? null;
+      if (stop?.kind === 'restarted') {
+        // The caller restarted it: straight back in the queue, never through a
+        // terminal state a watcher could read as the step ending.
+        Object.assign(runtime, { status: 'pending', finishedAt: null, lastFailure: null });
+        persist();
+        releaseWorkspace();
+        return;
+      }
       runtime.status = interrupted ? 'interrupted' : stop || result.status === 'cancelled' ? 'cancelled' : 'failed';
       runtime.lastFailure = interrupted
         ? { kind: 'interrupted', message: 'kernel interrupted; work retained for resume' }
@@ -1960,6 +2024,9 @@ async function runV2Kernel({
     // All worker attempts are durable by this point. Reconcile overlapping
     // subscription meter intervals before publishing the result and rollup so
     // each pool's shares conserve the observed run delta.
+    // Last chance to price attempts that finished without usage before the
+    // subscription shares, the result and the rollup are computed.
+    priceFinishedAttempts();
     reconcileSubscriptionLedger(state);
     // Guidance nobody acted on no longer holds a run open: the result lists
     // it, and the caller decides whether it still matters.
@@ -1972,6 +2039,7 @@ async function runV2Kernel({
     const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason, workspace, unreadSteering });
     const resultPath = join(runDir, 'result.json');
     writeResultAtomic(resultPath, result);
+    spawnRetentionSweep({ bullswarmDir, trigger: 'kernel' });
     state.lifecycle.status = result.status;
     state.lifecycle.finishedAt = finishedAt;
     state.lifecycle.resultFile = resultPath;
@@ -2041,6 +2109,7 @@ async function runV2Kernel({
       const pause = readPauseRequest();
       if (pause ? !state.pause || state.pause.mode !== pauseMode(pause.mode) : Boolean(state.pause && !state.pause.pausedAt)) return true;
       if (programExecution && pendingRevisionRequests(state, runDir).length) return true;
+      if (programExecution && readStepRestarts(runDir).some((entry) => !entry.appliedAt)) return true;
       if (callerPlanner && peekSteering(state, runDir).some((entry) => !announcedSteeringIds().has(entry.id))) return true;
     } catch { /* the next poll retries */ }
     return false;
@@ -2094,6 +2163,28 @@ async function runV2Kernel({
     }
     emit('program.revised', revisionEventPayload(committed.record));
     removeStaleReceipts(runDir, committed.staleReceipts);
+  };
+
+  // A caller restart (workflow step restart): stop exactly that step's running
+  // attempt, then queue the step again; its next attempt carries the handoff.
+  const applyStepRestart = async (request) => {
+    const task = activeTasks.get(request.actionId);
+    if (task) {
+      stopRequested.set(request.actionId, { kind: 'restarted', message: `stopped by the caller with workflow step restart (${request.id})` });
+      await Promise.allSettled([task]);
+      stopRequested.delete(request.actionId);
+    }
+    const outcome = requeueRestartedStep(state, request);
+    if (!outcome.requeued) {
+      clearStepRestart(runDir, request.actionId);
+      emit('step.restart_refused', { requestId: request.id, actionId: request.actionId, why: outcome.why });
+      return;
+    }
+    markStepRestartApplied(runDir, request, { at: now(), attemptId: outcome.attemptId });
+    emit('step.restarted', {
+      requestId: request.id, actionId: request.actionId, attemptId: outcome.attemptId,
+      stoppedPool: outcome.stoppedPool, pool: request.pool ?? null, source: request.source ?? 'cli',
+    });
   };
 
   const requeuePausedActions = () => {
@@ -2200,6 +2291,11 @@ async function runV2Kernel({
           await applyQueuedRevision(request);
           continue;
         }
+        const restart = readStepRestarts(runDir).find((entry) => !entry.appliedAt);
+        if (restart) {
+          await applyStepRestart(restart);
+          continue;
+        }
       }
       const paused = await honorPause();
       if (paused) return paused;
@@ -2256,6 +2352,9 @@ async function runV2Kernel({
         }
         continue;
       }
+      // A quiet boundary: no worker is streaming, so pricing the attempts that
+      // finished without usage delays nothing, and what it priced is durable now.
+      if (!activeTasks.size && priceFinishedAttempts()) persist();
       const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
       if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
       if (progress.status === 'needs-planner') {

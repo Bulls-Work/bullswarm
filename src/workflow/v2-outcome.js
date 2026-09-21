@@ -16,7 +16,7 @@ const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.strin
 // that failed for any other reason (the worker reported failure, it wrote
 // outside its files) needs the caller to change something before it reruns.
 export const V2_RETRYABLE_FAILURE_KINDS = Object.freeze([
-  'provider', 'quota', 'auth', 'process', 'unavailable', 'interrupted', 'runtime', 'schema', 'stalled',
+  'provider', 'quota', 'throttle', 'auth', 'process', 'unavailable', 'interrupted', 'runtime', 'schema', 'stalled',
 ]);
 const RETRYABLE_FAILURE_KINDS = new Set(V2_RETRYABLE_FAILURE_KINDS);
 const RERUN_STATUSES = new Set(['pending', 'ready', 'waiting', 'running', 'cancelled', 'interrupted']);

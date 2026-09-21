@@ -411,3 +411,60 @@ test('CLI prints the exact retention caveat and supports --json without corrupti
     assert.equal(stderr.includes(REPRICE_RETENTION_CAVEAT), true);
   } finally { cleanup(); }
 });
+
+test('manual reprice shares the task-text matcher; a single task never takes another task\'s transcript', () => {
+  const { home, cleanup } = tempHome();
+  try {
+    // Two parallel attempts in one cwd and one window: cwd + time is
+    // ambiguous, the task path each delegate was sent is not. The rollouts are
+    // the real fixture plus the prompt row the codex connector sends.
+    const runId = 'wf-mtsz2t1c-763f7c';
+    const sourcePath = (action) => `/home/dev/.bullswarm/workflows/${runId}/task-${action}-attempt-1.md`;
+    const attempts = ['alpha', 'beta'].map((action) => ({
+      id: `${action}-1`, actionId: 'reprice-step', ordinal: action === 'alpha' ? 1 : 2, status: 'failed',
+      pool: 'codex', model: 'gpt-5.6-luna',
+      startedAt: '2026-09-19T15:15:02.116Z', finishedAt: '2026-09-19T15:15:14.719Z',
+      taskFile: sourcePath(action), outputFile: null, failureKind: 'semantic', why: 'fixture',
+      usage: { model: 'gpt-5.6-luna', tokens: { totalKnown: null }, tokenSource: 'unknown' },
+      wallSec: 12.6,
+    }));
+    const { runDir } = fixtureState(home, { runId, attempts, startedAt: '2026-09-19T15:15:02.116Z' });
+    const rows = readFileSync(join(FIXTURE_DIR, 'codex-rollout.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const sessions = join(home, '.codex', 'sessions', '2026', '09', '19');
+    mkdirSync(sessions, { recursive: true });
+    const ids = { alpha: '01a0ba3c-3045-7013-928b-53a20891542b', beta: '01a0ba3c-3045-7013-928b-53a20891542c' };
+    for (const [action, id] of Object.entries(ids)) {
+      const [meta, context, ...rest] = structuredClone(rows);
+      meta.payload.session_id = id;
+      meta.payload.id = id;
+      const prompt = {
+        timestamp: context.timestamp, type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `Read ${sourcePath(action)} and follow the instructions.` }] },
+      };
+      writeFileSync(join(sessions, `rollout-2026-09-19T23-15-01-${id}.jsonl`),
+        `${[meta, context, prompt, ...rest].map((row) => JSON.stringify(row)).join('\n')}\n`);
+      writeFileSync(join(runDir, `task-${action}-attempt-1.md`), `sample task for ${action}\n`);
+    }
+    // A single task from the same window whose record kept only outFile, ts
+    // and wallSec. Its task file is named beside outFile; both rollouts in its
+    // window quote other task files, so it resolves to none, not a pick.
+    const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
+    state.decisionLog = [{
+      ts: '2026-09-19T15:15:14.719Z', picked: 'codex', ok: true, wallSec: 12.6, model: 'gpt-5.6-luna',
+      outFile: '/home/dev/.bullswarm/runs/out-1789614568945-32ood.md',
+      usage: { model: 'gpt-5.6-luna', tokens: { totalKnown: null }, tokenSource: 'unknown' },
+    }];
+    writeFileSync(join(home, 'state.json'), JSON.stringify(state));
+    const report = repriceRuns({ bullswarmDir: home, transcriptHome: home, connectors: connectorMap(), apply: true });
+    const byAttempt = Object.fromEntries(report.rows.map((row) => [row.attemptId, row]));
+    assert.equal(byAttempt['alpha-1'].confidence, 'task-text');
+    assert.equal(byAttempt['beta-1'].confidence, 'task-text');
+    assert.equal(byAttempt['alpha-1'].totalKnown, 21089);
+    const task = report.rows.find((row) => row.actionId === 'single-task');
+    assert.equal(task.confidence, 'none');
+    assert.equal(task.tokenSource, 'unknown');
+    const priced = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    assert.deepEqual(priced.attempts.map((attempt) => attempt.usage.sessionId), [ids.alpha, ids.beta]);
+    validateV2DurableState(priced);
+  } finally { cleanup(); }
+});

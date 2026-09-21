@@ -1,3 +1,4 @@
+import { pauseProof } from '../lib/quota.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 // Low-noise, non-interactive workflow progress watcher.
 // A run is event-based by default: one attach line, then one line per notable
@@ -16,6 +17,7 @@ import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { isDeliveredWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
+import { createStaleProbe } from '../lib/stale.js';
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -315,6 +317,7 @@ export function initialWatchMemory(state, {
   sinceMs = null,
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
   nowMs = Date.now(),
+  stale = null,
 } = {}) {
   // A stage whose action finished among the replayed events is exactly the news
   // this relaunch exists to deliver, so it must not be pre-marked as reported
@@ -342,7 +345,22 @@ export function initialWatchMemory(state, {
       stalled.set(key, { since: activityAt });
     }
   }
-  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map() };
+  // Likewise an attempt that already looked stale before the previous watcher
+  // exited was reported by it: the score says when it crossed the threshold.
+  const staleReported = new Map();
+  if (sinceMs != null && typeof stale === 'function') {
+    for (const record of v2AttemptRecords(state)) {
+      if (record.attempt.status !== 'running') continue;
+      const score = staleFor(stale, state, record, nowMs);
+      if (score?.stale && score.staleSince != null && score.staleSince < sinceMs) staleReported.set(record.key, score.staleSince);
+    }
+  }
+  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map(), handoffs: new Map(), staleReported };
+}
+
+function staleFor(probe, state, { attempt, actionId }, nowMs) {
+  const action = (state.program?.actions ?? []).find((entry) => entry.id === actionId) ?? null;
+  try { return probe({ attempt, action, state, nowMs }); } catch { return null; }
 }
 
 // Epoch ms of a pool's re-probe deadline from the CORE bullswarm state (the
@@ -353,6 +371,13 @@ function readCoreQuarantineUntilMs(bullswarmDir, pool) {
   const core = readJson(join(bullswarmDir, 'state.json'));
   const until = core?.pools?.[pool]?.quarantine?.until;
   return Number.isFinite(until) ? until : null;
+}
+
+// The proof a quota pause was recorded with (quota.js Q6): the meter window or
+// the provider line that named the reset. Null when the record carries none.
+function coreQuotaPauseProof(bullswarmDir, pool) {
+  if (!bullswarmDir || !pool) return null;
+  return pauseProof(readJson(join(bullswarmDir, 'state.json'))?.pools?.[pool]?.quarantine ?? null);
 }
 
 // ISO timestamp literal embedded in a verdict `why` string, e.g.
@@ -392,6 +417,8 @@ export function notableWatchEvents({
   nowMs = Date.now(),
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
   bullswarmDir = null,
+  // (attempt record) -> staleScore() result; null skips the stale score.
+  stale = null,
 } = {}) {
   const carried = memory ?? initialWatchMemory(state);
   const stages = new Set(carried.stages);
@@ -399,6 +426,7 @@ export function notableWatchEvents({
   const retry = new Map(carried.retry);
   const moving = new Map(carried.moving);
   const handoffs = new Map(carried.handoffs);
+  const staleReported = new Map(carried.staleReported);
   const notable = [];
 
   const onAttemptStarted = (actionId, payload, ordinal) => {
@@ -438,6 +466,9 @@ export function notableWatchEvents({
     if (payload.status === 'succeeded') { retry.delete(actionId); return; }
     const failureKind = payload.failureKind
       ?? (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId)?.failureKind;
+    // Stopped by the caller's restart: not a retry, and the handoff line
+    // comes from the next attempt's own start event.
+    if (failureKind === 'restarted') { retry.delete(actionId); return; }
     const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId);
     const rememberHandoff = () => {
       if (payload.willRetry !== true || failureKind === 'schema') return;
@@ -474,6 +505,7 @@ export function notableWatchEvents({
         pool,
         why,
         until: quotaDeadlineIso(bullswarmDir, pool, why),
+        proof: coreQuotaPauseProof(bullswarmDir, pool),
         willRetry: payload.willRetry === true,
       });
       rememberHandoff();
@@ -492,6 +524,9 @@ export function notableWatchEvents({
         const status = payload.status ?? runtime?.status ?? 'finished';
         retry.delete(payload.actionId);
         moving.delete(payload.actionId);
+        // A caller-driven restart stops the attempt on purpose; its own
+        // step.restarted line reports it, and the step runs again.
+        if (payload.failureKind === 'restarted') break;
         notable.push({
           type: 'action.finished',
           actionId: payload.actionId,
@@ -603,6 +638,16 @@ export function notableWatchEvents({
       case 'workflow.reopened':
         notable.push({ type: 'run.reopened', previousStatus: payload.previousStatus ?? null });
         break;
+      case 'step.restarted':
+        staleReported.delete(payload.attemptId);
+        notable.push({
+          type: 'step.restarted', actionId: payload.actionId ?? null, attemptId: payload.attemptId ?? null,
+          stoppedPool: payload.stoppedPool ?? null, pool: payload.pool ?? null,
+        });
+        break;
+      case 'step.restart_refused':
+        notable.push({ type: 'step.restart_refused', actionId: payload.actionId ?? null, why: payload.why ?? null });
+        break;
       default:
         break;
     }
@@ -656,7 +701,59 @@ export function notableWatchEvents({
     });
   }
 
-  return { notable, memory: { stages, stalled, retry, moving, handoffs } };
+  // The stale score: one line per attempt, the first time it crosses the
+  // threshold. Nothing is stopped; the caller decides whether to restart.
+  if (typeof stale === 'function') {
+    const running = new Set();
+    for (const record of v2AttemptRecords(state)) {
+      if (record.attempt.status !== 'running') continue;
+      running.add(record.key);
+      if (staleReported.has(record.key)) continue;
+      const score = staleFor(stale, state, record, nowMs);
+      if (!score?.stale) continue;
+      staleReported.set(record.key, score.staleSince ?? nowMs);
+      notable.push({
+        type: 'attempt.stale', actionId: record.actionId, attemptId: record.key,
+        pool: record.attempt.pool ?? null, model: record.attempt.model ?? null,
+        score: score.score, reasons: score.reasons,
+        staleSince: score.staleSince == null ? null : new Date(score.staleSince).toISOString(),
+      });
+    }
+    for (const key of [...staleReported.keys()]) if (!running.has(key)) staleReported.delete(key);
+  }
+
+  return { notable, memory: { stages, stalled, retry, moving, handoffs, staleReported } };
+}
+
+/**
+ * What kind of trouble one notable event is, or null for routine progress.
+ * `watch --until trouble` ends on the first one; `--until` of either kind
+ * prints only these lines and the outcome.
+ */
+export function watchTrouble(event) {
+  switch (event?.type) {
+    case 'action.finished':
+      if (event.status === 'failed' || event.status === 'blocked') return 'failed';
+      if (event.status === 'cancelled' && event.failureKind === 'paused') return 'paused';
+      return null;
+    case 'evidence.recorded':
+      return (event.requirements ?? []).some((item) => item.status === 'failed' || item.status === 'blocked') ? 'rejected' : null;
+    case 'plan.rejected':
+      return 'rejected';
+    case 'planner.finished':
+      return event.ok === false ? 'rejected' : null;
+    case 'attempt.stalled':
+      return 'stalled';
+    case 'attempt.stale':
+      return 'stale';
+    case 'pause.requested':
+      return 'paused';
+    // Steering is addressed to the caller, who acts on it by revising the plan.
+    case 'steering.received':
+      return 'steering';
+    default:
+      return null;
+  }
 }
 
 /** One notable event as one human line. `now` anchors the attempt.quota
@@ -692,6 +789,14 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
         `${event.pool ?? '?'}/${event.model ?? '?'} · still running, not auto-killed`;
     case 'agent.recovered':
       return `${glyphs().retry} ${event.actionId} active again after ${formatDuration(event.silentSec)}`;
+    case 'attempt.stale':
+      return `${glyphs().warn} ${event.actionId} looks stale: ${(event.reasons ?? []).join('; ') || 'no reason recorded'}`;
+    case 'step.restarted':
+      return `${glyphs().retry} ${event.actionId} restarted · stopped ${event.attemptId ?? 'its attempt'}`
+        + `${event.stoppedPool ? ` on ${event.stoppedPool}` : ''} · runs again with its handoff`
+        + `${event.pool ? ` on ${event.pool}` : ''}`;
+    case 'step.restart_refused':
+      return `× ${event.actionId} not restarted · ${event.why ?? 'no reason recorded'}`;
     case 'cancellation.requested':
       return `${glyphs().waiting} cancellation requested`;
     case 'action.started':
@@ -705,6 +810,7 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
     case 'attempt.quota':
       return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · ` +
         `paused until ${formatDeadline(event.until, now)} · `
+        + (event.proof ? `${event.proof} · ` : '')
         + (event.willRetry ? 'retrying on another pool' : 'no retry left');
     case 'attempt.moved':
       return `${glyphs().reroute} ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
@@ -784,6 +890,12 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   afterSequence = null,
   sinceMs = null,
   waitForRunMs = 0,
+  // 'outcome' follows until the run's outcome; 'trouble' also ends on the
+  // first trouble line (failed, rejected, paused, stalled, stale, steering).
+  // Either prints only trouble lines and the outcome, with no attach line.
+  until = null,
+  // The stale-score probe (see src/lib/stale.js); false turns it off.
+  stale = null,
   now = Date.now,
   output = process.stdout,
 } = {}) {
@@ -795,9 +907,13 @@ export async function runWorkflowWatch(bullswarmDir, token, {
     output.write(`${legacyRunLine({ shortId: resolved.shortId, runId: resolved.runId, runDir: resolved.runDir })}\n`);
     return 2;
   }
+  const untilMode = until === 'outcome' || until === 'trouble';
   // --next follows the run until something happens, so it never degrades to a
-  // single snapshot even if --once is also passed.
-  const oneShot = once && !next;
+  // single snapshot even if --once is also passed; neither does --until.
+  const oneShot = once && !next && !untilMode;
+  const staleProbe = stale === false ? null
+    : typeof stale === 'function' ? stale
+      : createStaleProbe({ runDir: resolved.runDir });
   let priorFingerprint = null;
   let priorHumanFingerprint = null;
   let lastPrintedAt = 0;
@@ -813,7 +929,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       const snapshot = watchSnapshot(resolved.runDir, state, new Date(nowMs));
       // --once stays a single snapshot and --classic forces the historical
       // transition-plus-heartbeat stream; everything else is event-based.
-      const eventMode = !oneShot && !classic;
+      const eventMode = untilMode || (!oneShot && !classic);
       if (priorSequence == null) {
         // A newly attached watcher has no preceding interval. Start at the
         // durable high-water mark instead of replaying the run lifetime, unless
@@ -857,16 +973,18 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         lastPrintedAt = nowMs;
       };
       let notablePrinted = 0;
+      let troublePrinted = 0;
+      const staleSteps = [];
       if (eventMode) {
         if (!attached) {
           attached = true;
           memory = initialWatchMemory(state, {
             replayedEvents: afterSequence == null ? [] : newEvents,
-            sinceMs, stallAfterMs, nowMs,
+            sinceMs, stallAfterMs, nowMs, stale: staleProbe,
           });
           lastPrintedAt = nowMs;
           // --next is a wake-up call, not a follow: it prints only what happens.
-          if (!next) {
+          if (!next && !untilMode) {
             emitLine({
               type: 'attach', runId: snapshot.runId, shortId: snapshot.shortId,
               status: snapshot.status, running: snapshot.runningCount,
@@ -876,15 +994,21 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         }
         const collected = notableWatchEvents({
           events: newEvents, state, memory, verbose, nowMs, stallAfterMs, bullswarmDir,
+          stale: snapshot.interrupted ? null : staleProbe,
         });
         memory = collected.memory;
         for (const event of collected.notable) {
+          const trouble = watchTrouble(event);
+          // --until prints only what needs the caller: trouble, then the outcome.
+          if (untilMode && trouble == null) continue;
           emitLine(event);
           notablePrinted += 1;
+          if (trouble != null) troublePrinted += 1;
+          if (event.type === 'attempt.stale' && !staleSteps.includes(event.actionId)) staleSteps.push(event.actionId);
         }
         // The periodic heartbeat is opt-in for V2 runs (--heartbeat <seconds>).
         const beatMs = Number.isFinite(heartbeatMs) && heartbeatMs > 0 ? heartbeatMs : null;
-        if (beatMs != null && !next && nowMs - lastPrintedAt >= beatMs) {
+        if (beatMs != null && !next && !untilMode && nowMs - lastPrintedAt >= beatMs) {
           output.write(jsonl
             ? `${JSON.stringify({ type: 'heartbeat', ...snapshot })}\n`
             : `${renderWatchSnapshot(snapshot, { heartbeat: true, verbose, events: pendingEvents })}\n`);
@@ -972,13 +1096,19 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         }
         return 0;
       }
-      // --next has delivered its wake-up: something notable happened and the
-      // run is still going. The relaunch line hands the caller the exact cursor
-      // and exit time to resume from, so nothing committed in between is lost.
-      if (next && notablePrinted > 0) {
+      // --next (or --until trouble) has delivered its wake-up: something
+      // happened and the run is still going. The relaunch line hands the
+      // caller the exact cursor and exit time to resume from, so nothing
+      // committed in between is lost; a stale step also gets its restart line.
+      const woke = until === 'trouble' ? troublePrinted > 0 : next && notablePrinted > 0;
+      if (woke) {
         if (eventMode && !jsonl) {
-          output.write(`next: bullswarm workflow watch ${snapshot.shortId ?? snapshot.runId}`
-            + ` --next --after ${priorSequence} --since ${snapshot.at}\n`);
+          const runToken = snapshot.shortId ?? snapshot.runId;
+          output.write(`next: bullswarm workflow watch ${runToken}`
+            + `${until === 'trouble' ? ' --until trouble' : ' --next'} --after ${priorSequence} --since ${snapshot.at}\n`);
+          for (const step of staleSteps) {
+            output.write(`  or restart: bullswarm workflow step restart ${runToken} ${step}\n`);
+          }
         }
         return 0;
       }
