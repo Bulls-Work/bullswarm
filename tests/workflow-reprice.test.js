@@ -65,6 +65,7 @@ function fixtureState(home, {
   const defaultAttempt = {
     id: `${action.id}-1`, actionId: action.id, ordinal: 1, status: actionStatus,
     pool, model, startedAt, finishedAt,
+    taskFile: join(runDir, 'task-implement-attempt-1.md'),
     outputFile: null, failureKind: 'semantic', why: 'fixture',
     usage: {
       model,
@@ -216,10 +217,14 @@ test('dry-run is byte-identical and reports a transcript-summed real fixture', (
     const { runDir } = fixtureState(home);
     const beforeState = readFileSync(join(runDir, 'state.json'));
     const beforeResult = readFileSync(join(runDir, 'result.json'));
+    let transcriptArgs = null;
     const report = repriceRuns({
       bullswarmDir: home,
       connectors: connectorMap(),
-      readTranscriptUsage: () => capturedCodexUsage(),
+      readTranscriptUsage: (args) => {
+        transcriptArgs = args;
+        return capturedCodexUsage();
+      },
     });
     assert.equal(report.apply, false);
     assert.equal(report.scannedRuns, 1);
@@ -231,6 +236,7 @@ test('dry-run is byte-identical and reports a transcript-summed real fixture', (
     assert.equal(report.rows[0].tokenSource, 'transcript-summed');
     assert.equal(report.rows[0].totalKnown, 21089);
     assert.equal(report.rows[0].apiUsd, 0.00299364);
+    assert.equal(transcriptArgs.taskFile, join(runDir, 'task-implement-attempt-1.md'));
     assert.equal(readFileSync(join(runDir, 'state.json')).equals(beforeState), true);
     assert.equal(readFileSync(join(runDir, 'result.json')).equals(beforeResult), true);
     assert.equal(existsSync(join(runDir, 'rollup.json')), false);

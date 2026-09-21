@@ -30,6 +30,7 @@
     "strategy": "event-stream"
   },
   "eventStream": {
+    "$comment-usage": "verified 2026-09-20 against command-code 1.54.2 and tests/fixtures/streams/command-code-hello.jsonl, a real capture of `command-code -p --no-session --tools-all --output-format json 'Reply with the single word ok.'`: the final line is the CLI's own summary (`type: \"result\"`) carrying `sessionId` and `usage{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}`; the same totals also ride the nested `model_request_end`, `turn_end` and `run_end` events. inputTokens is inclusive — the durable store's rows agree (inputTokens 16801 beside cacheWriteTokens 16798 in tests/fixtures/transcripts/command-code-session.jsonl) — so standardRead is input - cacheRead - cacheWrite, exactly how src/lib/transcripts/command-code.js derives it. The stream reports no cost at all. The supplied read-only test home contained 0 stream-*.jsonl files on 2026-09-20, so this capture is the first real evidence for the live shape; historical --no-session attempts still have no transcript and stay unknown.",
     "format": "jsonl",
     "args": [
       "--output-format",
@@ -103,6 +104,37 @@
           "text"
         ],
         "status": "completed"
+      }
+    ],
+    "usage": [
+      {
+        "match": {
+          "path": "event.type",
+          "equals": "run_start"
+        },
+        "mode": "last",
+        "fields": {
+          "sessionId": "event.sessionId"
+        }
+      },
+      {
+        "match": {
+          "path": "type",
+          "equals": "result"
+        },
+        "mode": "last",
+        "fields": {
+          "standardRead": "usage.inputTokens",
+          "cacheRead": "usage.cacheReadTokens",
+          "cacheWrite": "usage.cacheWriteTokens",
+          "output": "usage.outputTokens"
+        },
+        "inclusive": {
+          "standardRead": [
+            "cacheRead",
+            "cacheWrite"
+          ]
+        }
       }
     ],
     "output": [
@@ -228,8 +260,8 @@
         "cacheReadUsdPerMillion": 0.02,
         "outputUsdPerMillion": 1.2
       },
-      "pricingSource": "https://developers.openai.com/api/docs/models",
-      "pricingUpdatedAt": "2026-08-27"
+      "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits",
+      "pricingUpdatedAt": "2026-09-20"
     },
     {
       "match": "(?:^|/)claude-fable-",

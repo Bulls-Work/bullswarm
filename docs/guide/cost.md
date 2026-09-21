@@ -148,6 +148,36 @@ missing or ambiguous match becomes `unknown` with null totals and API cost.
 Historical repricing reads calibration but never appends samples. Add
 `--apply` only when the dry-run rows are the changes you want persisted.
 
+## Durable-history recovery matrix
+
+Transcript recovery is a property of the pool's provider store, not a promise
+that every old attempt has a record. The 0.35.2 provider study (2026-09-20)
+found the following:
+
+| Pool or attempt | Durable source | What can be recovered | What never can be recovered |
+|---|---|---|---|
+| `claude-code`, `codex` | The provider's existing transcript store | A unique session or cwd/time-window match is summed as `transcript-summed` | An attempt whose provider transcript was deleted, never written, or remains ambiguous |
+| `grok` started before 2026-09-14 | No supported durable transcript record for that period | Nothing from transcript history | Those pre-2026-09-14 attempts cannot be backfilled; later attempts still require a matching transcript |
+| `opencode2*`, including `opencode2:kaihk-*` | `~/.local/share/opencode/opencode.db` (`session`, `message`, and `part`) | Token classes, model, cwd, and time bounds when one session matches the attempt window; a task-file path/text disambiguates multiple candidates | No session, or more than one unresolved candidate, stays unknown |
+| `command-code` with a persisted session | `~/.commandcode/projects/<cwd-slug>/<session-id>.jsonl` | Assistant message usage and model when that JSONL transcript exists and matches | The supplied historical 116 attempts used `--no-session`; their checkpoint files, hook logs, and `history.jsonl` carry no authoritative usage, so those attempts cannot be backfilled |
+| Any pool with no durable transcript | None | A provider-reported stream value may still win when the stream actually carries usage | No transcript means no historical sum: the result is `unknown`, never `$0` |
+
+The OpenCode matcher uses the attempt's exact cwd and inclusive time window,
+then the first user part/task-file path when necessary; ambiguity is retained
+as ambiguity. Command Code's `inputTokens` is inclusive, so a persisted row's
+fresh input is `inputTokens - cacheReadTokens - cacheWriteTokens`. The
+`sessions/` and `history.jsonl` side stores are not substitutes for a
+conversation transcript.
+
+Both contrib connectors now declare `eventStream.usage` rules proven by real
+captures made on 2026-09-20 and checked in as
+`tests/fixtures/streams/opencode-hello.jsonl` and
+`tests/fixtures/streams/command-code-hello.jsonl`. OpenCode reports disjoint
+`part.tokens` counters on each `step_finish` step; Command Code reports
+inclusive `inputTokens` on its final `result` line. A live provider-reported
+value now wins before the durable reader, then the normal estimate/unknown
+ladder above.
+
 ## Reading the money pair
 
 Every surface uses the same pair: API cost first, subscription cost second.

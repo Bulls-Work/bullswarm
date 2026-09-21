@@ -1,0 +1,160 @@
+{
+ "schemaVersion": "bullswarm.workflow.program.v2",
+ "actions": [
+  {
+   "id": "study",
+   "kind": "architecture",
+   "purpose": "Prove from real files what opencode and command-code record, and how an attempt maps to a session",
+   "dependsOn": [],
+   "affects": [],
+   "ownedFiles": [],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.2-providers (git worktree, branch release-0.35.2-providers from the released v0.35.0). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. The test home is a real snapshot at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 (36 MB, the 116 workflow runs that have opencode2*/command-code attempts); it is read-only \u2014 copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-<your-action-id>) if you must write, point BULLSWARM_HOME at the copy, delete it when done. The provider stores ~/.local/share/opencode/opencode.db (3.3 GB \u2014 open read-only in place with node:sqlite, NEVER copy it) and ~/.commandcode/ are real local data: read only, never modify. Read /home/dev/Repo/bullswork/bullswarm-0.35.2-providers/docs/plans/providers-0.35.2.goal.txt first. Real data only: never invent a token count, price, fixture or frame; unknown stays null/dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Read-only judgment, no edits. Report, with the exact file paths and SQL you used: (1) opencode.db \u2014 the message.data JSON fields for tokens/model/cwd/time, how session.directory and time_created relate to an attempt's cwd and window, whether the first user message of a session contains the bullswarm task text (compare with a task-*.md of an opencode2 attempt in /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352/workflows), and a SQL query that returns one attempt's summed token classes; also whether `part` rows are needed. (2) ~/.commandcode/projects/<slug>/<id>.jsonl \u2014 line types, whether any line carries token usage or a model id (grep the real files; quote one line), how the slug maps to cwd, and sessions/ and history.jsonl roles. (3) The live streams: find a real stream-*.jsonl in /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352/workflows for an opencode2* attempt and one for a command-code attempt (state.json names the pool per attempt) and state whether any event carries usage fields; quote the event. (4) Which models these pools ran (state.json attempt.model across /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352), and for each a public price source URL with date if one exists (opencode's kaihk/* models are relayed; command-code's models include free tiers) \u2014 say 'no public card' where none. (5) The registry change: exactly where src/lib/transcripts/index.js, src/lib/watch.js and src/workflow/reprice.js hard-code the three providers and how to switch them to providerFor/transcriptReaderFor from src/lib/providers.js without changing first-class behaviour. Number your findings so writers can cite them."
+  },
+  {
+   "id": "opencode-reader",
+   "kind": "implement",
+   "purpose": "opencode transcript reader over opencode.db",
+   "dependsOn": [
+    "study"
+   ],
+   "affects": [
+    "requirement-1",
+    "requirement-3",
+    "requirement-5"
+   ],
+   "ownedFiles": [
+    "providers/contrib/opencode/provider.mjs",
+    "providers/contrib/opencode/connector.json",
+    "src/lib/transcripts/opencode.js",
+    "tests/transcripts-opencode.test.js",
+    "tests/fixtures/transcripts/opencode-messages.json",
+    "tests/fixtures/transcripts/opencode-session.json"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.2-providers (git worktree, branch release-0.35.2-providers from the released v0.35.0). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. The test home is a real snapshot at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 (36 MB, the 116 workflow runs that have opencode2*/command-code attempts); it is read-only \u2014 copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-<your-action-id>) if you must write, point BULLSWARM_HOME at the copy, delete it when done. The provider stores ~/.local/share/opencode/opencode.db (3.3 GB \u2014 open read-only in place with node:sqlite, NEVER copy it) and ~/.commandcode/ are real local data: read only, never modify. Read /home/dev/Repo/bullswork/bullswarm-0.35.2-providers/docs/plans/providers-0.35.2.goal.txt first. Real data only: never invent a token count, price, fixture or frame; unknown stays null/dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirements 1, 3 and 5 for opencode, following the study's numbered findings. Put the sqlite access and matching in src/lib/transcripts/opencode.js (node:sqlite, `readOnly: true`, open in place; index = sessions with directory, time bounds, model, token sums; match by cwd + window, then task text from the first user message, ambiguous \u2192 null with reason) and export `buildTranscriptIndex` and `readTranscriptUsage` from providers/contrib/opencode/provider.mjs by delegating to it, in the shape docs/reference/providers.md documents (same as src/providers/codex/provider.mjs). Map tokens: input\u2192standardRead (minus cache read if the study proves input includes it), cache.read\u2192cacheRead, cache.write\u2192cacheWrite, output\u2192output, reasoning\u2192reasoning. connector.json: add `usage` rules only if the study proved the live stream carries usage; add model pricing only with the study's cited source and date. Fixtures: export a few real rows with `sqlite3 ... -json` into the two fixture files and test against them; also one test that opens the real database read-only when it exists and skips otherwise. Run `node --test tests/transcripts-opencode.test.js tests/provider-usage-rules.test.js` and quote the summary."
+  },
+  {
+   "id": "command-code-reader",
+   "kind": "implement",
+   "purpose": "command-code transcript reader over ~/.commandcode/projects",
+   "dependsOn": [
+    "study"
+   ],
+   "affects": [
+    "requirement-2",
+    "requirement-3",
+    "requirement-5"
+   ],
+   "ownedFiles": [
+    "providers/contrib/command-code/provider.mjs",
+    "providers/contrib/command-code/connector.json",
+    "src/lib/transcripts/command-code.js",
+    "tests/transcripts-command-code.test.js",
+    "tests/fixtures/transcripts/command-code-session.jsonl"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.2-providers (git worktree, branch release-0.35.2-providers from the released v0.35.0). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. The test home is a real snapshot at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 (36 MB, the 116 workflow runs that have opencode2*/command-code attempts); it is read-only \u2014 copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-<your-action-id>) if you must write, point BULLSWARM_HOME at the copy, delete it when done. The provider stores ~/.local/share/opencode/opencode.db (3.3 GB \u2014 open read-only in place with node:sqlite, NEVER copy it) and ~/.commandcode/ are real local data: read only, never modify. Read /home/dev/Repo/bullswork/bullswarm-0.35.2-providers/docs/plans/providers-0.35.2.goal.txt first. Real data only: never invent a token count, price, fixture or frame; unknown stays null/dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirements 2, 3 and 5 for command-code, following the study's numbered findings. src/lib/transcripts/command-code.js indexes ~/.commandcode/projects/<slug>/<id>.jsonl (head/tail read like src/lib/transcripts/claude-code.js \u2014 read that file first and reuse its helpers where they are exported) and returns token classes, model, cwd and time bounds when the lines carry them; if the study proved they carry no usage, the reader indexes sessions for matching but returns null usage with reason 'command-code transcripts record no token usage' and you document that in the provider.mjs comment. Export `buildTranscriptIndex` and `readTranscriptUsage` from providers/contrib/command-code/provider.mjs; keep readUsage and the credit parsing untouched. connector.json: `usage` rules only if proven from a real stream; model pricing only with a cited source and date. Fixture: one real session file excerpt (first lines, one message with usage if any). Run `node --test tests/transcripts-command-code.test.js tests/provider-usage-rules.test.js` and quote the summary."
+  },
+  {
+   "id": "registry",
+   "kind": "implement",
+   "purpose": "Transcript readers resolve through loaded providers, first-class and contrib",
+   "dependsOn": [
+    "study"
+   ],
+   "affects": [
+    "requirement-4"
+   ],
+   "ownedFiles": [
+    "src/lib/transcripts/index.js",
+    "src/lib/watch.js",
+    "src/workflow/reprice.js",
+    "tests/transcripts.test.js",
+    "tests/workflow-reprice.test.js"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.2-providers (git worktree, branch release-0.35.2-providers from the released v0.35.0). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. The test home is a real snapshot at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 (36 MB, the 116 workflow runs that have opencode2*/command-code attempts); it is read-only \u2014 copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-<your-action-id>) if you must write, point BULLSWARM_HOME at the copy, delete it when done. The provider stores ~/.local/share/opencode/opencode.db (3.3 GB \u2014 open read-only in place with node:sqlite, NEVER copy it) and ~/.commandcode/ are real local data: read only, never modify. Read /home/dev/Repo/bullswork/bullswarm-0.35.2-providers/docs/plans/providers-0.35.2.goal.txt first. Real data only: never invent a token count, price, fixture or frame; unknown stays null/dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirement 4 per the study's finding (5). src/lib/transcripts/index.js builds indexes and resolves readers from the loaded providers (loadProviders / providerFor / transcriptReaderFor in src/lib/providers.js), keeping the three first-class readers' behaviour byte-identical; src/lib/watch.js and src/workflow/reprice.js use that resolution so pools opencode2, opencode2:kaihk-2/3/4 and command-code reach their provider's hook; the reprice summary counts per pool. The two contrib readers are being written in parallel: code against the documented hook shape, and test with a fake provider module that exports the hooks. Run `node --test tests/transcripts.test.js tests/workflow-reprice.test.js tests/attempt-usage-wiring.test.js` and quote the summary."
+  },
+  {
+   "id": "docs",
+   "kind": "implement",
+   "purpose": "Provider reference, cost guide and the 0.35.2 changelog draft",
+   "dependsOn": [
+    "study"
+   ],
+   "affects": [
+    "requirement-7"
+   ],
+   "ownedFiles": [
+    "docs/reference/providers.md",
+    "docs/guide/cost.md",
+    "docs/design/providers-0.35.2/README.md",
+    "docs/design/providers-0.35.2/CHANGELOG-draft.md"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.2-providers (git worktree, branch release-0.35.2-providers from the released v0.35.0). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. The test home is a real snapshot at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 (36 MB, the 116 workflow runs that have opencode2*/command-code attempts); it is read-only \u2014 copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-<your-action-id>) if you must write, point BULLSWARM_HOME at the copy, delete it when done. The provider stores ~/.local/share/opencode/opencode.db (3.3 GB \u2014 open read-only in place with node:sqlite, NEVER copy it) and ~/.commandcode/ are real local data: read only, never modify. Read /home/dev/Repo/bullswork/bullswarm-0.35.2-providers/docs/plans/providers-0.35.2.goal.txt first. Real data only: never invent a token count, price, fixture or frame; unknown stays null/dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirement 7. docs/design/providers-0.35.2/README.md records the study's findings (what each store contains, the matching rule, which pools recover history and which never can \u2014 grok before 2026-09-14, anything with no transcript \u2014 and the price sources or their absence). docs/reference/providers.md documents the two contrib readers and the registry rule. docs/guide/cost.md gets the recovery table. CHANGELOG-draft.md holds the `## 0.35.2` bullets for this run in the existing style; do NOT edit CHANGELOG.md. Describe only what the study proved and the goal commits to."
+  },
+  {
+   "id": "digest",
+   "kind": "digest",
+   "purpose": "Condense the writer reports for the integrator",
+   "dependsOn": [
+    "study",
+    "opencode-reader",
+    "command-code-reader",
+    "registry",
+    "docs"
+   ],
+   "affects": [],
+   "ownedFiles": [],
+   "evidenceFor": [],
+   "prompt": "Keep every 'Shared-file requests' and 'Contract deviations' section verbatim with their diffs, every quoted test summary, and every SQL query or file path the writers cite."
+  },
+  {
+   "id": "integrate",
+   "kind": "integration",
+   "purpose": "Wire the readers through the registry, run reprice on a copy, make npm test green",
+   "dependsOn": [
+    "digest"
+   ],
+   "affects": [
+    "requirement-1",
+    "requirement-2",
+    "requirement-3",
+    "requirement-4",
+    "requirement-5",
+    "requirement-6",
+    "requirement-7"
+   ],
+   "ownedFiles": [],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.2-providers (git worktree, branch release-0.35.2-providers from the released v0.35.0). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. The test home is a real snapshot at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 (36 MB, the 116 workflow runs that have opencode2*/command-code attempts); it is read-only \u2014 copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-<your-action-id>) if you must write, point BULLSWARM_HOME at the copy, delete it when done. The provider stores ~/.local/share/opencode/opencode.db (3.3 GB \u2014 open read-only in place with node:sqlite, NEVER copy it) and ~/.commandcode/ are real local data: read only, never modify. Read /home/dev/Repo/bullswork/bullswarm-0.35.2-providers/docs/plans/providers-0.35.2.goal.txt first. Real data only: never invent a token count, price, fixture or frame; unknown stays null/dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. You are the only writer now; no territory limit. Apply every Shared-file request, make the contrib hooks load through the registry, then copy the test home (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-integrate-352) and run `BULLSWARM_HOME=/tmp/bsw-integrate-352 node bin/bullswarm.js workflow reprice --json` (dry run) and quote the summary counts per pool: how many opencode2*, opencode2:kaihk-* and command-code attempts resolve, how many stay ambiguous or missing and why. Re-derive two resolved attempts by hand (one SQL query against opencode.db read-only, one jsonl read) and show the numbers match. Run `npm test` and quote the summary; if only the three known load-sensitive tests fail, run each alone and quote those. Delete /tmp/bsw-integrate-352. Commit nothing."
+  },
+  {
+   "id": "verify",
+   "kind": "adversarial-acceptance",
+   "purpose": "Independent evidence for requirements 1\u20137",
+   "dependsOn": [
+    "study",
+    "opencode-reader",
+    "command-code-reader",
+    "registry",
+    "docs",
+    "integrate"
+   ],
+   "affects": [],
+   "ownedFiles": [],
+   "evidenceFor": [
+    "requirement-1",
+    "requirement-2",
+    "requirement-3",
+    "requirement-4",
+    "requirement-5",
+    "requirement-6",
+    "requirement-7"
+   ],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.2-providers (git worktree, branch release-0.35.2-providers from the released v0.35.0). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. The test home is a real snapshot at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 (36 MB, the 116 workflow runs that have opencode2*/command-code attempts); it is read-only \u2014 copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-<your-action-id>) if you must write, point BULLSWARM_HOME at the copy, delete it when done. The provider stores ~/.local/share/opencode/opencode.db (3.3 GB \u2014 open read-only in place with node:sqlite, NEVER copy it) and ~/.commandcode/ are real local data: read only, never modify. Read /home/dev/Repo/bullswork/bullswarm-0.35.2-providers/docs/plans/providers-0.35.2.goal.txt first. Real data only: never invent a token count, price, fixture or frame; unknown stays null/dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Judge requirements 1\u20137 from the artifacts, inspecting only; try to break it. Copy the test home yourself (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-352 /tmp/bsw-verify-352) and run the reprice dry run; pick two opencode2 attempts and one command-code attempt the reprice resolved and recompute their token classes independently (node:sqlite read-only query on the real opencode.db; a plain read of the command-code jsonl) \u2014 the numbers must match exactly. Pick one attempt reprice left ambiguous and confirm it is genuinely ambiguous. Grep the two connectors for any price without a source URL and date; grep the readers for any hard-coded number. Confirm the first-class readers' outputs are unchanged for two codex/claude attempts versus the code at git tag v0.35.0 (git stash is not available to you; use `git show v0.35.0:<file>` into a temp dir). Read the two guides against the code. Run `npm test`, quote the summary and, for any failing load-sensitive test, its result when run alone. Delete your copy."
+  }
+ ]
+}

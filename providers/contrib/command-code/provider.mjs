@@ -1,7 +1,16 @@
 // bullswarm contrib provider: command-code — Command Code alpha billing
 // endpoints (the same ones the CLI's /usage overlay calls). Monthly credits
 // plus 5-hour and weekly rate-limit windows. The pool itself is
-// connector.json; this module adds the meter.
+// connector.json; this module adds the meter and the durable transcript hook.
+//
+// Command Code's persisted sessions contain authoritative usage on assistant
+// message rows. Historical Bullswarm attempts used connector.json's
+// --no-session flag, so their checkpoint files do not carry that usage and
+// remain unknown; future persisted sessions are indexed by the transcript
+// reader below. Live streams carry usage too: connector.json's
+// eventStream.usage rule reads the final `result` line (inclusive inputTokens
+// minus the cache classes), proven on 2026-09-20 against
+// tests/fixtures/streams/command-code-hello.jsonl.
 
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -9,9 +18,21 @@ import path from 'node:path';
 
 import { MeterError } from '../../../src/provider-kit.js';
 import { retryAfterMsFromHeaders } from '../../../src/meters/framework.js';
+import {
+  buildTranscriptIndex as buildCommandCodeTranscriptIndex,
+  readTranscriptUsage as readCommandCodeTranscriptUsage,
+} from '../../../src/lib/transcripts/command-code.js';
 
 export const name = 'command-code';
 export const displayName = 'Command Code';
+
+export function buildTranscriptIndex(args = {}) {
+  return buildCommandCodeTranscriptIndex(args);
+}
+
+export function readTranscriptUsage(args = {}) {
+  return readCommandCodeTranscriptUsage(args);
+}
 
 const DEFAULT_API_BASE = 'https://api.commandcode.ai';
 const CREDITS_PATH = '/alpha/billing/credits';

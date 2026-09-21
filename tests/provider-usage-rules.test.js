@@ -12,8 +12,11 @@ import { validateProvider } from '../src/provider-cli.js';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const FIRST_CLASS = join(REPO, 'src', 'providers');
+const CONTRIB = join(REPO, 'providers', 'contrib');
 const CODEX_STDOUT_FIXTURE = join(REPO, 'tests', 'fixtures', 'transcripts', 'codex-stdout.jsonl');
 const CLAUDE_RESULT_FIXTURE = join(REPO, 'tests', 'fixtures', 'transcripts', 'claude-result-event.json');
+const OPENCODE_STREAM_FIXTURE = join(REPO, 'tests', 'fixtures', 'streams', 'opencode-hello.jsonl');
+const COMMAND_CODE_STREAM_FIXTURE = join(REPO, 'tests', 'fixtures', 'streams', 'command-code-hello.jsonl');
 
 // These are the four real lines captured by the design probe when Codex was
 // asked to reply with exactly "ok". The transcript worker may later add the
@@ -43,6 +46,10 @@ const REAL_CLAUDE_RESULT = JSON.stringify({
 
 function connector(name) {
   return JSON.parse(readFileSync(join(FIRST_CLASS, name, 'connector.json'), 'utf8'));
+}
+
+function contribConnector(name) {
+  return JSON.parse(readFileSync(join(CONTRIB, name, 'connector.json'), 'utf8'));
 }
 
 function isolatedLoader(home) {
@@ -122,5 +129,40 @@ test('Claude result usage subtracts thinking tokens from inclusive output', () =
     cacheWrite1h: 30253,
     output: 155,
     reasoning: 21,
+  });
+});
+
+// The two fixtures below are real, unedited stdout captures made on 2026-09-20
+// (the connectors' $comment-usage names the exact commands). The asserted
+// numbers are the ones the files carry.
+
+test('OpenCode step_finish usage reads the real captured stream without subtracting disjoint counters', () => {
+  const opencode = contribConnector('opencode');
+  const decoder = createAgentEventDecoder(opencode.eventStream);
+  decoder.push(readFileSync(OPENCODE_STREAM_FIXTURE, 'utf8'), 'stdout', '2026-09-20T02:42:47.578Z');
+  decoder.finish('2026-09-20T02:42:47.578Z');
+  assert.equal(decoder.output().trim(), 'ok');
+  assert.deepEqual(decoder.usage(), {
+    sessionId: 'ses_f434e3b69ffed4pqWwY50GlaGz',
+    standardRead: 15390,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 4,
+    reasoning: 14,
+  });
+});
+
+test('Command Code result usage reads the real captured stream and removes the inclusive cache classes', () => {
+  const commandCode = contribConnector('command-code');
+  const decoder = createAgentEventDecoder(commandCode.eventStream);
+  decoder.push(readFileSync(COMMAND_CODE_STREAM_FIXTURE, 'utf8'), 'stdout', '2026-09-20T02:40:27.343Z');
+  decoder.finish('2026-09-20T02:40:27.343Z');
+  assert.equal(decoder.output(), 'ok');
+  assert.deepEqual(decoder.usage(), {
+    sessionId: '4cd53a33-80d6-41c1-b64c-5a47b36079f4',
+    standardRead: 3,
+    cacheRead: 0,
+    cacheWrite: 21097,
+    output: 5,
   });
 });

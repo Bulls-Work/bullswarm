@@ -3,24 +3,9 @@
 // result used by callers that do not have a durable transcript hook.
 
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 
-import { buildTranscriptIndex as buildClaudeIndex, readTranscriptUsage as readClaudeTranscriptUsage } from './claude-code.js';
-import { buildTranscriptIndex as buildCodexIndex, readTranscriptUsage as readCodexTranscriptUsage } from './codex.js';
-import { buildTranscriptIndex as buildGrokIndex, readTranscriptUsage as readGrokTranscriptUsage } from './grok.js';
-
-const READERS = Object.freeze({
-  claude: readClaudeTranscriptUsage,
-  'claude-code': readClaudeTranscriptUsage,
-  codex: readCodexTranscriptUsage,
-  grok: readGrokTranscriptUsage,
-});
-
-const INDEXERS = Object.freeze({
-  claude: buildClaudeIndex,
-  'claude-code': buildClaudeIndex,
-  codex: buildCodexIndex,
-  grok: buildGrokIndex,
-});
+import { loadProviders, providerFor, transcriptReaderFor } from '../providers.js';
 
 function blankTokens() {
   return {
@@ -49,10 +34,79 @@ function none() {
   };
 }
 
-function providerKey(provider) {
+function providerName(provider) {
   const raw = typeof provider === 'string' ? provider : provider?.name;
-  if (typeof raw !== 'string' || !raw) return null;
-  return raw.toLowerCase().split(':', 1)[0];
+  return typeof raw === 'string' && raw ? raw : null;
+}
+
+function providerEntries(providers) {
+  if (Array.isArray(providers)) return providers;
+  if (Array.isArray(providers?.providers)) return providers.providers;
+  return [];
+}
+
+/**
+ * The old public helper accepted `provider: "codex"` without a provider
+ * registry. Keep that call shape useful for library consumers and the
+ * first-class transcript tests, but discover the implementation through the
+ * shipped provider directories rather than maintaining a second hard-coded
+ * reader table here.
+ */
+function loadTranscriptProviders({ home = homedir(), bullswarmDir = null } = {}) {
+  const root = typeof bullswarmDir === 'string' && bullswarmDir
+    ? bullswarmDir
+    : join(home, '.bullswarm');
+  try {
+    return loadProviders(root, { packaged: true }).providers;
+  } catch {
+    return [];
+  }
+}
+
+function resolveEntries(providers, { home = homedir(), bullswarmDir = null } = {}) {
+  const supplied = providerEntries(providers);
+  const explicitlySupplied = Array.isArray(providers) || Array.isArray(providers?.providers);
+  const loaded = explicitlySupplied
+    ? supplied
+    : loadTranscriptProviders({ home, bullswarmDir });
+  // Older callers supplied a list of provider names to the index builder.
+  // Resolve those names through the same owner helper instead of treating the
+  // strings as provider entries.
+  if (supplied.length && supplied.every((entry) => typeof entry === 'string')) {
+    const available = loadTranscriptProviders({ home, bullswarmDir });
+    return supplied.map((name) => providerFor(available, name)).filter(Boolean);
+  }
+  return loaded;
+}
+
+function resolveOwner(providers, pool) {
+  const owner = providerFor(providers, pool);
+  if (owner) return owner;
+  const poolName = providerName(pool)?.toLowerCase();
+  // Workflow records written before the OpenCode pool rename still use
+  // `opencode2[:account]`. Resolve that historical name through the loaded
+  // `opencode` provider so repricing does not strand old attempts.
+  if (poolName === 'opencode2' || poolName?.startsWith('opencode2:')) {
+    return providerFor(providers, `opencode${poolName.slice('opencode2'.length)}`);
+  }
+  // `claude` was the public alias before the provider was named
+  // `claude-code`; retain it without making aliases part of provider
+  // ownership or pool-prefix matching.
+  if (poolName === 'claude') {
+    return providerFor(providers, 'claude-code');
+  }
+  return null;
+}
+
+function canonicalProvider(pool, owner) {
+  const raw = providerName(pool);
+  if (!raw) return owner?.name ?? null;
+  if (raw.toLowerCase() === 'claude') return owner?.name ?? raw;
+  if (owner?.name?.toLowerCase() === 'opencode'
+    && (raw.toLowerCase() === 'opencode2' || raw.toLowerCase().startsWith('opencode2:'))) {
+    return `opencode${raw.slice('opencode2'.length)}`;
+  }
+  return raw;
 }
 
 /**
@@ -68,36 +122,69 @@ export function readTranscriptUsage({
   cwd = null,
   startedAt = null,
   endedAt = null,
+  taskText = null,
+  taskFile = null,
+  taskPath = null,
   home = homedir(),
   index = null,
+  providers = null,
+  bullswarmDir = null,
 } = {}) {
-  const reader = READERS[providerKey(provider)];
+  const entries = resolveEntries(providers, { home, bullswarmDir });
+  const owner = resolveOwner(entries, provider);
+  const reader = owner ? transcriptReaderFor(entries, owner.name) : null;
   if (!reader) return none();
   try {
-    return reader({ sessionId, cwd, startedAt, endedAt, home, index });
+    return reader({
+      provider: canonicalProvider(provider, owner),
+      sessionId,
+      cwd,
+      startedAt,
+      endedAt,
+      taskText,
+      taskFile,
+      taskPath,
+      home,
+      index,
+    });
   } catch {
     return none();
   }
 }
 
 /** Build each provider store index once for a bulk repricing invocation. */
-export function buildTranscriptIndexes({ home = homedir(), providers = ['claude-code', 'codex', 'grok'] } = {}) {
+export function buildTranscriptIndexes({
+  home = homedir(),
+  providers = null,
+  bullswarmDir = null,
+} = {}) {
+  const entries = resolveEntries(providers, { home, bullswarmDir });
   const indexes = {};
-  for (const provider of providers) {
-    const key = providerKey(provider);
-    const build = INDEXERS[key];
-    if (!build || indexes[key]) continue;
-    try { indexes[key] = build({ home }); } catch { indexes[key] = null; }
+  for (const owner of entries) {
+    const key = providerName(owner);
+    const build = owner?.module?.buildTranscriptIndex;
+    if (!key || typeof build !== 'function' || indexes[key]) continue;
+    try {
+      indexes[key] = build({ home });
+    } catch {
+      indexes[key] = null;
+    }
   }
   return indexes;
 }
 
-export function indexedTranscriptReader({ home = homedir(), providers } = {}) {
-  const indexes = buildTranscriptIndexes({ home, providers });
+export function indexedTranscriptReader({
+  home = homedir(),
+  providers = null,
+  bullswarmDir = null,
+} = {}) {
+  const entries = resolveEntries(providers, { home, bullswarmDir });
+  const indexes = buildTranscriptIndexes({ home, providers: entries, bullswarmDir });
   return (args = {}) => readTranscriptUsage({
     ...args,
     home: args.home ?? home,
-    index: indexes[providerKey(args.provider)] ?? null,
+    providers: entries,
+    index: indexes[resolveOwner(entries, args.provider)?.name] ?? null,
   });
 }
 

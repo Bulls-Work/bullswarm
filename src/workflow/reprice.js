@@ -9,7 +9,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadConnectors } from '../lib/config.js';
+import { loadProviders } from '../lib/providers.js';
 import { projectName } from '../lib/project.js';
 import { attachTranscriptUsage, estimateInvocationUsage } from '../lib/usage.js';
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
@@ -100,8 +100,13 @@ function oldApiUsd(usage) {
 function connectorFor(connectors, poolName) {
   if (poolName && connectors?.[poolName]) return connectors[poolName];
   if (typeof poolName === 'string') {
+    const lower = poolName.toLowerCase();
+    const canonical = lower === 'opencode2' || lower.startsWith('opencode2:')
+      ? `opencode${poolName.slice('opencode2'.length)}`
+      : poolName;
+    if (connectors?.[canonical]) return { ...connectors[canonical], name: poolName };
     const entry = Object.entries(connectors ?? {}).find(([name]) => (
-      poolName === name || poolName.startsWith(`${name}:`)
+      canonical === name || canonical.startsWith(`${name}:`)
     ));
     if (entry) return { ...entry[1], name: poolName };
   }
@@ -320,6 +325,7 @@ function candidateFor({ attempt, state, connectors, home, transcriptHome, readTr
       cwd,
       startedAt: attempt.startedAt ?? null,
       endedAt,
+      taskFile: attempt.taskFile ?? null,
       home: transcriptHome,
     });
   } catch {
@@ -570,16 +576,27 @@ export function repriceRuns({
   pool = null,
   readTranscriptUsage = defaultReadTranscriptUsage,
   connectors = null,
+  providers = null,
   onRow = null,
 } = {}) {
   const beganAt = Date.now();
   const sinceMs = since == null ? null : timeMs(since);
   if (since != null && sinceMs == null) throw new Error(`--since must be an ISO-compatible date: ${since}`);
   let connectorMap = connectors;
-  if (!connectorMap) {
-    try { connectorMap = loadConnectors(bullswarmDir, { packaged: true }); }
-    catch { connectorMap = {}; }
+  let providerEntries = Array.isArray(providers) ? providers : providers?.providers ?? null;
+  if (!connectorMap || !providerEntries) {
+    try {
+      const loaded = loadProviders(bullswarmDir, { packaged: true });
+      connectorMap ??= loaded.connectors;
+      providerEntries ??= loaded.providers;
+    } catch {
+      connectorMap ??= {};
+      providerEntries ??= [];
+    }
   }
+  const effectiveReader = readTranscriptUsage === defaultReadTranscriptUsage
+    ? indexedTranscriptReader({ home: transcriptHome, providers: providerEntries, bullswarmDir })
+    : readTranscriptUsage;
   const report = {
     action: 'reprice',
     apply: Boolean(apply),
@@ -623,7 +640,7 @@ export function repriceRuns({
           connectors: connectorMap,
           home: bullswarmDir,
           transcriptHome,
-          readTranscriptUsage,
+          readTranscriptUsage: effectiveReader,
         });
       } catch (error) {
         runFailed = error;
@@ -725,7 +742,7 @@ export function repriceRuns({
           connectors: connectorMap,
           home: bullswarmDir,
           transcriptHome,
-          readTranscriptUsage,
+          readTranscriptUsage: effectiveReader,
         });
       } catch (error) {
         report.failures.push({ runId: entry.attemptId, error: error.message });
@@ -774,6 +791,7 @@ export function cmdReprice(args = [], {
   transcriptHome = homedir(),
   readTranscriptUsage = defaultReadTranscriptUsage,
   connectors = null,
+  providers = null,
   log = (line) => console.log(line),
   error = (line) => console.error(line),
 } = {}) {
@@ -793,7 +811,7 @@ export function cmdReprice(args = [], {
       ? null
       : opts.since ?? new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
     const liveReader = readTranscriptUsage === defaultReadTranscriptUsage
-      ? indexedTranscriptReader({ home: transcriptHome })
+      ? indexedTranscriptReader({ home: transcriptHome, bullswarmDir, providers })
       : readTranscriptUsage;
     const streamRows = readTranscriptUsage === defaultReadTranscriptUsage;
     report = repriceRuns({
@@ -804,6 +822,7 @@ export function cmdReprice(args = [], {
       pool: opts.pool,
       readTranscriptUsage: liveReader,
       connectors,
+      providers,
       onRow: streamRows ? (row) => log(opts.json
         ? JSON.stringify({ type: 'attempt', ...row })
         : `${row.shortId ?? row.runId}  ${row.actionId}  try ${row.ordinal}  ${row.pool ?? '-'}  ${row.tokenSource}  api=${money(row.apiUsd)}  sub=${money(row.subscriptionUsd)}  ${row.confidence}`) : null,

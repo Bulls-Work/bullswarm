@@ -1,0 +1,22 @@
+[
+  {
+    "id": "ses_fa7933856ffeObmn5v5n9sRGzu",
+    "project_id": "ccbf843fd6379cf1aaefa6d388cbef5025a81d3d",
+    "workspace_id": null,
+    "parent_id": null,
+    "slug": "proud-lagoon",
+    "directory": "/home/dev/Repo/bullswarm",
+    "path": "",
+    "title": "Task audit v2 implementation attempt",
+    "version": "1.18.25",
+    "cost": 0.0,
+    "tokens_input": 368554,
+    "tokens_output": 6104,
+    "tokens_reasoning": 2214,
+    "tokens_cache_read": 1597440,
+    "tokens_cache_write": 0,
+    "model": "{\"id\":\"gpt-5.6-luna\",\"providerID\":\"kaihk\",\"variant\":\"default\"}",
+    "time_created": 1788189919145,
+    "time_updated": 1788190175540
+  }
+]
