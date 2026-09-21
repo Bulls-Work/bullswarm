@@ -355,6 +355,22 @@ export function paneView(
       return {}
     }
     const rowText = (entry: StepPaneRow): RenderElement[] => {
+      if (entry.toggle) {
+        // Rule 14: the toggle sits in the activity heading, straight after the
+        // heading word; the current view is marked, each word switches to its view.
+        const { lead, trail } = entry.toggle
+        return [
+          <Box key={entry.key} flexDirection="row">
+            <Text dimColor>──</Text>
+            <Text {...toneProps(entry.tone)}>{lead.slice(2)}</Text>
+            <Button key="overview" plain label={shaped.mode === 'overview' ? '● overview' : 'overview'} onPress={() => actions.setStepMode?.('overview')} />
+            <Text dimColor> · </Text>
+            <Button key="detail" plain label={shaped.mode === 'detail' ? '● detail' : 'detail'} onPress={() => actions.setStepMode?.('detail')} />
+            <Text {...toneProps(entry.tone)}>{trail.slice(0, -2)}</Text>
+            <Text dimColor>──</Text>
+          </Box>,
+        ]
+      }
       const lines = wrapText(entry.text, width)
       if (entry.segments && lines.length === 1) return [
         <Text key={entry.key} wrap="truncate-end">
@@ -388,13 +404,8 @@ export function paneView(
     const rows: RenderElement[] = shaped.rows.flatMap(rowText)
 
     const header: RenderElement[] = [
-      <Box key="h0" flexDirection="row" justifyContent="space-between">
+      <Box key="h0" flexDirection="row">
         <Text bold>Step </Text>
-        <Box flexDirection="row">
-          <Button key="overview" plain label={shaped.mode === 'overview' ? '● overview' : 'overview'} onPress={() => actions.setStepMode?.('overview')} />
-          <Text dimColor> · </Text>
-          <Button key="detail" plain label={shaped.mode === 'detail' ? '● detail' : 'detail'} onPress={() => actions.setStepMode?.('detail')} />
-        </Box>
       </Box>,
     ]
     if (!compact) header.push(nav)

@@ -1214,12 +1214,12 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
       page: name, width: 100, height: 30, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha', ...extra,
     }).lines.join('\n');
 
-    // The tab row is the first row of every page, the active tab inverted.
-    // The Step page's top bar also ends on its `overview · detail` toggle.
+    // The tab row is the first row of every page, the active tab inverted;
+    // the Step page's `overview · detail` toggle lives in its activity rule.
     for (const name of DASHBOARD_PAGE_NAMES) {
       assert.deepEqual(
         tabNames(page(name)),
-        ['Home', 'Runs', 'Budget', 'Stats', 'Fleet', ...(name === 'step' || name === 'task' ? ['overview · detail'] : [])],
+        ['Home', 'Runs', 'Budget', 'Stats', 'Fleet'],
         `${name} painted the wrong tab row`,
       );
     }
@@ -1702,13 +1702,15 @@ test('Step keyboard controls select, filter, follow, open detail, and jump secti
       { seq: 2, at: '2026-08-29T00:02:02.000Z', source: 'codex', providerType: 'item.started', kind: 'command_execution', status: 'running', summary: 'run tests', eventId: 'evt-2', toolCallId: 'call-1', toolName: 'shell', arguments: { command: 'npm test' } },
       { seq: 3, at: '2026-08-29T00:02:03.000Z', source: 'codex', providerType: 'item.completed', kind: 'command_execution', status: 'failed', summary: 'test failed', eventId: 'evt-3', toolCallId: 'call-1', toolName: 'shell', result: 'exit 1', durationMs: 1000 },
     ].map((event) => JSON.stringify(event)).join('\n'));
-    const session = shellSession(home, { token: 'wf-alpha', columns: 120, rows: 26 });
+    // 200 columns: the toggle, the counts and the filter control all fit the
+    // activity rule (in a narrower column the control gives way first).
+    const session = shellSession(home, { token: 'wf-alpha', columns: 200, rows: 26 });
     session.press('\r'); // the run page opens the phase's first step
     assert.match(frameHeader(lastFrame(session.output)), /scan · aaa111 · succeeded/);
 
     // Rule 9: one filter control. `t` cycles turns → tools → errors → all, and
     // the activity rule ends with the lens it is showing.
-    assert.match(plain(lastFrame(session.output)), /── activity · .* showing turns ─/);
+    assert.match(plain(lastFrame(session.output)), /── activity · overview · detail · .* showing turns · t to change ─/);
     assert.match(plain(session.press('t')), /showing tools/);
     assert.match(plain(session.press('t')), /showing errors/);
     assert.match(plain(session.press('t')), /showing turns/);
@@ -1729,7 +1731,7 @@ test('Step keyboard controls select, filter, follow, open detail, and jump secti
     // v switches the activity block to the transcript and back (step-v2 rule
     // 12); the footer names what each view holds, and the top bar marks it.
     const transcript = plain(session.press('v'));
-    assert.match(transcript, /── transcript · 1 turn · /);
+    assert.match(transcript, /── transcript · overview · detail · 1 turn · /);
     assert.match(transcript, /08:02:02  \$ run tests\s+1s/);
     assert.match(plain(lastFrame(session.output)), /v overview \(latest turns\)/);
     // Enter on the tool row opens every field its two captures carried.
@@ -1771,11 +1773,13 @@ test('Up and Down on the Step page move one inverse cursor row through the turns
       { seq: 3, at: '2026-08-29T00:02:09.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'third answer' },
     ].map((event) => JSON.stringify(event)).join('\n'));
     const session = shellSession(home, { token: 'wf-alpha', columns: 120, rows: 30 });
-    // The body rows only: the tab row's current tab and the nav are not cursors.
+    // The body rows only: the tab row's current tab, the nav and the activity
+    // rule's current view (`overview · detail`) are not cursors.
     const cursorRows = (screen) => {
       const rows = String(screen).split('\n');
       if (plain(rows[0]) === '') rows.shift();
-      return rows.slice(1, -1).map((row, index) => [index, row]).filter(([, row]) => row.includes('\x1b[7m'));
+      return rows.slice(1, -1).map((row, index) => [index, row])
+        .filter(([, row]) => row.includes('\x1b[7m') && !/── \S+ · overview · detail/.test(plain(row)));
     };
     const run = lastFrame(session.output);
     assert.equal(cursorRows(run).length, 1, 'the Run page draws its selected phase box as the cursor');
@@ -1804,10 +1808,10 @@ test('Up and Down on the Step page move one inverse cursor row through the turns
   } finally { cleanup(); }
 });
 
-test('Step overview · detail: the latest-turns window, the fold line, the top-bar toggle, turn-head clicks and tool rows', async () => {
+test('Step overview · detail: the latest-turns window, the fold line, the activity-rule toggle, turn-head clicks and tool rows', async () => {
   // Step-v2 rules 12–14 driven through the real shell with keys and SGR mouse
   // presses on a twelve-turn step: the overview shows the newest ten turns, the
-  // fold line and the top-bar toggle open the transcript, a click on a turn
+  // fold line and the activity-rule toggle open the transcript, a click on a turn
   // head is Enter on it, and Enter on a transcript row opens its fields.
   const { home, cleanup } = shellFixture();
   try {
@@ -1826,16 +1830,21 @@ test('Step overview · detail: the latest-turns window, the fold line, the top-b
     const raw = () => lastFrame(session.output).split('\n');
     const left = (line) => line.split(' │ ')[0].trimEnd();
     const heads = () => rows().map((line) => left(line).match(/^[ ▶]{0,2}(\d+) {2}\d\d:\d\d {2}answer/)?.[1]).filter(Boolean).map(Number);
-    const cursorText = () => raw().slice(1, -1).filter((line) => line.includes('\x1b[7m')).map((line) => left(plain(line)));
+    const cursorText = () => raw().slice(1, -1)
+      .filter((line) => line.includes('\x1b[7m') && !/── \S+ · overview · detail/.test(plain(line)))
+      .map((line) => left(plain(line)));
 
     // Rule 13: the newest ten turns under one fold line; the cursor on the newest.
     assert.match(frameHeader(lastFrame(session.output)), /scan · aaa111 · succeeded/);
     assert.deepEqual(heads(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     assert.ok(rows().some((line) => left(line) === ' turns 1–2 · 2 commands · click for detail'), rows().join('\n'));
     assert.deepEqual(cursorText(), [' 12  08:04  answer 12 · 1 command']);
-    // Rule 14: the top bar carries the toggle with the current view marked.
-    assert.match(rows()[0], /^ Home  Runs  Budget  Stats  Fleet +overview · detail$/);
-    assert.match(raw()[0], /\x1b\[7moverview\x1b\[0m · detail/);
+    // Rule 14: the toggle sits in the activity rule, straight after its heading
+    // word, the current view marked; the top bar carries none of it.
+    assert.match(rows()[0], /^ Home  Runs  Budget  Stats  Fleet\s*$/);
+    const ruleAt = rows().findIndex((line) => /^── activity · overview · detail · /.test(line));
+    assert.ok(ruleAt > 0, rows().join('\n'));
+    assert.match(raw()[ruleAt], /activity · \x1b\[7moverview\x1b\[0m · detail · /);
 
     // Hovering a turn head lights its own words only: not the padding, not the
     // right column across the divider.
@@ -1859,10 +1868,12 @@ test('Step overview · detail: the latest-turns window, the fold line, the top-b
     clickOn(session, 'answer 5');
     assert.equal(rows().some((line) => /^▶ 5 /.test(line)), false, 'a second click collapses it');
 
-    // Rule 14: `detail` in the top bar opens the transcript and marks it.
+    // Rule 14: a click on `detail` in the activity rule opens the transcript
+    // and marks it.
     clickOn(session, 'detail');
-    assert.ok(rows().some((line) => /^── transcript · 12 turns · /.test(line)), rows().join('\n'));
-    assert.match(raw()[0], /overview · \x1b\[7mdetail\x1b\[0m/);
+    const transcriptAt = rows().findIndex((line) => /^── transcript · overview · detail · 12 turns/.test(line));
+    assert.ok(transcriptAt > 0, rows().join('\n'));
+    assert.match(raw()[transcriptAt], /overview · \x1b\[7mdetail\x1b\[0m/);
     assert.match(rows().at(-1), /v overview \(latest turns\)/);
     // Rule 12: every turn, each expanded — the response, its counts, its rows.
     assert.deepEqual(heads().slice(0, 3), [1, 2, 3]);
@@ -1880,7 +1891,7 @@ test('Step overview · detail: the latest-turns window, the fold line, the top-b
     session.press('\x1b[A');
     assert.deepEqual(cursorText(), [' turns 1–2 · 2 commands · click for detail']);
     session.press('\r');
-    assert.ok(rows().some((line) => /^── transcript · 12 turns · /.test(line)), 'Enter on the fold line opens detail');
+    assert.ok(rows().some((line) => /^── transcript · overview · detail · 12 turns/.test(line)), 'Enter on the fold line opens detail');
     assert.equal(heads()[0], 1, 'the transcript opens at its top');
 
     // Rule 12: the cursor walks the rows; Enter on a tool row opens every field
@@ -1906,8 +1917,85 @@ test('Step overview · detail: the latest-turns window, the fold line, the top-b
     session.press('v');
     assert.deepEqual(heads(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     clickOn(session, 'click for detail');
-    assert.ok(rows().some((line) => /^── transcript · 12 turns · /.test(line)), 'a click on the fold line opens detail');
+    assert.ok(rows().some((line) => /^── transcript · overview · detail · 12 turns/.test(line)), 'a click on the fold line opens detail');
     assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('the Step top bar carries only the page tabs; the toggle is not on it', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const model = dashboardModel(row, {
+      runs: rows.filter((entry) => entry.ongoing),
+      usage: usageFixture(),
+      integration: { ok: true, agents: [] },
+      rollups: rollupFixture(),
+      days: dayFixture(),
+    });
+    for (const width of [55, 100, 200]) for (const stepView of ['overview', 'detail']) {
+      const result = renderDashboardPage(model, {
+        page: 'step', width, height: 30, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha', stepView,
+      });
+      const top = plain(result.lines[0]);
+      assert.doesNotMatch(top, /overview|detail/, `${width}/${stepView}: ${top}`);
+      assert.ok(result.regions.filter((region) => region.y === 1).every((region) => region.action.kind === 'page'),
+        `${width}/${stepView}: every top-bar click opens a page`);
+      // The toggle is on the activity rule instead, two click regions.
+      const screen = result.lines.map(plain);
+      const ruleAt = screen.findIndex((line) => /^── (activity|transcript) · overview · detail/.test(line));
+      assert.ok(ruleAt > 0, `${width}/${stepView}: the toggle is on the activity rule\n${screen.join('\n')}`);
+      const onRule = result.regions.filter((region) => region.y === ruleAt + 1 && region.action.kind === 'stepView');
+      assert.deepEqual(onRule.map((region) => region.action.view), ['overview', 'detail']);
+      assert.deepEqual(onRule.map((region) => screen[ruleAt].slice(region.x1 - 1, region.x2)), ['overview', 'detail']);
+    }
+  } finally { cleanup(); }
+});
+
+test('a click on either word of the activity rule switches the Step view, and a hover lights the word only', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    writeFileSync(join(dir, 'stream-scan-attempt-1.jsonl'), [
+      { seq: 1, at: '2026-08-29T00:02:01.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'first answer' },
+      { seq: 2, at: '2026-08-29T00:02:05.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'second answer' },
+    ].map((event) => JSON.stringify(event)).join('\n'));
+    for (const columns of [55, 200]) {
+      const session = shellSession(home, { token: 'wf-alpha', columns, rows: 40 });
+      session.press('\r'); // the run page opens the phase's first step
+      const rows = () => paintedRows(lastFrame(session.output)).map(plain);
+      const raw = () => lastFrame(session.output).split('\n');
+      const ruleRow = (heading) => rows().findIndex((line) => line.startsWith(`── ${heading} · overview · detail`));
+      const clickWord = (heading, word) => {
+        const at = ruleRow(heading);
+        assert.ok(at >= 0, `${columns}: the ${heading} rule is painted\n${rows().join('\n')}`);
+        const x = rows()[at].indexOf(word, `── ${heading} · `.length) + 1;
+        session.press(`\x1b[<0;${x};${at + 1}M`);
+      };
+      assert.ok(ruleRow('activity') > 0, `${columns}: opens in the overview`);
+      assert.match(raw()[ruleRow('activity')], /activity · \x1b\[7moverview\x1b\[0m · detail/);
+
+      // A hover on the plain word lights that word's text and nothing else.
+      const at = ruleRow('activity');
+      const x = rows()[at].indexOf('detail', '── activity · '.length) + 1;
+      session.press(`\x1b[<35;${x + 1};${at + 1}M`);
+      const lit = raw()[at];
+      assert.match(lit, /· \x1b\[7mdetail\x1b\[27m/, `${columns}: ${JSON.stringify(lit)}`);
+      assert.equal(plain(lit), rows()[at], `${columns}: the hover keeps the text`);
+      session.press('\x1b[<35;1;3M'); // off the rule
+
+      clickWord('activity', 'detail');
+      assert.ok(ruleRow('transcript') > 0, `${columns}: a click on detail opens the transcript\n${rows().join('\n')}`);
+      assert.match(raw()[ruleRow('transcript')], /transcript · overview · \x1b\[7mdetail\x1b\[0m/);
+      assert.match(rows().at(-1), /v overview/);
+
+      clickWord('transcript', 'overview');
+      assert.ok(ruleRow('activity') > 0, `${columns}: a click on overview returns to the overview`);
+      assert.match(raw()[ruleRow('activity')], /activity · \x1b\[7moverview\x1b\[0m · detail/);
+      assert.match(rows().at(-1), /v detail/);
+      assert.equal(await session.quit(), 0);
+    }
   } finally { cleanup(); }
 });
 

@@ -17,6 +17,8 @@ export type StepPaneRow = {
   turnIndex?: number
   expandable?: boolean
   opensDetail?: boolean
+  /** A heading that carries the `overview · detail` toggle: `text` is `${lead}overview · detail${trail}`. */
+  toggle?: { lead: string; trail: string }
 }
 
 export type StepPaneBlock = {
@@ -298,6 +300,23 @@ function costRows(page: Raw): StepPaneRow[] {
   return rows.length ? rows : [row('cost-empty', 'text', '—', 'dim')]
 }
 
+const TOGGLE_TEXT = 'overview · detail'
+
+/**
+ * The activity block's heading (rule 14): the heading word, the toggle straight
+ * after it, then the counts. A narrow pane drops count segments from the end,
+ * the filter control first; the word and the toggle are never cut. The current
+ * view is marked with two cells (`● ` in the pane, brackets in the frames).
+ */
+function headingWithToggle(label: string, segments: readonly string[], width: number): { lead: string; trail: string; title: string } {
+  const lead = `── ${label} · `
+  let keep = segments.length
+  const trailOf = (count: number): string => `${count ? ` · ${segments.slice(0, count).join(' · ')}` : ''} ──`
+  while (keep > 0 && lead.length + TOGGLE_TEXT.length + trailOf(keep).length + 2 > width) keep -= 1
+  const trail = trailOf(keep)
+  return { lead, trail, title: `${lead.slice(3)}${TOGGLE_TEXT}${trail.slice(0, -3)}` }
+}
+
 /** Shape the action-show record into the finished Step v2 pane. */
 export function shapeStep(value: unknown, options: StepPaneOptions = {}): StepPaneModel {
   const page = stepPageOf(value)
@@ -312,9 +331,13 @@ export function shapeStep(value: unknown, options: StepPaneOptions = {}): StepPa
   const resultVerdict = nullable(result.verdictText)
   const activityTotals = record(activity.totals) ?? {}
   const turnCount = list(activity.turns).length
-  const activityTitle = mode === 'detail'
-    ? `transcript · ${turnCount} turn${turnCount === 1 ? '' : 's'} · ${numberOf(activityTotals.commands) ?? 0} commands · ${numberOf(activityTotals.edits) ?? 0} edits · ${numberOf(activityTotals.errors) ?? 0} errors · showing all`
-    : `activity · ${turnCount} turn${turnCount === 1 ? '' : 's'} · showing turns`
+  const commandCount = numberOf(activityTotals.commands) ?? 0
+  const editCount = numberOf(activityTotals.edits) ?? 0
+  const errorCount = numberOf(activityTotals.errors) ?? 0
+  const activityHeading = headingWithToggle(mode === 'detail' ? 'transcript' : 'activity', mode === 'detail'
+    ? [`${turnCount} turn${turnCount === 1 ? '' : 's'}`, `${commandCount} commands`, `${editCount} edits`, `${errorCount} errors`, 'showing all']
+    : [`${turnCount} turn${turnCount === 1 ? '' : 's'}`, 'showing turns'], options.width ?? 120)
+  const activityTitle = activityHeading.title
   const resultTitle = result.running === true ? 'now · not yet' : `result · ${status}${resultVerdict ? ` · ${resultVerdict}` : ''}`
   const taskTitle = `task${task.lane ? ` · ${String(task.lane)}` : ''}${task.kind ? ` · ${String(task.kind)}` : ''}`
   const cost = record(presentation.cost) ?? {}
@@ -330,7 +353,10 @@ export function shapeStep(value: unknown, options: StepPaneOptions = {}): StepPa
     ? ['header', 'result', 'activity', 'task', 'cost']
     : ['header', 'activity', 'result', 'task', 'cost']
   const blocks = order.map(key => blocksByKey[key])
-  const rows = blocks.flatMap(block => block.key === 'header' ? block.rows : [row(`${block.key}-section`, 'section', `── ${block.title} ──`), ...block.rows])
+  const sectionRow = (block: StepPaneBlock): StepPaneRow => block.key === 'activity'
+    ? row('activity-section', 'section', `${activityHeading.lead}${TOGGLE_TEXT}${activityHeading.trail}`, 'normal', { toggle: { lead: activityHeading.lead, trail: activityHeading.trail } })
+    : row(`${block.key}-section`, 'section', `── ${block.title} ──`)
+  const rows = blocks.flatMap(block => block.key === 'header' ? block.rows : [sectionRow(block), ...block.rows])
   return {
     mode,
     actionId: oneLine(header.actionId ?? fallback?.id, 'step'),

@@ -78,9 +78,11 @@ const wrap = (value, width) => {
 };
 const frame = (shapeStep, doc, width, mode) => {
   const model = shapeStep(doc.step, { width, mode });
-  const rows = model.rows.flatMap((entry) => wrap(entry.text, width));
+  // The toggle sits in the activity heading, straight after its word; the
+  // current view is bracketed where the pane marks it with a dot.
   const toggle = mode === 'overview' ? '[overview] · detail' : 'overview · [detail]';
-  rows.unshift(`Step${' '.repeat(Math.max(1, width - [...toggle].length - 4))}${toggle}`);
+  const rows = model.rows.flatMap((entry) => wrap(entry.toggle ? `${entry.toggle.lead}${toggle}${entry.toggle.trail}` : entry.text, width));
+  rows.unshift('Step');
   rows.push(model.toggleHint);
   return `${rows.join('\n')}\n`;
 };
@@ -114,7 +116,9 @@ try {
         const rendered = frame(shapeStep, doc, width, mode);
         const expected = name === 'finished' ? 'succeeded' : name;
         if (!rendered.includes(expected)) throw new Error(`${name} ${mode} ${width}: missing ${expected} header`);
-        if (!rendered.includes(mode === 'overview' ? `[${mode}] · detail` : `overview · [${mode}]`)) throw new Error(`${name} ${mode} ${width}: missing top toggle`);
+        const heading = mode === 'overview' ? '── activity · [overview] · detail' : '── transcript · overview · [detail]';
+        if (!rendered.split('\n').some((line) => line.startsWith(heading) && [...line].length <= width)) throw new Error(`${name} ${mode} ${width}: toggle missing from the activity heading`);
+        if (rendered.split('\n')[0] !== 'Step') throw new Error(`${name} ${mode} ${width}: the toggle is still on the Step top line`);
         if (name === 'finished' && (!rendered.includes('owns  ') || !rendered.includes('after  ') || !rendered.includes('affects  '))) throw new Error(`${name} ${mode} ${width}: task facts missing`);
         if (!rendered.includes('API rate') || !rendered.includes(' plan  ')) throw new Error(`${name} ${mode} ${width}: two cost rows missing`);
         if (mode === 'overview' && doc.step.presentation.activity.turns.length > (width < 100 ? 5 : 10) && !rendered.includes('click for detail')) throw new Error(`${name} ${width}: latest-turn fold missing`);

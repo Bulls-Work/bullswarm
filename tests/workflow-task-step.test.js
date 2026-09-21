@@ -49,6 +49,14 @@ class FakeOutput extends EventEmitter {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** The painted rows a chunk of terminal output positions, as `[row, text]`. */
+function positionedRows(chunk) {
+  const parts = String(chunk).split(/\x1b\[(\d+);1H/);
+  const rows = [];
+  for (let at = 1; at < parts.length; at += 2) rows.push([Number(parts[at]), parts[at + 1]]);
+  return rows;
+}
+
 test('task adapter reads the record and copied sibling artifacts without following source-home paths', () => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-task-step-'));
   try {
@@ -173,20 +181,22 @@ test('dashboard task route uses the Step toggle and Esc leaves the task page', a
     await settle();
     assert.match(plain(output.text.slice(beforeOpen)), /build task · key-task/);
     assert.match(plain(output.text.slice(beforeOpen)), /── result · succeeded/);
-    // A standalone task gets the same page: the top bar ends on the toggle.
+    // A standalone task gets the same page: the toggle sits in the activity
+    // rule after its heading word, and the top bar carries none of it.
     const opened = output.text.slice(beforeOpen);
-    assert.match(plain(opened), / Home  Runs  Budget  Stats  Fleet +overview · detail/);
-    assert.match(opened, /\x1b\[7moverview\x1b\[0m · detail/);
+    assert.equal(positionedRows(output.text).filter(([row, text]) => row === 1 && /overview|detail/.test(plain(text))).length, 0);
+    assert.match(opened, /activity · \x1b\[7moverview\x1b\[0m · detail · 0 turns/);
     const beforeToggle = output.text.length;
     input.press('v');
     await settle();
     // 80 columns stacks like the phone, whose footer keeps the short hint.
     assert.match(plain(output.text.slice(beforeToggle)), /v overview/);
-    assert.match(output.text.slice(beforeToggle), /overview · \x1b\[7mdetail\x1b\[0m/);
-    // A click on `overview` in the top bar switches back (79 painted columns:
-    // the toggle's 17 cells end one short of the edge).
+    assert.match(output.text.slice(beforeToggle), /transcript · overview · \x1b\[7mdetail\x1b\[0m/);
+    // A click on `overview` in the transcript rule switches back.
+    const [ruleRow, ruleText] = positionedRows(output.text.slice(beforeToggle))
+      .find(([, text]) => plain(text).startsWith('── transcript · overview · detail'));
     const beforeClick = output.text.length;
-    input.press('\x1b[<0;62;1M');
+    input.press(`\x1b[<0;${plain(ruleText).indexOf('overview') + 1};${ruleRow}M`);
     await settle();
     assert.match(output.text.slice(beforeClick), /\x1b\[7moverview\x1b\[0m · detail/);
     assert.match(plain(output.text.slice(beforeClick)), /v detail/);
@@ -364,7 +374,7 @@ test('a fake-provider run persists stream-<id>.jsonl beside the task file and th
     const body = bodyFor();
     renderStepPage(model, { width: 120, stepView: 'overview' }, body);
     const text = plain(body.lines.join('\n'));
-    assert.match(text, /── activity · 2 turns/);
+    assert.match(text, /── activity · overview · detail · 2 turns/);
     assert.match(text, /Reviewed the prior attempt block/);
     assert.match(text, /The answering fixture completed the bounded dispatch/);
     assert.doesNotMatch(text, /no event stream path recorded/);

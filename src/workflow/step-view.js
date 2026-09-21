@@ -309,12 +309,12 @@ function headerLines(presentation, { width, phone }) {
 
 function activityCounts(totals, { phone, running, compact = phone }) {
   const turns = totals.turns ?? 0;
-  return countList([
+  return [
     `${turns} turn${turns === 1 ? '' : 's'}${running && !phone ? ' so far' : ''}`,
     compact ? `${totals.commands} cmds` : `${totals.commands} command${totals.commands === 1 ? '' : 's'}`,
     `${totals.edits} edit${totals.edits === 1 ? '' : 's'}`,
     compact ? `${totals.errors} err` : `${totals.errors} error${totals.errors === 1 ? '' : 's'}`,
-  ]);
+  ];
 }
 
 /** The overview's default lens reads `turns`; the detail log reads `all`. */
@@ -323,51 +323,94 @@ function filterLabel(presentation, view) {
   return view === 'overview' && filter === 'all' ? 'turns' : filter;
 }
 
+/** The rule's count segments, in the order a narrow rule drops them from the end. */
 function activityTitle(presentation, { phone, view, compact }) {
   const activity = presentation.activity;
   const totals = { ...activity.totals, turns: activity.turns.length };
   if (activity.running && phone) {
-    return countList([
+    return [
       `${totals.turns} turn${totals.turns === 1 ? '' : 's'}`,
       `showing ${filterLabel(presentation, view)}`,
-    ]);
+    ];
   }
   return activityCounts(totals, { phone, running: activity.running, compact });
 }
 
 /**
- * The activity rule ends with its one filter control; the follow marker owns
- * the last cells of the rule while the step runs (rule 9). The reserved tail
- * keeps the control in the same place whether or not it is following.
+ * The block's heading rule: the heading word, the `overview · detail` toggle
+ * straight after it (rule 14), the counts, then the one filter control. The
+ * follow marker owns the last cells of the rule while the step runs (rule 9);
+ * the reserved tail keeps the control in the same place whether or not it is
+ * following. When the column is short the control gives way first (its
+ * `· t to change`, then the dashes after it, then the control itself), then
+ * the counts drop from the end; the heading word and the toggle are never cut. Returns the painted line and the toggle's click regions as
+ * columns of that line.
  */
-function activityRule(title, suffix, width, { following }) {
-  const paintedTitle = paintErrorCounts(title);
-  if (!suffix) return paintRule(rule(paintedTitle, null, width));
+function activityRule(label, view, segments, suffix, width, { following }) {
+  const toggle = stepViewToggle(view);
+  const lead = `${label} · `;
+  const titleOf = (counts) => {
+    const text = paintErrorCounts(countList(counts));
+    return `${lead}${toggle.text}${text ? ` · ${text}` : ''}`;
+  };
+  // Where the toggle starts on the line: the leading `── `, then the heading.
+  const start = 3 + lead.length;
+  const regionsOf = () => toggle.regions.map((region) => ({
+    x1: start + region.x,
+    x2: start + region.x + region.width - 1,
+    action: region.action,
+  }));
   // The control is the first thing to shorten when the column cannot hold it,
   // then the dashes that follow it — the follow marker is the last to go, and
-  // only because the header line already carries it. The counts in the title
-  // never shrink.
+  // only because the header line already carries it.
   const tails = following
     ? [`── following ${glyphs().ongoing}`, `── ${glyphs().ongoing}`, '──────', '──']
     : ['──────────', '──────', '──'];
-  for (const tail of tails) {
-    for (const candidate of [suffix, suffix.replace(/ · t to change$/, ''), null]) {
-      if (!candidate) break;
-      const head = `── ${paintedTitle} `;
-      const middle = ` ${candidate} `;
-      const fill = width - visibleLength(head) - visibleLength(middle) - visibleLength(tail);
-      if (fill >= 3) {
-        // Colour rules: every dash run on a block rule is dim, the filter
-        // control is meta, and a `following ●` marker reads as running.
-        const paintedTail = paintRule(tail).replace(
-          new RegExp(`following ${escapeRegExp(glyphs().ongoing)}|${escapeRegExp(glyphs().ongoing)}`),
-          (mark) => tint(mark, 'amber'),
-        );
-        return `${dimCell('──')} ${paintedTitle} ${dimCell('─'.repeat(fill))} ${dimCell(candidate)} ${paintedTail}`;
+  const plain = (counts) => {
+    const head = `── ${titleOf(counts)} `;
+    const fill = width - visibleLength(head);
+    return fill >= 2 ? { line: paintRule(`${head}${'─'.repeat(fill)}`), regions: regionsOf() } : null;
+  };
+  const withControl = (counts) => {
+    if (!suffix) return null;
+    for (const tail of tails) {
+      for (const candidate of [suffix, suffix.replace(/ · t to change$/, '')]) {
+        const head = `── ${titleOf(counts)} `;
+        const middle = ` ${candidate} `;
+        const fill = width - visibleLength(head) - visibleLength(middle) - visibleLength(tail);
+        if (fill >= 3) {
+          // Colour rules: every dash run on a block rule is dim, the filter
+          // control is meta, and a `following ●` marker reads as running.
+          const paintedTail = paintRule(tail).replace(
+            new RegExp(`following ${escapeRegExp(glyphs().ongoing)}|${escapeRegExp(glyphs().ongoing)}`),
+            (mark) => tint(mark, 'amber'),
+          );
+          return {
+            line: `${dimCell('──')} ${titleOf(counts)} ${dimCell('─'.repeat(fill))} ${dimCell(candidate)} ${paintedTail}`,
+            regions: regionsOf(),
+          };
+        }
       }
     }
+    return null;
+  };
+  // The control (and the dashes after it) give way before the counts do: the
+  // full counts keep the rule until neither the control nor its dashes fit.
+  const found = withControl(segments) ?? plain(segments);
+  if (found) return found;
+  // Then the counts shorten: a zero (`0 edits`) goes before a fact, and once
+  // none is left the rest drop from the end.
+  const kept = [...segments];
+  while (kept.length > 0) {
+    const zero = kept.findLastIndex((count, index) => index > 0 && /^0 /.test(count));
+    kept.splice(zero > 0 ? zero : kept.length - 1, 1);
+    const shorter = plain(kept);
+    if (shorter) return shorter;
   }
-  return paintRule(rule(title, null, width));
+  // Below any width the heading and toggle fit: clip, and keep only the
+  // regions that are still fully on the line.
+  const line = paintRule(cut(`── ${titleOf([])}`, width));
+  return { line, regions: regionsOf().filter((region) => region.x2 <= width) };
 }
 
 function turnHead(turn, { mark }) {
@@ -584,23 +627,24 @@ function activityLines(presentation, {
   limit = 10,
 }) {
   const activity = presentation.activity;
-  const title = `activity · ${activityTitle(presentation, { phone, view, compact })}`;
+  const segments = activityTitle(presentation, { phone, view, compact });
   const lines = [];
   const marks = [];
-  if (!activity.available) {
-    lines.push(paintRule(rule(title, null, width)));
-    lines.push(fit(` ${dimCell(`${activity.reason ?? 'event stream unavailable'}.`)}`, width));
-    lines.push(fit(` ${dimCell('turns, tools, and event timing cannot be reconstructed.')}`, width));
-    return { lines, marks, windowEnd: null };
-  }
   // One filter control, and the follow marker only while the step runs
   // (rule 9): a finished page has nothing to follow.
-  const suffix = phone ? null : `showing ${filterLabel(presentation, view)} · t to change`;
+  const suffix = phone || !activity.available ? null : `showing ${filterLabel(presentation, view)} · t to change`;
   const following = Boolean(activity.running && activity.following);
-  lines.push(activityRule(title, suffix, width, { following }));
+  const heading = activityRule('activity', view, segments, suffix, width, { following });
+  const ruleRegions = heading.regions;
+  lines.push(heading.line);
+  if (!activity.available) {
+    lines.push(fit(` ${dimCell(`${activity.reason ?? 'event stream unavailable'}.`)}`, width));
+    lines.push(fit(` ${dimCell('turns, tools, and event timing cannot be reconstructed.')}`, width));
+    return { lines, marks, ruleRegions, windowEnd: null };
+  }
   if (!activity.turns.length) {
     lines.push(fit(` ${dimCell(`no response turns captured · ${activity.events} atomic events`)}`, width));
-    return { lines, marks, windowEnd: null };
+    return { lines, marks, ruleRegions, windowEnd: null };
   }
   // Rule 13: the newest turns, and one line for the rest that opens detail.
   const window = overviewWindow(activity.turns, { limit, windowEnd, following });
@@ -637,7 +681,7 @@ function activityLines(presentation, {
     const range = newer.length === 1 ? `turn ${newer[0].number}` : `turns ${newer[0].number}–${newer.at(-1).number}`;
     lines.push(fit(` ${dimCell(`${range} · f to follow`)}`, width));
   }
-  return { lines, marks, windowEnd: window.end, cursor };
+  return { lines, marks, ruleRegions, windowEnd: window.end, cursor };
 }
 
 function nowLines(presentation, { width, nowMs = null }) {
@@ -970,14 +1014,17 @@ function transcriptLines(step, presentation, {
 }) {
   const activity = presentation.activity;
   const filter = filterLabel(presentation, view);
-  const title = `transcript · ${activityTitle(presentation, { phone, view, compact })}`;
-  const suffix = phone ? null : `showing ${filter} · t to change`;
-  const lines = [activityRule(title, suffix, width, { following: Boolean(activity.running && activity.following) })];
+  const suffix = phone || !activity.available ? null : `showing ${filter} · t to change`;
+  const heading = activityRule('transcript', view, activityTitle(presentation, { phone, view, compact }), suffix, width, {
+    following: Boolean(activity.running && activity.following),
+  });
+  const ruleRegions = heading.regions;
+  const lines = [heading.line];
   const marks = [];
   if (!activity.available) {
     lines.push(fit(` ${dimCell(`${activity.reason ?? 'event stream unavailable'}.`)}`, width));
     lines.push(fit(` ${dimCell('turns, tools, and event timing cannot be reconstructed.')}`, width));
-    return { lines, marks, cursor: null };
+    return { lines, marks, ruleRegions, cursor: null };
   }
   const events = new Map((step?.activity?.events ?? []).map((event) => [Number(event.index), event]));
   const room = Math.max(1, width - GUTTER);
@@ -1003,7 +1050,7 @@ function transcriptLines(step, presentation, {
   }
   if (!activity.turns.length) {
     lines.push(fit(` ${dimCell(`no response turns captured · ${activity.events} atomic events`)}`, width));
-    return { lines, marks, cursor };
+    return { lines, marks, ruleRegions, cursor };
   }
   for (const turn of activity.turns) {
     const rows = turn.toolRows ?? [];
@@ -1017,7 +1064,7 @@ function transcriptLines(step, presentation, {
     lines.push(fit(`${indent}${dimCounts(turn.countsText)}`, width));
     toolRows(rows);
   }
-  return { lines, marks, cursor };
+  return { lines, marks, ruleRegions, cursor };
 }
 
 // --- the page -------------------------------------------------------------
@@ -1037,9 +1084,10 @@ export function stepFooterText(presentation, { phone, view }) {
 }
 
 /**
- * Rule 14: the Step page's top bar carries `overview · detail`, the current
- * view inverted like the active tab, each word a click region that switches
- * to its view (`v` toggles the same state).
+ * Rule 14: the activity block's heading rule carries `overview · detail`
+ * straight after the heading word, the current view inverted like the active
+ * tab, each word a click region that switches to its view (`v` toggles the
+ * same state). The top tab bar carries nothing of it.
  */
 export function stepViewToggle(view) {
   return periodToggle([
@@ -1153,10 +1201,12 @@ export function renderStepPage(step, opts = {}, body) {
       : anchor.rows.find((row) => (activity.cursor === -1 ? row.kind === 'fold' : row.turnIndex === activity.cursor))?.y ?? null;
   anchor.cursorTurn = view === 'overview' ? activity.cursor ?? null : null;
   anchor.windowEnd = activity.windowEnd ?? null;
-  // Click regions: a turn head toggles its turn like Enter (rule 14, hover-lit
-  // on its text only), the fold line opens detail, and a transcript tool row
-  // opens its captured fields.
+  // Click regions: the rule's toggle words, a turn head toggles its turn like
+  // Enter (rule 14, hover-lit on its text only), the fold line opens detail,
+  // and a transcript tool row opens its captured fields.
   if (Array.isArray(body.regions)) {
+    // The toggle's words sit on the activity rule, the block's first line.
+    for (const region of activity.ruleRegions ?? []) body.regions.push({ ...region, y: activityRow });
     for (const row of anchor.rows) {
       const line = activityColumn[row.line];
       const x2 = textExtent(line, activityWidth);

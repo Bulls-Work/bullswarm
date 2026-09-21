@@ -121,6 +121,9 @@ function plain(value) {
   return String(value ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
 
+/** The activity rule's current view is inverse like the active tab, never a cursor. */
+const isToggleRule = (line) => /── \S+ · overview · detail/.test(plain(line));
+
 function rgb(hex) {
   const value = Number.parseInt(hex.slice(1), 16);
   return `\x1b[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
@@ -169,7 +172,7 @@ test('the turn Up/Down selected is the one inverse row on real Step frames, in A
   }, { actionId: 'accept', attemptOrdinal: 5, nowMs: fixedNow });
   const turns = model.presentation.activity.turns;
   assert.ok(turns.length >= 2, 'the real attempt has two turns to move between');
-  const inverseRows = (lines) => lines.map((line, index) => [index, line]).filter(([, line]) => line.includes('\x1b[7m'));
+  const inverseRows = (lines) => lines.map((line, index) => [index, line]).filter(([, line]) => line.includes('\x1b[7m') && !isToggleRule(line));
   const check = (width) => {
     const untouched = render(model, width);
     // Step-v2 rule 13: the overview opens with the cursor on the newest turn.
@@ -219,7 +222,7 @@ test('the transcript cursor is one inverse tool row, and Enter opens its capture
   assert.ok(tools.length >= 3, 'the real transcript has tool rows to select');
   const inverseRows = (lines) => lines
     .map((line, index) => [index, line])
-    .filter(([, line]) => line.includes('\x1b[7m'));
+    .filter(([, line]) => line.includes('\x1b[7m') && !isToggleRule(line));
   const check = (width) => {
     const untouched = render(model, width, { stepView: 'detail' });
     assert.deepEqual(inverseRows(untouched), [], `${width}: the transcript has no cursor before navigation`);
@@ -317,8 +320,10 @@ test('running, finished, and failed Step frames stay width-bounded in both views
       assert.match(dashboard, view === 'overview'
         ? (wider ? /v detail \(every turn in full\)/ : /v detail/)
         : (wider ? /v overview \(latest turns\)/ : /v overview/));
-      // Rule 14: the top bar carries the toggle, the current view inverted.
-      assert.match(dashboard.split('\n')[0], /overview · detail$/);
+      // Rule 14: the toggle sits in the activity rule, the top bar has none.
+      assert.doesNotMatch(plain(dashboard.split('\n')[0]), /overview|detail/);
+      assert.match(dashboard.split('\n').map(plain).join('\n'), view === 'overview'
+        ? /^── activity · overview · detail/m : /^── transcript · overview · detail/m);
       writeFileSync(join(frameDir, `rendered-${state}-${view}-${width}.txt`), `${lines.map(plain).join('\n')}\n`);
     }
   }
@@ -330,7 +335,7 @@ test('the desk draws two columns and the phone stacks result → activity → ta
   const rule = desk.find((line) => line.startsWith('── activity ·'));
   assert.ok(rule, 'the activity rule is on the desk');
   assert.match(rule, / ── result · not yet /);
-  assert.match(rule.slice(0, 132), /showing turns · t to change ── following ●$/);
+  assert.match(rule.slice(0, 132), /^── activity · overview · detail · 2 turns so far · 3 commands · 0 edits · 0 errors ─+ showing turns · t to change ── following ●$/);
   assert.equal([...rule.slice(0, 132)].length, 132);
   assert.ok(desk.some((line) => /^── task /.test(line.slice(135))), 'task card on the right');
   assert.ok(desk.some((line) => /^── cost /.test(line.slice(135))), 'cost card on the right');
@@ -341,7 +346,8 @@ test('the desk draws two columns and the phone stacks result → activity → ta
   const narrowRule = narrow.find((line) => line.startsWith('── activity ·'));
   assert.ok(narrowRule, '120 columns keeps the two columns');
   assert.equal([...narrowRule.slice(0, 77)].length, 77);
-  assert.match(narrowRule.slice(0, 77), /showing turns/);
+  // The toggle is never cut; the filter control gave way to it first.
+  assert.match(narrowRule.slice(0, 77), /^── activity · overview · detail · 2 turns so far · 3 cmds · 0 edits ─+$/);
   assert.ok(narrow.filter((line) => line.includes(' │ ')).every((line) => [...line].length <= 120));
   assert.equal(render(finished, 55).map(plain).some((line) => line.includes(' │ ')), false);
 });
@@ -352,17 +358,19 @@ test('running activity leads with the now block and keeps the filter control', (
   const selected = render(model, 120, { stepSelectedEventIndex: 3, stepFollow: false, stepFilter: 'tools' });
   const text = selected.map(plain).join('\n');
   assert.match(text, /● step-view · stefx · running · attempt 1 of 1/);
-  assert.match(text, /showing tools/);
-  assert.match(text, /2 turns so far · 3 cmds · 0 edits · 0 err/);
+  // The control and the last zero count gave way to the toggle in the 77-cell column.
+  assert.match(text, /── activity · overview · detail · 2 turns so far · 3 cmds · 0 edits ─/);
+  // The control has room beside the toggle on the wide desk.
+  const wide = render(model, 200, { stepSelectedEventIndex: 3, stepFollow: false, stepFilter: 'tools' });
+  assert.match(wide.map(plain).join('\n'), /── activity · overview · detail · .* showing tools · t to change/);
   assert.doesNotMatch(text, /following ●/);
   assert.match(text, /· 1 command\b/);
   const filtered = render(model, 55, { stepSelectedEventIndex: 3, stepFollow: false, stepFilter: 'tools' });
-  assert.match(filtered.map(plain).join('\n'), /showing tools/);
   assert.match(filtered.map(plain).join('\n'), /now · 7 events · 3 cmds · 0 edits · 0 err/);
 
   const detailModel = stepPageModel(base.modelInput, { nowMs: fixedNow, selectedEventIndex: 6, follow: false, view: 'detail' });
   const detail = render(detailModel, 55, { stepView: 'detail', stepDetail: true, stepSelectedEventIndex: 6, stepFollow: false });
-  assert.match(detail.map(plain).join('\n'), /── transcript · 2 turns · showing all/);
+  assert.match(detail.map(plain).join('\n'), /── transcript · overview · detail · 2 turns ─/);
   assert.match(detail.map(plain).join('\n'), /seq 7 · 2026-09-19T17:51/);
   assert.match(detail.map(plain).join('\n'), /eventId|toolCallId|duration/i);
 
@@ -657,7 +665,7 @@ test('the overview cursor can sit on the fold line, and turn heads and the fold 
       assert.equal(region.x2, own.replace(/\s+$/, '').length, `${width}: ${text}`);
     }
     const onFold = render(model, width, { stepTurnIndex: -1 });
-    const inverse = onFold.filter((line) => line.includes('\x1b[7m'));
+    const inverse = onFold.filter((line) => line.includes('\x1b[7m') && !isToggleRule(line));
     assert.equal(inverse.length, 1, `${width}: one cursor on the fold line`);
     assert.match(plain(inverse[0]), /^ turns 1–\d+ · /);
   }
@@ -669,7 +677,7 @@ test('the transcript lists every turn in full with one row per tool, and every r
   const body = regionBody();
   renderStepPage(model, { width: 200, nowMs: fixedNow, stepView: 'detail' }, body);
   const lines = body.lines.map(plain);
-  assert.match(lines.find((line) => line.startsWith('── transcript ·')), /── transcript · 31 turns · /);
+  assert.match(lines.find((line) => line.startsWith('── transcript ·')), /── transcript · overview · detail · 31 turns · /);
   const anchor = body.anchor.step;
   assert.equal(anchor.view, 'detail');
   assert.deepEqual(anchor.rows.filter((row) => row.kind === 'turn').map((row) => row.number), turns.map((turn) => turn.number));
@@ -700,7 +708,7 @@ test('the transcript filter narrows to tool turns or error rows', () => {
   assert.equal(toolLines.length, errorRows.length);
 });
 
-test('the top-bar toggle marks the current view and each word switches to its view', () => {
+test('the toggle marks the current view and each word switches to its view', () => {
   for (const view of ['overview', 'detail']) {
     const toggle = stepViewToggle(view);
     assert.equal(plain(toggle.text), 'overview · detail');
@@ -711,6 +719,59 @@ test('the top-bar toggle marks the current view and each word switches to its vi
       { kind: 'stepView', view: 'detail' },
     ]);
     assert.deepEqual(toggle.regions.map((region) => [region.x, region.width]), [[1, 8], [12, 6]]);
+  }
+});
+
+test('the activity rule carries the toggle at 55 and 200, both views, running and finished, never dropped or cut', () => {
+  const { running, finished } = makeModels();
+  const words = { overview: 'overview', detail: 'detail' };
+  for (const [state, model] of Object.entries({ running, finished })) for (const view of ['overview', 'detail']) for (const width of [55, 200]) {
+    const label = `${state}/${view}/${width}`;
+    const body = regionBody();
+    const header = renderStepPage(model, { width, nowMs: fixedNow, stepView: view }, body);
+    // Every line fits its width in display cells, on the desk's two columns too.
+    for (const line of [header, ...body.lines]) assert.ok([...plain(line)].length <= width, `${label}: ${plain(line)}`);
+    const at = body.lines.findIndex((line) => /^(\x1b\[2m)?──(\x1b\[0m)? (activity|transcript) · /.test(line));
+    assert.ok(at >= 0, `${label}: the activity rule is painted`);
+    const raw = body.lines[at];
+    const text = plain(raw);
+    const column = width >= 160 ? text.slice(0, 132) : text;
+    // The heading word, then the toggle straight after it, before any count.
+    assert.match(column, new RegExp(`^── ${view === 'detail' ? 'transcript' : 'activity'} · overview · detail( · |\\s|─)`), label);
+    // The current view is inverse, the other word plain.
+    const inverse = view === 'overview' ? '\x1b[7moverview\x1b[0m · detail' : 'overview · \x1b[7mdetail\x1b[0m';
+    assert.ok(raw.includes(inverse), `${label}: ${JSON.stringify(raw.slice(0, 120))}`);
+    assert.equal(raw.match(/\x1b\[7m/g).length, 1, `${label}: exactly one inverse word`);
+    // Each word is a click region over exactly its own cells.
+    const regions = body.regions.filter((region) => region.y === at + 1);
+    assert.deepEqual(regions.map((region) => region.action), [
+      { kind: 'stepView', view: 'overview' },
+      { kind: 'stepView', view: 'detail' },
+    ], label);
+    assert.deepEqual(regions.map((region) => column.slice(region.x1 - 1, region.x2)), [words.overview, words.detail], label);
+    assert.ok(regions.every((region) => region.x2 <= (width >= 160 ? 132 : width)), `${label}: regions stay in the column`);
+  }
+});
+
+test('a narrow rule sheds the control and dashes first, then counts, and keeps the toggle whole', () => {
+  const model = realClaudeModel();
+  const ruleAt = (width, view = 'overview') => render(model, width, { stepView: view })
+    .map(plain).map((line) => (width >= 160 ? line.slice(0, 132).trimEnd() : line)).find((line) => /^── (activity|transcript) · /.test(line));
+  // Wide: counts, the whole control, dashes.
+  assert.match(ruleAt(200), /^── activity · overview · detail · 31 turns · 231 commands · 1 edit · 1 error ─+ showing turns · t to change ─+$/);
+  assert.match(ruleAt(200, 'detail'), /^── transcript · overview · detail · 31 turns · 231 commands · 1 edit · 1 error ─+ showing all · t to change ─+$/);
+  // The 78-cell desk column: the control goes before any count does.
+  assert.match(render(model, 120).map(plain).find((line) => line.startsWith('── activity ·')).slice(0, 77), /^── activity · overview · detail · 31 turns · 231 cmds · 1 edit · 1 err ─+$/);
+  // The phone: counts shorten from the end while the toggle stays whole.
+  assert.match(ruleAt(55), /^── activity · overview · detail · 31 turns ─+$/);
+  assert.match(ruleAt(55, 'detail'), /^── transcript · overview · detail · 31 turns ─+$/);
+  assert.match(ruleAt(40), /^── activity · overview · detail ─+$/);
+  for (const width of [55, 40, 34]) {
+    for (const view of ['overview', 'detail']) {
+      const rule = ruleAt(width, view);
+      assert.ok(rule.includes('overview · detail'), `${width}/${view}: ${rule}`);
+      assert.ok([...rule].length <= width, `${width}/${view}: ${rule}`);
+    }
   }
 });
 
@@ -726,15 +787,16 @@ test('the Step v2 record quotes the transcript frames the code renders, beside t
     const before = committed(`0.35.2-before-overview-finished-${width}.txt`).join('\n');
     const after = frames.get(`0.35.2-overview-finished-${width}.txt`).join('\n');
     // Before: every turn, the toggle only in the footer. After: the window,
-    // its fold line and the top-bar toggle.
+    // its fold line and the toggle in the activity rule.
     assert.match(before, /^ {0,2}1 {2}01:50 {2}/m);
     assert.match(before, width < 100 ? /v detail/ : /v detail \(every event\)/);
     assert.equal(before.split('\n')[0], ' Home  Runs  Budget  Stats  Fleet');
     assert.doesNotMatch(after, /^ {0,2}1 {2}01:50 {2}/m);
     assert.match(after, /^ turns 1–(5|10) · .*click for detail/m);
-    assert.match(after.split('\n')[0], /overview · detail$/);
+    assert.equal(after.split('\n')[0], ' Home  Runs  Budget  Stats  Fleet');
+    assert.match(after, /^── activity · overview · detail · /m);
     assert.match(committed(`0.35.2-before-detail-finished-${width}.txt`).join('\n'), /detail · today's capture-order log/);
-    assert.match(frames.get(`0.35.2-detail-finished-${width}.txt`).join('\n'), /── transcript · 15 turns/);
+    assert.match(frames.get(`0.35.2-detail-finished-${width}.txt`).join('\n'), /── transcript · overview · detail · 15 turns/);
     assert.match(frames.get(`0.35.2-detail-tool-open-${width}.txt`).join('\n'), /seq \d+ · 2026-09-19T17:51:12\.686Z/);
   }
 });

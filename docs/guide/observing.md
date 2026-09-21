@@ -26,8 +26,9 @@ The pages are arranged as follows.
 | **Run** | The header says `done of total steps`, names running/waiting ids, and shows `active of span` minutes plus the start/finish clock. The plan is phase-only boxes on desktop (named step groups, never `Parallel work`) and a glyph strip on phones; `p` toggles the phone boxes. The live block is the selected running attempt's latest stream turn (or the last finished turn), and the spend block reports known API/plan subtotals with measured, estimated, running, and unmeasured coverage. The timeline has one phase rule with start → end, active duration and done/total, then one `clock · glyph · step · pool · model · effort` row per attempt; filler `started`/`completed` rows, licence bars, `so far`, and ETA rows are gone. |
 | **Step** | One header, then turns, result, task and cost. Line 1 of the header is the verdict (step · run · status · independent verification · attempt), line 2 the purpose, line 3 `pool · model · effort · reasoning` beside one clock, then the route sentence. At 160 columns the activity holds the left column and the result, task and cost cards stack on the right; below that the page stacks result → activity → task → cost. |
 
-The Step top bar carries one visible `overview · detail` toggle; the current
-view is marked. Click either word or press `v`. The footer says `v detail
+The Step activity heading carries one visible `overview · detail` toggle,
+straight after the heading word (`── activity · overview · detail · 9 turns …`);
+the current view is marked. Click either word or press `v`. The footer says `v detail
 (every turn in full)` in overview and `v overview (latest turns)` in detail,
 and standalone tasks use the same page.
 

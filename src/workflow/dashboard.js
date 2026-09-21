@@ -67,7 +67,7 @@ import { finiteOrNull } from '../lib/num.js';
 import { openSetupTui as openSetupControlCentre } from '../setup.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepModel } from './task-step.js';
-import { renderStepPage, stepFooterText, stepViewToggle } from './step-view.js';
+import { renderStepPage, stepFooterText } from './step-view.js';
 
 const ESC = '\x1b[';
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -1188,23 +1188,11 @@ const underline = (text) => `\x1b[4m${text}\x1b[24m`;
  * read. Help remains available from the bottom nav and the `?` key, but is
  * intentionally not a top-level tab.
  */
-function pageTabs(page, width, { stepView = 'overview' } = {}) {
+function pageTabs(page, width) {
   const active = TAB_OF_PAGE[page] ?? (page === 'help' ? null : page);
   const hidden = [];
   if (width < 38) hidden.push('fleet');
-  if (page !== 'step' && page !== 'task') return tabsRow(PAGE_TABS, { active, width, hidden });
-  // The Step page's top bar ends on its one view toggle (step-v2 rule 14):
-  // `overview · detail`, right-aligned, the tabs giving way before it does.
-  const toggle = stepViewToggle(stepView);
-  const toggleWidth = visibleLength(toggle.text);
-  const tabs = tabsRow(PAGE_TABS, { active, width: Math.max(1, width - toggleWidth - 2), hidden });
-  const gap = width - visibleLength(tabs.text) - toggleWidth - 1;
-  if (gap < 1) return tabs;
-  const at = visibleLength(tabs.text) + gap;
-  return {
-    text: `${tabs.text}${' '.repeat(gap)}${toggle.text}`,
-    regions: tabs.regions.concat(toggle.regions.map((region) => ({ ...region, x: region.x + at }))),
-  };
+  return tabsRow(PAGE_TABS, { active, width, hidden });
 }
 
 /**
@@ -1856,7 +1844,7 @@ function helpPage(model, opts, body) {
   row('bar', 'a breakdown bar opens its Stats tab · a trend bar opens its day');
   row('pool', 'a pool name or meter opens Budget on it');
   row('step', 'a plan glyph or step row opens the step');
-  row('view', narrow ? 'overview · detail on the Step top bar' : 'overview · detail on the Step top bar switches the view');
+  row('view', narrow ? 'overview · detail in the Step activity rule' : 'overview · detail after the Step activity heading switches the view');
   row('turn', narrow ? 'a turn head opens it · click for detail' : 'a Step turn head opens the turn · the `click for detail` line opens detail');
   row('run', 'a run row or nav button opens the run');
 
@@ -1865,7 +1853,7 @@ function helpPage(model, opts, body) {
   row('e · c · y', 'edit the fleet · stop this workflow · y confirms it');
   row('/ · a · i', 'filter · active/all · install (on Runs)');
   row('o · v · t', 'planner · technical · phases (on Run) · Stats By Pool/By Model');
-  row('v · t · f', narrow ? 'Step: overview · detail · filter · follow' : 'Step: overview · detail (the top-bar toggle) · filter · follow');
+  row('v · t · f', narrow ? 'Step: overview · detail · filter · follow' : 'Step: overview · detail (the activity-rule toggle) · filter · follow');
   row(DASHBOARD_KEYS.copy.keys, 'copy the screen · OSC 52, else pbcopy/wl-copy');
   row(DASHBOARD_KEYS.detach.keys, 'quit to the shell; workflows keep running');
   row('under 100', 'Fleet leaves the tab row until f opens it');
@@ -1974,7 +1962,7 @@ export function renderDashboardPage(model, options = {}) {
   else header = runPage(model, { ...opts, bodyHeight }, body);
 
   const frame = frameBuilder();
-  frame.kit(pageTabs(page, width, { stepView: opts.stepView === 'detail' ? 'detail' : 'overview' }));
+  frame.kit(pageTabs(page, width));
   if (page === 'runs' || page === 'history') {
     const padding = Math.max(0, (body.anchor?.history ?? 1) - 1 + bodyHeight - body.lines.length);
     for (let index = 0; index < padding; index += 1) body.push('');
@@ -2764,7 +2752,7 @@ export async function runDashboard(bullswarmDir, {
     return paint();
   };
   /**
-   * The Step page's `overview · detail` toggle, from `v`, the top bar or the
+   * The Step page's `overview · detail` toggle, from `v`, the activity rule or the
    * fold line. Detail opens on the turn the overview's cursor was on (the
    * newest, unless the reader moved), or at the top from the fold line.
    */
@@ -3160,8 +3148,10 @@ export async function runDashboard(bullswarmDir, {
   // Chart columns, tiles, meters, tabs and toggles are click targets too, but
   // reverse-painting a chart row destroys its colours and tells the reader
   // nothing a cursor would not.
-  // A Step turn head and a transcript row are list rows too.
-  const HOVER_KINDS = new Set(['run', 'step', 'task', 'stepTurn', 'stepTool']);
+  // A Step turn head and a transcript row are list rows too, and so are the
+  // words of the activity rule's `overview · detail` toggle (rule 14): the
+  // hover lights the word's text, never the dashes around it.
+  const HOVER_KINDS = new Set(['run', 'step', 'task', 'stepTurn', 'stepTool', 'stepView']);
   const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2
     && region.action && HOVER_KINDS.has(region.action.kind));
   // A stacked chart paints its total-column hit region before its per-slice
