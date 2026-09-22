@@ -257,16 +257,56 @@
       "low": "low"
     }
   },
-  "modelProfiles": [
+  "$comment-modelFamilies": "Tier and base rank by name, so a model the CLI starts listing is ranked the day it appears; the version in the id orders one family (gpt-6-sol above gpt-5.6-sol). The order is the one the per-model rows these replace gave 5.x: astra above sol, sol above the bare gpt line, then terra, luna, mini. A family never carries a price: a new version is unpriced until its own row below cites a rate card.",
+  "modelFamilies": [
     {
-      "match": "^gpt-6(?:[.-].*)?-astra$",
+      "family": "astra",
+      "match": "^gpt-[0-9][0-9.]*-astra$",
+      "tier": "high",
+      "qualityRank": 7
+    },
+    {
+      "family": "sol",
+      "match": "^gpt-[0-9][0-9.]*-sol$",
       "tier": "high",
       "qualityRank": 6
     },
     {
-      "match": "^gpt-5\\.6-sol$",
+      "family": "gpt",
+      "match": "^gpt-[0-9]+(?:\\.[0-9]+)?$",
       "tier": "high",
-      "qualityRank": 6,
+      "qualityRank": 5
+    },
+    {
+      "family": "terra",
+      "match": "^gpt-[0-9][0-9.]*-terra$",
+      "tier": "medium",
+      "qualityRank": 4
+    },
+    {
+      "family": "luna",
+      "match": "^gpt-[0-9][0-9.]*-luna$",
+      "tier": "low",
+      "qualityRank": 3
+    },
+    {
+      "family": "mini",
+      "match": "mini",
+      "tier": "low",
+      "qualityRank": 2
+    }
+  ],
+  "$comment-generationFallback": "Owner decision (2026-09-23), not a benchmark result: when the family that serves medium has no model in the newest generation, medium takes the newest-generation model of the next-lower family and runs it at max reasoning. Today the newest generation is gpt-6 and terra's newest is gpt-5.6-terra, so medium is gpt-6-luna at max; once a gpt-6-terra is discovered, medium is terra again at the normal medium reasoning. The owner's own dispatch record backs it: 168 medium dispatches as luna at max reasoning, 99% ok. High and low do not fall back. `max` is clamped to what the model reports it supports.",
+  "generationFallback": {
+    "label": "gpt-{generation}",
+    "tiers": {
+      "medium": { "reasoning": "max" }
+    }
+  },
+  "$comment-modelProfiles": "Exact rows: dated prices, and gpt-5.3-codex, which belongs to no family. Tier and rank come from modelFamilies unless a row sets them.",
+  "modelProfiles": [
+    {
+      "match": "^gpt-5\\.6-sol$",
       "pricing": {
         "inputUsdPerMillion": 4,
         "cacheReadUsdPerMillion": 0.4,
@@ -277,14 +317,7 @@
       "pricingUpdatedAt": "2026-09-20"
     },
     {
-      "match": "^gpt-5\\.(5|4)$",
-      "tier": "high",
-      "qualityRank": 5
-    },
-    {
       "match": "^gpt-5\\.6-terra$",
-      "tier": "medium",
-      "qualityRank": 4,
       "pricing": {
         "inputUsdPerMillion": 2,
         "cacheReadUsdPerMillion": 0.2,
@@ -309,8 +342,6 @@
     },
     {
       "match": "^gpt-5\\.6-luna$",
-      "tier": "low",
-      "qualityRank": 3,
       "pricing": {
         "inputUsdPerMillion": 0.2,
         "cacheReadUsdPerMillion": 0.02,
@@ -319,11 +350,6 @@
       },
       "pricingSource": "https://developers.openai.com/api/docs/guides/prompt-caching",
       "pricingUpdatedAt": "2026-09-20"
-    },
-    {
-      "match": "mini",
-      "tier": "low",
-      "qualityRank": 2
     }
   ],
   "subscription": {

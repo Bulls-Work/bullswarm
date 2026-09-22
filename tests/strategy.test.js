@@ -6,7 +6,9 @@ import {
   selectedModelsForTier, setModelTierSelection,
   rungsFor, setRung, rungRecord, formatRungEvidence,
   TIER_LANES, TIER_CONTEXTS, clearTierAssignment, STRATEGY_TIERS,
+  applyRecommendedReasoning, getRecommendedReasoning, setStrategyReasoning, clearStrategyReasoning,
 } from '../src/lib/strategy.js';
+import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../src/workflow/action-validator.js';
 
 test('connector-declared parsing handles columns, bullets, and plain lines', () => {
@@ -128,7 +130,7 @@ test('strategy keeps unknown subscription values null and ranks each tier determ
   assert.equal(result.suggestions.medium.recommended, null);
 });
 
-test('dated connector benchmark scores outrank coarse quality ranks when supplied', () => {
+test('dated connector benchmark scores break ties only between models of equal quality rank', () => {
   const capable = {
     lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'],
   };
@@ -137,12 +139,21 @@ test('dated connector benchmark scores outrank coarse quality ranks when supplie
     { name: 'a', connector: connectors.a, enabled: true, costRank: 1, pace: 0 },
     { name: 'b', connector: connectors.b, enabled: true, costRank: 1, pace: 0 },
   ];
-  const discoveries = {
-    a: { models: [{ id: 'a1', tier: 'high', qualityRank: 100, benchmarkScore: 40, benchmark: { score: 40, source: 'dated-a' } }] },
-    b: { models: [{ id: 'b1', tier: 'high', qualityRank: 1, benchmarkScore: 60, benchmark: { score: 60, source: 'dated-b' } }] },
-  };
-  const report = buildStrategy({ connectors, pools, state: {}, discoveries });
-  assert.deepEqual(report.suggestions.high.recommended, { pool: 'b', model: 'b1' });
+  const model = (id, qualityRank, score) => ({
+    id, tier: 'high', qualityRank, benchmarkScore: score, benchmark: { score, source: `dated-${id}` },
+  });
+  // Equal rank: the higher dated score wins the tie.
+  const tie = buildStrategy({
+    connectors, pools, state: {},
+    discoveries: { a: { models: [model('a1', 5, 40)] }, b: { models: [model('b1', 5, 60)] } },
+  });
+  assert.deepEqual(tie.suggestions.high.recommended, { pool: 'b', model: 'b1' });
+  // Different rank: the score is never weighed against the rank.
+  const ranked = buildStrategy({
+    connectors, pools, state: {},
+    discoveries: { a: { models: [model('a1', 6, 40)] }, b: { models: [model('b1', 5, 60)] } },
+  });
+  assert.deepEqual(ranked.suggestions.high.recommended, { pool: 'a', model: 'a1' });
 });
 
 test('high-tier strategy excludes a higher-scoring model without planning capability', () => {
@@ -276,7 +287,7 @@ test('OpenRouter signals select one current Claude default for every provider ti
   }
 });
 
-test('OpenRouter ranking favors current GPT generation over a stale local quality rank', () => {
+test('a stale rank on an older family member never outranks the current version', () => {
   const connector = {
     name: 'codex', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'],
   };
@@ -285,9 +296,10 @@ test('OpenRouter ranking favors current GPT generation over a stale local qualit
     pools: [{ name: 'codex', connector, enabled: true, pace: 0, costRank: 2 }],
     state: {},
     discoveries: { codex: { models: [
-      { id: 'gpt-5.5', tier: 'high', qualityRank: 99 },
-      { id: 'gpt-5.6-sol', tier: 'high', qualityRank: 6 },
+      { id: 'gpt-5.6-sol', tier: 'high', qualityRank: 99, family: 'sol', version: '5.6' },
+      { id: 'gpt-6-sol', tier: 'high', qualityRank: 6, family: 'sol', version: '6' },
     ] } },
+    // Only the older model is benchmarked and priced.
     openRouterCatalog: { models: {
       'openai/gpt-5.6-sol': {
         id: 'openai/gpt-5.6-sol', ranks: { agentic: 2, coding: 1, intelligence: 2 },
@@ -295,7 +307,31 @@ test('OpenRouter ranking favors current GPT generation over a stale local qualit
       },
     } },
   });
-  assert.deepEqual(report.providerSuggestions.codex.high.recommended, { model: 'gpt-5.6-sol' });
+  assert.deepEqual(report.providerSuggestions.codex.high.recommended, { model: 'gpt-6-sol' });
+  const [first, second] = report.providerSuggestions.codex.high.candidates;
+  assert.equal(first.inheritsFrom, 'gpt-5.6-sol');
+  assert.equal(second.model, 'gpt-5.6-sol');
+});
+
+test('OpenRouter indices break a tie between families of equal quality rank', () => {
+  const connector = {
+    name: 'codex', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'],
+  };
+  const report = buildStrategy({
+    connectors: { codex: connector },
+    pools: [{ name: 'codex', connector, enabled: true, pace: 0, costRank: 2 }],
+    state: {},
+    discoveries: { codex: { models: [
+      { id: 'gpt-a', tier: 'high', qualityRank: 6 },
+      { id: 'gpt-b', tier: 'high', qualityRank: 6 },
+      { id: 'gpt-c', tier: 'high', qualityRank: 7 },
+    ] } },
+    openRouterCatalog: { models: {
+      'openai/gpt-a': { id: 'openai/gpt-a', ranks: { agentic: 40, coding: 40, intelligence: 40 } },
+      'openai/gpt-b': { id: 'openai/gpt-b', ranks: { agentic: 1, coding: 1, intelligence: 1 } },
+    } },
+  });
+  assert.deepEqual(report.providerSuggestions.codex.high.candidates.map((c) => c.model), ['gpt-c', 'gpt-b', 'gpt-a']);
 });
 
 test('an unbenchmarked OpenRouter listing does not masquerade as quality evidence', () => {
@@ -345,6 +381,406 @@ test('account-cloned providers recommend only models belonging to that account',
   });
   assert.deepEqual(report.providerSuggestions.relay.high.recommended, { model: 'a/gpt-5.6-sol' });
   assert.deepEqual(report.providerSuggestions['relay:b'].high.recommended, { model: 'b/gpt-5.6-sol' });
+});
+
+// --- family and version ranking ----------------------------------------------
+// The real Codex and Claude connectors, fed through the real discovery step.
+
+function packagedConnector(name) {
+  return JSON.parse(readFileSync(new URL(`../src/providers/${name}/connector.json`, import.meta.url), 'utf8'));
+}
+
+async function discoverWith(connector, ids) {
+  return discoverConnectorModels(connector, {
+    provider: { module: { discoverModels: async () => ({ models: ids.map((id) => ({ id })) }) } },
+  });
+}
+
+function poolFor(connector, extra = {}) {
+  return {
+    name: connector.name, connector, enabled: true, pace: 0, costRank: connector.costRank,
+    lanes: connector.lanes, capabilities: connector.capabilities, ...extra,
+  };
+}
+
+const CODEX_IDS = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'];
+
+// Fixture benchmark numbers, not real results: they only make the 5.x models
+// look strongly benchmarked while the gpt-6 models have none.
+function codexWithBenchmarkedFiveSix() {
+  const codex = packagedConnector('codex');
+  codex.modelProfiles = codex.modelProfiles.map((row) => (row.match.includes('5\\.6')
+    ? { ...row, benchmark: { name: 'fixture', score: 99, source: 'fixture', updatedAt: '2026-09-01' } }
+    : row));
+  return codex;
+}
+
+const FIVE_SIX_ON_OPENROUTER = { models: Object.fromEntries(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5']
+  .map((id) => [`openai/${id}`, {
+    id: `openai/${id}`,
+    indices: { agentic: 60, coding: 80, intelligence: 60 },
+    pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+  }])) };
+
+test('Codex: the gpt-6 models win their tiers over benchmarked and priced 5.x models', async () => {
+  const codex = codexWithBenchmarkedFiveSix();
+  const discovery = await discoverWith(codex, CODEX_IDS);
+  const byId = Object.fromEntries(discovery.models.map((model) => [model.id, model]));
+  // The 5.6 models are priced and benchmarked, the gpt-6 models are not, and
+  // no price was copied onto a newer model.
+  assert.ok(byId['gpt-5.6-sol'].pricing && byId['gpt-5.6-sol'].benchmarkScore === 99);
+  for (const id of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
+    assert.equal(byId[id].pricing, null, id);
+    assert.equal(byId[id].benchmarkScore, null, id);
+  }
+  const report = buildStrategy({
+    connectors: { codex },
+    pools: [poolFor(codex)],
+    state: {},
+    discoveries: { codex: discovery },
+    openRouterCatalog: FIVE_SIX_ON_OPENROUTER,
+  });
+  const provider = report.providerSuggestions.codex;
+  for (const view of [provider, report.suggestions]) {
+    // astra sits above sol in the family order; neither may be a 5.x model.
+    assert.equal(view.high.recommended.model, 'gpt-6-astra');
+    assert.equal(view.low.recommended.model, 'gpt-6-luna');
+    // There is no gpt-6 terra, so medium falls back to the newest luna
+    // (the generation fallback tests below cover it in full).
+    assert.equal(view.medium.recommended.model, 'gpt-6-luna');
+  }
+  const order = (tier) => provider[tier].candidates.map((c) => c.model);
+  assert.deepEqual(order('high'), ['gpt-6-astra', 'gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.5']);
+  assert.deepEqual(order('medium'), ['gpt-6-luna', 'gpt-5.6-terra']);
+  assert.deepEqual(order('low'), ['gpt-6-luna', 'gpt-5.6-luna']);
+  const sol = provider.high.candidates.find((c) => c.model === 'gpt-6-sol');
+  assert.deepEqual([sol.tier, sol.qualityRank, sol.family, sol.version, sol.inheritsFrom],
+    ['high', 6, 'sol', '6', 'gpt-5.6-sol']);
+  assert.deepEqual(report.unranked, []);
+});
+
+test('Codex: newer wins inside a family whatever pace, pool cost, or price say', async () => {
+  const codex = codexWithBenchmarkedFiveSix();
+  const discovery = await discoverWith(codex, CODEX_IDS);
+  for (const pool of [
+    poolFor(codex, { pace: 90, costRank: 1 }),
+    poolFor(codex, { pace: -90, costRank: 9 }),
+  ]) {
+    const report = buildStrategy({
+      connectors: { codex }, pools: [pool], state: {},
+      discoveries: { codex: discovery }, openRouterCatalog: FIVE_SIX_ON_OPENROUTER,
+    });
+    assert.equal(report.suggestions.low.recommended.model, 'gpt-6-luna');
+    assert.equal(report.suggestions.high.recommended.model, 'gpt-6-astra');
+  }
+  // Without astra, gpt-6-sol takes high, not the benchmarked gpt-5.6-sol.
+  const withoutAstra = await discoverWith(codex, CODEX_IDS.filter((id) => id !== 'gpt-6-astra'));
+  const report = buildStrategy({
+    connectors: { codex }, pools: [poolFor(codex)], state: {},
+    discoveries: { codex: withoutAstra }, openRouterCatalog: FIVE_SIX_ON_OPENROUTER,
+  });
+  assert.equal(report.suggestions.high.recommended.model, 'gpt-6-sol');
+  // The per-pool pick used by rungs and dispatch applies the same rule.
+  assert.equal(resolveDispatchModel(codex, 'high', {
+    allowedModels: ['gpt-5.6-sol', 'gpt-6-sol', 'gpt-5.5'],
+  }).model, 'gpt-6-sol');
+  assert.equal(resolveDispatchModel(codex, 'low', {
+    allowedModels: ['gpt-5.6-luna', 'gpt-6-luna'],
+  }).model, 'gpt-6-luna');
+});
+
+test('an exact row may lower a newer model\'s rank without breaking newer-wins; autoRecommend false steps aside', async () => {
+  const base = {
+    name: 'fixture', lanes: ['build'], capabilities: ['code-reading', 'file-editing'],
+    modelSelection: { flag: '--model' },
+    modelFamilies: [{ family: 'terra', match: '-terra$', tier: 'medium', qualityRank: 4 }],
+  };
+  const priced = { match: '^m-1-terra$', qualityRank: 8, pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } };
+  const recommend = async (newerRow) => {
+    const connector = { ...base, modelProfiles: [priced, newerRow] };
+    return buildStrategy({
+      connectors: { fixture: connector },
+      pools: [{ name: 'fixture', connector, enabled: true, pace: 0, costRank: 1 }],
+      state: {},
+      discoveries: { fixture: await discoverWith(connector, ['m-1-terra', 'm-2-terra']) },
+    }).suggestions.medium.recommended?.model;
+  };
+  // The newer model is unpriced and an exact row even lowers its rank.
+  assert.equal(await recommend({ match: '^m-2-terra$', qualityRank: 1 }), 'm-2-terra',
+    'neither the lowered rank nor the missing price pushes the newer model down');
+  assert.equal(await recommend({ match: '^m-2-terra$', autoRecommend: false }), 'm-1-terra',
+    'a deliberate opt-out lets the older model be suggested');
+  const connector = { ...base, modelProfiles: [priced, { match: '^m-2-terra$', qualityRank: 1 }] };
+  assert.equal(resolveDispatchModel(connector, 'medium', { allowedModels: ['m-1-terra', 'm-2-terra'] }).model, 'm-2-terra');
+});
+
+test('Claude: claude-opus-5-5 beats claude-opus-5, and Fable is never auto-recommended', async () => {
+  const claude = packagedConnector('claude-code');
+  const discovery = await discoverWith(claude, [
+    'claude-opus-5', 'claude-opus-5-5', 'claude-opus-5-5[1m]', 'claude-fable-5-1[1m]',
+    'claude-sonnet-5', 'claude-haiku-4-5',
+  ]);
+  const report = buildStrategy({
+    connectors: { 'claude-code': claude },
+    pools: [poolFor(claude)],
+    state: {},
+    discoveries: { 'claude-code': discovery },
+    // Only the older Opus is benchmarked (fixture ranks).
+    openRouterCatalog: { models: {
+      'anthropic/claude-opus-5': { id: 'anthropic/claude-opus-5', ranks: { agentic: 1, coding: 1, intelligence: 1 } },
+      'anthropic/claude-fable-5-1': { id: 'anthropic/claude-fable-5-1', ranks: { agentic: 1, coding: 1, intelligence: 1 } },
+    } },
+  });
+  const provider = report.providerSuggestions['claude-code'];
+  assert.deepEqual(provider.high.recommended, { model: 'claude-opus-5-5' });
+  assert.deepEqual(report.suggestions.high.recommended, { pool: 'claude-code', model: 'claude-opus-5-5' });
+  assert.deepEqual(provider.high.candidates.map((c) => c.model),
+    ['claude-opus-5-5', 'claude-opus-5-5[1m]', 'claude-opus-5']);
+  assert.equal(provider.high.candidates.some((c) => /fable/.test(c.model)), false);
+  const fable = discovery.models.find((model) => model.id === 'claude-fable-5-1[1m]');
+  assert.deepEqual([fable.tier, fable.family, fable.autoRecommend], ['high', 'fable', false]);
+  assert.deepEqual(provider.medium.recommended, { model: 'claude-sonnet-5' });
+  assert.deepEqual(provider.low.recommended, { model: 'claude-haiku-4-5' });
+});
+
+test('an unknown model is reported as unranked and never recommended', async () => {
+  const codex = packagedConnector('codex');
+  const discovery = await discoverWith(codex, ['gpt-5.6-luna', 'nova-9-preview']);
+  const nova = discovery.models.find((model) => model.id === 'nova-9-preview');
+  assert.deepEqual([nova.tier, nova.qualityRank, nova.ranking], [null, null, 'unranked']);
+  const report = buildStrategy({
+    connectors: { codex }, pools: [poolFor(codex)], state: {}, discoveries: { codex: discovery },
+  });
+  assert.deepEqual(report.unranked, [{
+    pool: 'codex', model: 'nova-9-preview', ranking: 'unranked',
+    reason: 'new model: no family rule or model profile gives it a tier yet',
+  }]);
+  assert.ok(report.discoveries.codex.models.some((model) => model.id === 'nova-9-preview'), 'still listed');
+  for (const tier of STRATEGY_TIERS) {
+    assert.equal(report.suggestions[tier].candidates.some((c) => c.model === 'nova-9-preview'), false, tier);
+    assert.equal(report.providerSuggestions.codex[tier].candidates.some((c) => c.model === 'nova-9-preview'), false, tier);
+  }
+  assert.equal(report.suggestions.low.recommended.model, 'gpt-5.6-luna');
+  // Alone, it is still not recommended for any tier.
+  const alone = buildStrategy({
+    connectors: { codex }, pools: [poolFor(codex)], state: {},
+    discoveries: { codex: await discoverWith(codex, ['nova-9-preview']) },
+  });
+  for (const tier of STRATEGY_TIERS) assert.equal(alone.suggestions[tier].recommended, null, tier);
+  assert.equal(alone.unranked.length, 1);
+});
+
+// --- newest-generation fallback ----------------------------------------------
+// Owner decision: when the family serving medium has no model in the newest
+// generation, medium runs the next-lower family's newest model at deeper
+// reasoning. The real Codex connector opts medium in; high and low do not.
+
+// The reasoning levels codex-cli's model/list reports today (discovery keeps
+// them per model); `ultra` is outside Bullswarm's scale.
+const SIX_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+
+async function discoverWithLevels(connector, ids, levels = () => SIX_LEVELS) {
+  return discoverConnectorModels(connector, {
+    provider: { module: { discoverModels: async () => ({
+      models: ids.map((id) => ({ id, reasoningLevels: levels(id) })),
+    }) } },
+  });
+}
+
+function codexReport(discovery, extra = {}) {
+  const codex = extra.connector ?? packagedConnector('codex');
+  return buildStrategy({
+    connectors: { codex }, pools: [poolFor(codex)], state: extra.state ?? {},
+    discoveries: { codex: discovery },
+  });
+}
+
+test('Codex medium suggests gpt-6-luna at max reasoning while there is no gpt-6 terra', async () => {
+  const report = codexReport(await discoverWithLevels(packagedConnector('codex'), CODEX_IDS));
+  const why = 'no gpt-6 terra yet, newest generation preferred';
+  assert.deepEqual(report.providerSuggestions.codex.medium.recommended,
+    { model: 'gpt-6-luna', reasoning: 'max', why });
+  assert.deepEqual(report.suggestions.medium.recommended,
+    { pool: 'codex', model: 'gpt-6-luna', reasoning: 'max', why });
+  const [fallback, stale] = report.providerSuggestions.codex.medium.candidates;
+  assert.deepEqual(fallback.fallback, {
+    family: 'luna', generation: 6, staleFamily: 'terra', staleVersion: '5.6',
+    replaces: 'gpt-5.6-terra', reasoning: 'max', reasoningClamped: false, reason: why,
+  });
+  // The stale terra is still listed, directly below the model that replaces it.
+  assert.equal(stale.model, 'gpt-5.6-terra');
+  assert.equal(stale.fallback, undefined);
+  // High and low do not fall back: astra/sol by family order, the newest luna.
+  assert.deepEqual(report.providerSuggestions.codex.high.recommended, { model: 'gpt-6-astra' });
+  assert.deepEqual(report.providerSuggestions.codex.low.recommended, { model: 'gpt-6-luna' });
+  assert.match(report.caveats.join(' '), /generationFallback/);
+});
+
+test('Codex medium returns to terra at the normal medium reasoning once a gpt-6 terra is discovered', async () => {
+  const codex = packagedConnector('codex');
+  const report = codexReport(await discoverWithLevels(codex, [...CODEX_IDS, 'gpt-6-terra']));
+  assert.deepEqual(report.providerSuggestions.codex.medium.recommended, { model: 'gpt-6-terra' });
+  assert.deepEqual(report.suggestions.medium.recommended, { pool: 'codex', model: 'gpt-6-terra' });
+  assert.equal(report.providerSuggestions.codex.medium.candidates.some((c) => c.fallback), false);
+  // No level travels with it, so the rung runs the connector's medium default.
+  const strategy = { configuredTiers: ['medium'] };
+  setRung(strategy, { pool: 'codex', tier: 'medium', model: 'gpt-6-terra' });
+  const [row] = rungsFor({ pools: [poolFor(codex)], strategy });
+  assert.deepEqual([row.model, row.reasoning.applied, row.reasoning.source], ['gpt-6-terra', 'medium', 'connector']);
+});
+
+test('the fallback level clamps to the reasoning levels the model reports', async () => {
+  const codex = packagedConnector('codex');
+  const suggested = async (levels) => codexReport(await discoverWithLevels(codex, CODEX_IDS,
+    (id) => (id === 'gpt-6-luna' ? levels : SIX_LEVELS))).providerSuggestions.codex.medium;
+  // Capped at max: `ultra` is never suggested.
+  assert.equal((await suggested(SIX_LEVELS)).recommended.reasoning, 'max');
+  // The strongest level the model supports.
+  const high = await suggested(['low', 'medium', 'high']);
+  assert.equal(high.recommended.reasoning, 'high');
+  assert.equal(high.candidates[0].fallback.reasoningClamped, true);
+  // No discovered list: the connector's own levels decide.
+  assert.equal((await suggested(undefined)).recommended.reasoning, 'max');
+  // A model the CLI reports no level for gets none.
+  assert.equal((await suggested([])).recommended.reasoning, null);
+});
+
+test('the fallback steps aside for a disabled model and needs a lower family in the newest generation', async () => {
+  const codex = packagedConnector('codex');
+  const discovery = await discoverWithLevels(codex, CODEX_IDS);
+  // The operator turned gpt-6-luna off for codex: no newest-generation luna.
+  const disabled = codexReport(discovery, { state: { strategy: { disabledModels: { codex: ['gpt-6-luna'] } } } });
+  assert.deepEqual(disabled.providerSuggestions.codex.medium.recommended, { model: 'gpt-5.6-terra' });
+  // Without any gpt-6 model, gpt-5.6 is the newest generation and terra is current.
+  const five = codexReport(await discoverWithLevels(codex, CODEX_IDS.filter((id) => !id.startsWith('gpt-6'))));
+  assert.deepEqual(five.providerSuggestions.codex.medium.recommended, { model: 'gpt-5.6-terra' });
+  // A connector that does not opt the tier in never falls back.
+  const optedOut = { ...codex, generationFallback: undefined };
+  const plain = codexReport(discovery, { connector: optedOut });
+  assert.deepEqual(plain.providerSuggestions.codex.medium.recommended, { model: 'gpt-5.6-terra' });
+});
+
+test('with the stale terra disabled, the stand-in keeps terra\'s standing across pools', async () => {
+  const codex = packagedConnector('codex');
+  const claude = packagedConnector('claude-code');
+  const report = buildStrategy({
+    connectors: { codex, 'claude-code': claude },
+    pools: [poolFor(codex, { pace: 0 }), poolFor(claude, { pace: 0 })],
+    state: { strategy: { disabledModels: { codex: ['gpt-5.6-terra'] } } },
+    discoveries: {
+      codex: await discoverWithLevels(codex, CODEX_IDS),
+      'claude-code': await discoverWith(claude, ['claude-sonnet-5']),
+    },
+    // Fixture indices: terra benchmarked above sonnet, gpt-6-luna not at all.
+    openRouterCatalog: { models: {
+      'openai/gpt-5.6-terra': { id: 'openai/gpt-5.6-terra', indices: { agentic: 70, coding: 70, intelligence: 70 } },
+      'anthropic/claude-sonnet-5': { id: 'anthropic/claude-sonnet-5', indices: { agentic: 60, coding: 60, intelligence: 60 } },
+    } },
+  });
+  const [first] = report.providerSuggestions.codex.medium.candidates;
+  assert.deepEqual([first.model, first.fallback.replaces], ['gpt-6-luna', 'gpt-5.6-terra']);
+  assert.deepEqual(report.suggestions.medium.recommended.model, 'gpt-6-luna');
+  // The disabled terra is not a cross-pool candidate either.
+  assert.equal(report.suggestions.medium.candidates.some((c) => c.model === 'gpt-5.6-terra'), false);
+});
+
+test('a tier is never pinned to a model the operator disabled for that pool', async () => {
+  const codex = packagedConnector('codex');
+  const report = codexReport(await discoverWithLevels(codex, CODEX_IDS), {
+    state: { strategy: { disabledModels: { codex: ['gpt-6-astra'] } } },
+  });
+  assert.deepEqual(report.suggestions.high.recommended, { pool: 'codex', model: 'gpt-6-sol' });
+  assert.equal(report.suggestions.high.candidates.some((c) => c.model === 'gpt-6-astra'), false);
+});
+
+test('Claude tiers are unchanged: Sonnet 5 is in the newest generation, so medium never falls back', async () => {
+  const ids = ['claude-opus-5-5', 'claude-opus-5-5[1m]', 'claude-fable-5-1[1m]', 'claude-sonnet-5', 'claude-haiku-4-5'];
+  for (const claude of [
+    packagedConnector('claude-code'),
+    // Even opted in the way Codex is, Opus 5.5 is generation 5 like Sonnet 5.
+    { ...packagedConnector('claude-code'), generationFallback: { tiers: { medium: { reasoning: 'max' } } } },
+  ]) {
+    const report = buildStrategy({
+      connectors: { 'claude-code': claude }, pools: [poolFor(claude)], state: {},
+      discoveries: { 'claude-code': await discoverWith(claude, ids) },
+    });
+    const provider = report.providerSuggestions['claude-code'];
+    assert.deepEqual(provider.high.recommended, { model: 'claude-opus-5-5' });
+    assert.deepEqual(provider.medium.recommended, { model: 'claude-sonnet-5' });
+    assert.deepEqual(provider.low.recommended, { model: 'claude-haiku-4-5' });
+    assert.equal(STRATEGY_TIERS.some((tier) => provider[tier].candidates.some((c) => c.fallback)), false);
+  }
+});
+
+test('a Codex fallback keeps terra\'s standing against other pools on medium', async () => {
+  const codex = packagedConnector('codex');
+  const claude = packagedConnector('claude-code');
+  const report = buildStrategy({
+    connectors: { codex, 'claude-code': claude },
+    pools: [poolFor(codex, { pace: 10 }), poolFor(claude, { pace: 0 })],
+    state: {},
+    discoveries: {
+      codex: await discoverWithLevels(codex, CODEX_IDS),
+      'claude-code': await discoverWith(claude, ['claude-sonnet-5']),
+    },
+  });
+  // Codex led medium with terra on pace; the stand-in takes that place, with
+  // the stale terra right behind it and Claude after both.
+  assert.deepEqual(report.suggestions.medium.candidates.map((c) => `${c.pool}/${c.model}`),
+    ['codex/gpt-6-luna', 'codex/gpt-5.6-terra', 'claude-code/claude-sonnet-5']);
+});
+
+test('applying a recommendation writes its level once, marked, and never over an operator level', () => {
+  const why = 'no gpt-6 terra yet, newest generation preferred';
+  const levels = { codex: { medium: { level: 'max', model: 'gpt-6-luna', why } } };
+  const strategy = {};
+  assert.deepEqual(applyRecommendedReasoning(strategy, levels).written,
+    [{ pool: 'codex', tier: 'medium', level: 'max', model: 'gpt-6-luna', why }]);
+  assert.deepEqual(strategy.reasoning, { tiers: {}, pools: { codex: { medium: 'max' } } });
+  assert.deepEqual(getRecommendedReasoning(strategy), { codex: { medium: { level: 'max', model: 'gpt-6-luna', why } } });
+  const codex = packagedConnector('codex');
+  const resolved = (model, s = strategy) => resolveReasoningLevel({ connector: codex, tier: 'medium', model, strategy: s });
+  assert.deepEqual([resolved('gpt-6-luna').applied, resolved('gpt-6-luna').source], ['max', 'recommendation']);
+  // The level belongs to the model it was recommended for.
+  assert.deepEqual([resolved('gpt-5.6-terra').applied, resolved('gpt-5.6-terra').source], ['medium', 'connector']);
+  // Re-applying is idempotent.
+  applyRecommendedReasoning(strategy, levels);
+  assert.deepEqual(strategy.reasoning.pools, { codex: { medium: 'max' } });
+
+  // An operator's pool+tier level is theirs: set-rung takes the slot over,
+  // and a later apply keeps it.
+  const own = {};
+  applyRecommendedReasoning(own, levels);
+  setRung(own, { pool: 'codex', tier: 'medium', model: 'gpt-6-luna', reasoning: 'high' });
+  assert.deepEqual(getRecommendedReasoning(own), {});
+  const kept = applyRecommendedReasoning(own, levels);
+  assert.deepEqual(kept.kept, [{ pool: 'codex', tier: 'medium', level: 'high', source: 'strategy-pool' }]);
+  assert.equal(own.reasoning.pools.codex.medium, 'high');
+  assert.equal(resolved('gpt-6-luna', own).source, 'strategy-pool');
+
+  // A tier-wide operator level replaces the recommended one and is kept too.
+  const tierWide = {};
+  applyRecommendedReasoning(tierWide, levels);
+  setStrategyReasoning(tierWide, { tier: 'medium', level: 'xhigh' });
+  assert.deepEqual(tierWide.reasoning, { tiers: { medium: 'xhigh' }, pools: {} });
+  assert.deepEqual(applyRecommendedReasoning(tierWide, levels).kept,
+    [{ pool: 'codex', tier: 'medium', level: 'xhigh', source: 'strategy-tier' }]);
+  assert.equal(resolved('gpt-6-luna', tierWide).applied, 'xhigh');
+
+  // Once medium is no longer a fallback, the next apply removes its own level.
+  const back = {};
+  applyRecommendedReasoning(back, levels);
+  assert.deepEqual(applyRecommendedReasoning(back, {}).cleared,
+    [{ pool: 'codex', tier: 'medium', level: 'max', model: 'gpt-6-luna' }]);
+  assert.equal(back.reasoning, undefined);
+  assert.equal(back.recommendedReasoning, undefined);
+  // ...but never an operator's level in the same slot.
+  const mine = { reasoning: { tiers: {}, pools: { codex: { medium: 'low' } } } };
+  applyRecommendedReasoning(mine, {});
+  assert.equal(mine.reasoning.pools.codex.medium, 'low');
+  // reset-reasoning clears the marks with the levels.
+  clearStrategyReasoning(strategy, { tier: 'medium' });
+  assert.equal(strategy.recommendedReasoning, undefined);
 });
 
 // --- rungs -------------------------------------------------------------------

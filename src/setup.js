@@ -14,15 +14,15 @@
 
 import { execFileSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { stdin as input } from 'node:process';
 import { loadState, updateState } from './lib/state.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
+  getRecommendedReasoning,
 } from './lib/strategy.js';
 import { buildPools, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
@@ -30,8 +30,7 @@ import {
   awarenessBlock, applyAwarenessBlock, awarenessBlockPresent,
   installIntegration, retireLegacyOffload,
 } from './integrate.js';
-
-const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+import { packagedConnectorSources, syncConnectorCopies } from './lib/connector-copies.js';
 
 // --- prompting ------------------------------------------------------------
 // Sequential prompts that work identically on a TTY and with piped answers.
@@ -192,57 +191,26 @@ export function integrationBlockPresent(filePath) {
 
 // --- repair ---------------------------------------------------------------
 
-export function repairConnectors(bullswarmDir) {
-  const target = join(bullswarmDir, 'connectors');
-  mkdirSync(target, { recursive: true });
-  const repaired = [];
-  // Shipped templates now live in provider directories; without a packaged
-  // connectors/ there is nothing to copy.
-  if (!existsSync(join(REPO_ROOT, 'connectors'))) return repaired;
-  for (const f of readdirSync(join(REPO_ROOT, 'connectors'))) {
-    if (!f.endsWith('.json') || f.startsWith('_')) continue;
-    const dst = join(target, f);
-    let broken = false;
-    let differs = false;
-    try {
-      JSON.parse(readFileSync(dst, 'utf8'));
-    } catch {
-      broken = true;
-    }
-    if (!broken && existsSync(dst)) {
-      differs = readFileSync(dst, 'utf8') !== readFileSync(join(REPO_ROOT, 'connectors', f), 'utf8');
-    }
-    if (!existsSync(dst) || broken || differs) {
-      copyFileSync(join(REPO_ROOT, 'connectors', f), dst);
-      repaired.push(f);
-    }
-  }
-  return repaired;
+/**
+ * Setup's connector repair. Until 0.29.0 this copied every packaged connector
+ * into `<home>/connectors/`; nothing is copied any more, because the packaged
+ * provider directories are what loads. What is left to repair is the copies
+ * older installs still hold: an unmodified older copy is retired so the
+ * packaged connector loads in its place, and an edited one is kept for
+ * `bullswarm doctor` to report (src/lib/connector-copies.js).
+ *
+ * @returns {string[]} the copy files retired
+ */
+export function repairConnectors(bullswarmDir, opts = {}) {
+  mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
+  return syncConnectorCopies(bullswarmDir, opts).map((action) => action.file);
 }
 
 // Forward-compatible metadata migration for existing installations. Preserve
 // user-edited spawn commands and other connector quirks; only fill fields that
-// did not exist in older published connector documents.
-/**
- * The packaged connectors an installed `<home>/connectors/<name>.json` can be
- * upgraded from, as [filename, absolute path] pairs. They used to sit in one
- * flat `connectors/` directory; they now live one per provider directory
- * across the first-class and contrib tiers, so the provider's own directory
- * name supplies the `<name>.json` an operator's legacy file is matched by.
- */
-function packagedConnectorSources() {
-  const out = [];
-  for (const base of [join(REPO_ROOT, 'src', 'providers'), join(REPO_ROOT, 'providers', 'contrib')]) {
-    if (!existsSync(base)) continue;
-    for (const entry of readdirSync(base).sort()) {
-      if (entry.startsWith('_') || entry.startsWith('.')) continue;
-      const file = join(base, entry, 'connector.json');
-      if (existsSync(file)) out.push([`${entry}.json`, file]);
-    }
-  }
-  return out;
-}
-
+// did not exist in older published connector documents. The packaged sources
+// are one per provider directory (connector-copies.js packagedConnectorSources),
+// matched to the `<name>.json` a legacy copy was named by.
 export function upgradeConnectorMetadata(bullswarmDir, {
   packagedDir = null,
 } = {}) {
@@ -256,7 +224,7 @@ export function upgradeConnectorMetadata(bullswarmDir, {
         .filter((f) => f.endsWith('.json') && !f.startsWith('_'))
         .map((f) => [f, join(packagedDir, f)])
       : [])
-    : packagedConnectorSources();
+    : packagedConnectorSources().map((source) => [source.file, source.connector]);
   const upgraded = [];
   for (const [f, packagedPath] of sources) {
     const dst = join(target, f);
@@ -353,7 +321,7 @@ export function upgradeConnectorMetadata(bullswarmDir, {
         }
         changed = true;
       }
-      for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'conversation', 'subscription', 'preferredConcurrency']) {
+      for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelFamilies', 'generationFallback', 'modelSelection', 'conversation', 'subscription', 'preferredConcurrency']) {
         if (installed[field] == null && packaged[field] != null) {
           installed[field] = packaged[field];
           changed = true;
@@ -497,6 +465,8 @@ export function isConfigured(bullswarmDir) {
  */
 export function ensureSetup(bullswarmDir) {
   if (isConfigured(bullswarmDir)) {
+    // Retire unmodified older copies first, so only edited ones get fills.
+    try { syncConnectorCopies(bullswarmDir); } catch { /* never blocks a verb */ }
     upgradeConnectorMetadata(bullswarmDir);
     migrateTestFixturePools(bullswarmDir);
     return null;
@@ -535,8 +505,11 @@ function rungLine(row) {
   const reasoning = row.reasoning?.applied
     ? `${row.reasoning.applied} (${row.reasoning.source})`
     : `connector default (${row.reasoning?.source ?? 'none'})`;
+  // A level the recommendation chose says why, e.g. `— no gpt-6 terra yet,
+  // newest generation preferred`.
+  const why = row.reasoning?.why ? ` — ${row.reasoning.why}` : '';
   return `    ${row.tier.padEnd(6)} ${row.pool}/${row.model}`
-    + `  reasoning ${reasoning}${evidence ? `  ${evidence}` : ''}`;
+    + `  reasoning ${reasoning}${why}${evidence ? `  ${evidence}` : ''}`;
 }
 
 export async function configureTierRungs(bullswarmDir, prompter, {
@@ -566,9 +539,14 @@ export async function configureTierRungs(bullswarmDir, prompter, {
   const configured = STRATEGY_TIERS.filter((tier) => (state.strategy?.configuredTiers ?? []).includes(tier));
   const asked = configured.length ? configured : STRATEGY_TIERS;
   const answers = {};
+  const recommended = getRecommendedReasoning(state.strategy ?? {});
   for (const tier of asked) {
+    // An answer here is a tier-wide level and replaces a recommended one;
+    // Enter keeps whatever the rung lines above show.
+    const kept = Object.values(recommended).some((tiers) => tiers[tier])
+      ? 'the recommended level' : 'the connector default';
     const answer = (await prompter.question(
-      `Reasoning for ${tier} [Enter keeps the connector default]: `,
+      `Reasoning for ${tier} [Enter keeps ${kept}]: `,
     )).trim().toLowerCase();
     if (!answer) continue;
     if (!REASONING_LEVELS.includes(answer)) {
@@ -593,6 +571,23 @@ export async function configureTierRungs(bullswarmDir, prompter, {
     log(`    ${tier.padEnd(6)} ${stored.tiers[tier] ?? 'connector default'}`);
   }
   return stored;
+}
+
+/**
+ * What an apply did to rung reasoning, one line each: the levels it wrote
+ * and why, and the operator levels it left alone. Shared by the wizard and
+ * `setup --yes --strategy`.
+ */
+export function recommendedReasoningLines(reasoning) {
+  const lines = [];
+  for (const entry of reasoning?.written ?? []) {
+    const rung = [entry.pool, entry.tier, entry.model].filter(Boolean).join(' ');
+    lines.push(`rung reasoning: ${rung} · ${entry.level} reasoning${entry.why ? ` — ${entry.why}` : ''}`);
+  }
+  for (const entry of reasoning?.kept ?? []) {
+    lines.push(`rung reasoning: ${entry.pool} ${entry.tier} kept your ${entry.level} (${entry.source})`);
+  }
+  return lines;
 }
 
 // --- the control center ---------------------------------------------------
@@ -702,7 +697,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
     `${JSON.stringify(table, null, 2)}\n`,
   );
   console.log(`\nWrote ${bullswarmDir}/state.json and routing.json`);
-  if (repaired.length) console.log(`Repaired connector files: ${repaired.join(', ')}`);
+  if (repaired.length) console.log(`Retired older connector copies (the packaged connectors load instead): ${repaired.join(', ')}`);
 
   // 5. Optional execution style. Agent-decides is the neutral default: it
   // communicates preference without forcing a repository/worktree topology.
@@ -726,7 +721,8 @@ export async function runWizard(bullswarmDir, opts = {}) {
     const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
     const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true });
     const applied = applyStrategyRecommendations(bullswarmDir, report);
-    console.log(`  strategy tiers applied: ${Object.entries(applied.applied).map(([tier, value]) => `${tier}=${value.pool}/${value.model}`).join(', ')}`);
+    console.log(`  strategy tiers applied: ${Object.entries(applied.applied).map(([tier, value]) => `${tier}=${value.pool}/${value.model}${value.why && value.reasoning ? ` · ${value.reasoning} reasoning` : ''}`).join(', ')}`);
+    for (const line of recommendedReasoningLines(applied.reasoning)) console.log(`  ${line}`);
   } else {
     console.log('  strategy autopilot: off (enable later with bullswarm strategy apply --yes)');
   }

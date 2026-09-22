@@ -343,6 +343,58 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
     });
   }
 
+  if (pool.modelFamilies !== undefined) {
+    if (!Array.isArray(pool.modelFamilies)) errors.push('modelFamilies: must be an array');
+    else pool.modelFamilies.forEach((rule, i) => {
+      if (typeof rule?.family !== 'string' || rule.family === '') {
+        errors.push(`modelFamilies[${i}].family: required non-empty string`);
+      }
+      if (typeof rule?.match !== 'string') errors.push(`modelFamilies[${i}].match: required regex string`);
+      else {
+        try { new RegExp(rule.match, 'i'); } catch (err) { errors.push(`modelFamilies[${i}].match: ${err.message}`); }
+      }
+      if (!TIERS.includes(rule?.tier)) errors.push(`modelFamilies[${i}].tier: must be ${TIERS.join(', ')}`);
+      if (rule?.qualityRank !== undefined && !Number.isFinite(rule.qualityRank)) {
+        errors.push(`modelFamilies[${i}].qualityRank: must be a number`);
+      }
+      if (rule?.autoRecommend !== undefined && typeof rule.autoRecommend !== 'boolean') {
+        errors.push(`modelFamilies[${i}].autoRecommend: must be true or false`);
+      }
+      // A family spans versions; a price or score belongs to one of them.
+      for (const key of ['pricing', 'benchmark', 'free']) {
+        if (rule?.[key] !== undefined) {
+          errors.push(`modelFamilies[${i}].${key}: belongs on an exact modelProfiles row, never on a family`);
+        }
+      }
+    });
+  }
+
+  const fallback = pool.generationFallback;
+  if (fallback !== undefined) {
+    if (!fallback || typeof fallback !== 'object' || Array.isArray(fallback)) {
+      errors.push('generationFallback: must be an object with a tiers map');
+    } else {
+      if (fallback.label !== undefined && (typeof fallback.label !== 'string' || !fallback.label.includes('{generation}'))) {
+        errors.push('generationFallback.label: must be a string containing {generation}');
+      }
+      const tiers = fallback.tiers;
+      if (!tiers || typeof tiers !== 'object' || Array.isArray(tiers)) {
+        errors.push('generationFallback.tiers: must map a tier to { reasoning }');
+      } else {
+        for (const [tier, setting] of Object.entries(tiers)) {
+          if (!TIERS.includes(tier)) errors.push(`generationFallback.tiers.${tier}: unknown tier (${TIERS.join(', ')})`);
+          if (!REASONING_LEVELS.includes(setting?.reasoning)) {
+            errors.push(`generationFallback.tiers.${tier}.reasoning: must be ${REASONING_LEVELS.join(', ')}`);
+          }
+        }
+      }
+      // The rule walks family ranks; without families there is nothing to fall back to.
+      if (!Array.isArray(pool.modelFamilies) || !pool.modelFamilies.length) {
+        errors.push('generationFallback: needs modelFamilies to rank families against each other');
+      }
+    }
+  }
+
   const reasoning = pool.reasoning;
   if (reasoning !== undefined) {
     if ((reasoning?.flag === undefined) === (reasoning?.args === undefined)) {

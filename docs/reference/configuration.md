@@ -20,7 +20,7 @@ The home is `$BULLSWARM_HOME` when that variable is a non-empty string, otherwis
 | `routing.json` | a suggested per-lane order written by `setup`; dispatch does not read it |
 | `providers.json` | `{ "enabled": ["command-code"] }` — which contrib providers to load |
 | `providers/<name>/` | local providers (always loaded) |
-| `connectors/*.json` | JSON-only local providers from older installs; still loaded |
+| `connectors/*.json` | JSON-only local providers, and the copies of packaged connectors that `setup` made before 0.29.0. An unmodified copy moves to `connectors/retired/` so the packaged connector loads. An edited copy is kept, and `doctor` names its stale fields ([Providers](/reference/providers#copies-in-home-connectors)) |
 | `assignments/` | in-flight ledger that `pools` counts as `inflight` |
 | `meters/` | cached usage readings |
 | `runs/` | `task-*` and `out-*` files from `bullswarm run` |
@@ -118,7 +118,8 @@ bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
 | `configuredTiers` | same | which tiers are explicit allow-lists instead of automatic |
 | `assignments` | `assign`, `apply` | hard `{ pool, model }` pin per tier; a model-tier write clears the pin for that tier |
 | `reasoning.tiers` | `set-reasoning`, `set-rung`, `configure` | global level per effort tier |
-| `reasoning.pools` | `set-reasoning --pool`, `set-rung` | per-pool override of that global |
+| `reasoning.pools` | `set-reasoning --pool`, `set-rung`, `apply` | per-pool override of that global; `apply` writes one only for a suggestion that carries a level |
+| `recommendedReasoning` | `apply`, `refresh --apply`, `setup --yes --strategy` | `{ [pool]: { [tier]: { level, model, why } } }`: marks a `reasoning.pools` level as written by a recommendation, so it reports source `recommendation` and the next apply may replace or remove it. Any operator write to that slot, or to the tier, removes the mark |
 | `excludedModels` | `exclude-model` / `include-model` | blocked from any dispatch |
 | `disabledModels` | `set-model ... --tiers off` | per-pool disabled model ids |
 | `subscriptions` | `set-subscription` | `{ plan, monthlyPriceUsd, includedValueUsd, quotaWindow, resetsAt }` per pool; overrides the connector |
@@ -127,6 +128,8 @@ bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
 | `pausing` | `set-pausing` | `"off"` stops every automatic pool pause — quota ('limit notices are retried, then move to another pool'), auth, the credential-group siblings an auth pause benches with it, and the soft bench; absent means on |
 
 Reasoning is a separate dimension from the model: the tier chooses which model runs, reasoning chooses how deeply it thinks. Precedence per attempt: action `reasoning` field → `--worker-reasoning` / `run --reasoning` → strategy per-pool → strategy per-tier → connector default → nothing. `default` means append nothing and let the worker CLI decide. A level a connector cannot express is clamped down, never up.
+
+A suggestion can carry a level. Today that happens only for a newest-generation fallback, such as `medium: gpt-6-luna · max reasoning — no gpt-6 terra yet, newest generation preferred` ([Providers](/reference/providers#newest-generation-fallback-generationfallback)). `strategy apply`, `refresh --apply`, `setup --yes --strategy`, the setup wizard, and the TUI's apply key all use the same path. That path writes the level into the pool+tier slot, as `set-rung --reasoning` would, and marks it as the recommendation's. The rung then reports `max (recommendation)`. The level applies only while that rung runs the model it was recommended for. It is never written over a level you set, per pool or per tier. When a later apply no longer carries it (a `gpt-6-terra` appeared), that apply removes it, so the connector's own default for the tier applies again.
 
 `strategy inventory --json` is the agent-readable dump of providers, models, selections, meters, rungs, and effective routes. `strategy configure --file` applies `providers`, `models`, and `reasoning` in one validated write.
 
@@ -147,7 +150,7 @@ Epoch data is used under CC BY 4.0: Epoch AI, 'AI Benchmarking Hub'. Published o
 
 ## Custom providers
 
-A provider is a directory with `connector.json` and/or `provider.mjs`. Three tiers load on every start: first-class in the package, contrib listed in `providers.json`, and local under `<home>/providers/`. Existing `<home>/connectors/*.json` files keep working as JSON-only local providers.
+A provider is a directory with `connector.json` and/or `provider.mjs`. Three tiers load on every start: first-class in the package, contrib listed in `providers.json`, and local under `<home>/providers/`. Existing `<home>/connectors/*.json` files keep working as JSON-only local providers. A file there that is an unmodified older copy of a packaged connector is retired instead ([Providers](/reference/providers#copies-in-home-connectors)).
 
 ```bash
 # Write a local provider directory (default ~/.bullswarm/providers/<name>/).

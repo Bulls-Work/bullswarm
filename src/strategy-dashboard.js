@@ -111,7 +111,10 @@ function modelLines(models, selected, selectedTier, width, focused = true) {
     const cells = STRATEGY_TIERS.map((tier, tierIndex) => tierCell(
       model, tier, focused && index === selected && tierIndex === selectedTier,
     )).join(' ');
-    return `${marker} ${pad(model.id, Math.max(8, width - tierWidth))} ${cells}`;
+    // No family rule or profile gives this model a tier yet; say so rather
+    // than show a row that looks like an ordinary unselected model.
+    const label = model.ranking === 'unranked' ? `${model.id} (unranked)` : model.id;
+    return `${marker} ${pad(label, Math.max(8, width - tierWidth))} ${cells}`;
   });
 }
 
@@ -226,8 +229,15 @@ export function renderAnalysisProgress({
 }
 
 function recommendationReason(candidate) {
+  // A newest-generation stand-in for a stale family says why in one line.
+  if (candidate?.fallback?.reason) return candidate.fallback.reason;
+  // A newer family member with no benchmark or price of its own yet ranks on
+  // its version; name that instead of an unrelated fallback line.
+  const newest = candidate?.inheritsFrom
+    ? `newest ${candidate.family} version (${candidate.version}), ranked above ${candidate.inheritsFrom}`
+    : null;
   const external = candidate?.openRouter;
-  if (!external) return 'local provider capability and cost profile';
+  if (!external) return newest ?? 'local provider capability and cost profile';
   const indices = external.indices ?? {};
   const ranks = external.ranks ?? {};
   const qualityParts = [
@@ -242,7 +252,7 @@ function recommendationReason(candidate) {
   const output = external.pricing?.outputUsdPerMillion;
   const price = Number.isFinite(Number(input)) && Number.isFinite(Number(output))
     ? `${formatMoney(input)}/${formatMoney(output)} per 1M input/output tokens` : null;
-  return [...qualityParts, price].filter(Boolean).join(' · ') || 'listed in the Bullswarm benchmark datapack';
+  return [newest, ...qualityParts, price].filter(Boolean).join(' · ') || 'listed in the Bullswarm benchmark datapack';
 }
 
 export function recommendationLines(inventory) {
@@ -257,15 +267,21 @@ export function recommendationLines(inventory) {
       return {
         tier,
         model: recommendation.model,
+        // The level a fallback runs at is part of the choice being approved.
+        reasoning: recommendation.why && recommendation.reasoning ? recommendation.reasoning : null,
         reason: recommendationReason(candidate),
       };
     }).filter(Boolean);
-    if (!choices.length) continue;
+    const unranked = (provider.models ?? [])
+      .filter((model) => model.ranking === 'unranked')
+      .map((model) => model.id);
+    if (!choices.length && !unranked.length) continue;
     lines.push(`${provider.name}`);
     for (const choice of choices) {
-      lines.push(`  ${choice.tier[0].toUpperCase()}  ${choice.model}`);
+      lines.push(`  ${choice.tier[0].toUpperCase()}  ${choice.model}${choice.reasoning ? ` · ${choice.reasoning} reasoning` : ''}`);
       lines.push(`     ${choice.reason}`);
     }
+    if (unranked.length) lines.push(`  unranked (new, no tier yet): ${unranked.join(', ')}`);
   }
   return lines;
 }
@@ -283,7 +299,7 @@ export function renderRecommendationReview(inventory, {
     ? hasBenchmarkData
       ? `Using cached benchmark data; latest refresh unavailable (${inventory.openRouter.error}).`
       : `Benchmark datapack unavailable (${inventory.openRouter.error}); local metadata was used.`
-    : 'Quality uses OpenRouter agentic, coding, and intelligence indices; API price guides budget.';
+    : 'Quality is the connector rank, newest version first in a family; OpenRouter indices break equal ranks; API price guides budget.';
   const details = recommendationLines(inventory);
   const bodyHeight = Math.max(3, height - 9);
   const start = Math.max(0, Math.min(offset, Math.max(0, details.length - bodyHeight)));

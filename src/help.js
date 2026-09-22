@@ -567,13 +567,15 @@ const doctorText = rich({
   usage: 'bullswarm doctor [--json]',
   purpose: 'Report installation readiness — config present, at least one agent CLI discovered, '
     + 'meters reachable, at least one delegate pool enabled — with the exact fix command for '
-    + 'anything failing.',
+    + 'anything failing, and warn about any edited copy of a packaged connector left in '
+    + '<home>/connectors/ by an install older than 0.29.0.',
   args: [],
   options: [
-    { flag: '--json', desc: 'machine-readable { version, configured, ok, checks[], nextActions[] }', default: 'human-readable checklist with ✓/✗ per check' },
+    { flag: '--json', desc: 'machine-readable { version, configured, ok, checks[], nextActions[] }', default: 'human-readable checklist with ✓/!/✗ per check' },
   ],
   safety: [
     'self-heals: if ~/.bullswarm is not yet configured, runs the same auto-setup as any other verb before reporting, so it writes state.json/connector files on a fresh machine',
+    'like every verb, first moves an unmodified older copy of a packaged connector from <home>/connectors/ to <home>/connectors/retired/; an edited copy is kept and shown as a ! warning that never fails readiness',
     'calls each connector\'s live usage meter to populate the "meters" check (network request per metered pool)',
     'exit code is 0 when every check passes, 1 if any check fails',
   ],
@@ -794,7 +796,7 @@ const strategyRefreshText = rich({
   ],
   safety: [
     'executes each installed agent CLI\'s discovery/list command and live meter/usage network calls',
-    'writes the resulting report to state.json; with --apply --yes also writes tier assignments and enables the auto-refresh policy',
+    'writes the resulting report to state.json; with --apply --yes also writes tier assignments, the reasoning level a suggestion carries (never over one you set), and enables the auto-refresh policy',
   ],
   examples: [{ cmd: 'bullswarm strategy refresh --json' }],
   next: 'bullswarm strategy show to review, or add --apply --yes to approve immediately.',
@@ -824,7 +826,10 @@ const strategyApplyText = rich({
     { flag: '--yes', desc: 'required — approves changing routing', default: 'none; the command refuses without it' },
     { flag: '--refresh-hours <n>', desc: 'auto-refresh cadence to record', default: '24' },
   ],
-  safety: ['writes state.strategy.assignments and the auto-refresh policy'],
+  safety: [
+    'writes state.strategy.assignments and the auto-refresh policy',
+    'writes the reasoning level a suggestion carries (a newest-generation fallback such as codex medium at max) into that pool+tier rung, marked as the recommendation\'s; a level you set per pool or per tier is never overwritten',
+  ],
   examples: [{ cmd: 'bullswarm strategy apply --yes' }],
   next: 'bullswarm strategy show to confirm the applied assignments.',
 });

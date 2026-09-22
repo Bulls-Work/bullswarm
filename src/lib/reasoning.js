@@ -25,6 +25,11 @@
 //        degrades to "nothing appended", because a thinking-level preference
 //        is not worth failing real work over.
 //   RS6. Zero dependencies.
+//   RS7. A level a strategy recommendation wrote (`strategy.recommendedReasoning`
+//        marks it) sits in the per-pool slot but reports source
+//        `recommendation`, and stops applying once the rung runs a different
+//        model than the one it was recommended for. Any operator write to the
+//        slot takes it over (src/lib/strategy.js).
 
 /** The common scale, weakest → strongest. Order is the clamping order. */
 export const REASONING_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -34,7 +39,7 @@ export const REASONING_DEFAULT = 'default';
 
 /** Every `source` value resolveReasoningLevel can report. */
 export const REASONING_SOURCES = [
-  'action', 'run', 'strategy-pool', 'strategy-tier', 'connector',
+  'action', 'run', 'strategy-pool', 'recommendation', 'strategy-tier', 'connector',
   'none', 'unsupported', 'skipped-model',
 ];
 
@@ -58,6 +63,15 @@ function supportedLevels(connector, model = null, strategy = null) {
     ? strategy?.lastReport?.discoveries?.[connector?.name]?.models
       ?.find((entry) => entry.id === model)?.reasoningLevels
     : null;
+  return levelsOnScale(connector, discovered);
+}
+
+/**
+ * The model's discovered levels when the CLI reported a list, else the
+ * connector's, kept to the common scale (a CLI-only `ultra` or `minimal`
+ * drops out), weakest → strongest.
+ */
+function levelsOnScale(connector, discovered) {
   const declared = Array.isArray(discovered) ? discovered : connector?.reasoning?.levels;
   if (!Array.isArray(declared)) return [];
   const seen = new Set();
@@ -115,10 +129,17 @@ export function resolveReasoningLevel({
   const pool = typeof connector?.name === 'string' ? connector.name : null;
   const tierKey = typeof tier === 'string' ? tier : null;
   const configured = strategy?.reasoning ?? null;
+  const poolLevel = pool && tierKey ? configured?.pools?.[pool]?.[tierKey] : null;
+  // RS7: the per-pool slot holds either an operator's level or one a
+  // recommendation wrote for one model.
+  const recommended = pool && tierKey ? strategy?.recommendedReasoning?.[pool]?.[tierKey] : null;
+  const fromRecommendation = recommended != null && poolLevel != null && recommended.level === poolLevel;
+  const otherModel = fromRecommendation && typeof model === 'string' && model
+    && typeof recommended.model === 'string' && recommended.model !== model;
   const layers = [
     ['action', actionOverride],
     ['run', runOverride],
-    ['strategy-pool', pool && tierKey ? configured?.pools?.[pool]?.[tierKey] : null],
+    [fromRecommendation ? 'recommendation' : 'strategy-pool', otherModel ? null : poolLevel],
     ['strategy-tier', tierKey ? configured?.tiers?.[tierKey] : null],
     ['connector', tierKey ? connector?.reasoning?.defaults?.[tierKey] : null],
   ];
@@ -142,6 +163,27 @@ export function resolveReasoningLevel({
   if (skipsModel(connector, model)) return { requested, applied: null, source: 'skipped-model', clamped: false };
   const { applied, clamped } = clampToSupported(requested, levels);
   return { requested, applied, source, clamped };
+}
+
+/**
+ * The level a strategy recommendation may suggest for one model: `requested`
+ * clamped (RS4) to what that model accepts — the levels its CLI reported at
+ * discovery, else the connector's — so it is the strongest supported level
+ * not above the request, and never above `max`. Null when the connector
+ * declares no reasoning or skips the flag for this model (RS1).
+ *
+ * @param {object|null} connector
+ * @param {{id?: string, reasoningLevels?: string[]}} model  a discovered model
+ * @param {string} requested  a common-scale level, `max` by default
+ * @returns {{requested: string, applied: string|null, clamped: boolean}}
+ */
+export function suggestedReasoningLevel(connector, model = {}, requested = 'max') {
+  const wanted = REASONING_LEVELS.includes(requested) ? requested : 'max';
+  const levels = levelsOnScale(connector, model?.reasoningLevels);
+  if (!levels.length || skipsModel(connector, model?.id)) {
+    return { requested: wanted, applied: null, clamped: false };
+  }
+  return { requested: wanted, ...clampToSupported(wanted, levels) };
 }
 
 /**

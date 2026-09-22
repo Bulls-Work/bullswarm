@@ -538,8 +538,10 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
 - `bullswarm strategy rungs --json` answers "what would this pool actually run
   on this tier, and what did it cost last time" in one row per pool and effort
   tier: the effective model and its source, the effective reasoning level and
-  the layer that chose it (`action` > `run` > `strategy-pool` > `strategy-tier`
-  > `connector`), the dated benchmark evidence for that model at that level, and
+  the layer that chose it (`action` > `run` > `strategy-pool` or
+  `recommendation` > `strategy-tier` > `connector`; `recommendation` is a
+  per-pool level an applied suggestion wrote, such as codex medium at `max`
+  while there is no gpt-6 terra), the dated benchmark evidence for that model at that level, and
   the local record from the decision log (dispatches, median wall minutes, ok
   share). Use it when a pick looks right but the *result* was wrong — a rung
   whose reasoning shows `clamped` sent the worker a weaker level than you

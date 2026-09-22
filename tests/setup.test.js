@@ -406,6 +406,40 @@ test('the tier step asks only about configured tiers and shows each rung with it
   } finally { cleanup(); }
 });
 
+test('the tier step shows a recommended level with its reason, and a typed answer replaces it', async () => {
+  const why = 'no gpt-6 terra yet, newest generation preferred';
+  const home = (answers) => {
+    const { d, cleanup } = tmp();
+    autoSetup(d, { reason: 'test' });
+    const state = loadState(d);
+    state.pools.codex = { enabled: true };
+    // What applying the codex fallback writes (strategy-cli applyStrategyRecommendations).
+    state.strategy = {
+      configuredTiers: ['medium'],
+      modelTiers: { codex: { 'gpt-6-luna': ['medium'] } },
+      reasoning: { tiers: {}, pools: { codex: { medium: 'max' } } },
+      recommendedReasoning: { codex: { medium: { level: 'max', model: 'gpt-6-luna', why } } },
+    };
+    saveState(d, state);
+    return { d, cleanup, prompter: scriptedPrompter(answers) };
+  };
+  const kept = home(['']);
+  try {
+    const lines = [];
+    await configureTierRungs(kept.d, kept.prompter, { log: (line) => lines.push(line), evidence: null });
+    assert.deepEqual(kept.prompter.asked, ['Reasoning for medium [Enter keeps the recommended level]: ']);
+    assert.ok(lines.includes(`    medium codex/gpt-6-luna  reasoning max (recommendation) — ${why}`), lines.join('\n'));
+    assert.deepEqual(loadState(kept.d).strategy.reasoning.pools, { codex: { medium: 'max' } });
+  } finally { kept.cleanup(); }
+  const typed = home(['high']);
+  try {
+    await configureTierRungs(typed.d, typed.prompter, { log: () => {}, evidence: null });
+    const saved = loadState(typed.d).strategy;
+    assert.deepEqual(saved.reasoning, { tiers: { medium: 'high' }, pools: {} });
+    assert.equal(saved.recommendedReasoning, undefined);
+  } finally { typed.cleanup(); }
+});
+
 test('the tier step prints no evidence text for a rung the datapack does not cover', async () => {
   const { d, cleanup } = tmp();
   try {

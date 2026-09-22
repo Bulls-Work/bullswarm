@@ -3,9 +3,14 @@
 // connector JSON. Core only executes and normalizes those declarations.
 
 import { execFile } from 'node:child_process';
-import { isFreeModel, modelProfile } from './usage.js';
+import { isFreeModel } from './usage.js';
+import {
+  compareVersions, generationFallback, modelRanking, versionLabelParts,
+} from './model-family.js';
 import { openRouterMetadata } from './openrouter-models.js';
-import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './reasoning.js';
+import {
+  isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel, suggestedReasoningLevel,
+} from './reasoning.js';
 import { attemptWindow } from './spend.js';
 import { pacingWindowFor } from '../meters/framework.js';
 // The canonical lane/effort tables. Imported, never restated: see
@@ -100,6 +105,15 @@ export function setModelDisabled(strategy, pool, model, disabled) {
 // every value is a common-scale level or the literal 'default'. Absent keys
 // fall through to the next layer; nothing is written implicitly, so an empty
 // strategy still lets each connector's own per-tier defaults decide.
+//
+// One writer is not the operator: applying a recommendation that carries a
+// level (a newest-generation fallback) writes it into the pool+tier slot, as
+// `strategy set-rung --reasoning` would, and marks it in
+// `state.strategy.recommendedReasoning = { [pool]: { [tier]: { level, model,
+// why } } }`. The mark is what makes the resolver report `recommendation`,
+// and what lets the next apply replace or remove its own level. Every operator
+// writer below drops the mark it touches, so a user's level is never
+// overwritten by a later apply.
 
 function reasoningLevelList() {
   return [...REASONING_LEVELS, 'default'].join(', ');
@@ -148,6 +162,47 @@ export function assertReasoningLevel(level) {
   return level;
 }
 
+/** The recommendation marks, normalized: `{ [pool]: { [tier]: { level, model, why } } }`. */
+export function getRecommendedReasoning(strategy = {}) {
+  const marks = {};
+  for (const [pool, tiers] of Object.entries(strategy?.recommendedReasoning ?? {})) {
+    if (!tiers || typeof tiers !== 'object') continue;
+    for (const tier of STRATEGY_TIERS) {
+      const mark = tiers[tier];
+      if (!mark || !REASONING_LEVELS.includes(mark.level)) continue;
+      (marks[pool] ??= {})[tier] = {
+        level: mark.level,
+        model: typeof mark.model === 'string' ? mark.model : null,
+        why: typeof mark.why === 'string' ? mark.why : null,
+      };
+    }
+  }
+  return marks;
+}
+
+function storeRecommendedReasoning(strategy, marks) {
+  for (const [pool, tiers] of Object.entries(marks)) {
+    if (!Object.keys(tiers).length) delete marks[pool];
+  }
+  if (Object.keys(marks).length) strategy.recommendedReasoning = marks;
+  else delete strategy.recommendedReasoning;
+}
+
+/** Drop the recommendation marks `(pool, tier)` matches; returns the dropped ones. */
+function dropRecommendedMarks(strategy, matches) {
+  const marks = getRecommendedReasoning(strategy);
+  const dropped = [];
+  for (const [pool, tiers] of Object.entries(marks)) {
+    for (const [tier, mark] of Object.entries(tiers)) {
+      if (!matches(pool, tier)) continue;
+      dropped.push({ pool, tier, ...mark });
+      delete tiers[tier];
+    }
+  }
+  if (dropped.length || strategy?.recommendedReasoning) storeRecommendedReasoning(strategy, marks);
+  return dropped;
+}
+
 /** Set (level) or remove (level null) one tier level, globally or per pool. */
 export function setStrategyReasoning(strategy, { tier, level, pool = null } = {}) {
   assertReasoningTier(tier);
@@ -156,6 +211,16 @@ export function setStrategyReasoning(strategy, { tier, level, pool = null } = {}
   const target = pool ? (reasoning.pools[pool] ??= {}) : reasoning.tiers;
   if (level == null) delete target[tier];
   else target[tier] = level;
+  if (pool) {
+    // The operator took this slot over, whatever a recommendation wrote there.
+    dropRecommendedMarks(strategy, (p, t) => p === pool && t === tier);
+  } else if (level != null) {
+    // A tier-wide choice is the operator's answer for every pool on that tier,
+    // so a recommended per-pool level may not shadow it.
+    for (const mark of dropRecommendedMarks(strategy, (_p, t) => t === tier)) {
+      if (reasoning.pools[mark.pool]?.[tier] === mark.level) delete reasoning.pools[mark.pool][tier];
+    }
+  }
   return storeStrategyReasoning(strategy, reasoning);
 }
 
@@ -164,6 +229,7 @@ export function clearStrategyReasoning(strategy, { tier = null, pool = null } = 
   if (tier != null) assertReasoningTier(tier);
   if (tier == null && pool == null) {
     delete strategy.reasoning;
+    delete strategy.recommendedReasoning;
     return { tiers: {}, pools: {} };
   }
   const reasoning = getStrategyReasoning(strategy);
@@ -175,7 +241,68 @@ export function clearStrategyReasoning(strategy, { tier = null, pool = null } = 
     delete reasoning.tiers[tier];
     for (const tiers of Object.values(reasoning.pools)) delete tiers[tier];
   }
+  dropRecommendedMarks(strategy, (p, t) => (pool == null || p === pool) && (tier == null || t === tier));
   return storeStrategyReasoning(strategy, reasoning);
+}
+
+/**
+ * Write the reasoning levels an applied recommendation carries, never over
+ * an operator's. `levels` is `{ [pool]: { [tier]: { level, model, why } } }`.
+ *
+ *   - A slot holding an operator's level (one without this module's mark),
+ *     or a tier the operator set tier-wide, is kept as it is.
+ *   - Otherwise the level is written into the pool+tier slot and marked.
+ *   - A level an earlier apply wrote that this one no longer carries (a
+ *     `gpt-6-terra` appeared, so medium is no longer a fallback) is removed,
+ *     so the connector's own default for that tier applies again.
+ *
+ * Pure, like setRung: the caller saves state once.
+ * @returns {{written: object[], kept: object[], cleared: object[]}}
+ */
+export function applyRecommendedReasoning(strategy, levels = {}) {
+  const reasoning = getStrategyReasoning(strategy);
+  const previous = getRecommendedReasoning(strategy);
+  const marks = {};
+  const result = { written: [], kept: [], cleared: [] };
+  const wanted = (pool, tier) => {
+    const level = levels?.[pool]?.[tier]?.level;
+    return REASONING_LEVELS.includes(level) ? level : null;
+  };
+  for (const [pool, tiers] of Object.entries(previous)) {
+    for (const [tier, mark] of Object.entries(tiers)) {
+      if (reasoning.pools[pool]?.[tier] !== mark.level || wanted(pool, tier)) continue;
+      delete reasoning.pools[pool][tier];
+      result.cleared.push({ pool, tier, level: mark.level, model: mark.model });
+    }
+  }
+  for (const [pool, tiers] of Object.entries(levels ?? {})) {
+    for (const tier of STRATEGY_TIERS) {
+      const level = wanted(pool, tier);
+      if (!level) continue;
+      const slot = reasoning.pools[pool]?.[tier] ?? null;
+      const ours = slot != null && previous[pool]?.[tier]?.level === slot;
+      if (slot != null && !ours) {
+        result.kept.push({ pool, tier, level: slot, source: 'strategy-pool' });
+        continue;
+      }
+      if (reasoning.tiers[tier] != null) {
+        result.kept.push({ pool, tier, level: reasoning.tiers[tier], source: 'strategy-tier' });
+        continue;
+      }
+      const entry = levels[pool][tier];
+      const mark = {
+        level,
+        model: typeof entry.model === 'string' ? entry.model : null,
+        why: typeof entry.why === 'string' ? entry.why : null,
+      };
+      (reasoning.pools[pool] ??= {})[tier] = level;
+      (marks[pool] ??= {})[tier] = mark;
+      result.written.push({ pool, tier, ...mark });
+    }
+  }
+  storeStrategyReasoning(strategy, reasoning);
+  storeRecommendedReasoning(strategy, marks);
+  return result;
 }
 
 /** Effective `{ [pool]: { [tier]: { level, source } } }` for a pool list. */
@@ -197,6 +324,92 @@ export function configuredModel(connector) {
   return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
 }
 
+// --- ranking -----------------------------------------------------------------
+// One quality scale: the connector's quality rank (a family's base rank, or an
+// exact row's). Benchmarks never share that scale. They only break ties
+// between models of EQUAL rank, and each is compared only with its own kind:
+// the datapack's OpenRouter index with other OpenRouter indices, then a
+// connector-declared dated score with other declared scores. A model without
+// one loses that tie-break and nothing else.
+//
+// Within one pool and family the newer version always wins. Its comparison
+// key is never worse than any older member's in the same candidate list — it
+// takes the best of them — so a missing price, benchmark, or local record
+// cannot put it below its predecessor. Pace, pool cost, and price still order
+// different families and pools; they never reorder one family.
+
+/** Descending lexicographic order of two numeric keys; -1 means `a` first. */
+function compareKeys(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] ?? -Infinity;
+    const y = b[i] ?? -Infinity;
+    if (x > y) return -1;
+    if (x < y) return 1;
+  }
+  return 0;
+}
+
+/**
+ * Sort `{ pool, model, key }` entries best first, newest first inside each
+ * pool+family. Each entry gains `effectiveKey` and `inheritsFrom` (the older
+ * family member whose standing a newer model took, or null).
+ */
+function rankCandidates(entries) {
+  const families = new Map();
+  for (const entry of entries) {
+    const parts = entry.model.family ? versionLabelParts(entry.model.version) : null;
+    entry.versionParts = parts;
+    entry.groupLabel = parts ? `family:${entry.model.family}` : `model:${entry.model.id}`;
+    entry.effectiveKey = entry.key;
+    entry.inheritsFrom = null;
+    if (!parts) continue;
+    const group = JSON.stringify([entry.pool, entry.model.family]);
+    if (!families.has(group)) families.set(group, []);
+    families.get(group).push(entry);
+  }
+  for (const members of families.values()) {
+    members.sort((a, b) => compareVersions(a.versionParts, b.versionParts));
+    let best = null;
+    for (let start = 0; start < members.length;) {
+      let end = start;
+      while (end < members.length
+        && compareVersions(members[end].versionParts, members[start].versionParts) === 0) end += 1;
+      // Members of one version do not inherit from each other (`x` and
+      // `x[1m]`); each inherits only from strictly older versions.
+      const batch = members.slice(start, end);
+      for (const entry of batch) {
+        if (best && compareKeys(best.key, entry.key) < 0) {
+          entry.effectiveKey = best.key;
+          entry.inheritsFrom = best.model;
+        }
+      }
+      for (const entry of batch) {
+        if (!best || compareKeys(entry.effectiveKey, best.key) < 0) {
+          best = { key: entry.effectiveKey, model: entry.inheritsFrom ?? entry.model.id };
+        }
+      }
+      start = end;
+    }
+  }
+  return entries.sort((a, b) => compareKeys(a.effectiveKey, b.effectiveKey)
+    || String(a.pool).localeCompare(String(b.pool))
+    || a.groupLabel.localeCompare(b.groupLabel)
+    || compareVersions(b.versionParts, a.versionParts)
+    || a.model.id.localeCompare(b.model.id));
+}
+
+/** A pool's models by quality rank alone, newest first inside a family. */
+function strongestFirst(connector, models) {
+  return rankCandidates(models.map((model) => {
+    const ranking = modelRanking(connector, model);
+    return {
+      pool: connector.name ?? '',
+      model: { id: model, family: ranking.family, version: ranking.version },
+      key: [ranking.qualityRank ?? 0],
+    };
+  })).map((entry) => entry.model.id);
+}
+
 /**
  * Resolve a model under the persisted routing policy. Once any model is
  * excluded, an implicit provider default is not trustworthy: Bullswarm pins
@@ -216,12 +429,9 @@ export function resolveDispatchModel(connector, tier, {
       reason: `no enabled model is assigned to ${tier}`,
     };
     const configured = configuredModel(connector);
-    const candidates = allowed
-      .map((model) => ({ model, profile: modelProfile(connector, model) }))
-      .sort((a, b) => Number(b.profile?.qualityRank ?? 0) - Number(a.profile?.qualityRank ?? 0)
-        || a.model.localeCompare(b.model));
+    const candidates = strongestFirst(connector, allowed);
     if (connector.modelSelection?.flag && candidates[0]) {
-      return { eligible: true, model: candidates[0].model, source: 'tier-selection' };
+      return { eligible: true, model: candidates[0], source: 'tier-selection' };
     }
     if (configured && allowed.includes(configured)) {
       return { eligible: true, model: configured, source: 'tier-selection-configured' };
@@ -237,14 +447,12 @@ export function resolveDispatchModel(connector, tier, {
   if (!excluded.length) return { eligible: true, model: null, source: 'connector-default' };
 
   const configured = configuredModel(connector);
-  const candidates = unique([...(connector.knownModels ?? []), configured])
+  const candidates = strongestFirst(connector, unique([...(connector.knownModels ?? []), configured])
     .filter((model) => !isModelExcluded(model, excluded))
-    .map((model) => ({ model, profile: modelProfile(connector, model) }))
-    .filter((candidate) => candidate.profile?.tier === tier)
-    .sort((a, b) => Number(b.profile?.qualityRank ?? 0) - Number(a.profile?.qualityRank ?? 0));
+    .filter((model) => modelRanking(connector, model).tier === tier));
 
   if (connector.modelSelection?.flag && candidates[0]) {
-    return { eligible: true, model: candidates[0].model, source: 'exclusion-safe-tier-fallback' };
+    return { eligible: true, model: candidates[0], source: 'exclusion-safe-tier-fallback' };
   }
   if (configured && !isModelExcluded(configured, excluded)) {
     return { eligible: true, model: configured, source: 'configured-model' };
@@ -423,6 +631,10 @@ export function rungsFor({
           }));
         } catch { found = null; }
       }
+      // Why a recommendation chose this level, where one did (RS7).
+      const why = reasoning.source === 'recommendation'
+        ? getRecommendedReasoning(strategy ?? {})[pool.name]?.[tier]?.why ?? null
+        : null;
       rows.push({
         pool: pool.name,
         tier,
@@ -434,6 +646,7 @@ export function rungsFor({
           source: reasoning.source,
           requested: reasoning.requested,
           clamped: reasoning.clamped,
+          ...(why ? { why } : {}),
         },
         evidence: found,
         record: rungRecord(decisionLog, pool.name, tier),
@@ -554,18 +767,25 @@ export async function discoverConnectorModels(connector, {
     return true;
   }).map((entry) => {
     const { id } = entry;
-    const profile = modelProfile(connector, id);
+    const ranking = modelRanking(connector, id);
+    const { profile } = ranking;
     return {
       ...entry,
       id,
-      tier: profile?.tier ?? null,
-      qualityRank: Number.isFinite(Number(profile?.qualityRank)) ? Number(profile.qualityRank) : null,
+      tier: ranking.tier,
+      qualityRank: ranking.qualityRank,
+      family: ranking.family,
+      version: ranking.version,
+      // `unranked`: the CLI reported it, but no family rule or profile gives
+      // it a tier yet. Listed in the report, never recommended.
+      ranking: ranking.ranking,
+      rankSource: ranking.rankSource,
       benchmark: profile?.benchmark ?? null,
-      benchmarkScore: Number.isFinite(Number(profile?.benchmark?.score)) ? Number(profile.benchmark.score) : null,
+      benchmarkScore: finiteOr(profile?.benchmark?.score, null),
       pricing: profile?.pricing ?? null,
       pricingSource: profile?.pricingSource ?? null,
       pricingUpdatedAt: profile?.pricingUpdatedAt ?? null,
-      autoRecommend: profile?.autoRecommend !== false,
+      autoRecommend: ranking.autoRecommend,
       free: isFreeModel(connector, id),
       configured: id === configured,
     };
@@ -619,20 +839,6 @@ function subscriptionView(pool, state) {
   };
 }
 
-function candidateScore(candidate, tier) {
-  // Core never invents or scrapes benchmark comparisons. A connector may
-  // declare a dated score from a comparable harness; otherwise use its coarse
-  // quality rank as the explicit fallback.
-  const quality = candidate.model.recommendationScore
-    ?? candidate.model.benchmarkScore ?? candidate.model.qualityRank ?? 0;
-  const pace = Number.isFinite(candidate.pool.pace) ? candidate.pool.pace : 0;
-  const costRank = Number(candidate.pool.costRank ?? 5);
-  const freeBonus = candidate.model.free ? 1 : 0;
-  if (tier === 'high') return quality * 100 + pace - costRank;
-  if (tier === 'medium') return quality * 50 + pace * 2 - costRank * 5 + freeBonus * 10;
-  return freeBonus * 200 - costRank * 20 + quality * 10 + pace;
-}
-
 function openRouterQuality(metadata) {
   const indices = metadata?.indices ?? {};
   if (['agentic', 'coding', 'intelligence'].some((dimension) => Number.isFinite(Number(indices[dimension])))) {
@@ -650,24 +856,39 @@ function openRouterQuality(metadata) {
 }
 
 function apiPrice(metadata) {
-  const input = Number(metadata?.pricing?.inputUsdPerMillion);
-  const output = Number(metadata?.pricing?.outputUsdPerMillion);
-  if (!Number.isFinite(input) && !Number.isFinite(output)) return null;
-  return (Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0);
+  const input = finiteOr(metadata?.pricing?.inputUsdPerMillion, null);
+  const output = finiteOr(metadata?.pricing?.outputUsdPerMillion, null);
+  if (input == null && output == null) return null;
+  return (input ?? 0) + (output ?? 0);
 }
 
-function recommendationScore(model, tier) {
-  const external = model.openRouter ?? null;
-  const externalQuality = openRouterQuality(external);
-  const quality = Number(model.benchmarkScore ?? model.qualityRank ?? 0);
-  const price = apiPrice(external);
-  // Presence in OpenRouter is availability evidence, not quality evidence.
-  // Only an actual benchmark index/rank may outrank connector-owned quality.
-  const benchmarkedExternally = externalQuality > 0 ? 1 : 0;
-  if (tier === 'high') return benchmarkedExternally * 1_000_000 + externalQuality * 1_000 + quality * 10;
-  if (tier === 'medium') return benchmarkedExternally * 1_000_000 + externalQuality * 500 + quality * 20 - (price ?? 0) * 5;
-  return Number(model.free) * 2_000_000 + benchmarkedExternally * 1_000_000
-    + externalQuality * 50 + quality * 20 - (price ?? 0) * 100;
+function finiteOr(value, fallback) {
+  if (value == null || value === '' || typeof value === 'boolean') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * The comparison key of one model on one tier, best first (see "ranking"
+ * above). Quality rank leads; the two benchmark kinds follow as tie-breaks;
+ * then the tier's budget term from live pace and pool cost; API price last.
+ * An unknown price loses only that last tie-break, and a newer family member
+ * inherits its predecessor's key, so the unknown never costs it its place.
+ */
+function tierKey(model, pool, tier) {
+  const rank = finiteOr(model.qualityRank, 0);
+  // Presence in OpenRouter is availability evidence, not quality evidence:
+  // only a real benchmark index or rank counts (externalQuality is null).
+  const external = finiteOr(model.externalQuality, -Infinity);
+  const declared = finiteOr(model.benchmarkScore, -Infinity);
+  const pace = finiteOr(pool.pace, 0);
+  const costRank = finiteOr(pool.costRank, 5);
+  const free = model.free ? 1 : 0;
+  const price = apiPrice(model) ?? apiPrice(model.openRouter);
+  const cheapness = price == null ? -Infinity : -price;
+  if (tier === 'high') return [rank, external, declared, pace - costRank, cheapness];
+  if (tier === 'medium') return [rank, external, declared, pace * 2 - costRank * 5 + free * 10, cheapness];
+  return [free, rank, external, declared, pace - costRank * 20, cheapness];
 }
 
 function enrichDiscoveries(discoveries, openRouterCatalog) {
@@ -675,9 +896,10 @@ function enrichDiscoveries(discoveries, openRouterCatalog) {
     ...discovery,
     models: (discovery.models ?? []).map((model) => {
       const external = openRouterMetadata(openRouterCatalog, model.id);
-      const tier = model.tier;
+      const quality = openRouterQuality(external);
       return {
         ...model,
+        ranking: model.ranking ?? (model.tier ? 'ranked' : 'unranked'),
         openRouter: external ? {
           id: external.id,
           indices: external.indices,
@@ -686,10 +908,87 @@ function enrichDiscoveries(discoveries, openRouterCatalog) {
           pricingSource: external.pricingSource,
           created: external.created,
         } : null,
-        recommendationScore: recommendationScore({ ...model, openRouter: external }, tier),
+        externalQuality: quality > 0 ? Math.round(quality * 100) / 100 : null,
       };
     }),
   }]));
+}
+
+/** What a report says about one ranked candidate, and why it sits where it does. */
+function candidateView(entry) {
+  const { model } = entry;
+  return {
+    model: model.id,
+    tier: model.tier ?? null,
+    qualityRank: model.qualityRank ?? null,
+    family: model.family ?? null,
+    version: model.version ?? null,
+    // The older family member whose standing this newer model took.
+    inheritsFrom: entry.inheritsFrom,
+    benchmarkScore: model.benchmarkScore ?? null,
+    externalQuality: model.externalQuality ?? null,
+    // A newest-generation stand-in for a stale family (see fallbackEntry).
+    ...(entry.fallback ? { fallback: entry.fallback } : {}),
+  };
+}
+
+/**
+ * The recommendation a report stores for a tier's top candidate. A
+ * newest-generation stand-in also carries the reasoning level it runs at and
+ * why, which `applyStrategyRecommendations` writes as that pool's rung level.
+ */
+function recommendedView(entry, withPool) {
+  if (!entry) return null;
+  return {
+    ...(withPool ? { pool: entry.pool } : {}),
+    model: entry.model.id,
+    ...(entry.fallback ? { reasoning: entry.fallback.reasoning, why: entry.fallback.reason } : {}),
+  };
+}
+
+/**
+ * A tier's newest-generation stand-in (model-family.js generationFallback)
+ * as a ranked entry, or null when the connector does not opt the tier in or
+ * the serving family is current.
+ *
+ * It takes the standing of the candidate it replaces — the pool's best for
+ * the tier, normally the stale family's newest member — so pools and
+ * families of other providers are compared exactly as before. One trailing
+ * key component puts it directly above that candidate and moves nothing
+ * else. With no candidate to replace, it stands at the stale family's rank.
+ */
+function fallbackEntry(pool, connector, eligible, tier, ranked, listed) {
+  const found = generationFallback(connector, eligible, tier);
+  if (!found) return null;
+  const replaced = ranked[0] ?? null;
+  // Nothing left to replace (the operator disabled the stale model): the
+  // stand-in still speaks for the family, so it takes the standing of that
+  // family's newest listed model, and only failing that the family's rank.
+  const staleNewest = replaced ? null : listed
+    .filter((model) => model.family === found.staleFamily && model.tier === tier)
+    .sort((a, b) => compareVersions(versionLabelParts(b.version), versionLabelParts(a.version)))[0] ?? null;
+  const base = replaced?.effectiveKey
+    ?? tierKey(staleNewest ?? { ...found.model, qualityRank: found.staleRank }, pool, tier);
+  const reasoning = suggestedReasoningLevel(connector, found.model, found.reasoning ?? 'max');
+  const entry = {
+    pool: pool.name,
+    poolView: pool,
+    model: found.model,
+    key: [...base, 1],
+    fallback: {
+      family: found.family,
+      generation: found.generation,
+      staleFamily: found.staleFamily,
+      staleVersion: found.staleVersion,
+      replaces: replaced?.model.id ?? staleNewest?.id ?? null,
+      reasoning: reasoning.applied,
+      reasoningClamped: reasoning.clamped,
+      reason: found.reason,
+    },
+  };
+  entry.effectiveKey = entry.key;
+  entry.inheritsFrom = null;
+  return entry;
 }
 
 function recommendationModels(pool, discovery) {
@@ -788,31 +1087,53 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
   const tiers = ['high', 'medium', 'low'];
   const suggestions = {};
   const providerSuggestions = {};
+  // pool -> tier -> the newest-generation stand-in, shared by both views.
+  const fallbacks = {};
   for (const pool of pools) {
     providerSuggestions[pool.name] = {};
+    fallbacks[pool.name] = {};
     const disabled = new Set([
       ...normalizeExcludedModels(state.strategy?.excludedModels),
       ...disabledModelsForPool(state.strategy, pool.name),
     ]);
+    // What this pool may recommend on any tier; the newest generation is read
+    // from these.
+    const listed = recommendationModels(pool, rankedDiscoveries[pool.name]);
+    const eligible = listed
+      .filter((model) => model.tier
+        && model.autoRecommend !== false
+        && !disabled.has(model.id.toLowerCase()));
     for (const tier of tiers) {
       const context = TIER_CONTEXTS[tier];
       if (pool.enabled === false || pool.quarantine || pool.burstGate || !supportsContext(pool, context)) continue;
-      const candidates = recommendationModels(pool, rankedDiscoveries[pool.name])
-        .filter((model) => model.tier === tier
-          && model.autoRecommend !== false
-          && !disabled.has(model.id.toLowerCase()))
-        .sort((a, b) => b.recommendationScore - a.recommendationScore || a.id.localeCompare(b.id));
+      const candidates = rankCandidates(eligible
+        .filter((model) => model.tier === tier)
+        .map((model) => ({ pool: pool.name, model, key: tierKey(model, pool, tier) })));
+      const fallback = fallbackEntry(pool, pool.connector ?? pool, eligible, tier, candidates, listed);
+      if (fallback) {
+        fallbacks[pool.name][tier] = fallback;
+        candidates.unshift(fallback);
+      }
       providerSuggestions[pool.name][tier] = {
-        recommended: candidates[0] ? { model: candidates[0].id } : null,
-        candidates: candidates.map((model) => ({
-          model: model.id,
-          score: Math.round(model.recommendationScore * 10) / 10,
-          qualityRank: model.qualityRank,
-          openRouter: model.openRouter,
+        recommended: recommendedView(candidates[0], false),
+        candidates: candidates.map((entry) => ({
+          ...candidateView(entry),
+          openRouter: entry.model.openRouter,
         })),
       };
     }
   }
+  // A model no family rule or profile classifies is still reported, by pool,
+  // so a new CLI model is visible the day it appears. It has no tier, so no
+  // tier's candidate list can ever recommend it.
+  const unranked = pools.flatMap((pool) => recommendationModels(pool, rankedDiscoveries[pool.name])
+    .filter((model) => !model.tier)
+    .map((model) => ({
+      pool: pool.name,
+      model: model.id,
+      ranking: 'unranked',
+      reason: 'new model: no family rule or model profile gives it a tier yet',
+    })));
   for (const tier of tiers) {
     const context = TIER_CONTEXTS[tier];
     const candidates = [];
@@ -820,36 +1141,38 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
       if (pool.enabled === false || pool.quarantine || pool.burstGate) continue;
       if (!supportsContext(pool, context)) continue;
       const discovery = rankedDiscoveries[pool.name];
+      // The same exclusions the pool's own suggestion honours, so a tier is
+      // never pinned to a model the operator turned off for that pool.
+      const disabled = disabledModelsForPool(state.strategy, pool.name);
       for (const model of recommendationModels(pool, discovery)) {
         if (model.tier !== tier) continue;
         if (model.autoRecommend === false) continue;
         if (isModelExcluded(model.id, state.strategy?.excludedModels)) continue;
-        candidates.push({ pool, model, score: 0 });
+        if (disabled.includes(model.id.toLowerCase())) continue;
+        candidates.push({ pool: pool.name, poolView: pool, model, key: tierKey(model, pool, tier) });
       }
+      const fallback = fallbacks[pool.name]?.[tier];
+      if (fallback) candidates.push({ ...fallback });
     }
-    for (const candidate of candidates) candidate.score = candidateScore(candidate, tier);
-    candidates.sort((a, b) => b.score - a.score || a.pool.name.localeCompare(b.pool.name) || a.model.id.localeCompare(b.model.id));
+    rankCandidates(candidates);
     const configured = state.strategy?.assignments?.[tier] ?? null;
     suggestions[tier] = {
       assignment: configured,
-      recommended: candidates[0] ? { pool: candidates[0].pool.name, model: candidates[0].model.id } : null,
+      recommended: recommendedView(candidates[0], true),
       requirements: context,
       candidates: candidates.slice(0, 8).map((candidate) => ({
-        pool: candidate.pool.name,
-        model: candidate.model.id,
-        qualityRank: candidate.model.qualityRank,
+        pool: candidate.pool,
+        ...candidateView(candidate),
         benchmark: candidate.model.benchmark,
-        benchmarkScore: candidate.model.benchmarkScore,
         free: candidate.model.free,
         pricing: candidate.model.pricing,
-        pace: candidate.pool.pace ?? null,
-        score: Math.round(candidate.score * 10) / 10,
+        pace: candidate.poolView.pace ?? null,
       })),
       basis: tier === 'high'
-        ? 'analysis/workflow-planning capability, then dated benchmark score (quality rank fallback), live quota surplus, and cost rank'
+        ? 'analysis/workflow-planning capability, then quality rank (the newest version wins inside a family), benchmarks only to break equal ranks, then live quota surplus and cost rank'
         : tier === 'medium'
-          ? 'build/editing capability, then balanced dated benchmark or quality rank, live quota surplus, and cost rank'
-          : 'chore capability and free/low-cost first, then dated benchmark or quality rank and live quota surplus',
+          ? 'build/editing capability, then quality rank (the newest version wins inside a family), benchmarks only to break equal ranks, then live quota surplus, cost rank, and API price'
+          : 'chore capability and free models first, then quality rank (the newest version wins inside a family), benchmarks only to break equal ranks, then cost rank, live quota surplus, and API price',
     };
   }
   return {
@@ -859,6 +1182,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
     discoveries: rankedDiscoveries,
     suggestions,
     providerSuggestions,
+    unranked,
     openRouter: openRouterCatalog ? {
       capturedAt: openRouterCatalog.capturedAt,
       source: openRouterCatalog.source,
@@ -870,8 +1194,11 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
     excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
     caveats: [
       'Model availability comes from local CLI discovery plus connector fallbacks.',
+      'Tier and quality rank come from connector family rules and model profiles; inside a family the newest version always ranks first.',
       'Benchmark and pricing fields come from the dated Bullswarm datapack or connector metadata.',
-      'OpenRouter agentic, coding, and intelligence indices drive external quality comparisons.',
+      'OpenRouter agentic, coding, and intelligence indices only break ties between models of equal quality rank.',
+      'A discovered model no family rule or profile classifies is listed under unranked and never recommended.',
+      'Where a connector opts a tier into generationFallback and the family serving it has no model in the newest generation, that tier takes the next-lower family\'s newest-generation model at the declared reasoning level.',
       'API-equivalent prices may not match subscription quota debits.',
       'Unknown license value, token counters, pricing, or benchmarks remain null; Bullswarm does not invent them.',
     ],

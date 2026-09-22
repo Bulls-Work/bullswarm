@@ -10,7 +10,7 @@ import {
   getStrategyReasoning, setStrategyReasoning, clearStrategyReasoning,
   reasoningEffective, assertReasoningTier, assertReasoningLevel,
   rungsFor, setRung, configuredModel, formatRungEvidence,
-  TIER_LANES, clearTierAssignment,
+  TIER_LANES, clearTierAssignment, applyRecommendedReasoning, getRecommendedReasoning,
 } from './lib/strategy.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
@@ -24,6 +24,7 @@ import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
 import { priceFor } from './lib/prices.js';
 import { formatMoney } from './lib/usage-basis.js';
 import { poolLabel, resolvePoolId, withPoolLabel, withPoolLabels } from './lib/pool-labels.js';
+import { connectorCopyWarnings, inspectConnectorCopies } from './lib/connector-copies.js';
 
 // Strategy operates on what ships with the package plus what the operator
 // installed, so the packaged tiers load here even under node:test, where the
@@ -130,7 +131,35 @@ function subscriptionValueText(sub) {
     + ' (use strategy set-subscription --monthly-usd)';
 }
 
-function render(report, reasoning = null) {
+/**
+ * ` · max reasoning — no gpt-6 terra yet, newest generation preferred` for a
+ * suggestion that carries a level and a reason (a newest-generation
+ * fallback); empty for an ordinary one.
+ */
+export function fallbackNote(recommended) {
+  const { level, why } = fallbackParts(recommended);
+  return why ? `${level} — ${why}` : '';
+}
+
+function fallbackParts(recommended) {
+  if (!recommended?.why) return { level: '', why: '' };
+  return {
+    level: recommended.reasoning ? ` · ${recommended.reasoning} reasoning` : '',
+    why: recommended.why,
+  };
+}
+
+// A copy of a packaged connector an older install left in <home>/connectors/
+// that is not the package (src/lib/connector-copies.js), one line each.
+function copyWarnings(bullswarmDir) {
+  try {
+    return connectorCopyWarnings(inspectConnectorCopies(bullswarmDir));
+  } catch {
+    return [];
+  }
+}
+
+function render(report, reasoning = null, copies = []) {
   const lines = [`bullswarm strategy · ${report.capturedAt}`, '', 'subscriptions:'];
   for (const sub of report.subscriptions) {
     const value = subscriptionValueText(sub);
@@ -145,11 +174,34 @@ function render(report, reasoning = null) {
   lines.push('', 'tier suggestions:');
   for (const [tier, suggestion] of Object.entries(report.suggestions)) {
     const selected = suggestion.assignment ?? suggestion.recommended;
-    lines.push(`  ${tier}: ${selected ? `${selected.pool}/${selected.model}` : 'no classified model'}${suggestion.assignment ? ' (assigned)' : ' (recommended)'}`);
+    const recommended = suggestion.recommended ?? null;
+    const same = selected && recommended
+      && selected.pool === recommended.pool && selected.model === recommended.model;
+    // `medium: codex/gpt-6-luna · max reasoning (recommended) — no gpt-6 …`
+    const { level, why } = same ? fallbackParts(recommended) : { level: '', why: '' };
+    lines.push(`  ${tier}: ${selected ? `${selected.pool}/${selected.model}` : 'no classified model'}${level}`
+      + `${suggestion.assignment ? ' (assigned)' : ' (recommended)'}${why ? ` — ${why}` : ''}`);
+    // Another pool's own pick for this tier that is a fallback too: its rung
+    // gets the level on apply, so it is named even when it lost the tier.
+    for (const [pool, tiers] of Object.entries(report.providerSuggestions ?? {})) {
+      const own = tiers?.[tier]?.recommended;
+      if (!own?.why || (same && pool === recommended.pool)) continue;
+      lines.push(`    ${pool} rung: ${own.model}${fallbackNote(own)}`);
+    }
     lines.push(`    ${suggestion.basis}`);
+  }
+  // A model the CLI listed that no family rule or profile classifies yet: it
+  // is named here instead of vanishing, and never suggested for a tier.
+  if (report.unranked?.length) {
+    lines.push('', `unranked (new, no tier yet; never recommended): ${report.unranked
+      .map((entry) => `${entry.pool}/${entry.model}`).join(', ')}`);
   }
   lines.push('', `excluded models: ${report.excludedModels?.length ? report.excludedModels.join(', ') : 'none'}`);
   if (reasoning) lines.push('', ...reasoningLines(reasoning));
+  if (copies.length) {
+    lines.push('', 'connector copies that differ from the package (bullswarm doctor has the fix):',
+      ...copies.map((line) => `  ${line}`));
+  }
   lines.push('', 'Use --json for models, pricing sources, benchmarks, and caveats.');
   return lines.join('\n');
 }
@@ -173,8 +225,11 @@ function reasoningLines(reasoning) {
   lines.push(`  configured tiers: ${STRATEGY_TIERS
     .map((tier) => `${tier}=${reasoning.tiers?.[tier] ?? 'connector default'}`).join(' \u00b7 ')}`);
   for (const [pool, tiers] of Object.entries(reasoning.pools ?? {})) {
+    // A level the recommendation wrote is named as such: it is replaced by
+    // the next apply, where an operator's own level is not.
+    const mark = (tier) => (reasoning.recommended?.[pool]?.[tier]?.level === tiers[tier] ? ' (recommendation)' : '');
     lines.push(`  ${pool} override: ${STRATEGY_TIERS.filter((tier) => tiers[tier])
-      .map((tier) => `${tier}=${tiers[tier]}`).join(' \u00b7 ')}`);
+      .map((tier) => `${tier}=${tiers[tier]}${mark(tier)}`).join(' \u00b7 ')}`);
   }
   const width = Math.max(0, ...Object.keys(reasoning.effective ?? {}).map((pool) => pool.length));
   for (const [pool, tiers] of Object.entries(reasoning.effective ?? {})) {
@@ -192,6 +247,7 @@ function reasoningReport(bullswarmDir) {
     .sort((a, b) => a.name.localeCompare(b.name));
   return {
     ...getStrategyReasoning(state.strategy),
+    recommended: getRecommendedReasoning(state.strategy),
     effective: reasoningEffective(pools, state.strategy ?? {}),
   };
 }
@@ -674,11 +730,21 @@ function setModelTiers(bullswarmDir, pool, model, tiers, inventory) {
   return { action: 'model-tiers-updated', pool, model, tiers: selected };
 }
 
+/**
+ * The one path every "adopt the suggestions" caller takes: `strategy apply`,
+ * `strategy refresh --apply`, `setup --yes --strategy`, the setup wizard's
+ * autopilot answer, the TUI's apply key, and the daily auto-refresh. It pins
+ * each tier, selects each pool's suggested model per tier, and writes the
+ * reasoning level a suggestion carries (a newest-generation fallback) into
+ * that pool+tier rung, marked as the recommendation's and never over a level
+ * the operator set (applyRecommendedReasoning in src/lib/strategy.js).
+ */
 export function applyStrategyRecommendations(bullswarmDir, report, {
   refreshHours = 24, enableAutoRefresh = true,
 } = {}) {
   const approvedRefreshHours = enableAutoRefresh ? refreshHoursValue(refreshHours) : null;
   const applied = {};
+  let reasoning = { written: [], kept: [], cleared: [] };
   // Under the lock (S5): apply always follows a refresh (seconds of discovery)
   // or a TUI session, so it rewrites assignments on a fresh load and reports
   // the policy the mutator actually wrote.
@@ -688,19 +754,26 @@ export function applyStrategyRecommendations(bullswarmDir, report, {
     for (const tier of ['high', 'medium', 'low']) {
       const recommended = report?.suggestions?.[tier]?.recommended ?? null;
       if (!recommended) continue;
-      state.strategy.assignments[tier] = { ...recommended };
+      // The pin is a pool and a model; the level travels on the rung below.
+      state.strategy.assignments[tier] = { pool: recommended.pool, model: recommended.model };
       applied[tier] = { ...recommended };
     }
     state.strategy.modelTiers = {};
     state.strategy.configuredTiers = [...STRATEGY_TIERS];
+    const levels = {};
     for (const [pool, tiers] of Object.entries(report?.providerSuggestions ?? {})) {
       for (const tier of STRATEGY_TIERS) {
-        const model = tiers?.[tier]?.recommended?.model ?? null;
+        const recommended = tiers?.[tier]?.recommended ?? null;
+        const model = recommended?.model ?? null;
         if (!model) continue;
         const existing = state.strategy.modelTiers?.[pool]?.[model] ?? [];
         setModelTierSelection(state.strategy, pool, model, [...existing, tier]);
+        if (isReasoningLevel(recommended.reasoning) && recommended.reasoning !== 'default') {
+          (levels[pool] ??= {})[tier] = { level: recommended.reasoning, model, why: recommended.why ?? null };
+        }
       }
     }
+    reasoning = applyRecommendedReasoning(state.strategy, levels);
     state.strategy.policy = {
       ...(state.strategy.policy ?? {}),
       autoApplyRecommendations: enableAutoRefresh,
@@ -717,7 +790,7 @@ export function applyStrategyRecommendations(bullswarmDir, report, {
       state.strategy.lastReport = report;
     }
   });
-  return { applied, policy: written.strategy.policy };
+  return { applied, reasoning, policy: written.strategy.policy };
 }
 
 export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
@@ -997,14 +1070,14 @@ export async function cmdStrategy(args, {
         }) : null;
       console.log(opts.json
         ? JSON.stringify(applied ? { report, ...applied } : report, null, 2)
-        : withPoolLabels(render(report, reasoningReport(bullswarmDir)), bullswarmDir));
+        : withPoolLabels(render(report, reasoningReport(bullswarmDir), copyWarnings(bullswarmDir)), bullswarmDir));
       return 0;
     }
     if (sub === 'show') {
       const state = loadState(bullswarmDir);
       const cached = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       const report = state.strategy?.lastReport ? resolveReportPrices(cached, state) : cached;
-      console.log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(render(report, reasoningReport(bullswarmDir)), bullswarmDir));
+      console.log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(render(report, reasoningReport(bullswarmDir), copyWarnings(bullswarmDir)), bullswarmDir));
       return 0;
     }
     if (sub === 'set-subscription') {

@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { autoSetup } from '../src/setup.js';
-import { discoverConnectorModels } from '../src/lib/strategy.js';
+import { buildStrategy, discoverConnectorModels } from '../src/lib/strategy.js';
 import { loadConnectors } from '../src/lib/config.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import {
@@ -387,6 +387,133 @@ test('analysis review lists one recommendation per tier and asks before applying
   }, { width: 100, height: 30 });
   assert.match(cached, /Using cached benchmark data; latest refresh unavailable/);
   assert.doesNotMatch(cached, /local metadata was used/);
+});
+
+test('strategy show and the setup screens name an unranked model instead of dropping it', async () => {
+  const f = fixture();
+  try {
+    const codex = loadConnectors(f.dir, { packaged: true }).codex;
+    const discovery = await discoverConnectorModels(codex, {
+      provider: { module: { discoverModels: async () => ({
+        models: [{ id: 'gpt-5.6-luna' }, { id: 'nova-9-preview' }],
+      }) } },
+    });
+    const report = buildStrategy({
+      connectors: { codex },
+      pools: [{ name: 'codex', connector: codex, enabled: true, pace: 0, costRank: 3 }],
+      state: {},
+      discoveries: { codex: discovery },
+    });
+    const state = loadState(f.dir);
+    state.strategy = { ...(state.strategy ?? {}), lastReport: report };
+    saveState(f.dir, state);
+    const shown = await runStrategy(['show'], f.dir);
+    assert.equal(shown.code, 0);
+    assert.match(shown.out, /unranked \(new, no tier yet; never recommended\): codex\/nova-9-preview/);
+    assert.match(shown.out, /low: codex\/gpt-5\.6-luna \(recommended\)/);
+
+    const models = discovery.models.map((model) => ({
+      ...model, tiers: [], effectiveTiers: model.tier ? [model.tier] : [], disabled: false,
+    }));
+    const inventory = {
+      providers: [{ name: 'codex', enabled: true, usedPct: 10, models }],
+      routes: {},
+      recommendations: report.providerSuggestions,
+      openRouter: { error: null },
+    };
+    const matrix = renderStrategyDashboard(inventory, {
+      view: 'models', providerIndex: 0, modelIndex: 0, tierIndex: 0, search: '', width: 110, height: 30,
+    });
+    assert.match(matrix, /nova-9-preview \(unranked\)/);
+    assert.doesNotMatch(matrix, /gpt-5\.6-luna \(unranked\)/);
+    assert.ok(recommendationLines(inventory).includes('  unranked (new, no tier yet): nova-9-preview'));
+  } finally { f.cleanup(); }
+});
+
+// --- newest-generation fallback, applied -------------------------------------
+
+const CODEX_SIX = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'];
+
+async function codexFallbackReport(dir, ids = CODEX_SIX) {
+  const codex = loadConnectors(dir, { packaged: true }).codex;
+  const discovery = await discoverConnectorModels(codex, {
+    provider: { module: { discoverModels: async () => ({
+      models: ids.map((id) => ({ id, reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] })),
+    }) } },
+  });
+  return buildStrategy({
+    connectors: { codex },
+    pools: [{ name: 'codex', connector: codex, enabled: true, pace: 0, costRank: 3, lanes: codex.lanes, capabilities: codex.capabilities }],
+    state: {},
+    discoveries: { codex: discovery },
+  });
+}
+
+const medium = (rows) => rows.find((row) => row.pool === 'codex' && row.tier === 'medium');
+
+test('apply writes the fallback reasoning into the codex medium rung, as set-rung --reasoning would', async () => {
+  const f = fixture();
+  try {
+    const result = applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir));
+    assert.deepEqual(result.reasoning.written, [{
+      pool: 'codex', tier: 'medium', level: 'max', model: 'gpt-6-luna',
+      why: 'no gpt-6 terra yet, newest generation preferred',
+    }]);
+    // The pin stays a pool and a model; the level lives on the rung.
+    assert.deepEqual(loadState(f.dir).strategy.assignments.medium, { pool: 'codex', model: 'gpt-6-luna' });
+    const row = medium(await rungRows(f.dir, { pool: 'codex' }));
+    assert.equal(row.model, 'gpt-6-luna');
+    assert.deepEqual(row.reasoning, {
+      applied: 'max', source: 'recommendation', requested: 'max', clamped: false,
+      why: 'no gpt-6 terra yet, newest generation preferred',
+    });
+    assert.match(renderRungs([row]), /codex {2}medium {2}gpt-6-luna {2}max \(recommendation\)/);
+
+    // The report says why, in one line.
+    const shown = await runStrategy(['show'], f.dir);
+    assert.match(shown.out, /medium: codex\/gpt-6-luna · max reasoning \(assigned\) — no gpt-6 terra yet, newest generation preferred/);
+    assert.match(shown.out, /codex override: medium=max \(recommendation\)/);
+
+    // A gpt-6 terra appears: the next apply takes medium back to terra and
+    // removes the level it wrote, so the connector's medium default applies.
+    const back = applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir, [...CODEX_SIX, 'gpt-6-terra']));
+    assert.deepEqual(back.reasoning.cleared, [{ pool: 'codex', tier: 'medium', level: 'max', model: 'gpt-6-luna' }]);
+    const terra = medium(await rungRows(f.dir, { pool: 'codex' }));
+    assert.deepEqual([terra.model, terra.reasoning.applied, terra.reasoning.source], ['gpt-6-terra', 'medium', 'connector']);
+  } finally { f.cleanup(); }
+});
+
+test('an explicit reasoning setting survives strategy apply', async () => {
+  const f = fixture();
+  try {
+    assert.equal((await runStrategy(['set-rung', 'codex', 'medium', '--model', 'gpt-6-luna', '--reasoning', 'high', '--force'], f.dir)).code, 0);
+    const result = applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir));
+    assert.deepEqual(result.reasoning.written, []);
+    assert.deepEqual(result.reasoning.kept, [{ pool: 'codex', tier: 'medium', level: 'high', source: 'strategy-pool' }]);
+    const row = medium(await rungRows(f.dir, { pool: 'codex' }));
+    assert.deepEqual([row.model, row.reasoning.applied, row.reasoning.source], ['gpt-6-luna', 'high', 'strategy-pool']);
+    // Removing the level the recommendation did not write is not its job either.
+    applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir, [...CODEX_SIX, 'gpt-6-terra']));
+    assert.equal(loadState(f.dir).strategy.reasoning.pools.codex.medium, 'high');
+  } finally { f.cleanup(); }
+});
+
+test('the setup review screen shows the fallback model, its reasoning, and why', async () => {
+  const f = fixture();
+  try {
+    const report = await codexFallbackReport(f.dir);
+    const inventory = {
+      providers: [{ name: 'codex', enabled: true, usedPct: 10, models: [] }],
+      routes: {},
+      recommendations: report.providerSuggestions,
+      openRouter: { error: null },
+    };
+    const lines = recommendationLines(inventory);
+    const at = lines.indexOf('  M  gpt-6-luna · max reasoning');
+    assert.ok(at > 0, lines.join('\n'));
+    assert.equal(lines[at + 1], '     no gpt-6 terra yet, newest generation preferred');
+    assert.ok(lines.includes('  L  gpt-6-luna'), 'low is not a fallback and carries no level');
+  } finally { f.cleanup(); }
 });
 
 test('raw terminal input preserves arrows and splits batched search typing', () => {

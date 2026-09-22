@@ -214,6 +214,23 @@
   "knownModels": [
     "fallback-model-id"
   ],
+  "$comment-modelFamilies": "Optional. A family rule gives every model whose id matches `match` (a regex, tested without a trailing [1m]-style selector) its tier and base qualityRank; within one family the higher version read from the id always ranks first. The version is the first standalone digit run (gpt-5.6-sol -> 5.6, claude-opus-5-5 -> 5.5), or the named capture group `version` when the pattern has one. No pricing, benchmark, or free here: those are one model's facts and belong on an exact modelProfiles row, which may also override a family's tier, rank, or autoRecommend.",
+  "modelFamilies": [
+    {
+      "family": "example-family",
+      "match": "^example-[0-9][0-9.]*-pro$",
+      "tier": "high|medium|low",
+      "qualityRank": 1,
+      "autoRecommend": true
+    }
+  ],
+  "$comment-generationFallback": "Optional, per tier. When the family serving an opted-in tier has no model in the pool's newest generation (the highest leading version number among its recommendable family members), the tier takes the newest-generation model of the next-lower-ranked family at `reasoning` (clamped to what that model supports). `label` names a generation in the explanation, e.g. gpt-{generation} -> 'no gpt-6 terra yet'.",
+  "generationFallback": {
+    "label": "example-{generation}",
+    "tiers": {
+      "medium": { "reasoning": "max" }
+    }
+  },
   "modelProfiles": [
     {
       "match": "connector-owned regex",

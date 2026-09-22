@@ -12,7 +12,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   REASONING_LEVELS, isReasoningLevel, resolveReasoningLevel, reasoningArgs,
-  appliedReasoningLevel, reasoningRecord,
+  appliedReasoningLevel, reasoningRecord, suggestedReasoningLevel, REASONING_SOURCES,
 } from '../src/lib/reasoning.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -304,4 +304,36 @@ test('the reported record accepts a resolved object or a bare level', () => {
   );
   // An unrecognized source is not passed through as if it were real.
   assert.equal(reasoningRecord({ applied: 'high', source: 'made-up' }).source, 'none');
+});
+
+test('a suggested level is the strongest the model supports, never above max', () => {
+  const connector = { name: 'x', reasoning: { flag: '--effort', levels: ['low', 'medium', 'high', 'xhigh', 'max'], skipModels: ['^tiny-'] } };
+  const at = (model, requested) => suggestedReasoningLevel(connector, model, requested).applied;
+  assert.equal(at({ id: 'a', reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }), 'max');
+  assert.equal(at({ id: 'a', reasoningLevels: ['low', 'medium', 'high'] }), 'high');
+  assert.equal(at({ id: 'a' }), 'max', 'no discovered list: the connector levels');
+  assert.equal(at({ id: 'a', reasoningLevels: ['ultra'] }), null, 'nothing on the common scale');
+  assert.equal(at({ id: 'tiny-1' }), null, 'a skipped model gets no level');
+  assert.equal(at({ id: 'a' }, 'high'), 'high', 'a lower request is kept');
+  assert.equal(suggestedReasoningLevel(null, { id: 'a' }).applied, null, 'no reasoning block');
+  assert.equal(suggestedReasoningLevel(connector, { id: 'a', reasoningLevels: ['low'] }).clamped, true);
+});
+
+test('a recommendation-written pool level reports source recommendation, for its own model only', () => {
+  assert.ok(REASONING_SOURCES.includes('recommendation'));
+  const connector = { name: 'codex', reasoning: { args: ['-c', 'e={level}'], levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaults: { medium: 'medium' } } };
+  const strategy = {
+    reasoning: { tiers: {}, pools: { codex: { medium: 'max' } } },
+    recommendedReasoning: { codex: { medium: { level: 'max', model: 'gpt-6-luna', why: 'w' } } },
+  };
+  const resolve = (model, s = strategy) => resolveReasoningLevel({ connector, tier: 'medium', model, strategy: s });
+  assert.deepEqual(resolve('gpt-6-luna'), { requested: 'max', applied: 'max', source: 'recommendation', clamped: false });
+  assert.deepEqual(resolve(null), { requested: 'max', applied: 'max', source: 'recommendation', clamped: false });
+  assert.deepEqual(resolve('gpt-5.6-terra'), { requested: 'medium', applied: 'medium', source: 'connector', clamped: false });
+  // A run-wide override still wins over it.
+  assert.equal(resolveReasoningLevel({ connector, tier: 'medium', model: 'gpt-6-luna', strategy, runOverride: 'low' }).source, 'run');
+  // A slot whose value no longer matches the mark is the operator's.
+  const edited = { ...strategy, reasoning: { tiers: {}, pools: { codex: { medium: 'high' } } } };
+  assert.equal(resolve('gpt-6-luna', edited).source, 'strategy-pool');
+  assert.equal(reasoningRecord({ requested: 'max', applied: 'max', source: 'recommendation' }).source, 'recommendation');
 });

@@ -649,7 +649,7 @@ bullswarm strategy refresh --json
 | `--yes` | required alongside `--apply` — approves changing routing | none; `--apply` refuses without it |
 | `--refresh-hours <n>` | auto-refresh cadence to record when combined with `--apply` | `24` |
 
-Writes the report to `state.json`; with `--apply --yes` also writes tier assignments and enables the auto-refresh policy.
+Writes the report to `state.json`; with `--apply --yes` also writes tier assignments, the reasoning level a suggestion carries (never over one you set), and enables the auto-refresh policy.
 
 ### apply
 
@@ -665,7 +665,7 @@ bullswarm strategy apply --yes
 | `--yes` | required — approves changing routing | none; the command refuses without it |
 | `--refresh-hours <n>` | auto-refresh cadence to record | `24` |
 
-Writes `state.strategy.assignments` and the auto-refresh policy.
+Writes `state.strategy.assignments` and the auto-refresh policy. A suggestion that carries a reasoning level (a newest-generation fallback, such as `medium: gpt-6-luna · max reasoning — no gpt-6 terra yet, newest generation preferred`) also has that level written into its pool+tier rung, marked as the recommendation's. A level you set per pool or per tier is never overwritten.
 
 ### show
 
@@ -863,7 +863,7 @@ Argument: a pool name; contrib providers are probed even when not enabled. Spawn
 
 ## doctor
 
-Report installation readiness — config present, at least one agent CLI discovered, meters reachable, at least one delegate pool enabled — with the exact fix command for anything failing.
+Report installation readiness — config present, at least one agent CLI discovered, meters reachable, at least one delegate pool enabled — with the exact fix command for anything failing. The `connector-copies` check warns (`!`, never a failure) about an edited copy of a packaged connector that an install older than 0.29.0 left in `<home>/connectors/`, naming its stale fields and whether it is read at all.
 
 ```bash
 # Machine-readable { version, configured, ok, checks[], nextActions[] }.
@@ -872,7 +872,7 @@ bullswarm doctor --json
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--json` | machine-readable `{ version, configured, ok, checks[], nextActions[] }` | human-readable checklist with ✓/✗ per check |
+| `--json` | machine-readable `{ version, configured, ok, checks[], nextActions[] }` | human-readable checklist with ✓/!/✗ per check |
 
 Self-heals: if `~/.bullswarm` is not yet configured, runs the same auto-setup as any other verb before reporting. Exit code is 0 when every check passes, 1 if any check fails.
 

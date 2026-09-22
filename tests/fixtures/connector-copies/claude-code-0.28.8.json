@@ -1,0 +1,87 @@
+{
+  "name": "claude-code",
+  "bin": "claude",
+  "configDirs": [
+    "~/.claude"
+  ],
+  "spawn": {
+    "cmd": [
+      "claude",
+      "-p",
+      "Read the file {taskFile} and follow its instructions exactly.",
+      "--add-dir",
+      "{cwd}",
+      "--dangerously-skip-permissions"
+    ],
+    "cwdMode": "add-dir"
+  },
+  "authSignatures": [
+    "unauthorized",
+    "authentication failed",
+    "failed to authenticate",
+    "credit balance",
+    "not logged in",
+    "please run /login"
+  ],
+  "$comment-quotaSignatures": "usage-limit phrases: classified `quota`, quarantined until the reset the message names. DEFAULT_QUOTA_SIGNATURES (src/lib/quota.js) apply on top of these.",
+  "quotaSignatures": [
+    "hit your session limit",
+    "hit your limit",
+    "hit your usage limit"
+  ],
+  "outputExtraction": {
+    "strategy": "event-stream"
+  },
+  "eventStream": {
+    "format": "jsonl",
+    "args": ["--output-format", "stream-json", "--verbose", "--forward-subagent-text"],
+    "modelPaths": ["model", "message.model"],
+    "silenceThresholdSec": 600,
+    "rules": [
+      { "rootMatch": { "path": "type", "equals": "assistant" }, "forEach": "message.content", "match": { "path": "type", "equals": "tool_use" }, "idPaths": ["id"], "kindPaths": ["name"], "summaryPaths": ["input.command", "input.file_path", "input.path", "input.pattern"], "status": "running" },
+      { "rootMatch": { "path": "type", "equals": "user" }, "forEach": "message.content", "match": { "path": "type", "equals": "tool_result" }, "idPaths": ["tool_use_id"], "kind": "tool", "statusPath": "is_error", "statusMap": { "true": "failed", "false": "completed" }, "defaultStatus": "completed" },
+      { "rootMatch": { "path": "type", "equals": "assistant" }, "forEach": "message.content", "match": { "path": "type", "equals": "text" }, "kind": "response", "summaryPaths": ["text"], "status": "completed" }
+    ],
+    "output": [
+      { "match": { "path": "type", "equals": "result" }, "path": "result", "mode": "last" }
+    ]
+  },
+  "$comment-meter": "the CALLER pool \u2014 competes in analyze/build, wins only when no delegate can take the lane",
+  "meter": {
+    "type": "reader",
+    "window": "weekly+5h"
+  },
+  "costRank": 4,
+  "lanes": [
+    "analyze",
+    "build",
+    "chore"
+  ],
+  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
+  "knownModels": ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "$comment-reasoning": "verified from `claude --help` (Claude Code 2.1.263): `--effort <level>  Effort level for the current session (low, medium, high, xhigh, max)`. skipModels: `--help` does not state per-model support, so Haiku is excluded conservatively — re-verify before removing the exclusion. With no `reasoning` override anywhere, workers inherit whatever effortLevel the home settings.json sets.",
+  "reasoning": {
+    "flag": "--effort",
+    "levels": ["low", "medium", "high", "xhigh", "max"],
+    "defaults": { "high": "xhigh", "medium": "high", "low": "medium" },
+    "skipModels": ["^claude-haiku-"]
+  },
+  "conversation": {
+    "newArgs": ["--session-id", "{sessionId}"],
+    "resumeArgs": ["--resume", "{sessionId}"]
+  },
+  "modelProfiles": [
+    { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-opus-(5|4-[5-8])$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 5, "cacheReadUsdPerMillion": 0.5, "outputUsdPerMillion": 25 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-sonnet-5$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 10 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-sonnet-", "tier": "medium", "qualityRank": 4 },
+    { "match": "^claude-haiku-4-5$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 1, "cacheReadUsdPerMillion": 0.1, "outputUsdPerMillion": 5 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" }
+  ],
+  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly" },
+  "flags": {
+    "stealth": false,
+    "isCaller": true
+  },
+  "$comment-timeout": "No implicit wall-clock timeout; callers may opt in with --timeout or workflow step.timeoutSec"
+}

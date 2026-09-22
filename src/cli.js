@@ -1045,9 +1045,13 @@ async function cmdSetup(opts) {
     if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r, strategy, integration }, null, 2));
     else {
       console.log(withPoolLabels(`setup complete (${r.reason}): enabled ${r.enabledPools.join(', ')}`, getBullswarmDir()));
-      if (r.repaired.length) console.log(`repaired connector files: ${r.repaired.join(', ')}`);
+      if (r.repaired.length) console.log(`retired older connector copies (the packaged connectors load instead): ${r.repaired.join(', ')}`);
       console.log(`model strategy: ${r.strategyCommand} (discovers models and refreshes tier suggestions)`);
-      if (strategy) console.log(`strategy autopilot: applied ${Object.keys(strategy.applied).join(', ')} tiers; refresh every ${strategy.policy.refreshHours}h`);
+      if (strategy) {
+        console.log(`strategy autopilot: applied ${Object.keys(strategy.applied).join(', ')} tiers; refresh every ${strategy.policy.refreshHours}h`);
+        const { recommendedReasoningLines } = await import('./setup.js');
+        for (const line of recommendedReasoningLines(strategy.reasoning)) console.log(line);
+      }
       if (integration) console.log('agent integration: installed (inspect with bullswarm integrate status)');
     }
     return 0;
@@ -1097,6 +1101,37 @@ async function cmdDoctor(opts) {
     fix: found.length ? null : 'install at least one agent CLI (codex, grok, opencode…)',
   });
 
+  // Copies of packaged connectors an older install left in <home>/connectors/
+  // (src/lib/connector-copies.js). Unmodified ones were retired by the
+  // first-use pass that ran before this verb; an edited copy is kept, and
+  // this check names its stale fields. A warning, never a failed readiness.
+  try {
+    const {
+      inspectConnectorCopies, connectorCopyWarnings, retiredConnectorCopies,
+    } = await import('./lib/connector-copies.js');
+    const copies = inspectConnectorCopies(getBullswarmDir());
+    const warnings = connectorCopyWarnings(copies);
+    const retired = retiredConnectorCopies(getBullswarmDir());
+    checks.push({
+      id: 'connector-copies',
+      ok: true,
+      warn: warnings.length > 0,
+      detail: warnings.length
+        ? `${warnings.length} connector cop${warnings.length === 1 ? 'y' : 'ies'} in ${getBullswarmDir()}/connectors ${warnings.length === 1 ? 'differs' : 'differ'} from the package`
+        : `no copies of packaged connectors in use${retired.length ? `; retired: ${retired.join(', ')} (connectors/retired/)` : ''}`,
+      lines: warnings,
+      fix: warnings.length
+        ? 'compare each copy with the packaged connector.json; move it into connectors/retired/ to use the package'
+        : null,
+      copies: copies.map(({ file, provider, pool, status, staleFields, editedFields, read, servedBy }) => ({
+        file, provider, pool, status, staleFields, editedFields, read, servedBy,
+      })),
+      retired,
+    });
+  } catch (err) {
+    checks.push({ id: 'connector-copies', ok: true, warn: true, detail: `could not inspect connector copies: ${err.message}`, fix: null });
+  }
+
   try {
     const { pools } = await buildPoolsLive(getBullswarmDir(), Date.now(), {
     packaged: true,
@@ -1132,8 +1167,9 @@ async function cmdDoctor(opts) {
   else {
     console.log(`bullswarm doctor (v${report.version}) — ${report.ok ? 'READY' : 'DEGRADED'}`);
     for (const c of checks) {
-      console.log(withPoolLabels(`  ${c.ok ? '✓' : '✗'} ${c.id}: ${c.detail}`, getBullswarmDir()));
-      if (!c.ok && c.fix) console.log(`      fix: ${c.fix}`);
+      console.log(withPoolLabels(`  ${c.ok ? (c.warn ? '!' : '✓') : '✗'} ${c.id}: ${c.detail}`, getBullswarmDir()));
+      for (const line of c.lines ?? []) console.log(withPoolLabels(`      ${line}`, getBullswarmDir()));
+      if ((!c.ok || c.warn) && c.fix) console.log(`      fix: ${c.fix}`);
     }
   }
   return report.ok ? 0 : 1;

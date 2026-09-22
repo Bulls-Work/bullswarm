@@ -176,12 +176,21 @@
     "newArgs": ["--session-id", "{sessionId}"],
     "resumeArgs": ["--resume", "{sessionId}"]
   },
+  "$comment-modelFamilies": "Tier and base rank by family name, so a new Opus, Sonnet or Haiku is ranked the day the CLI lists it and the version in the id orders one family (claude-opus-5-5 above claude-opus-5). Fable stays out of automatic recommendations, as its per-model row kept it before. A family never carries a price.",
+  "modelFamilies": [
+    { "family": "fable", "match": "^claude-fable-[0-9]", "tier": "high", "qualityRank": 6, "autoRecommend": false },
+    { "family": "opus", "match": "^claude-opus-[0-9]", "tier": "high", "qualityRank": 5 },
+    { "family": "sonnet", "match": "^claude-sonnet-[0-9]", "tier": "medium", "qualityRank": 4 },
+    { "family": "haiku", "match": "^claude-haiku-[0-9]", "tier": "low", "qualityRank": 3 }
+  ],
+  "$comment-modelProfiles": "Exact rows carry dated prices only, one per rate-card line, so no model inherits an older model's price: Opus 5.5 and Fable 5.1 are priced differently from Opus 5 and Fable 5 (checked against the pricing page on 2026-09-23). A model with no row here is unpriced.",
   "modelProfiles": [
-    { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "cacheWrite5mUsdPerMillion": 12.5, "cacheWrite1hUsdPerMillion": 20, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
-    { "match": "^claude-opus-(?:5(?:-[0-9]+)?|4-[5-8])(?:\\[1m\\])?$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 5, "cacheReadUsdPerMillion": 0.5, "cacheWrite5mUsdPerMillion": 6.25, "cacheWrite1hUsdPerMillion": 10, "outputUsdPerMillion": 25 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
-    { "match": "^claude-sonnet-5(?:\\[1m\\])?$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "cacheWrite5mUsdPerMillion": 2.5, "cacheWrite1hUsdPerMillion": 4, "outputUsdPerMillion": 10 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
-    { "match": "^claude-sonnet-", "tier": "medium", "qualityRank": 4 },
-    { "match": "^claude-haiku-4-5$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 1, "cacheReadUsdPerMillion": 0.1, "cacheWrite5mUsdPerMillion": 1.25, "cacheWrite1hUsdPerMillion": 2, "outputUsdPerMillion": 5 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" }
+    { "match": "^claude-fable-5(?:\\[1m\\])?$", "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "cacheWrite5mUsdPerMillion": 12.5, "cacheWrite1hUsdPerMillion": 20, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-23" },
+    { "match": "^claude-fable-5-1(?:\\[1m\\])?$", "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 0.25, "cacheWrite5mUsdPerMillion": 12.5, "cacheWrite1hUsdPerMillion": 20, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-23" },
+    { "match": "^claude-opus-5-5(?:\\[1m\\])?$", "pricing": { "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.2, "cacheWrite5mUsdPerMillion": 5, "cacheWrite1hUsdPerMillion": 8, "outputUsdPerMillion": 20 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-23" },
+    { "match": "^claude-opus-(?:5|4-[5-8])(?:\\[1m\\])?$", "pricing": { "inputUsdPerMillion": 5, "cacheReadUsdPerMillion": 0.5, "cacheWrite5mUsdPerMillion": 6.25, "cacheWrite1hUsdPerMillion": 10, "outputUsdPerMillion": 25 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-23" },
+    { "match": "^claude-sonnet-5(?:\\[1m\\])?$", "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "cacheWrite5mUsdPerMillion": 2.5, "cacheWrite1hUsdPerMillion": 4, "outputUsdPerMillion": 10 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
+    { "match": "^claude-haiku-4-5$", "pricing": { "inputUsdPerMillion": 1, "cacheReadUsdPerMillion": 0.1, "cacheWrite5mUsdPerMillion": 1.25, "cacheWrite1hUsdPerMillion": 2, "outputUsdPerMillion": 5 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" }
   ],
   "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly" },
   "flags": {
