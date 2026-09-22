@@ -1,15 +1,50 @@
 ---
 title: Introduction
-description: What Bullswarm is, the two ways to start work, and the four rules it never breaks.
+description: Why Bullswarm exists, how it puts coding-agent subscriptions to work, and what makes it different from an API proxy.
 ---
 
 # Introduction
 
-By the end of this page you will know what Bullswarm does, which of its two starting commands fits the work in front of you, and the four rules that decide how it behaves.
+Bullswarm turns the coding-agent subscriptions you already use into one paced,
+observable fleet. It routes work through their official headless CLIs, records
+what happened, and verifies the saved result before it calls the work useful.
 
-## What Bullswarm is
+![Bullswarm dashboard Home page showing current runs, quota, and recent history](/screens/home.png)
 
-Bullswarm is a CLI that sends a coding task to whichever of your installed agent CLIs — Claude Code, Codex, Grok, OpenCode, or Command Code — has the most unspent subscription quota right now. It waits for that delegate to finish and then judges the saved output by its content, never by its exit code. It runs on Node.js 22.12 or later and is installed with `npm i -g bullswarm`.
+*Home keeps active work, recent results, and subscription pace in one view.*
+
+## The problem
+
+Several coding-agent subscriptions can mean several separate quota clocks,
+commands, model menus, transcripts, and failure modes. Choosing one by habit
+can leave quota unused on another. Starting several by hand makes it hard to
+see which agent owns which part, whether a process merely exited, and whether
+anyone independently checked the result.
+
+## The value
+
+Bullswarm gives your main agent two deliberate ways to hand work off:
+
+- one bounded outcome goes through `bullswarm run`;
+- parallel territories, integration, or independent acceptance use a
+  caller-authored `bullswarm workflow goal` program.
+
+The router compares each eligible pool with its own quota clock, accounts for
+work already in flight, and prefers quota at risk of expiring. Durable run,
+attempt, output, and evidence records make the work inspectable from the CLI or
+dashboard after the delegate process has gone away.
+
+## What Bullswarm is — and is not
+
+Bullswarm drives the official headless CLIs on your own machine and uses the
+subscriptions already logged in there. Built-in agent CLIs are Claude Code,
+Codex, and Grok; OpenCode and Command Code are contributed providers.
+
+It is **not an API proxy**. It does not pool API keys behind a hosted endpoint,
+replace a provider's CLI, or make provider-specific behavior part of the core.
+Each provider owns how its CLI launches, how output is read, and — when the
+provider exposes it — how usage is measured. Bullswarm owns routing,
+coordination, durable records, and verification.
 
 ## Two ways to start work
 
@@ -23,7 +58,9 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo --program plan.json
 ```
 
-Use `run` when the work ends in one answer you could describe in a paragraph. Use `workflow goal` when it has parallel territories, an integration step, or acceptance you want judged on its own — see [Workflows](/guide/workflows).
+Use `run` when the work ends in one answer you could describe in a paragraph.
+Use `workflow goal` when it has parallel territories, an integration step, or
+acceptance you want judged on its own — see [Workflows](/guide/workflows).
 
 ## The four rules
 
@@ -44,12 +81,13 @@ These are the non-negotiable rules the rest of the tool is built on. Everything 
 | [Cost and usage](/guide/cost) | How token sources, API rates, subscription measurements, and money glyphs work |
 | [Routing](/guide/routing) | The order in which a pool is picked, with the numbers |
 | [Workflows](/guide/workflows) | Authoring the program that `workflow goal` executes |
+| [Playbook](/guide/playbook) | A practical rhythm for planning, watching, steering, and signing off |
 
 For the CLI surface itself, [CLI reference](/reference/cli) lists every verb and nested subcommand.
 
 ## Next steps
 
-- [Getting started](/guide/getting-started) — install Bullswarm and complete one run.
+- [Getting started](/guide/getting-started) — install Bullswarm, complete one run, and launch a workflow.
 - [Concepts](/guide/concepts) — the vocabulary every other page assumes.
 - [Run one task](/guide/run) — the full `bullswarm run` surface.
 - [Cost and usage](/guide/cost) — the basis behind every token and dollar field.

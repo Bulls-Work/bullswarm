@@ -2,36 +2,66 @@
 layout: home
 title: Bullswarm
 titleTemplate: Route coding work by quota. Verify it by content.
-description: Bullswarm routes a bounded coding task to whichever installed agent CLI has unused subscription quota, then verifies the result by its content.
+description: Bullswarm routes coding work across your installed agent CLIs by subscription pace, then verifies the result by its content.
 
 hero:
   name: Bullswarm
   text: Route coding work by quota. Verify it by content.
-  tagline: Bullswarm is a CLI that sends a coding task to whichever of your installed agent CLIs — Claude Code, Codex, Grok, OpenCode, or Command Code — currently has unused subscription quota, then checks the result by its content.
+  tagline: Put your logged-in coding-agent subscriptions to work as one paced, observable fleet — without turning them into an API proxy.
+  image:
+    src: /brand/bullswarm-banner.png
+    alt: Bullswarm fleet
   actions:
     - theme: brand
       text: Get started
       link: /guide/getting-started
     - theme: alt
-      text: Concepts
-      link: /guide/concepts
+      text: Read the playbook
+      link: /guide/playbook
     - theme: alt
       text: CLI reference
       link: /reference/cli
 
 features:
-  - title: Quota-paced routing across pools
-    details: A pool is one installed agent CLI, or one account of that CLI. Work is tagged by lane — analyze, build, or chore — and the pool furthest behind its own quota pace wins. A pool at its 5-hour ceiling yields to one with headroom, and a pool whose weekly window is about to reset gets priority for its remaining surplus, so quota never runs out the clock unspent.
-  - title: Verdict by content, never exit code
-    details: Every delegate's output is evidence to be verified, never an authority to be trusted on its word. A non-zero exit is never success on its own — the JSON verdict's ok, why, and contentUsableDespiteExit say what was actually written before you re-run anything.
-  - title: Workflows you author, with independent acceptance
-    details: One agent planning and judging its own serial work leaves every other pool idle and multiplies the risk. You author the program; the kernel validates and runs the graph of dependent actions across whichever pools have quota to spare, and computes completion from evidence the graph itself required.
-  - title: Works inside Claude Code, Codex and Grok
-    details: The packaged bullswarm skill goes straight to bullswarm run or bullswarm workflow goal from the agent CLI you are already in — no separate preview or classifier command to learn first.
-
-## Documentation
-
-- [Cost and usage](/guide/cost) — the measured, transcript, estimated, and unknown bases behind token and subscription figures.
-- [CLI reference](/reference/cli) — every command, including workflow repricing.
-- [Result envelope](/reference/result) — the JSON fields for per-step and total cost.
+  - title: Pacing router
+    details: Spend subscription quota before it expires. Weekly and monthly pace, reset urgency, five-hour headroom, and current load all shape the pick.
+    link: /guide/routing
+    linkText: See how routing works
+  - title: Lanes
+    details: Describe the work as analyze, build, or chore. Eligible pools compete at runtime instead of being hard-wired to a task type.
+    link: /guide/concepts
+    linkText: Learn the vocabulary
+  - title: Workflows
+    details: Author a dependency graph, let ready steps fan out across providers, then bring the results back together in one shared workspace.
+    link: /guide/workflows
+    linkText: Build a workflow
+  - title: Verification
+    details: Exit code is not the verdict. Bullswarm judges saved output by content, and workflow requirements can require evidence another worker inspected.
+    link: /guide/run
+    linkText: Read the result envelope
+  - title: Dashboard
+    details: Follow Home, Runs, Run, Step, Budget, Stats, and Fleet from one keyboard-and-mouse dashboard while work continues independently.
+    link: /guide/observing
+    linkText: Tour the dashboard
+  - title: Meters
+    details: Provider-owned usage readers supply quota windows and resets. Stale or unavailable measurements stay visibly unknown instead of becoming zero.
+    link: /guide/cost
+    linkText: Understand usage and cost
+  - title: Packaged skill
+    details: Install Bullswarm's guidance into Claude Code, Codex, or Grok so your main agent can choose a bounded run or author a workflow for you.
+    link: /integrations/agent-clis
+    linkText: Connect an agent CLI
+  - title: Claude Code Mod
+    details: Open a read-only Bullswarm pane inside Claude Code with the same run, step, and usage facts as the terminal dashboard.
+    link: /integrations/claude-code
+    linkText: Open the Claude integration
 ---
+
+## One fleet, your subscriptions
+
+Bullswarm drives the official headless CLIs already installed and logged in on
+your machine. Start with one bounded task, or give your main agent a goal and a
+program that can spread independent work across the fleet.
+
+[Install and run your first task](/guide/getting-started) or read the
+[day-to-day playbook](/guide/playbook).

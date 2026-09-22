@@ -137,6 +137,39 @@ The pages answer different questions:
 | **Fleet** | Which model and reasoning rung each pool uses by lane or provider, its run record and meter state, and where to open setup for edits. |
 | **Help** | What every key, click, layout rule, and dashboard command does. |
 
+### Home
+
+![Dashboard Home page with current runs, quota, trends, and recent history](/screens/home.png)
+
+*Home answers “what needs attention now?” before you open an individual run.*
+
+### Runs
+
+![Runs page with active work and dated workflow history](/screens/runs.png)
+
+*Runs keeps active work above the searchable history catalogue.*
+
+### Run
+
+![Run page with phase plan, live activity, and attempt timeline](/screens/run.png)
+
+*Run separates execution progress from independent verification and shows the
+pool, model, effort, and clock for every attempt.*
+
+### Step
+
+![Step page with activity turns, result, task, and cost evidence](/screens/step.png)
+
+*Step is the evidence view: inspect turns, the durable result, the original
+task, and the cost basis without leaving the dashboard.*
+
+### Stats
+
+![Stats page with spend trend and pool, model, and project breakdowns](/screens/stats.png)
+
+*Stats compares the selected period without turning missing usage or money
+into a confident zero.*
+
 The other pages retain their existing period, budget, statistics, and fleet
 controls. The 0.35.1 changes described above are the layout contract for Home,
 Runs, Run, and Step; they do not turn an unavailable value into zero or replace

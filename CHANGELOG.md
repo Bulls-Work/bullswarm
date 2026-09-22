@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- docs: a new README with a banner, the problem, a comparison with the
+  alternatives, and dashboard screenshots taken from a made-up demo home;
+  a new playbook guide; `scripts/render-readme-shots.sh` rebuilds the
+  screenshots and refuses to write them if private terms or source IDs
+  survive.
+
+- stats: hyphenated project names keep their complete basename when the panel
+  has room instead of being reduced to the suffix after the final hyphen.
+
 - stats: charts share Home's even whole-unit ticks, zero baseline and daily
   weekday labels, while compact money cells use the dashboard-wide source and
   lower-bound glyphs and return the saved width to pool and project names.
@@ -190,7 +199,7 @@
   sessions read-only; Command Code reads persisted project JSONL only when a
   session transcript exists and carries usage.
 - reprice: transcript lookup follows the loaded provider registry, so
-  `opencode2*`, `opencode2:kaihk-*`, and `command-code` pools reach their
+  `opencode2*`, `opencode2:orbit-*`, and `command-code` pools reach their
   provider-owned readers without a hard-coded provider list. Ambiguous,
   missing, and checkpoint-only records stay unknown rather than becoming
   zero-cost attempts.
@@ -198,7 +207,7 @@
   `--no-session`, so their checkpoints are documented as non-recoverable
   history.
 - pricing: public model cards are retained only with a source and date (the
-  cards were checked 2026-09-20). `kaihk/*` and `opencode/union-alpha` relay
+  cards were checked 2026-09-20). `orbit/*` and `opencode/union-alpha` relay
   identifiers have no public card, so the underlying OpenAI card is not
   substituted; observed Command Code models use the cited Command Code card.
 - evidence: live OpenCode and Command Code streams captured on 2026-09-20 are

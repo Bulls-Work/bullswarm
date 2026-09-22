@@ -94,7 +94,7 @@ under-specified local estimate, not a claim about the subscription debit.
 ## Implementation and evidence commands
 
 The reusable script is [`scripts/cost-audit/claude-transcript-cost.mjs`](../../scripts/cost-audit/claude-transcript-cost.mjs), documented in
-[`scripts/cost-audit/README.md`](../../scripts/cost-audit/README.md).
+[`scripts/cost-audit/README.md`](https://github.com/Bulls-Work/bullswarm/blob/main/scripts/cost-audit/README.md).
 
 Its dedupe and sidechain choices follow project-n's parser:
 

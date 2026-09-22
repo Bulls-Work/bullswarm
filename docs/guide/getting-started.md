@@ -1,11 +1,12 @@
 ---
 title: Getting started
-description: Install Bullswarm, open its dashboard, verify your pools, and read the verdict from your first run.
+description: Install and set up Bullswarm, run one bounded task, launch a workflow, and open the dashboard.
 ---
 
 # Getting started
 
-After this page you will have Bullswarm installed, your agent CLIs discovered, the packaged skill registered with them, and one finished run whose JSON verdict you can read field by field.
+After this page you will have Bullswarm installed, your agent CLIs discovered,
+one finished task, one workflow program ready to launch, and the dashboard open.
 
 ## Install
 
@@ -19,12 +20,20 @@ bullswarm version
 
 Later, `bullswarm update` upgrades that install in place to the latest published version, and `bullswarm update --check` only reports whether a newer one exists.
 
-## Configure your pools
+## Set up the fleet
 
-`bullswarm setup` discovers the agent CLIs installed on this machine, shows their quota state, and writes the routing configuration. On a terminal, bare `bullswarm setup` opens the provider/model control center; `--yes` takes the discovered defaults without prompting, which is what an agent or a CI job wants.
+`bullswarm setup` discovers the agent CLIs installed on this machine, shows
+their quota state, and opens the provider/model control center. Its three
+effort tiers — `high`, `medium`, and `low` — each resolve to a provider pool,
+model, and reasoning level. They are separate from the work lanes `analyze`,
+`build`, and `chore`: a lane says what kind of work this is; an effort tier
+says which model rung it needs.
 
 ```bash
-# discover installed CLIs and write routing config without prompting
+# open the interactive provider/model control center
+bullswarm setup
+
+# agent or CI setup: discover and accept deterministic defaults
 bullswarm setup --yes
 ```
 
@@ -41,9 +50,13 @@ bullswarm doctor --json
 
 The exit code is 0 when every check passes and 1 when one fails, so `doctor` works as a gate in a script.
 
-## Register the skill with your agents
+## Or ask your agent to set it up
 
-The integration step symlinks the packaged `bullswarm` skill into each agent's global config and appends a short awareness rule, so an agent that has never seen Bullswarm can still discover it. Installed agents see it as `/bullswarm` (or `$bullswarm`).
+Bullswarm ships with an agent-facing skill. You can ask your main agent to use
+the packaged Bullswarm skill and set up the fleet, or install the integration
+yourself. The integration symlinks the skill into each supported agent's global
+config and adds the awareness rule that lets it discover Bullswarm. Installed
+agents see it as `/bullswarm` (or `$bullswarm`).
 
 ```bash
 # symlink the skill and append the awareness block
@@ -56,15 +69,9 @@ bullswarm integrate status
 
 ## Your first run
 
-The first time you run bare `bullswarm`, it opens setup so the agent CLIs and
-pools can be discovered. Once that configuration exists, bare `bullswarm`
-opens the dashboard on Home; `bullswarm --setup` or `bullswarm setup` opens
-setup again. The explicit dashboard form is `bullswarm workflow tui`.
-The dashboard's Home, Run, Step, Usage, and Help pages share a sticky header
-and bottom nav with `q`, `?`, `u`, `e`, `i`, `l`/`p`, arrows, `PgUp`/`PgDn`,
-and Enter; click its buttons, tabs, runs, or steps, or use the wheel. In
-Claude Code, the Mod is the same dashboard's read-only counterpart: the Run,
-Step, and Usage pages in the same colours, with no edit or install action.
+Use `bullswarm run` for one bounded outcome. This read-only example asks for a
+machine-checkable answer, routes it to one eligible pool, and prints the full
+verdict.
 
 ```bash
 # one read-only analysis task, routed to the best pool and verified
@@ -111,8 +118,47 @@ cat ~/.bullswarm/runs/out-<stamp>.md
 A delegate exiting 0 is not success. One real run answered a two-line request with `I'll read that scratchpad file first …` plus the two lines, and the gate failed it as `announcement without substance`. When the answer is small, ask for a shape you can check — a JSON array, one fact per line.
 :::
 
+## Your first workflow
+
+A workflow starts from a program you author. Ask for the contract, create a
+`plan.json` that divides the goal into actions and evidence, validate it, then
+launch it. The workflow guide includes a complete program you can copy.
+
+```bash
+# get the exact program schema for this goal
+bullswarm workflow plan contract "Add a status command, document it, and verify both" --cwd . --json
+
+# after writing plan.json, reject structural or requirement gaps before launch
+bullswarm workflow plan validate "Add a status command, document it, and verify both" --cwd . --program plan.json --json
+
+# run ready actions across the fleet and follow low-noise progress
+bullswarm workflow goal "Add a status command, document it, and verify both" --cwd . --program plan.json --watch
+```
+
+Start with [the worked workflow program](/guide/workflows), then use the
+[playbook](/guide/playbook) to decide what belongs with your main agent and
+what should fan out.
+
+## Open the dashboard
+
+Once setup exists, bare `bullswarm` opens Home. You can also use the explicit
+workflow form, optionally with a run id.
+
+```bash
+bullswarm
+bullswarm workflow tui
+bullswarm workflow tui <runId>
+```
+
+Home summarizes current and recent work. Runs opens the catalogue; Run and
+Step expose progress and evidence; Budget, Stats, and Fleet explain quota,
+history, and routing. The dashboard is read-only for normal browsing, and
+quitting it does not stop workflows. See [Observing runs](/guide/observing)
+for the screenshots and controls.
+
 ## Next steps
 
 - [Run one task](/guide/run) — every `bullswarm run` option and what each verdict asks you to do.
 - [Workflows](/guide/workflows) — when one delegate is not enough, author a program for `workflow goal`.
+- [Playbook](/guide/playbook) — the day-to-day planning, steering, and sign-off rhythm.
 - [Routing](/guide/routing) — why this run went to that pool.

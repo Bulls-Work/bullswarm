@@ -15,10 +15,11 @@ cols = int(sys.argv[3]) if len(sys.argv) > 3 else max(1, max((len(re.sub(r'\x1b\
 rows = int(sys.argv[4]) if len(sys.argv) > 4 else len(lines)
 
 FONT = '/System/Library/Fonts/Menlo.ttc'
-SIZE = 15
+SCALE = 2
+SIZE = 15 * SCALE
 font = ImageFont.truetype(FONT, SIZE)
-bold = ImageFont.truetype(FONT, SIZE, index=1) if True else font
-cw, ch = font.getbbox('M')[2], SIZE + 5
+bold = ImageFont.truetype(FONT, SIZE, index=1)
+cw, ch = font.getbbox('M')[2], (15 + 5) * SCALE
 BG = (30, 32, 40); FG = (220, 220, 225)
 BASE16 = [(0,0,0),(205,49,49),(13,188,121),(229,229,16),(36,114,200),(188,63,188),(17,168,205),(229,229,229),
           (102,102,102),(241,76,76),(35,209,139),(245,245,67),(59,142,234),(214,112,214),(41,184,219),(255,255,255)]
@@ -29,9 +30,32 @@ def c256(n):
         return tuple(0 if v == 0 else 55 + 40 * v for v in (r, g, b))
     v = 8 + 10 * (n - 232); return (v, v, v)
 
-img = Image.new('RGB', (cols * cw + 16, rows * ch + 16), BG)
+pad = 8 * SCALE
+img = Image.new('RGB', (cols * cw + 2 * pad, rows * ch + 2 * pad), BG)
 draw = ImageDraw.Draw(img)
 sgr = re.compile(r'\x1b\[([0-9;]*)m')
+
+def draw_cell(chv, px, py, colour, weight):
+    # TUI charts rely on these cells touching exactly; font hinting otherwise
+    # leaves hairline gaps between adjacent rows and columns.
+    if '\u2580' <= chv <= '\u259f':
+        if chv == '\u2580': draw.rectangle([px, py, px + cw, py + ch // 2], fill=colour)
+        elif chv == '\u2584': draw.rectangle([px, py + ch // 2, px + cw, py + ch], fill=colour)
+        elif chv in ('\u2588', '\u2589', '\u258a', '\u258b', '\u258c', '\u258d', '\u258e', '\u258f'):
+            widths = {'\u2588': 8, '\u2589': 7, '\u258a': 6, '\u258b': 5, '\u258c': 4, '\u258d': 3, '\u258e': 2, '\u258f': 1}
+            draw.rectangle([px, py, px + cw * widths[chv] // 8, py + ch], fill=colour)
+        else: draw.rectangle([px, py, px + cw, py + ch], fill=colour)
+        return
+    if '\u2500' <= chv <= '\u257f':
+        midx, midy, thick = px + cw // 2, py + ch // 2, max(1, SCALE)
+        if chv not in '│┃╵╷': draw.line([px, midy, px + cw, midy], fill=colour, width=thick)
+        if chv not in '─━╴╶': draw.line([midx, py, midx, py + ch], fill=colour, width=thick)
+        return
+    if chv == '⋮':
+        r = SCALE
+        for yy in (py + ch // 4, py + ch // 2, py + 3 * ch // 4): draw.ellipse([px + cw // 2-r, yy-r, px + cw // 2+r, yy+r], fill=colour)
+        return
+    draw.text((px, py + 2 * SCALE), chv, font=weight, fill=colour)
 
 for y, line in enumerate(lines[:rows]):
     fg, bg, b, d, u, rev = None, None, False, False, False, False
@@ -72,11 +96,11 @@ for y, line in enumerate(lines[:rows]):
                 f = fg or FG; g = bg
                 if d: f = tuple(int(v * 0.55) for v in f)
                 if rev: f, g = (g or BG), (fg or FG)
-                px, py = 8 + x * cw, 8 + y * ch
+                px, py = pad + x * cw, pad + y * ch
                 if g: draw.rectangle([px, py, px + cw, py + ch], fill=g)
                 if chv != ' ':
-                    draw.text((px, py + 2), chv, font=bold if b else font, fill=f)
-                if u: draw.line([px, py + ch - 3, px + cw, py + ch - 3], fill=f)
+                    draw_cell(chv, px, py, f, bold if b else font)
+                if u: draw.line([px, py + ch - 3 * SCALE, px + cw, py + ch - 3 * SCALE], fill=f, width=SCALE)
                 x += 1
         i += 1
 img.save(out)

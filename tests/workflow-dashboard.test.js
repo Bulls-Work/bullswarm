@@ -746,7 +746,7 @@ test('dashboard loads a legacy opencode2 attempt without rewriting its run histo
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     state.attempts.push({
       id: 'legacy-1', actionId: 'audit-files', ordinal: 1,
-      pool: 'opencode2', model: 'kaihk/gpt-5.6-luna', status: 'succeeded',
+      pool: 'opencode2', model: 'orbit/gpt-5.6-luna', status: 'succeeded',
     });
     writeFileSync(statePath, JSON.stringify(state));
     const before = readFileSync(statePath, 'utf8');

@@ -7,6 +7,26 @@ description: How Bullswarm picks a pool for a lane — the exact order it applie
 
 After this page you can predict which pool a task will go to, read the reason line routing prints, and understand a surprising pick from the numbers in `bullswarm pools` instead of guessing.
 
+## Pacing in one minute
+
+Bullswarm tries to spend included quota before its clock throws that quota
+away. For each eligible pool it calculates:
+
+`surplus = subscription window elapsed% − quota used%`
+
+A larger positive surplus means the pool is further behind its own pace. If
+70% of a week has elapsed and a pool has used 40%, its surplus is `70 − 40 =
++30`. Another pool 50% through its month with 45% used has `+5`. With the
+same higher-priority gates and no urgent reset, the weekly pool is preferred:
+it has 30 points at risk of going unused, versus 5.
+
+Now suppose the monthly pool has only two hours until reset and still has
+spendable quota, while the weekly pool has three days. The reset-soon pool can
+win even with the smaller raw surplus, because its remaining opportunity
+expires first. Five-hour exhaustion, eligibility, free-model routing, forecast
+protection, current load, and explicit pins still apply; the worked numbers
+explain the pacing preference inside those rules.
+
 ## The order decisions are made
 
 Routing runs the same six checks every time, in this order. Each one is a filter or a preference within the set that survived the one before it.

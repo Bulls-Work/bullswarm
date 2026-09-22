@@ -8,7 +8,9 @@ export default defineConfig({
   base: '/bullswarm/',
   cleanUrls: true,
   ignoreDeadLinks: false,
-  srcExclude: ['**/node_modules/**'],
+  // Internal design records contain historical machine-local evidence links;
+  // they are source material, not published documentation.
+  srcExclude: ['**/node_modules/**', '**/design/**'],
   vite: {
     resolve: {
       preserveSymlinks: true,
@@ -16,9 +18,10 @@ export default defineConfig({
   },
   lastUpdated: true,
   head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/bullswarm/favicon.svg' }],
+    ['link', { rel: 'icon', type: 'image/png', href: '/bullswarm/favicon.png' }],
   ],
   themeConfig: {
+    logo: '/brand/bullswarm-mark.png',
     nav: [
       { text: 'Guide', link: '/guide/' },
       { text: 'Reference', link: '/reference/cli' },
@@ -29,6 +32,7 @@ export default defineConfig({
       '/guide/': [
         { text: 'Introduction', link: '/guide/' },
         { text: 'Getting started', link: '/guide/getting-started' },
+        { text: 'Day-to-day playbook', link: '/guide/playbook' },
         { text: 'Concepts', link: '/guide/concepts' },
         { text: 'Run one task', link: '/guide/run' },
         { text: 'Workflows', link: '/guide/workflows' },

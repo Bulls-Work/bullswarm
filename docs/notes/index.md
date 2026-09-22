@@ -13,7 +13,7 @@ documentation — read the [guide](/guide/) for how Bullswarm works today.
 |---|---|---|
 | [Bullswarm codebase audit](/audits/2026-09-09-codebase-audit) | 2026-09-09 | A full audit of the 0.26/0.27 checkout: version drift between `package.json` and `CHANGELOG.md`, vocabulary, and the defects found. |
 | [How Claude Code drives a dynamic workflow](/claude-dynamic-workflow-mechanics) | 2026-08-29 | The mechanics of Claude Code's `Workflow` tool, written from inside such a session, and what bullswarm adopted from it. |
-| [Caller-first workflow CLI](/design/2026-09-06-caller-first-cli) | 2026-09-06 | The design for the caller-planned CLI shipped in 0.24.0, including the removal of `bullswarm delegate`. |
+| [Caller-first workflow CLI](https://github.com/Bulls-Work/bullswarm/blob/main/docs/design/2026-09-06-caller-first-cli.md) | 2026-09-06 | The design for the caller-planned CLI shipped in 0.24.0, including the removal of `bullswarm delegate`. |
 | [Dynamic workflow handoff](/dynamic-workflow-handoff) | 2026-08-21 | The iteration brief for making the workflow system behave like Claude Code's dynamic workflows without giving up provider routing or content verification. |
 | [Dynamic workflow acceptance evidence](/dynamic-workflow-qa) | 2026-08-27 | The acceptance run recorded against that handoff's criteria, accurate as of the date it was written. |
 | [Dynamic Workflow V2 execution plan](/dynamic-workflow-v2-execution-plan) | 2026-08-31 | The execution plan for the program-based V2 engine that replaced the authored graph. |
