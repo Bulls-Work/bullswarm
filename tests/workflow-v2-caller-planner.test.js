@@ -50,7 +50,7 @@ function setup(settings = {}) {
     goal: 'Deliver a correct report', cwd: workspace, requirements: [requirement],
     settings: { scout: false, concurrency: 2, maxExpansionRounds: 1, plannerMode: 'caller', ...settings },
   });
-  return { root, bullswarmDir, workspace, goal, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, bullswarmDir, workspace, goal, cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 function fakeDispatch(handler) {
@@ -419,7 +419,7 @@ function cliFixture() {
     version: 1, pools, incumbents: {}, decisionLog: [],
     config: { depthLimit: 2, callerName: 'claude-code', worktreeIsolation: 'off' },
   }, null, 2)}\n`);
-  return { root, home, target, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, home, target, cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 function cli(f, args) {
