@@ -56,7 +56,7 @@
     "levels": ["low", "medium", "high", "xhigh", "max"],
     "defaults": { "high": "high", "medium": "medium", "low": "low" }
   },
-  "$comment-pricing": "No OpenCode relay model profile here has an authoritative public token rate card as of 2026-09-20 (kaihk/* and opencode/union-alpha were checked). Pricing is intentionally omitted so transcript token totals remain unknown-cost rather than being treated as zero; the underlying OpenAI card is not assigned to an unidentified relay.",
+  "$comment-pricing": "No OpenCode relay model profile here has an authoritative public token rate card as of 2026-09-20 (orbit/* and opencode/union-alpha were checked). Pricing is intentionally omitted so transcript token totals remain unknown-cost rather than being treated as zero; the underlying OpenAI card is not assigned to an unidentified relay.",
   "modelProfiles": [
     { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false },
     { "match": "gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "autoRecommend": true },

@@ -7,7 +7,7 @@
   sessions read-only; Command Code reads persisted project JSONL only when a
   session transcript exists and carries usage.
 - reprice: transcript lookup follows the loaded provider registry, so
-  `opencode2*`, `opencode2:kaihk-*`, and `command-code` pools can reach their
+  `opencode2*`, `opencode2:orbit-*`, and `command-code` pools can reach their
   provider-owned readers without another hard-coded provider list. Ambiguous,
   missing, and checkpoint-only records stay unknown rather than becoming
   zero-cost attempts.
@@ -16,7 +16,7 @@
   history; future recovery requires a matching persisted JSONL transcript.
 - pricing: public model cards are retained only with a source and date (the
   cards in this draft were checked 2026-09-20).
-  `kaihk/*` and `opencode/union-alpha` relay identifiers have no public card,
+  `orbit/*` and `opencode/union-alpha` relay identifiers have no public card,
   so the underlying OpenAI card is not substituted; observed Command Code
   models use the cited Command Code card.
 - evidence: both live streams were captured for real on 2026-09-20 and checked

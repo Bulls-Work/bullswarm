@@ -1,8 +1,8 @@
  Home  Runs  Budget  Stats  Fleet
  ✗ cli · run ytdsii · FAILED · not verified
  Purpose  sample text …                                                                                                                   
- Pool      opencode2 · attempt 2 · kaihk/gpt-5.6-luna · reasoning max · started 20:52 · elapsed 1m19s · output 1 KB
- Route    build/medium · most-behind capable pool (surplus 8.3) · skipped near 5h limit (projected): claude-code:acme 81.8% (67.5% elapsed) · candidate opencode2/kaihk/gpt-5.6-luna · surplus 8.3
+ Pool      opencode2 · attempt 2 · orbit/gpt-5.6-luna · reasoning max · started 20:52 · elapsed 1m19s · output 1 KB
+ Route    build/medium · most-behind capable pool (surplus 8.3) · skipped near 5h limit (projected): claude-code:acme 81.8% (67.5% elapsed) · candidate opencode2/orbit/gpt-5.6-luna · surplus 8.3
  Money    API — unknown · subscription — unknown                                      Tokens ~5,531 · estimated:utf8-bytes/4
  Status   FAILED · workflow partial · execution FAILED · verified NOT VERIFIED
 
@@ -16,8 +16,8 @@
                                                                                                                  not captured: structured provider payload, tool identity, final event
 
 ── attempt history ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1 INTERRUPTED · opencode2:kaihk-3 · kaihk-3/gpt-5.6-luna · 1m25s · 1 KB · ~2,766 tokens · provider stream reported error
->2 INTERRUPTED · opencode2 · kaihk/gpt-5.6-luna · 1m19s · 1 KB · ~2,765 tokens · provider stream reported error
+ 1 INTERRUPTED · opencode2:orbit-3 · orbit-3/gpt-5.6-luna · 1m25s · 1 KB · ~2,766 tokens · provider stream reported error
+>2 INTERRUPTED · opencode2 · orbit/gpt-5.6-luna · 1m19s · 1 KB · ~2,765 tokens · provider stream reported error
 
 ── outcome and verification ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ✗ workflow not verified

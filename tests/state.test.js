@@ -43,67 +43,67 @@ test('OpenCode pool migration rewrites state, config, snapshots, and history ide
       version: 1,
       pools: {
         opencode2: { enabled: true },
-        'opencode2:kaihk-2': { enabled: false },
+        'opencode2:orbit-2': { enabled: false },
         // Equal values exercise the safe both-present merge.
         opencode: { enabled: true },
       },
-      incumbents: { build: 'opencode2:kaihk-2' },
+      incumbents: { build: 'opencode2:orbit-2' },
       decisionLog: [{
         picked: 'opencode2',
-        routing: { candidates: [{ pool: 'opencode2:kaihk-2' }] },
+        routing: { candidates: [{ pool: 'opencode2:orbit-2' }] },
       }],
       config: { depthLimit: 2 },
       strategy: {
         assignments: { high: { pool: 'opencode2' } },
         subscriptions: {
           opencode2: { resetsAt: '2026-09-20T00:00:00.000Z' },
-          'opencode2:kaihk-3': { quotaWindow: 'monthly' },
+          'opencode2:orbit-3': { quotaWindow: 'monthly' },
         },
         reasoning: { pools: { opencode2: { high: 'default' } } },
-        modelTiers: { 'opencode2:kaihk-3': { 'kaihk-3/gpt-5.6-luna': ['low'] } },
-        disabledModels: { opencode2: ['kaihk/gpt-5.6-terra'] },
+        modelTiers: { 'opencode2:orbit-3': { 'orbit-3/gpt-5.6-luna': ['low'] } },
+        disabledModels: { opencode2: ['orbit/gpt-5.6-terra'] },
         lastReport: {
           discoveries: { opencode2: { pool: 'opencode2' } },
-          providerSuggestions: { 'opencode2:kaihk-3': { low: {} } },
-          subscriptions: [{ pool: 'opencode2:kaihk-3' }],
+          providerSuggestions: { 'opencode2:orbit-3': { low: {} } },
+          subscriptions: [{ pool: 'opencode2:orbit-3' }],
         },
       },
     }, null, 2)}\n`);
     writeFileSync(join(dir, 'routing.json'), `${JSON.stringify({
-      build: { order: ['opencode2', 'opencode', 'opencode2:kaihk-3'], fallback: 'caller' },
+      build: { order: ['opencode2', 'opencode', 'opencode2:orbit-3'], fallback: 'caller' },
     }, null, 2)}\n`);
     writeFileSync(join(dir, 'providers.json'), JSON.stringify({ enabled: ['opencode2', 'opencode'] }));
     writeFileSync(join(dir, 'meters', 'opencode2.json'), `${JSON.stringify({ pool: 'opencode2', monthly: {} })}\n`);
-    writeFileSync(join(dir, 'meters', 'history', 'opencode2:kaihk-3.jsonl'), `${JSON.stringify({
-      pool: 'opencode2:kaihk-3', monthly: { utilization: 4 },
+    writeFileSync(join(dir, 'meters', 'history', 'opencode2:orbit-3.jsonl'), `${JSON.stringify({
+      pool: 'opencode2:orbit-3', monthly: { utilization: 4 },
     })}\n`);
 
     const migrated = loadState(dir);
-    assert.deepEqual(Object.keys(migrated.pools).sort(), ['opencode', 'opencode:kaihk-2']);
-    assert.equal(migrated.incumbents.build, 'opencode:kaihk-2');
+    assert.deepEqual(Object.keys(migrated.pools).sort(), ['opencode', 'opencode:orbit-2']);
+    assert.equal(migrated.incumbents.build, 'opencode:orbit-2');
     assert.equal(migrated.decisionLog[0].picked, 'opencode');
-    assert.equal(migrated.decisionLog[0].routing.candidates[0].pool, 'opencode:kaihk-2');
+    assert.equal(migrated.decisionLog[0].routing.candidates[0].pool, 'opencode:orbit-2');
     assert.ok(migrated.strategy.subscriptions.opencode);
-    assert.ok(migrated.strategy.subscriptions['opencode:kaihk-3']);
+    assert.ok(migrated.strategy.subscriptions['opencode:orbit-3']);
     assert.ok(migrated.strategy.reasoning.pools.opencode);
-    assert.ok(migrated.strategy.modelTiers['opencode:kaihk-3']);
+    assert.ok(migrated.strategy.modelTiers['opencode:orbit-3']);
     assert.ok(migrated.strategy.disabledModels.opencode);
     assert.ok(migrated.strategy.lastReport.discoveries.opencode);
-    assert.ok(migrated.strategy.lastReport.providerSuggestions['opencode:kaihk-3']);
-    assert.equal(migrated.strategy.lastReport.subscriptions[0].pool, 'opencode:kaihk-3');
+    assert.ok(migrated.strategy.lastReport.providerSuggestions['opencode:orbit-3']);
+    assert.equal(migrated.strategy.lastReport.subscriptions[0].pool, 'opencode:orbit-3');
 
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'routing.json'))).build.order,
-      ['opencode', 'opencode:kaihk-3']);
+      ['opencode', 'opencode:orbit-3']);
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'providers.json'))).enabled, ['opencode']);
     assert.deepEqual(readdirSync(join(dir, 'meters')).sort(), ['history', 'opencode.json']);
-    assert.deepEqual(readdirSync(join(dir, 'meters', 'history')).sort(), ['opencode:kaihk-3.jsonl']);
+    assert.deepEqual(readdirSync(join(dir, 'meters', 'history')).sort(), ['opencode:orbit-3.jsonl']);
     assert.equal(JSON.parse(readFileSync(join(dir, 'meters', 'opencode.json'))).pool, 'opencode');
-    assert.equal(JSON.parse(readFileSync(join(dir, 'meters', 'history', 'opencode:kaihk-3.jsonl'))).pool,
-      'opencode:kaihk-3');
+    assert.equal(JSON.parse(readFileSync(join(dir, 'meters', 'history', 'opencode:orbit-3.jsonl'))).pool,
+      'opencode:orbit-3');
 
     const files = [
       'state.json', 'routing.json', 'providers.json',
-      'meters/opencode.json', 'meters/history/opencode:kaihk-3.jsonl',
+      'meters/opencode.json', 'meters/history/opencode:orbit-3.jsonl',
     ];
     const bytes = files.map((file) => readFileSync(join(dir, file)));
     loadState(dir);

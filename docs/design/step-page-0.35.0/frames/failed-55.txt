@@ -4,9 +4,9 @@
  Verified no · attempts 2/2 interrupted
  Tokens ~5,531 total · money API — · sub —
 ── attempts ───────────────────────────────────────────
- 1 INTERRUPTED · kaihk-3/gpt-5.6-luna
+ 1 INTERRUPTED · orbit-3/gpt-5.6-luna
    1m25s · ~2,766 tokens · provider stream error
->2 INTERRUPTED · kaihk/gpt-5.6-luna
+>2 INTERRUPTED · orbit/gpt-5.6-luna
    1m19s · ~2,765 tokens · provider stream error
 ── selected failure ───────────────────────────────────
  Provider stream reported an error.

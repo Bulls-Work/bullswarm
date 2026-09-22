@@ -1,6 +1,6 @@
  Home  Runs  Budget  Stats  Fleet
  ✗ cli · run clifx · FAILED · not verified · 1–27/50
- Status   failed · kaihk-3/gpt-5.6-luna · reasoning — · NOT VERIFIED
+ Status   failed · orbit-3/gpt-5.6-luna · reasoning — · NOT VERIFIED
  Pool      opencode2 · attempt 2 · effort medium · history 2/2
  Purpose  Build the cli fixture
  Route    build/medium · most-behind capable pool · candidate codex/gpt-5.6-luna
@@ -20,8 +20,8 @@
  not captured: structured provider payload, tool identity, final event
 
 ── attempt history ─────────────────────────────────────────────────────────────────────────────────────────────────────
- 1 INTERRUPTED · opencode2 · kaihk-3/gpt-5.6-luna · 1m25s · ~2,766 tokens · provider stream reported error
->2 INTERRUPTED · opencode2 · kaihk-3/gpt-5.6-luna · 1m19s · ~2,765 tokens · provider stream reported error
+ 1 INTERRUPTED · opencode2 · orbit-3/gpt-5.6-luna · 1m25s · ~2,766 tokens · provider stream reported error
+>2 INTERRUPTED · opencode2 · orbit-3/gpt-5.6-luna · 1m19s · ~2,765 tokens · provider stream reported error
 
 ── outcome and verification ────────────────────────────────────────────────────────────────────────────────────────────
  ✗ workflow not verified

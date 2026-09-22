@@ -73,7 +73,7 @@ WHERE session_id = ?
 
 For the observed `wf-mthe1rm0-364da1` mapping the query returned
 `standardRead 368554`, `cacheRead 1597440`, `cacheWrite 0`, `output 6104`,
-`reasoning 2214`, model `gpt-5.6-luna`, provider `kaihk`, cwd
+`reasoning 2214`, model `gpt-5.6-luna`, provider `orbit`, cwd
 `/home/dev/Repo/bullswarm`, and the attempt's first/last message times.
 
 The reader therefore matches by exact cwd and the inclusive attempt window,
@@ -131,11 +131,11 @@ The model counts and public-card findings from the snapshot are:
 
 | Pool/model observed | Attempts | Price evidence as of 2026-09-20 |
 |---|---:|---|
-| `opencode2`: `kaihk/gpt-5.6-luna` | 244 | No public price card for the `kaihk` relay. The underlying OpenAI card lists $0.20/M fresh input, $0.02/M cached input, $0.25/M cache writes, and $1.20/M output, but those rates are **not** assigned to an unidentified relay. [OpenAI GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) |
+| `opencode2`: `orbit/gpt-5.6-luna` | 244 | No public price card for the `orbit` relay. The underlying OpenAI card lists $0.20/M fresh input, $0.02/M cached input, $0.25/M cache writes, and $1.20/M output, but those rates are **not** assigned to an unidentified relay. [OpenAI GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) |
 | `opencode2`: `opencode/union-alpha` | 4 | No public price card located for this identifier; API cost stays unknown. |
-| `opencode2:kaihk-2`: `kaihk-2/gpt-5.6-luna` | 117 | No public `kaihk-2` relay card; do not substitute the underlying OpenAI card. |
-| `opencode2:kaihk-3`: `kaihk-3/gpt-5.6-luna` | 112 | No public `kaihk-3` relay card; do not substitute the underlying OpenAI card. |
-| `opencode2:kaihk-3`: `kaihk/gpt-5.6-luna` | 1 | No public `kaihk` relay card. |
+| `opencode2:orbit-2`: `orbit-2/gpt-5.6-luna` | 117 | No public `orbit-2` relay card; do not substitute the underlying OpenAI card. |
+| `opencode2:orbit-3`: `orbit-3/gpt-5.6-luna` | 112 | No public `orbit-3` relay card; do not substitute the underlying OpenAI card. |
+| `opencode2:orbit-3`: `orbit/gpt-5.6-luna` | 1 | No public `orbit` relay card. |
 | `command-code`: `deepseek/deepseek-v4.1-flash` | 69 | Command Code card: off-peak $0.15/M input, $0.003/M cache read, $0.60/M output; peak weekday windows are $0.30/M input and $1.20/M output. [Command Code pricing](https://commandcode.ai/docs/resources/pricing-limits) |
 | `command-code`: `gpt-5.6-luna` | 44 | Command Code card: $0.20/M input, $0.02/M cache read, $0.25/M cache write, $1.20/M output. [Command Code pricing](https://commandcode.ai/docs/resources/pricing-limits) |
 | `command-code`: `meta/muse-spark-1.3-contributor` | 3 | Command Code card: $0.10/M input, $0.002/M cache read, $0.20/M output. [Command Code pricing](https://commandcode.ai/docs/resources/pricing-limits) |
@@ -156,7 +156,7 @@ The provider loader already exposes `providerFor(providers, pool)` and
 the watcher already follows the same provider-owned path. This removes the
 old hard-coded Claude/Codex/Grok reader list while retaining those readers'
 behaviour byte-for-byte. Each provider can supply its own index and matching
-rules, so `opencode2*`, `opencode2:kaihk-*`, and `command-code` are resolved by
+rules, so `opencode2*`, `opencode2:orbit-*`, and `command-code` are resolved by
 the provider that actually owns the pool.
 
 The accounting fallback remains ordered and explicit:

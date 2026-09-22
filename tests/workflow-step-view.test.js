@@ -66,7 +66,7 @@ function finishedAttempt() {
 
 function failedAttempts() {
   const base = {
-    ...runningAttempt(), actionId: 'cli', streamFile: null, pool: 'opencode2', model: 'kaihk-3/gpt-5.6-luna', failureKind: 'provider', why: 'provider stream reported error',
+    ...runningAttempt(), actionId: 'cli', streamFile: null, pool: 'opencode2', model: 'orbit-3/gpt-5.6-luna', failureKind: 'provider', why: 'provider stream reported error',
     usage: { tokens: { standardRead: 2407, output: 359, totalKnown: 2766 }, tokenSource: 'estimated:utf8-bytes/4', pricing: null, cost: { estimatedUsd: null, basis: 'unknown: no model rate metadata' } },
   };
   return [

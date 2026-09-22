@@ -1,6 +1,6 @@
  Home  Runs  Budget  Stats  Fleet
  ✗ Step cli · run clifx · FAILED · not verified · 1–25/35
- failed · not verified · opencode2 · kaihk-3/gpt-5.6-luna · medium
+ failed · not verified · opencode2 · orbit-3/gpt-5.6-luna · medium
  purpose Build the cli fixture
  active 2.73m · span 2m44s
 

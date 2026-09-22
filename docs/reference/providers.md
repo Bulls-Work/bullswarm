@@ -275,7 +275,7 @@ the matcher needs the first user text or task-file path; they are not needed
 to sum usage.
 
 For a pool owned by this provider (including account-shaped names such as
-`opencode2:kaihk-2`), matching first narrows sessions by exact `cwd` and the
+`opencode2:orbit-2`), matching first narrows sessions by exact `cwd` and the
 attempt's inclusive start/end window. If more than one session remains, the
 reader compares the first user part with the task-file path/text. A unique
 match is returned with `confidence: "window"` (or `"exact"` when a session

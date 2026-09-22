@@ -30,7 +30,7 @@ not shown at all.
 
 | Statistic | Source | Evidence |
 |---|---|---|
-| pool, model, reasoning per attempt | `state.attempts[]` | top models: `claude-opus-5` 217 attempts, `kaihk/gpt-5.6-luna` 164, `claude-sonnet-5` 115, `grok-4.6` 113 |
+| pool, model, reasoning per attempt | `state.attempts[]` | top models: `claude-opus-5` 217 attempts, `orbit/gpt-5.6-luna` 164, `claude-sonnet-5` 115, `grok-4.6` 113 |
 | minutes: wall, agent-seconds, per-attempt `wallSec` | `lifecycle.startedAt/finishedAt`, `budget.seconds` | total agent time **124.8 h** across the 181 finished/indexed runs (`budget.seconds`); 128.8 h across all 189 V2 runs; `attempt.wallSec` sums 123.9 h; 105 legacy runs record neither. The 187 h in the planning draft is not reproducible and must not be printed — corrected 2026-09-17 by the aggregation-models measurement |
 | verified, requirements passed/total | `result.verified`, `result.requirements[]` | 180 of 188 V2 runs carry a result; 94 are `verified: true` |
 | pool used %, elapsed %, pace, resets_at, reset source | `pool.usedPct`, `pool.elapsedPct`, `pool.paceResetsAt`, `pool.resetSource` | read now: claude-code 41/28.9, codex 30/49, grok 77/75.1, command-code 94.9/98.1 |

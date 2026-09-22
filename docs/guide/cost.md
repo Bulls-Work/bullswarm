@@ -190,7 +190,7 @@ found the following:
 |---|---|---|---|
 | `claude-code`, `codex` | The provider's existing transcript store | A unique session, task-text, or cwd/time-window match is summed as `transcript-summed` | An attempt whose provider transcript was deleted, never written, or remains ambiguous |
 | `grok` started before 2026-09-14 | No supported durable transcript record for that period | Nothing from transcript history | Those pre-2026-09-14 attempts cannot be backfilled; later attempts still require a matching transcript |
-| `opencode2*`, including `opencode2:kaihk-*` | `~/.local/share/opencode/opencode.db` (`session`, `message`, and `part`) | Token classes, model, cwd, and time bounds when one session matches the attempt window; a task-file path/text disambiguates multiple candidates | No session, or more than one unresolved candidate, stays unknown |
+| `opencode2*`, including `opencode2:orbit-*` | `~/.local/share/opencode/opencode.db` (`session`, `message`, and `part`) | Token classes, model, cwd, and time bounds when one session matches the attempt window; a task-file path/text disambiguates multiple candidates | No session, or more than one unresolved candidate, stays unknown |
 | `command-code` with a persisted session | `~/.commandcode/projects/<cwd-slug>/<session-id>.jsonl` | Assistant message usage and model when that JSONL transcript exists and matches | Historical attempts made with `--no-session` have no usage-bearing transcript and cannot be backfilled; since 0.35.2 Bullswarm leaves sessions enabled |
 | Any pool with no durable transcript | None | A provider-reported stream value may still win when the stream actually carries usage | No transcript means no historical sum: the result is `unknown`, never `$0` |
 

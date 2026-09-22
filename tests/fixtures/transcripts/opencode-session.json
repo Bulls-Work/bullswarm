@@ -15,7 +15,7 @@
     "tokens_reasoning": 2214,
     "tokens_cache_read": 1597440,
     "tokens_cache_write": 0,
-    "model": "{\"id\":\"gpt-5.6-luna\",\"providerID\":\"kaihk\",\"variant\":\"default\"}",
+    "model": "{\"id\":\"gpt-5.6-luna\",\"providerID\":\"orbit\",\"variant\":\"default\"}",
     "time_created": 1788189919145,
     "time_updated": 1788190175540
   }
