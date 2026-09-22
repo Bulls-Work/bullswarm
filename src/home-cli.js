@@ -30,7 +30,7 @@ const OWN_FLAGS = {
   'home prune': ['dry-run', 'yes', 'days', 'auto', 'trigger', 'json'],
   'home status': ['json'],
 };
-const COPY_FILES = ['state.json', 'routing.json', 'providers.json'];
+const COPY_FILES = ['state.json', 'routing.json', 'providers.json', 'pool-labels.json'];
 const COPY_DIRS = [
   // assignments/ and runs/ are the single-task surfaces used by Runs/Home.
   'assignments',

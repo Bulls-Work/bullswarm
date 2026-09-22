@@ -24,6 +24,7 @@ export function parsePools(stdout: string): BullswarmPool[] {
 
       return {
         name: p.name as string,
+        poolLabel: str(p.poolLabel),
         enabled: p.enabled === true,
         ...windowsOf(p, num(p.elapsedPct), str(p.pacingWindow)),
         usedPct: num(p.usedPct),
@@ -96,6 +97,7 @@ export function parseRungs(stdout: string): BullswarmRung[] {
       const record = (r.record ?? null) as Raw | null
       return {
         pool: r.pool as string,
+        poolLabel: str(r.poolLabel),
         tier: r.tier as string,
         model: str(r.model),
         reasoning: reasoning ? (str(reasoning.applied) ?? str(reasoning.requested)) : null,

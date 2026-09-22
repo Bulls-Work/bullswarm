@@ -44,6 +44,7 @@ import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
 import { stepJsonModel } from './step-json.js';
 import { listAssignments } from '../lib/assignments.js';
+import { resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -76,6 +77,11 @@ export async function cmdWorkflow(args, {
   const [head, ...tail] = args;
   const sub = flagName(head) ? undefined : head;
   const opts = parseFlags(sub === undefined ? args : tail);
+  for (const key of ['pool', 'worker-pool', 'orchestrator', 'strict-orchestrator']) {
+    if (typeof opts[key] === 'string' && opts[key] !== 'auto') {
+      opts[key] = resolvePoolId(opts[key], bullswarmDir);
+    }
+  }
 
   if (!sub && input.isTTY && output.isTTY) {
     try { return await runDashboard(bullswarmDir, { input, output }); }
@@ -1916,9 +1922,9 @@ async function wfStep(opts) {
   if (result.status === 'refused') { console.error(`✗ ${stepId} in ${id} was not restarted: ${result.why}`); return result.code; }
   const where = result.pool ? ` on ${result.pool}` : '';
   if (result.status === 'restarted') {
-    console.log(`✓ restarted ${stepId} in ${id}: stopped ${result.stoppedAttemptId}${result.stoppedPool ? ` on ${result.stoppedPool}` : ''}; it runs again with its handoff${where}`);
+    console.log(withPoolLabels(`✓ restarted ${stepId} in ${id}: stopped ${result.stoppedAttemptId}${result.stoppedPool ? ` on ${result.stoppedPool}` : ''}; it runs again with its handoff${where}`, BULLSWARM_DIR()));
   } else {
-    console.log(`✓ restart requested for ${stepId} in ${id}; its kernel stops ${result.stoppedAttemptId} at its next control check and runs it again with its handoff${where}`);
+    console.log(withPoolLabels(`✓ restart requested for ${stepId} in ${id}; its kernel stops ${result.stoppedAttemptId} at its next control check and runs it again with its handoff${where}`, BULLSWARM_DIR()));
   }
   console.log(`  watch    ${payload.next.watch}`);
   return result.code;

@@ -35,6 +35,7 @@ import { loadState } from './lib/state.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
 import { helpText, usageLine } from './help.js';
 import { flagName, unknownFlagExit } from './lib/cli-flags.js';
+import { resolvePoolId, withPoolLabels } from './lib/pool-labels.js';
 
 const require = createRequire(import.meta.url);
 
@@ -798,7 +799,7 @@ export async function cmdProvider(args, {
 
     if (sub === 'list') {
       const report = listReport(bullswarmDir, loaderOpts);
-      log(opts.json ? JSON.stringify(report, null, 2) : renderList(report));
+      log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(renderList(report), bullswarmDir));
       return 0;
     }
     if (sub === 'enable' || sub === 'disable') {
@@ -817,7 +818,7 @@ export async function cmdProvider(args, {
       if (!operand) throw usage(sub, 'missing <dir|name>');
       const dir = resolveProviderTarget(bullswarmDir, operand, loaderOpts);
       const report = validateProvider(bullswarmDir, dir, loaderOpts);
-      log(opts.json ? JSON.stringify(report, null, 2) : renderValidate(report));
+      log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(renderValidate(report), bullswarmDir));
       return report.ok ? 0 : 2;
     }
     if (sub === 'scaffold') {
@@ -841,8 +842,9 @@ export async function cmdProvider(args, {
       timeoutSec = Number(opts.timeout);
       if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) throw usage(sub, '--timeout must be a positive number of seconds');
     }
-    const result = await probePool(bullswarmDir, operand, { loaderOpts, timeoutSec });
-    log(opts.json ? JSON.stringify(result, null, 2) : renderProbe(result));
+    const pool = resolvePoolId(operand, bullswarmDir);
+    const result = await probePool(bullswarmDir, pool, { loaderOpts, timeoutSec });
+    log(opts.json ? JSON.stringify(result, null, 2) : withPoolLabels(renderProbe(result), bullswarmDir));
     return result.ok ? 0 : 1;
   } catch (err) {
     error(`✗ ${err.message}`);

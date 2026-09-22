@@ -9,6 +9,10 @@
   compact Step schema v2: one activity per distinct attempt, one canonical
   event array inside each activity, reference markers for aliases, and the
   unchanged display projection used by the dashboard and Claude mod.
+- pools: per-home display labels (`bullswarm pools label`) now shorten pool ids
+  across human CLI output, progress, the dashboard, and the Claude Mod without
+  changing credential, routing, meter, history, or workflow-record keys. Pool
+  arguments accept either form; JSON retains `pool` and adds `poolLabel`.
 
 ## 0.35.4 — one Runs table for workflows and tasks
 

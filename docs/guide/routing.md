@@ -159,6 +159,24 @@ A relayed credential fails upstream, not in the CLI. When a provider's event str
 
 `bullswarm pools` prints one line per pool: `cost=`, `lanes=`, the meter it is paced from, `surplus=`, `inflight=`, the 5-hour column as `5h=<reading>%-><projected>%` with `(<n>% elapsed)`, `free=<model>` when its model costs nothing, then `ready`, `disabled`, `PAUSED until … · <why> · lift now: bullswarm pools resume <pool>`, `BENCHED until … (<reason>, <n> strikes)`, `NEAR-5H-LIMIT`, `BURST-GATED`, or `resets in … EXPIRING-SOON urgency=<n>`. A pool carrying an uncounted-out strike prints `strikes=<n>(<reason>)` beside `ready`. `pools` names no lane and therefore no effort tier, so when free-ness differs per tier the column names each one — `free=medium:opencode/union-alpha`. A stale meter held after a failed poll is marked `[stale · <status-or-kind>, retry in <time>]`; `pools --json` carries the same `meterError` and `meterHoldUntil` fields.
 
+### Pool display labels
+
+Pool ids are durable because credentials, meters, routing pins, history and
+workflow records refer to them. To shorten only what people see, set a unique
+per-home label:
+
+```bash
+bullswarm pools label claude-code:acme claude-code:a
+bullswarm pools label --list
+bullswarm pools label claude-code:acme --clear
+```
+
+Labels contain no spaces, cannot equal another pool id, and are stored in
+`$BULLSWARM_HOME/pool-labels.json` (default `~/.bullswarm/pool-labels.json`).
+Human CLI output, progress lines, every dashboard page, and the Claude Mod use
+the label. Commands that take a pool accept either the label or id. JSON keeps
+the durable `pool` id and adds `poolLabel` beside it on pool-bearing list rows.
+
 ```text
 answerer       cost=3 lanes=analyze/build/chore unmetered surplus=0 inflight=0 ready
 opencode       cost=1 lanes=analyze/build/chore unmetered surplus=0 inflight=0 free=opencode/union-alpha BENCHED until 10:40:36 AM (stall, 2 strikes)

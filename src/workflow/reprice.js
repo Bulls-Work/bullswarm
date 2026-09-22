@@ -23,6 +23,7 @@ import { listRuns } from './short-id.js';
 import { isTerminalWorkflowStatus } from './status.js';
 import { helpText, usageLine } from '../help.js';
 import { reconcilePricing } from './reconcile.js';
+import { resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 
 export const REPRICE_RETENTION_CAVEAT =
   'provider transcripts are pruned. Attempts older than the retention window will resolve to unknown, and the honest dashboard consequence is a visible gap in the history chart, not a silent zero.';
@@ -887,6 +888,7 @@ export function cmdReprice(args = [], {
     error(`✗ ${err.message}`);
     return 2;
   }
+  if (opts.pool) opts.pool = resolvePoolId(opts.pool, bullswarmDir);
   const home = opts['transcript-home'] ?? transcriptHome;
   if (opts.incremental) {
     // The automatic path, run by hand or as the dashboard's detached child:
@@ -928,7 +930,7 @@ export function cmdReprice(args = [], {
       providers,
       onRow: streamRows ? (row) => log(opts.json
         ? JSON.stringify({ type: 'attempt', ...row })
-        : `${row.shortId ?? row.runId}  ${row.actionId}  try ${row.ordinal}  ${row.pool ?? '-'}  ${row.tokenSource}  api=${money(row.apiUsd)}  sub=${money(row.subscriptionUsd)}  ${row.confidence}`) : null,
+        : withPoolLabels(`${row.shortId ?? row.runId}  ${row.actionId}  try ${row.ordinal}  ${row.pool ?? '-'}  ${row.tokenSource}  api=${money(row.apiUsd)}  sub=${money(row.subscriptionUsd)}  ${row.confidence}`, bullswarmDir)) : null,
     });
   } catch (err) {
     error(`✗ ${err.message}`);
@@ -943,7 +945,7 @@ export function cmdReprice(args = [], {
       : report;
     log(JSON.stringify({ type: 'summary', ...summary }));
   } else {
-    log(table(report.rows));
+    log(withPoolLabels(table(report.rows), bullswarmDir));
     log(REPRICE_RETENTION_CAVEAT);
     log(`✓ reprice: ${report.rows.length} record${report.rows.length === 1 ? '' : 's'}, ${report.changedRuns} run${report.changedRuns === 1 ? '' : 's'} changed, ${report.minutesChanged} duration record${report.minutesChanged === 1 ? '' : 's'} stale (${report.minutesRecomputed} recomputed), ${report.changedProjects} project${report.changedProjects === 1 ? '' : 's'} backfilled, ${(report.elapsedMs / 1000).toFixed(1)}s elapsed`);
     for (const failure of report.failures) error(`✗ ${failure.runId}: ${failure.error}`);

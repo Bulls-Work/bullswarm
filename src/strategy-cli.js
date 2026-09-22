@@ -23,6 +23,7 @@ import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
 import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
 import { priceFor } from './lib/prices.js';
 import { formatMoney } from './lib/usage-basis.js';
+import { poolLabel, resolvePoolId, withPoolLabel, withPoolLabels } from './lib/pool-labels.js';
 
 // Strategy operates on what ships with the package plus what the operator
 // installed, so the packaged tiers load here even under node:test, where the
@@ -265,8 +266,10 @@ function rungUsage(missing) {
  * A pool's label for progress lines: its owning provider's displayName, with
  * the pool's `:<suffix>` in parentheses; the pool name when no provider owns it.
  */
-function providerLabel(name, providers) {
+function providerLabel(name, providers, bullswarmDir) {
   const pool = String(name ?? '');
+  const configured = poolLabel(pool, bullswarmDir);
+  if (configured !== pool) return configured;
   const owner = providerFor(providers, pool);
   if (!owner?.displayName) return pool;
   return pool === owner.name ? owner.displayName : `${owner.displayName} (${pool.slice(owner.name.length + 1)})`;
@@ -285,8 +288,8 @@ export async function refreshStrategy(bullswarmDir, {
     getReadings,
     onProviderProgress: ({ stage, pool, index, completed, total }) => {
       onProgress(stage === 'start'
-        ? `[${index}/${total}] Checking usage for ${providerLabel(pool, providers)}`
-        : `[${completed}/${total}] Usage checked for ${providerLabel(pool, providers)}`);
+        ? `[${index}/${total}] Checking usage for ${providerLabel(pool, providers, bullswarmDir)}`
+        : `[${completed}/${total}] Usage checked for ${providerLabel(pool, providers, bullswarmDir)}`);
     },
   });
   onProgress('Discovering available models');
@@ -749,6 +752,15 @@ export async function cmdStrategy(args, {
   const [head, ...tail] = args;
   const sub = head === undefined || flagName(head) ? 'show' : head;
   const opts = parseFlags(head !== undefined && flagName(head) ? args : tail);
+  // Every CLI pool input accepts the per-home display label. Resolution is
+  // done once here; all strategy internals and persisted state keep the id.
+  if (typeof opts.pool === 'string') opts.pool = resolvePoolId(opts.pool, bullswarmDir);
+  for (const flag of ['worker-pool']) {
+    if (typeof opts[flag] === 'string' && opts[flag] !== 'auto') opts[flag] = resolvePoolId(opts[flag], bullswarmDir);
+  }
+  if (['set-rung', 'set-provider', 'set-model', 'set-subscription'].includes(sub) && typeof opts.rest[0] === 'string') {
+    opts.rest[0] = resolvePoolId(opts.rest[0], bullswarmDir);
+  }
   try {
     if (sub === 'help' || sub === '--help' || opts.help) {
       console.log(strategyUsage());
@@ -777,9 +789,9 @@ export async function cmdStrategy(args, {
         ? JSON.stringify({
           schemaVersion: 'bullswarm.strategy.rungs.v1',
           capturedAt: new Date().toISOString(),
-          rungs: rows,
+          rungs: rows.map((row) => withPoolLabel(row, bullswarmDir)),
         }, null, 2)
-        : renderRungs(rows));
+        : withPoolLabels(renderRungs(rows), bullswarmDir));
       return 0;
     }
     if (sub === 'set-rung') {
@@ -982,14 +994,14 @@ export async function cmdStrategy(args, {
         }) : null;
       console.log(opts.json
         ? JSON.stringify(applied ? { report, ...applied } : report, null, 2)
-        : render(report, reasoningReport(bullswarmDir)));
+        : withPoolLabels(render(report, reasoningReport(bullswarmDir)), bullswarmDir));
       return 0;
     }
     if (sub === 'show') {
       const state = loadState(bullswarmDir);
       const cached = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       const report = state.strategy?.lastReport ? resolveReportPrices(cached, state) : cached;
-      console.log(opts.json ? JSON.stringify(report, null, 2) : render(report, reasoningReport(bullswarmDir)));
+      console.log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(render(report, reasoningReport(bullswarmDir)), bullswarmDir));
       return 0;
     }
     if (sub === 'set-subscription') {

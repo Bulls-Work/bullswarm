@@ -42,13 +42,14 @@ What it adds beyond the packaged skill and the MCP server:
 | `tool.call` `mcp__bullswarm__route` | a tool the mod registers so the model can switch auto-routing on or off when the person asks ("stop routing my subagents"); the same switch as `/bullswarm on|off` |
 | `ui.close` | keeps the strip's `[w]` label in step when the person closes the pane |
 
-Pool names in the strip and pane are display names: an account pool such as
+Pool names in the session context, strip, pane and usage page are display names: an account pool such as
 `claude-code:acme` shows as `claude-code:a` (first letter of the account slug,
-unless two accounts would collide). The plugin option `poolAliases`
+unless two accounts would collide). A core label set with `bullswarm pools
+label <pool> <label>` is used when present. The plugin option `poolAliases`
 (`/config`, or `pluginConfigs` in settings) overrides any name:
-`claude-code:acme=cc:a,claude-code:initech=cc:i`. The real pool names are
-unchanged everywhere else, because bullswarm derives them from the account's
-config directory (`~/.claude-acme`) and the keychain entry is keyed by it.
+`claude-code:acme=cc:a,claude-code:initech=cc:i`. The durable pool ids remain
+unchanged because bullswarm derives them from the account's config directory
+(`~/.claude-acme`) and the keychain entry is keyed by it.
 
 Observing a run: press the digit shown in front of a run row in the strip
 (`1` for the first run) from an empty prompt, click the row, or press `[w]`,

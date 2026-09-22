@@ -42,6 +42,9 @@ import {
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from './lib/forecast.js';
 import { probeFreeModel, shouldProbeFreeModel } from './lib/probe.js';
 import * as usageBasis from './lib/usage-basis.js';
+import {
+  clearPoolLabel, poolLabel, poolLabelEntries, resolvePoolId, setPoolLabel, withPoolLabels,
+} from './lib/pool-labels.js';
 
 // The subscription worker owns the canonical formatter. Keep a tiny
 // compatibility fallback for this action's pre-integration checkout so the
@@ -194,12 +197,12 @@ export function poolStatusText(p, now = Date.now(), { timeZone = null } = {}) {
  * meter marker goes with it so routing reads the live meter next.
  */
 function cmdPoolsResume(opts) {
-  const pool = opts.rest[1];
+  const home = getBullswarmDir();
+  const pool = resolvePoolId(opts.rest[1], home);
   if (!pool || opts.rest.length > 2) {
     console.error(`usage: ${usageLine(['pools', 'resume'])}`);
     return 2;
   }
-  const home = getBullswarmDir();
   const known = new Set(Object.keys(loadConnectors(home, { packaged: true })));
   let lifted = null;
   let knownInState = false;
@@ -216,6 +219,7 @@ function cmdPoolsResume(opts) {
   const marker = dropQuotaRefusalSnapshot(home, pool);
   const result = {
     pool,
+    poolLabel: poolLabel(pool, home),
     resumed: Boolean(lifted?.quarantine || lifted?.bench),
     lifted: {
       quarantine: lifted?.quarantine ?? null,
@@ -228,15 +232,58 @@ function cmdPoolsResume(opts) {
     return 0;
   }
   if (!result.resumed && !marker) {
-    console.log(`${pool} was not paused; nothing to lift`);
+    console.log(`${poolLabel(pool, home)} was not paused; nothing to lift`);
     return 0;
   }
   const parts = [];
   if (lifted?.quarantine) parts.push(`lifted this pause: ${describePoolPause(null, lifted.quarantine)}`);
   if (lifted?.bench) parts.push(`lifted the bench (${lifted.bench.reason ?? '?'}, ${lifted.bench.count ?? '?'} strikes)`);
   if (marker) parts.push('dropped the 100% quota-refusal meter marker; the next meter read is live');
-  console.log(`${pool} resumed — ${parts.join('; ')}`);
+  console.log(`${poolLabel(pool, home)} resumed — ${parts.join('; ')}`);
   return 0;
+}
+
+function knownPoolIds(home) {
+  return [...new Set([
+    ...Object.keys(loadConnectors(home, { packaged: true })),
+    ...Object.keys(loadState(home).pools ?? {}),
+  ])];
+}
+
+function cmdPoolsLabel(opts) {
+  const home = getBullswarmDir();
+  if (opts.list === true) {
+    if (opts.rest.length !== 1) {
+      console.error(`usage: ${usageLine(['pools', 'label'])}`);
+      return 2;
+    }
+    const entries = poolLabelEntries(home);
+    if (opts.json) console.log(JSON.stringify({ labels: entries }, null, 2));
+    else if (!entries.length) console.log('no pool labels configured');
+    else for (const entry of entries) console.log(`${entry.pool}  ${entry.poolLabel}`);
+    return 0;
+  }
+  const typed = opts.rest[1];
+  const pool = resolvePoolId(typed, home);
+  try {
+    let result;
+    if (opts.clear === true) {
+      if (!typed || opts.rest.length !== 2) throw new Error(`usage: ${usageLine(['pools', 'label'])}`);
+      result = clearPoolLabel(home, pool, knownPoolIds(home));
+      if (opts.json) console.log(JSON.stringify(result, null, 2));
+      else console.log(result.cleared ? `cleared label for ${pool}` : `${pool} had no label`);
+      return 0;
+    }
+    const label = opts.rest[2];
+    if (!typed || !label || opts.rest.length !== 3) throw new Error(`usage: ${usageLine(['pools', 'label'])}`);
+    result = setPoolLabel(home, pool, label, knownPoolIds(home));
+    if (opts.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`${result.pool} displays as ${result.poolLabel}`);
+    return 0;
+  } catch (error) {
+    console.error(`✗ ${error.message}`);
+    return 2;
+  }
 }
 
 /**
@@ -271,6 +318,7 @@ function cmdStrategySetPausing(args) {
 
 async function cmdPools(opts) {
   if (opts.rest[0] === 'resume') return cmdPoolsResume(opts);
+  if (opts.rest[0] === 'label') return cmdPoolsLabel(opts);
   if (opts.rest.length) {
     console.error(`✗ unknown pools subcommand "${opts.rest[0]}"`);
     console.error(`usage: ${usageLine(['pools'])}`);
@@ -296,10 +344,10 @@ async function cmdPools(opts) {
     return released.length > 0 || unbenched.length > 0;
   });
   if (released.length && !opts.json) {
-    console.error(`quarantine expired, returned to service: ${released.join(', ')}`);
+    console.error(`quarantine expired, returned to service: ${released.map((id) => poolLabel(id, getBullswarmDir())).join(', ')}`);
   }
   if (unbenched.length && !opts.json) {
-    console.error(`bench expired, returned to service: ${unbenched.join(', ')}`);
+    console.error(`bench expired, returned to service: ${unbenched.map((id) => poolLabel(id, getBullswarmDir())).join(', ')}`);
   }
   // The sweep above wrote to state, not to the pool views built before it, so
   // an expired bench would still print as BENCHED. Re-read what the sweep left.
@@ -367,9 +415,10 @@ async function cmdPools(opts) {
       : freeTiers.length
         ? ` free=${freeTiers.map(([tier, model]) => `${tier}:${model}`).join(',')}`
         : '';
-    const status = poolStatusText(p, now);
+    const display = p.poolLabel ?? poolLabel(p.name, getBullswarmDir());
+    const status = poolStatusText({ ...p, name: display }, now);
     console.log(
-      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour}${free} ${status}${expiringNote}`,
+      `${display.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour}${free} ${status}${expiringNote}`,
     );
   }
   return 0;
@@ -384,7 +433,7 @@ function cmdAssignments(opts) {
   const records = listAssignments(getBullswarmDir(), { now });
   if (opts.json) {
     console.log(JSON.stringify(
-      records.map((r) => ({ ...r, ...describeAssignment(r, now) })),
+      records.map((r) => ({ ...r, poolLabel: poolLabel(r.pool, getBullswarmDir()), ...describeAssignment(r, now) })),
       null,
       2,
     ));
@@ -400,7 +449,7 @@ function cmdAssignments(opts) {
     const target = [r.runId, r.actionId].filter(Boolean).join('/') || '-';
     const expected = view.expectedMinutes == null ? 'unknown' : `${view.expectedMinutes}m`;
     console.log(
-      `${r.pool.padEnd(14)} ${work.padEnd(14)} ${(r.source ?? '-').padEnd(11)} ${target} `
+      `${poolLabel(r.pool, getBullswarmDir()).padEnd(14)} ${work.padEnd(14)} ${(r.source ?? '-').padEnd(11)} ${target} `
       + `age=${view.elapsedMinutes ?? '?'}m expected=${expected} `
       + `worker=${r.workerPid ?? 'spawning'}`,
     );
@@ -826,7 +875,12 @@ function shortReason(value, limit = 160) {
 }
 
 function emit(verdict, opts) {
-  if (opts.json) console.log(JSON.stringify(verdict, null, 2));
+  if (opts.json) {
+    const pick = verdict.pick?.pool
+      ? { ...verdict.pick, poolLabel: poolLabel(verdict.pick.pool, getBullswarmDir()) }
+      : verdict.pick;
+    console.log(JSON.stringify({ ...verdict, ...(pick ? { pick } : {}) }, null, 2));
+  }
   else {
     const line = [
       verdict.ok ? 'OK' : 'FAIL',
@@ -834,9 +888,9 @@ function emit(verdict, opts) {
       verdict.pick?.pool ? `[${verdict.pick.pool}]` : '',
       verdict.why ?? '',
     ].filter(Boolean).join(' ');
-    console.log(line);
+    console.log(withPoolLabels(line, getBullswarmDir()));
     if (verdict.routeWhy && verdict.routeWhy !== verdict.why) {
-      console.log(`route: ${verdict.routeWhy}`);
+      console.log(withPoolLabels(`route: ${verdict.routeWhy}`, getBullswarmDir()));
     }
     if (Array.isArray(verdict.pick?.command) && verdict.dryRun) {
       console.log(`command: ${verdict.pick.command.join(' ')}`);
@@ -913,7 +967,7 @@ function cmdHealth(opts) {
 
   const quarantined = Object.entries(state.pools ?? {})
     .filter(([, v]) => v.quarantine)
-    .map(([k, v]) => ({ pool: k, until: v.quarantine.until, reason: v.quarantine.reason }));
+    .map(([k, v]) => ({ pool: k, poolLabel: poolLabel(k, getBullswarmDir()), until: v.quarantine.until, reason: v.quarantine.reason }));
 
   const report = {
     // Healthy is the absence of the two defects this command can actually
@@ -943,7 +997,7 @@ function cmdHealth(opts) {
   }
   console.log(`  quarantined pools: ${report.quarantined.length}${report.quarantineCluster.length ? ' (CLUSTER)' : ''}`);
   for (const q of report.quarantined) {
-    console.log(`    ${q.pool}: until ${q.until} (${q.reason})`);
+    console.log(`    ${q.poolLabel}: until ${q.until} (${q.reason})`);
   }
   if (!report.healthy) console.log('  fix: bullswarm health --json for the machine-readable report');
   return report.healthy ? 0 : 1;
@@ -990,7 +1044,7 @@ async function cmdSetup(opts) {
     }
     if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r, strategy, integration }, null, 2));
     else {
-      console.log(`setup complete (${r.reason}): enabled ${r.enabledPools.join(', ')}`);
+      console.log(withPoolLabels(`setup complete (${r.reason}): enabled ${r.enabledPools.join(', ')}`, getBullswarmDir()));
       if (r.repaired.length) console.log(`repaired connector files: ${r.repaired.join(', ')}`);
       console.log(`model strategy: ${r.strategyCommand} (discovers models and refreshes tier suggestions)`);
       if (strategy) console.log(`strategy autopilot: applied ${Object.keys(strategy.applied).join(', ')} tiers; refresh every ${strategy.policy.refreshHours}h`);
@@ -1078,7 +1132,7 @@ async function cmdDoctor(opts) {
   else {
     console.log(`bullswarm doctor (v${report.version}) — ${report.ok ? 'READY' : 'DEGRADED'}`);
     for (const c of checks) {
-      console.log(`  ${c.ok ? '✓' : '✗'} ${c.id}: ${c.detail}`);
+      console.log(withPoolLabels(`  ${c.ok ? '✓' : '✗'} ${c.id}: ${c.detail}`, getBullswarmDir()));
       if (!c.ok && c.fix) console.log(`      fix: ${c.fix}`);
     }
   }
@@ -1097,6 +1151,7 @@ function topLevelHelpPath(verb, opts) {
   if (verb === '--version') return ['version'];
   if (OWN_PARSER.has(verb)) return null;
   if (verb === 'pools' && opts.rest[0] === 'resume') return ['pools', 'resume'];
+  if (verb === 'pools' && opts.rest[0] === 'label') return ['pools', 'label'];
   if (verb === 'integrate') {
     const sub = opts.rest[0] ?? 'status';
     return ['status', 'install', 'remove', 'retire-legacy'].includes(sub)

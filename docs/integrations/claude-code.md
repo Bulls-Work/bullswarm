@@ -103,9 +103,11 @@ The mod answers `/bullswarm` `pools`, `status`, `runs`, `pane`, `open <step> [ru
 | Option | Meaning | Default |
 |---|---|---|
 | `strip` | what the band above the prompt shows: `runs` (run rows), `full` (pool meters too), `off` (nothing; `/bullswarm pane` still opens the pane) | `runs` |
-| `poolAliases` | display names as `from=to` pairs, so `claude-code:acme=cc:w` shortens an account pool's name in the strip and pane | empty (an account pool shows as prefix plus the first letter of its slug) |
+| `poolAliases` | display names as `from=to` pairs; overrides a core `bullswarm pools label` value | empty (core label, else prefix plus the first letter of the slug) |
 
-Set them through `/config`, or under `pluginConfigs` in settings. The real pool names are unchanged everywhere else.
+Set them through `/config`, or under `pluginConfigs` in settings. Core labels
+apply to the session context, strip, pane, and usage page; durable pool ids
+remain unchanged in Bullswarm records.
 
 ### Known limits
 

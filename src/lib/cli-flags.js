@@ -68,6 +68,7 @@ const TABLE = {
   health: ['json'],
   pools: ['force', 'json'],
   'pools resume': ['json'],
+  'pools label': ['list', 'clear', 'json'],
   assignments: ['json'],
   doctor: ['json'],
   home: [],

@@ -67,7 +67,7 @@ const top = rich({
     { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, and Grok' },
     { name: 'run', desc: 'dispatch one bounded task' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
-    { name: 'pools', desc: 'show routing pools, meters, in-flight load, and pauses; pools resume lifts one' },
+    { name: 'pools', desc: 'show routing pools, meters, load, and pauses; resume lifts one and label manages display names' },
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
     { name: 'strategy', desc: 'discover models and manage tier assignments' },
     { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
@@ -463,7 +463,7 @@ const healthText = rich({
 });
 
 const poolsText = rich({
-  usage: 'bullswarm pools [resume <pool>] [--force] [--json]',
+  usage: 'bullswarm pools [resume <pool> | label ...] [--force] [--json]',
   purpose: 'Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, '
     + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and '
     + 'pause/burst-gate status. A paused pool reads `PAUSED until <time> · <why> · lift now: '
@@ -514,6 +514,32 @@ const poolsResumeText = rich({
   ],
   examples: [{ cmd: 'bullswarm pools resume claude-code' }],
   next: 'bullswarm pools to confirm the pool reads ready.',
+});
+
+const poolsLabelText = rich({
+  usage: 'bullswarm pools label <pool> <label> | <pool> --clear | --list [--json]',
+  purpose: 'Set, remove, or list per-home display labels for pools. Human-facing CLI, dashboard, '
+    + 'progress, and Claude Mod views use the label while durable records and JSON pool fields keep the pool id.',
+  args: [
+    { name: '<pool>', desc: 'known pool id, or its current label when clearing or replacing it' },
+    { name: '<label>', desc: 'unique display label with no spaces; it may not equal another pool id' },
+  ],
+  options: [
+    { flag: '--list', desc: 'list configured pool id to label mappings' },
+    { flag: '--clear', desc: 'remove the selected pool label' },
+    { flag: '--json', desc: 'machine-readable result' },
+  ],
+  safety: [
+    'writes only pool-labels.json under $BULLSWARM_HOME (default ~/.bullswarm)',
+    'never renames a pool id or rewrites state, meters, history, workflow records, credentials, or routing pins',
+    'unknown pools, spaces, duplicate labels, and labels equal to another pool id are refused',
+  ],
+  examples: [
+    { cmd: 'bullswarm pools label claude-code:acme claude-code:a' },
+    { cmd: 'bullswarm pools label --list' },
+    { cmd: 'bullswarm pools label claude-code:acme --clear' },
+  ],
+  next: 'bullswarm pools to see the label in human output; use either the id or label as command input.',
 });
 
 const assignmentsText = rich({
@@ -1804,7 +1830,7 @@ const HELP = {
   },
   run: { _text: runText },
   health: { _text: healthText },
-  pools: { _text: poolsText, resume: { _text: poolsResumeText } },
+  pools: { _text: poolsText, resume: { _text: poolsResumeText }, label: { _text: poolsLabelText } },
   assignments: { _text: assignmentsText },
   doctor: { _text: doctorText },
   home: {

@@ -253,13 +253,20 @@ export function register(on: On, options: PluginOptions = {}) {
     if (g.status === 'fulfilled') rungs = g.value
     if (p.status === 'fulfilled') {
       pools = p.value
-      names = displayNames(
-        pools.map(x => x.name),
-        aliases,
-      )
     }
     if (r.status === 'fulfilled') runs = r.value
     if (a.status === 'fulfilled') assignments = await readRunAssignmentFiles(h, a.value)
+    const identities = [...new Set([
+      ...pools.map(x => x.name),
+      ...assignments.map(x => x.pool),
+      ...rungs.map(x => x.pool),
+    ])]
+    const coreLabels = new Map<string, string>([
+      ...pools.flatMap(x => x.poolLabel && x.poolLabel !== x.name ? [[x.name, x.poolLabel] as const] : []),
+      ...assignments.flatMap(x => x.poolLabel && x.poolLabel !== x.pool ? [[x.pool, x.poolLabel] as const] : []),
+      ...rungs.flatMap(x => x.poolLabel && x.poolLabel !== x.pool ? [[x.pool, x.poolLabel] as const] : []),
+    ])
+    names = displayNames(identities, aliases, coreLabels)
     const failed = [p, r, a].find((x): x is PromiseRejectedResult => x.status === 'rejected')
     lastError = failed ? messageOf(failed.reason) : null
     nowMs = await h.now()
@@ -567,12 +574,12 @@ export function register(on: On, options: PluginOptions = {}) {
         ...result.blocks,
         {
           name: 'bullswarm',
-          text: contextText(
+          text: withDisplayNames(contextText(
             pools,
             autoRoute,
             routed.length,
             runs.map(r => runLine(r, assignments, nowMs)),
-          ),
+          ), names),
         },
       ],
     }
@@ -775,22 +782,22 @@ export function register(on: On, options: PluginOptions = {}) {
       for (const a of loose)
         lines.push(`  standalone ${a.lane} on ${a.pool}${a.model ? ` (${a.model})` : ''} ${a.elapsedMinutes ?? '?'}m elapsed`)
       return {
-        text: lines.length
+        text: withDisplayNames(lines.length
           ? [`${runs.length} ongoing run(s), ${assignments.length} step(s) in flight:`, ...lines,
              'bullswarm workflow watch <shortId> --next follows a run; bullswarm workflow runs result <shortId> --json --summary reads its result'].join('\n')
-          : 'no ongoing workflow runs and nothing in flight',
+          : 'no ongoing workflow runs and nothing in flight', names),
       }
     }
     if (arg === 'routed') {
       return {
-        text: routed.length
+        text: withDisplayNames(routed.length
           ? routed
               .map(
                 r =>
                   `${new Date(r.at).toISOString().slice(11, 19)} ${r.ok ? 'ok ' : 'no '} ${r.lane.padEnd(8)} ${r.pool ?? '-'} (${r.model ?? '-'}) ${r.description}${r.outFile ? ` → ${r.outFile}` : ''}${r.ok ? '' : ` · ${r.why ?? ''}`}`,
               )
               .join('\n')
-          : 'nothing routed this session',
+          : 'nothing routed this session', names),
       }
     }
 
@@ -808,7 +815,7 @@ export function register(on: On, options: PluginOptions = {}) {
         : []),
       '/bullswarm on|off toggles routing · /bullswarm refresh re-reads · /bullswarm runs shows ongoing workflows · /bullswarm pane opens the pane · /bullswarm open <step> [run] opens a step · /bullswarm routed lists routed calls · bare /bullswarm <task> is the skill',
     ]
-    return { text: lines.join('\n') }
+    return { text: withDisplayNames(lines.join('\n'), names) }
   })
 
   on('tool.call', { tool: /^mcp__bullswarm__route$/ }, async ($, e) => {

@@ -1096,6 +1096,7 @@ export function poolsModel(rollups, pools, { period = '7d', now = Date.now() } =
     const mergedRow = {
       ...row,
       live: pool ? liveMeter(pool) : null,
+      poolLabel: pool?.poolLabel ?? null,
       enabled: pool ? pool.enabled !== false : null,
       lanes: pool?.lanes ?? null,
     };
