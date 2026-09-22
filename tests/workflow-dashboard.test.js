@@ -495,7 +495,7 @@ test('Stats slice hover labels move, pin and clear without changing a 55-column 
     session.press('\t'); // Model, the stacked model-minutes chart
     const frame = lastFrame(session.output);
     const rows = paintedRows(frame).map(plain);
-    const axisRow = rows.findIndex((line) => /[+┼].*17 Sep/.test(line));
+    const axisRow = rows.findIndex((line) => /[+┼].*Thu/.test(line));
     assert.ok(axisRow > 0, 'the 17 Sep chart column is painted');
     const barGlyph = /[█▇▆▅▄▃▂▁]/;
     const bar = rows.map((line, index) => ({ line, index }))
@@ -503,7 +503,7 @@ test('Stats slice hover labels move, pin and clear without changing a 55-column 
     assert.ok(bar, 'the chart has a painted slice row');
     const x = bar.line.search(barGlyph) + 1;
     const y = bar.index + 1;
-    const label = /(?:Sep17|17 Sep) · gpt-5\.6-luna · 12h04m · 29\.1% of the day/;
+    const label = /Thu · gpt-5\.6-luna · 12h04m · 29\.1% of the day/;
 
     session.press(`\x1b[<35;${x};${y}M`);
     const hovered = lastFrame(session.output);
@@ -549,7 +549,7 @@ test('every Stats bar and legend entry labels, pins and clears without changing 
     session.press('v'); // use the measured worker-minute/model split for hover values
     const initial = lastFrame(session.output);
     const rows = paintedRows(initial).map(plain);
-    const axisRow = rows.findIndex((line) => /┼.*Sep/.test(line));
+    const axisRow = rows.findIndex((line) => /┼.*(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)/.test(line));
     assert.ok(axisRow > 0, 'the dated chart axis is visible');
     const chartGlyph = /[█▇▆▅▄▃▂▁]/;
     const chartRow = rows.map((line, index) => ({ line, index }))
@@ -561,20 +561,20 @@ test('every Stats bar and legend entry labels, pins and clears without changing 
 
     session.press(`\x1b[<35;${chartX};${chartY}M`);
     const chartHover = lastFrame(session.output);
-    assert.match(plain(chartHover), /Sep.*gpt-5\.6-(?:luna|sol).*\d+\.?\d*% of the day/);
+    assert.match(plain(chartHover), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*gpt-5\.6-(?:luna|sol).*\d+\.?\d*% of the day/);
     assert.equal(plain(chartHover).split('\n')[chartRow.index], chartBefore, 'hovering leaves the chart glyphs unchanged');
     const legendLine = chartHover.split('\n').find((line) => plain(line).startsWith('Legend') && /gpt-5\.6-luna/.test(plain(line)));
     assert.ok(legendLine, 'the legend is visible');
     assert.match(legendLine, /\x1b\[1mgpt-5\.6-(?:luna|sol)\x1b\[22m/, 'only the matching legend name is bold');
 
     session.press('\x1b[<35;1;2M');
-    assert.doesNotMatch(plain(lastFrame(session.output)), /Sep.*gpt-5\.6-(?:luna|sol).*of the day/, 'moving outside clears an unpinned label');
+    assert.doesNotMatch(plain(lastFrame(session.output)), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*gpt-5\.6-(?:luna|sol).*of the day/, 'moving outside clears an unpinned label');
     session.press(`\x1b[<35;${chartX};${chartY}M`);
     session.press(`\x1b[<0;${chartX};${chartY}M`);
     session.press('\x1b[<35;1;2M');
-    assert.match(plain(lastFrame(session.output)), /Sep.*gpt-5\.6-(?:luna|sol).*of the day/, 'a column click pins the label');
+    assert.match(plain(lastFrame(session.output)), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*gpt-5\.6-(?:luna|sol).*of the day/, 'a column click pins the label');
     session.press(ESC_KEY);
-    assert.doesNotMatch(plain(lastFrame(session.output)), /Sep.*gpt-5\.6-(?:luna|sol).*of the day/, 'Escape clears the pinned column label');
+    assert.doesNotMatch(plain(lastFrame(session.output)), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*gpt-5\.6-(?:luna|sol).*of the day/, 'Escape clears the pinned column label');
 
     const panelRow = paintedRows(chartHover).findIndex((line) => /gpt-5\.6-luna.*▓/.test(plain(line)));
     assert.ok(panelRow > 0, 'a breakdown share bar is visible');
@@ -3218,7 +3218,7 @@ test('a Spending chart column hovers and pins its dated value', async () => {
     const session = shellSession(home, { columns: 120, rows: 30 });
     session.press('s');
     const rows = paintedRows(lastFrame(session.output)).map(plain);
-    const axisRow = rows.findIndex((line) => /[+┼].*(?:Sep\d|\d+ Sep)/.test(line));
+    const axisRow = rows.findIndex((line) => /[+┼].*(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)/.test(line));
     assert.ok(axisRow > 0, 'the Spending chart has a dated axis');
     const chartRow = rows.map((line, index) => ({ line, index }))
       .filter(({ line, index }) => index < axisRow && /[█▇▆▅▄▃▂▁]/.test(line)).at(-1);
@@ -3226,12 +3226,12 @@ test('a Spending chart column hovers and pins its dated value', async () => {
     const x = chartRow.line.search(/[█▇▆▅▄▃▂▁]/) + 1;
     const y = chartRow.index + 1;
     session.press(`\x1b[<35;${x};${y}M`);
-    assert.match(plain(lastFrame(session.output)), /(?:Sep\d|\d+ Sep).*of the day/);
+    assert.match(plain(lastFrame(session.output)), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*of the day/);
     session.press(`\x1b[<0;${x};${y}M`);
     session.press('\x1b[<35;1;2M');
-    assert.match(plain(lastFrame(session.output)), /(?:Sep\d|\d+ Sep).*of the day/);
+    assert.match(plain(lastFrame(session.output)), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*of the day/);
     session.press(ESC_KEY);
-    assert.doesNotMatch(plain(lastFrame(session.output)), /(?:Sep\d|\d+ Sep).*of the day/);
+    assert.doesNotMatch(plain(lastFrame(session.output)), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*of the day/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });

@@ -10,6 +10,7 @@ import {
   cut,
   dateLabels,
   formatDashboardValue,
+  niceStep,
   periodToggle,
   rule,
   seriesColor,
@@ -24,6 +25,87 @@ const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const BOLD = '\x1b[1m';
 const NO_BOLD = '\x1b[22m';
 const HEX = /^#[0-9a-f]{6}$/i;
+const DAY_NAMES = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+const MONTH_NAMES = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+
+/** Three or four whole, evenly spaced ticks starting at zero. */
+export function spendTicks(max) {
+  const top = Number(max) > 0 ? Number(max) : 1;
+  const step = Math.max(1, niceStep(top, 3).step);
+  const intervals = Math.max(2, Math.ceil(Number((top / step).toPrecision(12))));
+  return Array.from({ length: intervals + 1 }, (_, index) => index * step);
+}
+
+/** Whole-dollar axis text; zero is never approximate. */
+export function tickText(value, mark = '') {
+  const dollars = `$${Math.round(Number(value) || 0).toLocaleString('en-US')}`;
+  return Number(value) === 0 ? dollars : `${mark}${dollars}`;
+}
+
+/** Fit exact tick intervals into a row budget and leave any remainder above. */
+export function fitTickRows(ticks, requestedRows, { minimum = 2, rounding = 'floor' } = {}) {
+  const intervals = Math.max(1, (Array.isArray(ticks) ? ticks.length : 1) - 1);
+  const room = Math.max(1, Math.trunc(Number(requestedRows)) || 1);
+  const round = rounding === 'round' ? Math.round : Math.floor;
+  const rowsPerTick = Math.max(minimum, round(room / intervals));
+  const scaledRows = intervals * rowsPerTick;
+  return { rowsPerTick, scaledRows, rowCount: Math.max(scaledRows, room) };
+}
+
+export function slotLabels(slots, { weekly = false } = {}) {
+  const list = Array.isArray(slots) ? slots : [];
+  return list.map((slot) => {
+    const raw = slot?.from ?? slot?.key ?? slot;
+    const date = new Date(raw);
+    const utc = typeof raw === 'string' && /^\d{4}-\d{1,2}-\d{1,2}/.test(raw);
+    const day = utc ? date.getUTCDay() : date.getDay();
+    const month = utc ? date.getUTCMonth() : date.getMonth();
+    const dateOfMonth = utc ? date.getUTCDate() : date.getDate();
+    return !weekly && list.length <= 7
+      ? DAY_NAMES[day]
+      : `${dateOfMonth} ${MONTH_NAMES[month]}`;
+  });
+}
+
+/** Place date labels under fixed cells, always retaining the newest slot. */
+export function slotLabelLine(slots, { cell, weekly = false, room }) {
+  const labels = slotLabels(slots, { weekly });
+  let line = '';
+  let free = 0;
+  const place = (index) => {
+    const label = labels[index];
+    const at = index * cell + Math.max(0, Math.floor((cell - label.length) / 2));
+    if (at < free || at + label.length > room) return;
+    line = `${line}${' '.repeat(at - line.length)}${label}`;
+    free = at + label.length + 1;
+  };
+  if (labels.every((label) => label.length < cell)) labels.forEach((_, index) => place(index));
+  else {
+    const widest = Math.max(0, ...labels.map((label) => label.length)) + 1;
+    const every = Math.max(1, Math.ceil(widest / Math.max(1, cell)));
+    const picks = [];
+    for (let index = labels.length - 1; index >= 0; index -= every) picks.unshift(index);
+    for (const index of picks) place(index);
+  }
+  return line;
+}
+
+export function spendFootnote(unpriced) {
+  const count = Math.max(0, Math.trunc(Number(unpriced)) || 0);
+  return count ? `~ bars leave ${count} unpriced attempt${count === 1 ? '' : 's'} out` : null;
+}
+
+/** The dashboard-wide compact money cell. */
+export function compactMoney({ value, known, tokenSource = null, partial = false, unpriced = 0, running = 0 } = {}) {
+  const amount = finite(known ?? value);
+  if (amount == null) return '—';
+  const lowerBound = partial || Number(unpriced) > 0 || Number(running) > 0;
+  const prefix = lowerBound ? '≥'
+    : tokenSource == null || tokenSource === 'provider-reported' ? ''
+      : tokenSource === 'transcript-summed' ? '≈' : '~';
+  const money = amount > 0 && amount < 0.01 ? '<$0.01' : `$${amount.toFixed(2)}`;
+  return `${prefix}${money}`;
+}
 
 const TABS = Object.freeze([
   { id: 'spending', label: 'Spending', key: 's' },
@@ -305,7 +387,11 @@ function lineWithReason(label, reason, width) {
 
 function chartLabels(buckets, width) {
   const cellWidth = width >= 180 ? 12 : width >= 90 ? 8 : 6;
-  return (Array.isArray(buckets) ? buckets : []).map((bucket) => {
+  const list = Array.isArray(buckets) ? buckets : [];
+  if (list.length <= 7 && list.every((bucket) => /^\d{4}-\d{1,2}-\d{1,2}/.test(String(bucket?.key ?? '')))) {
+    return slotLabels(list.map((bucket) => ({ from: `${String(bucket.key).slice(0, 10)}T00:00:00.000Z` })));
+  }
+  return list.map((bucket) => {
     const key = bucket?.key ?? '';
     const label = bucket?.label == null ? '' : String(bucket.label);
     // ISO labels are raw model keys, not reader-facing axis labels.  An
@@ -733,6 +819,13 @@ function chartOptions(width, height, rowCount, unit, mark, totals, cumulative, c
     totals: totals !== false,
     cumulative: cumulative === true,
     colors,
+    axisRule: (max, requestedRows) => {
+      const ticks = spendTicks(max);
+      return { step: ticks[1] ?? 0, ticks, ...fitTickRows(ticks, requestedRows) };
+    },
+    tickFormatter: (value) => unitName(unit) === 'usd'
+      ? tickText(value, mark)
+      : String(Math.round(Number(value) || 0)),
   };
 }
 
@@ -783,8 +876,7 @@ function chartLabelBucket(bucket, label) {
 function datedColumnLine(chart, values, width, formatter = (value) => value, valuesAreView = false) {
   const meta = chart?.meta;
   if (!meta || !Number.isFinite(meta.axisRow) || !meta.columns?.length) return null;
-  const prefix = ' '.repeat(Math.max(0, meta.axisWidth))
-    + visible(chart[meta.axisRow - 1] ?? '').slice(meta.axisWidth, meta.axisWidth + 1);
+  const prefix = visible(chart[meta.axisRow - 1] ?? '').slice(0, meta.axisWidth + 1);
   const cells = Array.from({ length: width }, () => ' ');
   [...prefix].forEach((character, index) => { if (index < cells.length) cells[index] = character; });
   const viewValues = meta.columns.map((column, index) => {
@@ -797,7 +889,9 @@ function datedColumnLine(chart, values, width, formatter = (value) => value, val
   // bucket as the next label anchor.
   const stride = Math.max(1, Math.ceil((longest + 1) / Math.max(1, meta.cellWidth)));
   let lastEnd = prefix.length;
-  for (let index = 0; index < viewValues.length; index += stride) {
+  const picks = [];
+  for (let index = viewValues.length - 1; index >= 0; index -= stride) picks.unshift(index);
+  for (const index of picks) {
     const value = visible(viewValues[index]);
     if (!value) continue;
     const start = Math.max(prefix.length, (meta.columns[index].x ?? prefix.length + 1) - 1);
@@ -828,7 +922,7 @@ function datedValueLine(chart, sums, width, unit, mark) {
 export function renderColumnChart({
   title, buckets, width, height, rowCount = null,
   unit, mark = '', totals = true, cumulative = false,
-  tab, metric, period, basis = null, colors = true, fill = false, fitHeight = false,
+  tab, metric, period, basis = null, colors = true, fill = false, fitHeight = false, footnote = null,
 } = {}) {
   const cols = widthOf(width, 55);
   const list = Array.isArray(buckets) ? buckets : [];
@@ -840,7 +934,7 @@ export function renderColumnChart({
     return { lines: [heading, lineWithReason('—', 'no measured values', cols)], regions: [] };
   }
   const rawChart = columnBars([{ name: 'total', values, color: seriesColor('total') }], labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
-  const chart = fill && fitHeight ? resizeFilledChart(rawChart, rowCount ?? height ?? 6) : rawChart;
+  const chart = rawChart;
   const lines = [heading, ...chart.map((line) => fit(line, cols))];
   const regions = [];
   const meta = chart.meta;
@@ -848,6 +942,7 @@ export function renderColumnChart({
   if (datedAxis && meta?.axisRow != null) lines[meta.axisRow] = datedAxis;
   const datedValues = meta?.valueRow != null ? datedValueLine(chart, meta.sums, cols, unit, mark) : null;
   if (datedValues && meta?.valueRow != null) lines[meta.valueRow] = datedValues;
+  if (footnote) lines.push(fit(`\x1b[2m ${footnote}\x1b[0m`, cols));
   if (meta) {
     meta.columns.forEach((column, index) => {
       const sourceIndex = column.sourceIndex ?? index;
@@ -903,7 +998,7 @@ function stackSliceRows(column, meta) {
 export function renderStackedColumnChart({
   title, buckets, series, width, height, rowCount = null,
   unit, mark = '', totals = true, cumulative = false,
-  tab, metric, period, basis = null, colors = true, fill = false, fitHeight = false,
+  tab, metric, period, basis = null, colors = true, fill = false, fitHeight = false, footnote = null,
 } = {}) {
   const cols = widthOf(width, 55);
   const list = Array.isArray(buckets) ? buckets : [];
@@ -925,7 +1020,7 @@ export function renderStackedColumnChart({
     return { lines: [heading, lineWithReason('—', 'no measured values', cols)], regions: [] };
   }
   const rawChart = columnBars(painterSeries, labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
-  const chart = fill && fitHeight ? resizeFilledChart(rawChart, rowCount ?? height ?? 6) : rawChart;
+  const chart = rawChart;
   const lines = [heading, ...chart.map((line) => fit(line, cols))];
   const regions = [];
   const meta = chart.meta;
@@ -933,6 +1028,7 @@ export function renderStackedColumnChart({
   if (datedAxis && meta?.axisRow != null) lines[meta.axisRow] = datedAxis;
   const datedValues = meta?.valueRow != null ? datedValueLine(chart, meta.sums, cols, unit, mark) : null;
   if (datedValues && meta?.valueRow != null) lines[meta.valueRow] = datedValues;
+  if (footnote) lines.push(fit(`\x1b[2m ${footnote}\x1b[0m`, cols));
   if (meta) {
     meta.columns.forEach((column, index) => {
       const sourceIndex = column.sourceIndex ?? index;
@@ -975,9 +1071,9 @@ export function renderStackedColumnChart({
             basis: seriesEntry?.basis ?? bucket.basis ?? basis ?? null,
             // A slice drawn from a subtotal says so, with the coverage that
             // makes it readable as a lower bound.
-            partial: seriesEntry?.partial === true,
-            pricedAttempts: finite(seriesEntry?.priced),
-            attempts: finite(seriesEntry?.attempts),
+            partial: bucket?.partial === true || seriesEntry?.partial === true,
+            pricedAttempts: finite(bucket?.priced ?? seriesEntry?.priced),
+            attempts: finite(bucket?.attempts ?? seriesEntry?.attempts),
             sourceIndex: entry.sourceIndex,
             sourceNames: names,
           };
@@ -1253,15 +1349,15 @@ export function formatHoverLabel(payload = {}) {
   const missingText = kind === 'slice' ? (payload.missingReason ?? 'not measured') : 'value unavailable';
   let valueText = value == null
     ? missingText
-    : `${estimated && unitName(payload.unit) === 'usd' ? '≈' : ''}${formatValue(value, payload.unit)}`;
-  if (partial && value != null) {
+    : unitName(payload.unit) === 'usd'
+      ? compactMoney({ value, tokenSource: payload.tokenSource, partial })
+      : `${estimated ? '≈' : ''}${formatValue(value, payload.unit)}`;
+  if (partial && value != null && unitName(payload.unit) !== 'usd') {
     const priced = finite(payload.pricedAttempts);
     const attempts = finite(payload.attempts);
     const unmeasured = priced != null && attempts != null ? Math.max(0, attempts - priced) : null;
     const coverage = unmeasured ? ` · ${unmeasured} unmeasured` : '';
-    valueText = unitName(payload.unit) === 'usd'
-      ? `at least ${formatValue(value, payload.unit)}${coverage}`
-      : `≈${formatValue(value, payload.unit)}${coverage}`;
+    valueText = `≈${formatValue(value, payload.unit)}${coverage}`;
   }
   if (value != null && unitName(payload.unit) === 'usd' && payload.subscriptionUsd != null) {
     valueText = formatMoneyPair({

@@ -12,12 +12,24 @@ import {
   renderSummaryCard,
   measurePanelGridLayout,
   shortenLabel,
+  spendTicks,
 } from '../src/workflow/stat-kit.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const visible = (text) => String(text ?? '').replace(SGR, '');
 const visibleLength = (text) => visible(text).length;
 const WIDTHS = [55, 120, 200];
+
+test('shared whole-dollar tick rule chooses even nice intervals', () => {
+  const cases = [
+    [0, [0, 1, 2]],
+    [2.93, [0, 1, 2, 3]],
+    [149, [0, 50, 100, 150]],
+    [299.87, [0, 100, 200, 300]],
+    [652.64, [0, 500, 1000]],
+  ];
+  for (const [maximum, expected] of cases) assert.deepEqual(spendTicks(maximum), expected);
+});
 
 function assertBounded(drawn, width) {
   assert.ok(drawn && Array.isArray(drawn.lines));
@@ -102,15 +114,15 @@ test('stacked slice regions tile each painted column without overlap', () => {
   assert.ok(slices.every((region) => region.payload.share >= 0 && region.payload.share <= 1));
 });
 
-test('dated axis labels use concrete calendar dates at every target width', () => {
+test('seven-slot dated charts use weekday labels at every target width', () => {
   assert.equal(dateLabel('2026-09-13', { width: 55 }), 'Sep13');
   assert.equal(dateLabel('2026-09-13', { width: 120 }), '13 Sep');
   assert.equal(dateLabel('2026-09-13', { width: 200 }), 'Sun 13 Sep');
   for (const width of WIDTHS) {
     const chart = renderColumnChart({ title: 'Spend', buckets: buckets.slice(0, 3), width, unit: 'usd', mark: '≈', colors: false });
     const text = chart.lines.map(visible).join('\n');
-    assert.match(text, width === 55 ? /Sep13/ : width === 120 ? /13 Sep/ : /Sun 13 Sep/);
-    assert.doesNotMatch(text, /(?:^|\s)[SMTWF]\s/);
+    assert.match(text, /Sun/);
+    assert.match(text, /Tue/);
   }
 });
 
@@ -347,15 +359,15 @@ test('a narrow panel drops its bars before it cuts a value or missing reason', (
   assert.ok(rows.every((line) => !/[▓▒░█▏#]/.test(line)), rows.join('\n'));
 });
 
-test('neighbouring dated axis and value labels never touch', () => {
+test('neighbouring weekday axis and value labels never touch', () => {
   for (const width of [55, 59, 120]) {
     const chart = renderColumnChart({
       title: 'Spend', width, unit: 'usd', mark: '≈', colors: false,
       buckets: buckets.map((bucket) => ({ ...bucket, value: bucket.value ?? 0.12 })),
     });
-    const axis = chart.lines.find((line) => /[+┼].*(?:Sep\d|\d+ Sep)/.test(visible(line)));
+    const axis = chart.lines.find((line) => /[+┼].*(?:Sun|Mon|Tue)/.test(visible(line)));
     assert.ok(axis, `${width}: missing dated axis`);
-    const labels = [...visible(axis).matchAll(/(?:Sep\d{1,2}|\d{1,2} Sep)/g)];
+    const labels = [...visible(axis).matchAll(/(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)/g)];
     for (let index = 1; index < labels.length; index += 1) {
       assert.ok(labels[index - 1].index + labels[index - 1][0].length < labels[index].index, `${width}: ${axis}`);
     }
@@ -412,16 +424,16 @@ test('a subtotal under the hover names the coverage that produced it', () => {
   // says which it is.
   assert.equal(
     formatHoverLabel({ kind: 'slice', bucketLabel: '20 Sep', series: 'codex', value: 8.28, share: 0.12, unit: 'usd', partial: true, pricedAttempts: 8, attempts: 11, tokenSource: 'unknown' }),
-    '20 Sep · codex · at least $8.28 · 3 unmeasured · 12% of day',
+    '20 Sep · codex · ≥$8.28 · 12% of day',
   );
   assert.equal(
     formatHoverLabel({ kind: 'share', label: 'codex', value: 63.16, share: 0.21, unit: 'usd', partial: true, pricedAttempts: 57, attempts: 113 }),
-    'codex · at least $63.16 · 56 unmeasured · 21% of panel',
+    'codex · ≥$63.16 · 21% of panel',
   );
   // Without a coverage count the words still say the figure is not a total.
   assert.equal(
     formatHoverLabel({ kind: 'column', bucketLabel: '20 Sep', value: 171.3, share: 1, unit: 'usd', partial: true }),
-    '20 Sep · total · at least $171.30 · 100% of day',
+    '20 Sep · total · ≥$171.30 · 100% of day',
   );
 });
 
@@ -451,8 +463,7 @@ test('a chart drawn to fill its panel takes its bars and gaps from its own colum
     assertBounded(drawn, 99);
     // The dated axis is the same label at the same width: filling the panel
     // never changes what a tick or a date says.
-    assert.equal(dateLabel('2026-09-19', { width: 99, cellWidth: 8 }), '19 Sep');
-    assert.match(drawn.lines.map(visible).join('\n'), /19 Sep/);
+    assert.match(drawn.lines.map(visible).join('\n'), /Fri/);
   }
   // The axis' own numbers and dates are unchanged by the fill.
   const axisText = (drawn) => drawn.lines.map(visible).filter((line) => /[┤┼]/.test(line)).join('\n');

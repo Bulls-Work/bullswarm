@@ -1,0 +1,24 @@
+ Spending  Pool  Model  Project
+Spending · 7d · 30d · all  [By Pool] By Model
+                                                                                                                                                                                                        
+── Summary · 7d ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Totals 15 workflows · 2816.01 worker-minutes · ≥$299.87 · sub unknown (no plan price) · 3 active days
+── Spend per day · API-equivalent · pool ─────────────────────────────────────────────────────────│  ── Pool spend ───────────────────────────────────  ── Pool worker-minutes ─────────────────────────
+       │                                                                                          │  codex                               ≥$63.16 21.1%  codex                                 35h12m 75%
+~$200  ┤                                     ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃                                    │  claude-code                        ≥$118.00 39.4%  claude-code                           3h34m 7.6%
+       │                                     █████████████████                                    │  grok                                ≥$34.04 11.4%  grok                                  2h35m 5.5%
+       │                                     █████████████████                                    │  claude-code:acme                    ≥$84.66 28.2%  claude-code:acme                      2h42m 5.8%
+       │                                     █████████████████                                    │  opencode                      — cost not recorded  opencode                              2h54m 6.2%
+       │ █████████████████                   █████████████████                                    │  +4 more                         — scroll for more  +4 more                        — scroll for more
+~$100  ┤ █████████████████                   █████████████████                                    │
+       │ █████████████████                   █████████████████                                    │  ── Project runs ─────────────────────────────────  ── Outcome & duration ──────────────────────────
+       │ █████████████████                   █████████████████                                    │  a                                   10 runs 66.7%  Status                              15 completed
+       │ █████████████████                   █████████████████                                    │  b                                    4 runs 26.7%  Verified                       10 verified 66.7%
+       │ █████████████████ █████████████████ █████████████████                                    │  c                                      1 run 6.7%  Requirements                  78/86 passed 90.7%
+$0     ┼Fri               Sat               Sun               Mon               Tue               │                                                     Median run             1h45m median · span 15/15
+ ~ bars leave 66 unpriced attempts out                                                            │                                                     Longest run          37h15m maximum · span 15/15
+Legend  ● claude-code:acme  ● grok  ● codex  ● claude-code  ● unallocated
+Basis · the recorded API-equivalent estimate per pool.
+Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 66 of 149 attempts recorded no price.
+Durations · 15 of 15 runs recorded no active interval union; their span stands in until workflow reprice fills it.
+History · the requested period is longer than the retained rollups.

@@ -4,23 +4,22 @@
 Spending · 7d · 30d · all  [By Pool] By Model
 
 ── Summary · 30d ──────────────────────────────────────
-Totals 15 workflows · 2816.01 worker-minutes · at leas…
+Totals 15 workflows · 2816.01 worker-minutes · ≥$299.8…
 ── Spend per day · API-equivalent · pool ──────────────
-                ┤
-at least $150.00┤             ▆▆▆▆
-                ┤             ████
-at least $100.00┤ ▃▃▃▃        ████
-                ┤ ████        ████
-at least $50.00 ┤ ████        ████
-                ┤ ████        ████
-at least $0.000 ┤ ████  ▅▅▅▅  ████
-                ┼Sep18 Sep19 Sep20
+~$200  ┤             ▁▁▁▁
+       │             ████
+       │ ▂▂▂▂        ████
+~$100  ┤ ████        ████
+       │ ████        ████
+       │ ████  ▄▄▄▄  ████
+$0     ┼Fri   Sat   Sun
+ ~ bars leave 66 unpriced attempts out
 
 ── Pool spend ─────────────────────────────────────────
-codex        ▓▒▒▒▒▒               at least $63.16 21.1%
-claude-code  ▓▓▒▒▒▒              at least $118.00 39.4%
-grok         ▓▒▒▒▒▒               at least $34.04 11.4%
-acme         ▓▓▒▒▒▒               at least $84.66 28.2%
+codex        ▓▒▒▒▒▒                       ≥$63.16 21.1%
+claude-code  ▓▓▒▒▒▒                      ≥$118.00 39.4%
+grok         ▓▒▒▒▒▒                       ≥$34.04 11.4%
+acme         ▓▓▒▒▒▒                       ≥$84.66 28.2%
 opencode                            — cost not recorded
 
 ── Pool worker-minutes ────────────────────────────────
@@ -44,8 +43,9 @@ Longest run   ▓▓▓▓▓▓                      6h41m maximum
 Legend  ● claude-code:acme  ● grok  ● codex  ● claude-…
 ● unallocated
 Basis · the recorded API-equivalent estimate per pool.
-Coverage · 66 of 149 attempts recorded no price; every…
+Money · $ measured · ≈ transcript-summed · ~ estimated…
 History · the requested period is longer than the reta…
+
 
 
 

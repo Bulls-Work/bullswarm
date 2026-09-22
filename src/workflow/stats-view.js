@@ -5,6 +5,7 @@
 import { formatDashboardValue, periodToggle, seriesColors } from './dash-kit.js';
 import {
   chartAxisRowIndex,
+  compactMoney,
   formatHoverLabel,
   paintChartHoverReadout,
   renderColumnChart,
@@ -13,9 +14,9 @@ import {
   renderStackedColumnChart,
   renderStatsSurface,
   measurePanelGridLayout,
+  spendFootnote,
 } from './stat-kit.js';
-import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
-import { honestApiTotalText, spendFacts } from './spend-facts.js';
+import { apiMoney, formatMoneyPair } from '../lib/usage-basis.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const TABS = Object.freeze([
@@ -225,28 +226,16 @@ function moneyText(rowOrValue, tokenSource = null, options = {}) {
     subscription,
     tokens: row.tokens ?? null,
   });
-  const [wholeApi, ...subscriptionText] = pair.split(' · ');
-  const legacyApi = money?.partial
-    ? apiMoneyText(money, null, row.tokens ?? null, options)
-    : wholeApi;
-  const facts = spendFacts(row);
-  // A panel cell has room for the amount and its share and nothing else — a
-  // longer phrase switches the panel grid's bars off, taking every row's hit
-  // region with them. So the cell keeps the `at least` marker and drops the
-  // word `api` (its panel title says what the money is) and the coverage
-  // counts, which `coverageNote()` states once for the page and the hover
-  // carries per row.
-  const apiText = facts
-    ? honestApiTotalText(facts, {
-      api: options.compact === true ? null : 'api',
-      whole: legacyApi,
-      counts: options.compact === true ? 'none' : options.counts ?? 'unmeasured',
-    })
-    : legacyApi;
+  const [, ...subscriptionText] = pair.split(' · ');
+  const apiText = compactMoney({
+    value: money?.usd,
+    tokenSource: row.tokenSource ?? tokenSource,
+    partial: money?.partial === true,
+  });
   // A panel row has a dozen columns for its conclusion, so it drops the
   // `sub unknown (…)` prose an amount-less subscription carries; the page's
   // own notes state the basis once instead. The summary keeps the full pair.
-  if (options.compact === true && finite(subscription.usd) == null) return apiText;
+  if (options.compact === true) return apiText;
   return [apiText, ...subscriptionText].join(' · ');
 }
 function minuteText(value) {
@@ -306,6 +295,7 @@ function panelRows(table, field, unit, { shareField = null, valueText = null, mi
       partial: money?.partial === true,
       priced: money?.priced ?? null,
       attempts: money?.attempts ?? null,
+      tokenSource: row?.tokenSource ?? null,
     };
   });
 }
@@ -501,8 +491,13 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
   // sizes `columnBars`' tick gutter, so a marked chart keeps its whole label
   // (`at least $160.00`).
   const partial = sourceBuckets.some((bucket) => bucket.partial);
+  const unpriced = sourceBuckets.reduce((sum, bucket) => {
+    const attempts = finite(bucket.attempts);
+    const priced = finite(bucket.priced);
+    return sum + (attempts != null && priced != null ? Math.max(0, attempts - priced) : 0);
+  }, 0);
   const mark = info.unit === 'usd'
-    ? partial ? 'at least ' : sourceBuckets.some((bucket) => bucket.tokenSource === 'estimated:utf8-bytes/4') ? '~' : ''
+    ? partial || sourceBuckets.some((bucket) => bucket.tokenSource !== 'provider-reported') ? '~' : ''
     : '';
   const chartArgs = {
     title,
@@ -516,6 +511,7 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
     metric: info.metric,
     period,
     basis: trend.segmentBasis ?? info.basis ?? null,
+    footnote: info.unit === 'usd' ? spendFootnote(unpriced) : null,
     ...(geometry.fill ? { fill: true, fitHeight: geometry.fit === true } : {}),
   };
   const drawn = (rows) => renderStackedColumnChart({ ...chartArgs, height: rows, rowCount: rows });
@@ -598,9 +594,9 @@ function coverageNote(table) {
   const totals = object(table)?.totals;
   const attempts = finite(totals?.attempts);
   const priced = finite(totals?.pricedAttempts);
-  if (attempts == null || priced == null || priced >= attempts) return null;
-  const unmeasured = attempts - priced;
-  return `Coverage · ${unmeasured} of ${attempts} attempts recorded no price; every spend total over this scope reads at least $X · ${unmeasured} unmeasured.`;
+  const unmeasured = attempts == null || priced == null ? 0 : Math.max(0, attempts - priced);
+  const total = attempts ?? 0;
+  return `Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; ${unmeasured} of ${total} attempts recorded no price.`;
 }
 
 /**
@@ -729,10 +725,8 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
   }
   if (activeTab === 'model') notes.push('Basis · cost per pool, not per model; model cost is not measured.');
   else if (trend?.segmentBasis) notes.push(`Basis · ${trend.segmentBasis}.`);
-  if (info.unit === 'usd') {
-    const coverage = coverageNote(chartTable);
-    if (coverage) notes.push(coverage);
-  }
+  const coverage = coverageNote(poolTable);
+  if (coverage) notes.push(coverage);
   const durations = durationNote(outcomes);
   if (durations) notes.push(durations);
   if (trend?.truncated) notes.push('History · the requested period is longer than the retained rollups.');

@@ -157,12 +157,49 @@ test('Spending renders a dated spend chart, including an unmeasured day', () => 
   const view = statsLines(fixture(), { width: 55, tab: 'spending', period: '7d', stackBy: 'pool', ansi: false });
   const text = view.lines.map(visible).join('\n');
   assert.match(text, /Spend per day/);
-  assert.match(text, /Sep13|13 Sep/);
-  assert.match(text, /Sep19|19 Sep/);
+  assert.match(text, /Sun/);
+  assert.match(text, /Sat/);
   assert.match(text, /—/);
   assert.doesNotMatch(text, /\bS\s+M\s+T\b/);
   assert.match(text, /Pool spend/);
   assert.match(text, /Outcome & duration/);
+});
+
+test('every Stats chart has evenly spaced whole ticks and an explicit zero baseline', () => {
+  const stats = fixture();
+  for (const tab of ['spending', 'pool', 'model', 'project']) {
+    const view = statsLines(stats, { width: 200, tab, period: '7d', stackBy: 'pool', ansi: false });
+    const lines = view.lines.map(visible);
+    const title = lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(line));
+    const legend = lines.findIndex((line, index) => index > title && line.startsWith('Legend'));
+    const chart = lines.slice(title, legend);
+    assert.ok(chart.some((line) => tab === 'spending' || tab === 'pool' ? /\$0\s*┼/.test(line) : /(?:^|\s)0\s*┼/.test(line)), `${tab}: zero baseline`);
+    const ticks = chart.flatMap((line) => {
+      const match = line.match(/^\s*(?:~)?\$?(\d[\d,]*)\s*┤/);
+      return match ? [Number(match[1].replaceAll(',', ''))] : [];
+    }).sort((a, b) => a - b);
+    assert.ok(ticks.length >= 2, `${tab}: multiple ticks`);
+    const gaps = ticks.slice(1).map((tick, index) => tick - ticks[index]);
+    assert.equal(new Set(gaps).size, 1, `${tab}: ${ticks.join(', ')}`);
+  }
+});
+
+test('Stats money cells use compact glyphs and two decimals', () => {
+  const stats = statsOf(partialIndex(), { period: '30d', now: REVIEW_NOW });
+  for (const tab of ['spending', 'pool', 'model', 'project']) {
+    const text = statsLines(stats, { width: 200, tab, period: '30d', stackBy: 'pool', ansi: false }).lines.map(visible).join('\n');
+    assert.doesNotMatch(text, /at least|\$\d+\.\d{3,}|\$\d+(?:\.\d+)?\s+api\b/i, tab);
+  }
+});
+
+test('every Stats line fits every width from 55 through 260', () => {
+  const stats = fixture();
+  for (let width = 55; width <= 260; width += 1) {
+    for (const tab of ['spending', 'pool', 'model', 'project']) {
+      const view = statsLines(stats, { width, tab, period: '7d', stackBy: 'pool', ansi: false });
+      for (const line of view.lines) assert.ok(visible(line).length <= width, `${tab}/${width}: ${visible(line)}`);
+    }
+  }
 });
 
 test('the Spending toggle changes both the chart metric and visible grid basis', () => {
@@ -275,7 +312,7 @@ test('the four panel slots remain titled at narrow width and are capped at six r
   for (let index = 0; index < panelTitles.length; index += 1) {
     const start = panelTitles[index] + 1;
     const end = panelTitles[index + 1] ?? lines.length;
-    const dataRows = lines.slice(start, end).filter((line) => line.trim() && !line.startsWith('── ') && !line.startsWith('● ') && !line.startsWith('Basis'));
+    const dataRows = lines.slice(start, end).filter((line) => line.trim() && !line.startsWith('── ') && !line.startsWith('● ') && !line.startsWith('Basis') && !line.startsWith('Money'));
     assert.ok(dataRows.length <= 6, `panel ${index + 1} has ${dataRows.length} rows`);
   }
 });
@@ -307,11 +344,11 @@ test('bar regions carry durable hover payloads and the reserved row formats them
   assert.equal(slice.action.kind, 'slice');
   assert.equal(slice.action.payload.tab, 'spending');
   assert.equal(slice.action.payload.metric, 'spend');
-  assert.match(slice.action.payload.bucketLabel, /Sep|2026/);
+  assert.match(slice.action.payload.bucketLabel, /Sun|Mon|Tue|Wed|Thu|Fri|Sat/);
   const hovered = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'pool', slice: slice.action, ansi: false });
   const readout = chartAxisReadout(hovered, 120);
   assert.equal(readout.readoutRow, readout.axisRow + 1);
-  assert.match(readout.text, /Sep|2026/);
+  assert.match(readout.text, /Sun|Mon|Tue|Wed|Thu|Fri|Sat/);
   assert.match(readout.text, /of the day/);
   assert.equal(visible(hovered.lines[2]).trim(), '', 'the reserved top row stays blank for a chart-bar hover');
   // The desktop grid now makes one all-four bar decision. The fixture's
@@ -408,9 +445,9 @@ test('Stats prints API and subscription money together without a bare estimate',
   };
   const text = statsLines(stats, { width: 120, tab: 'spending', period: '7d', ansi: false })
     .lines.map(visible).join('\n');
-  assert.match(text, /~ \$1\.23 api estimated/);
+  assert.match(text, /~\$1\.23/);
   assert.match(text, /2\.5% wk ≈ \$0\.50 sub/);
-  assert.doesNotMatch(text, /(?<!~ )\$1\.23 api(?:\s|·|$)/, 'estimated API money never uses the measured form');
+  assert.doesNotMatch(text, /(?<!~)\$1\.23 api(?:\s|·|$)/, 'estimated API money never uses the measured form');
 });
 
 // ---------------------------------------------------------------------------
@@ -461,14 +498,12 @@ test('a pool row shows the recorded subtotal instead of the missing-total reason
   const text = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false })
     .lines.map(visible).join('\n');
   const sub = CLAUDE_RESULT.total_cost_usd.toFixed(2);
-  // The cell has room for the amount and its share, so it keeps the Run spend
-  // block's `at least` marker and the page's Coverage note names the count.
-  assert.match(text, new RegExp(`codex[^\\n]*at least \\$${sub} 50%`), 'the partial pool prints its recorded subtotal');
+  assert.match(text, new RegExp(`codex[^\\n]*≥\\$${sub} 50%`), 'the partial pool prints its recorded subtotal');
   assert.doesNotMatch(text, /codex [^\n]*cost not recorded/);
   // The page says once what a subtotal is, in the same words.
-  assert.match(text, /Coverage · 1 of 3 attempts recorded no price; every spend total over this scope reads at least \$X · 1 unmeasured\./);
+  assert.match(text, /Money · \$ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 1 of 3 attempts recorded no price\./);
   // The whole-scope pool keeps the strict form and no coverage prose.
-  assert.match(text, /acme[^\n]*\$[\d.]+ api 50%/);
+  assert.match(text, /acme[^\n]*\$[\d.]+ 50%/);
 });
 
 test('the hover over a subtotal names the coverage that produced it', () => {
@@ -480,7 +515,7 @@ test('the hover over a subtotal names the coverage that produced it', () => {
   const hovered = visible(statsLines(stats, {
     width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false, slice: row.action,
   }).lines[2]);
-  assert.match(hovered, /codex · at least \$[\d.]+ · 1 unmeasured · [\d.]+% of panel/);
+  assert.match(hovered, /codex · ≥\$[\d.]+ · [\d.]+% of panel/);
 });
 
 test('a day whose attempts were only partly priced draws its recorded subtotal', () => {
@@ -488,19 +523,19 @@ test('a day whose attempts were only partly priced draws its recorded subtotal',
   const view = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false });
   const chart = view.lines.slice(5, 20).map(visible);
   assert.ok(chart.some((line) => /[█▇▆▅▄▃▂▁]/.test(line)), 'the partial day has a bar');
-  // The axis is a lower bound throughout, and says so in the same words.
-  assert.match(chart.join('\n'), /at least \$[\d.]+/, 'the axis reads at least');
+  assert.match(chart.join('\n'), /~\$[\d]+/, 'the approximate axis uses the chart mark');
+  assert.match(chart.join('\n'), /~ bars leave 1 unpriced attempt out/);
   const column = view.regions.find((region) => region.action.payload?.kind === 'column');
   assert.ok(column, 'the day is a hit region');
   assert.equal(column.action.payload.partial, true);
   const hovered = chartAxisReadout(statsLines(stats, {
     width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false, slice: { ...column.action, kind: 'column' },
   }), 200).text;
-  assert.match(hovered, /at least \$[\d.]+ · 1 unmeasured · 100% of the day/);
+  assert.match(hovered, /≥\$[\d.]+ · 100% of the day/);
   // The summary carries the period's recorded sum as the lower bound it is,
   // with the count of attempts it leaves out.
   const summary = visible(view.lines[4]);
-  assert.match(summary, /at least \$[\d.]+ api · 1 unmeasured/);
+  assert.match(summary, /≥\$[\d.]+/);
 });
 
 test('duration rows name the span an index without active unions falls back to', () => {
@@ -580,7 +615,7 @@ test('a selected chart bar labels the row under the axis inside the chart column
     const readout = chartAxisReadout(hovered, width);
     assert.ok(readout.axisRow >= 0, `${width}: chart axis missing`);
     assert.equal(readout.readoutRow, readout.axisRow + 1, `${width}: readout is not the first row under the axis`);
-    assert.match(readout.text, /Sep|2026/, `${width}: readout names the day`);
+    assert.match(readout.text, /Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sep|2026/, `${width}: readout names the day`);
     assert.match(readout.text, /\$|m|%|run/, `${width}: readout names the bar's value`);
     const chartBody = width >= 80 ? Math.max(1, readout.chartWidth - 1) : readout.chartWidth;
     const chartText = readout.text.slice(0, chartBody);
@@ -596,7 +631,7 @@ test('a selected chart bar labels the row under the axis inside the chart column
       assert.equal(end, chartBody, `${width}: a long readout is not clamped to the chart width`);
     }
     const idleText = visible(idle.lines[readout.readoutRow] ?? '');
-    assert.equal(idleText.slice(0, chartBody).trim(), '', `${width}: the under-axis row stays blank in the chart column when idle`);
+    assert.match(idleText.slice(0, chartBody).trim(), /^(?:~ bars leave \d+ unpriced attempts? out)?$/, `${width}: idle under-axis row is the one chart footnote`);
     assert.ok(hovered.lines.some((line) => visible(line).startsWith('Legend')), `${width}: hovering must not hide the legend`);
     assert.equal(hovered.lines.length, idle.lines.length, `${width}: hovering must not add a row`);
     const leftWidth = chartColumnWidth(width);

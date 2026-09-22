@@ -2,46 +2,47 @@
 Spending · 7d · 30d · all  [By Pool] By Model
                                                        
 ── Summary · 7d ───────────────────────────────────────
-Totals 60 workflows · 7226.66 worker-minutes · ≈$7.11 …
+Totals 15 workflows · 2816.01 worker-minutes · ≥$299.8…
 ── Spend per day · API-equivalent · pool ──────────────
-≈$2.50 ┤       ▆▆▆▆                               
-≈$2.00 ┤       ████                               
-≈$1.50 ┤       ████                               
-≈$1.00 ┤       ████        ▂▂▂▂                   
-≈$0.50 ┤       ████        ████                   
-≈$0.00 ┤       ████  ▅▅▅▅  ████              ▁▁▁▁ 
-       ┼Sep13 Sep14 Sep15 Sep16 Sep17 Sep18 Sep19      
+~$200  ┤             ▁▁▁▁             
+       │             ████             
+       │ ▂▂▂▂        ████             
+~$100  ┤ ████        ████             
+       │ ████        ████             
+       │ ████  ▄▄▄▄  ████             
+$0     ┼Fri   Sat   Sun   Mon   Tue                    
+ ~ bars leave 66 unpriced attempts out
 
 ── Pool spend ─────────────────────────────────────────
-codex         ▏▒▒▒▒▒                        ≈$0.30 4.3%
-claude-code   ▓▓▓▒▒▒                       ≈$3.00 42.2%
-acme          ▓▓▓▒▒▒                       ≈$3.31 46.6%
-command-code  ▏▒▒▒▒▒                          ≈$0.07 1%
-grok          ▏▒▒▒▒▒                          ≈$0.42 6%
+codex             ▓▒▒▒▒▒                  ≥$63.16 21.1%
+claude-code       ▓▓▒▒▒▒                 ≥$118.00 39.4%
+grok              ▓▒▒▒▒▒                  ≥$34.04 11.4%
+claude-code:acme  ▓▓▒▒▒▒                  ≥$84.66 28.2%
+opencode                            — cost not recorded
 +4 more                               — scroll for more
 
 ── Pool worker-minutes ────────────────────────────────
-codex         ▓▓▒▒▒▒                       36h26m 30.3%
-claude-code   ▓▒▒▒▒▒                       16h22m 13.6%
-acme          ▓▒▒▒▒▒                       21h16m 17.6%
-command-code  ▓▒▒▒▒▒                         16h49m 14%
-grok          ▏▒▒▒▒▒                         9h14m 7.7%
+codex             ▓▓▓▓▒▒                     35h12m 75%
+claude-code       ▏▒▒▒▒▒                     3h34m 7.6%
+grok              ▏▒▒▒▒▒                     2h35m 5.5%
+claude-code:acme  ▏▒▒▒▒▒                     2h42m 5.8%
+opencode          ▏▒▒▒▒▒                     2h54m 6.2%
 +4 more                               — scroll for more
 
 ── Project runs ───────────────────────────────────────
-system                                    20 runs 33.3%
-bullswarm                                 16 runs 26.7%
-project-a                                 11 runs 18.3%
-platform                                  10 runs 16.7%
-repo                                        2 runs 3.3%
-e2e-repo                                     1 run 1.7%
+a  ▓▓▓▓▒▒                                 10 runs 66.7%
+b  ▓▓▒▒▒▒                                  4 runs 26.7%
+c  ▏▒▒▒▒▒                                    1 run 6.7%
 
 ── Outcome & duration ─────────────────────────────────
-Status        ▓▓▓▓▓▓             54 completed · 6 other
-Verified      ▓▓▓▒▒▒                  31 verified 51.7%
-Requirements  ▓▓▓▓▓▒               241/307 passed 78.5%
-Median wall   ▓▓▓▓▓▓                         56m median
-Longest wall  ▓▓▓▓▓▓                      9h03m maximum
-Legend  ● claude-code  ● claude-code:acme  ● codex
-● command-code  ● grok
+Status        ▓▓▓▓▓▓                       15 completed
+Verified      ▓▓▓▓▒▒                  10 verified 66.7%
+Requirements  ▓▓▓▓▓▒                 78/86 passed 90.7%
+Median run    ▓▓▓▓▓▓          1h45m median · span 15/15
+Longest run   ▓▓▓▓▓▓        37h15m maximum · span 15/15
+Legend  ● claude-code:acme  ● grok  ● codex  ● claude-…
+● unallocated
 Basis · the recorded API-equivalent estimate per pool.
+Money · $ measured · ≈ transcript-summed · ~ estimated…
+Durations · 15 of 15 runs recorded no active interval …
+History · the requested period is longer than the reta…

@@ -13,12 +13,18 @@ import {
   compactRow,
   cut,
   formatDashboardValue,
-  niceStep,
   periodToggle,
   progressBar,
   rule,
   seriesColor,
 } from './dash-kit.js';
+import {
+  fitTickRows,
+  slotLabelLine,
+  spendFootnote,
+  spendTicks,
+  tickText,
+} from './stat-kit.js';
 import {
   measuredTaskMinutes,
   cardDurationText,
@@ -72,8 +78,6 @@ const BREAKDOWN_ROWS = 4;
 const QUOTA_BAR_MAX = 10;
 const QUOTA_BAR_MIN = 4;
 const TABLE_GAP = 2;
-const DAY_NAMES = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
-const MONTH_NAMES = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
 const EIGHTHS = Object.freeze(['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']);
 
 function taskIdText(task) {
@@ -896,52 +900,6 @@ function spendSlots(spend, periodId, nowMs) {
  * the nice number that reaches the tallest day in three intervals or fewer,
  * and at least two intervals are drawn so the axis always has three labels.
  */
-function spendTicks(max) {
-  const top = Number(max) > 0 ? Number(max) : 1;
-  const step = Math.max(1, niceStep(top, 3).step);
-  const intervals = Math.max(2, Math.ceil(Number((top / step).toPrecision(12))));
-  return Array.from({ length: intervals + 1 }, (_, index) => index * step);
-}
-
-/** A tick in whole dollars; `~` marks an axis whose bars are approximate. */
-function tickText(value, mark) {
-  const dollars = `$${Math.round(value).toLocaleString('en-US')}`;
-  return value === 0 ? dollars : `${mark}${dollars}`;
-}
-
-/**
- * Labels under the columns: every one when they fit, else as many as fit in
- * `room` cells — the newest always among them.
- */
-function slotLabelLine(slots, { cell, weekly, room }) {
-  const labels = slots.map((slot) => {
-    const date = new Date(slot.from);
-    return !weekly && slots.length <= 7
-      ? DAY_NAMES[date.getDay()]
-      : `${date.getDate()} ${MONTH_NAMES[date.getMonth()]}`;
-  });
-  let line = '';
-  let free = 0;
-  const place = (index) => {
-    const label = labels[index];
-    const at = index * cell + Math.max(0, Math.floor((cell - label.length) / 2));
-    if (at < free || at + label.length > room) return;
-    line = `${line}${' '.repeat(at - line.length)}${label}`;
-    free = at + label.length + 1;
-  };
-  if (labels.every((label) => label.length < cell)) labels.forEach((_, index) => place(index));
-  else {
-    // Too many columns to name each: name the newest, then every column the
-    // gaps leave room for, counting back so the latest day is always named.
-    const widest = Math.max(...labels.map((label) => label.length)) + 1;
-    const every = Math.max(1, Math.ceil(widest / Math.max(1, cell)));
-    const picks = [];
-    for (let index = slots.length - 1; index >= 0; index -= every) picks.unshift(index);
-    for (const index of picks) place(index);
-  }
-  return line;
-}
-
 /**
  * The spent-per-day chart, `width` wide: one bar per slot from a $0 baseline,
  * a tick every few rows labelled in whole dollars (`~$400` when the bars are
@@ -974,17 +932,18 @@ function spendChartLines(model, opts, width, { lines: fill = null } = {}) {
   const unpriced = slots.reduce((sum, slot) => sum + slot.unpriced, 0);
   const unknownDays = slots.filter((slot) => slot.unknown).length;
   const notes = [
-    unpriced ? `~ bars leave ${unpriced} unpriced attempt${unpriced === 1 ? '' : 's'} out` : null,
+    spendFootnote(unpriced),
     unknownDays ? `${blank()} no price recorded` : null,
   ].filter(Boolean);
   // The plot's rows: what `lines` leaves after the baseline, the day labels
   // and the note, else the terminal height's share.
   const room = fill == null ? null : fill - 2 - (notes.length ? 1 : 0);
-  const perTick = room == null
-    ? Math.max(2, Math.round(chartRowCount(opts.height ?? 36) / intervals))
-    : Math.max(2, Math.floor(room / intervals));
-  const scaled = intervals * perTick;
-  const rows = room == null ? scaled : Math.max(scaled, room);
+  const fitted = fitTickRows(ticks, room == null ? chartRowCount(opts.height ?? 36) : room, {
+    rounding: room == null ? 'round' : 'floor',
+  });
+  const perTick = fitted.rowsPerTick;
+  const scaled = fitted.scaledRows;
+  const rows = fitted.rowCount;
   const gutter = Math.max(...ticks.map((tick) => tickText(tick, mark).length));
   const ascii = asciiGlyphsPreferred();
   const plot = Math.max(slots.length, width - gutter - 3);
@@ -1427,7 +1386,6 @@ export {
   budgetWeekLines,
   breakdownCells,
   spendChartLines,
-  spendTicks,
   periodBand,
   summaryBand,
   activeRunLines,

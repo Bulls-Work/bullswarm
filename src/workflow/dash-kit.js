@@ -806,7 +806,7 @@ export function stackedBarsMeta(rows, { width = 120, colors = true } = {}) {
  */
 export function columnBars(series, labels, {
   width = null, height = 6, rowCount: requestedRowCount = null, col = 8, barW = 6, unit = '$', mark = '', totals = true, cumulative = false,
-  colors = true,
+  colors = true, axisRule = null, tickFormatter = null,
 } = {}) {
   const sourceLabels = Array.isArray(labels) ? labels.map((label) => String(label ?? '')) : [];
   const sourceSeries = (Array.isArray(series) ? series : []).filter(Boolean).map((entry) => ({
@@ -829,6 +829,7 @@ export function columnBars(series, labels, {
   const markText = typeof mark === 'string' ? mark : '';
   const ascii = asciiGlyphsPreferred();
   const axis = ascii ? '|' : '┤';
+  const plainAxis = ascii ? '|' : '│';
   const baseAxis = ascii ? '+' : '┼';
   const block = ascii ? '#' : '█';
 
@@ -843,7 +844,8 @@ export function columnBars(series, labels, {
     return total;
   });
   const max = sums.reduce((most, value) => value != null ? Math.max(most, value) : most, 0);
-  const axisInfo = niceStep(max, requestedRows);
+  const suppliedAxis = typeof axisRule === 'function' ? axisRule(max, requestedRows) : null;
+  const axisInfo = suppliedAxis?.ticks?.length ? suppliedAxis : niceStep(max, requestedRows);
   const axisTop = axisInfo.ticks.at(-1) ?? 0;
   // The tick gutter, the axis column, and the cell the mark needs in front of
   // the tick it qualifies. The prototype's six cells hold a tick up to
@@ -851,8 +853,11 @@ export function columnBars(series, labels, {
   // marked `≈$160.00`), and a cut tick is a label that measures nothing, so
   // the gutter is sized to the widest tick this axis will actually print. An
   // unusually narrow input still reduces it before narrowing cells.
+  const numberText = (value) => (value == null ? null : typeof tickFormatter === 'function'
+    ? tickFormatter(value, { unit, mark: markText })
+    : numberTextOf(value, unit, markText));
   const tickRoom = axisInfo.ticks.reduce(
-    (most, tick) => Math.max(most, visibleLength(numberTextOf(tick, unit, markText) ?? '')),
+    (most, tick) => Math.max(most, visibleLength(numberText(tick) ?? '')),
     6 + visibleLength(markText),
   );
   const axisWidth = requested == null
@@ -870,8 +875,13 @@ export function columnBars(series, labels, {
   // example a 0–20 axis at a wanted height of six).  Round the rows per tick
   // upward so the caller's minimum density is honoured rather than collapsing
   // the chart back to four rows.
-  const rowsPerTick = Math.max(1, Math.ceil(requestedRows / intervals));
-  const rowCount = intervals * rowsPerTick;
+  const rowsPerTick = suppliedAxis?.rowsPerTick == null
+    ? Math.max(1, Math.ceil(requestedRows / intervals))
+    : Math.max(1, Math.trunc(Number(suppliedAxis.rowsPerTick)) || 1);
+  const scaledRows = intervals * rowsPerTick;
+  const rowCount = suppliedAxis?.rowCount == null
+    ? scaledRows
+    : Math.max(scaledRows, Math.trunc(Number(suppliedAxis.rowCount)) || scaledRows);
   const scale = axisTop > 0 ? axisTop : 1;
   const eighths = sums.map((value) => value == null || value <= 0
     ? 0
@@ -925,7 +935,6 @@ export function columnBars(series, labels, {
     });
   });
 
-  const numberText = (value) => numberTextOf(value, unit, markText);
   // A value under a column keeps one blank cell before the next column. When
   // the full text would fill the cell (`16h34m` in a six-cell phone column ran
   // straight into `3h52m`), a duration falls back to whole hours and anything
@@ -963,11 +972,12 @@ export function columnBars(series, labels, {
     if (!text || !colors || ascii || !isHex(color)) return text;
     return `${fgOf(color)}${text}${RESET}`;
   };
-  // Tick labels belong to the bottom edge of a bar row.  The zero label is
-  // therefore on row one; the axis-top tick would land one row beyond the
-  // chart and is intentionally omitted to keep the requested height.
-  const ticksByRow = new Map(axisInfo.ticks
-    .map((tick, index) => [index * rowsPerTick + 1, tick])
+  // Positive ticks sit at exact whole-row intervals; zero belongs to the
+  // baseline, not to the first bar row.
+  const ticksByRow = new Map((suppliedAxis ? axisInfo.ticks.slice(1) : axisInfo.ticks)
+    .map((tick, index) => suppliedAxis
+      ? [(index + 1) * rowsPerTick, tick]
+      : [index * rowsPerTick + 1, tick])
     .filter(([row]) => row <= rowCount));
   const segmentCell = (index, row) => {
     const low = (row - 1) * 8;
@@ -1033,12 +1043,14 @@ export function columnBars(series, labels, {
 
   const lines = [];
   for (let row = rowCount; row >= 1; row -= 1) {
-    const tick = axisTop ? ticksByRow.get(row) ?? null : (row === 1 ? 0 : null);
-    let line = cellText(numberText(tick) ?? '', axisWidth) + axis;
+    const tick = axisTop ? ticksByRow.get(row) ?? null : (!suppliedAxis && row === 1 ? 0 : null);
+    let line = cellText(numberText(tick) ?? '', axisWidth) + (suppliedAxis && tick == null ? plainAxis : axis);
     for (let index = 0; index < n; index += 1) line += segmentCell(index, row);
     lines.push(line);
   }
-  let labelsLine = ' '.repeat(axisWidth) + baseAxis;
+  let labelsLine = suppliedAxis
+    ? cellText(numberText(0) ?? '0', axisWidth) + baseAxis
+    : ' '.repeat(axisWidth) + baseAxis;
   labelsView.forEach((label) => { labelsLine += columnCell(cellText(label, cellWidth - 1)); });
   lines.push(labelsLine);
   const valueRow = lines.length;

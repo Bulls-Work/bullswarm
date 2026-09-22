@@ -2,21 +2,23 @@
 Spending · 7d · 30d · all  [By Pool] By Model
                                                                                                                         
 ── Summary · 7d ────────────────────────────────────────────────────────────────────────────────────────────────────────
-Totals 60 workflows · 7226.66 worker-minutes · ≈$7.11 API-equivalent · 7 active days
+Totals 15 workflows · 2816.01 worker-minutes · ≥$299.87 · sub unknown (no plan price) · 3 active days
 ── Spend per day · API-equivalent · pool ─────────────────│  ── Pool spend ───────────────  ── Pool worker-minutes ─────
-≈$2.50 ┤       ▆▆▆▆                                       │  codex             ≈$0.30 4.3%  codex           36h26m 30.3%
-≈$2.00 ┤       ████                                       │  claude…          ≈$3.00 42.2%  claude…         16h22m 13.6%
-≈$1.50 ┤       ████                                       │  acme             ≈$3.31 46.6%  acme            21h16m 17.6%
-≈$1.00 ┤       ████        ▂▂▂▂                           │  comman…             ≈$0.07 1%  comman…           16h49m 14%
-≈$0.50 ┤       ████        ████                           │  grok                ≈$0.42 6%  grok              9h14m 7.7%
-≈$0.00 ┤       ████  ▅▅▅▅  ████              ▁▁▁▁         │  +4 more     — scroll for more  +4 more    — scroll for more
-       ┼13 Sep      15 Sep      17 Sep      19 Sep        │
-                                                          │  ── Project runs ─────────────  ── Outcome & duration ──────
-                                                          │  system          20 runs 33.3%  Status  54 completed · 6 ot…
-                                                          │  bullsw…         16 runs 26.7%  Verifi…    31 verified 51.7%
-                                                          │  bullse…         11 runs 18.3%  Requir… 241/307 passed 78.5%
-                                                          │  platfo…         10 runs 16.7%  Median…           56m median
-                                                          │  repo              2 runs 3.3%  Longes…        9h03m maximum
-                                                          │  e2…repo            1 run 1.7%
-Legend  ● claude-code  ● claude-code:acme  ● codex  ● command-code  ● grok
+       │                                                  │  codex           ≥$63.16 21.1%  codex             35h12m 75%
+~$200  ┤                     ▃▃▃▃▃▃▃▃▃                    │  cl…code        ≥$118.00 39.4%  cl…code           3h34m 7.6%
+       │                     █████████                    │  grok            ≥$34.04 11.4%  grok              2h35m 5.5%
+       │                     █████████                    │  cl…acme         ≥$84.66 28.2%  cl…acme           2h42m 5.8%
+       │                     █████████                    │  openco…   — cost not recorded  openco…           2h54m 6.2%
+       │ █████████           █████████                    │  +4 more     — scroll for more  +4 more    — scroll for more
+~$100  ┤ █████████           █████████                    │
+       │ █████████           █████████                    │  ── Project runs ─────────────  ── Outcome & duration ──────
+       │ █████████           █████████                    │  a               10 runs 66.7%  Status          15 completed
+       │ █████████           █████████                    │  b                4 runs 26.7%  Verifi…    10 verified 66.7%
+       │ █████████ █████████ █████████                    │  c                  1 run 6.7%  Requir…   78/86 passed 90.7%
+$0     ┼Fri       Sat       Sun       Mon       Tue       │                                 Median… 1h45m median · span…
+ ~ bars leave 66 unpriced attempts out                    │                                 Longes… 37h15m maximum · sp…
+Legend  ● claude-code:acme  ● grok  ● codex  ● claude-code  ● unallocated
 Basis · the recorded API-equivalent estimate per pool.
+Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 66 of 149 attempts recorded no price.
+Durations · 15 of 15 runs recorded no active interval union; their span stands in until workflow reprice fills it.
+History · the requested period is longer than the retained rollups.

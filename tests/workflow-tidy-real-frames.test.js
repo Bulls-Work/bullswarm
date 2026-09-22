@@ -51,11 +51,10 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   // verdict — no `Step ` prefix (requirement 5, step-v2 record rule 1). 0.35.1
   // names it as the Runs list does: `<lane> task · <8-char id>`.
   assert.match(frames.get('real-task-120.txt').join('\n'), /analyze task · 3155fb3c · succeeded/);
-  // The partly-priced period publishes its recorded subtotal as the lower
-  // bound it is, in the spend block's words, with the count that produced it —
-  // never a whole-scope total it does not have.
-  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /at least \$299\.87 api · 66 unmeasured/);
-  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Coverage · 66 of 149 attempts recorded no price/);
+  // Stats uses the page-wide compact money glyph and states its meaning and
+  // coverage exactly once below the chart.
+  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Totals .*≥\$299\.87/);
+  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Money · \$ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 66 of 149 attempts recorded no price\./);
   // Home's own totals line keeps the spend block's words; the chart under it
   // marks its axis `~` from $0, in whole dollars, and never says `at least`.
   const home200 = frames.get('real-home-200.txt');
