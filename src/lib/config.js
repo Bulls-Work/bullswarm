@@ -37,6 +37,7 @@ import {
   configuredModel, disabledModelsForPool, resolveDispatchModel, selectedModelsForTier,
   STRATEGY_TIERS,
 } from './strategy.js';
+import { poolLabel } from './pool-labels.js';
 
 /**
  * Every pool by name, from every loaded provider (src/lib/providers.js).
@@ -124,6 +125,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
     const selected = freeSelection(conn, state, name, effortTier);
     const pool = {
       name,
+      poolLabel: poolLabel(name, bullswarmDir),
       connector: conn,
       testFixture: conn.flags?.testFixture === true,
       enabled: poolEnabled(conn, ps),

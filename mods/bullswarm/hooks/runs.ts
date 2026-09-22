@@ -57,6 +57,7 @@ export function parseAssignmentRecord(
   if (!pool) return fallback
   return {
     pool,
+    poolLabel: str(raw.poolLabel) ?? fallback?.poolLabel ?? null,
     model: str(raw.model) ?? fallback?.model ?? null,
     lane: str(raw.lane) ?? fallback?.lane ?? '',
     source: str(raw.source) ?? fallback?.source ?? '',

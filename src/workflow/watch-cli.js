@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, legacyRunLine, readKernelStderrTail } from './short-id.js';
 import { glyphs } from '../lib/glyphs.js';
+import { withPoolLabels } from '../lib/pool-labels.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
@@ -957,6 +958,10 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   now = Date.now,
   output = process.stdout,
 } = {}) {
+  if (!jsonl) {
+    const sink = output;
+    output = { write: (chunk) => sink.write(withPoolLabels(chunk, bullswarmDir)) };
+  }
   const resolved = await resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs);
   const statePath = join(resolved.runDir, 'state.json');
   // Nothing drives a legacy run, so there is nothing to watch: say so once and

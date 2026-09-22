@@ -70,6 +70,7 @@ import { openSetupTui as openSetupControlCentre } from '../setup.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepModel } from './task-step.js';
 import { renderStepPage, stepFooterText } from './step-view.js';
+import { withPoolLabels } from '../lib/pool-labels.js';
 
 const ESC = '\x1b[';
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -1875,6 +1876,28 @@ function helpPage(model, opts, body) {
  * @returns {{page: string, lines: string[], regions: Array<{x1: number, x2: number, y: number, action: object}>}}
  */
 export function renderDashboardPage(model, options = {}) {
+  // Rendering is the only dashboard boundary where ids become labels. Clone
+  // the model so navigation/aggregation code sees a consistent name on every
+  // page while the live and durable models retain their pool ids.
+  const labels = new Map((model?.pools ?? [])
+    .filter((pool) => pool?.name && pool?.poolLabel && pool.poolLabel !== pool.name)
+    .map((pool) => [pool.name, pool.poolLabel]));
+  if (labels.size) {
+    const replace = (text) => {
+      let out = String(text);
+      for (const [pool, label] of [...labels].sort((a, b) => b[0].length - a[0].length)) {
+        out = out.split(pool).join(label);
+      }
+      return out;
+    };
+    const visit = (value) => {
+      if (typeof value === 'string') return labels.get(value) ?? replace(value);
+      if (Array.isArray(value)) return value.map(visit);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.entries(value).map(([key, child]) => [labels.get(key) ?? key, visit(child)]));
+    };
+    model = visit(model);
+  }
   const width = Math.max(20, Number(options.width) || 120);
   const height = Math.max(12, Number(options.height) || 36);
   const page = DASHBOARD_PAGES.includes(options.page)
@@ -2119,7 +2142,7 @@ export async function runDashboard(bullswarmDir, {
       width: Math.max(80, Number(output.columns) || 120),
       height: 80,
     });
-    const text = `${details}\n\n${timeline}`.replace(ANSI_SGR, '');
+    const text = withPoolLabels(`${details}\n\n${timeline}`.replace(ANSI_SGR, ''), bullswarmDir);
     output.write(`${text}\n`);
     return 0;
   }

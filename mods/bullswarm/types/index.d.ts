@@ -115,6 +115,7 @@ export type BullswarmRunDetail = {
 /** One live dispatch from the shared in-flight ledger (`bullswarm assignments --json`). */
 export type BullswarmAssignment = {
   pool: string
+  poolLabel?: string | null
   model: string | null
   lane: string
   source: string
@@ -137,6 +138,7 @@ export type BullswarmWindow = {
 /** One pool × effort-tier rung from `bullswarm strategy rungs --json`. */
 export type BullswarmRung = {
   pool: string
+  poolLabel?: string | null
   tier: string
   model: string | null
   reasoning: string | null
@@ -147,6 +149,8 @@ export type BullswarmRung = {
 
 export type BullswarmPool = {
   name: string
+  /** Core per-home display label; the durable id remains `name`. */
+  poolLabel?: string | null
   enabled: boolean
   /** The provider's meter windows, in `5h`, `7d`, `mo` order, when reported. */
   windows: readonly BullswarmWindow[]

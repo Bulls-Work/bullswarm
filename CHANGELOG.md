@@ -1,5 +1,12 @@
 # bullswarm changelog
 
+## Unreleased
+
+- pools: per-home display labels (`bullswarm pools label`) now shorten pool ids
+  across human CLI output, progress, the dashboard, and the Claude Mod without
+  changing credential, routing, meter, history, or workflow-record keys. Pool
+  arguments accept either form; JSON retains `pool` and adds `poolLabel`.
+
 ## 0.35.4 — one Runs table for workflows and tasks
 
 - mod: a live single task no longer replaces the selected workflow; each task

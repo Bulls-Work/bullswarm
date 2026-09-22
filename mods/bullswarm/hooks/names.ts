@@ -16,6 +16,7 @@ export function aliasesOf(option: unknown): Map<string, string> {
 export function displayNames(
   pools: readonly string[],
   aliases: ReadonlyMap<string, string>,
+  coreLabels: ReadonlyMap<string, string> = new Map(),
 ): Map<string, string> {
   const out = new Map<string, string>()
   const taken = new Map<string, string>()
@@ -28,6 +29,12 @@ export function displayNames(
   }
   for (const name of pools) {
     if (out.has(name)) continue
+    const core = coreLabels.get(name)
+    if (core && !taken.has(core)) {
+      out.set(name, core)
+      taken.set(core, name)
+      continue
+    }
     const at = name.indexOf(':')
     const slug = at >= 0 ? name.slice(at + 1) : ''
     let short = name

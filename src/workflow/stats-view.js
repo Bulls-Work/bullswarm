@@ -556,6 +556,7 @@ function summaryItems(overview, outcomes, poolTable, projectTable) {
   return [{ id: 'totals', label: 'Totals', value: totals ? 0 : null, valueText: totals || null, missingReason: 'no measured totals' }];
 }
 function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, outcomes, basis }) {
+  const poolKind = rowsOf(poolTable).some((row) => row?.poolLabel) ? 'poolLabel' : 'pool';
   const poolSpend = panelRows(poolTable, 'apiEquivalentUsd', 'usd');
   const poolMinutes = panelRows(poolTable, 'minutes', 'minutes', { shareField: 'minutesShare' });
   const poolAttempts = panelRows(poolTable, 'attempts', 'attempts');
@@ -571,14 +572,14 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
       // Spending's By Model comparison keeps the model identity readable for
       // hover/legend parity; the dedicated Model tab applies the compact
       // model-name form through the same renderer.
-      { ...panel(byModel ? 'Model worker-minutes' : 'Pool spend', byModel ? modelMinutes : poolSpend, tab, byModel ? 'minutes' : 'spend', period, byModel ? 'minutes' : 'usd', basis, byModel ? null : 'pool', !byModel) },
-      { ...panel(byModel ? 'Model attempts' : 'Pool worker-minutes', byModel ? modelAttempts : poolMinutes, tab, byModel ? 'attempts' : 'minutes', period, byModel ? 'attempts' : 'minutes', basis, byModel ? null : 'pool', !byModel) },
+      { ...panel(byModel ? 'Model worker-minutes' : 'Pool spend', byModel ? modelMinutes : poolSpend, tab, byModel ? 'minutes' : 'spend', period, byModel ? 'minutes' : 'usd', basis, byModel ? null : poolKind, !byModel) },
+      { ...panel(byModel ? 'Model attempts' : 'Pool worker-minutes', byModel ? modelAttempts : poolMinutes, tab, byModel ? 'attempts' : 'minutes', period, byModel ? 'attempts' : 'minutes', basis, byModel ? null : poolKind, !byModel) },
       { ...panel('Project runs', projectRuns, tab, 'runs', period, 'runs', basis, 'project', !byModel) },
       { ...panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count', basis, null, !byModel) },
     ];
   }
   if (tab === 'pool') return [
-    panel('Pool spend', poolSpend, tab, 'spend', period, 'usd', null, 'pool'), panel('Pool worker-minutes', poolMinutes, tab, 'minutes', period, 'minutes', null, 'pool'), panel('Pool attempts', poolAttempts, tab, 'attempts', period, 'attempts', null, 'pool'), panel('Licence / reset history', licenceRows(poolTable), tab, 'percent', period, 'percent', null, 'pool'),
+    panel('Pool spend', poolSpend, tab, 'spend', period, 'usd', null, poolKind), panel('Pool worker-minutes', poolMinutes, tab, 'minutes', period, 'minutes', null, poolKind), panel('Pool attempts', poolAttempts, tab, 'attempts', period, 'attempts', null, poolKind), panel('Licence / reset history', licenceRows(poolTable), tab, 'percent', period, 'percent', null, poolKind),
   ];
   if (tab === 'model') return [
     panel('Model worker-minutes', modelMinutes, tab, 'minutes', period, 'minutes', null, 'model'), panel('Model attempts', modelAttempts, tab, 'attempts', period, 'attempts', null, 'model'), panel('Model verified / ok', modelVerified, tab, 'verified', period, 'runs', null, 'model'), panel('Cost availability', modelCostRows(modelTable), tab, 'spend', period, 'usd', null, 'model'),

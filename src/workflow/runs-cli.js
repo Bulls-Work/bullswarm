@@ -31,6 +31,7 @@ import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result }
 import { aggregateAttemptUsage } from './rollup.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
+import { poolLabel } from '../lib/pool-labels.js';
 
 function jsonOut(obj, opts) {
   if (!(opts.json || opts.summary)) return;
@@ -304,7 +305,7 @@ function runsShow(idToken, opts) {
       const reasoning = applied
         ? `  reasoning ${applied} (${attempt.reasoning.source ?? 'unknown'}${attempt.reasoning.clamped ? ', clamped' : ''})`
         : '';
-      console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ?? '—'}  ${attempt.model ?? 'connector model'}${reasoning}${attemptBytesText(attempt.bytes)}`);
+      console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ? poolLabel(attempt.pool, BULLSWARM_DIR()) : '—'}  ${attempt.model ?? 'connector model'}${reasoning}${attemptBytesText(attempt.bytes)}`);
     }
   }
   printV2Advisories(state);

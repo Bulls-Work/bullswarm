@@ -107,6 +107,7 @@ export function shortenLabel(value, context = {}) {
   if (options.full === true) return source;
 
   const kind = String(options.kind ?? options.type ?? '').trim().toLowerCase();
+  if (kind === 'poollabel') return source;
   const requestedWidth = options.width ?? options.labelWidth;
   const scope = source.lastIndexOf(':');
   if (kind === 'model') {
