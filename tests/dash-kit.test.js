@@ -464,16 +464,16 @@ test('columnBars gives a one-cent slice one eighth at the bottom without increas
     assert.equal(column.eighths, 48);
     // Smallest slice first (bottom), biggest on top; the total stays 48 eighths.
     assert.deepEqual(column.segments.map((entry) => [entry.sourceIndex, entry.eighths]), [[0, 1], [1, 47]]);
-    // The bottom bar row holds the red eighth under the green slice: green
-    // foreground partial glyph over a red background.
+    // The bottom bar row holds the red eighth under the green slice: a lower
+    // red foreground eighth over the upper green background.
     const bottom = chart[chart.meta.chartRows - 1];
-    assert.match(bottom, /\x1b\[48;2;191;108;105m\x1b\[38;2;182;189;115m/);
+    assert.match(bottom, /\x1b\[38;2;191;108;105m\x1b\[48;2;182;189;115m▁/);
     assert.match(chart[0], /\x1b\[38;2;182;189;115m█/);
     assert.equal(column.height, 6);
   });
 });
 
-test('columnBars merges several sub-eighth pools into one vertical other slice', () => {
+test('columnBars keeps sub-eighth series identities without inventing an other slice', () => {
   withEnv(UNICODE_ENV, () => {
     const chart = columnBars([
       { name: 'main', values: [2.97, 75], color: METER_COLORS.green },
@@ -481,10 +481,11 @@ test('columnBars merges several sub-eighth pools into one vertical other slice',
       { values: [0.01, 0], color: METER_COLORS.cyan },
       { values: [0.01, 0], color: METER_COLORS.amber },
     ], ['day', 'large'], { height: 6, barW: 3 });
-    assert.deepEqual(chart.meta.columns[0].segments.map((entry) => entry.eighths), [1, 1]);
-    // The merged `other` slice sits at the bottom, under the named slice.
-    assert.equal(chart.meta.columns[0].segments[0].name, 'other (3 pools)');
-    assert.ok(chart.meta.legend.includes('main') && chart.meta.legend.includes('other (3 pools)'));
+    const segments = chart.meta.columns[0].segments;
+    assert.deepEqual(segments.map((entry) => entry.sourceIndex), [1, 2, 3, 0]);
+    assert.deepEqual(segments.map((entry) => entry.eighths), [1, 0, 0, 1]);
+    assert.ok(segments.every((entry) => entry.name !== 'other (3 pools)'));
+    assert.ok(!chart.join('\n').includes('\x1b[48;2;85;87;95m'));
     // No rendered chart row contains horizontal colour lanes. A cell may
     // carry one foreground (plus the lower slice as a background), never a
     // sequence of side-by-side foregrounds inside its own column width.

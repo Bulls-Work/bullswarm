@@ -114,6 +114,90 @@ test('stacked slice regions tile each painted column without overlap', () => {
   assert.ok(slices.every((region) => region.payload.share >= 0 && region.payload.share <= 1));
 });
 
+test('stacked columns preserve real series colours and order at every width', () => {
+  const poolA = '#112233';
+  const poolB = '#aabbcc';
+  const grey = '\x1b[48;2;85;87;95m';
+  const draw = (width) => renderStackedColumnChart({
+    title: 'Spend', width, height: 6, rowCount: 6, unit: 'usd', totals: false,
+    buckets: [{ key: '2026-09-13', value: 10 }, { key: '2026-09-14', value: 1.67 }],
+    series: [
+      { id: 'pool-a', color: poolA, values: [10, 0.63] },
+      { id: 'pool-b', color: poolB, values: [0, 1.04] },
+    ],
+  });
+  const narrow = draw(55);
+  const wide = draw(200);
+  const order = (drawn) => drawn.meta.chart.columns[1].segments
+    .filter((segment) => segment.eighths > 0)
+    .map((segment) => segment.name);
+
+  assert.deepEqual(order(narrow), ['pool-a', 'pool-b']);
+  assert.deepEqual(order(wide), order(narrow));
+  for (const drawn of [narrow, wide]) {
+    const ansi = drawn.lines.join('\n');
+    assert.match(ansi, /\x1b\[38;2;17;34;51m\x1b\[48;2;170;187;204m▃/,
+      'the lower series is foreground and the upper series is background');
+    assert.ok(!ansi.includes(grey), 'no synthetic other colour is painted');
+  }
+});
+
+test('a partial terminal cell leaves its unfilled background at the terminal default', () => {
+  const drawn = renderStackedColumnChart({
+    title: 'Spend', width: 55, height: 6, rowCount: 6, unit: 'usd', totals: false,
+    buckets: [{ key: '2026-09-13', value: 10 }, { key: '2026-09-14', value: 1 }],
+    series: [{ id: 'pool-a', color: '#112233', values: [10, 1] }],
+  });
+  const ansi = drawn.lines.join('\n');
+  assert.match(ansi, /\x1b\[38;2;17;34;51m▄+\x1b\[0m/);
+  assert.ok(!ansi.includes('\x1b[48;2;'), 'space above a partial column has no painted background');
+});
+
+test('a partial top cell whose slices tie after rounding takes the larger amount', () => {
+  // Each slice rounds to one eighth of a six-unit cell; pool-b holds the most.
+  const drawn = renderStackedColumnChart({
+    title: 'Spend', width: 55, height: 6, rowCount: 6, unit: 'usd', totals: false,
+    buckets: [{ key: '2026-09-13', value: 36 }, { key: '2026-09-14', value: 2.4 }],
+    series: [
+      { id: 'pool-a', color: '#112233', values: [36, 0.5] },
+      { id: 'pool-b', color: '#aabbcc', values: [0, 1.2] },
+      { id: 'pool-c', color: '#445566', values: [0, 0.7] },
+    ],
+  });
+  const top = drawn.meta.chart.columns[1].segments.filter((segment) => segment.eighths > 0);
+  assert.ok(top.length >= 2 && new Set(top.map((segment) => segment.eighths)).size === 1, JSON.stringify(top));
+  assert.match(drawn.lines.join('\n'), /\x1b\[38;2;170;187;204m[▁▂▃]+\x1b\[0m/);
+});
+
+test('the reserved other colour is painted only by a real other series', () => {
+  const drawn = renderStackedColumnChart({
+    title: 'Spend', width: 55, height: 6, rowCount: 6, unit: 'usd', totals: false,
+    buckets: [{ key: '2026-09-13', value: 10 }, { key: '2026-09-14', value: 1 }],
+    series: [
+      { id: 'pool-a', color: '#112233', values: [10, 0.25] },
+      { id: 'other', values: [0, 0.75] },
+    ],
+  });
+  assert.match(drawn.lines.join('\n'), /\x1b\[[34]8;2;85;87;95m/);
+  assert.ok(drawn.regions.some((region) => region.kind === 'slice' && region.payload.series === 'other'));
+});
+
+test('a column ending inside a cell keeps its exact height when two slices share that cell', () => {
+  // 0.25 + 0.5 of a one-unit cell: the top cell is 6/8 filled, so it draws `▆`
+  // in the slice filling most of it, never a background that reads as full.
+  const drawn = renderStackedColumnChart({
+    title: 'Spend', width: 55, height: 6, rowCount: 6, unit: 'usd', totals: false,
+    buckets: [{ key: '2026-09-13', value: 6 }, { key: '2026-09-14', value: 0.75 }],
+    series: [
+      { id: 'pool-a', color: '#112233', values: [6, 0.25] },
+      { id: 'pool-b', color: '#aabbcc', values: [0, 0.5] },
+    ],
+  });
+  const ansi = drawn.lines.join('\n');
+  assert.match(ansi, /\x1b\[38;2;170;187;204m▆+\x1b\[0m/, 'the larger slice colours the partial top cell');
+  assert.ok(!ansi.includes('\x1b[48;2;'), 'no background paints eighths above the column top');
+});
+
 test('seven-slot dated charts use weekday labels at every target width', () => {
   assert.equal(dateLabel('2026-09-13', { width: 55 }), 'Sep13');
   assert.equal(dateLabel('2026-09-13', { width: 120 }), '13 Sep');

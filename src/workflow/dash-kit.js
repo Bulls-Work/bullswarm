@@ -799,7 +799,9 @@ export function stackedBarsMeta(rows, { width = 120, colors = true } = {}) {
  * are measured in eighths of a row and their top cell uses ▁▂▃▄▅▆▇█, so a bar
  * never rises above its own value; stacked slices are laid smallest at the bottom and biggest on top,
  * every non-zero slice keeps at least one eighth (taken from the largest
- * slice), and a partial top cell carries the colour of its own slice. `meta`
+ * slice), and a partial top cell carries the colour of its own slice. A cell
+ * shared by two slices paints its lower part in the lower series' foreground
+ * and its upper part in the upper series' background. `meta`
  * exposes `axisTop`, `tickStep`, `rowsPerTick`, and per-column `eighths` and
  * `segments`.  Each segment also has a flat `meta.slices` entry with its
  * series name/value and one-based row/column ranges in the returned block.
@@ -893,32 +895,12 @@ export function columnBars(series, labels, {
     })).filter((entry) => entry.value > 0).sort((a, b) => a.value - b.value || a.sourceIndex - b.sourceIndex);
     const totalEighths = eighths[index];
     if (!entries.length || totalEighths <= 0) return [];
-    // A single sub-eighth slice gets the one-cell minimum. Several can keep
-    // that minimum while the column has enough eighths; only an impossible
-    // allocation is collapsed into one dim `other` slice at the top.
-    const tiny = entries.filter((entry) => (entry.value / sums[index]) * totalEighths < 1);
-    let drawable = entries;
-    // Keep every tiny slice when the column has enough eighths to give each
-    // one a minimum. Only an actually impossible allocation (more tiny
-    // slices than available eighths) is collapsed into the honest `other`
-    // aggregate, drawn at the bottom of the column.
-    const nonTiny = entries.length - tiny.length;
-    const tinySlots = Math.max(0, totalEighths - nonTiny);
-    if (tiny.length > tinySlots) {
-      const tinyValue = tiny.reduce((sum, entry) => sum + entry.value, 0);
-      const tinyIndexes = new Set(tiny.map((entry) => entry.sourceIndex));
-      drawable = [
-        {
-          color: METER_COLORS.others,
-          name: `other (${tiny.length} pools)`,
-          otherCount: tiny.length,
-          sourceIndex: -1,
-          value: tinyValue,
-        },
-        ...entries.filter((entry) => !tinyIndexes.has(entry.sourceIndex)),
-      ];
-    }
-    const counts = allocate(drawable.map((entry) => entry.value), totalEighths);
+    // Resolution changes how many eighths a slice receives, never which
+    // series the column contains or their order. If there are fewer eighths
+    // than live series, the smallest slices necessarily round to zero at this
+    // height; synthesizing an `other` slice here would introduce a colour and
+    // identity that the chart's legend does not contain.
+    const counts = allocate(entries.map((entry) => entry.value), totalEighths);
     for (let at = 0; at < counts.length; at += 1) {
       if (counts[at] > 0) continue;
       const donor = counts.reduce((best, count, candidate) => count > counts[best] ? candidate : best, 0);
@@ -928,7 +910,7 @@ export function columnBars(series, labels, {
       }
     }
     let cursor = 0;
-    return drawable.map((entry, at) => {
+    return entries.map((entry, at) => {
       const low = cursor;
       cursor += counts[at];
       return { ...entry, low, high: cursor, eighths: counts[at] };
@@ -987,14 +969,27 @@ export function columnBars(series, labels, {
     const top = segments.at(-1);
     const glyph = ascii ? (filled === 8 ? block : '.') : SPARK_UNICODE[filled - 1];
     if (segments.length < 2 || !colors || ascii) return columnCell('', colored(glyph, top?.color));
-    // A cell is a vertical slice, never a set of horizontal colour lanes.
-    // When two slices cross it, the lower one becomes the background and the
-    // upper one the foreground; middle slices remain vertical in neighbouring
-    // cells but never introduce a third colour into this row.
+    // The column ends inside this cell: a background would paint the empty
+    // eighths above its top as the upper slice and overstate the day. Keep
+    // the height exact and colour the cell with the slice that fills most of
+    // it; rounding can tie slices at one eighth, and then the larger amount wins.
+    if (filled < 8) {
+      const share = (entry) => Math.min(entry.high, low + filled) - Math.max(entry.low, low);
+      const main = segments.reduce((best, entry) => (share(entry) > share(best)
+        || (share(entry) === share(best) && (entry.value ?? 0) > (best.value ?? 0)) ? entry : best));
+      return columnCell('', colored(glyph, main.color));
+    }
+    // Lower-block glyphs paint from the cell's bottom upward. At a two-slice
+    // boundary the lower slice is therefore the foreground and the upper one
+    // the background. Use the boundary height, not the total column fill: a
+    // full cell split 3/8 + 5/8 must remain a two-colour `▃`, not a solid
+    // foreground block that hides the upper series.
     const lower = segments[0];
-    const run = glyph.repeat(barWidth);
+    const boundary = Math.max(1, Math.min(7, lower.high - low));
+    const mixedGlyph = SPARK_UNICODE[boundary - 1];
+    const run = mixedGlyph.repeat(barWidth);
     const painted = isHex(lower?.color) && isHex(top?.color)
-      ? `${bgOf(rgbOf(lower.color))}${fgOf(top.color)}${run}${RESET}`
+      ? `${fgOf(lower.color)}${bgOf(rgbOf(top.color))}${run}${RESET}`
       : colored(run, top?.color);
     return cellWidth <= 1 ? painted : ` ${painted}${' '.repeat(Math.max(0, cellWidth - barWidth - 1))}`;
   };

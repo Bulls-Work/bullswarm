@@ -9,9 +9,9 @@ Totals 15 workflows · 2816.01 worker-minutes · ≥$299.8…
 ~$200  ┤             ▁▁▁▁
        │             ████
        │ ▂▂▂▂        ████
-~$100  ┤ ████        ████
-       │ ████        ████
-       │ ████  ▄▄▄▄  ████
+~$100  ┤ ████        ▄▄▄▄
+       │ ▆▆▆▆        ████
+       │ ▁▁▁▁  ▄▄▄▄  ▂▂▂▂
 $0     ┼Fri   Sat   Sun
  ~ bars leave 66 unpriced attempts out
 
