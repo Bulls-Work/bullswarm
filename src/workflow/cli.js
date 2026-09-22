@@ -42,6 +42,7 @@ import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { cmdReprice } from './reprice.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
+import { stepJsonModel } from './step-json.js';
 import { listAssignments } from '../lib/assignments.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
@@ -1964,7 +1965,7 @@ function v2ActionJson(resolved, state, actionId) {
     attempts: (state.attempts ?? []).filter((attempt) => attempt.actionId === actionId),
     events: readEvents(resolved.runDir).filter((event) =>
       event.payload?.actionId === actionId || event.payload?.parentId === actionId),
-    step,
+    step: stepJsonModel(step),
   };
 }
 
@@ -2018,7 +2019,7 @@ function wfTask(opts, home) {
     const input = taskStepInput(taskRecord, { runsDir: join(home, 'runs') });
     const attempt = input.row.state.attempts[0] ?? null;
     const actionRecord = input.row.state.actions[0] ?? null;
-    const step = taskStepModel(input);
+    const step = stepJsonModel(taskStepModel(input));
     console.log(JSON.stringify({
       action: 'show-task',
       taskId: taskRecord.id ?? null,

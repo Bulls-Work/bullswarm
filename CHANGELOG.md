@@ -1,5 +1,12 @@
 # bullswarm changelog
 
+## Unreleased
+
+- step: `workflow action show --json` and `workflow task show --json` now emit
+  compact Step schema v2: one activity per distinct attempt, one canonical
+  event array inside each activity, reference markers for aliases, and the
+  unchanged display projection used by the dashboard and Claude mod.
+
 ## 0.35.4 — one Runs table for workflows and tasks
 
 - mod: a live single task no longer replaces the selected workflow; each task

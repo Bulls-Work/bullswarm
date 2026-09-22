@@ -59,6 +59,15 @@ task/output paths; it does not invent effort, usage, money, verification, a
 result envelope, or an event stream. With no stream pointer it says `no event
 stream path recorded`.
 
+For integrations, `workflow action show <run> <step> --json` and `workflow
+task show <taskId> --json` expose compact Step schema v2. Display rows are under
+`step.presentation`; activity-bearing attempt summaries are under
+`step.attempts`, with the complete durable records still in the outer
+`attempts` and the selected ordinal in `step.selectedAttemptOrdinal`. Each attempt keeps one
+canonical `activity.events` array, and its turns point into that array with
+`eventIndices`. Reference markers use `{ "sameAs": "attempts[…]" }` rather
+than expanding an identical selected attempt or activity again.
+
 ## Colours
 
 The Step and Run pages use colour for one thing only: telling you what a word

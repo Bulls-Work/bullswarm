@@ -84,6 +84,19 @@ export function stepPageOf(value: unknown): Raw {
 }
 
 const presentationOf = (page: Raw): Raw => record(page.presentation) ?? {}
+
+/** Resolve the selected attempt in compact Step JSON schema v2. */
+function selectedAttemptOf(page: Raw): Raw {
+  const direct = record(page.selectedAttempt)
+  if (direct && !nullable(direct.sameAs)) return direct
+  const attempts = list(page.attempts).map(record).filter((attempt): attempt is Raw => attempt !== null)
+  const ordinal = numberOf(page.selectedAttemptOrdinal)
+  return attempts.find(attempt => numberOf(attempt.ordinal) === ordinal) ?? attempts.at(-1) ?? {}
+}
+
+function activityOf(page: Raw): Raw {
+  return record(page.activity) ?? record(selectedAttemptOf(page).activity) ?? {}
+}
 const statusTone = (status: unknown): StepTone => {
   const value = String(status ?? '').toLowerCase()
   if (['succeeded', 'success', 'completed', 'complete', 'verified'].includes(value)) return 'good'
@@ -96,10 +109,11 @@ const statusGlyph = (state: unknown): string => state === 'ok' ? '✓' : state =
 function headerRows(page: Raw, fallback: BullswarmStep | null, options: StepPaneOptions): StepPaneRow[] {
   const header = record(presentationOf(page).header) ?? {}
   const identity = record(page.identity) ?? {}
-  const attempt = record(page.selectedAttempt) ?? record(fallback?.attempt) ?? {}
+  const attempt = selectedAttemptOf(page)
+  const fallbackAttempt = record(fallback?.attempt) ?? {}
   const actionId = oneLine(header.actionId ?? identity.actionId ?? fallback?.id, 'step')
   const shortId = nullable(header.shortId ?? identity.shortId)
-  const status = oneLine(header.status ?? identity.status ?? attempt.status ?? fallback?.status, 'unknown').toLowerCase()
+  const status = oneLine(header.status ?? identity.status ?? attempt.status ?? fallbackAttempt.status ?? fallback?.status, 'unknown').toLowerCase()
   const tone = statusTone(status)
   const phone = (options.width ?? 120) < 100
   const fullVerdict = nullable(header.verdictText)
@@ -115,8 +129,8 @@ function headerRows(page: Raw, fallback: BullswarmStep | null, options: StepPane
     ...(verdict ? [segment(' · '), segment(verdict, verdict.startsWith('not ') ? 'bad' : 'good')] : []),
     ...(attemptText ? [segment(' · '), segment(attemptText, 'dim')] : []),
   ]
-  const pool = nullable(header.pool ?? attempt.pool)
-  const model = nullable(header.model ?? attempt.model)
+  const pool = nullable(header.pool ?? attempt.pool ?? fallbackAttempt.pool)
+  const model = nullable(header.model ?? attempt.model ?? fallbackAttempt.model)
   const effort = nullable(header.effort ?? fallback?.effort)
   const reasoning = nullable(header.reasoning)
   const clock = nullable(header.clockText)
@@ -202,9 +216,14 @@ function toolsFor(page: Raw, shownTurn: Raw): readonly ToolRow[] {
     clock: nullable(entry.clock), text: oneLine(entry.text, 'tool'), command: entry.command === true,
     duration: nullable(entry.durationText), error: entry.error === true,
   }))
-  const rawActivity = record(page.activity) ?? {}
+  const rawActivity = activityOf(page)
   const rawTurn = list(rawActivity.turns).map(record).find(turn => numberOf(turn?.index) === numberOf(shownTurn.index))
-  return rawTurn ? rawToolRows(rawTurn) : []
+  if (!rawTurn) return []
+  const atomic = list(rawTurn.atomicEvents)
+  if (atomic.length) return rawToolRows(rawTurn)
+  const events = list(rawActivity.events)
+  const indices = list(rawTurn.eventIndices).map(numberOf).filter((index): index is number => index !== null)
+  return rawToolRows({ ...rawTurn, atomicEvents: indices.map(index => events[index]).filter(Boolean) })
 }
 
 function totalsOf(turns: readonly Raw[]): string {

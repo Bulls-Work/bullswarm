@@ -1540,12 +1540,12 @@ const workflowTaskText = rich({
   options: [],
   safety: ['read-only — reads the single-task ledger and persisted task artifacts'],
   examples: [{ cmd: 'bullswarm workflow task show f1e2d3c4 --json' }],
-  next: 'bullswarm workflow task show <taskId> --json for the full Step model.',
+  next: 'bullswarm workflow task show <taskId> --json for the compact versioned Step document.',
 });
 
 const workflowTaskShowText = rich({
   usage: 'bullswarm workflow task show <taskId> [--json]',
-  purpose: 'Print a standalone task using the same Step model as the dashboard, including its task text, event-stream turns, result, and recorded cost.',
+  purpose: 'Print a standalone task using compact Step schema v2, including its task text, event-stream turns, result, and recorded cost.',
   args: [{ name: '<taskId>', desc: 'full assignment id or an unambiguous id suffix (the pane shows its last 8 characters)' }],
   options: [{ flag: '--json', desc: 'accepted for consistency; output is always JSON', default: 'output is always JSON' }],
   safety: ['read-only — follows task artifacts only through the selected Bullswarm home runs directory'],

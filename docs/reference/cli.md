@@ -1360,6 +1360,32 @@ bullswarm workflow action show ab12cd act-3
 
 Read-only. The action id comes from the run's action ledger (`workflow runs show` or the TUI).
 
+The outer `actionRecord`, `attempts`, and action-scoped `events` fields retain
+the durable records. `step` is the compact, versioned Step display document:
+
+```json
+{
+  "schemaVersion": 2,
+  "identity": { "actionId": "sample-step", "status": "succeeded" },
+  "selectedAttemptOrdinal": 2,
+  "selectedAttempt": { "sameAs": "attempts[1]" },
+  "attempts": [
+    { "ordinal": 1, "activity": { "events": [], "turns": [] } },
+    { "ordinal": 2, "activity": { "events": [], "turns": [] } }
+  ],
+  "presentation": { "header": {}, "activity": {}, "result": {}, "task": {}, "cost": {} }
+}
+```
+
+The complete durable attempt records remain in the outer `attempts`; the
+attempts inside `step` carry selection facts and activity only. Each distinct
+attempt activity occurs once. `activity.events` is its canonical
+event array; turn `eventIndices` select from it. Filtered aliases such as
+`visibleEvents`, `todayEvents`, and `visibleDetailEvents`, and the dashboard's
+top-level model aliases, are not serialized. A `{ "sameAs": "…" }` object is
+a JSON reference marker for an identical value. `workflow task show` emits the
+same `step` schema around a standalone task record.
+
 ### runs
 
 Search ongoing and historical workflow run instances, including read-only legacy rows, or drill into one with `show` / `result` / `delete`. `bullswarm runs` is a documented alias that prints the same help with `bullswarm runs` in the synopsis.

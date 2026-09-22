@@ -15,6 +15,7 @@ import {
 } from '../src/workflow/task-step.js';
 import { renderStepPage } from '../src/workflow/step-view.js';
 import { runDashboard } from '../src/workflow/dashboard.js';
+import { shapeStep } from '../mods/bullswarm/hooks/step.ts';
 
 const REAL_HOME = fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
 const REAL_RUNS = join(REAL_HOME, 'runs');
@@ -78,10 +79,11 @@ test('workflow task show reads a fixture-home assignment through the shared Step
     assert.equal(doc.action, 'show-task');
     assert.equal(doc.taskId, id);
     assert.equal(doc.step.identity.shortId, '5c4d3e21');
-    assert.deepEqual(doc.step.task.lines, ['# Sample task', 'Summarize the invented orchard records.']);
-    assert.equal(doc.step.activity.available, true);
-    assert.equal(doc.step.activity.turns.length, 1);
-    assert.match(doc.step.resultBlock.output.lines.join('\n'), /invented orchard summary/);
+    assert.deepEqual(doc.step.presentation.task.promptLines, ['# Sample task', 'Summarize the invented orchard records.']);
+    const activity = doc.step.attempts[0].activity;
+    assert.equal(activity.available, true);
+    assert.equal(activity.turns.length, 1);
+    assert.match(doc.step.presentation.result.reportLines.join('\n'), /invented orchard summary/);
     assert.equal(doc.step.presentation.header.model, 'gpt-5.6-luna');
   } finally {
     rmSync(home, { recursive: true, force: true });

@@ -12,6 +12,9 @@ import { readEvents } from '../src/workflow/events.js';
 import { withV2Cancellation } from '../src/workflow/v2-cancellation.js';
 import { resolveRunId } from '../src/workflow/short-id.js';
 import { stepPageModel } from '../src/workflow/step-model.js';
+import { stepJsonModel } from '../src/workflow/step-json.js';
+import { parseStep } from '../mods/bullswarm/hooks/runs.ts';
+import { shapeStep } from '../mods/bullswarm/hooks/step.ts';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -77,17 +80,13 @@ function legacyPayload(home, token, actionId) {
 
 function expectedStep(home, token, actionId, shown) {
   const { resolved, state } = legacyPayload(home, token, actionId);
-  const captureDate = shown.step.activity.detailCaptureDate;
+  const selected = shown.step.attempts.find((attempt) => attempt.ordinal === shown.step.selectedAttemptOrdinal);
+  const captureDate = selected.activity.detailCaptureDate;
   let nowMs = Date.parse(`${captureDate}T12:00:00.000Z`);
   // An open attempt's active clock is intentionally live. Recover the exact
   // instant used by the CLI model from its durable start plus reported active
   // duration so the comparison remains a value-for-value contract test.
-  if (shown.step.identity.status === 'running' && shown.step.selectedAttempt?.startedAt) {
-    const startedAt = Date.parse(shown.step.selectedAttempt.startedAt);
-    if (Number.isFinite(startedAt) && Number.isFinite(shown.step.activeDurationMs)) {
-      nowMs = startedAt + shown.step.activeDurationMs;
-    }
-  }
+  if (shown.step.identity.status === 'running') nowMs = Date.now();
   return stepPageModel({
     runId: resolved.runId,
     shortId: resolved.shortId ?? state.shortId ?? null,
@@ -106,7 +105,22 @@ test('action show adds the Step model without changing the existing finished pay
   const shown = show(SNAPSHOT, SOURCE_RUN);
   const { payload } = legacyPayload(SNAPSHOT, SOURCE_RUN, ACTION_ID);
   assertPreviousFieldsUnchanged(shown, payload);
-  assert.deepEqual(shown.step, expectedStep(SNAPSHOT, SOURCE_RUN, ACTION_ID, shown));
+  const full = expectedStep(SNAPSHOT, SOURCE_RUN, ACTION_ID, shown);
+  assert.deepEqual(shown.step, stepJsonModel(full));
+  for (const width of [55, 120]) {
+    for (const mode of ['overview', 'detail']) {
+      assert.deepEqual(
+        shapeStep(shown, { width, mode, expandedTurn: 0 }),
+        shapeStep({ step: full }, { width, mode, expandedTurn: 0 }),
+      );
+    }
+  }
+  const parsed = parseStep(JSON.stringify(shown), 123);
+  assert.equal(parsed.id, ACTION_ID);
+  assert.equal(parsed.attempt.ordinal, 1);
+  assert.equal(parsed.page.schemaVersion, 2);
+  assert.ok(Array.isArray(parsed.events));
+  assert.equal(shown.step.schemaVersion, 2);
   assert.equal(shown.step.identity.actionId, ACTION_ID);
   assert.equal(shown.step.identity.status, 'succeeded');
   assert.deepEqual(shown.step.sectionOrder, ['header', 'task', 'activity', 'result', 'cost']);
@@ -143,17 +157,12 @@ test('action show carries the same Step model for a running action from a real s
     const { payload } = legacyPayload(home, 'wf-action-show-running', ACTION_ID);
     assertPreviousFieldsUnchanged(shown, payload);
     const expected = expectedStep(home, 'wf-action-show-running', ACTION_ID, shown);
-    // stepPageModel's compatibility panel calls workflowPanelModel with its
-    // own Date.now() when no panel is supplied. The CLI and this assertion
-    // therefore intentionally share the live panel instance, while every
-    // other model field remains a value-for-value comparison.
-    expected.panel = shown.step.panel;
-    assert.match(shown.step.ranFor, /^\d+m\d{2}s$/);
-    expected.ranFor = shown.step.ranFor;
-    assert.deepEqual(shown.step, expected);
+    assert.deepEqual(shown.step, stepJsonModel(expected));
+    assert.deepEqual(shapeStep(shown), shapeStep({ step: expected }));
     assert.equal(shown.step.identity.status, 'running');
-    assert.equal(shown.step.header.duration.spanMs, null);
-    assert.equal(shown.step.activity.turns.length, 15);
+    assert.match(shown.step.presentation.header.activeText, /^\d+(?:h\d{2}m|m\d{2}s)$/);
+    const selected = shown.step.attempts.find((attempt) => attempt.ordinal === shown.step.selectedAttemptOrdinal);
+    assert.equal(selected.activity.turns.length, 15);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
