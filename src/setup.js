@@ -718,10 +718,10 @@ export async function runWizard(bullswarmDir, opts = {}) {
     await rl.question('discover models and enable capability-aware daily strategy autopilot? [y/N] ')
   ).trim().toLowerCase();
   if (strategyAnswer === 'y' || strategyAnswer === 'yes') {
-    const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
+    const { refreshStrategy, applyStrategyRecommendations, applySummaryLines } = await import('./strategy-cli.js');
     const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true });
     const applied = applyStrategyRecommendations(bullswarmDir, report);
-    console.log(`  strategy tiers applied: ${Object.entries(applied.applied).map(([tier, value]) => `${tier}=${value.pool}/${value.model}${value.why && value.reasoning ? ` · ${value.reasoning} reasoning` : ''}`).join(', ')}`);
+    for (const line of applySummaryLines(applied)) console.log(`  ${line}`);
     for (const line of recommendedReasoningLines(applied.reasoning)) console.log(`  ${line}`);
   } else {
     console.log('  strategy autopilot: off (enable later with bullswarm strategy apply --yes)');

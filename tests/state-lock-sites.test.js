@@ -108,7 +108,7 @@ test('four different strategy mutations issued at once all survive', async () =>
     const { strategy: written } = readState(f.home);
     assert.deepEqual(written.modelTiers.echo['echo-local'], ['low']);
     assert.deepEqual(written.excludedModels, ['gpt-nope']);
-    assert.deepEqual(written.assignments.high, { pool: 'echo', model: 'echo-local' });
+    assert.deepEqual(written.assignments.high, { pool: 'echo', model: 'echo-local', source: 'user' });
     assert.deepEqual(written.subscriptions.echo, { plan: 'Fixture', monthlyPriceUsd: 0 });
     assert.equal(existsSync(stateLockPath(f.home)), false);
   } finally { f.cleanup(); }

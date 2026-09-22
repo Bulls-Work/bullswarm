@@ -496,7 +496,10 @@ bullswarm strategy routes --json
 
 Automatic routing chooses the most-behind capable eligible pool among those
 with 5-hour headroom, honors burst gates and quarantine, and applies only
-explicitly approved model assignments and exclusions. A pool at or above 75%
+explicitly approved model choices and exclusions. `strategy apply` sets each
+pool's model per tier and pins no tier; a tier goes to one pool only when
+someone pinned it with `strategy assign` (`strategy clear-assignment` removes
+it). A pool at or above 75%
 of its 5-hour window is picked only when no eligible pool below that line
 exists; `bullswarm pools` shows the reading as `5h=<n>%` with a
 `NEAR-5H-LIMIT` label, and meters and quarantines are re-read before every

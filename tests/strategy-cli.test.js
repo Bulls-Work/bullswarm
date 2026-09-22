@@ -4,7 +4,9 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { autoSetup } from '../src/setup.js';
-import { buildStrategy, discoverConnectorModels } from '../src/lib/strategy.js';
+import {
+  buildStrategy, discoverConnectorModels, resolveDispatchModel, selectedModelsForTier,
+} from '../src/lib/strategy.js';
 import { loadConnectors } from '../src/lib/config.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import {
@@ -97,8 +99,9 @@ test('strategy subscription metadata and assignments are explicit persisted user
     assert.deepEqual(state.strategy.subscriptions['command-code'], {
       plan: 'Go', monthlyPriceUsd: 10, includedValueUsd: 70, quotaWindow: 'monthly',
     });
+    // Marked as the user's, so no apply or auto-refresh ever removes it.
     assert.deepEqual(state.strategy.assignments.low, {
-      pool: 'command-code', model: 'gpt-5.6-luna',
+      pool: 'command-code', model: 'gpt-5.6-luna', source: 'user',
     });
   } finally {
     console.log = originalLog;
@@ -121,7 +124,7 @@ test('strategy model exclusions are persisted and reversible', async () => {
   }
 });
 
-test('recommended assignments require an explicit apply and persist an auto-refresh policy', async () => {
+test('apply writes per-pool rungs, never a tier pin, and persists an auto-refresh policy', async () => {
   const f = fixture();
   try {
     const report = await refreshStrategy(f.dir, {
@@ -130,9 +133,17 @@ test('recommended assignments require an explicit apply and persist an auto-refr
     });
     assert.deepEqual(loadState(f.dir).strategy.assignments ?? {}, {});
     const result = applyStrategyRecommendations(f.dir, report, { refreshHours: 12 });
-    assert.ok(Object.keys(result.applied).length > 0);
+    assert.ok(Object.keys(result.bestNow).length > 0, 'the tier-wide pick is still reported');
+    assert.ok(Object.keys(result.rungs).length > 0, 'each pool gets its rungs');
+    assert.deepEqual([result.unpinned, result.keptPins], [[], []]);
     const state = loadState(f.dir);
-    assert.deepEqual(state.strategy.assignments, result.applied);
+    assert.deepEqual(state.strategy.assignments, {});
+    assert.equal(state.strategy.lastReport.suggestions.high.assignment, null);
+    for (const [pool, tiers] of Object.entries(result.rungs)) {
+      for (const [tier, model] of Object.entries(tiers)) {
+        assert.ok(state.strategy.modelTiers[pool][model].includes(tier), `${pool} ${tier} rung is ${model}`);
+      }
+    }
     assert.equal(state.strategy.policy.autoApplyRecommendations, true);
     assert.equal(state.strategy.policy.refreshHours, 12);
     assert.equal(state.strategy.policy.source, 'explicit-user-approval');
@@ -187,6 +198,170 @@ test('applying recommendations persists no more than one model per provider tier
         assert.ok(Object.values(models).filter((tiers) => tiers.includes(tier)).length <= 1);
       }
     }
+  } finally { f.cleanup(); }
+});
+
+// --- tier pins -----------------------------------------------------------------
+
+// A home as an earlier (0.35.4 or older) apply left it: the pins it wrote, the
+// same pins recorded in lastReport.suggestions[tier].assignment, and its stamp.
+// `recorded` may differ from `pins` where the user changed a pin afterwards.
+function legacyApplyHome(dir, { pins, recorded = pins, stale = false }) {
+  const state = loadState(dir);
+  const now = Date.now();
+  state.strategy = {
+    ...(state.strategy ?? {}),
+    assignments: structuredClone(pins),
+    lastAppliedAt: new Date(now - 3 * 3600_000).toISOString(),
+    lastRefreshedAt: new Date(stale ? now - 48 * 3600_000 : now).toISOString(),
+    policy: { autoApplyRecommendations: true, refreshHours: 24, source: 'explicit-user-approval' },
+    lastReport: {
+      capturedAt: new Date(now - 3 * 3600_000).toISOString(),
+      subscriptions: [],
+      discoveries: {},
+      suggestions: Object.fromEntries(['high', 'medium', 'low'].map((tier) => [tier, {
+        assignment: recorded[tier] ?? null, recommended: recorded[tier] ?? null, basis: 'fixture',
+      }])),
+    },
+  };
+  saveState(dir, state);
+}
+
+const ASTRA = { pool: 'codex', model: 'gpt-6-astra' };
+const LUNA = { pool: 'codex', model: 'gpt-6-luna' };
+const USER_MEDIUM = { pool: 'command-code', model: 'gpt-5.6-terra' };
+
+test('apply removes a pin an earlier apply wrote, reports it, and keeps one the user changed', async () => {
+  const f = fixture();
+  try {
+    // high is still what apply recorded; the user moved medium afterwards.
+    legacyApplyHome(f.dir, {
+      pins: { high: ASTRA, medium: USER_MEDIUM },
+      recorded: { high: ASTRA, medium: LUNA },
+    });
+    const result = applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir));
+    assert.deepEqual(result.unpinned, [{ tier: 'high', ...ASTRA }]);
+    assert.deepEqual(result.keptPins, [{ tier: 'medium', ...USER_MEDIUM, source: 'user' }]);
+    const saved = loadState(f.dir).strategy;
+    assert.deepEqual(saved.assignments, { medium: { ...USER_MEDIUM, source: 'user' } });
+    // The kept pin runs its own model, and the report no longer names the removed one.
+    assert.deepEqual(saved.modelTiers['command-code'], { 'gpt-5.6-terra': ['medium'] });
+    assert.equal(saved.lastReport.suggestions.high.assignment, null);
+    // Nothing is left for a second apply to remove.
+    const again = applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir));
+    assert.deepEqual([again.unpinned, again.keptPins.map((pin) => pin.tier)], [[], ['medium']]);
+  } finally { f.cleanup(); }
+});
+
+test('apply leaves a pin the user set alone, even once a refresh copies it into the report', async () => {
+  const f = fixture();
+  try {
+    applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir));
+    assert.equal((await runStrategy(['assign', 'high', '--pool', 'command-code', '--model', 'gpt-5.6-sol'], f.dir)).code, 0);
+    // A refresh stores the pin in force where an earlier apply recorded its own.
+    await refreshStrategy(f.dir, { executor: () => '', getReadings: async () => ({}) });
+    const pin = { pool: 'command-code', model: 'gpt-5.6-sol', source: 'user' };
+    assert.deepEqual(loadState(f.dir).strategy.lastReport.suggestions.high.assignment, pin);
+    const result = applyStrategyRecommendations(f.dir, loadState(f.dir).strategy.lastReport);
+    assert.deepEqual(result.unpinned, []);
+    assert.deepEqual(result.keptPins, [{ tier: 'high', ...pin }]);
+    assert.deepEqual(loadState(f.dir).strategy.assignments, { high: pin });
+    // Pinned means the pool and its model: the pool's high rung is the pin's,
+    // so dispatch runs gpt-5.6-sol there rather than the rung apply chose.
+    const saved = loadState(f.dir).strategy;
+    const commandCode = loadConnectors(f.dir, { packaged: true })['command-code'];
+    assert.deepEqual(resolveDispatchModel(commandCode, 'high', {
+      assignment: saved.assignments.high,
+      allowedModels: selectedModelsForTier(saved, 'command-code', 'high'),
+    }).model, 'gpt-5.6-sol');
+    const shown = await runStrategy(['show'], f.dir);
+    assert.match(shown.out, /^ {2}high: \S+ \(best now\)$/m);
+    assert.match(shown.out, /^ {4}pinned to command-code\/gpt-5\.6-sol by you · high dispatches go there while it is available · strategy clear-assignment high removes it$/m);
+    assert.match(shown.out, /medium: \S+.*\(best now; routing picks by spare quota\)/);
+  } finally { f.cleanup(); }
+});
+
+test('a pin from a home where apply never ran is the user\'s, even when the report copies it', async () => {
+  const f = fixture();
+  try {
+    legacyApplyHome(f.dir, { pins: { high: ASTRA } });
+    const state = loadState(f.dir);
+    delete state.strategy.lastAppliedAt;
+    saveState(f.dir, state);
+    const result = applyStrategyRecommendations(f.dir, await codexFallbackReport(f.dir));
+    assert.deepEqual(result.unpinned, []);
+    assert.deepEqual(result.keptPins, [{ tier: 'high', ...ASTRA, source: 'user' }]);
+  } finally { f.cleanup(); }
+});
+
+test('an old pin is sorted before a command drops the report, so the next apply still removes it', async () => {
+  const f = fixture();
+  try {
+    legacyApplyHome(f.dir, { pins: { high: ASTRA, low: LUNA } });
+    // exclude-model drops the cached report: the only record of those pins.
+    assert.equal((await runStrategy(['exclude-model', 'gpt-nope'], f.dir)).code, 0);
+    const sorted = loadState(f.dir).strategy;
+    assert.equal(sorted.lastReport, undefined);
+    assert.deepEqual(sorted.assignments, { high: { ...ASTRA, source: 'apply' }, low: { ...LUNA, source: 'apply' } });
+    await refreshStrategy(f.dir, { executor: () => '', getReadings: async () => ({}) });
+    const shown = await runStrategy(['show'], f.dir);
+    assert.match(shown.out, /pinned to codex\/gpt-6-astra by an earlier setup · high dispatches go there while it is available · the next strategy apply removes it/);
+    const result = applyStrategyRecommendations(f.dir, loadState(f.dir).strategy.lastReport);
+    assert.deepEqual(result.unpinned, [{ tier: 'high', ...ASTRA }, { tier: 'low', ...LUNA }]);
+    assert.deepEqual(loadState(f.dir).strategy.assignments, {});
+  } finally { f.cleanup(); }
+});
+
+test('auto-refresh removes pins an earlier apply wrote and keeps the user\'s', async () => {
+  const f = fixture();
+  try {
+    // low is a pin `strategy assign` wrote, which a refresh then copied into
+    // the report: the record matches it, and `source: 'user'` still protects it.
+    const userLow = { pool: 'command-code', model: 'gpt-5.6-luna', source: 'user' };
+    legacyApplyHome(f.dir, {
+      pins: { high: ASTRA, medium: USER_MEDIUM, low: userLow },
+      recorded: { high: ASTRA, medium: LUNA, low: userLow },
+      stale: true,
+    });
+    const refreshed = await maybeRefreshStrategy(f.dir, {
+      executor: () => '', getReadings: async () => ({}),
+      openRouterCatalog: { models: {}, cache: 'test' },
+    });
+    assert.ok(refreshed?.report, JSON.stringify(refreshed));
+    assert.deepEqual(refreshed.unpinned, [{ tier: 'high', ...ASTRA }]);
+    assert.deepEqual(refreshed.keptPins, [
+      { tier: 'medium', ...USER_MEDIUM, source: 'user' },
+      { tier: 'low', ...userLow },
+    ]);
+    const saved = loadState(f.dir).strategy;
+    assert.deepEqual(Object.keys(saved.assignments), ['medium', 'low']);
+    assert.equal(saved.policy.autoApplyRecommendations, true);
+    // The refresh did not pin anything new.
+    assert.equal(saved.assignments.high, undefined);
+  } finally { f.cleanup(); }
+});
+
+test('strategy show counts unranked models per pool instead of listing them', async () => {
+  const f = fixture();
+  try {
+    const unranked = [
+      ...['a', 'b', 'c'].map((model) => ({ pool: 'command-code', model: `cc-${model}`, ranking: 'unranked' })),
+      { pool: 'codex', model: 'nova-9-preview', ranking: 'unranked' },
+      ...['x', 'y'].map((model) => ({ pool: 'opencode', model: `oc-${model}`, ranking: 'unranked' })),
+    ];
+    const state = loadState(f.dir);
+    state.strategy = {
+      ...(state.strategy ?? {}),
+      lastReport: { capturedAt: new Date().toISOString(), subscriptions: [], suggestions: {}, discoveries: {}, unranked },
+    };
+    saveState(f.dir, state);
+    const shown = await runStrategy(['show'], f.dir);
+    assert.equal(shown.code, 0);
+    assert.match(shown.out, /^unranked: 6 models \(command-code 3, opencode 2, codex 1\) · never recommended · strategy show --json lists them$/m);
+    for (const entry of unranked) assert.doesNotMatch(shown.out, new RegExp(entry.model));
+    // JSON keeps the full list.
+    const json = JSON.parse((await runStrategy(['show', '--json'], f.dir)).out);
+    assert.deepEqual(json.unranked, unranked);
   } finally { f.cleanup(); }
 });
 
@@ -299,8 +474,9 @@ test('strategy inventory and dashboard show provider toggles, tier matrix, and e
   assert.match(screen, /H smart/);
   assert.match(screen, /M —/);
   assert.match(screen, /L —/);
-  assert.match(screen, /Effective choices now/);
+  assert.match(screen, /Routing now · by spare quota at each dispatch, unless pinned/);
   assert.match(screen, /worker\/smart/);
+  assert.equal(inventory.routes.high.pin, null);
   assert.match(screen, /Finish setup/);
 });
 
@@ -409,8 +585,11 @@ test('strategy show and the setup screens name an unranked model instead of drop
     saveState(f.dir, state);
     const shown = await runStrategy(['show'], f.dir);
     assert.equal(shown.code, 0);
-    assert.match(shown.out, /unranked \(new, no tier yet; never recommended\): codex\/nova-9-preview/);
-    assert.match(shown.out, /low: codex\/gpt-5\.6-luna \(recommended\)/);
+    assert.match(shown.out, /^unranked: 1 model \(codex 1\) · never recommended · strategy show --json lists them$/m);
+    assert.doesNotMatch(shown.out, /codex\/nova-9-preview/);
+    assert.match(shown.out, /low: codex\/gpt-5\.6-luna \(best now; routing picks by spare quota\)/);
+    const json = JSON.parse((await runStrategy(['show', '--json'], f.dir)).out);
+    assert.deepEqual(json.unranked.map((entry) => `${entry.pool}/${entry.model}`), ['codex/nova-9-preview']);
 
     const models = discovery.models.map((model) => ({
       ...model, tiers: [], effectiveTiers: model.tier ? [model.tier] : [], disabled: false,
@@ -426,7 +605,7 @@ test('strategy show and the setup screens name an unranked model instead of drop
     });
     assert.match(matrix, /nova-9-preview \(unranked\)/);
     assert.doesNotMatch(matrix, /gpt-5\.6-luna \(unranked\)/);
-    assert.ok(recommendationLines(inventory).includes('  unranked (new, no tier yet): nova-9-preview'));
+    assert.ok(recommendationLines(inventory).includes('  unranked: 1 model · never recommended · strategy show --json lists them'));
   } finally { f.cleanup(); }
 });
 
@@ -459,8 +638,8 @@ test('apply writes the fallback reasoning into the codex medium rung, as set-run
       pool: 'codex', tier: 'medium', level: 'max', model: 'gpt-6-luna',
       why: 'no gpt-6 terra yet, newest generation preferred',
     }]);
-    // The pin stays a pool and a model; the level lives on the rung.
-    assert.deepEqual(loadState(f.dir).strategy.assignments.medium, { pool: 'codex', model: 'gpt-6-luna' });
+    // No pin: the level lives on the rung, and routing still picks the pool.
+    assert.deepEqual(loadState(f.dir).strategy.assignments, {});
     const row = medium(await rungRows(f.dir, { pool: 'codex' }));
     assert.equal(row.model, 'gpt-6-luna');
     assert.deepEqual(row.reasoning, {
@@ -471,7 +650,7 @@ test('apply writes the fallback reasoning into the codex medium rung, as set-run
 
     // The report says why, in one line.
     const shown = await runStrategy(['show'], f.dir);
-    assert.match(shown.out, /medium: codex\/gpt-6-luna · max reasoning \(assigned\) — no gpt-6 terra yet, newest generation preferred/);
+    assert.match(shown.out, /medium: codex\/gpt-6-luna · max reasoning \(best now; routing picks by spare quota\) — no gpt-6 terra yet, newest generation preferred/);
     assert.match(shown.out, /codex override: medium=max \(recommendation\)/);
 
     // A gpt-6 terra appears: the next apply takes medium back to terra and

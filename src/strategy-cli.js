@@ -11,6 +11,7 @@ import {
   reasoningEffective, assertReasoningTier, assertReasoningLevel,
   rungsFor, setRung, configuredModel, formatRungEvidence,
   TIER_LANES, clearTierAssignment, applyRecommendedReasoning, getRecommendedReasoning,
+  sortLegacyPins, dropStrategyReport, releaseAppliedPins, pinRung,
 } from './lib/strategy.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
@@ -159,7 +160,37 @@ function copyWarnings(bullswarmDir) {
   }
 }
 
-function render(report, reasoning = null, copies = []) {
+/**
+ * `pinned to claude-code/claude-opus-5 by you · high dispatches go there while
+ * it is available · strategy clear-assignment high removes it`. A pin
+ * overrides the pace pick for its tier, so it names who made it and how it
+ * goes away; one an earlier setup wrote goes on the next apply.
+ */
+export function pinLine(tier, pin) {
+  const target = `${pin.pool}/${pin.model}`;
+  const by = pin.source === 'apply' ? ' by an earlier setup' : pin.source === 'user' ? ' by you' : '';
+  const removal = pin.source === 'apply'
+    ? 'the next strategy apply removes it'
+    : `strategy clear-assignment ${tier} removes it`;
+  return `pinned to ${target}${by} · ${tier} dispatches go there while it is available · ${removal}`;
+}
+
+/**
+ * `unranked: 312 models (command-code 180, opencode 130, grok 2) · never
+ * recommended · strategy show --json lists them`. A pool with no family rules
+ * can list hundreds of models, so people get the count; --json keeps the list.
+ */
+export function unrankedLine(unranked = []) {
+  if (!unranked.length) return null;
+  const counts = new Map();
+  for (const entry of unranked) counts.set(entry.pool, (counts.get(entry.pool) ?? 0) + 1);
+  const pools = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([pool, count]) => `${pool} ${count}`).join(', ');
+  const noun = unranked.length === 1 ? 'model' : 'models';
+  return `unranked: ${unranked.length} ${noun} (${pools}) · never recommended · strategy show --json lists them`;
+}
+
+function render(report, reasoning = null, copies = [], pins = {}) {
   const lines = [`bullswarm strategy · ${report.capturedAt}`, '', 'subscriptions:'];
   for (const sub of report.subscriptions) {
     const value = subscriptionValueText(sub);
@@ -173,29 +204,30 @@ function render(report, reasoning = null, copies = []) {
   }
   lines.push('', 'tier suggestions:');
   for (const [tier, suggestion] of Object.entries(report.suggestions)) {
-    const selected = suggestion.assignment ?? suggestion.recommended;
     const recommended = suggestion.recommended ?? null;
-    const same = selected && recommended
-      && selected.pool === recommended.pool && selected.model === recommended.model;
-    // `medium: codex/gpt-6-luna · max reasoning (recommended) — no gpt-6 …`
-    const { level, why } = same ? fallbackParts(recommended) : { level: '', why: '' };
-    lines.push(`  ${tier}: ${selected ? `${selected.pool}/${selected.model}` : 'no classified model'}${level}`
-      + `${suggestion.assignment ? ' (assigned)' : ' (recommended)'}${why ? ` — ${why}` : ''}`);
+    // The pin in force now, from state: the report's copy is as old as the report.
+    const pin = pins?.[tier] ?? null;
+    // `medium: codex/gpt-6-luna · max reasoning (best now; routing picks by
+    // spare quota) — no gpt-6 …`. The suggestion is never a pin: each dispatch
+    // picks its pool by spare quota, and only a pin overrides that.
+    const { level, why } = fallbackParts(recommended);
+    const note = pin ? ' (best now)' : ' (best now; routing picks by spare quota)';
+    lines.push(`  ${tier}: ${recommended ? `${recommended.pool}/${recommended.model}${level}${note}` : 'no classified model'}`
+      + `${why ? ` — ${why}` : ''}`);
+    if (pin) lines.push(`    ${pinLine(tier, pin)}`);
     // Another pool's own pick for this tier that is a fallback too: its rung
-    // gets the level on apply, so it is named even when it lost the tier.
+    // gets the level on apply, so it is named even when it is not best now.
     for (const [pool, tiers] of Object.entries(report.providerSuggestions ?? {})) {
       const own = tiers?.[tier]?.recommended;
-      if (!own?.why || (same && pool === recommended.pool)) continue;
+      if (!own?.why || pool === recommended?.pool) continue;
       lines.push(`    ${pool} rung: ${own.model}${fallbackNote(own)}`);
     }
     lines.push(`    ${suggestion.basis}`);
   }
   // A model the CLI listed that no family rule or profile classifies yet: it
-  // is named here instead of vanishing, and never suggested for a tier.
-  if (report.unranked?.length) {
-    lines.push('', `unranked (new, no tier yet; never recommended): ${report.unranked
-      .map((entry) => `${entry.pool}/${entry.model}`).join(', ')}`);
-  }
+  // is counted here instead of vanishing, and never suggested for a tier.
+  const unranked = unrankedLine(report.unranked);
+  if (unranked) lines.push('', unranked);
   lines.push('', `excluded models: ${report.excludedModels?.length ? report.excludedModels.join(', ') : 'none'}`);
   if (reasoning) lines.push('', ...reasoningLines(reasoning));
   if (copies.length) {
@@ -237,6 +269,13 @@ function reasoningLines(reasoning) {
       .map((tier) => `${tier}=${cell(pool, tier, tiers[tier])}`).join(' \u00b7 ')}`);
   }
   return lines;
+}
+
+// The human `strategy show`/`refresh` text, read against the home's current
+// state: reasoning levels, connector copies, and the pins in force.
+function humanReport(report, bullswarmDir) {
+  const pins = loadState(bullswarmDir).strategy?.assignments ?? {};
+  return withPoolLabels(render(report, reasoningReport(bullswarmDir), copyWarnings(bullswarmDir), pins), bullswarmDir);
 }
 
 function reasoningReport(bullswarmDir) {
@@ -366,9 +405,14 @@ export async function refreshStrategy(bullswarmDir, {
   // Under the lock (S5): discovery and live meter calls above take seconds, so
   // the copy loaded at the top of this function is stale by now. Only the two
   // report fields are written, onto a FRESH load — a `strategy set-provider`
-  // that landed meanwhile survives.
+  // that landed meanwhile survives. The report being replaced is the only
+  // record of which pins an earlier apply wrote, so those are sorted first.
   updateState(bullswarmDir, (fresh) => {
     fresh.strategy ??= {};
+    sortLegacyPins(fresh.strategy);
+    for (const tier of STRATEGY_TIERS) {
+      if (report.suggestions?.[tier]) report.suggestions[tier].assignment = fresh.strategy.assignments?.[tier] ?? null;
+    }
     fresh.strategy.lastReport = report;
     fresh.strategy.lastRefreshedAt = report.capturedAt;
   });
@@ -604,8 +648,13 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
       }).minutes,
       inflightPenaltyPct: inflightPenaltyFrom(state),
     });
+    // The tier's pin, when a person set one; null means the pool below was
+    // picked by spare quota, as every unpinned dispatch is.
+    const pin = assignment
+      ? { pool: assignment.pool, model: assignment.model, source: assignment.source ?? null }
+      : null;
     if (!route.pick) {
-      routes[tier] = { lane: context.lane, pool: null, model: null, reasoning: null, reason: route.why };
+      routes[tier] = { lane: context.lane, pool: null, model: null, reasoning: null, pin, reason: route.why };
       continue;
     }
     const picked = route.pick.connector;
@@ -621,6 +670,7 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
       model,
       surplus: picked.pace ?? null,
       reasoning: { level: reasoning.applied, source: reasoning.source },
+      pin,
       reason: route.why,
     };
   }
@@ -733,31 +783,37 @@ function setModelTiers(bullswarmDir, pool, model, tiers, inventory) {
 /**
  * The one path every "adopt the suggestions" caller takes: `strategy apply`,
  * `strategy refresh --apply`, `setup --yes --strategy`, the setup wizard's
- * autopilot answer, the TUI's apply key, and the daily auto-refresh. It pins
- * each tier, selects each pool's suggested model per tier, and writes the
- * reasoning level a suggestion carries (a newest-generation fallback) into
- * that pool+tier rung, marked as the recommendation's and never over a level
- * the operator set (applyRecommendedReasoning in src/lib/strategy.js).
+ * autopilot answer, the TUI's apply key, and the daily auto-refresh. It
+ * selects each pool's suggested model per tier (the pool's rungs) and writes
+ * the reasoning level a suggestion carries (a newest-generation fallback)
+ * into that pool+tier rung, marked as the recommendation's and never over a
+ * level the operator set (applyRecommendedReasoning in src/lib/strategy.js).
+ *
+ * It never pins a tier: every dispatch still picks its pool by spare quota,
+ * from each pool's rung. A pin an earlier apply wrote is removed (`unpinned`);
+ * a pin the user made stays (`keptPins`, releaseAppliedPins). `bestNow` is the
+ * tier-wide pick of the report, for display only.
  */
 export function applyStrategyRecommendations(bullswarmDir, report, {
   refreshHours = 24, enableAutoRefresh = true,
 } = {}) {
   const approvedRefreshHours = enableAutoRefresh ? refreshHoursValue(refreshHours) : null;
-  const applied = {};
+  const bestNow = {};
+  for (const tier of STRATEGY_TIERS) {
+    const recommended = report?.suggestions?.[tier]?.recommended ?? null;
+    if (recommended) bestNow[tier] = { ...recommended };
+  }
+  const rungs = {};
+  let pins = { unpinned: [], keptPins: [] };
   let reasoning = { written: [], kept: [], cleared: [] };
   // Under the lock (S5): apply always follows a refresh (seconds of discovery)
-  // or a TUI session, so it rewrites assignments on a fresh load and reports
+  // or a TUI session, so it rewrites the rungs on a fresh load and reports
   // the policy the mutator actually wrote.
   const written = updateState(bullswarmDir, (state) => {
     state.strategy ??= {};
     state.strategy.assignments ??= {};
-    for (const tier of ['high', 'medium', 'low']) {
-      const recommended = report?.suggestions?.[tier]?.recommended ?? null;
-      if (!recommended) continue;
-      // The pin is a pool and a model; the level travels on the rung below.
-      state.strategy.assignments[tier] = { pool: recommended.pool, model: recommended.model };
-      applied[tier] = { ...recommended };
-    }
+    // Against the stored report, which is replaced below.
+    pins = releaseAppliedPins(state.strategy);
     state.strategy.modelTiers = {};
     state.strategy.configuredTiers = [...STRATEGY_TIERS];
     const levels = {};
@@ -768,9 +824,19 @@ export function applyStrategyRecommendations(bullswarmDir, report, {
         if (!model) continue;
         const existing = state.strategy.modelTiers?.[pool]?.[model] ?? [];
         setModelTierSelection(state.strategy, pool, model, [...existing, tier]);
+        (rungs[pool] ??= {})[tier] = model;
         if (isReasoningLevel(recommended.reasoning) && recommended.reasoning !== 'default') {
           (levels[pool] ??= {})[tier] = { level: recommended.reasoning, model, why: recommended.why ?? null };
         }
+      }
+    }
+    // A kept pin runs its own model: with the tier configured, dispatch reads
+    // the model from the pool's rung, so the pinned pool's rung is the pin's.
+    for (const pin of pins.keptPins) {
+      pinRung(state.strategy, pin.tier, pin);
+      (rungs[pin.pool] ??= {})[pin.tier] = pin.model;
+      if (levels[pin.pool]?.[pin.tier] && levels[pin.pool][pin.tier].model !== pin.model) {
+        delete levels[pin.pool][pin.tier];
       }
     }
     reasoning = applyRecommendedReasoning(state.strategy, levels);
@@ -782,15 +848,40 @@ export function applyStrategyRecommendations(bullswarmDir, report, {
       source: 'explicit-user-approval',
     };
     state.strategy.lastAppliedAt = new Date().toISOString();
-    // Keep the persisted report aligned with the assignments just applied.
+    // Keep the persisted report aligned with the pins still in force.
     if (report) {
-      for (const tier of ['high', 'medium', 'low']) {
-        if (report.suggestions?.[tier]) report.suggestions[tier].assignment = applied[tier] ?? null;
+      for (const tier of STRATEGY_TIERS) {
+        if (report.suggestions?.[tier]) report.suggestions[tier].assignment = state.strategy.assignments?.[tier] ?? null;
       }
       state.strategy.lastReport = report;
     }
   });
-  return { applied, reasoning, policy: written.strategy.policy };
+  return { bestNow, rungs, ...pins, reasoning, policy: written.strategy.policy };
+}
+
+/**
+ * What an apply did, for people, one line each: that no tier is pinned, the
+ * best pick per tier now, and every pin it removed or kept. Shared by
+ * `setup --yes --strategy` and the setup wizard.
+ */
+export function applySummaryLines(result, { refreshHours = result?.policy?.refreshHours } = {}) {
+  const lines = [];
+  const pools = Object.keys(result?.rungs ?? {}).sort();
+  lines.push(`strategy autopilot: set each pool's model per tier (${pools.length ? pools.join(', ') : 'no pool had a suggestion'})`
+    + ' · no tier is pinned; routing picks the pool by spare quota'
+    + `${refreshHours ? ` · refresh every ${refreshHours}h` : ''}`);
+  const best = STRATEGY_TIERS.filter((tier) => result?.bestNow?.[tier]).map((tier) => {
+    const pick = result.bestNow[tier];
+    return `${tier} ${pick.pool}/${pick.model}${pick.why && pick.reasoning ? ` · ${pick.reasoning} reasoning` : ''}`;
+  });
+  if (best.length) lines.push(`best now (not pins): ${best.join(', ')}`);
+  for (const pin of result?.unpinned ?? []) {
+    lines.push(`unpinned: ${pin.tier} ${pin.pool}/${pin.model} (an earlier setup pinned it)`);
+  }
+  for (const pin of result?.keptPins ?? []) {
+    lines.push(`kept pin: ${pin.tier} ${pin.pool}/${pin.model} (you set it; strategy clear-assignment ${pin.tier} removes it)`);
+  }
+  return lines;
 }
 
 export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
@@ -1070,14 +1161,14 @@ export async function cmdStrategy(args, {
         }) : null;
       console.log(opts.json
         ? JSON.stringify(applied ? { report, ...applied } : report, null, 2)
-        : withPoolLabels(render(report, reasoningReport(bullswarmDir), copyWarnings(bullswarmDir)), bullswarmDir));
+        : humanReport(report, bullswarmDir));
       return 0;
     }
     if (sub === 'show') {
       const state = loadState(bullswarmDir);
       const cached = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       const report = state.strategy?.lastReport ? resolveReportPrices(cached, state) : cached;
-      console.log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(render(report, reasoningReport(bullswarmDir), copyWarnings(bullswarmDir)), bullswarmDir));
+      console.log(opts.json ? JSON.stringify(report, null, 2) : humanReport(report, bullswarmDir));
       return 0;
     }
     if (sub === 'set-subscription') {
@@ -1102,7 +1193,7 @@ export async function cmdStrategy(args, {
           ...(quotaWindow !== undefined ? { quotaWindow } : {}),
           ...(resetsAt !== undefined ? { resetsAt } : {}),
         };
-        delete fresh.strategy.lastReport;
+        dropStrategyReport(fresh.strategy);
       });
       console.log(JSON.stringify({ action: 'subscription-updated', pool, subscription: state.strategy.subscriptions[pool] }, null, 2));
       return 0;
@@ -1113,11 +1204,14 @@ export async function cmdStrategy(args, {
       if (!opts.pool || !opts.model) throw new Error('assignment needs --pool and --model');
       const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[opts.pool]) throw new Error(`unknown pool "${opts.pool}"`);
+      // `source: 'user'` marks the pin as the user's, so no apply or
+      // auto-refresh ever removes it (releaseAppliedPins).
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
         fresh.strategy.assignments ??= {};
-        fresh.strategy.assignments[tier] = { pool: opts.pool, model: opts.model };
-        delete fresh.strategy.lastReport;
+        fresh.strategy.assignments[tier] = { pool: opts.pool, model: opts.model, source: 'user' };
+        pinRung(fresh.strategy, tier, fresh.strategy.assignments[tier]);
+        dropStrategyReport(fresh.strategy);
       });
       console.log(JSON.stringify({ action: 'tier-assigned', tier, assignment: state.strategy.assignments[tier] }, null, 2));
       return 0;
@@ -1132,7 +1226,7 @@ export async function cmdStrategy(args, {
         fresh.strategy.excludedModels = sub === 'exclude-model'
           ? normalizeExcludedModels([...current, normalized])
           : current.filter((entry) => entry !== normalized);
-        delete fresh.strategy.lastReport;
+        dropStrategyReport(fresh.strategy);
       });
       console.log(JSON.stringify({
         action: sub === 'exclude-model' ? 'model-excluded' : 'model-included',
@@ -1178,7 +1272,7 @@ export async function cmdStrategy(args, {
       if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'clear-assignment'])}`);
       updateState(bullswarmDir, (state) => {
         clearTierAssignment(state.strategy, tier);
-        delete state.strategy?.lastReport;
+        dropStrategyReport(state.strategy);
       });
       console.log(JSON.stringify({ action: 'tier-assignment-cleared', tier }, null, 2));
       return 0;

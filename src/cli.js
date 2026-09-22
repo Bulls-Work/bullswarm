@@ -1048,7 +1048,8 @@ async function cmdSetup(opts) {
       if (r.repaired.length) console.log(`retired older connector copies (the packaged connectors load instead): ${r.repaired.join(', ')}`);
       console.log(`model strategy: ${r.strategyCommand} (discovers models and refreshes tier suggestions)`);
       if (strategy) {
-        console.log(`strategy autopilot: applied ${Object.keys(strategy.applied).join(', ')} tiers; refresh every ${strategy.policy.refreshHours}h`);
+        const { applySummaryLines } = await import('./strategy-cli.js');
+        for (const line of applySummaryLines(strategy)) console.log(withPoolLabels(line, getBullswarmDir()));
         const { recommendedReasoningLines } = await import('./setup.js');
         for (const line of recommendedReasoningLines(strategy.reasoning)) console.log(line);
       }

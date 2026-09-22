@@ -74,7 +74,7 @@ bullswarm setup --yes --integrate --agents claude,codex
 |---|---|---|
 | `--wizard` | open the question-based wizard for worktree, reasoning-depth, and integration settings | off; bare setup opens the provider/model control center |
 | `--yes` | skip interactive setup and initialize with discovered defaults | interactive control center on a TTY |
-| `--strategy` | discover models, apply recommended effort-tier routes, and enable strategy autopilot; requires `--yes` | off |
+| `--strategy` | discover models, set each pool's recommended model per effort tier (its rungs; no tier is pinned), and enable strategy autopilot; requires `--yes` | off |
 | `--integrate` | also install agent integration (skill symlink + awareness block); requires `--yes` | off |
 | `--agents <list>` | comma-separated agent list for `--integrate` (`codex`, `claude`, `grok`) | all three |
 | `--json` | machine-readable result | human summary |
@@ -649,7 +649,7 @@ bullswarm strategy refresh --json
 | `--yes` | required alongside `--apply` — approves changing routing | none; `--apply` refuses without it |
 | `--refresh-hours <n>` | auto-refresh cadence to record when combined with `--apply` | `24` |
 
-Writes the report to `state.json`; with `--apply --yes` also writes tier assignments, the reasoning level a suggestion carries (never over one you set), and enables the auto-refresh policy.
+Writes the report to `state.json`; with `--apply --yes` also writes each pool's recommended rungs, the reasoning level a suggestion carries (never over one you set), and enables the auto-refresh policy. It pins no tier: see [apply](#apply).
 
 ### apply
 
@@ -665,7 +665,11 @@ bullswarm strategy apply --yes
 | `--yes` | required — approves changing routing | none; the command refuses without it |
 | `--refresh-hours <n>` | auto-refresh cadence to record | `24` |
 
-Writes `state.strategy.assignments` and the auto-refresh policy. A suggestion that carries a reasoning level (a newest-generation fallback, such as `medium: gpt-6-luna · max reasoning — no gpt-6 terra yet, newest generation preferred`) also has that level written into its pool+tier rung, marked as the recommendation's. A level you set per pool or per tier is never overwritten.
+Writes each pool's recommended model per tier (`state.strategy.modelTiers`, the pool's rungs) and the auto-refresh policy. It never pins a tier, so every dispatch still picks its pool by spare quota and runs that pool's rung model and reasoning. `strategy rungs` shows the rungs; `strategy routes` shows what routing picks now.
+
+Pins are explicit only: [`assign`](#assign) makes one and [`clear-assignment`](#clear-assignment) removes it. Apply keeps every pin you set (`keptPins` in its JSON). Versions up to 0.35.4 pinned every tier on apply and recorded that pin in `lastReport.suggestions[tier].assignment`. Apply and the auto-refresh remove such a pin when it still has the recorded pool and model (`unpinned`); a pin that differs from the record, or one from a home where apply never ran, is treated as yours and kept. The JSON also carries `rungs` (pool → tier → model) and `bestNow` (the tier-wide pick, for display only).
+
+A suggestion that carries a reasoning level (a newest-generation fallback, such as `medium: gpt-6-luna · max reasoning — no gpt-6 terra yet, newest generation preferred`) also has that level written into its pool+tier rung, marked as the recommendation's. A level you set per pool or per tier is never overwritten.
 
 ### show
 
@@ -680,11 +684,11 @@ bullswarm strategy show --json
 |---|---|---|
 | `--json` | print the full report as JSON | human-readable summary |
 
-Does not change approved routing assignments.
+Does not change routing. A tier line such as `high: codex/gpt-6-astra (best now; routing picks by spare quota)` names the best pick right now; it is not a pin. A pinned tier adds a line such as `pinned to claude-code/claude-opus-5 by you · high dispatches go there while it is available · strategy clear-assignment high removes it`. Models no family rule ranks are counted per pool on one line, `unranked: 312 models (command-code 180, opencode 130, grok 2) · never recommended · strategy show --json lists them`; `--json` keeps the full `unranked` list.
 
 ### assign
 
-Force one specific pool/model for an effort tier, overriding auto-discovery for that tier only.
+Pin one pool/model for an effort tier: dispatches of that tier go to that pool, running that model, while the pool is available, instead of the pool with the most spare quota.
 
 ```bash
 # Pin high to a specific Claude model.
@@ -696,11 +700,11 @@ bullswarm strategy assign high --pool claude-code --model claude-opus-5
 | `--pool <pool>` | connector/pool name to assign | required; no default |
 | `--model <model>` | exact model identifier to assign | required; no default |
 
-Argument: `<high|medium|low>`. Writes `state.strategy.assignments[tier]` and invalidates the cached report.
+Argument: `<high|medium|low>`. Writes `state.strategy.assignments[tier]` as `{ pool, model, source: "user" }`, makes the model that pool's rung for the tier when the tier has rungs, and invalidates the cached report. A pin you set is never removed by `apply` or the auto-refresh; only `clear-assignment` (or `set-model`, `reset-tier`, `configure` for that tier) removes it.
 
 ### clear-assignment
 
-Remove an explicit tier pin so that tier falls back to the latest discovery recommendation.
+Remove a tier pin, so dispatches of that tier go back to the pool with the most spare quota, running that pool's rung model.
 
 ```bash
 # Release the high-tier pin.
@@ -764,7 +768,7 @@ bullswarm strategy auto status
 |---|---|---|
 | `--yes` | required for `off` — approves changing routing policy | not needed for `status` |
 
-`auto status` is read-only. `auto off --yes` writes `state.strategy.policy` and keeps the last-applied tier assignments as-is.
+`auto status` is read-only. `auto off --yes` writes `state.strategy.policy` and keeps the last-applied rungs, and any pins you set, as-is.
 
 ## provider
 

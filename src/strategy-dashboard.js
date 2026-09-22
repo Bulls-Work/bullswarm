@@ -125,8 +125,11 @@ function routeLines(inventory) {
     // Reasoning depth is display-only here: the CLI owns every mutation, so
     // the control center shows what each tier would actually be sent.
     const depth = route?.reasoning?.level ? ` · reasoning ${route.reasoning.level}` : '';
+    // Only a pin fixes a tier's pool; every other tier is re-picked by spare
+    // quota at each dispatch, so the line says which it is.
+    const pinned = route?.pin ? ` · pinned to ${route.pin.pool}` : ' · by spare quota';
     return route?.pool
-      ? `${label} ${route.lane.padEnd(7)} → ${route.pool}/${route.model ?? 'provider default'} · surplus ${route.surplus ?? '?'}${depth}`
+      ? `${label} ${route.lane.padEnd(7)} → ${route.pool}/${route.model ?? 'provider default'} · surplus ${route.surplus ?? '?'}${depth}${pinned}`
       : `${label} ${route?.lane?.padEnd(7) ?? ''} → unavailable${route?.reason ? ` · ${route.reason}` : ''}`;
   });
 }
@@ -185,7 +188,7 @@ export function renderStrategyDashboard(inventory, {
       lines.push(`${pad(left[i] ?? '', leftWidth)} │ ${clip(right[i] ?? '', rightWidth)}`);
     }
   }
-  lines.push('', 'Effective choices now');
+  lines.push('', 'Routing now · by spare quota at each dispatch, unless pinned');
   lines.push(...routeLines(inventory));
   lines.push('', message || (view === 'providers'
     ? '↑/↓ select · Space enable/disable · Enter/→ open · F finish · Ctrl+R refresh'
@@ -272,16 +275,17 @@ export function recommendationLines(inventory) {
         reason: recommendationReason(candidate),
       };
     }).filter(Boolean);
-    const unranked = (provider.models ?? [])
-      .filter((model) => model.ranking === 'unranked')
-      .map((model) => model.id);
-    if (!choices.length && !unranked.length) continue;
+    // Counted, not listed: a pool with no family rules can list hundreds.
+    const unranked = (provider.models ?? []).filter((model) => model.ranking === 'unranked').length;
+    if (!choices.length && !unranked) continue;
     lines.push(`${provider.name}`);
     for (const choice of choices) {
       lines.push(`  ${choice.tier[0].toUpperCase()}  ${choice.model}${choice.reasoning ? ` · ${choice.reasoning} reasoning` : ''}`);
       lines.push(`     ${choice.reason}`);
     }
-    if (unranked.length) lines.push(`  unranked (new, no tier yet): ${unranked.join(', ')}`);
+    if (unranked) {
+      lines.push(`  unranked: ${unranked} model${unranked === 1 ? '' : 's'} · never recommended · strategy show --json lists them`);
+    }
   }
   return lines;
 }
@@ -301,13 +305,14 @@ export function renderRecommendationReview(inventory, {
       : `Benchmark datapack unavailable (${inventory.openRouter.error}); local metadata was used.`
     : 'Quality is the connector rank, newest version first in a family; OpenRouter indices break equal ranks; API price guides budget.';
   const details = recommendationLines(inventory);
-  const bodyHeight = Math.max(3, height - 9);
+  const bodyHeight = Math.max(3, height - 10);
   const start = Math.max(0, Math.min(offset, Math.max(0, details.length - bodyHeight)));
   const shown = details.slice(start, start + bodyHeight);
   const lines = [
     title,
     '',
     'Recommended defaults · one model per provider and tier',
+    'No tier is pinned: each dispatch picks the provider by spare quota and runs its model below.',
     source,
     `Datapack captured ${inventory.openRouter?.capturedAt ?? 'at an unknown time'}; the CLI uses no OpenRouter key.`,
     '',
@@ -482,7 +487,7 @@ export async function startStrategyDashboard({
       if (screen === 'recommendations') {
         if (key === 'q' || key === 'Q') return finish();
         const details = recommendationLines(inventory);
-        const bodyHeight = Math.max(3, (output.rows ?? 30) - 9);
+        const bodyHeight = Math.max(3, (output.rows ?? 30) - 10);
         if (down) recommendationOffset = Math.min(Math.max(0, details.length - bodyHeight), recommendationOffset + 1);
         if (up) recommendationOffset = Math.max(0, recommendationOffset - 1);
         if (key === 'y' || key === 'Y') {

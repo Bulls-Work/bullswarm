@@ -611,7 +611,10 @@ test('openSetupTui applies the last strategy report through the shared hook', as
   try {
     autoSetup(d, { reason: 'test' });
     const state = loadState(d);
-    state.strategy = { lastReport: { suggestions: { high: { recommended: { pool: 'codex', model: 'gpt-5.6-sol' } } } } };
+    state.strategy = { lastReport: {
+      suggestions: { high: { recommended: { pool: 'codex', model: 'gpt-5.6-sol' } } },
+      providerSuggestions: { codex: { high: { recommended: { model: 'gpt-5.6-sol' } } } },
+    } };
     saveState(d, state);
     let seen = null;
     await openSetupTui({
@@ -619,7 +622,10 @@ test('openSetupTui applies the last strategy report through the shared hook', as
       startDashboard: (options) => { seen = options; return Promise.resolve(0); },
     });
     seen.applyRecommendations();
-    assert.deepEqual(loadState(d).strategy.assignments.high, { pool: 'codex', model: 'gpt-5.6-sol' });
+    // The hook writes the pool's rung, not a tier pin.
+    const saved = loadState(d).strategy;
+    assert.deepEqual(saved.modelTiers.codex, { 'gpt-5.6-sol': ['high'] });
+    assert.deepEqual(saved.assignments, {});
   } finally { cleanup(); }
 });
 

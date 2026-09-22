@@ -116,7 +116,7 @@ bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
 |---|---|---|
 | `modelTiers` | `set-model`, `set-rung`, `apply`, `configure` | `{ [pool]: { [model]: ["high","medium"] } }` allow-lists |
 | `configuredTiers` | same | which tiers are explicit allow-lists instead of automatic |
-| `assignments` | `assign`, `apply` | hard `{ pool, model }` pin per tier; a model-tier write clears the pin for that tier |
+| `assignments` | `assign` | `{ pool, model, source }` pin per tier; only `assign` makes one (`source: "user"`), and `apply` never does. A model-tier write clears the pin for that tier; see [Pins](#pins) |
 | `reasoning.tiers` | `set-reasoning`, `set-rung`, `configure` | global level per effort tier |
 | `reasoning.pools` | `set-reasoning --pool`, `set-rung`, `apply` | per-pool override of that global; `apply` writes one only for a suggestion that carries a level |
 | `recommendedReasoning` | `apply`, `refresh --apply`, `setup --yes --strategy` | `{ [pool]: { [tier]: { level, model, why } } }`: marks a `reasoning.pools` level as written by a recommendation, so it reports source `recommendation` and the next apply may replace or remove it. Any operator write to that slot, or to the tier, removes the mark |
@@ -124,16 +124,29 @@ bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
 | `disabledModels` | `set-model ... --tiers off` | per-pool disabled model ids |
 | `subscriptions` | `set-subscription` | `{ plan, monthlyPriceUsd, includedValueUsd, quotaWindow, resetsAt }` per pool; overrides the connector |
 | `policy` | `apply`, `refresh --apply`, `auto off` | auto-apply-on-refresh cadence |
-| `lastReport` | `refresh` / `show` | cached discovery report |
+| `lastReport` | `refresh` / `show` / `apply` | cached discovery report; `suggestions[tier].recommended` is the best pick now (never a pin), and `suggestions[tier].assignment` is the pin in force when the report was saved |
 | `pausing` | `set-pausing` | `"off"` stops every automatic pool pause — quota ('limit notices are retried, then move to another pool'), auth, the credential-group siblings an auth pause benches with it, and the soft bench; absent means on |
 
 Reasoning is a separate dimension from the model: the tier chooses which model runs, reasoning chooses how deeply it thinks. Precedence per attempt: action `reasoning` field → `--worker-reasoning` / `run --reasoning` → strategy per-pool → strategy per-tier → connector default → nothing. `default` means append nothing and let the worker CLI decide. A level a connector cannot express is clamped down, never up.
 
 A suggestion can carry a level. Today that happens only for a newest-generation fallback, such as `medium: gpt-6-luna · max reasoning — no gpt-6 terra yet, newest generation preferred` ([Providers](/reference/providers#newest-generation-fallback-generationfallback)). `strategy apply`, `refresh --apply`, `setup --yes --strategy`, the setup wizard, and the TUI's apply key all use the same path. That path writes the level into the pool+tier slot, as `set-rung --reasoning` would, and marks it as the recommendation's. The rung then reports `max (recommendation)`. The level applies only while that rung runs the model it was recommended for. It is never written over a level you set, per pool or per tier. When a later apply no longer carries it (a `gpt-6-terra` appeared), that apply removes it, so the connector's own default for the tier applies again.
 
-`strategy inventory --json` is the agent-readable dump of providers, models, selections, meters, rungs, and effective routes. `strategy configure --file` applies `providers`, `models`, and `reasoning` in one validated write.
+`strategy inventory --json` is the agent-readable dump of providers, models, selections, meters, rungs, and effective routes (each route carries `pin`, `null` when the pool was picked by spare quota). `strategy configure --file` applies `providers`, `models`, and `reasoning` in one validated write.
 
 How a pick interacts with pace and 5-hour headroom is in [Routing](/guide/routing). The `strategy` verb flags are in the [CLI reference](/reference/cli).
+
+### Pins
+
+`strategy apply`, `refresh --apply`, `setup --yes --strategy`, the setup wizard, the TUI's apply key, and the daily auto-refresh all set each pool's rungs and pin no tier. Each dispatch then picks its pool by spare quota and runs that pool's rung model and reasoning, so `strategy routes` moves between pools as their pace changes. A tier suggestion such as `high: codex/gpt-6-astra (best now; routing picks by spare quota)` is the best pick right now, for display.
+
+A pin sends a tier's dispatches to one pool while that pool is available. Pins are explicit only: `strategy assign <tier> --pool <p> --model <m>` makes one, marked `source: "user"`, and `strategy clear-assignment <tier>` removes it. A pin you set survives every apply and auto-refresh, and apply keeps its model on that pool's rung so the pin runs the model it names.
+
+Versions up to 0.35.4 pinned every tier on apply and recorded each pin in `lastReport.suggestions[tier].assignment`. Such a pin has no `source`. It is sorted once, before the report that records it is replaced or dropped:
+
+- apply has run in this home and the pin has the recorded pool and model: apply wrote it. It is marked `source: "apply"`, and the next apply or auto-refresh removes it and reports it under `unpinned`;
+- anything else (a different pin, no record, or a home where apply never ran): you set it. It is marked `source: "user"` and kept, and apply reports it under `keptPins`.
+
+`strategy show` names each pin with who set it and what removes it.
 
 ### Where the benchmark evidence comes from
 

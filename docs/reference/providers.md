@@ -232,7 +232,7 @@ Codex opts medium in, and this is an owner decision, not a benchmark result. Cod
 
 ### `unranked`
 
-A discovered model that matches no family and no row with a `tier` is `ranking: "unranked"` in `discoveries`. It is also listed in the report's top-level `unranked` array (`pool`, `model`, `reason`). `strategy show` prints it as `unranked (new, no tier yet; never recommended)`, and the setup screens label it `(unranked)`. It is never dropped, and because it has no tier it is never auto-recommended. To use it, select it for a tier explicitly (`strategy set-model` or `set-rung`), or add a family rule or row.
+A discovered model that matches no family and no row with a `tier` is `ranking: "unranked"` in `discoveries`. It is also listed in the report's top-level `unranked` array (`pool`, `model`, `reason`). `strategy show` and the setup review screen count these models per pool on one line (`unranked: 2 models (grok 2) · never recommended · strategy show --json lists them`), because a pool with no family rules can list hundreds; `strategy show --json` keeps the full list, and the model pickers label each one `(unranked)`. It is never dropped, and because it has no tier it is never auto-recommended. To use it, select it for a tier explicitly (`strategy set-model` or `set-rung`), or add a family rule or row.
 
 ### `eventStream.usage`
 

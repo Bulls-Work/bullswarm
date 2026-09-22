@@ -87,6 +87,96 @@ export function clearTierAssignment(strategy, tier) {
   return true;
 }
 
+// --- tier pins ----------------------------------------------------------------
+// A pin sends every dispatch of its tier to one pool, so pace-based routing
+// never picks another plan for that tier. Only a person makes one now:
+// `strategy assign` writes `source: 'user'`, and apply writes per-pool rungs,
+// never a pin.
+//
+// Up to 0.35.4, apply pinned every tier and recorded the pin it wrote in
+// `lastReport.suggestions[tier].assignment`. Such a pin carries no source. It
+// is sorted once, while that record still exists (so before any report is
+// replaced or dropped):
+//   - apply ran in this home and the pin has the recorded pool and model:
+//     apply wrote it → `source: 'apply'`, removed by the next apply or
+//     auto-refresh (releaseAppliedPins);
+//   - anything else (a different pin, no record, apply never ran): the user
+//     changed it → `source: 'user'`.
+// A `user` pin is never removed automatically.
+
+export const PIN_SOURCES = Object.freeze(['user', 'apply']);
+
+export function samePin(a, b) {
+  return Boolean(a?.pool && b?.pool) && a.pool === b.pool && a.model === b.model;
+}
+
+/**
+ * Give every pin without a source one (see above). Mutates `strategy`.
+ * @returns {Array<{tier, pool, model, source}>} the pins it sorted
+ */
+export function sortLegacyPins(strategy) {
+  const sorted = [];
+  for (const tier of STRATEGY_TIERS) {
+    const pin = strategy?.assignments?.[tier];
+    if (!pin || PIN_SOURCES.includes(pin.source)) continue;
+    const recorded = strategy.lastAppliedAt
+      ? strategy.lastReport?.suggestions?.[tier]?.assignment ?? null
+      : null;
+    pin.source = samePin(pin, recorded) ? 'apply' : 'user';
+    sorted.push({ tier, pool: pin.pool, model: pin.model, source: pin.source });
+  }
+  return sorted;
+}
+
+/**
+ * Drop the cached report, sorting older pins first, since the report is the
+ * only record of which pins an earlier apply wrote.
+ */
+export function dropStrategyReport(strategy) {
+  if (!strategy) return;
+  sortLegacyPins(strategy);
+  delete strategy.lastReport;
+}
+
+/**
+ * The pin step of every apply: remove the pins an earlier apply wrote, keep
+ * every other one. Mutates `strategy`.
+ * @returns {{ unpinned: Array<{tier, pool, model}>, keptPins: Array<{tier, pool, model, source}> }}
+ */
+export function releaseAppliedPins(strategy) {
+  sortLegacyPins(strategy);
+  const unpinned = [];
+  const keptPins = [];
+  for (const tier of STRATEGY_TIERS) {
+    const pin = strategy?.assignments?.[tier];
+    if (!pin) continue;
+    if (pin.source === 'apply') {
+      clearTierAssignment(strategy, tier);
+      unpinned.push({ tier, pool: pin.pool, model: pin.model });
+    } else {
+      keptPins.push({ tier, pool: pin.pool, model: pin.model, source: pin.source });
+    }
+  }
+  return { unpinned, keptPins };
+}
+
+/**
+ * Make a pin's model its pool's rung for the tier. Once a tier is configured,
+ * dispatch reads each pool's model from its rung (resolveDispatchModel), so
+ * without this a pin would pick its pool but run that pool's rung model. A
+ * tier with no rungs yet reads the pin's model directly: nothing to do.
+ */
+export function pinRung(strategy, tier, pin) {
+  if (!(strategy?.configuredTiers ?? []).includes(tier) || !pin?.pool || !pin?.model) return;
+  strategy.modelTiers = normalizeModelTiers(strategy.modelTiers);
+  for (const [other, tiers] of Object.entries(strategy.modelTiers[pin.pool] ?? {})) {
+    if (other === pin.model || !tiers.includes(tier)) continue;
+    setModelTierSelection(strategy, pin.pool, other, tiers.filter((entry) => entry !== tier));
+  }
+  const existing = strategy.modelTiers[pin.pool]?.[pin.model] ?? [];
+  setModelTierSelection(strategy, pin.pool, pin.model, [...existing, tier]);
+}
+
 export function disabledModelsForPool(strategy = {}, pool) {
   return normalizeExcludedModels(strategy.disabledModels?.[pool] ?? []);
 }

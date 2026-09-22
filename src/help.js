@@ -69,7 +69,7 @@ const top = rich({
     { name: 'health', desc: 're-judge saved delegate outputs' },
     { name: 'pools', desc: 'show routing pools, meters, load, and pauses; resume lifts one and label manages display names' },
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
-    { name: 'strategy', desc: 'discover models and manage tier assignments' },
+    { name: 'strategy', desc: 'discover models and manage each pool\'s model per tier' },
     { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
     { name: 'doctor', desc: 'report installation readiness' },
     { name: 'home', desc: 'make a selective, dashboard-readable snapshot of a Bullswarm home' },
@@ -114,7 +114,7 @@ const setupText = rich({
   options: [
     { flag: '--wizard', desc: 'open the comprehensive question-based wizard for worktree, reasoning-depth, and integration settings', default: 'off; bare setup opens the provider/model control center' },
     { flag: '--yes', desc: 'skip interactive setup and initialize with discovered defaults', default: 'interactive control center on a TTY' },
-    { flag: '--strategy', desc: 'discover models, apply the recommended effort-tier routes, and enable strategy autopilot; requires --yes', default: 'off' },
+    { flag: '--strategy', desc: 'discover models, set each pool\'s recommended model per effort tier (its rungs; no tier is pinned), and enable strategy autopilot; requires --yes', default: 'off' },
     { flag: '--integrate', desc: 'also install agent integration (skill symlink + awareness block); requires --yes', default: 'off' },
     { flag: '--agents <list>', desc: 'comma-separated agent list for --integrate (codex, claude, grok)', default: 'all three' },
     { flag: '--json', desc: 'print a machine-readable result instead of human summary lines', default: 'human summary' },
@@ -604,7 +604,7 @@ const strategyText = rich({
     { name: 'set-pausing', desc: 'turn every automatic pool pause on (default) or off' },
     { name: 'configure', desc: 'atomically apply an agent-authored JSON strategy file' },
     { name: 'refresh', desc: 'discover models and recommend tiers (recommend is an alias)' },
-    { name: 'apply', desc: 'approve the last discovered recommendations' },
+    { name: 'apply', desc: 'approve the last recommendations: each pool\'s model per tier, never a pin' },
     { name: 'show', desc: 'print the last captured strategy report' },
     { name: 'assign', desc: 'pin an explicit pool/model for one tier' },
     { name: 'clear-assignment', desc: 'remove one tier pin' },
@@ -796,7 +796,7 @@ const strategyRefreshText = rich({
   ],
   safety: [
     'executes each installed agent CLI\'s discovery/list command and live meter/usage network calls',
-    'writes the resulting report to state.json; with --apply --yes also writes tier assignments, the reasoning level a suggestion carries (never over one you set), and enables the auto-refresh policy',
+    'writes the resulting report to state.json; with --apply --yes also writes each pool\'s recommended rungs, the reasoning level a suggestion carries (never over one you set), and enables the auto-refresh policy; it pins no tier (see strategy apply --help)',
   ],
   examples: [{ cmd: 'bullswarm strategy refresh --json' }],
   next: 'bullswarm strategy show to review, or add --apply --yes to approve immediately.',
@@ -827,11 +827,12 @@ const strategyApplyText = rich({
     { flag: '--refresh-hours <n>', desc: 'auto-refresh cadence to record', default: '24' },
   ],
   safety: [
-    'writes state.strategy.assignments and the auto-refresh policy',
+    'writes each pool\'s recommended model per tier (state.strategy.modelTiers, the pool\'s rungs) and the auto-refresh policy; every dispatch still picks its pool by spare quota',
+    'never pins a tier: it removes a pin an earlier version\'s apply wrote (reported as unpinned) and keeps a pin you set with strategy assign (reported as keptPins)',
     'writes the reasoning level a suggestion carries (a newest-generation fallback such as codex medium at max) into that pool+tier rung, marked as the recommendation\'s; a level you set per pool or per tier is never overwritten',
   ],
   examples: [{ cmd: 'bullswarm strategy apply --yes' }],
-  next: 'bullswarm strategy show to confirm the applied assignments.',
+  next: 'bullswarm strategy rungs to see each pool\'s model per tier, and strategy routes to see what routing picks now.',
 });
 
 const strategyShowText = rich({
@@ -840,34 +841,37 @@ const strategyShowText = rich({
     + 'exclusions); runs a first discovery pass automatically if none is cached yet.',
   args: [],
   options: [{ flag: '--json', desc: 'print the full report as JSON', default: 'human-readable summary' }],
-  safety: ['does not change approved routing assignments; a cold cache runs model discovery and persists the resulting strategy report'],
+  safety: ['does not change routing; a cold cache runs model discovery and persists the resulting strategy report'],
   examples: [{ cmd: 'bullswarm strategy show --json' }],
-  next: 'bullswarm strategy assign <tier> --pool <pool> --model <model> to override a suggestion.',
+  next: 'a tier suggestion is the best pick now, not a pin; bullswarm strategy assign <tier> --pool <pool> --model <model> pins a tier.',
 });
 
 const strategyAssignText = rich({
   usage: 'bullswarm strategy assign <high|medium|low> --pool <pool> --model <model>',
-  purpose: 'Force one specific pool/model for an effort tier, overriding auto-discovery for '
-    + 'that tier only.',
+  purpose: 'Pin one pool/model for an effort tier: dispatches of that tier go to that pool, running '
+    + 'that model, while the pool is available, instead of the pool with the most spare quota.',
   args: [{ name: '<high|medium|low>', desc: 'the effort tier to pin' }],
   options: [
     { flag: '--pool <pool>', desc: 'connector/pool name to assign', default: 'required; no default' },
     { flag: '--model <model>', desc: 'exact model identifier to assign', default: 'required; no default' },
   ],
-  safety: ['writes state.strategy.assignments[tier] and invalidates the cached report'],
+  safety: [
+    'writes state.strategy.assignments[tier] with source "user", makes the model that pool\'s rung for the tier when the tier has rungs, and invalidates the cached report',
+    'a pin you set is never removed by strategy apply or the auto-refresh; only clear-assignment (or set-model, reset-tier, configure for that tier) removes it',
+  ],
   examples: [{ cmd: 'bullswarm strategy assign high --pool claude-code --model claude-opus-5' }],
   next: 'bullswarm strategy clear-assignment high to release the pin later.',
 });
 
 const strategyClearAssignmentText = rich({
   usage: 'bullswarm strategy clear-assignment <high|medium|low>',
-  purpose: 'Remove an explicit tier pin so that tier falls back to the latest discovery '
-    + 'recommendation.',
+  purpose: 'Remove a tier pin, so dispatches of that tier go back to the pool with the most '
+    + 'spare quota, running that pool\'s rung model.',
   args: [{ name: '<high|medium|low>', desc: 'the effort tier to unpin' }],
   options: [],
   safety: ['writes state and invalidates the cached report'],
   examples: [{ cmd: 'bullswarm strategy clear-assignment high' }],
-  next: 'bullswarm strategy refresh to see the recommendation that now applies.',
+  next: 'bullswarm strategy routes to see which pool that tier picks now.',
 });
 
 const strategyExcludeModelText = rich({
@@ -940,8 +944,8 @@ const strategyAutoStatusText = rich({
 
 const strategyAutoOffText = rich({
   usage: 'bullswarm strategy auto off --yes',
-  purpose: 'Disable the auto-apply-on-refresh policy; the last-applied tier assignments are '
-    + 'kept as-is.',
+  purpose: 'Disable the auto-apply-on-refresh policy; the last-applied rungs and any pins you '
+    + 'set are kept as-is.',
   args: [],
   options: [{ flag: '--yes', desc: 'required — approves changing routing policy', default: 'none; the command refuses without it' }],
   safety: ['writes state.strategy.policy'],
@@ -1397,7 +1401,7 @@ const workflowCapabilitiesText = rich({
   options: [{ flag: '--json', desc: 'accepted so agents can pass it uniformly; it selects nothing, because this command has no human renderer', default: 'output is always JSON, with or without the flag' }],
   safety: ['read-only — performs live pool discovery to populate pool/meter state; nothing is written'],
   examples: [{ cmd: 'bullswarm workflow capabilities' }],
-  next: 'bullswarm workflow goal "<goal>" to plan and execute a workflow, or bullswarm strategy show to review model tier assignments.',
+  next: 'bullswarm workflow goal "<goal>" to plan and execute a workflow, or bullswarm strategy show to review the model tier suggestions.',
 });
 
 
