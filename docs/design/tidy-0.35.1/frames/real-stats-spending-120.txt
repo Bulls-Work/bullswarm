@@ -13,9 +13,9 @@ Totals 15 workflows · 2816.01 worker-minutes · ≥$299.87 · sub unknown (no p
        │ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                  ███████████████│  opencode  — cost not recorded  opencode          2h54m 6.2%
 ~$100  ┤ ████████████████                  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁│
        │ ████████████████                  ███████████████│  ── Project runs ─────────────  ── Outcome & duration ──────
-       │ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇                  ███████████████│  a               10 runs 66.7%  Status          15 completed
-       │ ████████████████                  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│  b                4 runs 26.7%  Verified   10 verified 66.7%
-       │ ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│  c                  1 run 6.7%  Requirem… 78/86 passed 90.7%
+       │ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇                  ███████████████│  project-a       10 runs 66.7%  Status          15 completed
+       │ ████████████████                  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│  project-b        4 runs 26.7%  Verified   10 verified 66.7%
+       │ ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│  project-c          1 run 6.7%  Requirem… 78/86 passed 90.7%
 $0     ┼Fri              Sat              Sun             │                                 Median r…       1h45m median
  ~ bars leave 66 unpriced attempts out                    │                                 Longest …      6h41m maximum
 Legend  ● claude-code:acme  ● grok  ● codex  ● claude-code  ● unallocated

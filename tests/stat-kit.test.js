@@ -227,6 +227,11 @@ test('shortening keeps scoped pool names distinct before any cut', () => {
   assert.equal(panel.regions[1].payload.label, 'claude-code:acme');
 });
 
+test('project labels keep meaningful hyphenated names when the panel has room', () => {
+  assert.equal(shortenLabel('mobile-app', { kind: 'project' }), 'mobile-app');
+  assert.equal(shortenLabel('/home/dev/projects/design-system', { kind: 'project' }), 'design-system');
+});
+
 test('model labels keep the full identity when the 55-column panel has room', () => {
   const names = [
     'claude-opus-5',
@@ -328,7 +333,7 @@ test('desktop +N more rows keep the complete label in the shared column', () => 
   assert.doesNotMatch(more, /\+4 …/);
 });
 
-test('a colliding project label drops its bar but preserves value and share', () => {
+test('distinct hyphenated project labels keep their bars, values, and shares', () => {
   const panel = renderPanel({
     title: 'Project runs', width: 29, labelWidth: 14, barWidth: 6, unit: 'runs', colors: false, labelKind: 'project',
     rows: [
@@ -337,8 +342,8 @@ test('a colliding project label drops its bar but preserves value and share', ()
     ],
   });
   const rows = panel.lines.slice(1).map(visible);
-  assert.equal(panel.meta.barsDroppedForCollision, true);
-  assert.ok(rows.every((line) => !/[▓▒░█▏#]/.test(line)));
+  assert.equal(panel.meta.barsDroppedForCollision, false);
+  assert.ok(rows.every((line) => /[▓▒░█▏#]/.test(line)));
   assert.match(rows[0], /2 runs 66\.7%$/);
   assert.match(rows[1], /1 run 33\.3%$/);
   assert.notEqual(rows[0].slice(0, 15), rows[1].slice(0, 15));
@@ -591,8 +596,8 @@ test('a resolvable label collision in one panel does not disarm the bars in all 
   const panels = [
     panel('Pool spend', pools, 'usd'),
     panel('Pool worker-minutes', pools, 'minutes'),
-    // A project label drops everything before the last dash, so `e2e-repo`
-    // and `repo` arrive at the measurer as the same string.
+    // Project identities keep their complete basename before the panel applies
+    // an ordinary width-aware cut.
     panel('Project runs', projects, 'runs', 'project'),
     panel('Outcome', [{ label: 'Verified', value: 31, valueText: '31 verified' }], 'runs'),
   ];
@@ -601,7 +606,7 @@ test('a resolvable label collision in one panel does not disarm the bars in all 
   assert.ok(wide.barEnabled);
   // And the colliding names are still pulled apart in the drawn panel.
   const drawn = renderPanel({ ...panels[2], width: 49, colors: false, layout: wide });
-  assert.equal(shortenLabel('e2e-repo', { kind: 'project' }), 'repo');
+  assert.equal(shortenLabel('e2e-repo', { kind: 'project' }), 'e2e-repo');
   const labels = drawn.lines.slice(1).map((line) => visible(line).slice(0, wide.labelWidth).trim());
   assert.equal(new Set(labels).size, labels.length, labels.join(' | '));
   assert.ok(drawn.lines.slice(1).every((line) => /[\u2593\u2592\u2591\u2588\u258f#]/.test(visible(line))),

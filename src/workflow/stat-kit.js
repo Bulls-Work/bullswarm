@@ -178,9 +178,9 @@ function modelLabelAtWidth(value, width) {
  *
  * The untouched name remains on every payload and in the legend; this helper
  * is only for labels painted inside a bounded panel.  Pool scopes are the
- * useful identity after the final colon.  Projects retain their deliberate
- * repository suffix rule; models use the identity-preserving staged rule
- * below when the caller supplies the panel's actual label width.
+ * useful identity after the final colon. Projects keep their complete
+ * repository basename; models use the identity-preserving staged rule below
+ * when the caller supplies the panel's actual label width.
  */
 export function shortenLabel(value, context = {}) {
   const source = String(value ?? '');
@@ -204,7 +204,8 @@ export function shortenLabel(value, context = {}) {
 
   const pathSegments = source.split(/[\\/]/).filter(Boolean);
   const lastPath = pathSegments.at(-1) ?? source;
-  if (pathSegments.length > 1 || kind === 'project' || kind === 'model') {
+  if (kind === 'project') return lastPath;
+  if (pathSegments.length > 1 || kind === 'model') {
     const dashSegments = lastPath.split('-').filter(Boolean);
     if (dashSegments.length > 1) return dashSegments.at(-1);
     return lastPath;
