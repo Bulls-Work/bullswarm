@@ -15,6 +15,7 @@ export type StepPaneRow = {
   tone: StepTone
   segments?: readonly StepPaneSegment[]
   turnIndex?: number
+  selected?: boolean
   expandable?: boolean
   opensDetail?: boolean
   /** A heading that carries the `overview · detail` toggle: `text` is `${lead}overview · detail${trail}`. */
@@ -43,6 +44,7 @@ export type StepPaneOptions = {
   promptPreview?: readonly string[]
   outputTail?: string | null
   width?: number
+  nowMs?: number
 }
 
 const record = (value: unknown): Raw | null =>
@@ -173,7 +175,7 @@ function taskRows(page: Raw, fallback: BullswarmStep | null, options: StepPaneOp
   return rows
 }
 
-type ToolRow = { clock: string | null; text: string; command: boolean; duration: string | null; error: boolean }
+type ToolRow = { clock: string | null; text: string; command: boolean; duration: string | null; error: boolean; inFlight: boolean }
 
 function clockOf(value: unknown, seconds = false): string | null {
   const date = new Date(String(value ?? ''))
@@ -205,6 +207,7 @@ function rawToolRows(turn: Raw): ToolRow[] {
       clock: clockOf(event.at, true), text: oneLine(event.summary ?? event.tool ?? event.kind, 'tool'), command,
       duration: durationMs !== null && durationMs >= 1000 ? `${Math.round(durationMs / 1000)}s` : null,
       error: ['failed', 'error'].includes(String(next?.status ?? event.status ?? '')),
+      inFlight: String(event.status ?? '') === 'running' && !samePair,
     })
   }
   return rows
@@ -215,6 +218,7 @@ function toolsFor(page: Raw, shownTurn: Raw): readonly ToolRow[] {
   if (projected.length) return projected.map(entry => ({
     clock: nullable(entry.clock), text: oneLine(entry.text, 'tool'), command: entry.command === true,
     duration: nullable(entry.durationText), error: entry.error === true,
+    inFlight: entry.inFlight === true,
   }))
   const rawActivity = activityOf(page)
   const rawTurn = list(rawActivity.turns).map(record).find(turn => numberOf(turn?.index) === numberOf(shownTurn.index))
@@ -242,6 +246,16 @@ function totalsOf(turns: readonly Raw[]): string {
   ].filter(Boolean).join(' · ')
 }
 
+function elapsedText(startedAt: unknown, nowMs: unknown): string | null {
+  const started = Date.parse(String(startedAt ?? ''))
+  const now = numberOf(nowMs)
+  if (!Number.isFinite(started) || now === null) return null
+  const seconds = Math.max(0, Math.floor((now - started) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m${String(seconds % 60).padStart(2, '0')}s`
+}
+
 function activityRows(page: Raw, options: StepPaneOptions): StepPaneRow[] {
   const activity = record(presentationOf(page).activity) ?? {}
   const turns = list(activity.turns).map(record).filter((turn): turn is Raw => turn !== null)
@@ -250,6 +264,10 @@ function activityRows(page: Raw, options: StepPaneOptions): StepPaneRow[] {
   if (!activity.available || !turns.length) return [row('activity-empty', 'text', oneLine(activity.reason, 'event stream unavailable'), 'dim')]
   const visibleCount = (options.width ?? 120) < 100 ? 5 : 10
   const first = mode === 'overview' ? Math.max(0, turns.length - visibleCount) : 0
+  const followedTurn = turns.at(-1)
+  const selectedIndex = options.expandedTurn ?? numberOf(followedTurn?.index)
+  const runningCommand = record(activity.runningCommand)
+  const runningElapsed = runningCommand ? elapsedText(runningCommand.startedAt, options.nowMs) : null
   if (mode === 'overview' && first > 0) {
     const hidden = turns.slice(0, first)
     const range = hidden.length === 1 ? 'turn 1' : `turns 1–${hidden.length}`
@@ -259,16 +277,25 @@ function activityRows(page: Raw, options: StepPaneOptions): StepPaneRow[] {
   turns.slice(first).forEach((turn, offset) => {
     const index = numberOf(turn.index) ?? first + offset
     const number = numberOf(turn.number) ?? index + 1
-    const prefix = `${String(number).padStart(2)}  ${oneLine(turn.clock, '--:--')}  `
+    const selected = mode === 'overview' && selectedIndex === index
+    const prefix = `${selected ? '▶' : ' '}${String(number).padStart(2)}  ${oneLine(turn.clock, '--:--')}  `
     const response = mode === 'overview'
       ? clip(oneLine(turn.text, 'response summary unavailable'), Math.max(20, ((options.width ?? 120) - prefix.length) * 2))
       : valueText(turn.text, 'response summary unavailable')
     const head = `${prefix}${response}`
-    rows.push(row(`turn-${index}`, 'response', head, 'normal', { turnIndex: index, expandable: mode === 'overview' }))
+    rows.push(row(`turn-${index}`, 'response', head, selected ? 'strong' : 'normal', { turnIndex: index, expandable: mode === 'overview', selected }))
     if (mode === 'overview') {
-      rows.push(row(`counts-${index}`, 'summary', turn.resultMarked === true ? '→ the report, shown under result' : oneLine(turn.countsText, 'no tools'), 'dim', { turnIndex: index }))
-      if (numberOf(options.expandedTurn) === index) {
-        toolsFor(page, turn).forEach((tool, toolIndex) => rows.push(row(`tool-${index}-${toolIndex}`, 'atomic', `${tool.clock ?? '--:--:--'}  ${tool.command ? '$ ' : ''}${tool.text}${tool.duration ? `  ${tool.duration}` : ''}`, tool.error ? 'bad' : 'dim', { turnIndex: index })))
+      const baseCounts = oneLine(turn.countsText, 'no tools').replace(/ · running:.*$/, '')
+      const counts = runningCommand && turn === followedTurn
+        ? `${baseCounts} · running: ${oneLine(runningCommand.text, 'command')}${runningElapsed ? ` ${runningElapsed}` : ''}`
+        : baseCounts
+      rows.push(row(`counts-${index}`, 'summary', turn.resultMarked === true ? '→ the report, shown under result' : counts, 'dim', { turnIndex: index, selected }))
+      if (selected) {
+        toolsFor(page, turn).filter(tool => !tool.inFlight).forEach((tool, toolIndex) => rows.push(row(`tool-${index}-${toolIndex}`, 'atomic', `${tool.clock ?? '--:--:--'}  ${tool.command ? '$ ' : ''}${tool.text}${tool.duration ? `  ${tool.duration}` : ''}`, tool.error ? 'bad' : 'dim', { turnIndex: index })))
+        if (runningCommand && turn === followedTurn) {
+          const live = `⋮ running${runningElapsed ? ` ${runningElapsed}` : ''}  ${oneLine(runningCommand.text, 'command')}`
+          rows.push(row(`running-${index}`, 'atomic', clip(live, Math.max(20, options.width ?? 120)), 'running', { turnIndex: index, selected: true }))
+        }
       }
       return
     }
@@ -353,9 +380,14 @@ export function shapeStep(value: unknown, options: StepPaneOptions = {}): StepPa
   const commandCount = numberOf(activityTotals.commands) ?? 0
   const editCount = numberOf(activityTotals.edits) ?? 0
   const errorCount = numberOf(activityTotals.errors) ?? 0
+  const running = activity.running === true
+  const countSegments = [
+    `${turnCount} turn${turnCount === 1 ? '' : 's'}${running ? ' so far' : ''}`,
+    `${commandCount} cmds`, `${editCount} edits`, `${errorCount} err`,
+  ]
   const activityHeading = headingWithToggle(mode === 'detail' ? 'transcript' : 'activity', mode === 'detail'
-    ? [`${turnCount} turn${turnCount === 1 ? '' : 's'}`, `${commandCount} commands`, `${editCount} edits`, `${errorCount} errors`, 'showing all']
-    : [`${turnCount} turn${turnCount === 1 ? '' : 's'}`, 'showing turns'], options.width ?? 120)
+    ? [...countSegments, 'showing all']
+    : [...countSegments, 'showing turns'], options.width ?? 120)
   const activityTitle = activityHeading.title
   const resultTitle = result.running === true ? 'now · not yet' : `result · ${status}${resultVerdict ? ` · ${resultVerdict}` : ''}`
   const taskTitle = `task${task.lane ? ` · ${String(task.lane)}` : ''}${task.kind ? ` · ${String(task.kind)}` : ''}`

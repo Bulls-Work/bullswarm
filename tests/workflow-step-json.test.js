@@ -72,6 +72,58 @@ test('Step JSON references an identical activity shared by two attempts', () => 
   assert.equal((JSON.stringify(projected).match(/"events":\[/g) ?? []).length, 1);
 });
 
+test('Step JSON projects an unmatched running command and removes it after completion', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-running-command-'));
+  try {
+    const streamFile = join(root, 'stream-sample.jsonl');
+    const started = {
+      seq: 2,
+      at: '2026-09-20T00:00:05.000Z',
+      source: 'stdout',
+      providerType: 'item.started',
+      kind: 'command_execution',
+      status: 'running',
+      summary: 'inspect the made-up orchard',
+    };
+    const response = {
+      seq: 1,
+      at: '2026-09-20T00:00:00.000Z',
+      source: 'stdout',
+      providerType: 'item.completed',
+      kind: 'response',
+      status: 'completed',
+      summary: 'I will inspect the made-up orchard.',
+    };
+    const record = {
+      id: 'sample-running-task',
+      pool: 'sample-pool',
+      model: 'sample-model',
+      streamFile,
+      startedAt: response.at,
+      status: 'running',
+    };
+    writeFileSync(streamFile, [response, started].map(JSON.stringify).join('\n'));
+    const running = stepJsonModel(taskStepModel(record, {
+      runsDir: root,
+      nowMs: Date.parse('2026-09-20T00:00:12.000Z'),
+    }));
+    assert.deepEqual(running.presentation.activity.runningCommand, {
+      text: 'inspect the made-up orchard',
+      startedAt: '2026-09-20T00:00:05.000Z',
+    });
+
+    const completed = { ...started, seq: 3, at: '2026-09-20T00:00:13.000Z', providerType: 'item.completed', status: 'completed' };
+    writeFileSync(streamFile, [response, started, completed].map(JSON.stringify).join('\n'));
+    const settled = stepJsonModel(taskStepModel(record, {
+      runsDir: root,
+      nowMs: Date.parse('2026-09-20T00:00:14.000Z'),
+    }));
+    assert.equal(settled.presentation.activity.runningCommand, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('compact task JSON shapes the same pane rows as the full Step model', () => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-step-json-'));
   try {

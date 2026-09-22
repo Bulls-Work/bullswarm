@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- mod: the Step pane follows, selects, and expands the newest turn by default,
+  refreshes an open running Step every four seconds, and ticks its projected
+  in-flight command name and elapsed time every second without refetching.
 - step: `workflow action show --json` and `workflow task show --json` now emit
   compact Step schema v2: one activity per distinct attempt, one canonical
   event array inside each activity, reference markers for aliases, and the

@@ -49,6 +49,8 @@ const SUBCOMMANDS = new Set(['pools', 'status', 'on', 'off', 'refresh', 'routed'
 /** Refresh period while nothing is in flight, and while something is. */
 const IDLE_REFRESH_MS = 120_000
 const BUSY_REFRESH_MS = 20_000
+const STEP_REFRESH_MS = 4_000
+const STEP_TICK_MS = 1_000
 const POOLS_TIMEOUT_MS = 30_000
 /** `bullswarm run --timeout`, seconds: under the 10-minute cap on `$.process.run`. */
 const RUN_TIMEOUT_SEC = 540
@@ -131,6 +133,7 @@ export function register(on: On, options: PluginOptions = {}) {
   let assignments: BullswarmAssignment[] = []
   let nowMs = Date.now()
   let timerGeneration = 0
+  let stepTickGeneration = 0
   let paneOpen = false
   let selectedShortId: string | null = null
   let selectedTaskId: string | null = null
@@ -165,6 +168,35 @@ export function register(on: On, options: PluginOptions = {}) {
   let signature = ''
   let own: { kind: string; percentUsed: number }[] = []
   const routed: Routed[] = []
+
+  function stepActivity(): Record<string, unknown> | null {
+    const page = (step as unknown as { page?: Record<string, unknown> | null } | null)?.page
+    const presentation = page?.presentation
+    if (!presentation || typeof presentation !== 'object' || Array.isArray(presentation)) return null
+    const activity = (presentation as Record<string, unknown>).activity
+    return activity && typeof activity === 'object' && !Array.isArray(activity)
+      ? activity as Record<string, unknown>
+      : null
+  }
+
+  function runningStepOpen(): boolean {
+    const choice = paneChoice(runs, assignments, selectedShortId, selectedTaskId)
+    return paneOpen && Boolean(selectedActionId || choice?.kind === 'task') && stepActivity()?.running === true
+  }
+
+  /** Tick elapsed command time from the engine clock; never refetch for a tick. */
+  function syncStepTick(h: Host) {
+    const generation = ++stepTickGeneration
+    const activity = stepActivity()
+    if (!runningStepOpen() || !activity?.runningCommand) return
+    const tick = () => h.after(STEP_TICK_MS, async () => {
+      if (generation !== stepTickGeneration || !runningStepOpen() || !stepActivity()?.runningCommand) return
+      nowMs = await h.now()
+      h.invalidate('ui.render')
+      tick()
+    })
+    tick()
+  }
 
   async function readPools(h: Host): Promise<BullswarmPool[]> {
     const r = await h.run(['bullswarm', 'pools', '--json'], { timeoutMs: POOLS_TIMEOUT_MS })
@@ -273,6 +305,7 @@ export function register(on: On, options: PluginOptions = {}) {
       detail = null
       overview = null
       step = null
+      syncStepTick(h)
       return null
     }
     if (choice.kind === 'task') {
@@ -288,6 +321,8 @@ export function register(on: On, options: PluginOptions = {}) {
       } catch (error) {
         detailError = messageOf(error)
       }
+      syncStepTick(h)
+      schedule(h)
       return detail
     }
     const id = choice.shortId
@@ -348,6 +383,8 @@ export function register(on: On, options: PluginOptions = {}) {
         }
       }
     }
+    syncStepTick(h)
+    schedule(h)
     return detail
   }
 
@@ -368,6 +405,9 @@ export function register(on: On, options: PluginOptions = {}) {
   async function closePane(h: Host) {
     await h.closePane({ id: PANE_ID }).catch(() => undefined)
     paneOpen = false
+    expandedStepTurn = null
+    stepTickGeneration += 1
+    schedule(h)
     settle(h)
   }
 
@@ -400,7 +440,9 @@ export function register(on: On, options: PluginOptions = {}) {
   /** Re-reads on a cadence that tightens while work is in flight. */
   function schedule(h: Host) {
     const generation = ++timerGeneration
-    const period = assignments.length || runs.length ? BUSY_REFRESH_MS : IDLE_REFRESH_MS
+    const period = runningStepOpen()
+      ? STEP_REFRESH_MS
+      : assignments.length || runs.length ? BUSY_REFRESH_MS : IDLE_REFRESH_MS
     h.after(period, () => {
       if (generation !== timerGeneration) return
       void refresh(h).finally(() => {
@@ -916,7 +958,11 @@ export function register(on: On, options: PluginOptions = {}) {
           stepMode = 'overview'
           expandedStepTurn = null
           paneOffset = 0
-          if (h) settle(h)
+          if (h) {
+            syncStepTick(h)
+            schedule(h)
+            settle(h)
+          }
         },
         toggleStep: () => {
           stepMode = stepMode === 'overview' ? 'detail' : 'overview'
@@ -974,7 +1020,12 @@ export function register(on: On, options: PluginOptions = {}) {
     const result = await next(e)
     if (result.deny === undefined) {
       paneOpen = false
-      if (host) settle(host)
+      expandedStepTurn = null
+      stepTickGeneration += 1
+      if (host) {
+        schedule(host)
+        settle(host)
+      }
     }
     return result
   })

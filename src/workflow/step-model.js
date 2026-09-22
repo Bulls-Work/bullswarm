@@ -1794,6 +1794,7 @@ function toolRowsOf(events, {
         command: toolKindCategory(event) === 'command',
         error: eventIsError(event) || Boolean(pair && byIndex.has(pair.completeIndex) && eventIsError(byIndex.get(pair.completeIndex))),
         text: inFlightTool?.text ?? eventToolSummary(event),
+        startedAt: inFlightTool ? (event.providerAt ?? event.at ?? null) : null,
         durationMs,
         durationText: durationMs != null && durationMs >= 1000 ? stepClockText(durationMs) : null,
         inFlight: Boolean(inFlightTool),
@@ -1923,6 +1924,15 @@ function stepPresentation({
   const finishMs = dateMs(selected?.finishedAt ?? selected?.endedAt);
   const lastEvent = activity?.events?.at(-1) ?? null;
   const lastEventMs = dateMs(lastEvent?.at);
+  const presentedTurns = stepTurns(activity, {
+    outText,
+    expandedTurn: activity?.expandedTurn ?? null,
+    nowMs,
+    allTools: activity?.view === 'detail',
+  });
+  const runningCommand = running
+    ? presentedTurns.flatMap((turn) => turn.toolRows ?? []).findLast((tool) => tool?.inFlight && tool?.command)
+    : null;
   const nowValue = finiteOrNull(nowMs);
   const verdictText = verification.total
     ? `${verification.complete ? 'verified by the workflow' : 'not verified'} (${verification.passed}/${verification.total} requirements)`
@@ -1973,17 +1983,16 @@ function stepPresentation({
       available: Boolean(activity?.available),
       reason: activity?.reason ?? null,
       events: activity?.events?.length ?? 0,
-      turns: stepTurns(activity, {
-        outText,
-        expandedTurn: activity?.expandedTurn ?? null,
-        nowMs,
-        allTools: activity?.view === 'detail',
-      }),
+      turns: presentedTurns,
       prelude: preludeRows(activity),
       totals: activityTotals(activity?.turns ?? []),
       filter: activity?.filter ?? 'all',
       running,
       following: Boolean(follow),
+      runningCommand: runningCommand ? {
+        text: runningCommand.text,
+        startedAt: runningCommand.startedAt,
+      } : null,
     },
     result: {
       running,

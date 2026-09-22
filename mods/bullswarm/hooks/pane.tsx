@@ -345,6 +345,7 @@ export function paneView(
       promptPreview: model.promptPreview.length ? model.promptPreview : assignment?.description ? [assignment.description] : [],
       outputTail: model.outputTail,
       width,
+      nowMs: model.nowMs,
     }
     const shaped = st ?? page ? shapeStep(st ?? page, stepOptions) : taskStepPane(assignment, stepOptions)
     const poolColor = (pool: string): string => {
@@ -396,6 +397,18 @@ export function paneView(
       ]
       if (entry.kind === 'response' && entry.expandable) {
         const [first, ...rest] = lines
+        if (entry.selected) return [
+          <Box key={entry.key} flexDirection="row">
+            <Button
+              key={`${entry.key}-close`}
+              plain
+              label="▶"
+              onPress={() => entry.turnIndex === undefined ? undefined : actions.expandStepTurn?.(entry.turnIndex)}
+            />
+            <Text inverse wrap="truncate-end">{(first ?? entry.text).replace(/^▶/, '')}</Text>
+          </Box>,
+          ...rest.map((line, index) => <Text key={`${entry.key}-continuation-${String(index)}`} inverse>{line}</Text>),
+        ]
         return [
           <Button
             key={entry.key}
