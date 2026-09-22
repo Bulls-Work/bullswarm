@@ -22,7 +22,7 @@ test('connector-declared parsing handles columns, bullets, and plain lines', () 
   assert.deepEqual(parseDiscoveredModels('one/model\ntwo/model\n', { parse: 'lines' }), ['one/model', 'two/model']);
 });
 
-test('model discovery merges live, fallback, and configured models with profiles', () => {
+test('model discovery uses live models without merging last-resort fallbacks', async () => {
   const connector = {
     name: 'fixture',
     model: 'configured-model',
@@ -30,22 +30,22 @@ test('model discovery merges live, fallback, and configured models with profiles
     knownModels: ['fallback-model'],
     modelProfiles: [{ match: 'live-model', tier: 'high', qualityRank: 5, autoRecommend: false }],
   };
-  const result = discoverConnectorModels(connector, {
+  const result = await discoverConnectorModels(connector, {
     executor: () => 'live-model\n',
   });
   assert.equal(result.source, 'cli');
-  assert.deepEqual(result.models.map((m) => m.id), ['live-model', 'fallback-model', 'configured-model']);
+  assert.deepEqual(result.models.map((m) => m.id), ['live-model']);
   assert.equal(result.models[0].tier, 'high');
   assert.equal(result.models[0].autoRecommend, false);
 });
 
-test('command-code profiles deepseek-v4.1-flash specifically; v4-flash stays on the generic flash catch-all', () => {
+test('command-code profiles deepseek-v4.1-flash specifically; v4-flash stays on the generic flash catch-all', async () => {
   // modelProfile (src/lib/usage.js) walks modelProfiles in order and returns
   // the first regex match, so the v4.1 entry must sit before the generic
   // `(?:flash|...|luna|free)` catch-all or it would inherit qualityRank 2
   // and no pricing.
   const commandCode = JSON.parse(readFileSync(new URL('../providers/contrib/command-code/connector.json', import.meta.url), 'utf8'));
-  const result = discoverConnectorModels(commandCode, {
+  const result = await discoverConnectorModels(commandCode, {
     executor: () => [
       'deepseek/deepseek-v4.1-flash   V4.1 hybrid-attention reasoning with vision',
       'deepseek/deepseek-v4-flash   predecessor flash',
@@ -68,15 +68,46 @@ test('command-code profiles deepseek-v4.1-flash specifically; v4-flash stays on 
   assert.equal(v4.pricing, null);
 });
 
-test('model discovery executes an identical provider command only once across account clones', () => {
+test('model discovery executes an identical provider command only once across account clones', async () => {
   let calls = 0;
   const connector = (name) => ({ name, modelDiscovery: { cmd: ['agent', 'models'] } });
-  const result = discoverAllModels({ a: connector('a'), b: connector('b') }, {
+  const result = await discoverAllModels({ a: connector('a'), b: connector('b') }, {
     executor: () => { calls += 1; return 'provider/model\n'; },
   });
   assert.equal(calls, 1);
   assert.deepEqual(result.a.models.map((model) => model.id), ['provider/model']);
   assert.deepEqual(result.b.models.map((model) => model.id), ['provider/model']);
+});
+
+test('a slow list command does not freeze the event loop while other providers handshake', async () => {
+  // A command-based connector whose list command takes 800 ms, next to a
+  // provider whose own discovery races a 300 ms timer. With a synchronous
+  // executor the timer would fire late, after the slow command returned.
+  const slow = {
+    name: 'slow',
+    modelDiscovery: { cmd: [process.execPath, '-e', 'setTimeout(() => console.log("vendor/slow-model"), 800)'] },
+  };
+  const handshake = {
+    name: 'handshake',
+    knownModels: ['fallback-model'],
+  };
+  let timerLateMs = null;
+  const provider = {
+    pools: ['handshake'],
+    module: {
+      discoverModels: () => new Promise((resolve) => {
+        const started = Date.now();
+        setTimeout(() => {
+          timerLateMs = Date.now() - started - 300;
+          resolve({ models: [{ id: 'live-model' }] });
+        }, 300);
+      }),
+    },
+  };
+  const result = await discoverAllModels({ slow, handshake }, { providers: [provider] });
+  assert.deepEqual(result.slow.models.map((model) => model.id), ['vendor/slow-model']);
+  assert.deepEqual(result.handshake.models.map((model) => model.id), ['live-model']);
+  assert.ok(timerLateMs < 400, `the handshake timer fired ${timerLateMs} ms late`);
 });
 
 test('strategy keeps unknown subscription values null and ranks each tier deterministically', () => {

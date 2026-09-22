@@ -293,7 +293,10 @@ export async function refreshStrategy(bullswarmDir, {
     },
   });
   onProgress('Discovering available models');
-  const discoveries = discoverAllModels(connectors, executor ? { executor } : {});
+  const discoveries = await discoverAllModels(connectors, {
+    providers,
+    ...(executor ? { executor } : {}),
+  });
   let externalCatalog = openRouterCatalog;
   if (useOpenRouter && !externalCatalog) {
     onProgress('Downloading the public Bullswarm benchmark datapack');

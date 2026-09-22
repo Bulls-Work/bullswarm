@@ -9,7 +9,7 @@
 //   plus `$dir/.credentials.json` on every platform.
 // No refresh flow — Claude Code rotates the token itself.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
@@ -23,10 +23,133 @@ import {
 export const name = 'claude-code';
 export const displayName = 'Claude';
 
+const DISCOVERY_TIMEOUT_MS = 15_000;
+const DISCOVERY_ARGS = [
+  '-p',
+  '--input-format', 'stream-json',
+  '--output-format', 'stream-json',
+  '--verbose',
+  '--safe-mode',
+  '--no-session-persistence',
+];
+const DISCOVERY_REQUEST = {
+  type: 'control_request',
+  request_id: 'bullswarm-model-discovery',
+  request: { subtype: 'initialize' },
+};
+
 const USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage';
 const BETA_HEADER = 'oauth-2025-04-20';
 const EXPIRY_SKEW_MS = 60_000;
 const HOME_MARKERS = ['.credentials.json', '.claude.json', 'settings.json', 'projects'];
+
+function inferredClaudeId(description) {
+  const match = String(description ?? '').match(/\b(Opus|Fable|Sonnet|Haiku)\s+(\d+(?:\.\d+)*)\b/i);
+  if (!match) return null;
+  return `claude-${match[1].toLowerCase()}-${match[2].replaceAll('.', '-')}`;
+}
+
+/**
+ * Normalize the initialize control response into stable model choices.
+ * Claude currently returns aliases for some rows. For those rows the concrete
+ * family/version is inferred from the CLI's own structured description and is
+ * labelled as such; a literal full ID is never rewritten. The explicit [1m]
+ * selector remains part of the model ID because it is meaningful to --model.
+ */
+export function parseClaudeModelDiscovery(output) {
+  const events = String(output ?? '').split(/\r?\n/).filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(Boolean);
+  const response = events.find((event) => event.type === 'control_response'
+    && event.response?.subtype === 'success'
+    && Array.isArray(event.response?.response?.models));
+  if (!response) throw new Error('Claude Code did not return initialize models (CLI may be too old)');
+  const models = [];
+  const seen = new Set();
+  for (const row of response.response.response.models) {
+    const value = typeof row?.value === 'string' ? row.value.trim() : '';
+    if (!value) continue;
+    const literal = value.startsWith('claude-');
+    const inferred = literal ? value.replace(/\[1m\]$/, '') : inferredClaudeId(row.description);
+    if (!inferred) continue;
+    const context = value.endsWith('[1m]') ? '[1m]' : '';
+    // `default` describes the base model; the separate explicit 1M row keeps
+    // the context selector. This also gives rungs a stable non-alias ID.
+    const id = literal ? value : `${inferred}${value === 'default' ? '' : context}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    models.push({
+      id,
+      displayName: typeof row.displayName === 'string' ? row.displayName : null,
+      alias: literal ? null : value,
+      idSource: literal ? 'cli' : 'description-inferred',
+    });
+  }
+  if (!models.length) throw new Error('Claude Code initialize returned no usable models');
+  return models;
+}
+
+function runClaudeDiscovery({ command, args, env, input, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let pending = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Discovery owns the process lifetime. kill() is harmless after exit and
+      // ensures a CLI that answered but did not close cannot linger.
+      child.kill('SIGKILL');
+      if (error) reject(error);
+      else resolve(stdout);
+    };
+    const timer = setTimeout(() => finish(new Error(`Claude Code model discovery timed out after ${timeoutMs}ms`)), timeoutMs);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      pending += chunk;
+      let newline;
+      while ((newline = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, newline).trim();
+        pending = pending.slice(newline + 1);
+        if (!line) continue;
+        try {
+          const event = JSON.parse(line);
+          if (event.type === 'control_response'
+            && event.response?.subtype === 'success'
+            && Array.isArray(event.response?.response?.models)) finish();
+        } catch { /* parser reports malformed/old output after process close */ }
+      }
+    });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', finish);
+    child.once('close', (code) => {
+      if (code === 0) finish();
+      else finish(new Error(`Claude Code model discovery exited ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+    });
+    child.stdin.end(input);
+  });
+}
+
+export async function discoverModels(connector, { executor = runClaudeDiscovery } = {}) {
+  const timeoutMs = Number(connector?.modelDiscovery?.timeoutMs ?? DISCOVERY_TIMEOUT_MS);
+  const command = connector?.bin ?? connector?.spawn?.cmd?.[0] ?? 'claude';
+  const output = await executor({
+    command,
+    args: DISCOVERY_ARGS,
+    env: { ...process.env, ...(connector?.env ?? {}) },
+    input: `${JSON.stringify(DISCOVERY_REQUEST)}\n`,
+    timeoutMs,
+  });
+  return {
+    command: [command, ...DISCOVERY_ARGS],
+    models: parseClaudeModelDiscovery(output),
+  };
+}
 
 export class ClaudeMeterError extends Error {
   constructor(message, code, { status = null, retryAfterMs = null } = {}) {

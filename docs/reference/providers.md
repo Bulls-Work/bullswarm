@@ -51,6 +51,7 @@ Skipped pools and errors are shown by `bullswarm setup` and `bullswarm provider 
 export const name = 'x';                        // required when provider.mjs exists
 export const displayName = 'X';                 // optional
 export function connectors(ctx) {}              // optional; sync, returns Pool[]
+export async function discoverModels(pool, ctx) {} // optional; returns { models, command }
 export async function readUsage(pool, ctx) {}   // optional; returns a Snapshot
 export function buildTranscriptIndex({ home }) {}   // optional; bulk repricing hint
 export function readTranscriptUsage({ provider, sessionId = null, cwd = null, startedAt = null, endedAt = null, home, index = null }) {}
@@ -62,12 +63,13 @@ export function doctor(ctx) {}                  // optional; returns a health ob
 | `name` | the provider's name and the prefix of every pool it returns | the `name` in `connector.json` |
 | `displayName` | the label strategy tables print | the provider name |
 | `connectors(ctx)` | synchronous, cheap, no network; returns an array of pools | one pool: the template |
+| `discoverModels(pool, ctx)` | async; performs this CLI's bounded, no-prompt discovery protocol and returns `{ models: [{ id, ...metadata }], command }` | core runs the connector's declarative `modelDiscovery.cmd`, or falls back to `knownModels` |
 | `readUsage(pool, ctx)` | async; returns a [snapshot](#the-snapshot); throws an `Error`, with an optional `.code` | the pool falls back to a declared meter, else it is unmetered |
 | `buildTranscriptIndex({ home })` | optional; builds a reusable index for this provider's durable store during bulk repricing | each lookup may scan the provider store directly |
 | `readTranscriptUsage(args)` | optional; sums this provider's durable transcript for one attempt and returns token classes plus `confidence` (`exact`, `window`, `ambiguous`, or `none`) | the attempt falls through to a UTF-8 byte estimate, then `unknown` |
 | `doctor(ctx)` | returns `{ installed: boolean, loggedIn: boolean \| null, hint?: string }` | installed means `bin` is on `PATH`; logged in means any `configDirs` entry exists |
 
-The core never branches on a thrown error's `code`; it is there for people reading the output of `bullswarm provider probe`.
+The core never branches on a thrown error's `code`; it is there for people reading the output of `bullswarm provider probe`. A failed `discoverModels` call is different: strategy records the error, labels the source `connector-fallback`, and uses `knownModels` only for that failed/old-CLI case.
 
 ## ctx
 
@@ -83,6 +85,8 @@ Every method receives the same `ctx`:
 | `bullswarmDir` | the package root |
 
 `readUsage` also receives `subscription`: the pool's entry in `state.strategy.subscriptions`, or `null`. It carries `includedValueUsd`, `quotaWindow`, `resetsAt`, `plan`, and `monthlyPriceUsd`.
+
+`discoverModels` receives the concrete pool as its first argument, including that pool's `env`. Account-cloned providers must launch discovery with this environment so availability is measured for the same login that will run the work.
 
 `templates` exists so a provider can build on a shipped CLI without copying its template: a reseller of OpenCode access clones `templates.opencode`.
 
@@ -123,7 +127,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `name` (required) | routing, strategy state, meter cache, quarantine |
 | `spawn.cmd` with `{taskFile}` (required), `spawn.cwdMode` | the runner (`src/lib/watch.js`). Placeholders: `{taskFile}`, `{cwd}`, `{sessionId}`, `{bullswarmDir}`. `cwdMode: "pwd"` makes the runner set `PWD` and spawn inside the target repository, for CLIs that resolve their project from `$PWD` |
 | `outputExtraction.strategy` (required: `stdout`, `stdout-tail`, `json-field`, `file`, `event-stream`), `eventStream.output` | the watcher |
-| `model`, `modelSelection.flag` and `mode`, `knownModels`, `modelDiscovery` (required: at least `model`) | dispatch, `set-rung`, model discovery. The only `mode` is `replace-or-append` |
+| `model`, `modelSelection.flag` and `mode`, `knownModels`, `modelDiscovery` (required: at least `model`) | dispatch, `set-rung`, model discovery. The only `mode` is `replace-or-append`; `knownModels` is a last-resort list when live discovery fails |
 | `displayName` (a provider export) | strategy tables |
 | `bin`, `configDirs` | the default `setup` health check |
 | `env` | merged into the child process environment verbatim, never inspected |
@@ -139,6 +143,15 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `costRank` (default 5), `lanes` (default all), `capabilities`, `flags.testFixture`, `flags.isCaller`, `flags.stealth` | routing and strategy |
 | `credentialGroup` (a string; the older `upstreamGroup` is still read) | quarantining siblings that share a credential, and dispatch avoidance |
 | `profile.providerId` | dispatch accepts an `<id>/<model>` pin only on this pool. `profile.configDir` and `profile.command` are display only |
+
+## First-class CLI model discovery
+
+`strategy refresh` asks the installed CLI under each pool's own environment. It sends no user prompt and therefore consumes no model quota.
+
+- Claude Code is started in print/stream-JSON mode with `--safe-mode` and `--no-session-persistence`. Bullswarm sends only the `initialize` control request and reads `control_response.response.models`. Safe mode disables user/project customizations, installed plugins, and hooks while retaining account auth. Claude currently returns aliases for some rows. Literal `claude-*` IDs are kept. Alias rows are converted from the CLI's structured family/version description (for example, `Opus 5.5` becomes `claude-opus-5-5`) and carry `idSource: description-inferred`; an explicit `[1m]` selector is preserved. If a future description cannot be parsed, Bullswarm does not invent an ID.
+- Codex is started as `codex app-server --stdio`. Bullswarm sends JSON-RPC `initialize`, the `initialized` notification, then pages through `model/list` until `nextCursor` is empty. Hidden rows are excluded. The visible rows retain `isDefault` and `supportedReasoningEfforts`; the latter refines reasoning clamping for that model. Levels outside Bullswarm's common scale, such as `ultra`, remain recorded but are not passed as a Bullswarm reasoning level.
+
+Both protocols have a 15-second bound and Bullswarm terminates the child after an answer, error, or timeout. A successful handshake is reported as `source: cli`. Bad JSON, an old CLI without the method, process failure, or timeout produces `source: connector-fallback`, includes the error text, and uses the connector's small compatibility list.
 
 ### `eventStream.usage`
 

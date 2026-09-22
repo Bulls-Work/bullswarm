@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- strategy: Claude Code and Codex model choices now come from bounded, no-prompt installed-CLI handshakes per account; Claude discovery suppresses hooks and preserves explicit 1M selectors, Codex pages `model/list` and records per-model reasoning support, and the static lists remain only as failure fallbacks.
+
 - docs: a new README with a banner, the problem, a comparison with the
   alternatives, and dashboard screenshots taken from a made-up demo home;
   a new playbook guide; `scripts/render-readme-shots.sh` rebuilds the

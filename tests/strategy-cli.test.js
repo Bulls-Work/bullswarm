@@ -770,7 +770,7 @@ test('neither strategy rungs nor set-rung spawns model discovery', async () => {
     // Positive control: the discovery path really does leave the marker, so
     // its absence above means something. Only the fixture's own command is
     // run — a full refresh would execute every installed provider CLI.
-    const discovered = discoverConnectorModels(loadConnectors(f.dir).deep);
+    const discovered = await discoverConnectorModels(loadConnectors(f.dir).deep);
     assert.equal(discovered.source, 'cli');
     assert.equal(existsSync(f.marker), true, 'the marker mechanism itself is broken');
   } finally { f.cleanup(); }

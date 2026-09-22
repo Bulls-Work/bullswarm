@@ -156,6 +156,7 @@ function loadOne({ dir, file, tier, enabled, load }, shared) {
   // Keep the historical serialized provider-entry shape stable while still
   // exposing the optional capability to code that needs it.
   hidden(entry, 'hasReadTranscriptUsage', false);
+  hidden(entry, 'hasDiscoverModels', false);
 
   try {
     const jsonPath = file ?? join(dir, 'connector.json');
@@ -179,6 +180,7 @@ function loadOne({ dir, file, tier, enabled, load }, shared) {
       ? mod.displayName
       : (typeof template?.displayName === 'string' && template.displayName ? template.displayName : entry.name);
     entry.hasReadUsage = typeof mod?.readUsage === 'function';
+    entry.hasDiscoverModels = typeof mod?.discoverModels === 'function';
     // Transcript accounting is an optional provider capability. The flag is
     // exposed to code that needs it while its enumerability remains hidden to
     // preserve the established provider-entry JSON contract.

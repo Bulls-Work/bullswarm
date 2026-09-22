@@ -199,7 +199,8 @@
     "workflow-planning"
   ],
   "modelDiscovery": {
-    "$comment": "Optional local CLI model listing. Parsing quirks stay connector-owned.",
+    "$comment": "Optional local CLI model listing. Parsing quirks stay connector-owned. A provider.mjs discoverModels export may instead name a provider-owned protocol and use timeoutMs; knownModels is only the failure fallback.",
+    "protocol": "optional provider.mjs-owned protocol name",
     "cmd": [
       "example-cli",
       "--list-models"

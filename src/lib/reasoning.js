@@ -53,8 +53,12 @@ function requestedLevel(value) {
  * Unknown names are dropped rather than trusted: clamping can only reason
  * about positions on the common scale.
  */
-function supportedLevels(connector) {
-  const declared = connector?.reasoning?.levels;
+function supportedLevels(connector, model = null, strategy = null) {
+  const discovered = typeof model === 'string' && model
+    ? strategy?.lastReport?.discoveries?.[connector?.name]?.models
+      ?.find((entry) => entry.id === model)?.reasoningLevels
+    : null;
+  const declared = Array.isArray(discovered) ? discovered : connector?.reasoning?.levels;
   if (!Array.isArray(declared)) return [];
   const seen = new Set();
   for (const level of declared) {
@@ -130,7 +134,7 @@ export function resolveReasoningLevel({
 
   // RS1: no usable connector declaration means there is no truthful flag to
   // append, whatever any layer asked for.
-  const levels = supportedLevels(connector);
+  const levels = supportedLevels(connector, model, strategy);
   if (!levels.length) return { requested, applied: null, source: 'unsupported', clamped: false };
   if (requested == null) return { requested: null, applied: null, source: 'none', clamped: false };
   // RS3: an explicit `default` is the decision — report the layer that made it.

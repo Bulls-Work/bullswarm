@@ -11,14 +11,17 @@ import {
   connectors,
   discoverClaudeAccounts,
   discoverClaudeConfigDirs,
+  discoverModels as discoverClaudeModels,
   extractCredentials,
   keychainServiceForConfigDir,
   parseClaudeUsage,
+  parseClaudeModelDiscovery,
   poolNameForSlug,
   profileCommand,
   readAccountCredentials,
   readUsage,
 } from '../src/providers/claude-code/provider.mjs';
+import { discoverConnectorModels } from '../src/lib/strategy.js';
 import { readUsage as readCodexUsage } from '../src/providers/codex/provider.mjs';
 import { readUsage as readGrokUsage } from '../src/providers/grok/provider.mjs';
 import { loadProviders, REPO_ROOT } from '../src/lib/providers.js';
@@ -50,6 +53,61 @@ function twoLogins(home) {
     }),
   });
 }
+
+const CLAUDE_DISCOVERY_OUTPUT = `${JSON.stringify({
+  type: 'control_response',
+  response: {
+    subtype: 'success',
+    request_id: 'bullswarm-model-discovery',
+    response: { models: [
+      { value: 'default', displayName: 'Default', description: 'Opus 5.5 with 1M context' },
+      { value: 'opus[1m]', displayName: 'Opus', description: 'Opus 5.5 with 1M context' },
+      { value: 'claude-fable-5-1[1m]', displayName: 'Fable', description: 'Fable 5.1' },
+      { value: 'sonnet', displayName: 'Sonnet', description: 'Sonnet 5' },
+      { value: 'haiku', displayName: 'Haiku', description: 'Haiku 4.5' },
+    ] },
+  },
+})}\n`;
+
+test('Claude initialize discovery maps aliases, preserves 1M selectors, and sends no prompt', async () => {
+  assert.deepEqual(parseClaudeModelDiscovery(CLAUDE_DISCOVERY_OUTPUT).map((model) => [model.id, model.idSource]), [
+    ['claude-opus-5-5', 'description-inferred'],
+    ['claude-opus-5-5[1m]', 'description-inferred'],
+    ['claude-fable-5-1[1m]', 'cli'],
+    ['claude-sonnet-5', 'description-inferred'],
+    ['claude-haiku-4-5', 'description-inferred'],
+  ]);
+  let invocation;
+  const result = await discoverClaudeModels({ bin: 'claude', env: { CLAUDE_CONFIG_DIR: '/tmp/acme' } }, {
+    executor: async (input) => { invocation = input; return CLAUDE_DISCOVERY_OUTPUT; },
+  });
+  assert.equal(invocation.env.CLAUDE_CONFIG_DIR, '/tmp/acme');
+  assert.ok(invocation.args.includes('--safe-mode'));
+  assert.ok(invocation.args.includes('--no-session-persistence'));
+  assert.equal(invocation.input.trim(), JSON.stringify({
+    type: 'control_request', request_id: 'bullswarm-model-discovery', request: { subtype: 'initialize' },
+  }));
+  assert.equal(invocation.input.includes('user'), false);
+  assert.equal(result.models[0].id, 'claude-opus-5-5');
+});
+
+test('Claude discovery falls back on timeout, bad JSON, and an old CLI response', async () => {
+  const connector = {
+    name: 'claude-code', knownModels: ['claude-fallback'],
+    modelProfiles: [{ match: '^claude-', tier: 'high' }],
+  };
+  const provider = { module: { discoverModels: discoverClaudeModels }, ctx: {} };
+  for (const executor of [
+    async () => { throw new Error('timed out after 10ms'); },
+    async () => 'not json\n',
+    async () => `${JSON.stringify({ type: 'control_response', response: { subtype: 'success', response: {} } })}\n`,
+  ]) {
+    const result = await discoverConnectorModels(connector, { provider, providerExecutor: executor });
+    assert.equal(result.source, 'connector-fallback');
+    assert.deepEqual(result.models.map((model) => model.id), ['claude-fallback']);
+    assert.ok(result.error);
+  }
+});
 
 test('default home uses unsuffixed keychain service; extra homes hash the abs path', () => {
   assert.equal(

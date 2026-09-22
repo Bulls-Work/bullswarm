@@ -2,7 +2,7 @@
 // Discovery commands, parsing quirks, tier rules, and dated pricing live in
 // connector JSON. Core only executes and normalizes those declarations.
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { isFreeModel, modelProfile } from './usage.js';
 import { openRouterMetadata } from './openrouter-models.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './reasoning.js';
@@ -491,37 +491,72 @@ export function parseDiscoveredModels(output, discovery = {}) {
   return unique(models).slice(0, Number(discovery.maxModels ?? 250));
 }
 
+// Asynchronous on purpose: discovery runs every connector at once, and a
+// synchronous list command (some take 15 s or more) would freeze the event
+// loop while the protocol handshakes of other providers wait on their timers.
 function defaultExecutor(command, args, opts) {
-  return execFileSync(command, args, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: opts.timeoutMs,
-    maxBuffer: 8 * 1024 * 1024,
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, {
+      encoding: 'utf8',
+      timeout: opts.timeoutMs,
+      env: opts.env,
+      maxBuffer: 8 * 1024 * 1024,
+    }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    // Match the old stdin: 'ignore' so a CLI never waits on an open pipe.
+    child.stdin?.end();
   });
 }
 
-export function discoverConnectorModels(connector, { executor = defaultExecutor } = {}) {
+function normalizedDiscoveredModel(entry) {
+  if (typeof entry === 'string') return { id: entry };
+  if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string') return null;
+  const id = entry.id.trim();
+  return id ? { ...entry, id } : null;
+}
+
+export async function discoverConnectorModels(connector, {
+  executor = defaultExecutor, provider = null, providerExecutor = null,
+} = {}) {
   const discovery = connector.modelDiscovery ?? null;
   let discovered = [];
   let error = null;
-  if (discovery?.cmd?.length) {
+  let command = discovery?.cmd ?? null;
+  if (typeof provider?.module?.discoverModels === 'function') {
     try {
-      const output = executor(discovery.cmd[0], discovery.cmd.slice(1), {
-        timeoutMs: Number(discovery.timeoutMs ?? 20_000),
+      const result = await provider.module.discoverModels(connector, {
+        ...(provider.ctx ?? {}),
+        ...(providerExecutor ? { executor: providerExecutor } : {}),
       });
-      discovered = parseDiscoveredModels(output, discovery);
+      discovered = (result?.models ?? []).map(normalizedDiscoveredModel).filter(Boolean);
+      command = result?.command ?? command;
+    } catch (err) {
+      error = err.message;
+    }
+  } else if (discovery?.cmd?.length) {
+    try {
+      const output = await executor(discovery.cmd[0], discovery.cmd.slice(1), {
+        timeoutMs: Number(discovery.timeoutMs ?? 20_000),
+        env: { ...process.env, ...(connector.env ?? {}) },
+      });
+      discovered = parseDiscoveredModels(output, discovery).map((id) => ({ id }));
     } catch (err) {
       error = err.message;
     }
   }
   const configured = configuredModel(connector);
-  const models = unique([
-    ...discovered,
-    ...(connector.knownModels ?? []),
-    configured,
-  ]).map((id) => {
+  const fallback = discovered.length ? [] : unique([
+    ...(connector.knownModels ?? []), configured,
+  ]).map((id) => ({ id }));
+  const seen = new Set();
+  const models = [...discovered, ...fallback].filter(({ id }) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  }).map((entry) => {
+    const { id } = entry;
     const profile = modelProfile(connector, id);
     return {
+      ...entry,
       id,
       tier: profile?.tier ?? null,
       qualityRank: Number.isFinite(Number(profile?.qualityRank)) ? Number(profile.qualityRank) : null,
@@ -538,7 +573,7 @@ export function discoverConnectorModels(connector, { executor = defaultExecutor 
   return {
     pool: connector.name,
     source: discovered.length ? 'cli' : (connector.knownModels?.length ? 'connector-fallback' : 'configured-only'),
-    command: discovery?.cmd ?? null,
+    command,
     error,
     models,
   };
@@ -843,27 +878,26 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
   };
 }
 
-export function discoverAllModels(connectors, opts = {}) {
+export async function discoverAllModels(connectors, opts = {}) {
   const outputs = new Map();
   const baseExecutor = opts.executor ?? defaultExecutor;
   const memoizedExecutor = (command, args, execOpts) => {
-    const key = JSON.stringify([command, args, execOpts?.timeoutMs]);
-    if (outputs.has(key)) {
-      const cached = outputs.get(key);
-      if (cached.error) throw cached.error;
-      return cached.output;
+    const key = JSON.stringify([command, args, execOpts?.timeoutMs, execOpts?.env]);
+    // One run per distinct command, shared by every connector that asks for
+    // it; the executor may answer synchronously (tests) or with a promise.
+    if (!outputs.has(key)) {
+      outputs.set(key, (async () => baseExecutor(command, args, execOpts))());
     }
-    try {
-      const output = baseExecutor(command, args, execOpts);
-      outputs.set(key, { output });
-      return output;
-    } catch (error) {
-      outputs.set(key, { error });
-      throw error;
-    }
+    return outputs.get(key);
   };
-  return Object.fromEntries(Object.values(connectors).map((connector) => [
-    connector.name,
-    discoverConnectorModels(connector, { executor: memoizedExecutor }),
-  ]));
+  const entries = await Promise.all(Object.values(connectors).map(async (connector) => {
+    const provider = opts.providers?.find((candidate) => candidate.pools?.includes(connector.name)) ?? null;
+    const discovery = await discoverConnectorModels(connector, {
+      executor: memoizedExecutor,
+      provider,
+      providerExecutor: opts.providerExecutors?.[provider?.name],
+    });
+    return [connector.name, discovery];
+  }));
+  return Object.fromEntries(entries);
 }

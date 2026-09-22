@@ -4,6 +4,7 @@
 // implemented here independently for bullswarm.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
@@ -14,6 +15,120 @@ import {
 
 export const name = 'codex';
 export const displayName = 'Codex';
+
+const DISCOVERY_TIMEOUT_MS = 15_000;
+
+export function parseCodexModelDiscovery(pages) {
+  const records = Array.isArray(pages) ? pages : String(pages ?? '').split(/\r?\n/).filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(Boolean);
+  const models = [];
+  const seen = new Set();
+  let found = false;
+  for (const record of records) {
+    const page = Array.isArray(record?.data) ? record : record?.result;
+    if (!Array.isArray(page?.data)) continue;
+    found = true;
+    for (const row of page.data) {
+      const id = typeof row?.id === 'string' ? row.id.trim() : '';
+      if (!id || row.hidden === true || seen.has(id)) continue;
+      seen.add(id);
+      const reasoningLevels = (row.supportedReasoningEfforts ?? [])
+        .map((entry) => typeof entry === 'string' ? entry : entry?.reasoningEffort)
+        .filter((level) => typeof level === 'string');
+      models.push({
+        id,
+        displayName: typeof row.displayName === 'string' ? row.displayName : null,
+        default: row.isDefault === true,
+        reasoningLevels: [...new Set(reasoningLevels)],
+      });
+    }
+  }
+  if (!found) throw new Error('Codex app-server did not return model/list data (CLI may be too old)');
+  if (!models.length) throw new Error('Codex app-server returned no visible models');
+  return models;
+}
+
+function runCodexDiscovery({ command, args, env, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const pages = [];
+    let stdout = '';
+    let stderr = '';
+    let initialized = false;
+    let requestId = 2;
+    let settled = false;
+    const send = (message) => {
+      if (settled || child.stdin.destroyed || !child.stdin.writable) return;
+      child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+        if (error) finish(error);
+      });
+    };
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGKILL');
+      if (error) reject(error);
+      else resolve(pages);
+    };
+    const timer = setTimeout(() => finish(new Error(`Codex model discovery timed out after ${timeoutMs}ms`)), timeoutMs);
+    const handleLine = (line) => {
+      if (settled) return;
+      let message;
+      try { message = JSON.parse(line); } catch { return; }
+      if (message.id === 1) {
+        if (message.error) return finish(new Error(`Codex initialize failed: ${message.error.message ?? 'unknown error'}`));
+        initialized = true;
+        send({ method: 'initialized', params: {} });
+        send({ id: requestId, method: 'model/list', params: {} });
+        return;
+      }
+      if (!initialized || message.id !== requestId) return;
+      if (message.error) return finish(new Error(`Codex model/list failed: ${message.error.message ?? 'unknown error'}`));
+      if (!Array.isArray(message.result?.data)) return finish(new Error('Codex model/list response has no data array'));
+      pages.push(message.result);
+      const cursor = message.result.nextCursor;
+      if (typeof cursor === 'string' && cursor) {
+        requestId += 1;
+        send({ id: requestId, method: 'model/list', params: { cursor } });
+      } else {
+        finish();
+      }
+    };
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      let newline;
+      while ((newline = stdout.indexOf('\n')) >= 0) {
+        const line = stdout.slice(0, newline).trim();
+        stdout = stdout.slice(newline + 1);
+        if (line) handleLine(line);
+      }
+    });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdin.on('error', (error) => finish(error));
+    child.once('error', finish);
+    child.once('close', (code) => {
+      if (!settled) finish(new Error(`Codex model discovery exited ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+    });
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'bullswarm-probe', version: '0' } } });
+  });
+}
+
+export async function discoverModels(connector, { executor = runCodexDiscovery } = {}) {
+  const timeoutMs = Number(connector?.modelDiscovery?.timeoutMs ?? DISCOVERY_TIMEOUT_MS);
+  const command = connector?.bin ?? connector?.spawn?.cmd?.[0] ?? 'codex';
+  const args = ['app-server', '--stdio'];
+  const pages = await executor({
+    command,
+    args,
+    env: { ...process.env, ...(connector?.env ?? {}) },
+    timeoutMs,
+  });
+  return { command: [command, ...args], models: parseCodexModelDiscovery(pages) };
+}
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const REFRESH_URL = 'https://auth.openai.com/oauth/token';

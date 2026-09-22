@@ -157,6 +157,12 @@
     "chore"
   ],
   "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
+  "modelDiscovery": {
+    "$comment": "provider.mjs performs Claude Code's initialize control handshake; this object supplies only the bounded timeout.",
+    "protocol": "claude-control-initialize",
+    "timeoutMs": 15000
+  },
+  "$comment-knownModels": "Last-resort compatibility list for an old or failing CLI. Successful CLI discovery does not merge these entries.",
   "knownModels": ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
   "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
   "$comment-reasoning": "verified from `claude --help` (Claude Code 2.1.263): `--effort <level>  Effort level for the current session (low, medium, high, xhigh, max)`. skipModels: `--help` does not state per-model support, so Haiku is excluded conservatively — re-verify before removing the exclusion. With no `reasoning` override anywhere, workers inherit whatever effortLevel the home settings.json sets.",
@@ -172,8 +178,8 @@
   },
   "modelProfiles": [
     { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "cacheWrite5mUsdPerMillion": 12.5, "cacheWrite1hUsdPerMillion": 20, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
-    { "match": "^claude-opus-(5|4-[5-8])$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 5, "cacheReadUsdPerMillion": 0.5, "cacheWrite5mUsdPerMillion": 6.25, "cacheWrite1hUsdPerMillion": 10, "outputUsdPerMillion": 25 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
-    { "match": "^claude-sonnet-5$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "cacheWrite5mUsdPerMillion": 2.5, "cacheWrite1hUsdPerMillion": 4, "outputUsdPerMillion": 10 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
+    { "match": "^claude-opus-(?:5(?:-[0-9]+)?|4-[5-8])(?:\\[1m\\])?$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 5, "cacheReadUsdPerMillion": 0.5, "cacheWrite5mUsdPerMillion": 6.25, "cacheWrite1hUsdPerMillion": 10, "outputUsdPerMillion": 25 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
+    { "match": "^claude-sonnet-5(?:\\[1m\\])?$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "cacheWrite5mUsdPerMillion": 2.5, "cacheWrite1hUsdPerMillion": 4, "outputUsdPerMillion": 10 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" },
     { "match": "^claude-sonnet-", "tier": "medium", "qualityRank": 4 },
     { "match": "^claude-haiku-4-5$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 1, "cacheReadUsdPerMillion": 0.1, "cacheWrite5mUsdPerMillion": 1.25, "cacheWrite1hUsdPerMillion": 2, "outputUsdPerMillion": 5 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-09-19" }
   ],

@@ -219,6 +219,12 @@
     "file-editing",
     "workflow-planning"
   ],
+  "modelDiscovery": {
+    "$comment": "provider.mjs pages through Codex app-server model/list; this object supplies only the bounded timeout.",
+    "protocol": "app-server-model-list",
+    "timeoutMs": 15000
+  },
+  "$comment-knownModels": "Last-resort compatibility list for an old or failing CLI. Successful CLI discovery does not merge these entries.",
   "knownModels": [
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -252,6 +258,11 @@
     }
   },
   "modelProfiles": [
+    {
+      "match": "^gpt-6(?:[.-].*)?-astra$",
+      "tier": "high",
+      "qualityRank": 6
+    },
     {
       "match": "^gpt-5\\.6-sol$",
       "tier": "high",

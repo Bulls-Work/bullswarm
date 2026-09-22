@@ -173,7 +173,7 @@ function disableProvider(bullswarmDir, name) {
 
 // --- validate -----------------------------------------------------------------
 
-const PROVIDER_EXPORTS = ['name', 'displayName', 'connectors', 'readUsage', 'readTranscriptUsage', 'doctor'];
+const PROVIDER_EXPORTS = ['name', 'displayName', 'connectors', 'discoverModels', 'readUsage', 'readTranscriptUsage', 'doctor'];
 const SPAWN_PLACEHOLDERS = ['taskFile', 'cwd', 'sessionId', 'bullswarmDir'];
 const FOLLOW_UP_PLACEHOLDERS = ['taskFile', 'cwd', 'sessionId', 'prompt', 'bullswarmDir'];
 const TIERS = ['high', 'medium', 'low'];
@@ -436,7 +436,7 @@ export function validateProvider(bullswarmDir, dir, loaderOpts = {}) {
     for (const key of PROVIDER_EXPORTS) report.exports[key] = typeof mod[key];
     if (typeof mod.name !== 'string' || mod.name === '') report.errors.push('export name: required non-empty string');
     if (mod.displayName !== undefined && typeof mod.displayName !== 'string') report.errors.push('export displayName: must be a string');
-    for (const fn of ['connectors', 'readUsage', 'readTranscriptUsage', 'doctor']) {
+    for (const fn of ['connectors', 'discoverModels', 'readUsage', 'readTranscriptUsage', 'doctor']) {
       if (mod[fn] !== undefined && typeof mod[fn] !== 'function') report.errors.push(`export ${fn}: must be a function`);
     }
     report.name = typeof mod.name === 'string' && mod.name ? mod.name : null;

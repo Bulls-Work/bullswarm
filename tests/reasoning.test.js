@@ -246,6 +246,23 @@ test('a request the connector cannot express is clamped, never dropped', () => {
   assert.equal(resolveReasoningLevel({ connector: messy, tier: 'high', runOverride: 'medium' }).applied, 'low');
 });
 
+test('Codex discovered per-model reasoning levels refine the connector clamp', () => {
+  const strategy = {
+    lastReport: { discoveries: { codex: { models: [
+      { id: 'gpt-5.5', reasoningLevels: ['low', 'medium', 'high', 'xhigh'] },
+      { id: 'gpt-5.6-sol', reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
+    ] } } },
+  };
+  assert.deepEqual(
+    resolveReasoningLevel({ connector: codex, model: 'gpt-5.5', tier: 'high', strategy, runOverride: 'max' }),
+    { requested: 'max', applied: 'xhigh', source: 'run', clamped: true },
+  );
+  // `ultra` is outside Bullswarm's common scale, while max remains available.
+  assert.equal(resolveReasoningLevel({
+    connector: codex, model: 'gpt-5.6-sol', tier: 'high', strategy, runOverride: 'max',
+  }).applied, 'max');
+});
+
 test('a malformed level at any layer falls through instead of failing the dispatch', () => {
   assert.deepEqual(
     resolveReasoningLevel({ connector: claude, tier: 'high', runOverride: 'ludicrous' }),
