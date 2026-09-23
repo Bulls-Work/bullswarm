@@ -720,6 +720,12 @@ async function grokAndCodexReport(dir) {
 test('apply gives every grok rung grok-4.7, with medium and low at the tier\'s lighter reasoning', async () => {
   const f = fixture();
   try {
+    // Enable grok explicitly, as fixture() does for codex: setup only enables
+    // it on a host where the grok CLI happens to be installed.
+    const state = loadState(f.dir);
+    state.pools.grok ??= {};
+    state.pools.grok.enabled = true;
+    saveState(f.dir, state);
     const result = applyStrategyRecommendations(f.dir, await grokAndCodexReport(f.dir));
     assert.deepEqual(result.rungs.grok, { high: 'grok-4.7', medium: 'grok-4.7', low: 'grok-4.7' });
     assert.deepEqual(result.reasoning.written.filter((entry) => entry.pool === 'grok'), [
