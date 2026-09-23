@@ -21,6 +21,9 @@ hero:
     - theme: alt
       text: CLI reference
       link: /reference/cli
+    - theme: alt
+      text: ⭐ Star on GitHub
+      link: https://github.com/Bulls-Work/bullswarm
 
 features:
   - title: Pacing router
