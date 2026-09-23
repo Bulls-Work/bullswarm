@@ -21,6 +21,7 @@
     "fixtures/",
     "data/",
     "docs/",
+    "!docs/public/",
     "README.md",
     "LICENSE",
     "AGENTS.md",
