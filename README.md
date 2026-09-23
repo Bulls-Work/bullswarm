@@ -43,6 +43,18 @@ flowchart LR
 - **Lets you steer mid-run.** Add, change, remove or rerun steps while a workflow is running, or pause and resume it.
 - **Extends with providers.** Claude Code, Codex and Grok are built in. Other CLIs can be added as providers without touching the core.
 
+## See it
+
+![The Bullswarm Home dashboard: today's work, quota, spend and recent runs](docs/public/screens/home.png)
+
+*Home: what's running today, how much quota each plan has left, and what you've spent.*
+
+![A workflow's Run page: phases, steps, agents and cost](docs/public/screens/run.png)
+
+*Run: one workflow's plan, which agent took each step, and what it cost.*
+
+More screens, including phone-sized ones, are in the [gallery](https://bulls-work.github.io/bullswarm/guide/gallery).
+
 ## Why not just…
 
 | Approach | What you give up |
@@ -61,18 +73,6 @@ The controller is portable. Claude Code, Codex, Grok, or any capable caller driv
 Agent plans now come with hard weekly limits, and serious work spans hours rather than prompts. A workflow can run for one to two hours across several agents—builders in parallel, an integrator, then independent acceptance—while you keep handing new goals to your main agent.
 
 With Bullswarm routing by pace, running several goals at once no longer means worrying about wasting one plan's scarce quota: the fleet spends whichever plan is furthest behind.
-
-## See it
-
-![The Bullswarm Home dashboard: today's work, quota, spend and recent runs](docs/public/screens/home.png)
-
-*Home: what's running today, how much quota each plan has left, and what you've spent.*
-
-![A workflow's Run page: phases, steps, agents and cost](docs/public/screens/run.png)
-
-*Run: one workflow's plan, which agent took each step, and what it cost.*
-
-More screens, including phone-sized ones, are in the [gallery](https://bulls-work.github.io/bullswarm/guide/gallery).
 
 ## Quick start
 
@@ -95,16 +95,6 @@ After that, just give your agent goals as usual. It will hand work to Bullswarm 
 
 To set things up by hand, or to choose models and reasoning yourself, see [Getting started](https://bulls-work.github.io/bullswarm/guide/getting-started).
 
-## A practical playbook
-
-1. **Say what done looks like.** What should change, what must stay the same, and how you'll know it worked.
-2. **Hand it to your main agent.** With the `/bullswarm` skill installed, it decides between a single run and a workflow, and writes the plan.
-3. **Let it fan out.** Independent steps run in parallel across your Claude, Codex and Grok plans, using whichever has the most spare quota.
-4. **Keep an eye on it.** Watch the dashboard, send guidance, pause, or change the plan if the goal moves.
-5. **Check the result.** Each workflow reports which requirements were verified. "Completed" means every step ran; "verified" means someone checked the work.
-
-You can run several goals at once without juggling plans yourself. Bullswarm counts work already in flight when it routes new work.
-
 ## Supported agents and meters
 
 | Agent CLI | Support | Quota windows tracked | Command it runs |
@@ -117,14 +107,11 @@ You can run several goals at once without juggling plans yourself. Bullswarm cou
 
 Each provider describes how to launch its CLI, read its quota, list its models and read its output. To add one, see [Adding a provider](https://bulls-work.github.io/bullswarm/reference/providers).
 
-## Status
-
-Routing, verification, workflows, the dashboard and the built-in providers are stable. Steering and plan changes during a run are newer, so check the results when you use them.
-
 ## Learn more
 
 - [Documentation](https://bulls-work.github.io/bullswarm/)
 - [Getting started](https://bulls-work.github.io/bullswarm/guide/getting-started)
+- [Day-to-day playbook](https://bulls-work.github.io/bullswarm/guide/playbook)
 - [How routing works](https://bulls-work.github.io/bullswarm/guide/routing)
 - [Authoring workflows](https://bulls-work.github.io/bullswarm/guide/workflows)
 - [The dashboard](https://bulls-work.github.io/bullswarm/guide/gallery) and [observing runs](https://bulls-work.github.io/bullswarm/guide/observing)
