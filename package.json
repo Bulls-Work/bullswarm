@@ -1,7 +1,7 @@
 {
   "name": "bullswarm",
   "version": "0.35.4",
-  "description": "Route work across coding-agent CLI subscriptions — paced by live quota meters, verified by content, never trusting exit codes.",
+  "description": "Route work across coding-agent CLI subscriptions \u2014 paced by live quota meters, verified by content, never trusting exit codes.",
   "type": "module",
   "bin": {
     "bullswarm": "./bin/bullswarm.js",
@@ -33,7 +33,8 @@
     "refresh:openrouter": "node scripts/refresh-openrouter-benchmarks.mjs",
     "refresh:epoch": "node scripts/refresh-epoch-benchmarks.mjs",
     "refresh:benchmarks": "npm run refresh:openrouter && npm run refresh:epoch",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "release": "node scripts/release.mjs"
   },
   "repository": {
     "type": "git",

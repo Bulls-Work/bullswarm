@@ -1511,21 +1511,6 @@ bullswarm update
 
 Reads `https://registry.npmjs.org/bullswarm/latest` (8s timeout). Exit 0 = at the latest published version afterwards (or `--check` reported); exit 1 = registry, npm, pnpm or git refused, or the install shape is unknown. The running process keeps its old version; the next `bullswarm` command runs the new one.
 
-## release
-
-Bump the `package.json` version, commit that change, and create an annotated git tag locally. For maintainers cutting a bullswarm release, not for routine use.
-
-```bash
-# Compute the resulting version and tag without writing or committing.
-bullswarm release patch --dry-run
-```
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--dry-run` | compute and print the resulting version/tag without writing or committing anything | off (writes for real) |
-
-Argument: `<patch|minor|major>` — patch for fixes, minor for new verbs/connectors/behavior, major for verdict-contract or config-format breaking changes. Refuses if the working tree is not clean. Never pushes or publishes; the command prints the exact push command to run next.
-
 ## Next steps
 
 - [Getting started](/guide/getting-started) — install, setup, and the first `run`

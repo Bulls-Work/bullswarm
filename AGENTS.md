@@ -69,7 +69,7 @@ is the canonical reference for the CLI surface.
 - Every verb must work non-interactively (no TTY). The interactive wizard is
   a human convenience, never a requirement.
 - Version single source: package.json. Release via
-  `node bin/bullswarm.js release patch|minor|major`, then `git push` and
+  `npm run release -- patch|minor|major [--title "<headline>"]`, then `git push` and
   `git push --tags`
   — CI publishes through npm trusted publishing (OIDC), no tokens.
 
@@ -90,7 +90,8 @@ the authoring method is `skill/references/providers.md`.
 ## Releasing
 
 1. All tests green.
-2. `node bin/bullswarm.js release patch` (creates commit + tag v*).
+2. `npm run release -- patch --title "<headline>"` (dates `## Unreleased`
+   in CHANGELOG.md, bumps package.json, creates commit + tag v*).
 3. `git push && git push --tags`.
 4. GitHub Actions publishes to npm via trusted publishing; verify with
    `npm view bullswarm version`.

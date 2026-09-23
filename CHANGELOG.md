@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- cli: the maintainer-only `release` verb is gone from the CLI and its help;
+  maintainers run `npm run release -- patch|minor|major`, which also dates
+  the `## Unreleased` changelog section.
+
 - package: the README screenshots and brand images (`docs/public/`) are no
   longer shipped in the npm package; the npm page loads them from GitHub.
 

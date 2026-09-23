@@ -77,7 +77,6 @@ const top = rich({
     { name: 'runs', desc: 'alias for workflow runs' },
     { name: 'version', desc: 'print the installed version' },
     { name: 'update', desc: 'upgrade the installed package to the latest published version' },
-    { name: 'release', desc: 'create a version commit and tag' },
   ],
   options: [
     { flag: '--yes', desc: 'bare `bullswarm` only: skip the dashboard and the interactive wizard and auto-initialize with discovered defaults. It takes the `bullswarm setup` path, so it accepts every option that command documents', default: 'prompts on a TTY; auto-initializes for a non-TTY caller' },
@@ -415,25 +414,6 @@ const updateText = rich({
     { cmd: 'bullswarm update', note: 'upgrade in place' },
   ],
   next: 'bullswarm version to confirm, then bullswarm integrate status if a skill link looks stale.',
-});
-
-const releaseText = rich({
-  usage: 'bullswarm release <patch|minor|major> [--dry-run]',
-  purpose: 'Bump the package.json version, commit that change, and create an annotated git '
-    + 'tag locally. For maintainers cutting a bullswarm release, not for routine use.',
-  args: [
-    { name: '<patch|minor|major>', desc: 'semver bump kind: patch for fixes, minor for new verbs/connectors/behavior, major for verdict-contract or config-format breaking changes' },
-  ],
-  options: [
-    { flag: '--dry-run', desc: 'compute and print the resulting version/tag without writing or committing anything', default: 'off (writes for real)' },
-  ],
-  safety: [
-    'refuses if the working tree is not clean (git status --porcelain must be empty)',
-    'without --dry-run: writes package.json, and runs `git commit` and `git tag -a` locally',
-    'never pushes or publishes — `git push`/`git push --tags`/`npm publish` are separate, manual steps (the command prints the exact push command to run next)',
-  ],
-  examples: [{ cmd: 'bullswarm release patch --dry-run' }],
-  next: 'git push && git push --tags once ready to publish (CI publishes to npm via trusted publishing).',
 });
 
 // --- health, pools, doctor -----------------------------------------------------
@@ -1850,7 +1830,6 @@ const HELP = {
   },
   version: { _text: versionText },
   update: { _text: updateText },
-  release: { _text: releaseText },
   strategy: {
     _text: strategyText,
     tui: { _text: strategyTuiText },

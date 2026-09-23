@@ -77,7 +77,6 @@ const TABLE = {
   'home status': ['json'],
   version: [],
   update: ['check', 'json'],
-  release: ['dry-run'],
 
   // --- src/provider-cli.js -------------------------------------------------
   provider: ['json', 'yes'],

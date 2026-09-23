@@ -6,7 +6,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { bumpVersion, release } from '../src/lib/release.js';
+import { bumpVersion, datedChangelog, release } from '../scripts/release.mjs';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -176,8 +176,9 @@ test('version bumping is deterministic and dry-run release behavior is safe', ()
   const repo = mkdtempSync(join(tmpdir(), 'bs-release-clean-'));
   try {
     writeFileSync(join(repo, 'package.json'), `${JSON.stringify({ name: 'fixture', version: '0.10.7' })}\n`);
+    writeFileSync(join(repo, 'CHANGELOG.md'), '## Unreleased\n\n- fix: one thing\n');
     execFileSync('git', ['init', '-q'], { cwd: repo });
-    execFileSync('git', ['add', 'package.json'], { cwd: repo });
+    execFileSync('git', ['add', 'package.json', 'CHANGELOG.md'], { cwd: repo });
     execFileSync('git', ['-c', 'user.name=Bullswarm Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture'], { cwd: repo });
     assert.deepEqual(release('patch', { dryRun: true, repoRoot: repo }), {
       from: '0.10.7', to: '0.10.8', tag: 'v0.10.8', dryRun: true,
@@ -185,6 +186,41 @@ test('version bumping is deterministic and dry-run release behavior is safe', ()
     writeFileSync(join(repo, 'dirty.txt'), 'dirty\n');
     assert.throws(() => release('patch', { dryRun: true, repoRoot: repo }), /working tree is dirty/);
   } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('a release dates the Unreleased changelog section and opens a fresh one', () => {
+  const before = '# changelog\n\n## Unreleased\n\n- fix: one thing\n\n## 0.10.7 — earlier\n\n- older\n';
+  assert.equal(
+    datedChangelog(before, '0.10.8', 'a headline'),
+    '# changelog\n\n## Unreleased\n\n## 0.10.8 — a headline\n\n- fix: one thing\n\n## 0.10.7 — earlier\n\n- older\n',
+  );
+  assert.match(datedChangelog(before, '0.10.8'), /\n## 0\.10\.8\n\n- fix: one thing/);
+  assert.throws(() => datedChangelog('## Unreleased\n\n## 0.10.7\n\n- older\n', '0.10.8'), /no entries/);
+  assert.throws(() => datedChangelog('## 0.10.7\n', '0.10.8'), /no "## Unreleased"/);
+});
+
+test('a real release commits the version and dated changelog and tags it', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'bs-release-real-'));
+  try {
+    writeFileSync(join(repo, 'package.json'), `${JSON.stringify({ name: 'fixture', version: '0.10.7' })}\n`);
+    writeFileSync(join(repo, 'CHANGELOG.md'), '## Unreleased\n\n- fix: one thing\n');
+    const gitIn = (...args) => execFileSync('git', ['-c', 'user.name=Bullswarm Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: repo, encoding: 'utf8' });
+    gitIn('init', '-q');
+    gitIn('add', '.');
+    gitIn('commit', '-qm', 'fixture');
+    process.env.GIT_AUTHOR_NAME = 'Bullswarm Test'; process.env.GIT_AUTHOR_EMAIL = 'test@example.invalid';
+    process.env.GIT_COMMITTER_NAME = 'Bullswarm Test'; process.env.GIT_COMMITTER_EMAIL = 'test@example.invalid';
+    assert.deepEqual(release('patch', { title: 'headline', repoRoot: repo }), {
+      from: '0.10.7', to: '0.10.8', tag: 'v0.10.8', dryRun: false,
+    });
+    assert.equal(JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version, '0.10.8');
+    assert.match(readFileSync(join(repo, 'CHANGELOG.md'), 'utf8'), /^## Unreleased\n\n## 0\.10\.8 — headline\n\n- fix: one thing/);
+    assert.equal(gitIn('tag', '--list').trim(), 'v0.10.8');
+    assert.equal(gitIn('log', '-1', '--format=%s').trim(), 'release v0.10.8');
+  } finally {
+    for (const key of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) delete process.env[key];
     rmSync(repo, { recursive: true, force: true });
   }
 });
