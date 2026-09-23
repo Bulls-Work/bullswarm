@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <img alt="npm version" src="https://img.shields.io/npm/v/bullswarm">
-  <img alt="MIT license" src="https://img.shields.io/npm/l/bullswarm">
-  <img alt="Node.js 22.12 or later" src="https://img.shields.io/badge/node-%3E%3D22.12-339933?logo=node.js&logoColor=white">
+  <a href="https://www.npmjs.com/package/bullswarm"><img alt="npm version" src="https://img.shields.io/npm/v/bullswarm"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/npm/l/bullswarm"></a>
+  <a href="https://nodejs.org/"><img alt="Node.js 22.12 or later" src="https://img.shields.io/badge/node-%3E%3D22.12-339933?logo=node.js&logoColor=white"></a>
 </p>
 
 <p align="center">Route work across your coding-agent subscriptions, spend quota before it expires, and verify what comes back.</p>
