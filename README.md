@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/public/brand/bullswarm-banner.png" alt="Bullswarm — use every coding-agent plan you pay for" width="100%">
+  <img src="docs/public/brand/bullswarm-banner.jpg" alt="Bullswarm: a fleet of bull agents in tuxedos wearing Claude, OpenAI and Grok pins" width="100%">
 </p>
 
 <p align="center">

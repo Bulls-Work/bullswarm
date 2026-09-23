@@ -9,7 +9,7 @@ hero:
   text: Route coding work by quota. Verify it by content.
   tagline: Put your logged-in coding-agent subscriptions to work as one paced, observable fleet — without turning them into an API proxy.
   image:
-    src: /brand/bullswarm-banner.png
+    src: /brand/bullswarm-banner.jpg
     alt: Bullswarm fleet
   actions:
     - theme: brand
