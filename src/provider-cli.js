@@ -386,6 +386,9 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
           if (!REASONING_LEVELS.includes(setting?.reasoning)) {
             errors.push(`generationFallback.tiers.${tier}.reasoning: must be ${REASONING_LEVELS.join(', ')}`);
           }
+          if (setting?.why !== undefined && (typeof setting.why !== 'string' || !setting.why.trim())) {
+            errors.push(`generationFallback.tiers.${tier}.why: must be a non-empty string`);
+          }
         }
       }
       // The rule walks family ranks; without families there is nothing to fall back to.

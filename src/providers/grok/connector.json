@@ -207,11 +207,14 @@
     "timeoutMs": 20000,
     "maxModels": 50
   },
+  "$comment-knownModels": "Last-resort list for when `grok models` fails: what grok 1.0.40 listed on 2026-09-23 (grok-4.7 is its default). Successful discovery does not merge these entries.",
   "knownModels": [
+    "grok-4.7",
+    "grok-4.7-build-fast",
     "grok-4.6",
     "grok-4.5"
   ],
-  "model": "grok-4.6",
+  "model": "grok-4.7",
   "modelSelection": {
     "flag": "--model",
     "mode": "replace-or-append"
@@ -242,11 +245,39 @@
       "{sessionId}"
     ]
   },
-  "modelProfiles": [
+  "$comment-modelFamilies": "Grok has one model line (owner decision, 2026-09-23). Every plain grok-N.M, with no suffix, is one family: high tier, rank 5, and the newest version wins, so a grok-4.8 takes over the day `grok models` lists it. grok-N.M-build-fast is Grok Build's id for the Fast variant, which https://docs.x.ai/developers/grok-4-7 (checked 2026-09-23) describes as 'the same model served on faster infrastructure, billed at twice the standard token rates'. It keeps its base model's rank and is never auto-recommended; it stays selectable by hand (strategy set-rung). Its family is named grok-build-fast so that, at equal rank, the plain grok family sorts first wherever models are ordered by rank alone.",
+  "modelFamilies": [
     {
-      "match": "^grok-4\\.6$",
+      "family": "grok",
+      "match": "^grok-[0-9]+(?:\\.[0-9]+)*$",
+      "tier": "high",
+      "qualityRank": 5
+    },
+    {
+      "family": "grok-build-fast",
+      "match": "^grok-[0-9]+(?:\\.[0-9]+)*-build-fast$",
       "tier": "high",
       "qualityRank": 5,
+      "autoRecommend": false
+    }
+  ],
+  "$comment-generationFallback": "Owner decision (2026-09-23), not a benchmark result: Grok has one model line, so medium and low run the newest grok-N.M too and differ from high only by reasoning. No family serves medium or low, so each tier takes the best-ranked family's newest model (grok-4.7 today) at the connector's own tier default (reasoning.defaults: high xhigh, medium high, low medium). The suggestion carries that level, so strategy apply writes it into the medium and low rungs the way it writes Codex's medium level.",
+  "generationFallback": {
+    "tiers": {
+      "medium": {
+        "reasoning": "high",
+        "why": "one Grok line, lighter reasoning for lighter tiers"
+      },
+      "low": {
+        "reasoning": "medium",
+        "why": "one Grok line, lighter reasoning for lighter tiers"
+      }
+    }
+  },
+  "$comment-modelProfiles": "Exact rows carry each model's dated price; tier and rank come from modelFamilies. Prices are per 1M tokens as https://docs.x.ai/docs/models listed them on 2026-09-23, the same numbers as https://docs.x.ai/developers/pricing that day: grok-4.7 and grok-4.6 $2.00 input, $0.50 cached input, $6.00 output below 200k prompt tokens and $4.00, $1.00, $12.00 from 200k; grok-4.5 $2.00, $0.30, $6.00 and $4.00, $0.60, $12.00. grok-4.7-build-fast has no row on purpose. Doubling grok-4.7 gives $4.00, $1.00, $12.00 below 200k and $8.00, $2.00, $24.00 above, but the Pricing page's own Grok 4.7 Fast table (https://docs.x.ai/developers/pricing#grok-47-fast-pricing-cursor-and-grok-build-only, 2026-09-23) lists $4.00, $1.00, $12.00 below 200k and $6.00, $1.50, $18.00 above. The long-context rates are not twice grok-4.7's, so a 2x row would be wrong there, and it stays unpriced until a row states which rate card it follows.",
+  "modelProfiles": [
+    {
+      "match": "^grok-4\\.7$",
       "pricing": {
         "inputUsdPerMillion": 2,
         "cacheReadUsdPerMillion": 0.5,
@@ -258,13 +289,40 @@
           "outputUsdPerMillion": 12
         }
       },
-      "pricingSource": "https://docs.x.ai/developers/models/grok-4.6",
-      "pricingUpdatedAt": "2026-09-20"
+      "pricingSource": "https://docs.x.ai/docs/models",
+      "pricingUpdatedAt": "2026-09-23"
+    },
+    {
+      "match": "^grok-4\\.6$",
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.5,
+        "outputUsdPerMillion": 6,
+        "longContext": {
+          "thresholdTokens": 200000,
+          "inputUsdPerMillion": 4,
+          "cacheReadUsdPerMillion": 1,
+          "outputUsdPerMillion": 12
+        }
+      },
+      "pricingSource": "https://docs.x.ai/docs/models",
+      "pricingUpdatedAt": "2026-09-23"
     },
     {
       "match": "^grok-4\\.5$",
-      "tier": "medium",
-      "qualityRank": 4
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.3,
+        "outputUsdPerMillion": 6,
+        "longContext": {
+          "thresholdTokens": 200000,
+          "inputUsdPerMillion": 4,
+          "cacheReadUsdPerMillion": 0.6,
+          "outputUsdPerMillion": 12
+        }
+      },
+      "pricingSource": "https://docs.x.ai/docs/models",
+      "pricingUpdatedAt": "2026-09-23"
     }
   ],
   "subscription": {

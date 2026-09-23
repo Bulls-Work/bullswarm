@@ -541,8 +541,11 @@ export function resolveDispatchModel(connector, tier, {
     .filter((model) => !isModelExcluded(model, excluded))
     .filter((model) => modelRanking(connector, model).tier === tier));
 
-  if (connector.modelSelection?.flag && candidates[0]) {
-    return { eligible: true, model: candidates[0], source: 'exclusion-safe-tier-fallback' };
+  // Never fall back onto a model the connector marks never-recommend (such as
+  // a premium or double-price variant); the configured model comes next.
+  const fallback = candidates.find((model) => modelRanking(connector, model).autoRecommend !== false);
+  if (connector.modelSelection?.flag && fallback) {
+    return { eligible: true, model: fallback, source: 'exclusion-safe-tier-fallback' };
   }
   if (configured && !isModelExcluded(configured, excluded)) {
     return { eligible: true, model: configured, source: 'configured-model' };
@@ -1046,6 +1049,9 @@ function recommendedView(entry, withPool) {
  * families of other providers are compared exactly as before. One trailing
  * key component puts it directly above that candidate and moves nothing
  * else. With no candidate to replace, it stands at the stale family's rank.
+ * A tier no family serves has no rank of its own there (0): the stand-in is
+ * the pool's own pick for it, and the tier-wide pick only where no other pool
+ * serves the tier.
  */
 function fallbackEntry(pool, connector, eligible, tier, ranked, listed) {
   const found = generationFallback(connector, eligible, tier);
@@ -1054,7 +1060,7 @@ function fallbackEntry(pool, connector, eligible, tier, ranked, listed) {
   // Nothing left to replace (the operator disabled the stale model): the
   // stand-in still speaks for the family, so it takes the standing of that
   // family's newest listed model, and only failing that the family's rank.
-  const staleNewest = replaced ? null : listed
+  const staleNewest = replaced || !found.staleFamily ? null : listed
     .filter((model) => model.family === found.staleFamily && model.tier === tier)
     .sort((a, b) => compareVersions(versionLabelParts(b.version), versionLabelParts(a.version)))[0] ?? null;
   const base = replaced?.effectiveKey
@@ -1288,7 +1294,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
       'Benchmark and pricing fields come from the dated Bullswarm datapack or connector metadata.',
       'OpenRouter agentic, coding, and intelligence indices only break ties between models of equal quality rank.',
       'A discovered model no family rule or profile classifies is listed under unranked and never recommended.',
-      'Where a connector opts a tier into generationFallback and the family serving it has no model in the newest generation, that tier takes the next-lower family\'s newest-generation model at the declared reasoning level.',
+      'Where a connector opts a tier into generationFallback and the family serving it has no model in the newest generation, that tier takes the next-lower family\'s newest-generation model at the declared reasoning level; a tier no family serves takes the best-ranked family\'s newest model the same way.',
       'API-equivalent prices may not match subscription quota debits.',
       'Unknown license value, token counters, pricing, or benchmarks remain null; Bullswarm does not invent them.',
     ],

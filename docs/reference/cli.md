@@ -669,7 +669,7 @@ Writes each pool's recommended model per tier (`state.strategy.modelTiers`, the 
 
 Pins are explicit only: [`assign`](#assign) makes one and [`clear-assignment`](#clear-assignment) removes it. Apply keeps every pin you set (`keptPins` in its JSON). Versions up to 0.35.4 pinned every tier on apply and recorded that pin in `lastReport.suggestions[tier].assignment`. Apply and the auto-refresh remove such a pin when it still has the recorded pool and model (`unpinned`); a pin that differs from the record, or one from a home where apply never ran, is treated as yours and kept. The JSON also carries `rungs` (pool → tier → model) and `bestNow` (the tier-wide pick, for display only).
 
-A suggestion that carries a reasoning level (a newest-generation fallback, such as `medium: gpt-6-luna · max reasoning — no gpt-6 terra yet, newest generation preferred`) also has that level written into its pool+tier rung, marked as the recommendation's. A level you set per pool or per tier is never overwritten.
+A suggestion that carries a reasoning level (a newest-generation fallback, such as `medium: gpt-6-luna · max reasoning — no gpt-6 terra yet, newest generation preferred`, or Grok's `low: grok-4.7 · medium reasoning — one Grok line, lighter reasoning for lighter tiers`) also has that level written into its pool+tier rung, marked as the recommendation's. A level you set per pool or per tier is never overwritten.
 
 ### show
 

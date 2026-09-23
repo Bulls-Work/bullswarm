@@ -114,7 +114,9 @@ export function modelFamily(connector, model) {
 // gpt-6-sol are generation 6, gpt-5.6-terra and gpt-5.5 are generation 5, and
 // claude-opus-5-5 and claude-sonnet-5 are both generation 5. So a point
 // release of one family (Opus 5.5) never makes another family of the same
-// generation (Sonnet 5) look stale; only a new leading number does.
+// generation (Sonnet 5) look stale; only a new leading number does. A tier
+// with no family at all is the stalest case: it takes the newest generation's
+// best family.
 
 /** The generation of a stored version label (`'5.6'` -> 5), or null. */
 export function versionGeneration(label) {
@@ -163,14 +165,19 @@ function generationLabel(connector, generation) {
  *     stale when none of its members is in the newest generation;
  *   - then the tier takes the newest member of the next-lower-ranked family
  *     that has one in the newest generation, to run at the connector's
- *     declared reasoning. With no such family, there is no fallback.
+ *     declared reasoning. With no such family, there is no fallback;
+ *   - a tier that no family serves, and no model of the pool is ranked for
+ *     (a provider with one model line), takes the newest member of the
+ *     best-ranked family that has one in the newest generation. It has no
+ *     rank of its own on that tier, so `staleRank` is 0;
+ *   - a tier's declared `why` replaces the generated reason.
  *
  * @param {object} connector  the pool's connector (modelFamilies, generationFallback)
  * @param {Array<object>} models  the pool's recommendable models, each with
- *   `id`, `family`, `version`, and optionally `reasoningLevels`
+ *   `id`, `tier`, `family`, `version`, and optionally `reasoningLevels`
  * @param {string} tier
  * @returns {null | {
- *   model: object, family: string, generation: number, staleFamily: string,
+ *   model: object, family: string, generation: number, staleFamily: string|null,
  *   staleVersion: string|null, staleRank: number, reasoning: string|null,
  *   reason: string,
  * }}
@@ -183,27 +190,32 @@ export function generationFallback(connector, models, tier) {
   if (!members.length) return null;
   const generation = Math.max(...members.map((model) => versionGeneration(model.version)));
   const rules = byRank(familyRules(connector));
-  const serving = rules.find((rule) => rule.tier === tier);
-  if (!serving) return null;
+  const serving = rules.find((rule) => rule.tier === tier) ?? null;
+  // An exact row may rank a model for a tier no family serves; that model
+  // serves the tier, and nothing stands in for it.
+  if (!serving && (models ?? []).some((model) => model?.tier === tier)) return null;
   const newestOf = (family) => members
     .filter((model) => model.family === family)
     .sort((a, b) => compareVersions(versionLabelParts(b.version), versionLabelParts(a.version))
       || String(a.id).localeCompare(String(b.id)))[0] ?? null;
-  const current = newestOf(serving.family);
+  const current = serving ? newestOf(serving.family) : null;
   if (current && versionGeneration(current.version) === generation) return null;
+  const why = typeof setting.why === 'string' && setting.why.trim() ? setting.why.trim() : null;
   for (const rule of rules) {
-    if (rule.rank >= serving.rank || rule.family === serving.family) continue;
+    if (serving && (rule.rank >= serving.rank || rule.family === serving.family)) continue;
     const candidate = newestOf(rule.family);
     if (!candidate || versionGeneration(candidate.version) !== generation) continue;
     return {
       model: candidate,
       family: rule.family,
       generation,
-      staleFamily: serving.family,
+      staleFamily: serving?.family ?? null,
       staleVersion: current?.version ?? null,
-      staleRank: serving.rank,
+      staleRank: serving?.rank ?? 0,
       reasoning: typeof setting.reasoning === 'string' ? setting.reasoning : null,
-      reason: `no ${generationLabel(connector, generation)} ${serving.family} yet, newest generation preferred`,
+      reason: why ?? (serving
+        ? `no ${generationLabel(connector, generation)} ${serving.family} yet, newest generation preferred`
+        : `no ${tier} family, newest ${rule.family} preferred`),
     };
   }
   return null;

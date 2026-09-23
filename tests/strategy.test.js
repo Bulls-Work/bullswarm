@@ -193,6 +193,17 @@ test('model exclusions pin an allowed same-tier model or block an unsafe implici
   assert.equal(resolveDispatchModel(claude, 'medium', {
     excludedModels: ['claude-fable-5'],
   }).model, 'claude-sonnet-5');
+  // A never-recommend model is skipped by the fallback even when it ranks
+  // highest: an unrelated exclusion must not route high work onto it.
+  assert.deepEqual(resolveDispatchModel({
+    ...claude,
+    modelProfiles: [
+      { match: '^claude-fable-5$', tier: 'high', qualityRank: 6, autoRecommend: false },
+      ...claude.modelProfiles.slice(1),
+    ],
+  }, 'high', { excludedModels: ['claude-sonnet-5'] }), {
+    eligible: true, model: 'claude-opus-5', source: 'exclusion-safe-tier-fallback',
+  });
   assert.equal(resolveDispatchModel({
     name: 'implicit-only', spawn: { cmd: ['agent'] }, knownModels: ['blocked-model'],
     modelProfiles: [{ match: 'blocked-model', tier: 'high' }],
@@ -728,6 +739,131 @@ test('a Codex fallback keeps terra\'s standing against other pools on medium', a
   // the stale terra right behind it and Claude after both.
   assert.deepEqual(report.suggestions.medium.candidates.map((c) => `${c.pool}/${c.model}`),
     ['codex/gpt-6-luna', 'codex/gpt-5.6-terra', 'claude-code/claude-sonnet-5']);
+});
+
+// --- Grok: one model line -------------------------------------------------------
+// Owner decision: Grok suggests its newest grok-N.M on every tier, and the
+// tiers differ only by reasoning. build-fast is the same model at twice the
+// price, so it is never suggested.
+
+// What `grok models` (grok 1.0.40) listed on 2026-09-23.
+const GROK_IDS = ['grok-4.7', 'grok-4.7-build-fast', 'grok-4.6', 'grok-4.5'];
+const GROK_WHY = 'one Grok line, lighter reasoning for lighter tiers';
+
+// Through the connector's own `bullets` parser, as `grok models` prints them.
+async function grokDiscovery(ids = GROK_IDS) {
+  const output = ids.map((id, i) => (i === 0 ? `  * ${id} (default)` : `  - ${id}`)).join('\n');
+  return discoverConnectorModels(packagedConnector('grok'), { executor: async () => `Available models:\n${output}\n` });
+}
+
+async function grokReport(ids) {
+  const grok = packagedConnector('grok');
+  return buildStrategy({
+    connectors: { grok }, pools: [poolFor(grok)], state: {},
+    discoveries: { grok: await grokDiscovery(ids) },
+  });
+}
+
+test('Grok suggests grok-4.7 on every tier, at xhigh, high and medium reasoning', async () => {
+  const grok = packagedConnector('grok');
+  const report = await grokReport();
+  assert.equal(report.discoveries.grok.source, 'cli');
+  const provider = report.providerSuggestions.grok;
+  // High is the family's own tier: the newest version wins and carries no
+  // level, so the rung runs the connector's high default.
+  assert.deepEqual(provider.high.recommended, { model: 'grok-4.7' });
+  const high = resolveReasoningLevel({ connector: grok, tier: 'high', model: 'grok-4.7', strategy: {} });
+  assert.deepEqual([high.applied, high.source], ['xhigh', 'connector']);
+  // No family serves medium or low: the same model, carrying the tier's level.
+  assert.deepEqual(provider.medium.recommended, { model: 'grok-4.7', reasoning: 'high', why: GROK_WHY });
+  assert.deepEqual(provider.low.recommended, { model: 'grok-4.7', reasoning: 'medium', why: GROK_WHY });
+  assert.deepEqual(provider.low.candidates[0].fallback, {
+    family: 'grok', generation: 4, staleFamily: null, staleVersion: null,
+    replaces: null, reasoning: 'medium', reasoningClamped: false, reason: GROK_WHY,
+  });
+  assert.deepEqual(provider.medium.candidates.map((c) => c.model), ['grok-4.7']);
+  // The carried levels are the connector's own tier defaults.
+  for (const tier of ['medium', 'low']) {
+    assert.equal(grok.generationFallback.tiers[tier].reasoning, grok.reasoning.defaults[tier], tier);
+  }
+  // Every model the CLI lists is ranked, and grok-4.5 is no longer medium.
+  assert.deepEqual(report.unranked, []);
+  assert.equal(report.discoveries.grok.models.find((m) => m.id === 'grok-4.5').tier, 'high');
+  for (const tier of STRATEGY_TIERS) assert.equal(report.suggestions[tier].recommended.model, 'grok-4.7', tier);
+});
+
+test('a newer grok takes over every Grok tier the day the CLI lists it', async () => {
+  for (const newest of ['grok-4.8', 'grok-5']) {
+    const report = await grokReport([newest, `${newest}-build-fast`, ...GROK_IDS]);
+    const provider = report.providerSuggestions.grok;
+    assert.deepEqual(provider.high.recommended, { model: newest }, newest);
+    assert.deepEqual(provider.medium.recommended, { model: newest, reasoning: 'high', why: GROK_WHY }, newest);
+    assert.deepEqual(provider.low.recommended, { model: newest, reasoning: 'medium', why: GROK_WHY }, newest);
+    // It has no price row yet and still ranks first: newest wins in the family.
+    assert.equal(provider.high.candidates[1].model, 'grok-4.7');
+    assert.equal(report.discoveries.grok.models.find((m) => m.id === newest).pricing, null);
+  }
+  // A new build-fast alone changes nothing: it is never suggested.
+  const fastOnly = await grokReport(['grok-4.8-build-fast', ...GROK_IDS]);
+  for (const tier of STRATEGY_TIERS) {
+    assert.equal(fastOnly.providerSuggestions.grok[tier].recommended.model, 'grok-4.7', tier);
+  }
+});
+
+test('grok-4.7-build-fast is never recommended but stays selectable by hand', async () => {
+  const grok = packagedConnector('grok');
+  const report = await grokReport();
+  const fast = report.discoveries.grok.models.find((m) => m.id === 'grok-4.7-build-fast');
+  // Listed and ranked like its base model, opted out of recommendations, unpriced.
+  assert.deepEqual([fast.tier, fast.qualityRank, fast.family, fast.version, fast.autoRecommend, fast.ranking],
+    ['high', 5, 'grok-build-fast', '4.7', false, 'ranked']);
+  assert.equal(fast.pricing, null);
+  for (const tier of STRATEGY_TIERS) {
+    assert.equal(report.providerSuggestions.grok[tier].candidates.some((c) => c.model === fast.id), false, tier);
+    assert.equal(report.suggestions[tier].candidates.some((c) => c.model === fast.id), false, tier);
+  }
+  // Alone, it is still not suggested for any tier.
+  const alone = await grokReport(['grok-4.7-build-fast']);
+  for (const tier of STRATEGY_TIERS) assert.equal(alone.providerSuggestions.grok[tier].recommended, null, tier);
+  // By hand, a rung runs it at the tier's reasoning.
+  const strategy = { configuredTiers: ['medium'] };
+  setRung(strategy, { pool: 'grok', tier: 'medium', model: 'grok-4.7-build-fast' });
+  const [row] = rungsFor({ pools: [poolFor(grok)], strategy });
+  assert.deepEqual([row.model, row.eligible, row.reasoning.applied], ['grok-4.7-build-fast', true, 'high']);
+  // Where models are ordered by rank alone (exclusions on, no rung), the
+  // plain model wins the tie with its equally ranked fast twin.
+  assert.equal(resolveDispatchModel(grok, 'high', { excludedModels: ['grok-4.5'] }).model, 'grok-4.7');
+});
+
+test('Codex and Claude suggestions are unchanged with Grok alongside', async () => {
+  const codex = packagedConnector('codex');
+  const claude = packagedConnector('claude-code');
+  const grok = packagedConnector('grok');
+  const discoveries = {
+    codex: await discoverWithLevels(codex, CODEX_IDS),
+    'claude-code': await discoverWith(claude, ['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5']),
+    grok: await grokDiscovery(),
+  };
+  const report = (withGrok) => buildStrategy({
+    connectors: withGrok ? { codex, 'claude-code': claude, grok } : { codex, 'claude-code': claude },
+    pools: [poolFor(codex), poolFor(claude), ...(withGrok ? [poolFor(grok)] : [])],
+    state: {},
+    discoveries,
+  });
+  const before = report(false);
+  const after = report(true);
+  for (const pool of ['codex', 'claude-code']) {
+    assert.deepEqual(after.providerSuggestions[pool], before.providerSuggestions[pool], pool);
+  }
+  // Grok's medium and low stand-in has no rank of its own there, so the
+  // tier-wide pick stays with the pools that serve those tiers.
+  for (const tier of STRATEGY_TIERS) {
+    assert.deepEqual(after.suggestions[tier].recommended, before.suggestions[tier].recommended, tier);
+  }
+  assert.deepEqual(after.suggestions.medium.recommended, { pool: 'codex', model: 'gpt-6-luna', reasoning: 'max', why: 'no gpt-6 terra yet, newest generation preferred' });
+  const grokMedium = after.suggestions.medium.candidates.find((c) => c.pool === 'grok');
+  assert.deepEqual([grokMedium.model, grokMedium.fallback.reasoning], ['grok-4.7', 'high']);
+  assert.equal(after.suggestions.medium.candidates.at(-1).pool, 'grok');
 });
 
 test('applying a recommendation writes its level once, marked, and never over an operator level', () => {

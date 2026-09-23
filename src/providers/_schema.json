@@ -224,11 +224,12 @@
       "autoRecommend": true
     }
   ],
-  "$comment-generationFallback": "Optional, per tier. When the family serving an opted-in tier has no model in the pool's newest generation (the highest leading version number among its recommendable family members), the tier takes the newest-generation model of the next-lower-ranked family at `reasoning` (clamped to what that model supports). `label` names a generation in the explanation, e.g. gpt-{generation} -> 'no gpt-6 terra yet'.",
+  "$comment-generationFallback": "Optional, per tier. When the family serving an opted-in tier has no model in the pool's newest generation (the highest leading version number among its recommendable family members), the tier takes the newest-generation model of the next-lower-ranked family at `reasoning` (clamped to what that model supports). An opted-in tier that no family serves and no model is ranked for (a provider with one model line) takes the best-ranked family's newest-generation model the same way. `label` names a generation in the explanation, e.g. gpt-{generation} -> 'no gpt-6 terra yet'; an optional `why` replaces the generated explanation.",
   "generationFallback": {
     "label": "example-{generation}",
     "tiers": {
-      "medium": { "reasoning": "max" }
+      "medium": { "reasoning": "max" },
+      "low": { "reasoning": "medium", "why": "optional plain reason shown with the suggestion" }
     }
   },
   "modelProfiles": [

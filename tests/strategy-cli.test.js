@@ -695,6 +695,54 @@ test('the setup review screen shows the fallback model, its reasoning, and why',
   } finally { f.cleanup(); }
 });
 
+// --- Grok's one model line, applied ---------------------------------------------
+
+const GROK_LISTED = 'Available models:\n  * grok-4.7 (default)\n  - grok-4.7-build-fast\n  - grok-4.6\n  - grok-4.5\n';
+const GROK_WHY = 'one Grok line, lighter reasoning for lighter tiers';
+
+async function grokAndCodexReport(dir) {
+  const { codex, grok } = loadConnectors(dir, { packaged: true });
+  const pool = (connector) => ({
+    name: connector.name, connector, enabled: true, pace: 0, costRank: connector.costRank,
+    lanes: connector.lanes, capabilities: connector.capabilities,
+  });
+  return buildStrategy({
+    connectors: { codex, grok },
+    pools: [pool(codex), pool(grok)],
+    state: {},
+    discoveries: {
+      codex: (await codexFallbackReport(dir)).discoveries.codex,
+      grok: await discoverConnectorModels(grok, { executor: async () => GROK_LISTED }),
+    },
+  });
+}
+
+test('apply gives every grok rung grok-4.7, with medium and low at the tier\'s lighter reasoning', async () => {
+  const f = fixture();
+  try {
+    const result = applyStrategyRecommendations(f.dir, await grokAndCodexReport(f.dir));
+    assert.deepEqual(result.rungs.grok, { high: 'grok-4.7', medium: 'grok-4.7', low: 'grok-4.7' });
+    assert.deepEqual(result.reasoning.written.filter((entry) => entry.pool === 'grok'), [
+      { pool: 'grok', tier: 'medium', level: 'high', model: 'grok-4.7', why: GROK_WHY },
+      { pool: 'grok', tier: 'low', level: 'medium', model: 'grok-4.7', why: GROK_WHY },
+    ]);
+    assert.deepEqual(loadState(f.dir).strategy.assignments, {});
+    const rows = (await rungRows(f.dir, { pool: 'grok' })).map((row) => [row.tier, row.model, row.reasoning.applied, row.reasoning.source]);
+    assert.deepEqual(rows, [
+      ['high', 'grok-4.7', 'xhigh', 'connector'],
+      ['medium', 'grok-4.7', 'high', 'recommendation'],
+      ['low', 'grok-4.7', 'medium', 'recommendation'],
+    ]);
+    // Best now stays with Codex; Grok's own rung is named under each tier.
+    const shown = await runStrategy(['show'], f.dir);
+    assert.match(shown.out, /medium: codex\/gpt-6-luna · max reasoning \(best now; routing picks by spare quota\)/);
+    assert.match(shown.out, /^ {4}grok rung: grok-4\.7 · high reasoning — one Grok line, lighter reasoning for lighter tiers$/m);
+    assert.match(shown.out, /^ {4}grok rung: grok-4\.7 · medium reasoning — one Grok line, lighter reasoning for lighter tiers$/m);
+    assert.doesNotMatch(shown.out, /build-fast/);
+    assert.doesNotMatch(shown.out, /^unranked:/m);
+  } finally { f.cleanup(); }
+});
+
 test('raw terminal input preserves arrows and splits batched search typing', () => {
   assert.deepEqual(inputKeys(`opus\x1b[C\r`), ['o', 'p', 'u', 's', '\x1b[C', '\r']);
 });

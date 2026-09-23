@@ -219,6 +219,39 @@ test('the generation fallback is generic: stale serving family -> next-lower fam
   assert.equal(fallback(['m-3-top', 'm-3-small'], 'medium', unlabeled).reason, 'no generation 3 mid yet, newest generation preferred');
 });
 
+test('an opted-in tier no family serves takes the best-ranked family\'s newest-generation model', () => {
+  const connector = {
+    generationFallback: { tiers: {
+      medium: { reasoning: 'high', why: 'one line, lighter reasoning for lighter tiers' },
+      low: { reasoning: 'medium' },
+    } },
+    modelFamilies: [
+      { family: 'line', match: '^line-[0-9.]+$', tier: 'high', qualityRank: 5 },
+      { family: 'fast', match: '-fast$', tier: 'high', qualityRank: 5, autoRecommend: false },
+    ],
+  };
+  const model = (id) => ({ id, ...modelRanking(connector, id) });
+  // Only recommendable models are passed in, as strategy.js does.
+  const fallback = (ids, tier, c = connector) => generationFallback(c, ids.map(model)
+    .filter((m) => m.tier && m.autoRecommend !== false), tier);
+  const found = fallback(['line-2.1', 'line-2.1-fast', 'line-2.0', 'line-1.9'], 'medium');
+  assert.deepEqual(
+    [found.model.id, found.family, found.generation, found.staleFamily, found.staleVersion, found.staleRank, found.reasoning, found.reason],
+    ['line-2.1', 'line', 2, null, null, 0, 'high', 'one line, lighter reasoning for lighter tiers'],
+  );
+  // No declared why: a generated reason names the tier and the family.
+  assert.equal(fallback(['line-2.1'], 'low').reason, 'no low family, newest line preferred');
+  // The opted-out fast twin never stands in, even alone.
+  assert.equal(fallback(['line-2.1-fast'], 'medium'), null);
+  // A tier the connector does not opt in: no stand-in.
+  assert.equal(fallback(['line-2.1'], 'medium', { ...connector, generationFallback: { tiers: { low: { reasoning: 'medium' } } } }), null);
+  // An exact row that ranks a model for the tier serves it: no stand-in.
+  const withRow = { ...connector, modelProfiles: [{ match: '^other-1$', tier: 'medium', qualityRank: 2 }] };
+  const ranked = (ids) => ids.map((id) => ({ id, ...modelRanking(withRow, id) }));
+  assert.equal(generationFallback(withRow, ranked(['line-2.1', 'other-1']), 'medium'), null);
+  assert.equal(generationFallback(withRow, ranked(['line-2.1']), 'medium').model.id, 'line-2.1');
+});
+
 test('provider validate checks generationFallback', () => {
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-generation-'));
   try {
@@ -247,15 +280,16 @@ test('provider validate checks generationFallback', () => {
     const ok = validateProvider(home, dir, loader);
     assert.equal(ok.ok, true, JSON.stringify(ok));
     writeFileSync(join(dir, 'connector.json'), JSON.stringify(pool({
-      generationFallback: { label: 'acme', tiers: { huge: { reasoning: 'ultra' } } },
+      generationFallback: { label: 'acme', tiers: { huge: { reasoning: 'ultra' }, low: { reasoning: 'low', why: ' ' } } },
     })));
     const errors = validateProvider(home, dir, loader).pools[0].errors.join('\n');
     assert.match(errors, /generationFallback\.label: must be a string containing \{generation\}/);
     assert.match(errors, /generationFallback\.tiers\.huge: unknown tier/);
     assert.match(errors, /generationFallback\.tiers\.huge\.reasoning: must be low, medium, high, xhigh, max/);
+    assert.match(errors, /generationFallback\.tiers\.low\.why: must be a non-empty string/);
     assert.match(errors, /generationFallback: needs modelFamilies/);
     // The packaged connectors that declare it pass.
-    for (const name of ['codex', 'claude-code']) {
+    for (const name of ['codex', 'claude-code', 'grok']) {
       const report = validateProvider(home, join(REPO, 'src', 'providers', name), loader);
       assert.deepEqual(report.pools.flatMap((p) => p.errors), [], name);
     }
