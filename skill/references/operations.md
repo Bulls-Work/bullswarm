@@ -202,7 +202,8 @@ the attempt ran past it).
 
 **Early return.** When a step's `## Not done` section lists items, the step
 still succeeds. Its attempt records `returnedEarly: { count, items }`, the Step
-page and the Run timeline read `returned early · N not done`, and a full watch
+page and the Run timeline read `returned early · N not done` and the selected
+Run row and the Step header list the stored items, and a full watch
 prints `◐ <step> returned early · N not done` instead of the finished line. The
 items are quoted in the tasks of the verifiers that judge the requirements the
 step affects. Nothing is retried and nothing fails: this is an honest partial

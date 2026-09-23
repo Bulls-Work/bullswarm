@@ -74,6 +74,7 @@ function attemptSilenceTimeoutSec(pool, effort, decisionLog, configuredSilenceSe
 function classifyFailure(verdict, pool = null) {
   if (verdict?.ok) return null;
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
+  if (verdict?.failureKind === 'no-op') return 'no-op';
   // Quota outranks the quarantine hint: a usage limit also asks for a
   // quarantine, but it is a healthy credential with an empty window, and only
   // it carries a real reset deadline.
@@ -195,12 +196,12 @@ function artifactBesideTask(taskFile, kind, ext) {
   return join(dirname(taskFile), `${kind}-${trimmed}${ext}`);
 }
 
-function withAttemptArtifacts(files, actionId, ordinal) {
+function withAttemptArtifacts(files) {
   return {
     ...files,
     streamFile: files.streamFile ?? artifactBesideTask(files.taskFile, 'stream', '.jsonl'),
     stdoutFile: files.stdoutFile ?? artifactBesideTask(files.taskFile, 'stdout', '.log'),
-    diffFile: files.diffFile ?? join(dirname(files.taskFile), `diff-${actionId}-attempt-${ordinal}.txt`),
+    diffFile: files.diffFile ?? artifactBesideTask(files.taskFile, 'diff', '.txt'),
   };
 }
 
@@ -212,7 +213,7 @@ function withAttemptArtifacts(files, actionId, ordinal) {
  */
 export function attemptArtifactsOnDisk(taskFile, actionId, ordinal) {
   if (!taskFile) return {};
-  const files = withAttemptArtifacts({ taskFile }, actionId, ordinal);
+  const files = withAttemptArtifacts({ taskFile });
   const outputFile = artifactBesideTask(taskFile, 'out', '.md');
   const streamFile = existsSync(files.streamFile) ? files.streamFile
     : existsSync(files.stdoutFile) ? files.stdoutFile
@@ -334,6 +335,26 @@ function untrackedStat(targetDir, files) {
       ? `${file} | deleted (untracked)`
       : `${file} | +${lines} lines (new)`;
   }).join('\n');
+}
+
+// The commit HEAD points at, or null outside git or before the first commit.
+// A commit step changes no file bytes but moves HEAD.
+function headCommit(targetDir, execFile) {
+  return gitText(execFile, ['rev-parse', '--verify', '-q', 'HEAD'], targetDir)?.trim() || null;
+}
+
+// Only a build-lane attempt is expected to leave a change behind. A chore step
+// (a commit, a PR, a formatter with nothing to format) may legitimately change
+// nothing, and an analyze step must not change anything. An integration step
+// is build-lane but may find its writers left nothing to reconcile, so a clean
+// run that only executes the acceptance checks still passes.
+function isNoOpAttempt(action, verdict, snapshot, headBefore, headAfter) {
+  return Boolean(verdict?.ok)
+    && action.lane === 'build'
+    && action.kind !== 'integration'
+    && snapshot.ok
+    && snapshot.changedFiles.length === 0
+    && headBefore === headAfter;
 }
 
 /**
@@ -865,11 +886,13 @@ export async function dispatchV2Action({
       }
     }
     const ordinal = attempts.length + 1;
-    const files = withAttemptArtifacts(attemptPaths(paths, ordinal), action.id, ordinal);
+    const files = withAttemptArtifacts(attemptPaths(paths, ordinal));
     const beforeAttempt = hashTerritory(
       targetDir,
       territoryFiles(targetDir, action.ownedFiles, execFile),
     );
+    const headBefore = headCommit(targetDir, execFile);
+    let headAfter = headBefore;
     const incomingHandoff = priorHandoff;
     priorHandoff = null;
     const session = sessionFor(connector, pool, model, currentSession, now(), uuid);
@@ -975,9 +998,13 @@ export async function dispatchV2Action({
       // worker-exit callback. Either can let a sibling begin editing this
       // territory, which must not be attributed to the attempt that ended.
       snapshot = captureDiffSnapshot(targetDir, action.ownedFiles, beforeAttempt, execFile);
+      headAfter = headCommit(targetDir, execFile);
     } finally {
       if (ledgerEntry) withLedger(() => releaseAssignment(bullswarmDir, ledgerEntry.id));
       if (workerPid) onWorkerExit?.(workerPid);
+    }
+    if (isNoOpAttempt(action, verdict, snapshot, headBefore, headAfter)) {
+      verdict = { ...verdict, ok: false, why: 'no files changed', failureKind: 'no-op' };
     }
     // The saved file is the attribution record; later sibling edits are not
     // replayed into it.

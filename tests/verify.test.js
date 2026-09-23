@@ -86,3 +86,14 @@ test('substantive report may explain unauthorized matching near its head', () =>
   const output = "I'll inspect the requested files. Source text that contains `unauthorized` is not treated as a provider auth failure. The watch layer distinguishes structured transcript content from error-shaped provider diagnostics, and the content gate only rejects a standalone auth failure at the output start. Both behaviors were verified against the named source files.";
   assert.equal(judgeContent(output).verdict, 'pass');
 });
+
+test('plan-mode refusal wording is not itself a failure pattern', () => {
+  const output = "I can't carry out the requested code changes in plan mode. Press Shift+Tab to exit, then ask me again.";
+  assert.equal(judgeContent(output).verdict, 'pass');
+});
+
+test('substantive output passes without a Done heading', () => {
+  const output = 'The implementation updates the request parser and preserves the existing timeout behavior. '
+    + 'The focused tests cover malformed input, empty responses, and successful retries. All checks pass.';
+  assert.equal(judgeContent(output).verdict, 'pass');
+});

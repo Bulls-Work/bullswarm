@@ -256,7 +256,7 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.match(plain(screen), /▶ check-result · relay:b · /);
     // The timeline row carries the attempt's own clock, pool · model · effort
     // and the word `running`, with its duration right-aligned at the end.
-    assert.match(plain(screen), /^ \d{2}:\d{2}  ▶ check-result · relay:b · gpt-5\.6-luna · — · running\s+\S+$/m);
+    assert.match(plain(screen), /^ \d{2}:\d{2}  ▶ check-result · relay:b · gpt-5\.6-luna · tier — · running\s+\S+$/m);
     assert.equal(workflowPanelModel(row).phases[0].name, 'r1-implementation');
     // The Run page draws no panel border at any width: flat rules only. The
     // timeline's own ├─/│ tree glyphs are content, not a frame, so the test
@@ -775,7 +775,7 @@ test('dashboard rows expose the running action and its live attempt', () => {
     // The live band names the running action, and the timeline row carries the
     // attempt's own pool · model · effort with its clock right-aligned.
     assert.match(plain(tui), /▶ audit-files · opencode2 · /);
-    assert.match(plain(tui), /^ \d{2}:\d{2}  ▶ audit-files · opencode2 · relay\/gpt-5\.6-luna · — · running\s+\S+$/m);
+    assert.match(plain(tui), /^ \d{2}:\d{2}  ▶ audit-files · opencode2 · relay\/gpt-5\.6-luna · tier — · running\s+\S+$/m);
     // Run v2 rule 3: the live block is the turn you would watch, read from the
     // attempt's own event stream. This attempt kept none, so the block says so
     // instead of replaying a single `lastAgentEvent` summary as if it were one.
@@ -2344,7 +2344,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     // pool · model · effort, the word `running`, and its clock at the end.
     assert.match(
       evidence[0],
-      /^HH:MM ▶ check-result · relay:b · gpt-5\.6-luna · — · running 1m0[5-9]s$/,
+      /^HH:MM ▶ check-result · relay:b · gpt-5\.6-luna · tier — · running 1m0[5-9]s$/,
       evidence.join('\n'),
     );
     // The row is the same at every spinner frame: `running` is a word on the
@@ -2367,7 +2367,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     // running worker's block carries no token count at all.
     const agents = plain(renderWorkflowTui(row, { width: 130, height: 22, focus: 1, spinnerFrame: 0 }));
     assert.match(agents, /── live · check-result · relay:b · gpt-5\.6-luna/);
-    assert.match(segmentRows(agents, 'Evidence').map(normalizeRow).join('\n'), /▶ check-result · relay:b · gpt-5\.6-luna · — · running 1m0[5-9]s/);
+    assert.match(segmentRows(agents, 'Evidence').map(normalizeRow).join('\n'), /▶ check-result · relay:b · gpt-5\.6-luna · tier — · running 1m0[5-9]s/);
     assert.doesNotMatch(agents, /check-result[^\n]*tok/);
 
     // once the worker finishes, its durable row replaces the live one
@@ -2379,7 +2379,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     const done = renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 120, height: 30 });
     const doneRows = segmentRows(done, 'Evidence').map(normalizeRow);
     assert.equal(doneRows.filter((line) => /^HH:MM ✓ check-result/.test(line)).length, 1, doneRows.join('\n'));
-    assert.match(doneRows.join('\n'), /relay:b · gpt-5\.6-luna · — 1m0[5-9]s/);
+    assert.match(doneRows.join('\n'), /relay:b · gpt-5\.6-luna · tier — 1m0[5-9]s/);
     // A finished attempt keeps its route and its measured clock, and the live
     // block becomes `last finished`.
     assert.match(
@@ -2434,13 +2434,13 @@ test('V2 attempt rows and the agent pane show the applied reasoning level next t
     // The live band names the running worker and its own clock; the timeline
     // row under it carries the attempt's pool · model · effort, clock last.
     assert.match(plain(live), /▶ check-result · relay:b · /);
-    assert.match(plain(live), /^ \d{2}:\d{2}  ▶ check-result · relay:b · gpt-5\.6-luna · — · running\s+\S+$/m);
+    assert.match(plain(live), /^ \d{2}:\d{2}  ▶ check-result · relay:b · gpt-5\.6-luna · reasoning high · tier — · running\s+\S+$/m);
     // Phase 1 holds the finished attempt; its applied reasoning level reads
     // next to the model on the attempt row.
     // Rule 6: the finished attempt's row carries pool · model · effort with
     // its clock at the end.
     const phaseOne = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
-    assert.match(plain(phaseOne), /^ \d{2}:\d{2}  ✓ implement-result · relay · gpt-5\.6-luna · low\s+\S+$/m);
+    assert.match(plain(phaseOne), /^ \d{2}:\d{2}  ✓ implement-result · relay · gpt-5\.6-luna · reasoning max · tier low\s+\S+$/m);
     // Step v2 rule 1: the header's third line is pool · model · effort ·
     // reasoning, so the applied level reads there, next to the model.
     const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
@@ -2485,10 +2485,10 @@ test('attempts without a reasoning record mark the Step field unavailable', () =
     assert.match(plain(live), /▶ implement-result · /);
     // The attempt row keeps the pool · model · effort with its clock at the
     // end; with no reasoning record there is no level to print beside the model.
-    assert.match(plain(live), /^ \d{2}:\d{2}  ▶ implement-result · relay · gpt-5\.6-luna · — · running\s+\S+$/m);
+    assert.match(plain(live), /^ \d{2}:\d{2}  ▶ implement-result · relay · gpt-5\.6-luna · tier — · running\s+\S+$/m);
     assert.doesNotMatch(plain(live), /gpt-5\.6-luna · (?:minimal|low|medium|high|xhigh|max)\b/);
     const pane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 }));
-    assert.match(pane, /^ \d{2}:\d{2}  ▶ implement-result · relay · gpt-5\.6-luna · — · running/m);
+    assert.match(pane, /^ \d{2}:\d{2}  ▶ implement-result · relay · gpt-5\.6-luna · tier — · running/m);
     const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
     // An attempt with no applied effort and no reasoning record keeps dashes
     // where the level would be, and never the word `reasoning`.
@@ -2739,14 +2739,14 @@ test('the timeline opens one segment header per phase change instead of prefixin
     // gone because the phase rule already carries start → end and done/total.
     // (timestamps render in the local zone, so only their shape is asserted)
     assert.deepEqual(segmentRows(screen, 'discover-a · discover-b').map(normalizeRow), [
-      'HH:MM ✓ discover-a · relay · gpt-5.6-luna · — 1m00s',
-      'HH:MM ✓ discover-b · relay · gpt-5.6-luna · — 1m10s',
+      'HH:MM ✓ discover-a · relay · gpt-5.6-luna · tier — 1m00s',
+      'HH:MM ✓ discover-b · relay · gpt-5.6-luna · tier — 1m10s',
     ]);
 
     // The running phase shows its live worker and reports no completion.
     const implementation = segmentRows(screen, 'implement-a · implement-b').join('\n');
-    assert.match(implementation, /✓ implement-a · relay · gpt-5\.6-luna · —/);
-    assert.match(implementation, /▶ implement-b · relay · gpt-5\.6-luna · — · running/);
+    assert.match(implementation, /✓ implement-a · relay · gpt-5\.6-luna · tier —/);
+    assert.match(implementation, /▶ implement-b · relay · gpt-5\.6-luna · tier — · running/);
     assert.deepEqual(segmentRows(screen, 'implement-a · implement-b').filter((line) => line.includes('completed')), []);
     // A live phase reports its active minutes, not the word `running`.
     assert.match(
@@ -2812,12 +2812,12 @@ test('parallel dependency levels stay grouped in declared level order', () => {
       'Preflight', 'implement-a · implement-b', 'verify-a · verify-b',
     ]);
     assert.deepEqual(segmentRows(screen, 'implement-a · implement-b').map(normalizeRow), [
-      'HH:MM ✓ implement-a · relay · gpt-5.6-luna · — 1m00s',
-      'HH:MM ✓ implement-b · relay · gpt-5.6-luna · — 30s',
+      'HH:MM ✓ implement-a · relay · gpt-5.6-luna · tier — 1m00s',
+      'HH:MM ✓ implement-b · relay · gpt-5.6-luna · tier — 30s',
     ]);
     assert.deepEqual(segmentRows(screen, 'verify-a · verify-b').map(normalizeRow), [
-      'HH:MM ✓ verify-a · relay · gpt-5.6-luna · — 30s',
-      'HH:MM ✓ verify-b · relay · gpt-5.6-luna · — 30s',
+      'HH:MM ✓ verify-a · relay · gpt-5.6-luna · tier — 30s',
+      'HH:MM ✓ verify-b · relay · gpt-5.6-luna · tier — 30s',
     ]);
     // Phase 2 opened while phase 1 was still running: the clock column proves
     // the rows were grouped by declared phase, not by time.
@@ -2846,7 +2846,7 @@ test('a long phase keeps one rule and one row per attempt, and the page carries 
     assert.match(labels[1], /^work-0 · work-1 .*…$/);
     const rows = segmentRows(tall, labels[1]).map(normalizeRow);
     assert.equal(rows.length, 13, rows.join('\n'));
-    assert.match(rows.at(-1), /^HH:MM ▶ work-tail · relay · gpt-5\.6-luna · — · running \S+$/);
+    assert.match(rows.at(-1), /^HH:MM ▶ work-tail · relay · gpt-5\.6-luna · tier — · running \S+$/);
     assert.deepEqual(timelinePaneRows(tall).filter((line) => line.includes('continued')), []);
     assert.deepEqual(timelinePaneRows(tall).filter((line) => line.includes('[Phase:')), []);
 
@@ -2865,7 +2865,7 @@ test('the live block follows the newest work, and the page body is what scrolls'
     const pane = timelinePaneRows(following);
     // Rule 3: following the newest work is the live block's job now. It names
     // the running step, its route, its clock and says it is following.
-    assert.match(plain(following), /── live · work-tail · relay · gpt-5\.6-luna · — · \S+ · \d+ turns · \d+ events/);
+    assert.match(plain(following), /── live · work-tail · relay · gpt-5\.6-luna · tier — · \S+ · \d+ turns · \d+ events/);
     assert.match(plain(following), /Enter → the step page · following ●/);
     assert.match(frameHeader(following), /^ ● lng234 · running/);
     // The timeline keeps every attempt as its own row, in phase order, and
@@ -2900,11 +2900,11 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
       'Preflight', 'discover-a · discover-b', 'implement-a · implement-b', 'Evidence',
     ]);
     assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
-    // Even at 60 columns an attempt row keeps its action, its pool and its own
-    // clock (rule 6 drops the model and the effort on the phone); a live phase
-    // reports its active minutes rather than the word `running`.
+    // Even at 60 columns an attempt row keeps its action, its pool, its tier
+    // and its own clock (the phone drops the model and the reasoning); a live
+    // phase reports its active minutes rather than the word `running`.
     assert.match(segmentRows(screen, 'discover-a · discover-b').join('\n'), /✓ discover-a · relay/);
-    assert.match(segmentRows(screen, 'discover-a · discover-b').join('\n'), /✓ discover-a · relay\s+1m00s/);
+    assert.match(segmentRows(screen, 'discover-a · discover-b').join('\n'), /✓ discover-a · relay · tier —\s+1m00s/);
     assert.match(
       timelineSegments(screen).find((segment) => segment.label === 'implement-a · implement-b').elapsed,
       /^(?:\d+h\d+m|\d+m\d+s|\d+s)$/,
@@ -4277,7 +4277,7 @@ test('the Run plan draws one box per phase, flowing across the width and stackin
     );
     // The running worker is named by the live band, which carries its clock.
     assert.match(desktop, /── live · p3-run · codex · /);
-    assert.match(desktop, /▶ p3-run · codex · gpt-5\.6-luna · — · running/);
+    assert.match(desktop, /▶ p3-run · codex · gpt-5\.6-luna · tier — · running/);
 
     const narrow = plain(renderWorkflowTui(row, {
       width: 55, height: 100, nowMs,

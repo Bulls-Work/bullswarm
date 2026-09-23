@@ -308,6 +308,7 @@ function headerLines(presentation, { width, phone }) {
   if (phone && (header.earlyText || header.boxText)) {
     lines.push(` ${countList([header.earlyText && !header.running ? tint(header.earlyText, 'amber') : null, header.boxText ? dimCell(header.boxText) : null])}`);
   }
+  for (const item of header.notDoneItems ?? []) lines.push(fit(`  ${oneLine(item)}`, width));
   if (!phone && header.route) lines.push(` ${dimCell('route')}  ${oneLine(header.route)}`);
   return lines;
 }

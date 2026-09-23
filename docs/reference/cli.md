@@ -1270,7 +1270,7 @@ Interactive mode and the snapshot views are read-only. `--cancel` writes `cancel
 
 ### watch
 
-Follow one V2 run by printing one attach line, then one line per notable event, staying silent while work is merely in progress. `--next` prints no attach line and returns after the first notable event, or immediately at a pause or terminal status. Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and `--since`. A legacy authored-graph run cannot be watched: the watcher prints the legacy line and exits 2 before polling.
+Follow one V2 run by printing one attach line, then one line per notable event, staying silent while work is merely in progress. Plain `workflow watch <runId>` follows until the outcome (a terminal status, a caller-planner wait, or an operator pause). `--next` prints no attach line and returns after the first notable event, or immediately at a pause or terminal status. Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and `--since`. A legacy authored-graph run cannot be watched: the watcher prints the legacy line and exits 2 before polling.
 
 ```bash
 # Print the next notable event and exit; relaunch until outcome reports pause or terminal.

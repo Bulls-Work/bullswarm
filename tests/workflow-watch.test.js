@@ -163,6 +163,30 @@ test('human watch reports interval activity without repeating excerpts', () => {
   } finally { f.cleanup(); }
 });
 
+test('event watch bounds its buffer and preserves heartbeat event counts', async () => {
+  const f = v2Fixture({ shortId: 'buf234' });
+  try {
+    let output = '';
+    let maxPendingEvents = 0;
+    const watching = runWorkflowWatch(f.home, 'buf234', {
+      intervalMs: 10,
+      heartbeatMs: 100,
+      onPendingEventCount: (count) => { maxPendingEvents = Math.max(maxPendingEvents, count); },
+      output: { write: (text) => { output += text; } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < 40; i += 1) f.emit('attempt.agent_action', { actionId: 'write-report' });
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    f.state.actions[0].status = 'succeeded';
+    f.state.attempts[0].status = 'succeeded';
+    f.state.lifecycle = { ...f.state.lifecycle, status: 'completed', finishedAt: new Date().toISOString() };
+    f.save();
+    assert.equal(await watching, 0);
+    assert.equal(maxPendingEvents, 0);
+    assert.match(output, /40 new events/);
+  } finally { f.cleanup(); }
+});
+
 test('classic watch aggregates low-level actions until the heartbeat interval', async () => {
   const f = v2Fixture({ shortId: 'agg234' });
   try {

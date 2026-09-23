@@ -263,6 +263,12 @@ export function returnedEarlyText(attempt) {
   return Number.isInteger(count) && count > 0 ? `returned early · ${count} not done` : null;
 }
 
+export function returnedEarlyItems(attempt) {
+  return Array.isArray(attempt?.returnedEarly?.items)
+    ? attempt.returnedEarly.items.filter((item) => typeof item === 'string' && item.trim())
+    : [];
+}
+
 /**
  * `box 20m · ran 34m` once the attempt ran past its box (its wall minutes,
  * rounded), `box 20m` otherwise; null when the attempt had no box.

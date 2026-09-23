@@ -36,7 +36,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 |---|---|---|
 | `id` | yes | kebab-case, unique in the program |
 | `purpose` | yes | one line: what this action delivers |
-| `dependsOn` | yes | ids of the actions whose outputs this one reads; `[]` if none |
+| `dependsOn` | yes | ids of actions whose outputs this one reads or whose files/contracts a writer needs first; `[]` if none |
 | `affects` | yes | requirement IDs this action's work contributes to; an action with `ownedFiles` must list at least one |
 | `ownedFiles` | yes | repo-relative paths this action may edit; `[]` on a build-lane action means no territory limit (the integrator); analyze-lane actions edit nothing |
 | `prompt` | yes | the self-contained task text with the absolute workspace path written in (nothing is substituted); for a `digest`, one line of focus appended to the kernel-written task |
@@ -47,6 +47,8 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, `default`; how hard the picked model thinks |
 | `timeBox` | no | whole minutes, 0–240: the soft time box written into this step's task; `0` leaves the paragraph out. Omit it to take `defaults.timeBox`, else the box computed from this home's recorded attempts |
 | `inputs`, `produces` | no | artifact IDs, kebab-case: the producer lists an ID in `produces`, its consumer in `inputs`; omit for ordinary dependencies |
+
+`dependsOn` is an input dependency: list an action when a writer needs its files or contract before it can compile or prove its change. It makes the writer wait for that input; it does not represent a phase. Keep each behavior and its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate ordered steps, in that sequence. Give the browser/e2e step an explicit `timeBox` sized for the full suite. Make the gate kind `check` and the commit and PR steps kind `mechanical` (chore lane), because they change no file.
 
 ::: warning
 Never set `defaults.effort` to `high`. High belongs to `integration`, `architecture`, and `adversarial-acceptance`. A study that reads code and writes markdown is `implement`.
@@ -62,7 +64,7 @@ The box for an attempt is the first of these that applies:
 2. `defaults.timeBox`;
 3. 1.5 × the median wall minutes of the succeeded attempts in this home for the same pool and kind, when that pair has at least 5, else for the kind alone when it has at least 5, else 20. It is rounded to a multiple of 5 and kept within 10–60. `opencode` attempts never feed it, because that pool runs a slow free model.
 
-The box is resolved for each attempt, so a retry on another pool gets its own clock. A step whose report lists items under `## Not done` still succeeds. Its attempt records `returnedEarly` with the count and the items, the Step page reads `returned early · N not done` (and `box 20m · ran 34m` when the attempt ran past its box), `workflow watch` prints `◐ <step> returned early · N not done`, and the items are quoted to the verifiers that judge the requirements the step affects.
+The box is resolved for each attempt, so a retry on another pool gets its own clock. A step whose report lists items under `## Not done` still succeeds. Its attempt records `returnedEarly` with the count and the items, the Step page reads `returned early · N not done` (and `box 20m · ran 34m` when the attempt ran past its box) and lists the stored items in the header, the selected Run timeline row and the Run live block list them too, `workflow watch` prints `◐ <step> returned early · N not done`, and the items are quoted to the verifiers that judge the requirements the step affects.
 
 ## Verify rounds
 
@@ -83,6 +85,8 @@ The `repair-<n>` and `verify-round-<n>` steps are ordinary program steps that th
 ## Kinds
 
 An analyze-lane action edits nothing; its deliverable is the report a dependent reads. Do not restate `lane` or `effort` on an action that has a `kind`.
+
+A build-lane attempt is expected to change something. If it exits successfully but changes no file and leaves HEAD where it was, it is recorded as failed (`no files changed`, kind `no-op`). A commit changes no file bytes but moves HEAD, so a build-lane commit still passes. An `integration` step is exempt: its writers may leave nothing to reconcile, and a run that only executes the acceptance checks still passes. A chore-lane attempt may change nothing, so make a step that only commits, pushes or opens a PR a `mechanical` step, and a browser/e2e gate a `check`.
 
 | Kind | Lane | Effort | Use for |
 |---|---|---|---|

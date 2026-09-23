@@ -28,7 +28,7 @@ No other top-level field is accepted.
 |---|---|---|
 | `id` | yes | kebab-case, unique in the program |
 | `purpose` | yes | one line: what this action delivers |
-| `dependsOn` | yes | ids of the actions whose outputs this one reads; `[]` if none |
+| `dependsOn` | yes | ids of actions whose outputs this one reads or whose files/contracts a writer needs first; `[]` if none |
 | `affects` | yes | requirement IDs this action's work contributes to; an action with `ownedFiles` must list at least one |
 | `ownedFiles` | yes | repo-relative paths this action may edit; `[]` on a build-lane action means no territory limit (the integrator); analyze-lane actions edit nothing |
 | `prompt` | yes | the self-contained task text with the absolute workspace path written in (nothing is substituted; `<cwd>` in the example is a placeholder); for a `digest`, one line of focus appended to the kernel-written task |
@@ -42,6 +42,15 @@ No other top-level field is accepted.
 
 Any other field is rejected. Resolution per field: the action's own `lane` or
 `effort`, then the kind table, then `defaults`, then the lane's default.
+
+`dependsOn` is an input dependency: list an action when a writer needs its
+files or contract before it can compile or prove its change. It makes the
+writer wait for that input; it does not represent a phase. Keep each behavior
+and its focused test in one writer action, and have writers run the checks they
+own. After integration, put the full browser/e2e gate, commit, and PR in
+separate ordered steps, in that sequence. Give the browser/e2e step an explicit
+`timeBox` sized for the full suite. Make the gate kind `check` and the commit
+and PR steps kind `mechanical` (chore lane), because they change no file.
 
 ## Time box and verify rounds
 
@@ -81,7 +90,12 @@ failing after the last round comes back in the result's caller-decision block.
 | `adversarial-acceptance` | analyze | high | independent evidence; empty `affects` and `ownedFiles`, `evidenceFor` set |
 
 An analyze-lane action edits nothing; its deliverable is the report a
-dependent reads.
+dependent reads. A build-lane attempt is expected to change something: if it
+exits successfully but changes no file and leaves HEAD where it was, it is
+recorded as failed (`no files changed`, kind `no-op`). An `integration` step is
+exempt: its writers may leave nothing to reconcile, and a run that only executes
+the acceptance checks still passes. A chore-lane attempt may change nothing, so
+a step that only commits, pushes or opens a PR is a `mechanical` step.
 
 ## Requirement IDs
 

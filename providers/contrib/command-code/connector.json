@@ -8,7 +8,6 @@
     "cmd": [
       "command-code",
       "-p",
-      "--tools-all",
       "--yolo",
       "--max-turns",
       "10000",

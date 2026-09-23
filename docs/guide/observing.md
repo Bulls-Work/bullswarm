@@ -23,8 +23,8 @@ The pages are arranged as follows.
 | --- | --- |
 | **Home** | Today leads with at most three cards: active runs first, then the most recently finished. Each card shows the run name, project, execution status, independent verdict, active minutes, steps done/total, and the API/subscription money pair. From 120 columns the three cards sit side by side; up to 159 columns the plain-word licence block (`pool · worker-minutes · weekly share · API · subscription`, one row per pool) follows beneath them at full width, and from 160 columns it moves to the right of the cards and shares their rows. Below 120 the cards stack full width with the licence block beneath. Below `budget · this week`, `── last 7 days ──` (`Last 30 days`/`All time` cycle with `p`) charts spend per day beside the by-pool/by-model/by-project lists with Workflows/verified, Favourite pool/model, Spent, Median run and Busiest project, and `── recent ── history ›` lists the five newest runs; Running and Budget remain visible. |
 | **Runs** | The full run list lives here. Home's compact cards do not replace the active and history records on Runs. |
-| **Run** | The header says `done of total steps`, names running/waiting ids, and shows `active of span` minutes plus the start/finish clock. The plan is phase-only boxes on desktop (named step groups, never `Parallel work`) and a glyph strip on phones; `p` toggles the phone boxes. The live block is the selected running attempt's latest stream turn (or the last finished turn), and the spend block reports known API/plan subtotals with measured, estimated, running, and unmeasured coverage. The timeline has one phase rule with start → end, active duration and done/total, then one `clock · glyph · step · pool · model · effort` row per attempt; filler `started`/`completed` rows, licence bars, `so far`, and ETA rows are gone. |
-| **Step** | One header, then turns, result, task and cost. Line 1 of the header is the verdict (step · run · status · independent verification · attempt), line 2 the purpose, line 3 `pool · model · effort · reasoning` beside one clock, then the route sentence. At 160 columns the activity holds the left column and the result, task and cost cards stack on the right; below that the page stacks result → activity → task → cost. |
+| **Run** | The header says `done of total steps`, names running/waiting ids, and shows `active of span` minutes plus the start/finish clock. The plan is phase-only boxes on desktop (named step groups, never `Parallel work`) and a glyph strip on phones; `p` toggles the phone boxes. The live block is the selected running attempt's latest stream turn (or the last finished turn). Its title labels the applied reasoning and the routing tier (`reasoning high · tier medium`) and lists that step's stored not-done items. The spend block reports known API/plan subtotals with measured, estimated, running, and unmeasured coverage. The timeline has one phase rule with start → end, active duration and done/total, then one `clock · glyph · step · pool · model · reasoning <applied> · tier <effort>` row per attempt; a narrow row keeps `tier <effort>` and drops the model and reasoning. The selected attempt lists its stored not-done items under that row, clipped to the width; a collapsed row keeps the count only (`returned early · N not done`). Filler `started`/`completed` rows, licence bars, `so far`, and ETA rows are gone. |
+| **Step** | One header, then turns, result, task and cost. Line 1 of the header is the verdict (step · run · status · independent verification · attempt), line 2 the purpose, line 3 `pool · model · effort · reasoning` beside one clock. Each stored not-done item is its own line under that, then the route sentence. At 160 columns the activity holds the left column and the result, task and cost cards stack on the right; below that the page stacks result → activity → task → cost. |
 
 The Step activity heading carries one visible `overview · detail` toggle,
 straight after the heading word (`── activity · overview · detail · 9 turns …`);
@@ -130,7 +130,7 @@ The pages answer different questions:
 | --- | --- |
 | **Home** | What happened today, which top runs are verified, what API-equivalent/licence figures are available, and which workflows are active or recent? |
 | **Runs** | Which workflows are active or in the catalogue, in one `active` block above the History day table? `/` filters and `a` switches active/all; the agents and `run it` blocks moved to Help (`?`). |
-| **Run** | Where is this workflow in its compact phase plan, what is each attempt's pool/model/effort, and what are the current active and span durations? |
+| **Run** | Where is this workflow in its compact phase plan, what is each attempt's pool, model, applied reasoning and tier, and what are the current active and span durations? |
 | **Step** | What is this action doing — its header, turn activity, result, task, and cost, with model, effort, and active duration? |
 | **Budget** | What does each pool's quota window report, how much measured worker time is workflows versus rest, what money is measured or labelled, how many median runs fit, and which workflows used the most worker-minutes? |
 | **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time? Its four tabs are Spending, Pool, Model, and Project. Spending puts the dated chart beside four breakdown panels; `By Pool` / `By Model` changes both the chart stacks and the visible breakdowns. |
@@ -154,7 +154,7 @@ The pages answer different questions:
 ![Run page with phase plan, live activity, and attempt timeline](/screens/run.png)
 
 *Run separates execution progress from independent verification and shows the
-pool, model, effort, and clock for every attempt.*
+pool, model, applied reasoning, tier, and clock for every attempt.*
 
 ### Step
 
@@ -287,7 +287,8 @@ model and view. The page says the header once, then draws four blocks:
 1. **Header** — line 1 is the verdict: the step, its run, the execution status,
    the independent verdict, and the selected attempt (`attempt 1 of 2`). Line 2
    is the purpose. Line 3 is `pool · model · effort · reasoning` on the left and
-   the clock on the right; the route sentence follows as its own line. Nothing
+   the clock on the right. Each stored not-done item is its own line under
+   that, clipped to the width, and the route sentence follows. Nothing
    below the header repeats it.
 2. **Activity** — the turns. A turn is one response and the tools that led to
    it; the rule carries the turn count and the totals, and the last cells of the
@@ -597,8 +598,12 @@ a step running a long command is not silent.
 ## A step that looks stale
 
 For each running attempt the watcher scores four signals. It reads them from
-the attempt's persisted stream and from the modification times of the files
-the step owns:
+the attempt's persisted stream and from file modification times. A step that
+declares owned files is scored from those files only. A writing step that owns
+no files, such as the integrator, is scored from the files `git status` lists
+as changed in that workspace, so a later edit to a file already marked
+modified counts, including an edit made through a shell command. When git
+cannot be read, that check contributes nothing and the score uses the stream.
 
 | Signal | Fires when | Weight |
 |---|---|---|

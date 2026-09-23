@@ -46,14 +46,26 @@ author the graph.
   tree, so tell each to preserve others' edits and to report any file it needs
   outside its territory instead of editing it.
 - **Dependencies are inputs, not phases.** `dependsOn` lists the actions whose
-  outputs this action reads. Everything with no unmet dependency runs at once.
-  A phase is simply the set of actions that become ready together; never add a
-  dependency to fake one.
+  outputs this action reads and any file or contract a writer needs before it
+  can compile or prove its change. Independent actions start up to the
+  concurrency cap, and dependents start when their inputs are ready. A failed
+  action skips its dependents; other branches continue. Never add a dependency
+  just to group phases.
+- **Keep a vertical slice.** Keep each behavior and its focused test in the
+  same writer action. Writers should run the checks they own; do not tell every
+  writer to skip those checks.
 - **Integrate after parallel writers.** One `integration` action that depends
   on all of them, directly or through a digest, with `ownedFiles: []`, which
   on a build-lane action means no territory limit. It reads their outputs,
   resolves shared-file requests, and runs the repository's acceptance checks.
   It runs alone.
+- **Finish after integration.** Put the full browser/e2e gate, commit, and PR
+  in separate ordered steps after integration, in that sequence. Give the
+  browser/e2e step an explicit `timeBox` sized for the full suite. Make the
+  gate a `check` and the commit and PR steps `mechanical` (chore lane): a
+  build-lane attempt that succeeds but changes no file and leaves HEAD in place
+  is recorded as failed `no-op`. The `integration` step is exempt, so a clean
+  integrator whose writers left nothing to reconcile still passes.
 - **Check independently when acceptance matters.** One `adversarial-acceptance`
   action with empty `affects` and `ownedFiles`, `evidenceFor` set to the
   requirement IDs it judges, depending on every writer that affects them.

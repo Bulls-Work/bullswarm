@@ -37,6 +37,18 @@ function harness(verdicts, coreOverrides = {}) {
   };
 }
 
+function gitWorkspace(root) {
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  writeFileSync(join(repo, 'owned.txt'), 'base\n');
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
+  execFileSync('git', ['-C', repo, 'add', 'owned.txt']);
+  execFileSync('git', ['-C', repo, 'commit', '-qm', 'base']);
+  return repo;
+}
+
 // The free-model liveness probe (src/lib/probe.js) runs before a dispatch to a
 // rung that names a free model, and by default it spawns the pool's OWN CLI.
 // The staller fixture below never answers anything, so a real probe would burn
@@ -238,6 +250,166 @@ test('semantic rejection is observed once and never retried', async () => {
   const result = await dispatchV2Action({ action, taskText: 'do it', targetDir: '/tmp', paths, pools: [connector('luna-1'), connector('luna-2')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies });
   assert.equal(result.failureKind, 'semantic');
   assert.equal(result.attempts.length, 1);
+});
+
+test('a writing action with a successful empty diff snapshot fails as a no-op', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-no-op-'));
+  const repo = gitWorkspace(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const h = harness([good]);
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'write-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
+      taskText: 'make a bounded change', targetDir: repo,
+      paths: { taskFile: join(home, 'task-write-work-attempt-1.md'), outFile: join(home, 'out-write-work-attempt-1.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'no-op');
+    assert.equal(result.attempts[0].failureKind, 'no-op');
+    assert.equal(result.attempts[0].status, 'failed');
+    assert.equal(result.attempts[0].why, 'no files changed');
+    assert.equal(result.attempts[0].changedFileCount, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an analyze action with a successful empty diff snapshot still passes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-analyze-empty-'));
+  const repo = gitWorkspace(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const h = harness([good]);
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'inspect-work', lane: 'analyze', effort: 'low', ownedFiles: [] },
+      taskText: 'inspect without changes', targetDir: repo,
+      paths: { taskFile: join(home, 'task-inspect-work-attempt-1.md'), outFile: join(home, 'out-inspect-work-attempt-1.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].failureKind, null);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a build commit step that moves HEAD but changes no file bytes is not a no-op', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-commit-step-'));
+  const repo = gitWorkspace(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  // The integrator left the edit uncommitted; the commit step only records it.
+  writeFileSync(join(repo, 'owned.txt'), 'integrated\n');
+  const h = harness([() => {
+    execFileSync('git', ['-C', repo, 'commit', '-qam', 'integrate']);
+    return good;
+  }]);
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'commit', lane: 'build', effort: 'low', ownedFiles: [] },
+      taskText: 'commit the integrated change', targetDir: repo,
+      paths: { taskFile: join(home, 'task-commit-attempt-1.md'), outFile: join(home, 'out-commit-attempt-1.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    const commits = execFileSync('git', ['-C', repo, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim();
+    assert.equal(commits, '2');
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].status, 'succeeded');
+    assert.equal(result.attempts[0].failureKind, null);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a chore step that changes neither files nor HEAD, such as opening a PR, still passes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-chore-empty-'));
+  const repo = gitWorkspace(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const h = harness([good]);
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'open-pr', lane: 'chore', effort: 'low', ownedFiles: [] },
+      taskText: 'open the pull request', targetDir: repo,
+      paths: { taskFile: join(home, 'task-open-pr-attempt-1.md'), outFile: join(home, 'out-open-pr-attempt-1.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].failureKind, null);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an integration step with nothing to reconcile that only runs the checks still passes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-integration-clean-'));
+  const repo = gitWorkspace(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const h = harness([good]);
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'integrate', kind: 'integration', lane: 'build', effort: 'high', ownedFiles: [] },
+      taskText: 'reconcile the writers and run npm test', targetDir: repo,
+      paths: { taskFile: join(home, 'task-integrate-attempt-1.md'), outFile: join(home, 'out-integrate-attempt-1.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].status, 'succeeded');
+    assert.equal(result.attempts[0].failureKind, null);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an implement-kind writer that changes nothing still fails as a no-op', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-implement-no-op-'));
+  const repo = gitWorkspace(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const h = harness([good]);
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'write-work', kind: 'implement', lane: 'build', effort: 'medium', ownedFiles: [] },
+      taskText: 'make a bounded change', targetDir: repo,
+      paths: { taskFile: join(home, 'task-write-work-attempt-1.md'), outFile: join(home, 'out-write-work-attempt-1.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'no-op');
+    assert.equal(result.attempts[0].why, 'no files changed');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('diff files remain distinct across dispatch reruns of the same action', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-rerun-diff-'));
+  const repo = gitWorkspace(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  try {
+    const first = await dispatchV2Action({
+      action: { id: 'write-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
+      taskText: 'first bounded change', targetDir: repo,
+      paths: { taskFile: join(home, 'task-write-work-attempt-4.md'), outFile: join(home, 'out-write-work-attempt-4.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: harness([() => {
+        writeFileSync(join(repo, 'owned.txt'), 'first change\n');
+        return good;
+      }]).dependencies,
+    });
+    const firstDiff = readFileSync(first.attempts[0].diffFile, 'utf8');
+    const second = await dispatchV2Action({
+      action: { id: 'write-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
+      taskText: 'second bounded change', targetDir: repo,
+      paths: { taskFile: join(home, 'task-write-work-attempt-5.md'), outFile: join(home, 'out-write-work-attempt-5.md') },
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: harness([() => {
+        writeFileSync(join(repo, 'owned.txt'), 'second change\nsecond line\n');
+        return good;
+      }]).dependencies,
+    });
+    assert.equal(first.attempts[0].diffFile, join(home, 'diff-write-work-attempt-4.txt'));
+    assert.equal(second.attempts[0].diffFile, join(home, 'diff-write-work-attempt-5.txt'));
+    assert.notEqual(first.attempts[0].diffFile, second.attempts[0].diffFile);
+    assert.match(firstDiff, /1 file changed, 1 insertion\(\+\), 1 deletion\(-\)/);
+    assert.equal(readFileSync(first.attempts[0].diffFile, 'utf8'), firstDiff);
+    assert.match(readFileSync(second.attempts[0].diffFile, 'utf8'), /1 file changed, 2 insertions\(\+\), 1 deletion\(-\)/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('a free stall does not spend the mechanical retry and falls through to the next pool', async () => {
@@ -1190,6 +1362,9 @@ test('a free stall falls back with a frozen diff snapshot of the prior attempt',
       maxMechanicalRetries: 1,
       dependencies: { probeFreeModel: seam.probeFreeModel },
       onAttempt: (stage, record) => {
+        if (stage === 'started' && record.ordinal === 2) {
+          writeFileSync(join(repo, 'owned.txt'), `${readFileSync(join(repo, 'owned.txt'), 'utf8')}answerer edit\n`);
+        }
         if (stage === 'finished' && record.ordinal === 1) {
           writeFileSync(join(repo, 'owned.txt'), `${readFileSync(join(repo, 'owned.txt'), 'utf8')}SIBLING EDIT AFTER ATTEMPT END\n`);
           writeFileSync(join(repo, 'later.txt'), 'later sibling\n');
@@ -1251,7 +1426,10 @@ test('diff attribution compares bytes, including new, pre-dirty, staged and dele
       // are irrelevant to this diff-only assertion.
       return { ok: false, failureKind: 'provider', why: 'empty output', meta: { exitCode: 1 } };
     },
-    good,
+    () => {
+      writeFileSync(join(repo, 'owned.txt'), `${readFileSync(join(repo, 'owned.txt'), 'utf8')}accepted attempt\n`);
+      return good;
+    },
   ]);
   try {
     const result = await dispatchV2Action({
@@ -1342,6 +1520,11 @@ test('the persisted stream feeds the handoff block on a real fixture fallback', 
       silenceTimeoutSec: 2,
       maxMechanicalRetries: 1,
       dependencies: { probeFreeModel: seam.probeFreeModel },
+      onAttempt: (stage, record) => {
+        if (stage === 'started' && record.ordinal === 2) {
+          writeFileSync(join(repo, 'owned.txt'), `${readFileSync(join(repo, 'owned.txt'), 'utf8')}answerer edit\n`);
+        }
+      },
     });
     assert.equal(result.ok, true);
     const streamFile = join(home, 'stream-do-work-attempt-1.jsonl');

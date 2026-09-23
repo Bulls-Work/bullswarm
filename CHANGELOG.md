@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- workflow: a build-lane attempt that exits successfully, changes no files
+  and leaves HEAD where it was is recorded as failed (`no files changed`, kind
+  `no-op`) instead of verified. A commit step moves HEAD, so it still passes.
+  An `integration` step is exempt, so a clean integrator whose writers left
+  nothing to reconcile still passes. Chore and analyze attempts that change
+  nothing still pass, so commit and PR steps belong in `mechanical` (chore
+  lane), and a snapshot that could not be read is left as it was. The skill
+  and planner rules say which kind the browser/e2e gate, commit and PR steps
+  use.
+- workflow: an attempt's diff file is named from its task file
+  (`diff-<action>-attempt-<n>.txt` beside `task-<action>-attempt-<n>.md`), so
+  a rerun writes a new diff and leaves the earlier attempt's diff in place.
+- command-code: headless runs no longer pass `--tools-all`. The default tool
+  set still reads, writes, searches and runs shell commands. The flag was what
+  added `enter_plan_mode`, so a headless run can no longer switch itself into
+  plan mode. `--yolo` is unchanged.
+- dashboard: a Run timeline row and the live block label the routing tier as
+  `tier <effort>` and, when the attempt recorded one, the applied level as
+  `reasoning <level>`. A narrow timeline row keeps the tier and drops the
+  model and reasoning; the narrow live block keeps the model and its
+  reasoning and drops the tier.
+- dashboard: the selected Run timeline row, the Run live block, and the Step
+  header list a step's stored not-done items, clipped to the width. A
+  collapsed timeline row still shows only `returned early · N not done`.
+- planner: the skill, the program reference, and the program-mode planner
+  rules say `dependsOn` is how a writer waits for a file or contract it needs,
+  that a behavior and its focused test stay in one action, and that the full
+  browser gate, the commit, and the PR are separate steps after integration,
+  with an explicit `timeBox` on the browser step.
+- watch: the stale check for a writing step that owns no files reads the
+  changed files `git status` lists, including a file edited again through a
+  shell command. A step that declares owned files is still scored from those
+  files only. When git cannot be read, that check contributes nothing.
+- watch: event mode no longer keeps every new event in memory until the next
+  heartbeat. An opted-in heartbeat still prints the event count and the action
+  count. Plain `workflow watch <runId>` follows until the outcome.
+
 ## 0.35.6 — set reasoning per tier and per model from the setup screen
 
 - setup: the setup screen (`bullswarm setup`, `strategy tui`) can now set
@@ -686,7 +723,6 @@ The Budget verdict redesign is not in this release: it remains prototype frames
 under `docs/design/prototype-frames-0.33.1/` (`budget-55.txt`,
 `budget-120.txt`, `home-today-55.txt`, `home-today-120.txt` and their READMEs),
 drawn from the real pool figures of 2026-09-18.
-
 
 ## 0.33.0 — the dashboard release
 

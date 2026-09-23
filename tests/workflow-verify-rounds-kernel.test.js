@@ -98,7 +98,15 @@ async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-a
       writeFileSync(files.outFile, 'evidence recorded');
       return { ok: true, why: 'structured output validated', structured: opts.outputValidator('prose'), meta };
     }
-    const report = scenario.work?.[id]?.({ targetDir, task }) ?? `## Done\n- ${id}\n\n## Not done\n- none\n\n## Suggested next step\n- none`;
+    const handler = scenario.work?.[id];
+    const report = handler?.({ targetDir, task }) ?? `## Done\n- ${id}\n\n## Not done\n- none\n\n## Suggested next step\n- none`;
+    // A build attempt that changes nothing is a no-op. An unscripted step
+    // still has to leave a byte change, and the comment does not make alpha()
+    // return 2, so the judge's verdict stays the one the scenario wrote.
+    if (!handler) {
+      const marker = join(targetDir, 'src', 'a.js');
+      writeFileSync(marker, `${read(targetDir, 'src/a.js').replace(/\n$/, '')} // ${id}\n`);
+    }
     writeFileSync(files.outFile, report);
     return { ok: true, why: 'ok', meta };
   };
@@ -191,7 +199,7 @@ test('an uncovered mandatory requirement is not judged and alone starts no repai
     /^verify rounds 1\/3 · not verified — your decision:$/);
 
   // With alpha failing, the repair is for alpha only; gamma stays with the caller.
-  const failing = await runLoop(t, { work: { ...buggyBuild, 'repair-1': () => '## Done\n- tried\n\n## Suggested next step\n- none' }, judge: workspaceJudge },
+  const failing = await runLoop(t, { work: { ...buggyBuild, 'repair-1': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'a.js'), 'export const alpha = () => 1; // tried\n'); return '## Done\n- tried\n\n## Suggested next step\n- none'; } }, judge: workspaceJudge },
     { requirements: [...REQUIREMENTS, GAMMA], programDoc: program({ verifyRounds: 2 }), runId: 'wf-loop-d4e5f6' });
   const repair = failing.run.state.program.actions.find((action) => action.id === 'repair-1');
   assert.deepEqual(repair.affects, ['alpha'], 'the repair takes the failed requirement, not the uncovered one');
@@ -273,8 +281,8 @@ test('fail in all 3 rounds: stops with the caller-decision block, never a fourth
   const { run, loop, ids, events } = await runLoop(t, {
     work: {
       ...buggyBuild,
-      'repair-1': () => '## Done\n- tried\n\n## Not done\n- alpha still prints 1\n\n## Suggested next step\n- none',
-      'repair-2': () => '## Done\n- tried again\n\n## Not done\n- alpha still prints 1\n\n## Suggested next step\n- rewrite alpha() against the spec in docs/alpha.md',
+      'repair-1': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'a.js'), 'export const alpha = () => 1; // tried\n'); return '## Done\n- tried\n\n## Not done\n- alpha still prints 1\n\n## Suggested next step\n- none'; },
+      'repair-2': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'a.js'), 'export const alpha = () => 1; // tried again\n'); return '## Done\n- tried again\n\n## Not done\n- alpha still prints 1\n\n## Suggested next step\n- rewrite alpha() against the spec in docs/alpha.md'; },
     },
     judge: workspaceJudge,
   });
@@ -329,11 +337,11 @@ test('fail in all 3 rounds: stops with the caller-decision block, never a fourth
     'verify round 1 of 3 · 2 to judge',
     'verify round 1 of 3 · 1 failed · repair next',
     'repair round 1 · 1 requirement · repair-1',
-    'repair round 1 finished · 0 files changed',
+    'repair round 1 finished · 1 file changed',
     'verify round 2 of 3 · 1 to re-check',
     'verify round 2 of 3 · 1 failed · repair next',
     'repair round 2 · 1 requirement · repair-2',
-    'repair round 2 finished · 0 files changed',
+    'repair round 2 finished · 1 file changed',
     'verify round 3 of 3 · 1 to re-check',
     'verify round 3 of 3 · 1 failed · your decision',
   ]);

@@ -269,6 +269,13 @@ test('every planner rule set states the reasoning field once', () => {
   assert.match(prompt, /optional per-action `reasoning` field \(low\|medium\|high\|xhigh\|max\|default\)/);
 });
 
+test('program planner guidance keeps writer inputs, slices and delivery explicit', () => {
+  const expected = 'Use `dependsOn` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. ' +
+    'After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit `timeBox` sized for the full suite. ' +
+    'Make the gate kind `check` and the commit and PR steps kind `mechanical`: a build-lane attempt other than `integration` that succeeds but changes no file and leaves HEAD in place fails as `no-op`.';
+  assert.ok(v2PlannerContractRules({ executionMode: 'program' }).includes(expected));
+});
+
 test('the planning contract documents kind, its derived table, program defaults, and the advisories', () => {
   const goal = createV2GoalDocument({
     goal: 'Create and check report.md', cwd: '/tmp',

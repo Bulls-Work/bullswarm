@@ -1440,7 +1440,9 @@ const workflowWatchText = rich({
   usage: 'bullswarm workflow watch <runId> [--until outcome|trouble] [--classic] [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next [--after <sequence>] [--since <iso-timestamp>]] [--jsonl] [--once] [--verbose]',
   purpose: "Follow one V2 run by printing one attach line, then one line per notable event "
     + '(action finished/failed/blocked/cancelled, evidence, stage completion, stall/recovery, planning, '
-    + 'cancellation) and staying silent while work is merely in progress. A usage-limit failure always '
+    + 'cancellation) and staying silent while work is merely in progress. Plain `workflow watch <runId>` '
+    + 'follows until the outcome (a terminal status, a caller-planner wait, or an operator pause). '
+    + 'A usage-limit failure always '
     + 'prints, verbose or not: an `⚠ ... usage limit on <pool> · paused until <deadline> · retrying on '
     + 'another pool` line, then an `↺ ... now on <pool> · <model>` line once the mechanical retry lands. '
     + '`--classic` forces the older heartbeat-based watcher instead (transition-on-change snapshots plus '

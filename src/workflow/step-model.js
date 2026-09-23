@@ -24,7 +24,7 @@ import { formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
 import { finiteOrNull } from '../lib/num.js';
 import { isFreeModel } from '../lib/usage.js';
 import { loadTemplates, ownsPoolName, providerDirs } from '../lib/providers.js';
-import { returnedEarlyText, timeBoxText } from './time-box.js';
+import { returnedEarlyItems, returnedEarlyText, timeBoxText } from './time-box.js';
 
 const START_STATUSES = new Set([
   'started', 'start', 'running', 'pending', 'in_progress', 'in-progress', 'queued',
@@ -1977,6 +1977,7 @@ function stepPresentation({
       // report listed unfinished items, and `box 20m · ran 34m` once it ran
       // past its box (`box 20m` otherwise). Null when the attempt had none.
       earlyText: returnedEarlyText(selected),
+      notDoneItems: returnedEarlyItems(selected),
       boxText: timeBoxText(selected, { durationMs: selected?.durationMs }),
     },
     activity: {

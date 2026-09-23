@@ -15,13 +15,13 @@
 ── Preflight ───────────────────────────────────────────────────────────────────────────────────────────────────────────
  04:05  ● goal accepted · goal.json
 ── ✓ Phase 1 · Mechanical · home-extraction ─────────────────────────────────────────────── 04:05 → 04:34 · 28m25s · 1/1
- 04:05  ✓ home-extraction · codex · gpt-5.6-luna · low                                                            28m25s
+ 04:05  ✓ home-extraction · codex · gpt-5.6-luna · reasoning max · tier low                                       28m25s
 ── ✓ Phase 2 · Mechanical · runs-extraction ─────────────────────────────────────────────── 04:34 → 05:04 · 30m32s · 1/1
- 04:34  ✓ runs-extraction · codex · gpt-5.6-luna · low                                                            30m32s
+ 04:34  ✓ runs-extraction · codex · gpt-5.6-luna · reasoning max · tier low                                       30m32s
 ── ✓ Phase 3 · Mechanical · run-extraction ──────────────────────────────────────────────── 05:04 → 05:36 · 31m52s · 1/1
- 05:04  ✓ run-extraction · codex · gpt-5.6-luna · low                                                             31m52s
+ 05:04  ✓ run-extraction · codex · gpt-5.6-luna · reasoning max · tier low                                        31m52s
 ── ▶ Phase 4 · Integrate · integrate ───────────────────────────────────────────────────────── 05:36 → now · 2m19s · 0/1
- 05:36  ▶ integrate · codex · gpt-5.6-sol · high · running                                                         2m19s
+ 05:36  ▶ integrate · codex · gpt-5.6-sol · reasoning medium · tier high · running                                 2m19s
 ── ○ Phase 5 · Verify · verify ───────────────────────────────────────────────────────────────────────── — → — · — · 0/1
 
 

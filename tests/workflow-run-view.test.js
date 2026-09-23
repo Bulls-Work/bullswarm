@@ -250,7 +250,7 @@ test('Run view paints numbered phase boxes and v2 attempt routing metadata', () 
   const text = timeline.lines.map((line) => visible(line.text ?? line)).join('\n');
   // One v2 row per attempt, its own clock on the right and the routing it ran
   // on beside the step's name. Phase start/completed filler is gone.
-  assert.match(text, /\d{2}:\d{2}\s+✓ report · codex · gpt-test · high\s+1m30s/);
+  assert.match(text, /\d{2}:\d{2}\s+✓ report · codex · gpt-test · tier high\s+1m30s/);
   assert.doesNotMatch(text, /phase active|├─ started|└─✓ completed/);
 });
 
@@ -319,7 +319,7 @@ test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per a
   for (const attempt of accept) {
     assert.ok(glyphFor(attempt.status), `unexpected accept status ${attempt.status}`);
     const own = durationClockText(minutesBetween(attempt.startedAt, attempt.finishedAt));
-    const expected = `HH:MM ${glyphFor(attempt.status)} accept · ${attemptRoutingText(attempt)} ${own}`;
+    const expected = `HH:MM ${glyphFor(attempt.status)} accept · ${attempt.pool} · ${attempt.model} · reasoning ${attempt.reasoning?.applied} · tier ${attempt.effort ?? attempt.routing?.effort ?? '—'} ${own}`;
     assert.ok(lines.includes(expected), `missing attempt row:\n  ${expected}\nin:\n${lines.join('\n')}`);
   }
   // Distinct clocks, not one shared phase duration: the goal's own complaint
@@ -375,7 +375,7 @@ test('the real euqrni run draws one v2 phase rule per sequential phase', () => {
     const attempt = row.state.attempts.find((entry) => entry.actionId === actionId);
     assert.ok(attempt, `missing ${actionId} attempt`);
     const own = durationClockText(minutesBetween(attempt.startedAt, attempt.finishedAt));
-    const expected = `HH:MM ✓ ${actionId} · ${attemptRoutingText(attempt)} ${own}`;
+    const expected = `HH:MM ✓ ${actionId} · ${attempt.pool} · ${attempt.model} · reasoning ${attempt.reasoning?.applied} · tier ${attempt.effort ?? attempt.routing?.effort ?? '—'} ${own}`;
     assert.ok(lines.includes(expected), `missing attempt row:\n  ${expected}\nin:\n${lines.join('\n')}`);
     const header = timeline.lines.find((line) => line?.header && (String(line.segment).endsWith(` · ${actionId}`) || String(line.segment) === actionId));
     const duration = phaseDurationFacts(row, panel.stages.find((stage) => (stage.actionIds ?? []).includes(actionId)), { nowMs: NOW });
@@ -654,28 +654,52 @@ test('each timeline attempt row opens the Step page on that attempt; the phase r
   }
 });
 
+test('the Run live row labels reasoning and tier, and selected timeline rows show stored not-done items', () => {
+  const row = rowFixture();
+  row.state.attempts[0].reasoning = { requested: 'max', applied: 'high' };
+  row.state.attempts[0].effort = 'medium';
+  row.state.attempts[0].returnedEarly = { count: 1, items: ['the remaining verification item'] };
+  for (const width of [55, 120]) {
+    const body = bodyBuilder();
+    runPage({ row, assignments: [], pools: [] }, {
+      width, bodyHeight: 36, narrow: width < 100, nowMs: NOW, spinnerFrame: 0, focus: 0,
+    }, body);
+    const text = body.lines.map(visible).join('\n');
+    // Wide rows carry both labels; at phone width the model and its reasoning
+    // outrank the routing tier.
+    assert.match(text, width < 100 ? /gpt-[\w.-]+ · reasoning high · \d+ turns/ : /reasoning high · tier medium/);
+    assert.ok(text.includes('the remaining verification item'));
+    assert.ok(body.lines.every((line) => visible(line).length <= width));
+  }
+});
+
 test('a Run timeline row says `returned early · N not done` after its duration, on its own row at 55 columns', () => {
   const row = rowFixture();
   row.state.attempts.unshift({
     id: 'audit-1', actionId: 'audit', ordinal: 1, status: 'succeeded', pool: 'codex', model: 'gpt-test',
     startedAt: '2026-09-20T11:55:00.000Z', finishedAt: '2026-09-20T11:57:30.000Z', wallSec: 150,
     routing: { lane: 'build', effort: 'low' },
+    reasoning: { requested: 'max', applied: 'high' },
     timeBox: { minutes: 20, wrapUpMinutes: 14, source: 'fallback', n: null, medianMinutes: null, startClock: '19:55:00' },
-    returnedEarly: { count: 2, items: ['the phone frame', 'the watch line'] },
+    returnedEarly: { count: 2, items: ['the first outstanding item', 'the second outstanding item'] },
   });
   row.state.actions[0].attempts = 1;
   const panel = workflowPanelModel(row);
-  const wide = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW }).lines;
+  const wide = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW, selectedActionId: 'audit' }).lines;
   const wideAudit = wide.filter((line) => line.actionId === 'audit');
-  assert.equal(wideAudit.length, 1, 'one row per attempt at 200 columns');
-  assert.match(visible(wideAudit[0].text), /^ \d{2}:\d{2} {2}✓ audit · codex · gpt-test · low +2m30s · returned early · 2 not done$/);
+  assert.equal(wideAudit.length, 3, 'the selected attempt is followed by its two not-done items');
+  assert.match(visible(wideAudit[0].text), /^ \d{2}:\d{2} {2}✓ audit · codex · gpt-test · reasoning high · tier low +2m30s · returned early · 2 not done$/);
   assert.equal(visible(wideAudit[0].text).length, 200);
   assert.ok(wideAudit[0].text.includes(`${rgb(METER_COLORS.amber)}returned early · 2 not done`), 'the early text is amber');
-  const phone = workflowTimelineLines(panel, 55, 0, { goalPreview: false, nowMs: NOW }).lines;
+  assert.deepEqual(wideAudit.slice(1).map((line) => visible(line.text).trim()), ['the first outstanding item', 'the second outstanding item']);
+  const collapsed = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW }).lines;
+  assert.equal(collapsed.filter((line) => line.actionId === 'audit').length, 1, 'collapsed attempts do not gain item rows');
+  const phone = workflowTimelineLines(panel, 55, 0, { goalPreview: false, nowMs: NOW, selectedActionId: 'audit' }).lines;
   const phoneAudit = phone.filter((line) => line.actionId === 'audit').map((line) => visible(line.text));
-  assert.equal(phoneAudit.length, 2, phoneAudit.join('\n'));
-  assert.match(phoneAudit[0], /^ \d{2}:\d{2} {2}✓ audit · codex +2m30s$/);
+  assert.equal(phoneAudit.length, 4, phoneAudit.join('\n'));
+  assert.match(phoneAudit[0], /^ \d{2}:\d{2} {2}✓ audit · codex · tier low +2m30s$/);
   assert.equal(phoneAudit[1], '        returned early · 2 not done');
+  assert.deepEqual(phoneAudit.slice(2).map((line) => line.trim()), ['the first outstanding item', 'the second outstanding item']);
   assert.ok(phone.every((line) => visible(line.text).length <= 55));
   // The report attempt did not return early: its rows carry no such text.
   assert.equal(wide.concat(phone).some((line) => line.actionId === 'report' && /returned early/.test(visible(line.text))), false);

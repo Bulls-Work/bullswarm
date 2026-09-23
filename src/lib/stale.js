@@ -22,6 +22,7 @@
 // decides (`bullswarm workflow step restart`).
 
 import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { isAbsolute, join } from 'node:path';
 import { artifactBesideTask } from './watch.js';
 
@@ -286,6 +287,43 @@ export function ownedFilesChangedAt(targetDir, ownedFiles = []) {
   return latest;
 }
 
+/** Latest modification time of changed files in an unrestricted workspace. */
+function unrestrictedFilesChangedAt(targetDir) {
+  if (!targetDir) return null;
+  let root;
+  let output;
+  try {
+    const options = {
+      cwd: targetDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    };
+    root = execFileSync('git', ['rev-parse', '--show-toplevel'], options).replace(/\r?\n$/, '');
+    output = execFileSync('git', [
+      'status', '--porcelain=v1', '-z', '--untracked-files=all',
+    ], options);
+  } catch {
+    return null;
+  }
+
+  let latest = null;
+  let checked = 0;
+  for (const record of output.split('\0')) {
+    if (checked >= MAX_OWNED_FILES) break;
+    if (!record) continue;
+    const status = record.slice(0, 2);
+    const path = record.slice(3);
+    if (!path || !(status === '??' || /[AMRC]/.test(status))) continue;
+    checked += 1;
+    const stat = statOrNull(join(root, path));
+    if (stat) latest = Math.max(latest ?? 0, stat.mtimeMs);
+  }
+  return latest;
+}
+
 function formatMinutes(ms) {
   const totalSec = Math.max(0, Math.round(ms / 1000));
   if (totalSec < 60) return `${totalSec}s`;
@@ -313,7 +351,9 @@ export function actionWrites(action) {
  *   attempt           the durable attempt record (startedAt, lastActivityAt,
  *                     lastEventAt, routing.forecast.expectedMinutes)
  *   facts             streamFacts()/reader output, or null with no event stream
- *   fileChangedAt     ownedFilesChangedAt() for the step's workspace, or null
+ *   fileChangedAt     latest mtime of the step's owned files, or, when it owns
+ *                     none, of the git-changed files in its workspace; null
+ *                     when that check cannot be read
  *   writes            whether the step is expected to change files
  *   expectedMinutes   overrides the attempt's recorded expectation
  * Returns {score, stale, staleSince, signals: [{id, weight, firedAt, reason}],
@@ -439,7 +479,8 @@ export function createStaleProbe({
     try { facts = readFacts(streamFile); } catch { facts = null; }
     const writes = actionWrites(action);
     let fileChangedAt = null;
-    if (writes && Array.isArray(action?.ownedFiles) && action.ownedFiles.length) {
+    if (writes) {
+      const ownedFiles = Array.isArray(action?.ownedFiles) ? action.ownedFiles : [];
       const key = attempt.id ?? `${attempt.actionId}-${attempt.ordinal}`;
       const cached = workspaceCache.get(key);
       if (cached && nowMs - cached.at < WORKSPACE_STAT_TTL_MS) fileChangedAt = cached.value;
@@ -448,7 +489,9 @@ export function createStaleProbe({
           ? isolatedWorkspace(runDir, attempt.actionId)
           : null;
         const targetDir = isolated ?? current?.intent?.cwd ?? null;
-        fileChangedAt = ownedFilesChangedAt(targetDir, action.ownedFiles);
+        fileChangedAt = ownedFiles.length
+          ? ownedFilesChangedAt(targetDir, ownedFiles)
+          : unrestrictedFilesChangedAt(targetDir);
         workspaceCache.set(key, { at: nowMs, value: fileChangedAt });
       }
     }

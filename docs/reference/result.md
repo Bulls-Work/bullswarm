@@ -163,7 +163,7 @@ A work step that is asked to stop at its time box reports `## Done`, `## Not don
 | `returnedEarly` | `{ count, items }`: how many items the report listed under `## Not done`, and the first 20 of them, each at most 300 characters. Absent when the section is empty, `- none`, or missing |
 | `timeBox` | `{ minutes, wrapUpMinutes, source, n, medianMinutes, startClock }`: the box the attempt was given and where it came from (`pair`, `kind`, `fallback`, `program`) |
 
-Both are read with `bullswarm workflow action show <shortId> <step> --json`. The `action.finished` event carries `returnedEarly: { count }`, and the run and step pages read `returned early · N not done`. Early return is not a failure: it does not change the step's status, and it is not counted against `verified`. The verifiers receive the items with the rest of the evidence and judge the requirements as the workspace stands.
+Both are read with `bullswarm workflow action show <shortId> <step> --json`. The `action.finished` event carries `returnedEarly: { count }`, and the run and step pages read `returned early · N not done`. The selected Run timeline row, the Run live block, and the Step header also list the stored items, clipped to the width; a collapsed timeline row keeps the count. Early return is not a failure: it does not change the step's status, and it is not counted against `verified`. The verifiers receive the items with the rest of the evidence and judge the requirements as the workspace stands.
 
 ## Cost rollups
 

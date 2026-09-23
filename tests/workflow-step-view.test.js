@@ -806,7 +806,7 @@ test('the Step header says an early return and the box, and `ran` only past the 
     const attempt = {
       ...finishedAttempt(),
       timeBox: { minutes: 20, wrapUpMinutes: 14, source: 'pair', n: 80, medianMinutes: 18.86, startClock: '01:21:52' },
-      returnedEarly: { count: 2, items: ['the phone frame', 'the watch line'] },
+      returnedEarly: { count: 2, items: ['the first outstanding item', 'the second outstanding item'] },
       ...over,
     };
     const state = stateFor({ actionId: 'step-view', actionStatus: 'succeeded', lifecycleStatus: 'completed', attempts: [attempt], resultFile: 'finished-result.json' });
@@ -815,10 +815,13 @@ test('the Step header says an early return and the box, and `ran` only past the 
   // wallSec 2361 is 39m21s: past a 20-minute box, so the header says both.
   const model = boxed();
   assert.equal(model.presentation.header.earlyText, 'returned early · 2 not done');
+  assert.deepEqual(model.presentation.header.notDoneItems, ['the first outstanding item', 'the second outstanding item']);
   assert.equal(model.presentation.header.boxText, 'box 20m · ran 39m');
   const wide = render(model, 200).map(plain);
   assert.match(wide[0], /^ ✓ step-view · ste\S* · succeeded · .* · returned early · 2 not done/);
   assert.equal(wide[0].length <= 200, true);
+  assert.ok(wide.includes('  the first outstanding item'));
+  assert.ok(wide.includes('  the second outstanding item'));
   const metaRow = wide.find((line) => line.includes('box 20m · ran 39m'));
   assert.ok(metaRow, wide.slice(0, 4).join('\n'));
   assert.match(metaRow, /codex · gpt-5\.6-luna · medium effort +box 20m · ran 39m · 39m/);

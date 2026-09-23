@@ -14,7 +14,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -360,6 +360,7 @@ test('pools and assignments report the same live load the router used', () => {
 
 test('the V2 kernel re-reads the ledger per pick, so simultaneous actions land on different pools', async () => {
   const home = fixtureHome();
+  let targetDir;
   try {
     const now = Date.now();
     // Identical meters again: only what each action registers can separate them.
@@ -372,15 +373,26 @@ test('the V2 kernel re-reads the ledger per pick, so simultaneous actions land o
     const released = [];
     const holdUntil = new Promise((resolve) => { released.push(resolve); });
     const started = [];
+    // A build attempt that changes no file is a no-op. This repo is only the
+    // diff target: both workers edit it so each dispatch can succeed.
+    targetDir = mkdtempSync(join(tmpdir(), 'bullswarm-load-aware-repo-'));
+    mkdirSync(join(targetDir, 'src'));
+    writeFileSync(join(targetDir, 'src', 'work.js'), 'export const value = 0;\n');
+    execFileSync('git', ['-C', targetDir, 'init', '-q']);
+    execFileSync('git', ['-C', targetDir, 'add', '.']);
+    execFileSync('git', ['-C', targetDir, '-c', 'user.name=Load Test', '-c', 'user.email=load@example.invalid', 'commit', '-qm', 'seed']);
     const watchOnce = (connector) => {
       started.push(connector.name);
-      return holdUntil.then(() => ({ ok: true, why: 'fixture', meta: { wallSec: 1 } }));
+      return holdUntil.then(() => {
+        writeFileSync(join(targetDir, 'src', 'work.js'), `export const value = '${connector.name}';\n`);
+        return { ok: true, why: 'fixture', meta: { wallSec: 1 } };
+      });
     };
 
     const dispatchOne = (id) => dispatchV2Action({
-      action: { id, lane: 'build', effort: 'medium' },
+      action: { id, lane: 'build', effort: 'medium', ownedFiles: ['src/work.js'] },
       taskText: 'fixture task',
-      targetDir: ROOT,
+      targetDir,
       paths: { taskFile: join(home, `task-${id}.md`), outFile: join(home, `out-${id}.md`) },
       pools,
       bullswarmDir: home,
@@ -423,5 +435,6 @@ test('the V2 kernel re-reads the ledger per pick, so simultaneous actions land o
     assert.deepEqual([...log.map((e) => e.picked)].sort(), ['alpha', 'beta']);
   } finally {
     rmSync(home, { recursive: true, force: true });
+    if (targetDir) rmSync(targetDir, { recursive: true, force: true });
   }
 });

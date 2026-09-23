@@ -1285,6 +1285,8 @@ test('command-code is spawned without --no-session so its transcript persists', 
   const commandCode = JSON.parse(readFileSync(join(REPO_ROOT, 'providers/contrib/command-code/connector.json'), 'utf8'));
   const argv = argvWithModel(commandCode, { taskFile: '/tmp/task.md', cwd: '/tmp' });
   assert.equal(argv.includes('--no-session'), false);
+  assert.equal(argv.includes('--tools-all'), false);
+  assert.ok(argv.includes('--yolo'));
   assert.deepEqual(argv.slice(0, 2), ['command-code', '-p']);
   assert.ok(argv.includes('--output-format'));
 });

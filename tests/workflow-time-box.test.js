@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   clearTimeBoxHistoryCache, medianOf, parseNotDone, readTimeBoxHistory, resolveTimeBox,
-  returnedEarlyText, timeBoxForAttempt, timeBoxHistory, timeBoxParagraph, timeBoxText,
+  returnedEarlyItems, returnedEarlyText, timeBoxForAttempt, timeBoxHistory, timeBoxParagraph, timeBoxText,
 } from '../src/workflow/time-box.js';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
@@ -139,6 +139,8 @@ test('parseNotDone reads the last `Not done` section: top-level items only, `non
 
 test('the display strings: returned early, box, and ran only past the box', () => {
   assert.equal(returnedEarlyText({ returnedEarly: { count: 2, items: ['a', 'b'] } }), 'returned early · 2 not done');
+  assert.deepEqual(returnedEarlyItems({ returnedEarly: { count: 2, items: ['a', 'b'] } }), ['a', 'b']);
+  assert.deepEqual(returnedEarlyItems({ returnedEarly: { count: 2 } }), []);
   assert.equal(returnedEarlyText({}), null);
   assert.equal(timeBoxText({ timeBox: { minutes: 20 }, wallSec: 34 * 60 + 10 }), 'box 20m · ran 34m');
   assert.equal(timeBoxText({ timeBox: { minutes: 20 }, wallSec: 20 * 60 + 20 }), 'box 20m');

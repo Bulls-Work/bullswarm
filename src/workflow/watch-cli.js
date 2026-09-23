@@ -173,11 +173,14 @@ function humanTransitionFingerprint(snapshot) {
   });
 }
 
-export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = false, events = [] } = {}) {
+export function renderWatchSnapshot(snapshot, {
+  heartbeat = false, verbose = false, events = [], eventCount = null, actionCount = null,
+} = {}) {
   const target = snapshot.dispatchTarget == null ? '∞' : snapshot.dispatchTarget;
   const location = [snapshot.phase, snapshot.step].filter(Boolean).join('/') || 'starting';
   if (!verbose) {
-    const actions = events.filter((event) => event.type === 'attempt.agent_action').length;
+    const actions = actionCount ?? events.filter((event) => event.type === 'attempt.agent_action').length;
+    const count = eventCount ?? events.length;
     if (snapshot.runningCount !== undefined) {
       const state = snapshot.terminal
         ? snapshot.status === 'completed'
@@ -187,13 +190,13 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
           ? `waiting for the caller planner (${snapshot.awaitingPlanner.boundary} boundary, turn ${snapshot.awaitingPlanner.turn})`
           : `${snapshot.runningCount} running, ${snapshot.waitingCount} waiting`;
       return `${snapshot.terminal || snapshot.awaitingPlanner ? glyphs().stopped : heartbeat ? glyphs().heartbeat : glyphs().ongoing} +${formatDuration(snapshot.elapsedSec)} ${state} · ` +
-        `${events.length} new events` +
+        `${count} new events` +
         (snapshot.latestAction ? ` · latest: ${snapshot.latestAction}` : '') +
         ` · quiet ${formatDuration(snapshot.quietForSec)}` +
         (snapshot.transportQuietForSec == null ? '' : ` · agent output ${formatDuration(snapshot.transportQuietForSec)} ago`);
     }
     const line = `${snapshot.terminal ? glyphs().stopped : heartbeat ? glyphs().heartbeat : glyphs().ongoing} +${formatDuration(snapshot.elapsedSec)} ` +
-      `${snapshot.status}/${snapshot.stage ?? '?'} ${location} · ${events.length} events, ${actions} actions · ` +
+      `${snapshot.status}/${snapshot.stage ?? '?'} ${location} · ${count} events, ${actions} actions · ` +
       `quiet ${formatDuration(snapshot.quietForSec)}` +
       (snapshot.transportQuietForSec == null ? '' : ` · agent output ${formatDuration(snapshot.transportQuietForSec)} ago`);
     if (snapshot.terminal && snapshot.timing) {
@@ -957,6 +960,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   stale = null,
   now = Date.now,
   output = process.stdout,
+  onPendingEventCount = null,
 } = {}) {
   if (!jsonl) {
     const sink = output;
@@ -982,6 +986,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   let lastPrintedAt = 0;
   let priorSequence = null;
   let pendingEvents = [];
+  let pendingEventCount = 0;
+  let pendingActionCount = 0;
   let lastActivityAt = null;
   let memory = null;
   let attached = false;
@@ -992,7 +998,6 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       const snapshot = watchSnapshot(resolved.runDir, state, new Date(nowMs));
       // --once stays a single snapshot and --classic forces the historical
       // transition-plus-heartbeat stream; everything else is event-based.
-      const eventMode = untilMode || (!oneShot && !classic);
       if (priorSequence == null) {
         // A newly attached watcher has no preceding interval. Start at the
         // durable high-water mark instead of replaying the run lifetime, unless
@@ -1017,8 +1022,19 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         );
       }
       const newEvents = readEvents(resolved.runDir, { after: priorSequence });
+      const eventMode = untilMode || (!oneShot && !classic);
+      const beatMs = Number.isFinite(heartbeatMs) && heartbeatMs > 0 ? heartbeatMs : null;
       if (newEvents.length) {
-        pendingEvents.push(...newEvents);
+        if (eventMode) {
+          if (beatMs != null) {
+            pendingEventCount += newEvents.length;
+            pendingActionCount += newEvents.filter((event) => event.type === 'attempt.agent_action').length;
+          }
+          onPendingEventCount?.(0);
+        } else {
+          pendingEvents.push(...newEvents);
+          onPendingEventCount?.(pendingEvents.length);
+        }
         lastActivityAt = Math.max(
           lastActivityAt,
           ...newEvents.map((event) => Date.parse(event.committedAt ?? '') || nowMs),
@@ -1070,13 +1086,17 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           if (event.type === 'attempt.stale' && !staleSteps.includes(event.actionId)) staleSteps.push(event.actionId);
         }
         // The periodic heartbeat is opt-in for V2 runs (--heartbeat <seconds>).
-        const beatMs = Number.isFinite(heartbeatMs) && heartbeatMs > 0 ? heartbeatMs : null;
         if (beatMs != null && !next && !untilMode && nowMs - lastPrintedAt >= beatMs) {
           output.write(jsonl
             ? `${JSON.stringify({ type: 'heartbeat', ...snapshot })}\n`
-            : `${renderWatchSnapshot(snapshot, { heartbeat: true, verbose, events: pendingEvents })}\n`);
+            : `${renderWatchSnapshot(snapshot, {
+              heartbeat: true, verbose, events: pendingEvents,
+              eventCount: pendingEventCount, actionCount: pendingActionCount,
+            })}\n`);
           lastPrintedAt = nowMs;
           pendingEvents = [];
+          pendingEventCount = 0;
+          pendingActionCount = 0;
         }
       } else {
         const classicHeartbeatMs = heartbeatMs == null ? 60000 : heartbeatMs;

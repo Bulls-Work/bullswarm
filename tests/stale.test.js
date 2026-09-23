@@ -7,6 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -39,6 +40,39 @@ const STREAMS = [
 const stream = (run, file) => STREAMS.find((entry) => entry.run === run && entry.file === file);
 const ms = (iso) => Date.parse(iso);
 const running = (attempt, extra = {}) => ({ ...attempt, status: 'running', finishedAt: null, lastActivityAt: null, lastEventAt: null, ...extra });
+
+function makeGitRepo(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-stale-unrestricted-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet', dir], { stdio: 'ignore' });
+  execFileSync('git', ['-C', dir, 'config', 'user.name', 'Example User']);
+  execFileSync('git', ['-C', dir, 'config', 'user.email', 'example@example.invalid']);
+  mkdirSync(join(dir, 'src'));
+  writeFileSync(join(dir, 'src', 'example.js'), 'export const value = 1;\n');
+  execFileSync('git', ['-C', dir, 'add', 'src/example.js']);
+  execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', 'initial']);
+  return dir;
+}
+
+function unrestrictedWriter(dir, startedAt) {
+  const facts = {
+    lastEventAt: startedAt + 12 * 60_000,
+    open: [{ id: 'command-example', kind: 'bash' }],
+    commandAts: [2, 4, 6, 8, 10, 12].map((minute) => startedAt + minute * 60_000),
+    lastCommandAt: startedAt + 12 * 60_000,
+    lastFileChangeAt: startedAt + 60_000,
+    streak: null,
+  };
+  return {
+    probe: createStaleProbe({ state: { intent: { cwd: dir } }, readFacts: () => facts }),
+    attempt: {
+      id: 'attempt-example', actionId: 'integrate', ordinal: 1, status: 'running',
+      startedAt: new Date(startedAt).toISOString(),
+    },
+    action: { id: 'integrate', lane: 'build', ownedFiles: [] },
+    nowMs: startedAt + 40 * 60_000,
+  };
+}
 
 test('every tool call in the real streams pairs with its completion, whatever the provider shape', () => {
   // claude-code (Bash → tool), grok (tool_call → tool_call_update), codex
@@ -200,6 +234,47 @@ test('workspace evidence reads only the files the step owns', (t) => {
   assert.equal(ownedFilesChangedAt(dir, ['src/mine.js', 'src/not-yet.js']), Date.parse('2026-09-19T10:00:00Z'));
   assert.equal(ownedFilesChangedAt(dir, []), null);
   assert.equal(ownedFilesChangedAt(null, ['src/mine.js']), null);
+});
+
+test('an unrestricted writer sees a re-edit to a file already marked modified', (t) => {
+  const dir = makeGitRepo(t);
+  const startedAt = Date.parse('2026-09-19T10:00:00.000Z');
+  const file = join(dir, 'src', 'example.js');
+  const writeAt = (value, at) => {
+    writeFileSync(file, value);
+    utimesSync(file, new Date(at), new Date(at));
+  };
+  writeAt('export const value = 2;\n', startedAt - 60_000);
+  const before = execFileSync('git', ['-C', dir, 'status', '--porcelain=v1'], { encoding: 'utf8' }).trim();
+  assert.match(before, /^M src\/example\.js$/);
+  writeAt('export const value = 3;\n', startedAt + 25 * 60_000);
+  const after = execFileSync('git', ['-C', dir, 'status', '--porcelain=v1'], { encoding: 'utf8' }).trim();
+  assert.equal(after, before, 'the file remains modified while its mtime advances');
+
+  const { probe, attempt, action } = unrestrictedWriter(dir, startedAt);
+  const score = probe({ attempt, action, nowMs: startedAt + 26 * 60_000 });
+  assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), false, JSON.stringify(score));
+  assert.equal(score.stale, false);
+});
+
+test('an unrestricted writer with no changed files still gets the no-file-change signal', (t) => {
+  const dir = makeGitRepo(t);
+  const startedAt = Date.parse('2026-09-19T10:00:00.000Z');
+  const { probe, attempt, action, nowMs } = unrestrictedWriter(dir, startedAt);
+  const score = probe({ attempt, action, nowMs });
+  assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), true);
+});
+
+test('an unrestricted writer in a non-git directory falls back to stream evidence', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-stale-unrestricted-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const startedAt = Date.parse('2026-09-19T10:00:00.000Z');
+  const file = join(dir, 'example.js');
+  writeFileSync(file, 'export const value = 2;\n');
+  utimesSync(file, new Date(startedAt + 25 * 60_000), new Date(startedAt + 25 * 60_000));
+  const { probe, attempt, action, nowMs } = unrestrictedWriter(dir, startedAt);
+  const score = probe({ attempt, action, nowMs: startedAt + 40 * 60_000 });
+  assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), true);
 });
 
 test('the probe finds a running attempt\'s stream beside its task file', (t) => {

@@ -71,7 +71,7 @@ import {
   runTimelineFacts,
 } from './run-model.js';
 import { stepPageModel, turnCountsText } from './step-model.js';
-import { returnedEarlyText } from './time-box.js';
+import { returnedEarlyItems, returnedEarlyText } from './time-box.js';
 import { loopVerdictText } from './verify-rounds.js';
 
 /** Lines of the goal the Preflight segment shows before an ellipsis. */
@@ -793,7 +793,7 @@ function runTimelineFold(row, { nowMs = Date.now() } = {}) {
  * for a reader (the mod pane) that has no pointer to click with.
  */
 function workflowTimelineLines(model, width, spinnerFrame = 0, {
-  goalPreview = true, nowMs = Date.now(), phone = Number(width) < 100, foldOpen = false, foldHint = true,
+  goalPreview = true, nowMs = Date.now(), phone = Number(width) < 100, foldOpen = false, foldHint = true, selectedActionId = null,
 } = {}) {
   const facts = runTimelineFacts(model.row, { nowMs });
   const lines = [];
@@ -849,16 +849,24 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
         : ['succeeded', 'completed', 'success'].includes(attempt.status) ? glyphs().ok : glyphs().fail;
       const pool = attempt.pool ?? '—';
       const modelName = attempt.model ?? '—';
-      const effort = attempt.effort ?? attempt.routing?.effort ?? '—';
+      const tier = attempt.effort ?? attempt.routing?.effort ?? '—';
+      const reasoning = reasoningText(attempt);
+      const routing = `tier ${tier}`;
       const runningText = attempt.status === 'running' ? ' · running' : '';
-      const left = phone
-        ? ` ${clock}  ${glyph} ${attempt.actionId} · ${pool}${runningText}`
-        : ` ${clock}  ${glyph} ${attempt.actionId} · ${pool} · ${modelName} · ${effort}${runningText}`;
       const duration = attemptDurationText(attempt, { nowMs });
+      const left = phone
+        ? (() => {
+          const prefix = ` ${clock}  ${glyph} `;
+          const suffix = ` · ${routing}`;
+          const available = Math.max(1, safeWidth - visibleLength(prefix) - visibleLength(suffix) - visibleLength(duration) - 1);
+          return `${prefix}${truncate(`${attempt.actionId} · ${pool}${runningText}`, available)}${suffix}`;
+        })()
+        : ` ${clock}  ${glyph} ${attempt.actionId} · ${pool} · ${modelName}${reasoning ? ` · reasoning ${reasoning}` : ''} · ${routing}${runningText}`;
       // A succeeded attempt whose report listed `## Not done` items says so
       // after its duration; a phone has no room there and gives it a row.
       const early = returnedEarlyText(attempt);
       const right = early && !phone ? `${duration} · ${early}` : duration;
+      const selected = selectedActionId === attempt.actionId;
       push(paintTimelineAttempt(alignRight(left, right, safeWidth), {
         ...attempt, glyph,
       }, { phone, duration, early: phone ? null : early }), {
@@ -866,6 +874,13 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
       });
       if (early && phone) {
         push(`        ${tint(early, 'amber')}`, { segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId });
+      }
+      if (selected) {
+        for (const item of returnedEarlyItems(attempt)) {
+          push(`        ${truncate(item, Math.max(1, safeWidth - 8))}`, {
+            segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId,
+          });
+        }
       }
     }
   };
@@ -1528,13 +1543,19 @@ function runLiveLinesV2(live, width, { phone = width < 100, runFollow = true, no
   const duration = attemptDurationText(attempt, { nowMs });
   const pool = attempt.pool ?? '—';
   const modelName = attempt.model ?? '—';
-  const effort = attempt.effort ?? attempt.routing?.effort ?? '—';
+  const tier = attempt.effort ?? attempt.routing?.effort ?? '—';
+  const reasoning = reasoningText(attempt);
+  const routing = `${reasoning ? `reasoning ${reasoning} · ` : ''}tier ${tier}`;
   const status = live.running ? tint('live', 'amber') : dimCell('last finished');
   const liveCounts = `${live.turns ?? 0} turns · ${live.events ?? 0} events`;
-  const title = `${status} · ${strong(attempt.actionId)} · ${paintPool(pool)}${phone ? '' : ` · ${modelName} · ${effort}`} · ${dimCell(duration)}${phone ? '' : ` · ${dimCounts(liveCounts)}`}`;
+  const title = `${status} · ${strong(attempt.actionId)} · ${paintPool(pool)}${phone ? '' : ` · ${modelName} · ${routing}`} · ${dimCell(duration)}${phone ? '' : ` · ${dimCounts(liveCounts)}`}`;
   const lines = [paintRule(rule(title, null, width))];
   if (pausedLine) lines.push(cut(` ${dimCell(pausedLine.trimStart())}`, width));
-  if (phone) lines.push(` ${modelName} · ${effort} · ${dimCounts(liveCounts)}`);
+  // At phone width the model and its reasoning outrank the routing tier.
+  if (phone) lines.push(cut(` ${modelName} · ${reasoning ? `reasoning ${reasoning}` : `tier ${tier}`} · ${dimCounts(liveCounts)}`, width));
+  for (const item of live.step?.presentation?.header?.notDoneItems ?? []) {
+    lines.push(cut(`  ${truncate(item, Math.max(1, width - 2))}`, width));
+  }
   if (!live.stream) {
     lines.push(` ${dimCell('no event stream kept for this attempt')}`);
   } else {
@@ -1992,7 +2013,9 @@ function runPage(model, opts, body) {
   body.push('');
 
   const foldOpen = opts.foldOpen === true;
-  const timeline = workflowTimelineLines(panel, width, opts.spinnerFrame ?? 0, { goalPreview: false, nowMs, phone, foldOpen });
+  const timeline = workflowTimelineLines(panel, width, opts.spinnerFrame ?? 0, {
+    goalPreview: false, nowMs, phone, foldOpen, selectedActionId: cursorId,
+  });
   const cursorSegment = !cursorInTimeline || opts.timelineSelection === 'fold' ? null
     : opts.timelineSelection === 0 ? 'Preflight' : panel.selectedPhase?.label ?? null;
   const foldRange = foldRangeOf(runTimelineFacts(row, { nowMs }).phases);
