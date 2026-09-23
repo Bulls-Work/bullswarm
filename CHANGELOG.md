@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- docs: the README keeps two screenshots and a plainer tone, and its quick
+  start is now a prompt you paste into your agent; the other dashboard screens
+  moved to a new gallery page on the docs site.
+
 ## 0.35.5 — model choices come from each CLI, newest version wins, setup stops pinning tiers
 
 - cli: the maintainer-only `release` verb is gone from the CLI and its help;

@@ -34,16 +34,14 @@ flowchart LR
   v -->|"verdict + evidence"| main
 ```
 
-- **Paces quota instead of guessing.** Each task goes to the eligible pool with the most unused quota relative to its reset clock. A pool that is furthest behind pace—or close to resetting with quota left—moves forward.
-- **Routes by the work.** The `analyze`, `build`, and `chore` lanes derive an effort tier; setup maps those tiers to provider and model choices, while `bullswarm setup --wizard` also configures reasoning depth. Or ask your agent to run the non-interactive setup.
-- **Runs one bounded task.** `bullswarm run` routes it to one agent, waits, and returns a verdict.
-- **Executes multi-phase workflows.** Your main agent authors a dependency graph; Bullswarm schedules ready, file-disjoint actions across agents in parallel, then runs integration and independent acceptance when the plan calls for them.
-- **Verifies content, not exit codes.** A delegate's output is evidence. A zero exit code is never enough by itself, and workflow completion stays separate from verified requirements.
-- **Shows the whole system live.** The terminal dashboard has Home, Runs, Run, Step, Budget, Stats, Fleet, and Help views, from portfolio-level quota and history down to individual agent turns.
-- **Reads licence meters.** Built-in readers cover Claude Code, Codex, and Grok; the provider interface extends routing, meters, models, and event streams without putting vendor quirks in the core.
-- **Lets your agent delegate.** The packaged `/bullswarm` skill teaches Claude Code, Codex, and Grok when to use a single run or a workflow.
-- **Lives inside Claude Code too.** The early-access Claude Code Mod adds Bullswarm routing, a run strip, and read-only Run, Step, and Usage panes inside Claude Code.
-- **Changes course while work is live.** Newer steering and plan-revision commands can add, amend, remove, or rerun actions; pause and resume remain explicit.
+- **Spends quota by pace.** Each task goes to the plan with the most spare quota for how far its window has run, so a plan that is behind, or about to reset with quota left, gets used first.
+- **Picks models for you.** Tasks come in three lanes (`analyze`, `build`, `chore`). Setup asks each CLI which models it offers and suggests the newest one for each effort level, so you don't have to update settings every time a vendor ships a model.
+- **Runs one task or a whole workflow.** `bullswarm run` sends one task to one agent and returns a verdict. For bigger goals your main agent writes a plan; Bullswarm runs the independent steps in parallel across agents, then integration and a final check by a different agent.
+- **Checks the work, not the exit code.** A delegate saying "done" isn't enough. Bullswarm reads what it actually produced, and a workflow finishing is kept separate from its requirements being verified.
+- **Shows everything live.** A terminal dashboard covers quota, history, running workflows and each agent's individual turns.
+- **Works with the agent you already use.** The `/bullswarm` skill teaches Claude Code, Codex and Grok when to delegate. There's also an early-access Claude Code Mod that shows runs and usage inside Claude Code.
+- **Lets you steer mid-run.** Add, change, remove or rerun steps while a workflow is running, or pause and resume it.
+- **Extends with providers.** Claude Code, Codex and Grok are built in. Other CLIs can be added as providers without touching the core.
 
 ## Why not just…
 
@@ -66,112 +64,62 @@ With Bullswarm routing by pace, running several goals at once no longer means wo
 
 ## See it
 
-![Bullswarm Home dashboard showing today's work, quota, spend, and recent runs](docs/public/screens/home.png)
+![The Bullswarm Home dashboard: today's work, quota, spend and recent runs](docs/public/screens/home.png)
 
-*Home — today's work, budget position, trends, and recent runs in one view.*
+*Home: what's running today, how much quota each plan has left, and what you've spent.*
 
-| Runs | Run |
-|---|---|
-| [![Bullswarm Runs dashboard showing active and historical workflows and tasks](docs/public/screens/runs.png)](docs/public/screens/runs.png) | [![Bullswarm Run page showing phases, live work, spend, and timeline](docs/public/screens/run.png)](docs/public/screens/run.png) |
-| Active and historical workflows and single tasks in one table. | Phases, live workers, costs, and the attempt timeline. |
+![A workflow's Run page: phases, steps, agents and cost](docs/public/screens/run.png)
 
-| Step | Stats |
-|---|---|
-| [![Bullswarm Step page showing agent turns, result, task, and cost](docs/public/screens/step.png)](docs/public/screens/step.png) | [![Bullswarm Stats dashboard showing usage and outcome trends](docs/public/screens/stats.png)](docs/public/screens/stats.png) |
-| The live or saved agent transcript, result, task, and cost evidence. | Workflow, spend, worker-time, and verification trends. |
+*Run: one workflow's plan, which agent took each step, and what it cost.*
 
-[![Bullswarm Budget dashboard showing licence meters, quota pace, and reset windows](docs/public/screens/budget.png)](docs/public/screens/budget.png)
-
-*Budget — spend spare quota before each weekly or monthly window resets.*
-
-<p align="center">
-  <img src="docs/public/screens/home-phone.png" alt="Bullswarm Home dashboard at phone width" width="360">
-  <img src="docs/public/screens/run-phone.png" alt="Bullswarm Run page at phone width" width="360">
-</p>
-
-*Home and Run retain their core evidence at a 55-column phone width.*
+More screens, including phone-sized ones, are in the [gallery](https://bulls-work.github.io/bullswarm/guide/gallery).
 
 ## Quick start
 
-Requires Node.js 22.12 or later.
+You need Node.js 22.12 or later and at least one agent CLI you're signed in to (Claude Code, Codex or Grok).
 
-```bash
-npm i -g bullswarm
-bullswarm setup
+The easiest way to set up is to let your agent do it. Paste this into Claude Code, Codex or Grok:
+
+```text
+Install and set up Bullswarm for me:
+1. Run `npm i -g bullswarm`.
+2. Run `bullswarm setup --yes --strategy --integrate` to find my agent CLIs,
+   pick models, and install the /bullswarm skill for each agent.
+3. Run `bullswarm doctor` and tell me which agents are ready and how much
+   quota each one has left.
+4. Read the installed /bullswarm skill so you know when to use
+   `bullswarm run` and when to write a workflow.
 ```
 
-`setup` discovers installed agent CLIs, shows their quota state, and opens the provider/model control centre. An agent or CI process can use discovered defaults without prompts:
+After that, just give your agent goals as usual. It will hand work to Bullswarm when that helps. Run `bullswarm` in a terminal to open the dashboard; closing it doesn't stop anything that's running.
 
-```bash
-bullswarm setup --yes --strategy --integrate
-bullswarm doctor
-```
-
-Run one bounded task:
-
-```bash
-bullswarm run --lane analyze --add-dir . \
-  --prompt "List every TODO in src with file and line number." --json
-```
-
-Start a first workflow with an explicitly delegated planner:
-
-```bash
-bullswarm workflow goal \
-  "Audit this repository and write a one-page summary" \
-  --cwd . --orchestrator auto --watch
-```
-
-For normal use, your main agent should author `plan.json`, validate it, and launch the exact same goal:
-
-```bash
-bullswarm workflow plan contract \
-  "1. Fix the parser. 2. Add independent verification." --cwd . --json
-
-bullswarm workflow plan validate \
-  "1. Fix the parser. 2. Add independent verification." \
-  --cwd . --program plan.json --json
-
-bullswarm workflow goal \
-  "1. Fix the parser. 2. Add independent verification." \
-  --cwd . --program plan.json --watch
-```
-
-Open the dashboard at any time. Quitting it does not stop running workflows.
-
-```bash
-bullswarm
-# explicit form:
-bullswarm workflow tui
-```
+To set things up by hand, or to choose models and reasoning yourself, see [Getting started](https://bulls-work.github.io/bullswarm/guide/getting-started).
 
 ## A practical playbook
 
-1. **Nail down the outcome.** State what must change, what must remain untouched, and what evidence will count as done.
-2. **Hand it to your main agent.** With the `/bullswarm` skill installed, it chooses a bounded run or authors a workflow program with clear territories, dependencies, integration, and acceptance.
-3. **Let the graph fan out.** Ready, file-disjoint actions can run across Codex, Grok, Claude accounts, and contributed providers while routing spends the quota furthest behind pace.
-4. **Stay in control.** Follow the dashboard or `workflow watch`; send guidance, pause, or revise the live plan when the goal changes.
-5. **Sign off on evidence.** Read the durable result envelope and requirement evidence. `completed` and `verified` answer different questions.
+1. **Say what done looks like.** What should change, what must stay the same, and how you'll know it worked.
+2. **Hand it to your main agent.** With the `/bullswarm` skill installed, it decides between a single run and a workflow, and writes the plan.
+3. **Let it fan out.** Independent steps run in parallel across your Claude, Codex and Grok plans, using whichever has the most spare quota.
+4. **Keep an eye on it.** Watch the dashboard, send guidance, pause, or change the plan if the goal moves.
+5. **Check the result.** Each workflow reports which requirements were verified. "Completed" means every step ran; "verified" means someone checked the work.
 
-You can keep several independent goals running without manually balancing every plan. Bullswarm accounts for in-flight load, while each workflow keeps its own durable state, outputs, events, and result.
+You can run several goals at once without juggling plans yourself. Bullswarm counts work already in flight when it routes new work.
 
 ## Supported agents and meters
 
-| Agent CLI | Provider status | Subscription meter declared by the shipped connector | Headless entry point |
+| Agent CLI | Support | Quota windows tracked | Command it runs |
 |---|---|---|---|
 | Claude Code | Built in | weekly + 5-hour | `claude -p` |
 | Codex | Built in | weekly | `codex exec` |
 | Grok | Built in | weekly | `grok -p` |
-| OpenCode | Contributed | none in the base connector | `opencode run --auto` |
+| OpenCode | Contributed | none | `opencode run --auto` |
 | Command Code | Contributed | weekly + monthly + 5-hour | `command-code -p` |
 
-Providers declare their own spawn command, meter reader, model discovery, reasoning levels, event decoding, and capabilities. See [Adding a provider](https://bulls-work.github.io/bullswarm/reference/providers).
+Each provider describes how to launch its CLI, read its quota, list its models and read its output. To add one, see [Adding a provider](https://bulls-work.github.io/bullswarm/reference/providers).
 
 ## Status
 
-Bullswarm is used daily. The maintainer's local records contained **335 workflow runs** and **507 single tasks** as of September 2026.
-
-The routing, content verification, durable workflow kernel, dashboard, and built-in providers are established parts of the project. Mid-run steering and whole-plan revision are newer; use their validation and revision guards, and inspect the resulting evidence.
+Routing, verification, workflows, the dashboard and the built-in providers are stable. Steering and plan changes during a run are newer, so check the results when you use them.
 
 ## Learn more
 
@@ -179,7 +127,7 @@ The routing, content verification, durable workflow kernel, dashboard, and built
 - [Getting started](https://bulls-work.github.io/bullswarm/guide/getting-started)
 - [How routing works](https://bulls-work.github.io/bullswarm/guide/routing)
 - [Authoring workflows](https://bulls-work.github.io/bullswarm/guide/workflows)
-- [Observing runs and the dashboard](https://bulls-work.github.io/bullswarm/guide/observing)
+- [The dashboard](https://bulls-work.github.io/bullswarm/guide/gallery) and [observing runs](https://bulls-work.github.io/bullswarm/guide/observing)
 - [Provider reference](https://bulls-work.github.io/bullswarm/reference/providers)
 - Contributing: [open an issue](https://github.com/Bulls-Work/bullswarm/issues) or [submit a pull request](https://github.com/Bulls-Work/bullswarm/pulls)
 - [MIT licence](LICENSE)

@@ -37,6 +37,7 @@ export default defineConfig({
         { text: 'Run one task', link: '/guide/run' },
         { text: 'Workflows', link: '/guide/workflows' },
         { text: 'Observing runs', link: '/guide/observing' },
+        { text: 'Dashboard gallery', link: '/guide/gallery' },
         { text: 'Routing', link: '/guide/routing' },
       ],
       '/reference/': [
