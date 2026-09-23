@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.5 — model choices come from each CLI, newest version wins, setup stops pinning tiers
+
 - cli: the maintainer-only `release` verb is gone from the CLI and its help;
   maintainers run `npm run release -- patch|minor|major`, which also dates
   the `## Unreleased` changelog section.
