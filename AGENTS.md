@@ -8,6 +8,16 @@ A CLI that routes bounded tasks to whichever coding-agent CLI subscription
 has the most quota headroom, paced by live provider meters, verified by
 content. Published as `bullswarm` on npm.
 
+## Redesign in progress (2026-09)
+
+The core is being redesigned around facts-only mechanics, four mandatory
+principles, caller-chosen options and a pattern library, for any kind of work
+rather than code only. The design, the decisions taken and the staged build
+plan are in `docs/design/redesign-mechanics-principles-options.md`, and draft
+pattern cards are in `docs/design/patterns/`. Build in the plan's stage order.
+The doctrine below stays in force until the stage that changes an item lands.
+The redesign rewords items 1, 5, 6 and 7, and each stage updates this file.
+
 ## Non-negotiable doctrine
 
 1. Judge delegate output by CONTENT, not exit code (see `src/lib/verify.js`).
