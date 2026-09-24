@@ -717,6 +717,7 @@ function pushColumns(body, cells, { width, gap = 2, indent = 1 } = {}) {
 
 export function actionRoleLabel(action) {
   if (action.kind) return action.kind;
+  if (action.role) return action.role;
   if (Array.isArray(action.evidenceFor) && action.evidenceFor.length) return 'evidence';
   if (action.lane || action.prompt) return 'work';
   return 'action';

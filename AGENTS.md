@@ -17,6 +17,10 @@ plan are in `docs/design/redesign-mechanics-principles-options.md`, and draft
 pattern cards are in `docs/design/patterns/`. Build in the plan's stage order.
 The doctrine below stays in force until the stage that changes an item lands.
 The redesign rewords items 1, 5, 6 and 7, and each stage updates this file.
+Stage 1 (step vocabulary) has landed: program-mode steps may state a role and a
+deliverable, each kind belongs to one role and keeps its exact routing, and
+the no-op gate is now 'declared deliverable not produced' (failure kind
+`not-produced`), measured over the whole step.
 
 ## Non-negotiable doctrine
 

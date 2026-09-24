@@ -114,9 +114,10 @@ or fallback executor. `bullswarm workflow goal --resume <shortId>` and
 Legacy authored-graph runs are listed as read-only rows marked `legacy`; driving
 commands fail closed with their short ID and retained run directory.
 
-## Program actions: `kind`, `defaults`, and advisories
+## Program actions: role, kind, defaults, and advisories
 
-The program format itself — fields, kinds, requirement IDs, enforced rules
+The program format itself — fields, roles, kinds, deliverables, requirement
+IDs, enforced rules
 and an example — is in [program.md](program.md). The same rules are also served
 live by the running kernel:
 
@@ -127,32 +128,55 @@ bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
 That contract carries the goal's derived requirement IDs, the exact validate
 and launch commands with goal and `--cwd` filled in, and any run-wide
 `reasoning` override. It is the brief a dispatched planner receives, and the
-fallback for a caller whose `plan validate` rejects field names or kinds after
-an upgrade.
+fallback for a caller whose `plan validate` rejects field names, roles or kinds
+after an upgrade.
 
-An action's `kind` names what the work IS and derives its `lane` and `effort`,
-so a program states the nature once instead of re-deciding two routing fields:
+An action's `role` says what the step does, and its optional `deliverable`
+says what it leaves behind (`files`, `report`, `data`, `media` or `outward`).
+Both work only in program-mode runs. A role-only step takes its lane and effort
+from the role and its deliverable:
 
-| `kind` | lane | effort |
-|---|---|---|
-| `mechanical` | chore | low |
-| `io-read` | analyze | low |
-| `digest` | analyze | low |
-| `check` | analyze | medium |
-| `implement` | build | medium |
-| `integration` | build | high |
-| `architecture` | analyze | high |
-| `adversarial-acceptance` | analyze | high |
+| role | default deliverable | files | data or media | report | outward |
+|---|---|---|---|---|---|
+| `investigate` | report | build/medium | build/medium | analyze/medium | — |
+| `produce` | files | build/medium | build/medium | analyze/medium | — |
+| `transform` | files | chore/low | chore/low | analyze/low | — |
+| `combine` | (required) | build/high | build/medium | analyze/medium | — |
+| `check` | report | — | — | analyze/medium | — |
+| `act` | outward | — | — | — | analyze/medium |
+
+An action's `kind` names a more exact work nature. Each kind belongs to one
+role and keeps its own lane, effort and gate, so a kind and its role alone do
+not always route or gate the same way:
+
+| kind | role | kind: lane/effort | role alone: lane/effort (default deliverable) | kind gate | role gate |
+|---|---|---|---|---|---|
+| `mechanical` | `transform` | chore/low | chore/low (files) | not judged | judged: a file change or a commit |
+| `io-read` | `investigate` | analyze/low | analyze/medium (report) | not judged | report not empty |
+| `architecture` | `investigate` | analyze/high | analyze/medium (report) | not judged | report not empty |
+| `implement` | `produce` | build/medium | build/medium (files) | a file change or a commit | a file change or a commit |
+| `integration` | `combine` | build/high | needs a deliverable | exempt | files: exempt; data/media: paths; report: not empty |
+| `digest` | `combine` | analyze/low, kernel-written task | — | not judged | a role step never gets the digest task |
+| `check` | `check` | analyze/medium | analyze/medium (report) | not judged | not judged with evidenceFor, else report not empty |
+| `adversarial-acceptance` | `check` | analyze/high | analyze/medium (report) | not judged | same as check |
+
+A step may give both only when the role is the kind's own; then only the kind
+is stored, so annotating an exported plan changes nothing. The kind gate for
+`implement` applies to runs started by this version.
 
 Resolution is per field: an explicit `lane` or `effort` on the action wins,
-then the kind table, then an optional program-level `defaults` object — which
-may set only `effort`, `reasoning`, `timeBox` and `verifyRounds`, since lane
-follows the individual action — then the per-lane default. A `kind` outside that closed list is a validation
-error, not a runtime failure: `workflow plan validate` exits 2 and nothing
-launches. A program using neither `kind` nor `defaults` validates and runs
-exactly as before.
+then the kind table, else the role table, then an optional program-level
+`defaults` object — which may set only `effort`, `reasoning`, `timeBox` and
+`verifyRounds`, since lane follows the individual action — then the per-lane
+default. A role or `kind` outside its closed list is a validation error, not a
+runtime failure: `workflow plan validate` exits 2 and nothing launches. A
+program written only with kinds or lanes validates exactly as before. One
+behavior is new in runs started by this version: a build-lane step other than
+`integration` that changes no file and makes no commit fails as
+`not-produced`; 0.35.6 recorded it as succeeded. Runs started before this
+version keep their original rules when resumed.
 
-`digest` is the one kernel-owned kind: the runtime writes its task from a
+`digest` is the kernel-owned kind of combine: the runtime writes its task from a
 template, so the action's own `prompt` is appended as focus guidance only. A
 digest reads every dependency output in full and re-emits it condensed and
 verbatim — each source's delivered items, validation results with their
@@ -177,7 +201,8 @@ high effort; `requirement-unchecked` fires when a requirement is in no action's
 `advisories` and its human output prints `advisory:` lines; `workflow goal`
 prints the same lines at launch. Exit codes are unchanged, and the kernel stores
 them on the run, so `workflow runs show` lists them afterwards. `runs result`,
-`runs show`, and `workflow action show` print `kind` next to lane and effort.
+`runs show`, and `workflow action show` print `kind` (or `role` for a step
+without one) next to lane and effort.
 
 ## The time box and the verify loop
 
@@ -190,7 +215,8 @@ box, and an invitation to stop and write `## Done`, `## Not done` (one line per
 unfinished item, or `- none`) and `## Suggested next step`. The box is the
 action's `timeBox`, else `defaults.timeBox` (whole minutes, 0-240), else
 computed from this home's succeeded attempts: 1.5 x the median wall minutes for
-the pool and kind when the pair has at least 5, else for the kind, else 20,
+the pool and kind (or role, for a step with no kind) when the pair has at
+least 5, else for the kind or role alone, else 20,
 rounded to 5 and kept within 10-60. `opencode` attempts never feed the
 history. `timeBox: 0` leaves the paragraph out of that action; digests, planner
 turns and the scout never carry one. The box is worked out per attempt, so a
@@ -217,7 +243,12 @@ plan revision: `repair-<n>`, kind `implement`, given the failing requirements
 with the verifier's evidence, the not-done items and durable handoffs of the
 steps that affect them, and ownership of the union of those steps'
 `ownedFiles` (an unrestricted integrator among them makes the repair
-unrestricted, and it runs alone). Then it adds `verify-round-<n+1>`
+unrestricted, and it runs alone). When every step affecting the failing
+requirements declares a `report` deliverable, the repair is instead a
+read-only `analyze` step with deliverable `report` and no `ownedFiles`. A
+requirement an `act` step affects is never repaired: it is handed back in
+`callerDecision`, and when only such requirements fail the loop stops with
+`stoppedBy: act-step`. Then it adds `verify-round-<n+1>`
 (`adversarial-acceptance`, on a pool other than the repair's when one is
 free). Round 2 re-checks the failures and does discovery: a regression in a
 file the repair touched, or the same defect elsewhere, is reported as a
@@ -434,9 +465,9 @@ cancelled steps, failed steps whose kind a retry fixes (`provider`, `quota`,
 `stalled`), and the steps blocked behind them; moves `result.json` to
 `result-before-resume-<n>.json`; writes `workflow.reopened` with `source:
 resume`; and relaunches the kernel. A step that failed for any other reason
-(the worker reported failure, `ownership`) stays failed: change the plan with
-`plan revise`. With nothing retryable, resume prints `nothing to retry`, lists
-the steps that need you, starts nothing, and exits 1.
+(the worker reported failure, `ownership`, `not-produced`) stays failed:
+change the plan with `plan revise`. With nothing retryable, resume prints
+`nothing to retry`, lists the steps that need you, starts nothing, and exits 1.
 
 The silence cutoff is `BULLSWARM_WORKER_SILENCE_SEC` (default 3600). It
 measures silence, not run time: every byte a worker writes restarts it.

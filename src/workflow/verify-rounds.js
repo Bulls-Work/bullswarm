@@ -19,9 +19,10 @@
 import { formatMoney } from '../lib/usage-basis.js';
 import { VERIFY_ROUNDS_DEFAULT } from './action-validator.js';
 import { removedActionIds } from './execution-policy.js';
+import { declaredDeliverable } from './step-vocabulary.js';
 
 export const VERIFY_ROUNDS_MAX = 3;
-export const VERIFY_LOOP_STOPS = Object.freeze(['passed', 'rounds', 'revision', 'step-failed']);
+export const VERIFY_LOOP_STOPS = Object.freeze(['passed', 'rounds', 'revision', 'step-failed', 'act-step']);
 const DISCOVERY_CAP = 20;
 const DISCOVERY_CHARS = 300;
 const EVIDENCE_LINES = 6;
@@ -157,6 +158,28 @@ export function failingRequirements(state, round = null) {
 }
 
 /**
+ * The ids in `ids` that any live step with `role === 'act'` affects (D20a).
+ * An act step's outward action is never repeated by a kernel repair.
+ */
+export function actAffectedRequirements(state, ids) {
+  const wanted = new Set(ids ?? []);
+  const hit = [];
+  for (const action of liveActions(state)) {
+    if (action.role !== 'act') continue;
+    for (const id of action.affects ?? []) {
+      if (wanted.has(id) && !hit.includes(id)) hit.push(id);
+    }
+  }
+  return intentOrder(state, hit);
+}
+
+function repairableRequirements(state) {
+  const failing = failingRequirements(state);
+  const blocked = new Set(actAffectedRequirements(state, failing));
+  return failing.filter((id) => !blocked.has(id));
+}
+
+/**
  * What the loop does at the boundary where every live step has succeeded.
  * One of: close-round, add-repair, finish-repair, finish (with stoppedBy).
  */
@@ -182,6 +205,7 @@ export function nextLoopStep(state) {
   const failing = failingRequirements(state);
   if (!failing.length) return { step: 'finish', stoppedBy: 'passed' };
   if (current.round >= loop.max) return { step: 'finish', stoppedBy: 'rounds' };
+  if (!repairableRequirements(state).length) return { step: 'finish', stoppedBy: 'act-step' };
   return { step: 'add-repair', round: current.round };
 }
 
@@ -243,8 +267,9 @@ export function closeRound(state, { at }) {
   round.discovery = roundKind(loop, round.round) === 'middle' && !removed ? discoveryItems(state, round) : [];
   if (removed) loop.stoppedBy = 'revision';
   const notJudged = notJudgedRequirements(state);
+  const repairable = round.failed.filter((id) => !new Set(actAffectedRequirements(state, round.failed)).has(id));
   const next = !round.failed.length ? 'finish'
-    : round.round < loop.max && !['rounds', 'revision'].includes(loop.stoppedBy) ? 'repair' : 'caller';
+    : round.round < loop.max && !['rounds', 'revision'].includes(loop.stoppedBy) && repairable.length ? 'repair' : 'caller';
   return {
     round: round.round, of: loop.max, stage: 'finished',
     passed: [...round.passed], failed: [...round.failed], discovery: round.discovery.length, next,
@@ -286,7 +311,7 @@ export function planRepairStep(state) {
   const loop = loopOf(state);
   const round = loop?.rounds.at(-1);
   if (!round) return null;
-  const failing = failingRequirements(state);
+  const failing = repairableRequirements(state);
   const affecting = affectingSteps(state, failing);
   const integrator = affecting.some((action) => ['build', 'chore'].includes(action.lane) && !(action.ownedFiles ?? []).length);
   const files = [...new Set(affecting.flatMap((action) => action.ownedFiles ?? []))].sort();
@@ -294,14 +319,42 @@ export function planRepairStep(state) {
   const id = freeActionId(state, `repair-${round.round}`);
   const live = new Set(liveActions(state).map((action) => action.id));
   const ids = failing.join(', ');
+  const prompt = `Kernel repair: make ${ids} pass. The kernel adds the failing evidence, discovery items, not-done items and handoffs below.`;
+  const dependsOn = round.verifyActionIds.filter((actionId) => live.has(actionId));
+  const allReport = affecting.length > 0 && affecting.every((action) => declaredDeliverable(action)?.type === 'report');
+  if (allReport) {
+    return {
+      action: {
+        id,
+        purpose: `Repair after verify round ${round.round}: ${ids}`,
+        dependsOn,
+        affects: [...failing],
+        ownedFiles: [],
+        lane: 'analyze',
+        deliverable: 'report',
+        prompt,
+        kind: 'implement',
+        effort: highestEffort(affecting, 'medium'),
+        evidenceFor: [],
+        inputs: [],
+        produces: [],
+      },
+      record: {
+        repairActionId: id,
+        repairRequirements: [...failing],
+        repairOwnedFiles: [],
+        repairUnrestricted: false,
+      },
+    };
+  }
   return {
     action: {
       id,
       purpose: `Repair after verify round ${round.round}: ${ids}`,
-      dependsOn: round.verifyActionIds.filter((actionId) => live.has(actionId)),
+      dependsOn,
       affects: [...failing],
       ownedFiles: unrestricted ? [] : files,
-      prompt: `Kernel repair: make ${ids} pass. The kernel adds the failing evidence, discovery items, not-done items and handoffs below.`,
+      prompt,
       kind: 'implement',
       effort: highestEffort(affecting, 'medium'),
       evidenceFor: [],
@@ -315,6 +368,20 @@ export function planRepairStep(state) {
       repairUnrestricted: unrestricted,
     },
   };
+}
+
+/**
+ * Declared deliverable paths of the steps affecting this repair's requirements
+ * (D20c). Derived from state, so the repair stores no extra field.
+ */
+export function repairInheritedPaths(state, repairActionId) {
+  const round = roundOfRepair(state, repairActionId);
+  if (!round) return [];
+  const paths = new Set();
+  for (const action of affectingSteps(state, round.repairRequirements ?? [])) {
+    for (const path of declaredDeliverable(action)?.paths ?? []) paths.add(path);
+  }
+  return [...paths].sort();
 }
 
 /**
@@ -796,13 +863,17 @@ export function callerDecision(state, { readText = null, token = null } = {}) {
     const evidence = clip(String(judged?.evidence?.[0] ?? judged?.mechanicalFailure?.message ?? 'no evidence recorded').split(/\r?\n/, 1)[0], 200);
     const repair = loop.rounds.findLast((entry) => entry.repairActionId && entry.repairRequirements.includes(id));
     let next = null;
-    if (repair && typeof readText === 'function') {
-      const report = lastSucceededAttempt(state, repair.repairActionId)?.outputFile;
-      if (report) next = firstSuggestedStep(readText(report));
-    }
-    if (!next) {
-      const files = [...new Set(affectingSteps(state, [id]).flatMap((action) => action.ownedFiles ?? []))].slice(0, 3);
-      next = `add a step that fixes ${id}${files.length ? ` (owning ${files.join(', ')})` : ''} and rerun ${lastVerify}: bullswarm workflow plan export ${runToken} --out plan.json, edit it, then plan revise`;
+    if (actAffectedRequirements(state, [id]).includes(id)) {
+      next = `an act step affects ${id}; Bullswarm never repeats an outward action on its own. Check what was done, then add an act step if it must be redone: bullswarm workflow plan export ${runToken} --out plan.json, edit it, then plan revise`;
+    } else {
+      if (repair && typeof readText === 'function') {
+        const report = lastSucceededAttempt(state, repair.repairActionId)?.outputFile;
+        if (report) next = firstSuggestedStep(readText(report));
+      }
+      if (!next) {
+        const files = [...new Set(affectingSteps(state, [id]).flatMap((action) => action.ownedFiles ?? []))].slice(0, 3);
+        next = `add a step that fixes ${id}${files.length ? ` (owning ${files.join(', ')})` : ''} and rerun ${lastVerify}: bullswarm workflow plan export ${runToken} --out plan.json, edit it, then plan revise`;
+      }
     }
     return { id, status, round, evidence, next };
   });

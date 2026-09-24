@@ -1,7 +1,7 @@
 import { withV2Cancellation } from './v2-cancellation.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { writeJsonAtomic } from '../lib/fsjson.js';
+import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent, readEvents } from './events.js';
 import {
   commitV2Revision, exportV2Plan, pendingRevisionRequests, planV2Revision, queueRevisionRequest,
@@ -9,8 +9,8 @@ import {
 } from './v2-revision.js';
 import { ACTION_PROGRAM_SCHEMA_VERSION } from './action-validator.js';
 import {
-  applyRevisionVerifyRounds, closeRound, createVerifyLoop, nextLoopStep, openFirstRound, openNextRound,
-  planRepairStep, planVerifyStep, recheckSet, repairBrief, repairChangedFiles, roundBrief,
+  applyRevisionVerifyRounds, closeRound, createVerifyLoop, kernelRepairActionIds, nextLoopStep, openFirstRound, openNextRound,
+  planRepairStep, planVerifyStep, recheckSet, repairBrief, repairChangedFiles, repairInheritedPaths, roundBrief,
 } from './verify-rounds.js';
 import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
@@ -35,8 +35,9 @@ import {
 } from './v2-outcome.js';
 import {
   appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
-  markStepRestartApplied, readStepRestarts, requeueRestartedStep,
+  markStepRestartApplied, readStepRestarts, requeueRestartedStep, snapshotPossible,
 } from './v2-dispatch.js';
+import { declaredDeliverable, roleOf } from './step-vocabulary.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
 import {
@@ -493,6 +494,56 @@ const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.strin
 function settings(state) { return { ...DEFAULTS, ...(state.config.settings ?? {}) }; }
 function statePath(runDir) { return join(runDir, 'state.json'); }
 function goalPath(runDir) { return join(runDir, 'goal.json'); }
+function featuresPath(runDir) { return join(runDir, 'features.json'); }
+
+// The D16 marker. Missing or unreadable means the legacy lane rule stays off,
+// so a run started before stage 1 resumes with its original semantics.
+function legacyGateFor(runDir) {
+  const marker = readJsonSafe(featuresPath(runDir), null);
+  return marker?.deliverableGate === 1;
+}
+
+// When the step's current definition began: the last applied revision that
+// amended or added it, or null for the original plan. Resume, reopen, rerun,
+// invalidation and restore keep the definition, so supersededAttempts (which
+// all of them raise) cannot mark this boundary.
+function definitionStartedAt(state, actionId) {
+  for (const revision of [...(state.revisions ?? [])].reverse()) {
+    if (revision?.status !== 'applied') continue;
+    const { amended = [], added = [] } = revision.changes ?? {};
+    if (amended.includes(actionId) || added.includes(actionId)) return Date.parse(revision.processedAt);
+  }
+  return null;
+}
+
+// Earlier dispatches of this step (D19). produced: an earlier attempt
+// succeeded, changed a file, or recorded a written path. A not-produced
+// failure never counts, and for a path deliverable only a success or a
+// written path does. unknown: an attempt of the current definition stopped
+// before its snapshot. An isolated dispatch starts from a fresh copy of the
+// main tree, so only integrated (succeeded) work is on its disk.
+function earlierWorkFor(state, actionId, { isolated = false } = {}) {
+  const hasPaths = (definition(state, actionId)?.deliverable?.paths?.length ?? 0) > 0;
+  const since = definitionStartedAt(state, actionId);
+  let produced = false;
+  let unknown = false;
+  for (const attempt of state.attempts ?? []) {
+    if (attempt?.actionId !== actionId || attempt.failureKind === 'not-produced') continue;
+    const written = attempt.deliverable?.written;
+    const wrote = Array.isArray(written) && written.length > 0;
+    const changed = Number.isInteger(attempt.changedFileCount) && attempt.changedFileCount > 0;
+    if (attempt.status === 'succeeded' || (!isolated && (wrote || (!hasPaths && changed)))) produced = true;
+    const current = !Number.isFinite(since) || !(Date.parse(attempt.startedAt) < since);
+    if (!isolated && current && !Number.isInteger(attempt.changedFileCount)) unknown = true;
+  }
+  return { produced, unknown };
+}
+
+// Declared deliverable paths a kernel repair inherits from the steps it fixes (D20c).
+function extraSnapshotPathsFor(state, actionId) {
+  if (!kernelRepairActionIds(state).includes(actionId)) return [];
+  return repairInheritedPaths(state, actionId);
+}
 
 function nextShortId(bullswarmDir) {
   return generateShortId({ existing: listRuns(bullswarmDir).map((run) => run.shortId).filter(Boolean) });
@@ -542,6 +593,7 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     ...(record.diffFile !== undefined ? { diffFile: record.diffFile } : {}),
     ...(record.changedFileCount !== undefined ? { changedFileCount: record.changedFileCount } : {}),
     ...(Array.isArray(record.changedFiles) ? { changedFiles: [...record.changedFiles] } : {}),
+    ...(record.deliverable !== undefined ? { deliverable: clone(record.deliverable) } : {}),
     // The last `response` event the persisted stream recorded, kept so the
     // handoff line names what the worker actually said last rather than
     // whatever event happened to arrive last (`lastAgentEvent` is any kind).
@@ -1020,7 +1072,40 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd, runDir = nul
   ].filter(Boolean).join('\n');
 }
 
-function buildProgramWorkTask(state, action, targetDir, runDir = null) {
+const ACT_MUTATION_LINE = 'This is an act step: it acts outside the workspace (send, post, publish, deploy) and takes only the actions your instructions name. Do not modify workspace files, and do not stage, commit, stash, check out or reset anything in this repository. In your final response, list every action you took: what, where, and a link or ID for each.';
+
+// One deliverable sentence, or null for outward and for steps that declare none.
+// When no snapshot is possible the files lines drop the failure promise (D21).
+function deliverableBriefLine(action, targetDir) {
+  const declared = declaredDeliverable(action);
+  if (!declared || declared.type === 'outward') return null;
+  const possible = snapshotPossible(targetDir, action);
+  if (declared.type === 'report') {
+    return 'Declared deliverable: your final response is the report. Bullswarm fails this step as not produced if it is empty.';
+  }
+  if (declared.paths?.length) {
+    const line = `Declared deliverable (${declared.type}): ${declared.paths.join(', ')}.`;
+    return possible
+      ? `${line} Bullswarm fails this step as not produced if any of these is missing when you finish, or none of them was written during this step.`
+      : line;
+  }
+  if (declared.type !== 'files') return null;
+  if (roleOf(action) === 'combine') {
+    return 'Declared deliverable: the combined work in this workspace. Changing nothing is acceptable when there is nothing to reconcile.';
+  }
+  if (action.ownedFiles?.length) {
+    const line = `Declared deliverable: changes to your territory files (${action.ownedFiles.join(', ')}) or a commit.`;
+    return possible
+      ? `${line} Bullswarm fails this step as not produced if none of them changes and no commit is made.`
+      : line;
+  }
+  const line = 'Declared deliverable: file changes in this workspace (a commit counts).';
+  return possible
+    ? `${line} Bullswarm fails this step as not produced if no file changes and no commit is made.`
+    : line;
+}
+
+export function buildProgramWorkTask(state, action, targetDir, runDir = null) {
   const strict = enforcesOwnership(state);
   // A kernel repair carries its brief after the prompt: the failing evidence,
   // discovery items, not-done items and the durable handoffs (verify-rounds.js).
@@ -1028,20 +1113,27 @@ function buildProgramWorkTask(state, action, targetDir, runDir = null) {
     handoff: (attempt, format) => durableAttemptHandoff(attempt, runDir, format),
   });
   const readOnly = action.lane === 'analyze' || state.intent.constraints?.workspaceMutation === 'forbidden';
+  // Kind-only steps (no role, no deliverable) keep the brief byte-identical.
+  const deliverableLine = action.role == null && action.deliverable == null
+    ? null
+    : deliverableBriefLine(action, targetDir);
   return [
     `Bullswarm program action: ${action.id}`,
     `Purpose: ${action.purpose}`,
     `Workspace: ${targetDir}`,
-    readOnly ? 'This action is read-only. Do not modify workspace files.'
-      : strict ? `You own exactly these files for mutation: ${action.ownedFiles.join(', ')}. Do not modify any other path.`
-        : action.ownedFiles.length
-          ? `Your intended territory: ${action.ownedFiles.join(', ')}. This is coordination guidance, not an exact-file enforcement gate. Stay within your action purpose; report cross-territory requests for the integrator to apply.`
-          : 'You are the sole unrestricted integrator. You may edit any file needed for this action; no other action runs alongside you.',
+    action.role === 'act'
+      ? ACT_MUTATION_LINE
+      : readOnly ? 'This action is read-only. Do not modify workspace files.'
+        : strict ? `You own exactly these files for mutation: ${action.ownedFiles.join(', ')}. Do not modify any other path.`
+          : action.ownedFiles.length
+            ? `Your intended territory: ${action.ownedFiles.join(', ')}. This is coordination guidance, not an exact-file enforcement gate. Stay within your action purpose; report cross-territory requests for the integrator to apply.`
+            : 'You are the sole unrestricted integrator. You may edit any file needed for this action; no other action runs alongside you.',
     'Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Do not commit unless the user explicitly requires it.',
     'Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file requests. An integration action applies those requests, reconciles the combined work, and runs the repository acceptance gates.',
     `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}`,
     ...state.intent.requirements.filter((item) => action.affects.includes(item.id)).map((item) => `Requirement context (${item.id}): ${item.text}`),
     'Deliver only your action purpose. Exercise observable behavior and run the focused checks; report exact validation and anything unfinished. Do not claim success based only on editing files or unrelated green tests.',
+    ...(deliverableLine ? [deliverableLine] : []),
     '', targetDir === state.intent.cwd ? action.prompt : action.prompt.split(state.intent.cwd).join(targetDir),
     ...(brief ? ['', brief] : []),
     '',
@@ -1348,8 +1440,10 @@ async function runV2Kernel({
     // checkout is there, the remote is there. Stamp it now so the rollup and
     // every later reindex agree on which project this run belongs to.
     recordGoalProject(runDir, goalDocument.intent.cwd, { now });
+    writeJsonAtomic(featuresPath(runDir), { deliverableGate: 1 });
     state = createV2DurableState(goalDocument, { runId: id, shortId: nextShortId(bullswarmDir) });
   }
+  const legacyGate = legacyGateFor(runDir);
 
   let scoutReport = typeof scout === 'string' && scout.trim() ? scout.trim() : null;
   if (!scoutReport && state.preflight.scout.status === 'succeeded' && state.preflight.scout.outputFile && existsSync(state.preflight.scout.outputFile)) {
@@ -1517,6 +1611,9 @@ async function runV2Kernel({
     await syncPools();
     const result = await dispatch({
       action: { id: 'preflight-scout', lane: 'analyze', effort: 'low' },
+      legacyGate,
+      earlierWork: earlierWorkFor(state, 'preflight-scout'),
+      extraSnapshotPaths: extraSnapshotPathsFor(state, 'preflight-scout'),
       taskText: scoutPrompt(state.intent.goal, state.intent.cwd), targetDir: state.intent.cwd,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-preflight-scout-attempt-${ordinal}.md`), outFile: join(runDir, `out-preflight-scout-attempt-${ordinal}.md`) }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
@@ -1661,6 +1758,9 @@ async function runV2Kernel({
     await syncPools();
     const result = await dispatch({
       action: { id: 'workflow-planner', lane: 'analyze', effort: 'high' },
+      legacyGate,
+      earlierWork: earlierWorkFor(state, 'workflow-planner'),
+      extraSnapshotPaths: extraSnapshotPathsFor(state, 'workflow-planner'),
       taskText: prompt,
       targetDir: state.intent.cwd,
       paths: (ordinal) => ({
@@ -1877,6 +1977,9 @@ async function runV2Kernel({
     };
     try { result = receipt ? { ok: true, status: 'succeeded', verdict: receipt.verdict, attempts: [] } : await dispatch({
       action,
+      legacyGate,
+      earlierWork: earlierWorkFor(state, action.id, { isolated: Boolean(isolated) }),
+      extraSnapshotPaths: extraSnapshotPathsFor(state, action.id),
       taskText: dispatchedTaskText,
       targetDir,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),

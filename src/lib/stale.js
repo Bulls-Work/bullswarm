@@ -492,6 +492,13 @@ export function createStaleProbe({
         fileChangedAt = ownedFiles.length
           ? ownedFilesChangedAt(targetDir, ownedFiles)
           : unrestrictedFilesChangedAt(targetDir);
+        // A git-ignored data or media path is invisible to git status. Its
+        // mtime still counts as this step's file change.
+        const deliverablePaths = action?.deliverable?.paths;
+        if (Array.isArray(deliverablePaths) && deliverablePaths.length) {
+          const deliverableAt = ownedFilesChangedAt(targetDir, deliverablePaths);
+          if (deliverableAt != null) fileChangedAt = Math.max(fileChangedAt ?? 0, deliverableAt);
+        }
         workspaceCache.set(key, { at: nowMs, value: fileChangedAt });
       }
     }

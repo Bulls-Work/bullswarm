@@ -393,6 +393,8 @@ function cliFixture() {
     '  process.stdout.write("The durable evidence candidate validated.");',
     '} else if (/Bullswarm (?:autonomous V2|program) action: skip-work/.test(task)) {',
     '  process.stdout.write("Deliberately did not create the file so the evidence fails and the kernel consolidates a gap. This is the bounded fixture behaviour for the gap test.");',
+    '} else if (/Bullswarm program action: (?:survey-done|notify-done)\\n/.test(task)) {',
+    '  process.stdout.write("Read-only fixture step: reported on done.txt and changed no workspace file. The outbox line was recorded as fixture-outbox-1.");',
     '} else {',
     '  writeFileSync("done.txt", "caller-complete\\n");',
     '  process.stdout.write("Implemented the bounded action and wrote done.txt with the exact caller-complete line, then read it back to confirm acceptance.");',
@@ -1377,5 +1379,107 @@ test('CLI: a kind-only program dispatches on the derived lane and effort and rep
     const missing = cli(f, ['workflow', 'action', 'show', token, 'no-such-action']);
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /has no action "no-such-action"/);
+  } finally { f.cleanup(); }
+});
+
+// The same goal written with roles only: no kind, no lane, no effort. The
+// target folder is not a git repository, so the produce step is judged by
+// hashing its exact ownedFiles directly.
+function roleProgram() {
+  return {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    defaults: { reasoning: 'low' },
+    actions: [
+      { id: 'create-done', purpose: 'Create done.txt', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', role: 'produce', evidenceFor: [], inputs: [], produces: ['done'] },
+      { id: 'survey-done', purpose: 'Report on done.txt', dependsOn: ['create-done'], affects: [], ownedFiles: [], prompt: 'Read done.txt and report its bytes. Do not modify any file.', role: 'investigate', evidenceFor: [], inputs: ['done'], produces: [] },
+      { id: 'notify-done', purpose: 'Record the change in the outbox outside the workspace', dependsOn: ['create-done'], affects: [], ownedFiles: [], prompt: 'Append one line to the outbox outside this workspace.', role: 'act', evidenceFor: [], inputs: [], produces: [] },
+      { id: 'check-create-done', purpose: 'Inspect done.txt', dependsOn: ['create-done', 'survey-done'], affects: [], ownedFiles: [], prompt: 'Read done.txt and compare bytes.', role: 'check', evidenceFor: ['requirement-1'], inputs: ['done'], produces: [] },
+    ],
+  };
+}
+
+test('CLI: a role-only program validates, dispatches on the role routing, judges each deliverable, and reports role everywhere', () => {
+  const f = cliFixture();
+  try {
+    const programPath = join(f.root, 'roles.json');
+    writeFileSync(programPath, JSON.stringify(roleProgram()));
+    const expected = [
+      ['create-done', undefined, 'produce', 'build', 'medium', { type: 'files' }],
+      ['survey-done', undefined, 'investigate', 'analyze', 'medium', { type: 'report' }],
+      ['notify-done', undefined, 'act', 'analyze', 'medium', { type: 'outward' }],
+      ['check-create-done', undefined, 'check', 'analyze', 'medium', { type: 'report' }],
+    ];
+    const shape = (action) => [action.id, action.kind, action.role, action.lane, action.effort, action.deliverable];
+
+    // Validate: lane, effort and the deliverable come from the role.
+    const validated = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
+    assert.equal(validated.status, 0, validated.stderr || validated.stdout);
+    const payload = JSON.parse(validated.stdout);
+    assert.equal(payload.action, 'plan-valid');
+    assert.deepEqual(payload.program.actions.map(shape), expected);
+    assert.deepEqual(payload.advisories, []);
+    const human = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath]);
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(human.stdout, /create-done\s+build\/medium role=produce deliverable=files reasoning=low/);
+    assert.match(human.stdout, /notify-done\s+analyze\/medium role=act deliverable=outward reasoning=low/);
+    assert.doesNotMatch(human.stdout, /kind=/);
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'validate must not create a run');
+
+    // Launch with the fake workers.
+    const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--summary', 'Role-driven program', '--foreground', '--json']);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.status, 'completed');
+    assert.equal(report.verified, true);
+    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
+    const runDir = join(f.home, 'workflows', report.runId);
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1 });
+    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    assert.deepEqual(state.program.actions.map(shape), expected);
+    const routed = state.attempts.map((attempt) => [attempt.actionId, attempt.routing?.lane, attempt.routing?.effort, attempt.status]);
+    assert.deepEqual(routed.sort(), [
+      ['check-create-done', 'analyze', 'medium', 'succeeded'],
+      ['create-done', 'build', 'medium', 'succeeded'],
+      ['notify-done', 'analyze', 'medium', 'succeeded'],
+      ['survey-done', 'analyze', 'medium', 'succeeded'],
+    ]);
+    const fact = (id) => state.attempts.find((attempt) => attempt.actionId === id).deliverable;
+    // Outside git the produce step is judged by hashing done.txt directly.
+    assert.deepEqual(fact('create-done'), { type: 'files', gated: true, produced: true });
+    assert.deepEqual(fact('survey-done'), { type: 'report', gated: true, produced: true });
+    assert.deepEqual(fact('notify-done'), { type: 'outward', gated: false, produced: null });
+    assert.deepEqual(fact('check-create-done'), { type: 'report', gated: false, produced: null });
+    // The briefs carry the role lines.
+    const brief = (id) => readFileSync(state.attempts.find((attempt) => attempt.actionId === id).taskFile, 'utf8');
+    assert.match(brief('create-done'), /Declared deliverable: changes to your territory files \(done\.txt\) or a commit\. Bullswarm fails this step as not produced/);
+    assert.match(brief('notify-done'), /This is an act step: it acts outside the workspace/);
+    assert.match(brief('survey-done'), /Declared deliverable: your final response is the report\./);
+    // A check with evidenceFor is never judged by the gate, so its brief promises nothing.
+    assert.doesNotMatch(brief('check-create-done'), /Declared deliverable/);
+
+    // Result: every surface names the role, and no kind.
+    const token = report.shortId ?? report.runId;
+    const show = cli(f, ['workflow', 'runs', 'show', token]);
+    assert.equal(show.status, 0, show.stderr);
+    assert.match(show.stdout, /create-done\s+build\/medium\s+role produce\s+succeeded/);
+    assert.match(show.stdout, /notify-done\s+analyze\/medium\s+role act\s+succeeded/);
+    assert.doesNotMatch(show.stdout, /\bkind \w/);
+    const resultText = cli(f, ['workflow', 'runs', 'result', token]);
+    assert.equal(resultText.status, 0, resultText.stderr);
+    assert.match(resultText.stdout, /check-create-done\s+analyze\/medium\s+role check/);
+    const envelope = JSON.parse(readFileSync(join(runDir, 'result.json'), 'utf8'));
+    assert.deepEqual(envelope.actions.map((action) => [action.id, action.role, action.kind]).sort(), [
+      ['check-create-done', 'check', null],
+      ['create-done', 'produce', null],
+      ['notify-done', 'act', null],
+      ['survey-done', 'investigate', null],
+    ]);
+    const actionShow = cli(f, ['workflow', 'action', 'show', token, 'notify-done']);
+    assert.equal(actionShow.status, 0, actionShow.stderr);
+    const shown = JSON.parse(actionShow.stdout);
+    assert.equal(shown.actionRecord.role, 'act');
+    assert.equal(shown.actionRecord.kind, undefined);
+    assert.deepEqual(shown.actionRecord.deliverable, { type: 'outward' });
+    assert.equal(shown.actionRecord.status, 'succeeded');
   } finally { f.cleanup(); }
 });

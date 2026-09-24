@@ -1169,7 +1169,7 @@ const workflowResumeText = rich({
   safety: [
     'planner mode, routing pins, and settings are durable; --program, --orchestrator, --scout, and --suggested-plan are rejected here (use workflow plan revise to change the plan)',
     'dispatches real coding-agent CLI processes for any unfinished actions, the same as workflow goal',
-    'a failed step whose failure is about the work itself (a check that failed it, a semantic failure) is not rerun; add a fix step or name it in plan revise --rerun',
+    'a failed step whose failure is about the work itself (a check that failed it, a semantic failure, a declared deliverable that was not produced, or a build-lane step with no declared deliverable that changed nothing) is not rerun; add a fix step or name it in plan revise --rerun',
   ],
   examples: [
     { cmd: 'bullswarm workflow resume ab12cd --watch' },
@@ -1380,7 +1380,7 @@ const workflowRepriceText = rich({
 
 const workflowCapabilitiesText = rich({
   usage: 'bullswarm workflow capabilities',
-  purpose: 'Report the workflow engine, current routing policy, and live '
+  purpose: 'Report the workflow engine, step roles, current routing policy, and live '
     + 'pool/model/meter state.',
   args: [],
   options: [{ flag: '--json', desc: 'accepted so agents can pass it uniformly; it selects nothing, because this command has no human renderer', default: 'output is always JSON, with or without the flag' }],

@@ -37,8 +37,9 @@ problem.
 
 ## 2b. A workflow
 
-The program format lives in [program.md](references/program.md): fields, kinds,
-requirement IDs, enforced rules, and one example. This section is how to
+The program format lives in [program.md](references/program.md): fields, roles
+and kinds (each kind belongs to one role), deliverables, requirement IDs,
+enforced rules, and one example. This section is how to
 author the graph.
 
 - **Decompose.** One action per bounded outcome a single worker can finish
@@ -54,37 +55,45 @@ author the graph.
 - **Keep a vertical slice.** Keep each behavior and its focused test in the
   same writer action. Writers should run the checks they own; do not tell every
   writer to skip those checks.
-- **Integrate after parallel writers.** One `integration` action that depends
-  on all of them, directly or through a digest, with `ownedFiles: []`, which
-  on a build-lane action means no territory limit. It reads their outputs,
+- **Integrate after parallel writers.** One integrator (`kind: integration`,
+  or a `combine` step with deliverable `files`), depending on all of them,
+  directly or through a digest, with `ownedFiles: []`, which on a build-lane
+  action means no territory limit. It reads their outputs,
   resolves shared-file requests, and runs the repository's acceptance checks.
   It runs alone.
 - **Finish after integration.** Put the full browser/e2e gate, commit, and PR
   in separate ordered steps after integration, in that sequence. Give the
   browser/e2e step an explicit `timeBox` sized for the full suite. Make the
-  gate a `check` and the commit and PR steps `mechanical` (chore lane): a
-  build-lane attempt that succeeds but changes no file and leaves HEAD in place
-  is recorded as failed `no-op`. The `integration` step is exempt, so a clean
-  integrator whose writers left nothing to reconcile still passes.
-- **Check independently when acceptance matters.** One `adversarial-acceptance`
-  action with empty `affects` and `ownedFiles`, `evidenceFor` set to the
+  browser/e2e gate a `check` step, and the commit and PR steps
+  `kind: mechanical` (not judged, and with empty ownedFiles they run alone). A
+  step whose declared deliverable was not produced fails as `not-produced`,
+  and so does a build-lane step with no declared deliverable that changes no
+  file and makes no commit. An integrator is not judged by files, so a clean
+  integrator still passes. An `act` step is for outward actions such as
+  sending messages; it is never judged by files.
+- **Check independently when acceptance matters.** One `check` step (or
+  `kind: adversarial-acceptance` for high effort) with empty `affects` and
+  `ownedFiles`, `evidenceFor` set to the
   requirement IDs it judges, depending on every writer that affects them.
   Describe what to inspect; the kernel supplies the evidence format. A
   requirement may be covered by evidence alone: a "verification" deliverable
-  is the evidence report in the run result, not a file.
-- **Digest when outputs pile up.** A `digest` action when three or more outputs
+  is the evidence report in the run result, not a file, so its deliverable
+  type is `report`.
+- **Digest when outputs pile up.** A `digest` (the kernel-written kind of
+  combine) when three or more outputs
   feed one reader, or a reader's inputs exceed about 20 KB. The reader depends
   on the digest instead of the raw writers and gets `digestOf` links to them;
   the digest keeps every shared-file request. Evidence never depends on a
   digest.
-- **Effort.** Writers are `implement`. High belongs to exactly three kinds:
-  `integration` (the sole writer after parallel work), `architecture` (a
-  read-only judgment whose report a later action consumes), and
-  `adversarial-acceptance` (independent evidence). A study that reads code and
-  writes markdown is `implement`. When a judgment must land in a file, keep it
-  `implement`, or split it into an `architecture` action plus a writer that
+- **Effort.** Writers are `produce` steps. High belongs to three kinds of
+  step: a `combine` step that merges written code (the sole writer after
+  parallel work), a design step (`kind: architecture`, a read-only judgment
+  whose report a later action consumes), and an independent check
+  (`kind: adversarial-acceptance`). A study that reads code and writes
+  markdown is a `produce` step. When a judgment must land in a file, keep it
+  `produce`, or split it into an `architecture` step plus a writer that
   records its report. Never set `defaults.effort` to `high`, and do not
-  restate `lane` or `effort` on an action that has a `kind`.
+  restate `lane` or `effort` on a step with a role or kind.
 - **Time box.** Every step's task carries a soft time box with a wrap-up point
   and an invitation to stop and report `## Done`, `## Not done` and
   `## Suggested next step`. The kernel computes the box from this home's
@@ -115,10 +124,10 @@ validate again. Validate also refuses what would only fail after launch: an
 `ownedFiles` entry that is a directory or a glob (name exact files), and, with
 a pinned pool, a step that pool cannot run. Exit 0 always carries an
 `advisories` array. `all-writers-high` and `docs-at-high` name an action whose
-effort is above what its work warrants: lower that action's kind, or write the
-reason it needs high into its `purpose`. `requirement-unchecked` names a
+effort is above what its work warrants: lower that action's role or kind, or
+write the reason it needs high into its `purpose`. `requirement-unchecked` names a
 requirement no step lists in `evidenceFor`: the run can finish but never
-verify it, so add it to an `adversarial-acceptance` step, or launch knowing the
+verify it, so add it to a `check` step's `evidenceFor`, or launch knowing the
 result will be unverified. An empty array means launch now, with the same
 goal, `--cwd` and absolute `--program` (validate's `next.launch` line is this
 command):
@@ -292,6 +301,8 @@ second, even while agents are running:
 | a new id | added; runs once its dependencies succeed |
 | an action left exactly as exported | kept: a finished result is reused, a running agent keeps going |
 | an action with any field changed (prompt, dependsOn, ownedFiles, kind…) | amended: a running agent is stopped and the step starts over with the new definition |
+| a step you annotate with the role its kind belongs to | kept (the stored step keeps the kind) |
+| changing `role` or `deliverable` in an exported plan | amended; after a `role` change delete the written-back `lane`, `effort` and `deliverable` (unless you set the deliverable on purpose); after a `deliverable` change delete `lane` and `effort` |
 | an unchanged id listed in `rerun` | its finished result is discarded and it runs again |
 | an action you deleted | removed: stopped if running, never runs again, reported as `removed` and not counted against the result |
 | anything that depends on an amended or rerun step | runs again, because its inputs change |
@@ -310,6 +321,10 @@ Rules that matter when you edit:
   restored, removed, rerun, and invalidated ids), `rejected` (with `issues`),
   or `queued` (the kernel had not taken it within `--wait`; watch prints `plan
   revised` when it does).
+- Replacing a kind with a role reruns the step. A run whose kernel started
+  before an upgrade rejects `role` and `deliverable`: pause, revise, resume.
+- The kernel never repairs a requirement an `act` step affects; it hands it
+  back to you.
 - A stopped or removed step's file edits stay in the shared tree. When they
   must not remain, give a new or amended step the job of reverting or repairing
   them.

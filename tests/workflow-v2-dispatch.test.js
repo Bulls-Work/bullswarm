@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { classifyV2DispatchFailure, dispatchV2Action, trackedDiffStatForTests } from '../src/workflow/v2-dispatch.js';
+import {
+  classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, snapshotPossible, statDeliverablePaths, trackedDiffStatForTests,
+} from '../src/workflow/v2-dispatch.js';
 import { handoffBlock } from '../src/workflow/v2-runtime.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import { listAssignments } from '../src/lib/assignments.js';
@@ -47,6 +49,41 @@ function gitWorkspace(root) {
   execFileSync('git', ['-C', repo, 'add', 'owned.txt']);
   execFileSync('git', ['-C', repo, 'commit', '-qm', 'base']);
   return repo;
+}
+
+const produceFiles = (extra = {}) => ({
+  id: 'write-work', role: 'produce', lane: 'build', effort: 'medium',
+  deliverable: { type: 'files' }, ownedFiles: ['owned.txt'], ...extra,
+});
+
+// One scripted dispatch against a throwaway git repo, or a plain directory
+// when `plain` is set. `watches` are the fake worker verdicts, in order.
+async function withGate(prefix, { action, watches = [() => good], plain = false, prepare, ...dispatch }, check) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  const repo = plain ? join(root, 'plain') : gitWorkspace(root);
+  if (plain) mkdirSync(repo, { recursive: true });
+  const home = join(root, 'home');
+  mkdirSync(home);
+  try {
+    if (prepare) prepare(repo);
+    const verdicts = typeof watches === 'function' ? watches(repo) : watches;
+    const result = await dispatchV2Action({
+      action,
+      taskText: 'do the step',
+      targetDir: repo,
+      paths: {
+        taskFile: join(home, `task-${action.id}-attempt-1.md`),
+        outFile: join(home, `out-${action.id}-attempt-1.md`),
+      },
+      pools: [connector('sample-pool')],
+      bullswarmDir: home,
+      dependencies: harness(verdicts).dependencies,
+      ...dispatch,
+    });
+    await check({ result, repo, home });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 // The free-model liveness probe (src/lib/probe.js) runs before a dispatch to a
@@ -266,11 +303,12 @@ test('a writing action with a successful empty diff snapshot fails as a no-op', 
       pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
     });
     assert.equal(result.ok, false);
-    assert.equal(result.failureKind, 'no-op');
-    assert.equal(result.attempts[0].failureKind, 'no-op');
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].failureKind, 'not-produced');
     assert.equal(result.attempts[0].status, 'failed');
-    assert.equal(result.attempts[0].why, 'no files changed');
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
     assert.equal(result.attempts[0].changedFileCount, 0);
+    assert.equal(Object.hasOwn(result.attempts[0], 'deliverable'), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -373,9 +411,551 @@ test('an implement-kind writer that changes nothing still fails as a no-op', asy
       pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
     });
     assert.equal(result.ok, false);
-    assert.equal(result.failureKind, 'no-op');
-    assert.equal(result.attempts[0].why, 'no files changed');
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('files with no paths fails when nothing changed, and a commit that moves HEAD passes', async () => {
+  await withGate('bs-files-none-', { action: produceFiles() }, ({ result }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: true, produced: false });
+  });
+  await withGate('bs-files-head-', {
+    action: produceFiles({ ownedFiles: [] }),
+    prepare: (repo) => writeFileSync(join(repo, 'owned.txt'), 'integrated\n'),
+    watches: (repo) => [() => {
+      execFileSync('git', ['-C', repo, 'commit', '-qam', 'integrate']);
+      return good;
+    }],
+  }, ({ result, repo }) => {
+    const commits = execFileSync('git', ['-C', repo, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim();
+    assert.equal(commits, '2');
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].failureKind, null);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: true, produced: true });
+  });
+});
+
+test('files with paths: missing fails, a write passes, and an identical rewrite passes on mtime', async () => {
+  const action = produceFiles({ deliverable: { type: 'files', paths: ['owned.txt'] } });
+  await withGate('bs-files-missing-', {
+    action,
+    watches: (repo) => [() => {
+      rmSync(join(repo, 'owned.txt'));
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'declared files missing: owned.txt');
+    assert.deepEqual(result.attempts[0].deliverable, {
+      type: 'files', gated: true, produced: false, written: [], missing: ['owned.txt'],
+    });
+  });
+  await withGate('bs-files-written-', {
+    action,
+    watches: (repo) => [() => {
+      writeFileSync(join(repo, 'owned.txt'), 'changed\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, {
+      type: 'files', gated: true, produced: true, written: ['owned.txt'], missing: [],
+    });
+  });
+  await withGate('bs-files-mtime-', {
+    action,
+    prepare: (repo) => utimesSync(join(repo, 'owned.txt'), new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z')),
+    watches: (repo) => [() => {
+      const file = join(repo, 'owned.txt');
+      writeFileSync(file, readFileSync(file));
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+    assert.deepEqual(result.attempts[0].deliverable, {
+      type: 'files', gated: true, produced: true, written: ['owned.txt'], missing: [],
+    });
+  });
+});
+
+test('a data path under a git-ignored out/ passes and is attributed', async () => {
+  await withGate('bs-data-ignored-', {
+    action: {
+      id: 'summary', role: 'produce', lane: 'build', effort: 'medium', ownedFiles: [],
+      deliverable: { type: 'data', paths: ['out/summary.json'] },
+    },
+    prepare: (repo) => {
+      writeFileSync(join(repo, '.gitignore'), 'out/\n');
+      execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+      execFileSync('git', ['-C', repo, 'commit', '-qm', 'ignore out']);
+    },
+    watches: (repo) => [() => {
+      mkdirSync(join(repo, 'out'));
+      writeFileSync(join(repo, 'out', 'summary.json'), '{"jsFiles":2}\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, {
+      type: 'data', gated: true, produced: true, written: ['out/summary.json'], missing: [],
+    });
+    assert.deepEqual(result.attempts[0].changedFiles, ['out/summary.json']);
+  });
+});
+
+test('a media path that was not created fails as not produced', async () => {
+  await withGate('bs-media-missing-', {
+    action: {
+      id: 'shot', role: 'produce', lane: 'build', effort: 'medium', ownedFiles: ['shot.png'],
+      deliverable: { type: 'media', paths: ['shot.png'] },
+    },
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'declared media missing: shot.png');
+  });
+});
+
+test('a non-empty report is produced, and an empty report fails in the verdict helper', async () => {
+  await withGate('bs-report-', {
+    action: {
+      id: 'survey', role: 'investigate', lane: 'analyze', effort: 'medium', ownedFiles: [],
+      deliverable: { type: 'report' },
+    },
+    watches: [({ paths }) => {
+      writeFileSync(paths.outFile, 'Two files under src.\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'report', gated: true, produced: true });
+  });
+  const empty = deliverableVerdict({
+    action: { role: 'investigate', lane: 'analyze', deliverable: { type: 'report' } },
+    verdict: { ok: true },
+    outputBytes: 0,
+  });
+  assert.equal(empty.failWhy, 'report is empty');
+  assert.deepEqual(empty.fact, { type: 'report', gated: true, produced: false });
+  // A check step with evidenceFor is never judged, even with the report its
+  // role writes back (spec section 2).
+  const evidence = deliverableVerdict({
+    action: { role: 'check', lane: 'analyze', evidenceFor: ['requirement-1'], deliverable: { type: 'report' } },
+    verdict: { ok: true },
+    outputBytes: 0,
+  });
+  assert.equal(evidence.failWhy, null);
+  assert.deepEqual(evidence.fact, { type: 'report', gated: false, produced: null });
+  const many = deliverableVerdict({
+    action: { role: 'produce', lane: 'build', deliverable: { type: 'data', paths: ['a', 'b', 'c', 'd'] } },
+    verdict: { ok: true },
+    snapshotOk: true,
+    pathsBefore: new Map(['a', 'b', 'c', 'd'].map((path) => [path, { exists: false, sha1: null, mtimeMs: null }])),
+    pathsAfter: new Map(['a', 'b', 'c', 'd'].map((path) => [path, { exists: false, sha1: null, mtimeMs: null }])),
+  });
+  assert.equal(many.failWhy, 'declared data missing: a, b, c and 1 more');
+  const same = { exists: true, sha1: 'abc', mtimeMs: 1 };
+  const untouched = deliverableVerdict({
+    action: { role: 'produce', lane: 'build', deliverable: { type: 'data', paths: ['out/summary.json'] } },
+    verdict: { ok: true },
+    snapshotOk: true,
+    pathsBefore: new Map([['out/summary.json', same]]),
+    pathsAfter: new Map([['out/summary.json', same]]),
+  });
+  assert.equal(untouched.failWhy, 'declared data not written: out/summary.json');
+  assert.equal(untouched.fact.produced, false);
+  assert.deepEqual(untouched.fact.written, []);
+});
+
+test('an outward act step is not judged, and combine files may change nothing', async () => {
+  await withGate('bs-outward-', {
+    action: {
+      id: 'notify', role: 'act', lane: 'analyze', effort: 'medium', ownedFiles: [],
+      deliverable: { type: 'outward' },
+    },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'outward', gated: false, produced: null });
+  });
+  await withGate('bs-combine-', {
+    action: {
+      id: 'merge', role: 'combine', lane: 'build', effort: 'high', ownedFiles: [],
+      deliverable: { type: 'files' },
+    },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: false, produced: null });
+  });
+  await withGate('bs-integration-files-', {
+    action: {
+      id: 'integrate', kind: 'integration', lane: 'build', effort: 'high', ownedFiles: [],
+      deliverable: { type: 'files' },
+    },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].failureKind, null);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: false, produced: null });
+  });
+});
+
+test('legacyGate false lets an unchanged build step pass, and a lane-only attempt stores no deliverable', async () => {
+  await withGate('bs-legacy-off-', {
+    action: { id: 'write-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
+    legacyGate: false,
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].failureKind, null);
+    assert.equal(Object.hasOwn(result.attempts[0], 'deliverable'), false);
+  });
+});
+
+test('the step baseline keeps a file written before a stall retry (D19)', async () => {
+  const stalled = { ok: false, failureKind: 'stalled', why: 'stalled: no output', meta: { exitCode: null, wallSec: 2 } };
+  await withGate('bs-d19-stall-', {
+    action: produceFiles(),
+    watches: (repo) => [
+      () => {
+        writeFileSync(join(repo, 'owned.txt'), 'attempt one\n');
+        return stalled;
+      },
+      () => good,
+    ],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts.length, 2);
+    assert.equal(result.attempts[0].failureKind, 'stalled');
+    assert.equal(result.attempts[0].changedFileCount, 1);
+    assert.equal(result.attempts[1].changedFileCount, 0);
+    assert.equal(result.attempts[1].status, 'succeeded');
+    assert.deepEqual(result.attempts[1].deliverable, { type: 'files', gated: true, produced: true });
+  });
+});
+
+test('earlier work carries a clean dispatch, and a refusal rerun is judged again', async () => {
+  await withGate('bs-earlier-files-', {
+    action: produceFiles(),
+    earlierWork: { produced: true },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: false, produced: null, carried: true });
+  });
+  await withGate('bs-earlier-legacy-', {
+    action: { id: 'write-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
+    earlierWork: { produced: true },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(Object.hasOwn(result.attempts[0], 'deliverable'), false);
+  });
+  await withGate('bs-earlier-paths-', {
+    action: produceFiles({ deliverable: { type: 'data', paths: ['owned.txt'] } }),
+    earlierWork: { produced: true },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, {
+      type: 'data', gated: true, produced: true, written: [], missing: [], carried: true,
+    });
+  });
+  await withGate('bs-earlier-gone-', {
+    action: {
+      id: 'summary', role: 'produce', lane: 'build', effort: 'medium', ownedFiles: [],
+      deliverable: { type: 'data', paths: ['out/summary.json'] },
+    },
+    earlierWork: { produced: true },
+  }, ({ result }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'declared data missing: out/summary.json');
+  });
+  await withGate('bs-earlier-unknown-', {
+    action: produceFiles(),
+    earlierWork: { unknown: true },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].deliverable.carried, true);
+    assert.equal(result.attempts[0].deliverable.produced, null);
+  });
+  await withGate('bs-earlier-refused-', {
+    action: produceFiles(),
+    earlierWork: { produced: false },
+  }, ({ result }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].deliverable.carried, undefined);
+  });
+});
+
+test('a resumed path deliverable carries when only other files changed, and is judged when it was rewritten', async () => {
+  const summary = {
+    id: 'summary', role: 'produce', lane: 'build', effort: 'medium', ownedFiles: [],
+    deliverable: { type: 'data', paths: ['out/summary.json'] },
+  };
+  // The earlier dispatch wrote out/ (ignored); this one only reruns the checks.
+  const prepare = (repo) => {
+    writeFileSync(join(repo, '.gitignore'), 'out/\n');
+    execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'ignore out']);
+    mkdirSync(join(repo, 'out'));
+    writeFileSync(join(repo, 'out', 'summary.json'), '{"jsFiles":2}\n');
+  };
+  const checksOnly = (repo) => [() => {
+    writeFileSync(join(repo, 'check.log'), 'summary.json valid\n');
+    return good;
+  }];
+  for (const earlierWork of [{ produced: true }, { unknown: true }]) {
+    await withGate('bs-carry-log-', { action: summary, earlierWork, prepare, watches: checksOnly }, ({ result }) => {
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.attempts[0].changedFiles, ['check.log']);
+      assert.deepEqual(result.attempts[0].deliverable, {
+        type: 'data', gated: true, produced: true, written: [], missing: [], carried: true,
+      });
+    });
+  }
+  // Without earlier work the same dispatch is judged and fails.
+  await withGate('bs-carry-log-none-', { action: summary, prepare, watches: checksOnly }, ({ result }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.attempts[0].why, 'declared data not written: out/summary.json');
+  });
+  // A dispatch that rewrites the path is judged on its own write, not carried.
+  await withGate('bs-carry-rewrite-', {
+    action: summary, earlierWork: { produced: true }, prepare,
+    watches: (repo) => [() => {
+      writeFileSync(join(repo, 'out', 'summary.json'), '{"jsFiles":3}\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, {
+      type: 'data', gated: true, produced: true, written: ['out/summary.json'], missing: [],
+    });
+  });
+});
+
+test('a workspace in a repository subfolder sees edits to untracked files under workspace paths', async () => {
+  const prepare = (repo) => {
+    mkdirSync(join(repo, 'packages', 'web'), { recursive: true });
+    writeFileSync(join(repo, 'packages', 'web', 'index.ts'), 'export {}\n');
+    execFileSync('git', ['-C', repo, 'add', '.']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'package']);
+    // An earlier step of the same run created this file; it is not committed.
+    writeFileSync(join(repo, 'packages', 'web', 'feature.ts'), 'export const v = 1;\n');
+  };
+  const edits = (repo) => [() => {
+    writeFileSync(join(repo, 'packages', 'web', 'feature.ts'), 'export const v = 2;\n');
+    writeFileSync(join(repo, 'packages', 'web', 'new.ts'), 'export const w = 1;\n');
+    return good;
+  }];
+  for (const step of [
+    { id: 'polish', role: 'produce', lane: 'build', effort: 'medium', ownedFiles: [], deliverable: { type: 'files' } },
+    { id: 'polish', kind: 'implement', lane: 'build', effort: 'medium', ownedFiles: [] },
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'bs-subfolder-'));
+    const repo = gitWorkspace(root);
+    const home = join(root, 'home');
+    mkdirSync(home);
+    try {
+      prepare(repo);
+      const pkg = join(repo, 'packages', 'web');
+      const result = await dispatchV2Action({
+        action: step, taskText: 'polish feature.ts', targetDir: pkg, legacyGate: true,
+        paths: { taskFile: join(home, 'task-polish-attempt-1.md'), outFile: join(home, 'out-polish-attempt-1.md') },
+        pools: [connector('sample-pool')], bullswarmDir: home,
+        dependencies: harness(edits(repo)).dependencies,
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.attempts[0].failureKind, null);
+      assert.deepEqual(result.attempts[0].changedFiles, ['feature.ts', 'new.ts']);
+      const diff = readFileSync(result.attempts[0].diffFile, 'utf8');
+      assert.match(diff, /^feature\.ts \| \+1 lines \(new\)$/m);
+      assert.match(diff, /^new\.ts \| \+1 lines \(new\)$/m);
+      assert.doesNotMatch(diff, /packages\/web/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('a workspace its repository ignores is outside git (D21)', async () => {
+  const site = (repo) => join(repo, 'scratch', 'site');
+  const prepare = (repo) => {
+    writeFileSync(join(repo, '.gitignore'), 'scratch/\n');
+    execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'ignore scratch']);
+    mkdirSync(site(repo), { recursive: true });
+    writeFileSync(join(site(repo), 'index.html'), '<h1>acme</h1>\n');
+  };
+  const rewrite = (repo) => [() => {
+    writeFileSync(join(site(repo), 'index.html'), '<h1>initech</h1>\n');
+    writeFileSync(join(site(repo), 'about.html'), '<p>about</p>\n');
+    return good;
+  }];
+  const run = async (step, watches, check) => {
+    const root = mkdtempSync(join(tmpdir(), 'bs-ignored-'));
+    const repo = gitWorkspace(root);
+    const home = join(root, 'home');
+    mkdirSync(home);
+    try {
+      prepare(repo);
+      const result = await dispatchV2Action({
+        action: step, taskText: 'rewrite the site', targetDir: site(repo), legacyGate: true,
+        paths: { taskFile: join(home, `task-${step.id}-attempt-1.md`), outFile: join(home, `out-${step.id}-attempt-1.md`) },
+        pools: [connector('sample-pool')], bullswarmDir: home,
+        dependencies: harness(watches(repo)).dependencies,
+      });
+      await check({ result, repo });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const open = { id: 'site', role: 'produce', lane: 'build', effort: 'medium', ownedFiles: [], deliverable: { type: 'files' } };
+  await run(open, rewrite, ({ result, repo }) => {
+    assert.equal(snapshotPossible(site(repo), open), false);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: false, produced: null });
+  });
+  // The legacy lane rule does not judge a step it cannot see.
+  await run({ id: 'site', kind: 'implement', lane: 'build', effort: 'medium', ownedFiles: [] }, () => [good], ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].failureKind, null);
+  });
+  // Exact owned files are hashed directly, so a refusal still fails.
+  const owned = { ...open, ownedFiles: ['index.html'] };
+  await run(owned, () => [good], ({ result, repo }) => {
+    assert.equal(snapshotPossible(site(repo), owned), true);
+    assert.equal(result.ok, false);
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+  });
+  await run(owned, rewrite, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].changedFiles, ['index.html']);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: true, produced: true });
+  });
+  // A commit in the repository that ignores the workspace is not the step's work.
+  await run(owned, (repo) => [() => {
+    writeFileSync(join(repo, 'owned.txt'), 'other\n');
+    execFileSync('git', ['-C', repo, 'commit', '-qam', 'unrelated']);
+    return good;
+  }], ({ result }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+  });
+});
+
+test('outside git, exact owned files and data paths are judged and a pathless step with no territory is not (D21)', async () => {
+  const owned = {
+    id: 'write-work', role: 'produce', lane: 'build', effort: 'medium',
+    deliverable: { type: 'files' }, ownedFiles: ['src/a.js'],
+  };
+  await withGate('bs-d21-refuse-', {
+    plain: true,
+    action: owned,
+    prepare: (repo) => {
+      mkdirSync(join(repo, 'src'));
+      writeFileSync(join(repo, 'src', 'a.js'), 'export {}\n');
+    },
+  }, ({ result, repo }) => {
+    assert.equal(snapshotPossible(repo, owned), true);
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+  });
+  await withGate('bs-d21-write-', {
+    plain: true,
+    action: owned,
+    prepare: (repo) => {
+      mkdirSync(join(repo, 'src'));
+      writeFileSync(join(repo, 'src', 'a.js'), 'export {}\n');
+    },
+    watches: (repo) => [() => {
+      writeFileSync(join(repo, 'src', 'a.js'), 'export const n = 1;\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: true, produced: true });
+    assert.deepEqual(result.attempts[0].changedFiles, ['src/a.js']);
+  });
+  await withGate('bs-d21-mtime-', {
+    plain: true,
+    action: owned,
+    prepare: (repo) => {
+      mkdirSync(join(repo, 'src'));
+      const file = join(repo, 'src', 'a.js');
+      writeFileSync(file, 'export {}\n');
+      utimesSync(file, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'));
+    },
+    watches: (repo) => [() => {
+      const file = join(repo, 'src', 'a.js');
+      utimesSync(file, new Date('2026-09-24T12:00:00Z'), new Date('2026-09-24T12:00:00Z'));
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[0].changedFileCount, 0);
+    assert.equal(result.attempts[0].deliverable.produced, true);
+  });
+  const open = {
+    id: 'write-work', role: 'produce', lane: 'build', effort: 'medium',
+    deliverable: { type: 'files' }, ownedFiles: [],
+  };
+  await withGate('bs-d21-open-', {
+    plain: true,
+    action: open,
+  }, ({ result, repo }) => {
+    assert.equal(snapshotPossible(repo, open), false);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: false, produced: null });
+    const stats = statDeliverablePaths(repo, ['missing.txt']);
+    assert.deepEqual(stats.get('missing.txt'), { exists: false, sha1: null, mtimeMs: null });
+  });
+  const data = {
+    id: 'summary', role: 'produce', lane: 'build', effort: 'medium', ownedFiles: [],
+    deliverable: { type: 'data', paths: ['out/summary.json'] },
+  };
+  await withGate('bs-d21-data-pass-', {
+    plain: true,
+    action: data,
+    watches: (repo) => [() => {
+      mkdirSync(join(repo, 'out'));
+      writeFileSync(join(repo, 'out', 'summary.json'), '{"jsFiles":1}\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].deliverable.written, ['out/summary.json']);
+    assert.equal(result.attempts[0].deliverable.produced, true);
+  });
+  await withGate('bs-d21-data-fail-', { plain: true, action: data }, ({ result }) => {
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'declared data missing: out/summary.json');
+  });
+});
+
+test('an ignored extraSnapshotPaths file counts as a change for a legacy build step', async () => {
+  await withGate('bs-extra-path-', {
+    action: { id: 'write-work', lane: 'build', effort: 'low', ownedFiles: [] },
+    extraSnapshotPaths: ['out/summary.json'],
+    prepare: (repo) => {
+      writeFileSync(join(repo, '.gitignore'), 'out/\n');
+      execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+      execFileSync('git', ['-C', repo, 'commit', '-qm', 'ignore out']);
+    },
+    watches: (repo) => [() => {
+      mkdirSync(join(repo, 'out'));
+      writeFileSync(join(repo, 'out', 'summary.json'), '{"ok":true}\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(Object.hasOwn(result.attempts[0], 'deliverable'), false);
+    assert.ok(result.attempts[0].changedFiles.includes('out/summary.json'));
+  });
 });
 
 test('diff files remain distinct across dispatch reruns of the same action', async () => {

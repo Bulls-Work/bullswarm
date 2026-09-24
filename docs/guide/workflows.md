@@ -54,13 +54,13 @@ A failed action skips its dependents while other branches keep running. The grap
 
 ## Integrate after parallel writers
 
-After a parallel wave, plan one `integration` action depending on all its writers, directly or through a digest. Give it `ownedFiles: []`, which on a build-lane action means no territory limit, and it runs alone.
+After a parallel wave, plan one integrator (`kind: integration`, or a `combine` step with deliverable `files`) depending on all its writers, directly or through a digest. Give it `ownedFiles: []`, which on a build-lane action means no territory limit, and it runs alone.
 
 Its prompt should read the worker outputs, apply cross-territory requests, reconcile shared files, and run the repository's acceptance commands.
 
-## Verify with an adversarial acceptance step
+## Verify with a check step
 
-Acceptance is its own action of kind `adversarial-acceptance`: empty `affects`, empty `ownedFiles`, `evidenceFor` set to the requirement IDs it judges, and `dependsOn` covering every writer that affects them. Describe what to inspect — the kernel owns the evidence format and rejects instructions such as "return only JSON".
+Acceptance is its own `check` step (or `kind: adversarial-acceptance` for high effort): empty `affects`, empty `ownedFiles`, `evidenceFor` set to the requirement IDs it judges, and `dependsOn` covering every writer that affects them. Describe what to inspect — the kernel owns the evidence format and rejects instructions such as "return only JSON".
 
 `verified` is computed separately from `completed`: it records whether every mandatory requirement has fresh passing evidence, so a run can finish and still be unverified.
 
@@ -70,22 +70,33 @@ Use a `digest` action when three or more writers feed a single reader, or when a
 
 A digest must depend on at least one action and owns no files. Evidence never depends on a digest: evidence reads the real artifacts.
 
-## Effort comes from the kind
+## Effort comes from the role or kind
 
-`kind` names the nature of the work once and derives lane and effort:
+A `role` says what a step does, and an optional `deliverable` says what it leaves behind: `files`, a `report`, `data` or `media` at exact `paths`, or `outward` actions such as a sent message. A role-only step takes its lane and effort from both:
 
-| `kind` | lane | effort | use for |
-| --- | --- | --- | --- |
-| `mechanical` | chore | low | renames, formatting, generated edits |
-| `io-read` | analyze | low | fetch or read something and report it |
-| `digest` | analyze | low | condense dependency outputs; the kernel writes the task |
-| `check` | analyze | medium | a read-only inspection with a report |
-| `implement` | build | medium | ordinary edits and writing, including docs written from code study |
-| `integration` | build | high | the sole writer after parallel writers; `ownedFiles: []` |
-| `architecture` | analyze | high | a read-only cross-cutting judgment a later action consumes |
-| `adversarial-acceptance` | analyze | high | independent evidence |
+| role | default deliverable | files | data or media | report | outward |
+| --- | --- | --- | --- | --- | --- |
+| `investigate` | report | build/medium | build/medium | analyze/medium | — |
+| `produce` | files | build/medium | build/medium | analyze/medium | — |
+| `transform` | files | chore/low | chore/low | analyze/low | — |
+| `combine` | (required) | build/high | build/medium | analyze/medium | — |
+| `check` | report | — | — | analyze/medium | — |
+| `act` | outward | — | — | — | analyze/medium |
 
-Stating `lane` and `effort` on every action is the other way to say the same thing; a `kind` outside this table is a validation error, not a runtime failure. Reasoning depth is a third, independent decision: an action's optional `reasoning` field sets how hard the picked model thinks on that one action. Every field and default is in [Program format](/reference/program).
+A `kind` names a more exact nature. Each kind belongs to one role and keeps its own lane, effort and gate, so the two do not always match:
+
+| kind | role | kind: lane/effort | role alone: lane/effort (default deliverable) | kind gate | role gate |
+| --- | --- | --- | --- | --- | --- |
+| `mechanical` | `transform` | chore/low | chore/low (files) | not judged | judged: a file change or a commit |
+| `io-read` | `investigate` | analyze/low | analyze/medium (report) | not judged | report not empty |
+| `architecture` | `investigate` | analyze/high | analyze/medium (report) | not judged | report not empty |
+| `implement` | `produce` | build/medium | build/medium (files) | a file change or a commit | a file change or a commit |
+| `integration` | `combine` | build/high | needs a deliverable | exempt | files: exempt; data/media: paths; report: not empty |
+| `digest` | `combine` | analyze/low, kernel-written task | — | not judged | a role step never gets the digest task |
+| `check` | `check` | analyze/medium | analyze/medium (report) | not judged | not judged with evidenceFor, else report not empty |
+| `adversarial-acceptance` | `check` | analyze/high | analyze/medium (report) | not judged | same as check |
+
+Give work steps a role. Keep commit, formatter and PR steps `kind: mechanical`, and use a kind for a `digest` or when you want its exact routing. A step whose declared deliverable was not produced fails as `not-produced`, and so does a build-lane step with no declared deliverable that changes no file and makes no commit. Stating `lane` and `effort` on every action is the other way to route; a role or `kind` outside these tables is a validation error, not a runtime failure. Reasoning depth is a third, independent decision: an action's optional `reasoning` field sets how hard the picked model thinks on that one action. Every field, default and gate is in [Program format](/reference/program#roles-and-deliverables).
 
 ## Validate, then launch
 
@@ -111,7 +122,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
   "actions": [
     {
       "id": "since-flag",
-      "kind": "implement",
+      "role": "produce",
       "purpose": "Add --since to runs list with a unit test",
       "dependsOn": [],
       "affects": ["requirement-1"],
@@ -121,7 +132,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
     },
     {
       "id": "readme",
-      "kind": "implement",
+      "role": "produce",
       "purpose": "Document --since in README",
       "dependsOn": [],
       "affects": ["requirement-2"],
@@ -131,7 +142,8 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
     },
     {
       "id": "integrate",
-      "kind": "integration",
+      "role": "combine",
+      "deliverable": "files",
       "purpose": "Reconcile both edits and run the full suite",
       "dependsOn": ["since-flag", "readme"],
       "affects": ["requirement-1", "requirement-2"],
@@ -141,7 +153,8 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
     },
     {
       "id": "verify",
-      "kind": "adversarial-acceptance",
+      "role": "check",
+      "effort": "high",
       "purpose": "Independently confirm the flag works and is documented",
       "dependsOn": ["since-flag", "readme", "integrate"],
       "affects": [],

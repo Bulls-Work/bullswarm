@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACTION_KINDS, ActionValidationError, DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS,
-  PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram,
+  KIND_ROLES, PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram,
 } from '../src/workflow/action-validator.js';
 
 const work = (over = {}) => ({
@@ -463,4 +463,326 @@ test('advisories report the two effort smells and never change validity', () => 
   assert.deepEqual(programAdvisories(smelly).map((advisory) => advisory.code), ['all-writers-high', 'docs-at-high']);
   assert.deepEqual(programAdvisories(null), []);
   assert.deepEqual(programAdvisories({ schemaVersion: 'bullswarm.workflow.program.v2' }), []);
+});
+
+// --- roles and deliverables -------------------------------------------------
+
+const roleStep = (role, over = {}) => ({
+  id: `step-${role}`, purpose: `Do ${role}`, dependsOn: [], affects: ['result'],
+  ownedFiles: [], prompt: `Do the ${role} work.`, role, evidenceFor: [], inputs: [], produces: [],
+  ...over,
+});
+const accept = (actions, runtime = relaxed) => validateActionProgram(
+  { schemaVersion: 'bullswarm.workflow.program.v2', actions },
+  runtime,
+).actions.at(-1);
+const issuesOf = (actions, runtime = relaxed) => {
+  try {
+    validateActionProgram({ schemaVersion: 'bullswarm.workflow.program.v2', actions }, runtime);
+    assert.fail('expected validation to fail');
+  } catch (error) {
+    assert.ok(error instanceof ActionValidationError);
+    return error.issues;
+  }
+};
+
+test('a role-only step resolves lane, effort and the default deliverable', () => {
+  const defaults = {
+    investigate: ['analyze', 'medium', 'report'],
+    produce: ['build', 'medium', 'files'],
+    transform: ['chore', 'low', 'files'],
+    check: ['analyze', 'medium', 'report'],
+    act: ['analyze', 'medium', 'outward'],
+  };
+  for (const [role, [lane, effort, type]] of Object.entries(defaults)) {
+    const ownedFiles = lane === 'build' || lane === 'chore' ? [`${role}.js`] : [];
+    const action = accept([roleStep(role, { ownedFiles })]);
+    assert.deepEqual([action.lane, action.effort, action.deliverable], [lane, effort, { type }], role);
+    assert.equal(action.role, role);
+    assert.equal(Object.hasOwn(action, 'kind'), false, role);
+  }
+  assert.deepEqual(
+    [accept([roleStep('produce', { deliverable: 'report' })]).lane, accept([roleStep('produce', { deliverable: 'report' })]).effort],
+    ['analyze', 'medium'],
+  );
+  const data = accept([roleStep('transform', {
+    deliverable: { type: 'data', paths: ['out/rows.json'] },
+    ownedFiles: ['out/rows.json'],
+  })]);
+  assert.deepEqual([data.lane, data.effort], ['chore', 'low']);
+  assert.deepEqual(
+    [accept([roleStep('combine', { deliverable: 'files', ownedFiles: ['src/a.js'] })]).lane,
+      accept([roleStep('combine', { deliverable: 'files', ownedFiles: ['src/a.js'] })]).effort],
+    ['build', 'high'],
+  );
+  const combinedData = accept([roleStep('combine', {
+    deliverable: { type: 'data', paths: ['out/rows.json'] },
+    ownedFiles: ['out/rows.json'],
+  })]);
+  assert.deepEqual([combinedData.lane, combinedData.effort], ['build', 'medium']);
+  const combinedReport = accept([roleStep('combine', { deliverable: 'report' })]);
+  assert.deepEqual([combinedReport.lane, combinedReport.effort, combinedReport.deliverable], ['analyze', 'medium', { type: 'report' }]);
+  assert.ok(issuesOf([roleStep('combine', { lane: 'build', effort: 'high' })]).includes(
+    'actions[0] combine steps must declare a deliverable: files (merging written work, build/high), data or media (build/medium), or report (condensing or comparing results, analyze/medium)',
+  ));
+  const checked = accept([roleStep('check', { affects: [], evidenceFor: ['result'] })]);
+  assert.deepEqual(checked.evidenceFor, ['result']);
+  assert.deepEqual(checked.deliverable, { type: 'report' });
+});
+
+test('a role step the role table cannot route reports its own issue, not a generic lane or effort one', () => {
+  const generic = (issue) => /\.(lane|effort) must be/.test(issue);
+  for (const [step, expected] of [
+    [roleStep('combine'), 'actions[0] combine steps must declare a deliverable: files (merging written work, build/high), data or media (build/medium), or report (condensing or comparing results, analyze/medium)'],
+    [roleStep('ship'), 'actions[0].role must be investigate|produce|transform|combine|check|act'],
+    [roleStep('check', { deliverable: 'files' }), 'actions[0].deliverable files is not allowed for role check; check takes report'],
+  ]) {
+    const issues = issuesOf([step]);
+    assert.ok(issues.includes(expected), issues.join('; '));
+    assert.equal(issues.some(generic), false, issues.join('; '));
+  }
+  // A lane the step sets itself is still checked.
+  assert.ok(issuesOf([roleStep('investigate', { lane: 'fast' })]).includes('actions[0].lane must be analyze|build|chore'));
+});
+
+test('explicit lane or effort outranks the role, and the role outranks defaults.effort', () => {
+  const laneWins = accept([roleStep('transform', { deliverable: 'files', lane: 'build', ownedFiles: ['a.js'] })]);
+  assert.deepEqual([laneWins.lane, laneWins.effort], ['build', 'low']);
+  const effortWins = accept([roleStep('produce', { effort: 'high', ownedFiles: ['a.js'] })]);
+  assert.deepEqual([effortWins.lane, effortWins.effort], ['build', 'high']);
+  const roleWins = validateActionProgram({
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    defaults: { effort: 'high' },
+    actions: [roleStep('produce', { ownedFiles: ['a.js'] })],
+  }, relaxed).actions[0];
+  assert.deepEqual([roleWins.lane, roleWins.effort], ['build', 'medium']);
+});
+
+test('the resolved lane must fit the deliverable', () => {
+  const expectIssue = (actions, message) => assert.ok(issuesOf(actions).includes(message), issuesOf(actions).join('; '));
+  expectIssue(
+    [kindWork('implement', { deliverable: 'report' })],
+    'actions[0] a report deliverable is for analyze steps; build and chore steps deliver files, data or media',
+  );
+  expectIssue(
+    [roleStep('investigate', { lane: 'build', ownedFiles: ['notes.md'] })],
+    'actions[0] a report deliverable is for analyze steps; build and chore steps deliver files, data or media',
+  );
+  expectIssue(
+    [roleStep('check', { lane: 'build' })],
+    'actions[0] a report deliverable is for analyze steps; build and chore steps deliver files, data or media',
+  );
+  expectIssue(
+    [kindWork('io-read', { deliverable: 'files', ownedFiles: [] })],
+    'actions[0] a files deliverable needs lane build or chore; analyze steps are read-only',
+  );
+});
+
+test('a matching role is deleted and the step matches the kind-only step', () => {
+  for (const kind of ACTION_KINDS) {
+    const role = KIND_ROLES[kind];
+    const analyze = KIND_DEFAULTS[kind].lane === 'analyze';
+    const peers = kind === 'digest' ? [kindWork('implement', { id: 'source' })] : [];
+    const over = {
+      ...(analyze ? { ownedFiles: [] } : {}),
+      ...(kind === 'digest' ? { dependsOn: ['source'], affects: [] } : {}),
+    };
+    const withRole = accept([...peers, kindWork(kind, { ...over, role })], relaxed);
+    const kindOnly = accept([...peers, kindWork(kind, over)], relaxed);
+    assert.deepEqual(withRole, kindOnly, kind);
+    if (analyze && kind !== 'digest') {
+      const evidenceOver = { ownedFiles: [], affects: [], evidenceFor: ['result'] };
+      assert.deepEqual(
+        accept([kindWork(kind, { ...evidenceOver, role })]),
+        accept([kindWork(kind, evidenceOver)]),
+        `${kind} evidenceFor`,
+      );
+    }
+  }
+  assert.ok(issuesOf([kindWork('check', { role: 'produce', ownedFiles: [] })]).includes(
+    'actions[0].role "produce" does not match kind "check" (kind check is role check); give one of them',
+  ));
+});
+
+test('deliverable paths must be a subset of non-empty ownedFiles', () => {
+  assert.ok(issuesOf([roleStep('produce', {
+    deliverable: { type: 'data', paths: ['keep.js', 'a', 'b'] },
+    ownedFiles: ['keep.js'],
+  })]).includes('actions[0].deliverable.paths must be listed in ownedFiles (missing: a, b)'));
+  const inside = accept([roleStep('produce', {
+    deliverable: { type: 'data', paths: ['./out/a.json'] },
+    ownedFiles: ['./out/a.json'],
+  })]);
+  assert.deepEqual(inside.deliverable, { type: 'data', paths: ['out/a.json'] });
+  const open = accept([roleStep('produce', {
+    deliverable: { type: 'data', paths: ['out/a.json'] },
+    ownedFiles: [],
+  })]);
+  assert.deepEqual(open.deliverable, { type: 'data', paths: ['out/a.json'] });
+});
+
+test('role and deliverable need a program-mode run; kind-only verified programs stay put', () => {
+  const verified = { mandatoryRequirements: ['result'], requireMandatoryEvidence: false, relaxedGraph: false };
+  assert.ok(issuesOf([roleStep('investigate')], verified).includes('actions[0].role and deliverable need a program-mode run'));
+  assert.ok(issuesOf([kindWork('implement', { deliverable: 'files' })], verified).includes('actions[0].role and deliverable need a program-mode run'));
+  const kindOnly = validateActionProgram(LEGACY_FIXTURE, { mandatoryRequirements: ['report-correct'], relaxedGraph: false });
+  assert.equal(JSON.stringify(kindOnly), LEGACY_FIXTURE_NORMALIZED);
+});
+
+test('every role and deliverable message has a case', () => {
+  const has = (actions, message, runtime = relaxed) => {
+    const issues = issuesOf(actions, runtime);
+    assert.ok(issues.includes(message), `${message}\n---\n${issues.join('\n')}`);
+  };
+  has([roleStep('investigate')], 'actions[0].role and deliverable need a program-mode run', { mandatoryRequirements: ['result'], requireMandatoryEvidence: false });
+  has([roleStep('investigate', { role: 'ship', lane: 'analyze', effort: 'medium' })], 'actions[0].role must be investigate|produce|transform|combine|check|act');
+  has(
+    [kindWork('implement', { role: 'check', ownedFiles: ['src/work-implement.js'] })],
+    'actions[0].role "check" does not match kind "implement" (kind implement is role produce); give one of them',
+  );
+  has([kindWork('implement', { deliverable: 'nope' })], 'actions[0].deliverable must be files|report|data|media|outward, or an object {type, paths}');
+  has([kindWork('implement', { deliverable: { type: 'files', note: true } })], 'actions[0].deliverable.note is not allowed');
+  has([kindWork('implement', { deliverable: { type: 'data', paths: [] } })], 'actions[0].deliverable.paths is required for data');
+  has([kindWork('implement', { deliverable: { type: 'media', paths: [] } })], 'actions[0].deliverable.paths is required for media');
+  has([roleStep('investigate', { deliverable: { type: 'report', paths: ['r.md'] } })], 'actions[0].deliverable.paths is not allowed for report');
+  has([roleStep('act', { deliverable: { type: 'outward', paths: ['x'] } })], 'actions[0].deliverable.paths is not allowed for outward');
+  has(
+    [roleStep('produce', { deliverable: { type: 'data', paths: ['a', 'b'] }, ownedFiles: ['a.js'] })],
+    'actions[0].deliverable.paths must be listed in ownedFiles (missing: a, b)',
+  );
+  has([roleStep('check', { deliverable: 'files', lane: 'build' })], 'actions[0].deliverable files is not allowed for role check; check takes report');
+  has([roleStep('act', { deliverable: 'files', lane: 'analyze' })], 'actions[0].deliverable files is not allowed for role act; act takes outward');
+  has([roleStep('produce', { deliverable: 'outward', lane: 'analyze' })], 'actions[0].deliverable outward needs role act');
+  has(
+    [roleStep('combine', { lane: 'build', effort: 'high' })],
+    'actions[0] combine steps must declare a deliverable: files (merging written work, build/high), data or media (build/medium), or report (condensing or comparing results, analyze/medium)',
+  );
+  has([kindWork('io-read', { deliverable: 'data', ownedFiles: [] })], 'actions[0] a data deliverable needs lane build or chore; analyze steps are read-only');
+  has([kindWork('implement', { deliverable: 'outward' })], 'actions[0] a outward deliverable is for analyze steps; build and chore steps deliver files, data or media');
+  has([roleStep('act', { lane: 'build', effort: 'medium' })], 'actions[0] act steps use lane analyze; they do not write workspace files');
+  has([roleStep('act', { evidenceFor: ['result'], affects: [] })], 'actions[0] act steps must have empty ownedFiles and evidenceFor');
+  has(
+    [kindWork('digest', { deliverable: 'report', ownedFiles: [], affects: [], dependsOn: ['source'] }), kindWork('implement', { id: 'source' })].reverse(),
+    'actions[1] digest actions take no deliverable; the kernel writes their report',
+  );
+  has([roleStep('investigate', { evidenceFor: ['result'], affects: [] })], 'actions[0] only check steps take evidenceFor');
+  has(
+    [kindWork('check', { deliverable: 'files', ownedFiles: [], affects: [], evidenceFor: ['result'] })],
+    'actions[0] steps with evidenceFor take no deliverable other than report',
+  );
+  has(
+    [kindWork('implement', { evidence: ['review'] })],
+    'actions[0].evidence is not accepted yet: command and schema evidence arrive in a later release; for judged evidence use a check step with evidenceFor',
+  );
+});
+
+test('string deliverables normalise to objects and empty file paths are dropped', () => {
+  assert.deepEqual(accept([roleStep('investigate', { deliverable: 'report' })]).deliverable, { type: 'report' });
+  const dropped = accept([kindWork('implement', { deliverable: { type: 'files', paths: [] } })]);
+  assert.deepEqual(dropped.deliverable, { type: 'files' });
+  assert.equal(Object.hasOwn(dropped.deliverable, 'paths'), false);
+  assert.ok(issuesOf([kindWork('implement', { deliverable: { type: 'data', paths: [] } })]).includes('actions[0].deliverable.paths is required for data'));
+});
+
+test('act is accepted when the goal forbids workspace mutation; outward is only for act', () => {
+  const forbidden = { relaxedGraph: true, workspaceMutation: 'forbidden', requireMandatoryEvidence: false, mandatoryRequirements: ['result'] };
+  const act = accept([roleStep('act')], forbidden);
+  assert.equal(act.lane, 'analyze');
+  assert.deepEqual(act.deliverable, { type: 'outward' });
+  assert.equal(act.role, 'act');
+  const rejected = issuesOf([roleStep('produce', { ownedFiles: ['a.js'] })], forbidden);
+  assert.ok(rejected.some((issue) => issue.includes('must use analyze because the goal forbids workspace mutation')));
+  assert.ok(issuesOf([roleStep('transform', { deliverable: 'outward', lane: 'analyze' })]).includes('actions[0].deliverable outward needs role act'));
+});
+
+test('evidence is not accepted yet, and proofs is an unknown field', () => {
+  assert.ok(issuesOf([kindWork('implement', { evidence: { type: 'review' } })]).includes(
+    'actions[0].evidence is not accepted yet: command and schema evidence arrive in a later release; for judged evidence use a check step with evidenceFor',
+  ));
+  assert.ok(issuesOf([kindWork('implement', { proofs: ['review'] })]).includes('actions[0].proofs is not allowed'));
+});
+
+test('normalising a role-only program and a mixed program twice is a fixed point', () => {
+  const roleProgram = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      roleStep('produce', { id: 'make', ownedFiles: ['src/make.js'], deliverable: { type: 'files', paths: ['./src/make.js'] } }),
+      roleStep('check', { id: 'look', dependsOn: ['make'], affects: [], evidenceFor: ['result'] }),
+    ],
+  };
+  const once = validateActionProgram(roleProgram, relaxed);
+  assert.equal(JSON.stringify(validateActionProgram(once, relaxed)), JSON.stringify(once));
+  assert.deepEqual(once.actions[0].deliverable, { type: 'files', paths: ['src/make.js'] });
+  const mixed = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      kindWork('implement', { id: 'impl', role: 'produce' }),
+      roleStep('investigate', { id: 'read' }),
+    ],
+  };
+  const mixedOnce = validateActionProgram(mixed, relaxed);
+  assert.equal(JSON.stringify(validateActionProgram(mixedOnce, relaxed)), JSON.stringify(mixedOnce));
+  assert.equal(Object.hasOwn(mixedOnce.actions[0], 'role'), false);
+  assert.equal(mixedOnce.actions[1].role, 'investigate');
+  assert.deepEqual(mixedOnce.actions[1].deliverable, { type: 'report' });
+});
+
+test('three produce steps at high effort raise all-writers-high', () => {
+  const program = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: ['a', 'b', 'c'].map((id) => roleStep('produce', { id, effort: 'high', ownedFiles: [`${id}.js`] })),
+  };
+  assert.deepEqual(programAdvisories(program).map((advisory) => advisory.code), ['all-writers-high']);
+});
+
+test('a role step gets one message for one mistake, not a cascade from the role defaults', () => {
+  const stepIssues = (actions) => issuesOf(actions).filter((issue) => issue.startsWith('actions[0]'));
+  // act with a non-outward deliverable resolves no lane; the author set none.
+  for (const deliverable of ['report', 'files', { type: 'data', paths: ['out/a.json'] }, { type: 'media', paths: ['out/a.png'] }]) {
+    const type = typeof deliverable === 'string' ? deliverable : deliverable.type;
+    assert.deepEqual(stepIssues([roleStep('act', { deliverable })]), [
+      `actions[0].deliverable ${type} is not allowed for role act; act takes outward`,
+    ]);
+  }
+  // An explicit wrong lane on act is still the author's to fix.
+  assert.ok(stepIssues([roleStep('act', { lane: 'build' })]).includes('actions[0] act steps use lane analyze; they do not write workspace files'));
+  // evidenceFor on a non-check role with no declared deliverable and no lane.
+  for (const role of ['investigate', 'produce', 'transform']) {
+    assert.deepEqual(stepIssues([roleStep(role, { evidenceFor: ['result'], affects: [] })]), [
+      'actions[0] only check steps take evidenceFor',
+    ], role);
+  }
+  assert.deepEqual(stepIssues([roleStep('act', { evidenceFor: ['result'], affects: [] })]), [
+    'actions[0] act steps must have empty ownedFiles and evidenceFor',
+  ]);
+  // A deliverable or lane the author did write is still judged.
+  assert.ok(stepIssues([roleStep('produce', { evidenceFor: ['result'], affects: [], deliverable: 'files' })])
+    .includes('actions[0] steps with evidenceFor take no deliverable other than report'));
+  assert.ok(stepIssues([roleStep('produce', { evidenceFor: ['result'], affects: [], lane: 'build' })])
+    .includes('actions[0] evidence actions must use lane analyze'));
+});
+
+test('kind and role match only through a real kind; prototype keys are unknown kinds', () => {
+  for (const kind of ['bogus', 'constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const issues = issuesOf([kindWork(kind, { role: 'produce' })]);
+    assert.ok(issues.includes(`actions[0].kind must be ${ACTION_KINDS.join('|')}`), kind);
+    assert.equal(issues.some((issue) => issue.includes('does not match kind')), false, `${kind}: ${issues.join(' / ')}`);
+  }
+  assert.ok(issuesOf([kindWork('implement', { role: 'check' })]).includes(
+    'actions[0].role "check" does not match kind "implement" (kind implement is role produce); give one of them',
+  ));
+});
+
+test('a data or media deliverable with non-array paths says must be an array, like files', () => {
+  for (const type of ['data', 'media', 'files']) {
+    for (const paths of ['out/a.png', null, { a: 1 }]) {
+      const issues = issuesOf([roleStep('produce', { deliverable: { type, paths } })]);
+      assert.ok(issues.includes('actions[0].deliverable.paths must be an array'), `${type} ${JSON.stringify(paths)}: ${issues.join(' / ')}`);
+      assert.equal(issues.includes(`actions[0].deliverable.paths is required for ${type}`), false);
+    }
+  }
+  for (const type of ['data', 'media']) {
+    assert.ok(issuesOf([roleStep('produce', { deliverable: { type } })]).includes(`actions[0].deliverable.paths is required for ${type}`));
+    assert.ok(issuesOf([roleStep('produce', { deliverable: { type, paths: [] } })]).includes(`actions[0].deliverable.paths is required for ${type}`));
+  }
 });

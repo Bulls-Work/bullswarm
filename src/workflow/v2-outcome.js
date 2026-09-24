@@ -127,7 +127,7 @@ function validateResultUsageBytes(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'bytes', 'routeWhy', 'routeCandidates', 'usage']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'bytes', 'routeWhy', 'routeCandidates', 'usage']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -140,6 +140,9 @@ function validateResultAction(value, name) {
   // Same optionality for `kind`: envelopes written before program actions
   // could state a work nature carry neither the field nor a null.
   if (value.kind !== undefined && value.kind !== null) resultString(value.kind, `${name}.kind`);
+  // `role` is written only for steps that store one, so older envelopes and
+  // kind-only steps carry no field at all.
+  if (value.role !== undefined) resultString(value.role, `${name}.role`);
   validateResultBytes(value.bytes, `${name}.bytes`);
   if (value.usage !== undefined && value.usage !== null) validateUsageAggregate(value.usage, `${name}.usage`);
 }
@@ -554,6 +557,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         // effort are derived from it at acceptance and already visible on the
         // durable action; `kind` is what a reader needs to know WHY.
         kind: definition.kind ?? null,
+        ...(definition.role ? { role: definition.role } : {}),
         bytes: lastAttemptBytes(state, definition.id),
         usage: actionUsage,
         routeWhy: attempt?.routeWhy ?? null,
@@ -601,6 +605,10 @@ function stateActionFor(state, actionId) {
 
 function fallback(value, alternate) {
   return value === undefined || value === null ? alternate ?? null : value;
+}
+
+function roleField(role) {
+  return role ? { role } : {};
 }
 
 function compactActionValue(value) {
@@ -858,6 +866,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
     return {
       id: action.id,
       kind: fallback(action.kind, definition?.kind),
+      ...roleField(fallback(action.role, definition?.role)),
       lane: fallback(action.lane, definition?.lane),
       effort: fallback(action.effort, definition?.effort),
       status: action.status,
@@ -970,7 +979,7 @@ export function validateV2ResultEnvelope(result) {
   return true;
 }
 
-const VERIFY_ROUND_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed']);
+const VERIFY_ROUND_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed', 'act-step']);
 
 function validateResultVerifyRounds(value) {
   resultObject(value, 'verifyRounds');

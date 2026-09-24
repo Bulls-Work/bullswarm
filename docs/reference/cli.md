@@ -1214,7 +1214,7 @@ The human table columns are `run`, `action`, `try`, `pool`, `match`, `tokens`,
 
 ### capabilities
 
-Report the workflow engine, current routing policy, and live pool/model/meter state.
+Report the workflow engine, step roles, current routing policy, and live pool/model/meter state.
 
 ```bash
 # Always JSON: pools, lanes, models, meters, routing constraints.

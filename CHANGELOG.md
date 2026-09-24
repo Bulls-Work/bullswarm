@@ -2,15 +2,42 @@
 
 ## Unreleased
 
-- workflow: a build-lane attempt that exits successfully, changes no files
-  and leaves HEAD where it was is recorded as failed (`no files changed`, kind
-  `no-op`) instead of verified. A commit step moves HEAD, so it still passes.
-  An `integration` step is exempt, so a clean integrator whose writers left
-  nothing to reconcile still passes. Chore and analyze attempts that change
-  nothing still pass, so commit and PR steps belong in `mechanical` (chore
-  lane), and a snapshot that could not be read is left as it was. The skill
-  and planner rules say which kind the browser/e2e gate, commit and PR steps
-  use.
+- workflow: a program-mode step can say what it does and what it leaves
+  behind. `role` is one of `investigate`, `produce`, `transform`, `combine`,
+  `check` or `act`, and `deliverable` is `files`, `report`, `data`, `media`
+  or `outward` (`data` and `media` name exact `paths`). A role sets lane and
+  effort the way `kind` does. Every kind still validates and belongs to one
+  role, keeping its own lane, effort and gate: `mechanical` is a
+  transform, `io-read` and `architecture` investigate, `implement` produces,
+  `integration` and `digest` combine, `check` and `adversarial-acceptance`
+  check. A step may give both only when they agree, and then only the kind is
+  stored, so annotating an exported plan changes nothing. An `act` step works
+  outside the workspace (send, post, publish, deploy): it may not edit
+  workspace files, and the kernel never repairs a requirement it affects. An
+  action-level `evidence` field is refused for now.
+- workflow: a step whose declared deliverable was not produced fails as
+  `not-produced`. A `files` deliverable needs a changed file or a new commit.
+  A deliverable with `paths` needs every path present and at least one
+  written during the step, checked without git, so git-ignored output counts
+  in a shared workspace (an isolated run refuses a git-ignored deliverable
+  path, and any run refuses a path that names a directory). A `report` must
+  not be empty, and that includes a `combine` step's report. `act` steps, and
+  `combine` steps with a `files` deliverable and no paths, are not judged.
+  The check covers the whole step, so a retry or rerun that finds the work
+  already done is not failed; a rerun of a step that failed `not-produced` is
+  judged again. A program written only with kinds or lanes
+  validates exactly as before. One behavior is new in runs started by this
+  version: a build-lane step other than `integration` that changes no file
+  and makes no commit fails as `not-produced`; 0.35.6 recorded it as
+  succeeded. Chore and analyze steps with no declared deliverable are not
+  judged. Runs started before this version keep their original rules when
+  resumed. The failure is not retried automatically, and `workflow resume`
+  leaves it to you. The skill and planner rules make the gate a `check` and
+  keep commit and PR steps `mechanical`.
+- workflow: when every step affecting a failed requirement declares a
+  `report`, the verify loop's repair step is a read-only `analyze` step whose
+  deliverable is `report` and which owns no files. A requirement an `act`
+  step affects gets no repair: the loop stops with `stoppedBy: act-step`.
 - workflow: an attempt's diff file is named from its task file
   (`diff-<action>-attempt-<n>.txt` beside `task-<action>-attempt-<n>.md`), so
   a rerun writes a new diff and leaves the earlier attempt's diff in place.

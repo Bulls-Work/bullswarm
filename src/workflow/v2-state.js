@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
+import { DELIVERABLE_TYPES } from './step-vocabulary.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 
@@ -75,7 +76,12 @@ const ATTEMPT_FIELDS = new Set([
   // loop's carry-forward rule and the durable handoff. Absent on attempts
   // recorded before 0.35.2 and on attempts with no snapshot.
   'changedFiles',
+  // Present only when the action declared a deliverable. `written` and
+  // `missing` appear when paths were declared; `carried` only when an earlier
+  // dispatch of this step decided the result (D19).
+  'deliverable',
 ]);
+const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried']);
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
 const ATTEMPT_TIME_BOX_SOURCES = new Set(['program', 'pair', 'kind', 'fallback']);
 const ATTEMPT_RETURNED_EARLY_FIELDS = new Set(['count', 'items']);
@@ -87,7 +93,7 @@ const VERIFY_ROUND_FIELDS = new Set([
   'repairActionId', 'repairRequirements', 'repairOwnedFiles', 'repairUnrestricted', 'repairStartedAt',
   'repairFinishedAt', 'changedFiles',
 ]);
-const VERIFY_LOOP_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed']);
+const VERIFY_LOOP_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed', 'act-step']);
 const ATTEMPT_SESSION_FIELDS = new Set([
   'pool', 'model', 'sessionId', 'generation', 'startedAt', 'lastUsedAt',
 ]);
@@ -868,6 +874,23 @@ function validateOutputRecovery(attempt, at) {
   }
 }
 
+function stringPathList(value, at) {
+  if (!Array.isArray(value) || value.length > 50 || value.some((item) => typeof item !== 'string')) {
+    fail(`${at} must be a string array of at most 50 entries`);
+  }
+}
+
+function validateAttemptDeliverable(value, at) {
+  object(value, at);
+  noUnknown(value, ATTEMPT_DELIVERABLE_FIELDS, at);
+  if (!DELIVERABLE_TYPES.includes(value.type)) fail(`${at}.type must be ${DELIVERABLE_TYPES.join('|')}`);
+  if (typeof value.gated !== 'boolean') fail(`${at}.gated must be a boolean`);
+  if (typeof value.produced !== 'boolean' && value.produced !== null) fail(`${at}.produced must be a boolean or null`);
+  if (value.written !== undefined) stringPathList(value.written, `${at}.written`);
+  if (value.missing !== undefined) stringPathList(value.missing, `${at}.missing`);
+  if (value.carried !== undefined && value.carried !== true) fail(`${at}.carried must be true`);
+}
+
 function validateAttempts(attempts, program) {
   if (!Array.isArray(attempts)) fail('state.attempts must be an array');
   const programIds = new Set(program.actions.map((action) => action.id));
@@ -907,6 +930,7 @@ function validateAttempts(attempts, program) {
     if (attempt.returnedEarly !== undefined) validateReturnedEarly(attempt.returnedEarly, `state.attempts[${index}].returnedEarly`);
     if (attempt.changedFiles !== undefined && (!Array.isArray(attempt.changedFiles) || attempt.changedFiles.length > 200
       || attempt.changedFiles.some((file) => typeof file !== 'string' || !file))) fail(`state.attempts[${index}].changedFiles must list at most 200 paths`);
+    if (attempt.deliverable !== undefined) validateAttemptDeliverable(attempt.deliverable, `state.attempts[${index}].deliverable`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
   }
@@ -944,7 +968,7 @@ function validateVerifyLoop(loop, state) {
   noUnknown(loop, VERIFY_LOOP_FIELDS, 'state.verifyLoop');
   if (!isProgramWorkflow(state)) fail('state.verifyLoop requires a program workflow');
   if (!Number.isInteger(loop.max) || loop.max < 1 || loop.max > 3) fail('state.verifyLoop.max must be 1, 2 or 3');
-  if (loop.stoppedBy !== null && !VERIFY_LOOP_STOPS.has(loop.stoppedBy)) fail('state.verifyLoop.stoppedBy must be null|passed|rounds|revision|step-failed');
+  if (loop.stoppedBy !== null && !VERIFY_LOOP_STOPS.has(loop.stoppedBy)) fail('state.verifyLoop.stoppedBy must be null|passed|rounds|revision|step-failed|act-step');
   if (!Array.isArray(loop.rounds)) fail('state.verifyLoop.rounds must be an array');
   if (loop.rounds.length > 3) fail('state.verifyLoop.rounds must hold at most three rounds');
   const requirementIds = new Set(state.intent.requirements.map((requirement) => requirement.id));

@@ -292,3 +292,93 @@ test('round trips the attempt provider session and rejects a malformed one', () 
     /session.generation must be a positive integer/,
   );
 });
+
+function programModeGoal() {
+  return createV2GoalDocument({
+    ...input(),
+    settings: { concurrency: 2, executionMode: 'program', plannerMode: 'caller', scout: false },
+  });
+}
+
+function roleProgramState() {
+  const state = createV2DurableState(programModeGoal(), { runId: 'wf-role', shortId: 'rol234' });
+  state.program = {
+    schemaVersion: 'bullswarm.workflow.program.v2', revision: 1,
+    actions: [{
+      id: 'write-work', purpose: 'Write the owned file', role: 'produce',
+      lane: 'build', effort: 'medium', deliverable: { type: 'files' },
+      dependsOn: [], affects: ['result-versioned'], ownedFiles: ['owned.txt'],
+      evidenceFor: [], inputs: [], produces: [], prompt: 'Write owned.txt.',
+    }],
+  };
+  state.actions = [{ id: 'write-work', status: 'succeeded', attempts: 2, programRevision: 1 }];
+  state.presentation = { stages: [{ id: 'r1-build', label: 'Build', revision: 1, actionIds: ['write-work'], startedAt: null, completedAt: null }] };
+  state.attempts = [{
+    id: 'write-work-1', actionId: 'write-work', ordinal: 1, status: 'succeeded',
+    pool: 'sample', model: 'gpt-5.6-luna', startedAt: '2026-09-17T02:30:20.000Z',
+    finishedAt: '2026-09-17T02:30:28.000Z',
+    deliverable: { type: 'files', gated: true, produced: true },
+  }, {
+    id: 'write-work-2', actionId: 'write-work', ordinal: 2, status: 'succeeded',
+    pool: 'sample', model: 'gpt-5.6-luna', startedAt: '2026-09-17T02:31:20.000Z',
+    finishedAt: '2026-09-17T02:31:28.000Z',
+    deliverable: {
+      type: 'data', gated: true, produced: true, written: ['out/summary.json'], missing: [], carried: true,
+    },
+  }];
+  return state;
+}
+
+test('an attempt deliverable loads, and a role-authored program round-trips', () => {
+  const state = roleProgramState();
+  const loaded = deserializeV2DurableState(serializeV2DurableState(state));
+  assert.deepEqual(loaded.attempts[0].deliverable, { type: 'files', gated: true, produced: true });
+  assert.equal(loaded.attempts[1].deliverable.carried, true);
+  assert.equal(loaded.program.actions[0].role, 'produce');
+  assert.deepEqual(loaded.program.actions[0].deliverable, { type: 'files' });
+  assert.deepEqual(loaded, state);
+  const reject = (deliverable, pattern) => {
+    const copy = structuredClone(state);
+    copy.attempts[0] = { ...copy.attempts[0], deliverable };
+    assert.throws(() => validateV2DurableState(copy), pattern);
+  };
+  reject({ type: 'files', gated: true, produced: false, extra: 1 }, /deliverable.extra is not allowed/);
+  reject({ type: 'nope', gated: true, produced: false }, /deliverable.type must be files\|report\|data\|media\|outward/);
+  reject({ type: 'files', gated: true, produced: false, carried: false }, /deliverable.carried must be true/);
+  reject({ type: 'files', gated: 'yes', produced: false }, /deliverable.gated must be a boolean/);
+  reject({
+    type: 'data', gated: true, produced: false, written: Array.from({ length: 51 }, (_, index) => `f${index}`),
+  }, /written must be a string array of at most 50 entries/);
+});
+
+test('verifyLoop.stoppedBy act-step loads', () => {
+  const state = roleProgramState();
+  state.verifyLoop = {
+    max: 1,
+    stoppedBy: 'act-step',
+    rounds: [{
+      round: 1,
+      verifyActionIds: ['check-work'],
+      startedAt: '2026-09-17T02:40:00.000Z',
+      closedAt: '2026-09-17T02:41:00.000Z',
+      toJudge: ['result-versioned'],
+      carried: [],
+      passed: [],
+      failed: ['result-versioned'],
+      discovery: [],
+      repairActionId: null,
+      repairRequirements: [],
+      repairOwnedFiles: [],
+      repairUnrestricted: false,
+      repairStartedAt: null,
+      repairFinishedAt: null,
+      changedFiles: null,
+    }],
+  };
+  const loaded = deserializeV2DurableState(serializeV2DurableState(state));
+  assert.equal(loaded.verifyLoop.stoppedBy, 'act-step');
+  assert.throws(
+    () => validateV2DurableState({ ...state, verifyLoop: { ...state.verifyLoop, stoppedBy: 'tired' } }),
+    /stoppedBy must be null\|passed\|rounds\|revision\|step-failed\|act-step/,
+  );
+});

@@ -19,6 +19,7 @@ import {
 } from '../src/workflow/v2-revision.js';
 import { peekSteering, queueSteering } from '../src/workflow/steering.js';
 import { projectV2DependencyStages } from '../src/workflow/v2-presentation.js';
+import { ACTION_KINDS, KIND_ROLES } from '../src/workflow/action-validator.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
 const requirements = [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }];
@@ -461,6 +462,99 @@ test('CLI: plan export writes an editable document; plan revise refuses no-op an
   const help = cli('workflow', 'plan', 'revise', '--help');
   assert.equal(help.status, 0);
   assert.match(help.stdout, /--rerun <id,\.\.\.>/);
+});
+
+// Step vocabulary and revise: an untouched export of any plan shape changes
+// nothing; annotating a kind step with the role its kind belongs to changes
+// nothing (the stored step keeps the kind); replacing a kind with a role is a
+// real amendment.
+const kindStep = (id, kind, options = {}) => {
+  const { lane, effort, ...rest } = work(id, { kind, ...options });
+  return rest;
+};
+const kindPlan = () => [
+  kindStep('a', 'implement'),
+  kindStep('fmt', 'mechanical', { ownedFiles: ['fmt.txt'] }),
+  kindStep('design', 'architecture', { affects: [], ownedFiles: [] }),
+  kindStep('scan', 'io-read', { affects: [], ownedFiles: [] }),
+  kindStep('sum', 'digest', { dependsOn: ['a', 'fmt'], affects: [], ownedFiles: [] }),
+  kindStep('merge', 'integration', { dependsOn: ['a', 'fmt', 'sum'], ownedFiles: [] }),
+  kindStep('look', 'io-read', { dependsOn: ['merge'], affects: [], ownedFiles: [], evidenceFor: ['deliver'] }),
+  kindStep('gate', 'check', { dependsOn: ['merge'], affects: [], ownedFiles: [], evidenceFor: ['deliver'] }),
+  kindStep('judge', 'adversarial-acceptance', { dependsOn: ['merge'], affects: [], ownedFiles: [], evidenceFor: ['deliver'] }),
+];
+const roleStep = (id, role, options = {}) => {
+  const { lane, effort, ...rest } = work(id, { role, ...options });
+  return rest;
+};
+const rolePlan = () => [
+  roleStep('p', 'produce'),
+  roleStep('data', 'produce', { ownedFiles: ['out/data.json'], deliverable: { type: 'data', paths: ['out/data.json'] } }),
+  roleStep('survey', 'investigate', { affects: [], ownedFiles: [] }),
+  roleStep('join', 'combine', { dependsOn: ['p', 'data'], ownedFiles: [], deliverable: 'files' }),
+  roleStep('compare', 'combine', { dependsOn: ['survey', 'join'], affects: [], ownedFiles: [], deliverable: 'report' }),
+  roleStep('notify', 'act', { dependsOn: ['join'], affects: [], ownedFiles: [] }),
+  roleStep('gate', 'check', { dependsOn: ['join'], affects: [], ownedFiles: [], evidenceFor: ['deliver'] }),
+];
+const mixedPlan = () => [
+  work('lane-writer'),
+  kindStep('a', 'implement'),
+  roleStep('p', 'produce'),
+  roleStep('merge', 'combine', { dependsOn: ['lane-writer', 'a', 'p'], ownedFiles: [], deliverable: 'files' }),
+  check('check', ['merge']),
+];
+const unchangedBy = (state, document) => {
+  const planned = planV2Revision(state, normalizeRevisionInput(document));
+  assert.equal(planned.ok, false, JSON.stringify(planned.changes));
+  assert.match(planned.issues[0], /changes nothing/);
+};
+
+test('revise: an untouched export of a kind, lane-only, role or mixed plan changes nothing', async (t) => {
+  for (const [name, actions] of [['kind', kindPlan()], ['lane', [work('a'), work('b', { dependsOn: ['a'] }), check('check', ['a', 'b'])]], ['role', rolePlan()], ['mixed', mixedPlan()]]) {
+    const f = fixture(t);
+    const done = await start(f, `wf-vocab${name.slice(0, 1)}-abcdef`, actions, controller());
+    assert.equal(done.result.status, 'completed', name);
+    const document = exportV2Plan(done.state);
+    // Export is verbatim: kind steps carry no role or deliverable, role steps
+    // keep their role and the written-back deliverable.
+    for (const action of document.program.actions) {
+      if (action.kind) assert.equal('role' in action || 'deliverable' in action, false, `${name}/${action.id}`);
+      if (action.role) assert.equal(typeof action.deliverable?.type, 'string', `${name}/${action.id}`);
+    }
+    unchangedBy(done.state, document);
+  }
+});
+
+test('revise: adding the matching role to a kind step changes nothing, for every kind; replacing the kind with it is an amendment', async (t) => {
+  const f = fixture(t);
+  const done = await start(f, 'wf-vocabk-abcdef', kindPlan(), controller());
+  assert.equal(done.result.status, 'completed');
+  const document = exportV2Plan(done.state);
+  assert.deepEqual([...new Set(document.program.actions.map((action) => action.kind))].sort(), [...ACTION_KINDS].sort());
+  // One step at a time (so a failure names the kind), then all at once.
+  for (const action of document.program.actions) {
+    const annotated = structuredClone(document);
+    annotated.program.actions.find((entry) => entry.id === action.id).role = KIND_ROLES[action.kind];
+    unchangedBy(done.state, annotated);
+  }
+  const all = structuredClone(document);
+  for (const action of all.program.actions) action.role = KIND_ROLES[action.kind];
+  unchangedBy(done.state, all);
+  for (const id of ['merge', 'sum', 'look']) assert.ok(all.program.actions.some((action) => action.id === id && action.role), id);
+
+  const replaced = structuredClone(document);
+  const target = replaced.program.actions.find((action) => action.id === 'a');
+  delete target.kind;
+  target.role = 'produce';
+  const planned = planV2Revision(done.state, normalizeRevisionInput(replaced));
+  assert.equal(planned.ok, true, JSON.stringify(planned.issues));
+  assert.deepEqual(planned.changes.amended, ['a']);
+  assert.deepEqual(planned.changes.added, []);
+  assert.deepEqual(planned.changes.removed, []);
+  const stored = planned.desired.find((action) => action.id === 'a');
+  assert.equal(stored.role, 'produce');
+  assert.equal('kind' in stored, false);
+  assert.deepEqual(stored.deliverable, { type: 'files' });
 });
 
 test('a cancelled run reopened by a revision runs the steps the cancellation stopped', async (t) => {

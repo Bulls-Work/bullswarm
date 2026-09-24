@@ -939,11 +939,12 @@ const PHASE_KIND_NAMES = Object.freeze({
  * A phase's name from its steps' kinds, in the order each kind first appears,
  * joined with ` + ` when the phase mixes them (`Build + Verify`). A repair
  * step the kernel's verify loop added reads `Repair`, whatever kind it was
- * added as. Null when no step of the phase declares a kind.
+ * added as. A role-only step names the phase by its role (`Produce`). Null
+ * when no step of the phase declares a kind or a role.
  */
 function phaseKindName(state, actionIds) {
   const repairs = new Set(kernelRepairActionIds(state));
-  const kinds = new Map((state?.program?.actions ?? []).map((action) => [action?.id, action?.kind]));
+  const kinds = new Map((state?.program?.actions ?? []).map((action) => [action?.id, action?.kind ?? action?.role]));
   const names = [];
   for (const id of actionIds) {
     const kind = String(kinds.get(id) ?? '').trim();

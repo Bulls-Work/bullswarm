@@ -840,7 +840,8 @@ function resultLines(presentation, { width, phone, detail }) {
 
 function taskLines(presentation, { width, phone }) {
   const task = presentation.task;
-  const title = countList(['task', task.kind, task.lane ? (phone ? task.lane : `${task.lane} lane`) : null]);
+  // A kind already says what the step does; the role shows only on a role-only step.
+  const title = countList(['task', task.kind ?? task.role ?? null, task.lane ? (phone ? task.lane : `${task.lane} lane`) : null]);
   const lines = [paintRule(rule(title, null, width))];
   const rows = [];
   for (const line of task.promptLines ?? []) {

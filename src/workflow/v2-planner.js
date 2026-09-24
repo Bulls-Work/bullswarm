@@ -1,5 +1,11 @@
 import { ACTION_PROGRAM_SCHEMA_VERSION, KIND_DEFAULTS, PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram } from './action-validator.js';
-import { readFileSync } from 'node:fs';
+import {
+  DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, ROLE_ROUTING,
+  declaredDeliverable,
+} from './step-vocabulary.js';
+import { readFileSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState, validateV2GoalDocument } from './v2-state.js';
@@ -62,9 +68,39 @@ function runtimeFromState(state) {
   };
 }
 
+const isDirectoryAt = (cwd, file) => {
+  try { return statSync(resolve(cwd, file)).isDirectory(); } catch { return false; }
+};
+
+// git check-ignore exits 0 when ignored, 1 when not, and 128 outside a repo
+// (or on any other error): only a clean 0 counts, so a plain folder is skipped.
+const gitIgnores = (cwd, file) => spawnSync('git', ['-C', cwd, 'check-ignore', '-q', '--', file], { stdio: 'ignore' }).status === 0;
+
+// The validator cannot see the workspace. A directory named as an owned file
+// passes it, and then every write the step makes fails as out of scope; a
+// directory named as a deliverable path hashes to nothing and can never be
+// produced. An isolated run copies back only files git would track, so a
+// git-ignored deliverable path would never reach the target.
+export function workspacePathIssues(program, cwd, { isolated = false } = {}) {
+  const issues = [];
+  (program?.actions ?? []).forEach((action, index) => {
+    (Array.isArray(action?.ownedFiles) ? action.ownedFiles : []).forEach((file, fileIndex) => {
+      if (typeof file !== 'string' || !file) return;
+      if (isDirectoryAt(cwd, file)) issues.push(`program.actions[${index}].ownedFiles[${fileIndex}] names a directory ("${file}"); list the exact files step ${action.id} may change`);
+    });
+    (declaredDeliverable(action)?.paths ?? []).forEach((file, pathIndex) => {
+      const at = `program.actions[${index}].deliverable.paths[${pathIndex}]`;
+      if (isDirectoryAt(cwd, file)) issues.push(`${at} names a directory ("${file}"); list the exact files step ${action.id} leaves behind`);
+      else if (isolated && gitIgnores(cwd, file)) issues.push(`${at} is git-ignored ("${file}"); an isolated run copies back only files git would track`);
+    });
+  });
+  return issues;
+}
+
 export function validateV2PlannerResponse(response, state, {
   boundary = state?.program?.actions?.length ? 'gaps' : 'initial',
   requiredScoutUnits = [],
+  workspacePaths = true,
 } = {}) {
   validateV2DurableState(state);
   const issues = [];
@@ -89,6 +125,12 @@ export function validateV2PlannerResponse(response, state, {
           .map((action) => action.id));
         const missing = requiredScoutUnits.filter((unit) => !workIds.has(unit));
         if (missing.length) issues.push(`program is missing exact scout work actions: ${missing.join(', ')}`);
+      }
+      // Every program-mode entry (dispatched planner, plan submit, the launch
+      // program) gets the on-disk check validate, launch and revise run.
+      const cwd = state.intent?.cwd;
+      if (workspacePaths && isProgramWorkflow(state) && typeof cwd === 'string' && isDirectoryAt(cwd, '.')) {
+        issues.push(...workspacePathIssues(program, cwd, { isolated: state.config.settings.workspaceMode === 'isolated' }));
       }
     }
     catch (error) { issues.push(...(Array.isArray(error?.issues) ? error.issues : [error.message])); }
@@ -184,6 +226,16 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
 // caller-facing contract, and every durable planner request read identically.
 const KIND_FIELD_RULE = `The optional per-action \`kind\` field names the nature of the work and derives both routing fields: ${Object.entries(KIND_DEFAULTS).map(([kind, { lane, effort }]) => `${kind}=${lane}/${effort}`).join(', ')}. Prefer one \`kind\` over restating lane and effort. Resolution per field: an explicit action \`lane\`/\`effort\` wins, then the kind table, then the optional program-level \`defaults\` object (which may set only effort, reasoning, timeBox and verifyRounds), then the per-lane default (analyze=medium, build=medium, chore=low). A kind outside that closed list is a validation error before anything runs. Two advisories are reported at validate and at launch and never change acceptance or exit codes: \`${PROGRAM_ADVISORY_CODES[0]}\` when three or more build/chore actions all sit at high effort, and \`${PROGRAM_ADVISORY_CODES[1]}\` when a build/chore action owns only *.md files at high effort.`;
 
+// `role` and `deliverable` are the program-mode vocabulary beside kind. Stated
+// once, in the program rule set only (verified-mode runs reject both fields),
+// and never containing the kind-field marker, so exactly one rule per set
+// documents the kind field.
+const ROLE_ROUTING_TEXT = ROLES.map((role) => `${role}: ${Object.entries(ROLE_ROUTING[role])
+  .map(([type, { lane, effort }]) => `${type}=${lane}/${effort}`).join(', ')}`).join('; ');
+const KIND_ROLES_TEXT = Object.entries(KIND_ROLES).map(([kind, role]) => `${kind}=${role}`).join(', ');
+const ROLE_FIELD_RULE = `The optional per-action \`role\` field says what a step does: ${ROLES.join(', ')}. Each kind belongs to one role (${KIND_ROLES_TEXT}), and a kind keeps its own routing and gate. In new programs, give work steps a role and a deliverable. Use a kind for commit, formatter and PR steps (\`mechanical\`), for \`digest\`, or when you want a kind's exact routing. A role-only step takes lane/effort from its role and resolved deliverable: ${ROLE_ROUTING_TEXT}. Resolution per field: an explicit action \`lane\`/\`effort\` wins, then the kind table, then the role table, then program \`defaults\`, then the lane default. A role outside that closed list is a validation error. Kind and role may both appear only if they agree; the stored step then keeps only the kind. An \`act\` step acts outside the workspace (send, post, publish, deploy): it uses lane analyze, owns no files, is read-only on the workspace, is never judged by files, and the kernel never repairs a requirement it affects.`;
+const DELIVERABLE_FIELD_RULE = `The optional per-action \`deliverable\` field says what the step promises to leave: ${DELIVERABLE_TYPES.join(', ')}, or an object {type, paths}. Defaults per role: ${Object.entries(ROLE_DEFAULT_DELIVERABLE).map(([role, type]) => `${role}=${type}`).join(', ')}; combine has no default and must declare one. Allowed per role: ${ROLES.map((role) => `${role} takes ${ROLE_DELIVERABLES[role].join('|')}`).join('; ')}. \`outward\` needs role act, a \`digest\` takes no deliverable, and a step with evidenceFor takes none or \`report\`. \`data\` and \`media\` need exact relative file \`paths\`; \`files\` may name paths; \`report\` and \`outward\` take none. When ownedFiles is not empty, every deliverable path must be listed in it. The lane must fit the deliverable: files, data and media need build or chore; report and outward need analyze. \`produces\`/\`inputs\` are data-flow labels between steps, not the deliverable.`;
+
 // The digest kind, stated once for every rendering of the contract. Extractive
 // by construction: a digest that judged its sources would be delegated
 // reasoning, and evidence must read the real artifacts.
@@ -200,7 +252,7 @@ const TIME_BOX_RULE = 'The optional per-action `timeBox` field (whole minutes, 0
 
 // The kernel's bounded repair loop, stated once for the program rule set.
 // Authors still may not write repair steps: the kernel adds them itself.
-const REPAIR_LOOP_RULE = 'When a mandatory requirement fails its evidence, the kernel runs a bounded repair loop of at most 3 verify rounds (`defaults.verifyRounds` may set 1-3; 1 keeps the single round). It adds the steps `repair-<n>` and `verify-round-<n>` to the program itself, owning the union of the failing requirements\' `ownedFiles`; they appear in `plan export`. Never author a repair step, a repair field or your own retry loop for an ordinary failing check. Round 1 judges every requirement, round 2 re-checks the failures and looks for regressions, round 3 is final closure, and a requirement that passed is judged again only when a repair touched a file its evidence names. What is still failing after the last round is handed back in the result\'s `callerDecision` block with one suggested next step each.';
+const REPAIR_LOOP_RULE = 'When a mandatory requirement fails its evidence, the kernel runs a bounded repair loop of at most 3 verify rounds (`defaults.verifyRounds` may set 1-3; 1 keeps the single round). It adds the steps `repair-<n>` and `verify-round-<n>` to the program itself, owning the union of the failing requirements\' `ownedFiles`; they appear in `plan export`. Never author a repair step, a repair field or your own retry loop for an ordinary failing check. Round 1 judges every requirement, round 2 re-checks the failures and looks for regressions, round 3 is final closure, and a requirement that passed is judged again only when a repair touched a file its evidence names. What is still failing after the last round is handed back in the result\'s `callerDecision` block with one suggested next step each. The kernel never repairs a requirement an `act` step affects; it hands it back.';
 
 // One source of truth for the planning contract. The dispatched planner
 // prompt, the caller-facing `workflow plan contract`, and every durable
@@ -213,14 +265,16 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'dependsOn expresses the ordering you need. Independent actions start up to the concurrency cap, and a dependent starts as soon as its own inputs are ready. A failed action skips its dependents; other branches continue. Never create artificial dependencies merely to group phases.',
     'Every action has a self-contained prompt describing its purpose, repository context, expected files, and concrete acceptance commands. Dependency output artifacts are passed to the worker; ask it to read them, including outstanding requests for shared-file changes.',
     'Plan coherent acceptance slices: keep behavior and its focused tests together. Cover each requested outcome. Scout units and numeric targets are advisory, not reasons for rejecting an otherwise useful program.',
-    'Use `dependsOn` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit `timeBox` sized for the full suite. Make the gate kind `check` and the commit and PR steps kind `mechanical`: a build-lane attempt other than `integration` that succeeds but changes no file and leaves HEAD in place fails as `no-op`.',
+    'Use `dependsOn` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit `timeBox` sized for the full suite. Make the gate a `check` step and the commit and PR steps kind `mechanical` (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as `not-produced`; a build-lane step with no declared deliverable, other than `integration`, fails the same way when it changes no file and makes no commit.',
     'Use analyze for read-only investigation or evidence, build for contextual implementation, and chore with low effort for deterministic mechanical edits. Medium is the default for ordinary analysis and implementation. Reserve high for architecture, ambiguous tradeoffs, or cross-cutting integration judgment.',
     KIND_FIELD_RULE,
+    ROLE_FIELD_RULE,
+    DELIVERABLE_FIELD_RULE,
     DIGEST_KIND_RULE,
     REASONING_FIELD_RULE,
     TIME_BOX_RULE,
     workspaceMode === 'isolated'
-      ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
+      ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Deliverable paths must be files git would track: a git-ignored path is refused, because isolation copies back only tracked files. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
       : 'All agents share the target worktree. ownedFiles lists intended territory and provides overlap scheduling hints; it is not an exact-file enforcement gate. Overlapping territories are serialized automatically. An analyze action is read-only. A build/chore action with empty ownedFiles is an unrestricted integrator and runs alone.',
     'Build shared contracts first, then fan out independent territories. Tell workers that others share the tree, to preserve sibling edits, avoid whole-repository formatting and git resets, and report cross-territory requests instead of making conflicting edits. Never commit unless the user explicitly requires a commit.',
     'After a parallel implementation wave, include one integrator depending on all writers. It reads their outputs, applies cross-territory requests, reconciles shared files, and runs the repository acceptance commands. In a shared workspace, use build with empty ownedFiles to let that sole integrator fix any file.',
@@ -306,6 +360,11 @@ function programActionFields(stateOrGoal) {
       ownedFiles: stateOrGoal.config.settings.workspaceMode === 'isolated'
         ? 'exact relative files a build/chore action may mutate; a non-empty list is required for isolated writers'
         : 'intended relative file territories; empty for analyze or for an unrestricted shared build/chore integrator',
+      role: `optional ${ROLES.join(' | ')} — what the step does; derives lane and effort from the role and its deliverable`,
+      deliverable: `optional ${DELIVERABLE_TYPES.join(' | ')}, or {type, paths} — what the step promises to leave; data and media need exact paths, listed in ownedFiles when ownedFiles is not empty`,
+      lane: 'analyze | build | chore — omit when kind supplies it, or when role does',
+      effort: 'high | medium | low — omit to take it from kind, role, program defaults, or the lane default',
+      produces: 'optional artifact IDs this action produces for later actions (data-flow labels, not the deliverable)',
     } : {}),
   };
 }
@@ -333,6 +392,19 @@ export const V2_PROGRAM_EXAMPLE = Object.freeze({
   },
 });
 
+// The program-mode example: the same program authored with roles. Verified
+// runs reject role, so V2_PROGRAM_EXAMPLE stays their (kind-based) example.
+export const V2_ROLE_PROGRAM_EXAMPLE = Object.freeze({
+  ...V2_PROGRAM_EXAMPLE,
+  program: {
+    ...V2_PROGRAM_EXAMPLE.program,
+    actions: V2_PROGRAM_EXAMPLE.program.actions.map(({ kind, ...action }) => ({
+      ...action,
+      role: { 'fix-parser': 'produce', 'check-parser': 'check' }[action.id],
+    })),
+  },
+});
+
 export function buildV2PlannerPrompt(context) {
   if (!plain(context) || context.schemaVersion !== 'bullswarm.workflow.planner-context.v2') throw new TypeError('invalid V2 planner context');
   return [
@@ -353,6 +425,17 @@ export function buildV2PlannerPrompt(context) {
 
 export const V2_PLANNER_REQUEST_SCHEMA_VERSION = 'bullswarm.workflow.planner-request.v2';
 export const V2_PLANNER_CONTRACT_SCHEMA_VERSION = 'bullswarm.workflow.planner-contract.v2';
+
+// Per role: the kinds that belong to it, its default and allowed deliverables,
+// and its routing per deliverable type. Read by the contract and capabilities.
+export function v2RoleCatalog() {
+  return Object.fromEntries(ROLES.map((role) => [role, {
+    kinds: Object.keys(KIND_ROLES).filter((kind) => KIND_ROLES[kind] === role),
+    defaultDeliverable: ROLE_DEFAULT_DELIVERABLE[role] ?? null,
+    deliverables: [...ROLE_DELIVERABLES[role]],
+    routing: clone(ROLE_ROUTING[role]),
+  }]));
+}
 
 // The caller-facing planning contract for a goal that has not started yet.
 // A frontier agent reads this once, authors the initial program itself, and
@@ -385,9 +468,22 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
       // The single source of truth for what a kind derives, so a caller does
       // not have to infer the table from prose.
       kinds: clone(KIND_DEFAULTS),
+      ...(isProgramWorkflow(goalDocument) ? {
+        roles: v2RoleCatalog(),
+        kindRoles: clone(KIND_ROLES),
+        deliverableTypes: [...DELIVERABLE_TYPES],
+        evidenceTypes: {
+          types: [...EVIDENCE_TYPES],
+          usable: ['review'],
+          note: 'vocabulary only in this release: review (a check step with evidenceFor) is usable today; an action-level `evidence` field is refused',
+        },
+      } : {}),
       defaults: {
         allowed: ['effort', 'reasoning', 'timeBox', 'verifyRounds'],
         note: 'optional program-level object; any other key is a validation error. Per field the order is action > kind > program defaults > lane default (effort), action > program defaults > run > strategy > connector (reasoning), and action > program defaults > computed from recorded attempts > 20 minutes (timeBox). verifyRounds (1-3, default 3) is the most verify rounds the kernel runs before handing the rest to the caller; it is program-level only.',
+        ...(isProgramWorkflow(goalDocument) ? {
+          roleNote: 'a role-only action resolves action > role > program defaults > lane default; kind and role never both survive normalisation',
+        } : {}),
       },
       advisories: {
         codes: [...PROGRAM_ADVISORY_CODES],
@@ -412,7 +508,7 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
       ],
       responseShape: V2_PLANNER_RESPONSE_SHAPE.program,
       bareProgramAccepted: 'a file containing only {schemaVersion:"bullswarm.workflow.program.v2",actions:[...]} is wrapped automatically; use --summary to name it',
-      example: clone(V2_PROGRAM_EXAMPLE),
+      example: clone(isProgramWorkflow(goalDocument) ? V2_ROLE_PROGRAM_EXAMPLE : V2_PROGRAM_EXAMPLE),
     },
     evidence: {
       note: 'Evidence agents receive a kernel-owned output contract; the program prompt only describes what to inspect. The requirement ledger, completion, and the stable result envelope are computed by the kernel.',

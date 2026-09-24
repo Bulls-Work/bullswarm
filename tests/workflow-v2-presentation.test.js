@@ -44,6 +44,24 @@ test('dependency levels order research by edges instead of documentation keyword
   assert.equal(deriveV2DependencyStages([{ id: 'later', dependsOn: ['previous'] }], 2)[0].label, 'Follow-up 1: Phase 1 · later');
 });
 
+test('a level of analyze steps that includes an act step is Parallel work; analyze kind levels stay Parallel analysis', () => {
+  const act = [
+    { id: 'notify-acme', role: 'act', lane: 'analyze', effort: 'medium' },
+    { id: 'post-initech', role: 'act', lane: 'analyze', effort: 'medium' },
+  ];
+  const mixed = [{ id: 'announce', role: 'act', lane: 'analyze' }, { id: 'survey', role: 'investigate', lane: 'analyze' }];
+  const kinds = [{ id: 'trace', kind: 'io-read', lane: 'analyze' }, { id: 'audit', kind: 'check', lane: 'analyze' }];
+  const roles = [{ id: 'trace', role: 'investigate', lane: 'analyze' }, { id: 'audit', role: 'check', lane: 'analyze' }];
+  assert.equal(deriveV2DependencyStages(act, 1)[0].label, 'Phase 1 · Parallel work');
+  assert.equal(deriveV2DependencyStages(mixed, 1)[0].label, 'Phase 1 · Parallel work');
+  assert.equal(deriveV2DependencyStages(kinds, 1)[0].label, 'Phase 1 · Parallel analysis');
+  assert.equal(deriveV2DependencyStages(roles, 1)[0].label, 'Phase 1 · Parallel analysis');
+  // Stage ids hash membership only: the act level keeps the id a lane level would get.
+  const lanesOnly = act.map(({ id }) => ({ id, lane: 'analyze' }));
+  assert.equal(deriveV2DependencyStages(act, 1)[0].id, deriveV2DependencyStages(lanesOnly, 1)[0].id);
+  assert.equal(deriveV2DependencyStages(lanesOnly, 1)[0].label, 'Phase 1 · Parallel analysis');
+});
+
 test('saved program projection preserves overlapping levels and does not mutate history', () => {
   const state = { program: { actions: [
     { id: 'fast', dependsOn: [] }, { id: 'slow', dependsOn: [] }, { id: 'next', dependsOn: ['fast'] },

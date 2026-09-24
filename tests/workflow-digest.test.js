@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
-  ACTION_KINDS, ActionValidationError, KIND_DEFAULTS, validateActionProgram,
+  ACTION_KINDS, ActionValidationError, DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_DEFAULTS, KIND_ROLES, ROLES, validateActionProgram,
 } from '../src/workflow/action-validator.js';
 import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
 
@@ -149,6 +149,26 @@ test('workflow capabilities reports the closed kind list, so digest is discovera
   // Reported from the validator table, so a future kind needs no edit here.
   assert.deepEqual(kinds, JSON.parse(JSON.stringify(KIND_DEFAULTS)));
   assert.deepEqual(kinds.digest, { lane: 'analyze', effort: 'low' });
+});
+
+test('workflow capabilities reports the step roles beside the unchanged kind list', { timeout: 60_000 }, (t) => {
+  const home = echoHome(t);
+  const executed = spawnSync(process.execPath, [CLI, 'workflow', 'capabilities'], {
+    encoding: 'utf8', timeout: 60_000,
+    env: { ...process.env, BULLSWARM_HOME: home.bullswarmDir, BULLSWARM_DEPTH: '0' },
+  });
+  assert.equal(executed.status, 0, executed.stderr || executed.stdout);
+  const engine = JSON.parse(executed.stdout).engines.autonomousV2;
+  assert.deepEqual(engine.actionKinds, JSON.parse(JSON.stringify(KIND_DEFAULTS)));
+  assert.deepEqual(Object.keys(engine.actionRoles), [...ROLES]);
+  for (const role of ROLES) {
+    assert.deepEqual(engine.actionRoles[role].kinds, ACTION_KINDS.filter((kind) => KIND_ROLES[kind] === role), role);
+  }
+  assert.equal(engine.actionRoles.combine.defaultDeliverable, null);
+  assert.deepEqual(engine.actionRoles.combine.routing.files, { lane: 'build', effort: 'high' });
+  assert.deepEqual(engine.actionRoles.act.deliverables, ['outward']);
+  assert.deepEqual(engine.deliverableTypes, [...DELIVERABLE_TYPES]);
+  assert.deepEqual(engine.evidenceTypes, { types: [...EVIDENCE_TYPES], usable: ['review'] });
 });
 
 test('three writers → digest → integrator: the integrator reads only the digest and can drill down', { timeout: 120_000 }, (t) => {

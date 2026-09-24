@@ -5,8 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyRevisionVerifyRounds, callerDecision, closeRound, createVerifyLoop, firstSuggestedStep, loopStageLabel, loopVerdictText,
-  NOT_JUDGED_STATUS, nextLoopStep, notJudgedRequirements, planRepairStep, recheckSet, roundBrief, roundPhases, verifyLoopResult,
+  actAffectedRequirements, applyRevisionVerifyRounds, callerDecision, closeRound, createVerifyLoop, firstSuggestedStep, loopStageLabel, loopVerdictText,
+  NOT_JUDGED_STATUS, nextLoopStep, notJudgedRequirements, planRepairStep, recheckSet, repairInheritedPaths, roundBrief, roundPhases, verifyLoopResult,
   verifyRoundLabel,
 } from '../src/workflow/verify-rounds.js';
 import { validateActionProgram } from '../src/workflow/action-validator.js';
@@ -397,4 +397,58 @@ test('an accepted program validates again (verifyRounds is its normalized form),
   // The exemption is by the loop record, never by name: an author's own
   // `repair-1` is held to the rule.
   assert.throws(() => validateActionProgram(looped, { ...runtime, kernelRepairActionIds: ['repair-2'] }), issue(/must depend on work action "repair-1"/));
+});
+
+const ACT_NEXT = 'an act step affects alpha; Bullswarm never repeats an outward action on its own. Check what was done, then add an act step if it must be redone: bullswarm workflow plan export syn123 --out plan.json, edit it, then plan revise';
+const actStep = (affects) => ({
+  id: 'send', role: 'act', lane: 'analyze', effort: 'medium', dependsOn: [], affects, ownedFiles: [], evidenceFor: [],
+  deliverable: { type: 'outward' },
+});
+
+test('act-affected failures are not repaired, and a report-only failure repairs as an analyze report', () => {
+  const onlyAct = synthetic({
+    statuses: { alpha: 'failed', beta: 'passed' },
+    extraActions: [actStep(['alpha'])],
+    loop: { max: 3, stoppedBy: null, rounds: [round()] },
+  });
+  const closed = closeRound(onlyAct, { at: '2026-09-24T03:00:00.000Z' });
+  assert.equal(closed.next, 'caller');
+  assert.deepEqual(actAffectedRequirements(onlyAct, ['alpha', 'beta']), ['alpha']);
+  assert.deepEqual(nextLoopStep(onlyAct), { step: 'finish', stoppedBy: 'act-step' });
+  assert.equal(callerDecision(onlyAct, { token: 'syn123' }).requirements[0].next, ACT_NEXT);
+
+  const mixed = synthetic({
+    statuses: { alpha: 'failed', beta: 'failed' },
+    extraActions: [actStep(['beta'])],
+    loop: { max: 3, stoppedBy: null, rounds: [round({ closedAt: 'x', failed: ['alpha', 'beta'] })] },
+  });
+  assert.deepEqual(nextLoopStep(mixed), { step: 'add-repair', round: 1 });
+  assert.deepEqual(planRepairStep(mixed).action.affects, ['alpha']);
+  assert.equal(planRepairStep(mixed).action.lane, undefined, 'a kind-only repair keeps today\'s shape');
+
+  const report = synthetic({
+    statuses: { alpha: 'failed', beta: 'passed' },
+    loop: { max: 3, stoppedBy: null, rounds: [round({ closedAt: 'x', failed: ['alpha'] })] },
+  });
+  for (const action of report.program.actions) if (action.id !== 'verify') action.affects = [];
+  report.program.actions.push({
+    id: 'study', role: 'investigate', lane: 'analyze', effort: 'medium', dependsOn: [],
+    affects: ['alpha'], ownedFiles: [], evidenceFor: [], deliverable: { type: 'report' },
+  });
+  report.actions.push({ id: 'study', status: 'succeeded' });
+  const planned = planRepairStep(report);
+  assert.deepEqual([planned.action.lane, planned.action.deliverable, planned.action.ownedFiles, planned.action.kind], ['analyze', 'report', [], 'implement']);
+  assert.equal(planned.record.repairUnrestricted, false);
+  assert.deepEqual(planned.record.repairRequirements, ['alpha']);
+
+  const inherited = synthetic({
+    loop: { max: 3, stoppedBy: null, rounds: [round({ closedAt: 'x', failed: ['alpha'], repairActionId: 'repair-1', repairRequirements: ['alpha'] })] },
+  });
+  assert.deepEqual(repairInheritedPaths(inherited, 'repair-1'), []);
+  inherited.program.actions.push({
+    id: 'rows', role: 'produce', lane: 'build', effort: 'medium', dependsOn: [],
+    affects: ['alpha'], ownedFiles: [], evidenceFor: [],
+    deliverable: { type: 'data', paths: ['out/summary.json', 'out/rows.json'] },
+  });
+  assert.deepEqual(repairInheritedPaths(inherited, 'repair-1'), ['out/rows.json', 'out/summary.json']);
 });

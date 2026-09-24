@@ -43,9 +43,16 @@ function push(map, key, value) {
   else map.set(key, [value]);
 }
 
+// History key for one action: its kind, else its role for a role-only step.
+// A kind step never falls through to its role, so kind history is unchanged.
+function historyKey(action) {
+  if (typeof action?.kind === 'string' && action.kind) return action.kind;
+  return typeof action?.role === 'string' && action.role ? action.role : null;
+}
+
 /**
  * The home's succeeded workflow attempts as minutes, keyed `pool|kind` and by
- * kind. Single tasks under `runs/` carry no kind and are not read. Unreadable
+ * kind (the role for a role-only step). Single tasks under `runs/` carry no kind and are not read. Unreadable
  * or half-written state files are skipped: history is advice, never a gate.
  */
 export function readTimeBoxHistory(bullswarmDir) {
@@ -60,8 +67,8 @@ export function readTimeBoxHistory(bullswarmDir) {
     let state;
     try { state = JSON.parse(readFileSync(file, 'utf8')); } catch { continue; }
     const kindOf = new Map((Array.isArray(state?.program?.actions) ? state.program.actions : [])
-      .filter((action) => typeof action?.id === 'string' && typeof action.kind === 'string')
-      .map((action) => [action.id, action.kind]));
+      .filter((action) => typeof action?.id === 'string' && historyKey(action))
+      .map((action) => [action.id, historyKey(action)]));
     for (const attempt of Array.isArray(state?.attempts) ? state.attempts : []) {
       if (attempt?.status !== 'succeeded' || timeBoxExcludedPool(attempt.pool)) continue;
       const kind = kindOf.get(attempt.actionId);
@@ -119,7 +126,7 @@ export function resolveTimeBox({ action, pool = null, history = null } = {}) {
     if (authored === 0) return null;
     return withWrapUp({ minutes: authored, source: 'program', n: null, medianMinutes: null });
   }
-  const kind = typeof action?.kind === 'string' ? action.kind : null;
+  const kind = historyKey(action);
   const read = typeof history === 'function' ? history() : history;
   const pairSample = kind && pool && !timeBoxExcludedPool(pool) ? read?.pairs?.get(`${pool}|${kind}`) ?? [] : [];
   const kindSample = kind ? read?.kinds?.get(kind) ?? [] : [];

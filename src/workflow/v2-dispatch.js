@@ -20,6 +20,7 @@ import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/fore
 import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
+import { declaredDeliverable, roleOf } from './step-vocabulary.js';
 
 const MECHANICAL_KINDS = new Set(['auth', 'quota', 'throttle', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
 /** Kinds that make the SAME pool unusable, so a retry must move elsewhere. */
@@ -74,7 +75,7 @@ function attemptSilenceTimeoutSec(pool, effort, decisionLog, configuredSilenceSe
 function classifyFailure(verdict, pool = null) {
   if (verdict?.ok) return null;
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
-  if (verdict?.failureKind === 'no-op') return 'no-op';
+  if (verdict?.failureKind === 'not-produced') return 'not-produced';
   // Quota outranks the quarantine hint: a usage limit also asks for a
   // quarantine, but it is a healthy credential with an empty window, and only
   // it carries a real reset deadline.
@@ -240,43 +241,64 @@ function gitText(execFile, args, cwd) {
   }
 }
 
-function parseGitZPaths(output) {
-  if (typeof output !== 'string') return [];
-  return output.split('\0')
-    .filter(Boolean)
-    .map((entry) => entry.length >= 3 && entry[2] === ' ' ? entry.slice(3) : entry)
-    .filter(Boolean);
-}
-
+// Null when git cannot see the workspace: `git ls-files` fails, or the
+// workspace folder itself is ignored by its repository (a scratch folder in
+// .gitignore lists nothing and hides every write). Both count as outside git.
 function trackedFiles(targetDir, execFile) {
   const output = gitText(execFile, ['ls-files', '-z'], targetDir);
+  if (output == null) return null;
+  if (gitText(execFile, ['check-ignore', '-q', '.'], targetDir) != null) return null;
+  return new Set(output.split('\0').filter(Boolean));
+}
+
+// Untracked, not ignored files, relative to the workspace like `ls-files`.
+// `git status` prints repository-root paths, which are wrong when the
+// workspace is a subfolder of the repository.
+function unignoredUntrackedFiles(targetDir, execFile) {
+  const output = gitText(execFile, ['ls-files', '--others', '--exclude-standard', '-z'], targetDir);
   return output == null ? null : new Set(output.split('\0').filter(Boolean));
 }
 
-function unignoredStatusFiles(targetDir, execFile) {
-  const output = gitText(execFile, [
-    'status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all',
-  ], targetDir);
-  return output == null ? null : new Set(parseGitZPaths(output));
+function uniquePaths(paths) {
+  const out = [];
+  const seen = new Set();
+  for (const path of paths ?? []) {
+    if (typeof path !== 'string' || !path || seen.has(path)) continue;
+    seen.add(path);
+    out.push(path);
+  }
+  return out;
 }
 
-function territoryFiles(targetDir, ownedFiles, execFile) {
+// `git` is false when git cannot see the workspace (trackedFiles). A declared
+// deliverable then hashes its exact owned files and extra paths directly
+// (D21); a legacy step does not.
+function territoryFiles(targetDir, ownedFiles, execFile, extraPaths = [], { directWhenUngit = false } = {}) {
   const declared = Array.isArray(ownedFiles) ? ownedFiles.filter(Boolean) : [];
+  const extras = uniquePaths(extraPaths);
   const tracked = trackedFiles(targetDir, execFile);
-  if (tracked == null) return { ok: false, files: new Set(), tracked: new Set() };
+  if (tracked == null) {
+    if (!directWhenUngit) return { ok: false, files: new Set(), tracked: new Set(), git: false };
+    const direct = uniquePaths([...declared, ...extras]);
+    if (!direct.length) return { ok: false, files: new Set(), tracked: new Set(), git: false };
+    return { ok: true, files: new Set(direct), tracked: new Set(), git: false };
+  }
   if (declared.length) {
+    const files = new Set(uniquePaths([...declared, ...extras]));
     return {
       ok: true,
-      files: new Set(declared),
-      tracked: new Set(declared.filter((file) => tracked.has(file))),
+      files,
+      tracked: new Set([...files].filter((file) => tracked.has(file))),
+      git: true,
     };
   }
-  const status = unignoredStatusFiles(targetDir, execFile);
-  if (status == null) return { ok: false, files: new Set(), tracked };
+  const untracked = unignoredUntrackedFiles(targetDir, execFile);
+  if (untracked == null) return { ok: false, files: new Set(), tracked, git: true };
   return {
     ok: true,
-    files: new Set([...tracked, ...status]),
+    files: new Set([...tracked, ...untracked, ...extras]),
     tracked,
+    git: true,
   };
 }
 
@@ -343,18 +365,169 @@ function headCommit(targetDir, execFile) {
   return gitText(execFile, ['rev-parse', '--verify', '-q', 'HEAD'], targetDir)?.trim() || null;
 }
 
-// Only a build-lane attempt is expected to leave a change behind. A chore step
-// (a commit, a PR, a formatter with nothing to format) may legitimately change
-// nothing, and an analyze step must not change anything. An integration step
-// is build-lane but may find its writers left nothing to reconcile, so a clean
-// run that only executes the acceptance checks still passes.
-function isNoOpAttempt(action, verdict, snapshot, headBefore, headAfter) {
-  return Boolean(verdict?.ok)
-    && action.lane === 'build'
-    && action.kind !== 'integration'
-    && snapshot.ok
-    && snapshot.changedFiles.length === 0
-    && headBefore === headAfter;
+// Direct file stats. Never calls git. A directory is not a produced file.
+export function statDeliverablePaths(targetDir, paths) {
+  const stats = new Map();
+  for (const path of uniquePaths(paths)) {
+    let exists = false;
+    let sha1 = null;
+    let mtimeMs = null;
+    try {
+      const stat = statSync(join(targetDir, path));
+      if (stat.isFile()) {
+        exists = true;
+        sha1 = fileDigest(targetDir, path);
+        mtimeMs = stat.mtimeMs;
+      }
+    } catch { /* missing or unreadable */ }
+    stats.set(path, { exists, sha1, mtimeMs });
+  }
+  return stats;
+}
+
+// Git works, or the step names exact owned files or deliverable paths (D21).
+export function snapshotPossible(targetDir, action) {
+  if (trackedFiles(targetDir, execFileSync) != null) return true;
+  const owned = Array.isArray(action?.ownedFiles) ? action.ownedFiles.filter(Boolean) : [];
+  return owned.length > 0 || (declaredDeliverable(action)?.paths?.length ?? 0) > 0;
+}
+
+function pathStat(table, path) {
+  if (!table) return null;
+  if (typeof table.get === 'function') return table.get(path) ?? null;
+  return Object.prototype.hasOwnProperty.call(table, path) ? table[path] : null;
+}
+
+// Created, bytes changed, or mtime changed. A missing file was not written.
+function pathWasWritten(before, after) {
+  if (!after?.exists) return false;
+  if (!before?.exists) return true;
+  return before.sha1 !== after.sha1 || before.mtimeMs !== after.mtimeMs;
+}
+
+function ownedStatsWritten(before, after) {
+  const keys = new Set([
+    ...(typeof before?.keys === 'function' ? before.keys() : Object.keys(before ?? {})),
+    ...(typeof after?.keys === 'function' ? after.keys() : Object.keys(after ?? {})),
+  ]);
+  for (const path of keys) {
+    if (pathWasWritten(pathStat(before, path), pathStat(after, path))) return true;
+  }
+  return false;
+}
+
+function compareDeclaredPaths(paths, before, after) {
+  const written = [];
+  const missing = [];
+  for (const path of paths) {
+    const next = pathStat(after, path);
+    if (!next?.exists) missing.push(path);
+    else if (pathWasWritten(pathStat(before, path), next)) written.push(path);
+  }
+  return { written, missing };
+}
+
+function nameList(paths) {
+  if (paths.length <= 3) return paths.join(', ');
+  return `${paths.slice(0, 3).join(', ')} and ${paths.length - 3} more`;
+}
+
+function gateBaselinePaths(action, gitWorks) {
+  const declared = declaredDeliverable(action);
+  if (!declared) return [];
+  if (declared.paths?.length) return declared.paths;
+  if (gitWorks) return [];
+  return Array.isArray(action?.ownedFiles) ? action.ownedFiles.filter(Boolean) : [];
+}
+
+// The gate measures the whole step (D19), and only when the content verdict
+// is ok. A step with no declared deliverable keeps the legacy lane rule.
+// `changed` is the union of this dispatch's attempts; heads and path stats
+// are the step baseline. Returns `{ fact, failWhy }`. `fact` is null when
+// the action declares no deliverable.
+export function deliverableVerdict({
+  action,
+  verdict,
+  legacyGate = true,
+  snapshotOk = false,
+  changed = [],
+  headBefore = null,
+  headAfter = null,
+  pathsBefore = null,
+  pathsAfter = null,
+  outputBytes = null,
+  earlierWork = { produced: false, unknown: false },
+} = {}) {
+  const declared = declaredDeliverable(action);
+  const contentOk = verdict?.ok !== false;
+  const evidence = Array.isArray(action?.evidenceFor) && action.evidenceFor.length > 0;
+  const changedList = Array.isArray(changed) ? changed : [];
+  const headMoved = headBefore !== headAfter;
+  const paths = declared?.paths ?? [];
+  const compared = paths.length ? compareDeclaredPaths(paths, pathsBefore, pathsAfter) : { written: [], missing: [] };
+  const statWrite = paths.length
+    ? compared.written.length > 0
+    : ownedStatsWritten(pathsBefore, pathsAfter);
+  // For a path deliverable, "this dispatch changed nothing" (D19 3) means no
+  // declared path was written: a resumed worker that only reruns its checks
+  // may leave a log behind without redoing the deliverable.
+  const dispatchChanged = paths.length ? statWrite : changedList.length > 0 || headMoved || statWrite;
+  const earlierHit = !dispatchChanged && (earlierWork?.produced === true || earlierWork?.unknown === true);
+  const quiet = (fact, failWhy) => ({ fact, failWhy: contentOk ? failWhy : null });
+
+  if (!declared) {
+    if (action?.kind === 'digest' || evidence || legacyGate === false) return { fact: null, failWhy: null };
+    const judged = action?.lane === 'build' && action?.kind !== 'integration' && snapshotOk === true;
+    if (!judged || earlierHit) return { fact: null, failWhy: null };
+    if (!dispatchChanged) return quiet(null, 'no file changed and no commit made');
+    return { fact: null, failWhy: null };
+  }
+
+  const type = declared.type;
+  if (action?.kind === 'digest' || evidence) return { fact: { type, gated: false, produced: null }, failWhy: null };
+  if (type === 'outward') return { fact: { type: 'outward', gated: false, produced: null }, failWhy: null };
+  if (type === 'report') {
+    const produced = Number(outputBytes) > 0;
+    return quiet(
+      { type: 'report', gated: true, produced },
+      produced ? null : 'report is empty',
+    );
+  }
+  if (paths.length) {
+    const factPaths = {
+      written: compared.written.slice(0, 50),
+      missing: compared.missing.slice(0, 50),
+    };
+    if (compared.missing.length) {
+      return quiet(
+        { type, gated: true, produced: false, ...factPaths, ...(earlierHit ? { carried: true } : {}) },
+        `declared ${type} missing: ${nameList(compared.missing)}`,
+      );
+    }
+    if (!compared.written.length) {
+      if (earlierHit) {
+        return { fact: { type, gated: true, produced: true, written: [], missing: [], carried: true }, failWhy: null };
+      }
+      return quiet(
+        { type, gated: true, produced: false, written: [], missing: [] },
+        `declared ${type} not written: ${nameList(paths)}`,
+      );
+    }
+    return { fact: { type, gated: true, produced: true, ...factPaths }, failWhy: null };
+  }
+
+  // files, no paths. combine is exempt. No snapshot means the promise cannot
+  // be checked (D21), so the attempt is recorded and not failed.
+  const role = roleOf(action);
+  if (role === 'combine' || snapshotOk !== true) {
+    return {
+      fact: { type: 'files', gated: false, produced: null, ...(earlierHit ? { carried: true } : {}) },
+      failWhy: null,
+    };
+  }
+  if (earlierHit) return { fact: { type: 'files', gated: false, produced: null, carried: true }, failWhy: null };
+  if (!dispatchChanged) return quiet({ type: 'files', gated: true, produced: false }, 'no file changed and no commit made');
+  return { fact: { type: 'files', gated: true, produced: true }, failWhy: null };
 }
 
 /**
@@ -364,9 +537,9 @@ function isNoOpAttempt(action, verdict, snapshot, headBefore, headAfter) {
  * paths compare against a missing hash. The stat is captured at this same
  * boundary, before sibling callbacks can edit the territory.
  */
-function captureDiffSnapshot(targetDir, ownedFiles, before, execFile = execFileSync) {
+function captureDiffSnapshot(targetDir, ownedFiles, before, execFile = execFileSync, extraPaths = [], options = {}) {
   if (!before?.ok) return { ok: false, statText: '', changedFiles: [] };
-  const afterTerritory = territoryFiles(targetDir, ownedFiles, execFile);
+  const afterTerritory = territoryFiles(targetDir, ownedFiles, execFile, extraPaths, options);
   if (!afterTerritory.ok) return { ok: false, statText: '', changedFiles: [] };
   const after = hashTerritory(targetDir, afterTerritory);
   const files = new Set([...before.files, ...after.files]);
@@ -687,6 +860,10 @@ export async function dispatchV2Action({
   // for one attempt (src/workflow/time-box.js). Resolved per attempt, because
   // a retry can land on another pool and always starts its own clock.
   timeBox = null,
+  // The D16 marker. Saved runs pass false and keep the old unjudged lane rule.
+  legacyGate = true,
+  earlierWork = { produced: false, unknown: false },
+  extraSnapshotPaths = [],
 } = {}) {
   if (!action || typeof action.id !== 'string') throw new TypeError('action is required');
   if (typeof taskText !== 'string' || !taskText) throw new TypeError('taskText is required');
@@ -782,6 +959,24 @@ export async function dispatchV2Action({
     : taskText;
   let priorHandoff = resumedHandoff ? { from: resumedHandoff.from, bytes: resumedHandoff.bytes } : null;
   if (resumedHandoff && !nextTask.includes(resumedHandoff.block)) nextTask = `${nextTask}\n\n${resumedHandoff.block}`;
+  // Step baseline (D19): HEAD and path stats once, at the first attempt.
+  // `stepChanged` is the union the gate judges. Each attempt still records
+  // its own diff.
+  const declaredForSnapshot = declaredDeliverable(action);
+  const snapshotExtras = uniquePaths([
+    ...(declaredForSnapshot?.paths ?? []),
+    ...(Array.isArray(extraSnapshotPaths) ? extraSnapshotPaths : []),
+  ]);
+  const territoryOptions = { directWhenUngit: declaredForSnapshot != null };
+  const stepEarlier = {
+    produced: earlierWork?.produced === true,
+    unknown: earlierWork?.unknown === true,
+  };
+  let stepHeadBefore = null;
+  let baselinePaths = [];
+  let stepPathsBefore = new Map();
+  const stepChanged = new Set();
+  let stepBaselineReady = false;
 
   while (remaining.length || (last && retriesUsed < maxMechanicalRetries)) {
     if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
@@ -887,12 +1082,19 @@ export async function dispatchV2Action({
     }
     const ordinal = attempts.length + 1;
     const files = withAttemptArtifacts(attemptPaths(paths, ordinal));
-    const beforeAttempt = hashTerritory(
-      targetDir,
-      territoryFiles(targetDir, action.ownedFiles, execFile),
-    );
-    const headBefore = headCommit(targetDir, execFile);
-    let headAfter = headBefore;
+    const territory = territoryFiles(targetDir, action.ownedFiles, execFile, snapshotExtras, territoryOptions);
+    const beforeAttempt = hashTerritory(targetDir, territory);
+    // A workspace git cannot see (D21) has no HEAD of its own; a commit in
+    // the repository that ignores it is not this step's work.
+    const seesHead = territory.git !== false;
+    const headAtStart = seesHead ? headCommit(targetDir, execFile) : null;
+    let headAfter = headAtStart;
+    if (!stepBaselineReady) {
+      stepHeadBefore = headAtStart;
+      baselinePaths = gateBaselinePaths(action, territory.git === true);
+      stepPathsBefore = statDeliverablePaths(targetDir, baselinePaths);
+      stepBaselineReady = true;
+    }
     const incomingHandoff = priorHandoff;
     priorHandoff = null;
     const session = sessionFor(connector, pool, model, currentSession, now(), uuid);
@@ -962,6 +1164,7 @@ export async function dispatchV2Action({
     let workerPid = null;
     let verdict;
     let snapshot = { ok: false, statText: '', changedFiles: [] };
+    let deliverableFact = null;
     try {
       verdict = await watch(runtimeConnector, attemptTask, targetDir, files, {
         env: childDepthEnv(parentEnv),
@@ -997,19 +1200,38 @@ export async function dispatchV2Action({
       // Capture before releasing the in-flight ledger entry or invoking the
       // worker-exit callback. Either can let a sibling begin editing this
       // territory, which must not be attributed to the attempt that ended.
-      snapshot = captureDiffSnapshot(targetDir, action.ownedFiles, beforeAttempt, execFile);
-      headAfter = headCommit(targetDir, execFile);
+      snapshot = captureDiffSnapshot(targetDir, action.ownedFiles, beforeAttempt, execFile, snapshotExtras, territoryOptions);
+      headAfter = seesHead ? headCommit(targetDir, execFile) : null;
     } finally {
       if (ledgerEntry) withLedger(() => releaseAssignment(bullswarmDir, ledgerEntry.id));
       if (workerPid) onWorkerExit?.(workerPid);
     }
-    if (isNoOpAttempt(action, verdict, snapshot, headBefore, headAfter)) {
-      verdict = { ...verdict, ok: false, why: 'no files changed', failureKind: 'no-op' };
+    // stage 2: evidence runner runs here
+    const outputBytes = fileBytes(files.outFile);
+    if (snapshot.ok) {
+      for (const file of snapshot.changedFiles) stepChanged.add(file);
     }
+    const pathsAfter = statDeliverablePaths(targetDir, baselinePaths);
+    const judged = deliverableVerdict({
+      action,
+      verdict,
+      legacyGate,
+      snapshotOk: snapshot.ok,
+      changed: [...stepChanged].sort(),
+      headBefore: stepHeadBefore,
+      headAfter,
+      pathsBefore: stepPathsBefore,
+      pathsAfter,
+      outputBytes,
+      earlierWork: stepEarlier,
+    });
+    if (verdict?.ok && judged.failWhy) {
+      verdict = { ...verdict, ok: false, why: judged.failWhy, failureKind: 'not-produced' };
+    }
+    deliverableFact = judged.fact;
     // The saved file is the attribution record; later sibling edits are not
     // replayed into it.
     if (snapshot.ok) writeFileIfChanged(files.diffFile, snapshot.statText ? `${snapshot.statText}\n` : '');
-    const outputBytes = fileBytes(files.outFile);
     const streamFile = verdict?.meta?.streamFile
       ?? (files.streamFile && existsSync(files.streamFile) ? files.streamFile : null)
       ?? (files.stdoutFile && existsSync(files.stdoutFile) ? files.stdoutFile : null);
@@ -1066,6 +1288,7 @@ export async function dispatchV2Action({
       willRetry: willRecover,
       outputFile: files.outFile,
       ...(outputBytes != null ? { outputBytes } : {}),
+      ...(deliverableFact ? { deliverable: deliverableFact } : {}),
       ...(streamFile ? { streamFile } : {}),
       // The path list itself (at most 200; the count stays complete): the
       // repair loop's carry-forward rule and the durable handoff read it.

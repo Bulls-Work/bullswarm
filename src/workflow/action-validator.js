@@ -1,6 +1,13 @@
 // Deterministic validation for the generic autonomous workflow V2 program.
 
 import { isReasoningLevel } from '../lib/reasoning.js';
+import {
+  DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_ROLES, ROLES,
+  ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, WRITING_DELIVERABLES,
+  deliverableTypeOf, laneFitsDeliverable, roleRouting,
+} from './step-vocabulary.js';
+
+export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, EVIDENCE_TYPES };
 
 export const ACTION_PROGRAM_SCHEMA_VERSION = 'bullswarm.workflow.program.v2';
 
@@ -41,7 +48,7 @@ const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions', 'defaults', 'verifyR
 const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning', 'timeBox', 'verifyRounds']);
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
-  'kind', 'lane', 'effort', 'evidenceFor', 'inputs', 'produces', 'reasoning',
+  'kind', 'role', 'lane', 'effort', 'deliverable', 'evidenceFor', 'inputs', 'produces', 'reasoning',
   'timeBox',
 ]);
 // The soft time box, in whole minutes; 0 leaves the paragraph out. A guide
@@ -69,16 +76,21 @@ function evidencePromptOwnsOutput(prompt) {
 // (which writes the resolved values back onto the normalised action) and by
 // the advisories (which read raw or normalised programs alike). Nothing
 // downstream re-applies this precedence: acceptance normalises once.
-//   lane    : action.lane > KIND_DEFAULTS[kind].lane
-//   effort  : action.effort > KIND_DEFAULTS[kind].effort > defaults.effort
-//             > DEFAULT_EFFORT_BY_LANE[lane]
+//   lane    : action.lane > KIND_DEFAULTS[kind].lane > roleRouting(role, type)
+//   effort  : action.effort > KIND_DEFAULTS[kind].effort > role effort
+//             > defaults.effort > DEFAULT_EFFORT_BY_LANE[lane]
 //   reasoning: action.reasoning > defaults.reasoning  (run/strategy/connector
 //             levels still apply later, unchanged, when this is absent)
 export function resolveActionRouting(action, defaults = {}) {
-  const kindDefaults = KIND_DEFAULTS[action?.kind] ?? null;
-  const lane = action?.lane ?? kindDefaults?.lane ?? null;
+  const kindDefaults = Object.hasOwn(KIND_DEFAULTS, action?.kind ?? '') ? KIND_DEFAULTS[action.kind] : null;
+  const role = action?.role;
+  const roleDefaults = !kindDefaults && typeof role === 'string' && ROLES.includes(role)
+    ? roleRouting(role, deliverableTypeOf(action?.deliverable) ?? ROLE_DEFAULT_DELIVERABLE[role])
+    : null;
+  const lane = action?.lane ?? kindDefaults?.lane ?? roleDefaults?.lane ?? null;
   const effort = action?.effort
     ?? kindDefaults?.effort
+    ?? roleDefaults?.effort
     ?? defaults?.effort
     ?? (LANES.has(lane) ? DEFAULT_EFFORT_BY_LANE[lane] : null);
   return {
@@ -109,7 +121,7 @@ export function programAdvisories(program, { requirements = null } = {}) {
     advisories.push({
       code: 'all-writers-high',
       actionId: null,
-      message: `all ${writers.length} build/chore actions run at high effort; high is for architecture, ambiguous tradeoffs, or cross-cutting integration, so ordinary implementation slices belong at medium`,
+      message: `all ${writers.length} build/chore actions run at high effort; high is for design judgment, ambiguous tradeoffs, or cross-cutting integration, so ordinary implementation slices belong at medium`,
     });
   }
   for (const action of writers) {
@@ -134,8 +146,8 @@ export function programAdvisories(program, { requirements = null } = {}) {
         code: 'requirement-unchecked',
         actionId: null,
         message: checked.size
-          ? `no step gives evidence for ${named}; the run can finish but ${unchecked.length === 1 ? 'that requirement stays' : 'those requirements stay'} unverified, so add ${unchecked.length === 1 ? 'it' : 'them'} to an adversarial-acceptance step's evidenceFor`
-          : `no step checks any requirement (${named}); the run can finish but never be verified, so add an adversarial-acceptance step, or use bullswarm run for one bounded task`,
+          ? `no step gives evidence for ${named}; the run can finish but ${unchecked.length === 1 ? 'that requirement stays' : 'those requirements stay'} unverified, so add ${unchecked.length === 1 ? 'it' : 'them'} to a check step's evidenceFor`
+          : `no step checks any requirement (${named}); the run can finish but never be verified, so add a check step with evidenceFor, or use bullswarm run for one bounded task`,
       });
     }
   }
@@ -218,6 +230,50 @@ function normalizeOwnedFiles(value, at, issues) {
     result.push(normalized);
   }
   return result;
+}
+
+// String shorthand or `{type, paths}` becomes `{type}` or `{type, paths}`.
+// `paths` is checked with the same exact-file rules as ownedFiles.
+function normalizeDeliverable(raw, at, issues) {
+  const shape = `${at}.deliverable must be ${DELIVERABLE_TYPES.join('|')}, or an object {type, paths}`;
+  let value = raw;
+  if (typeof raw === 'string') {
+    if (!DELIVERABLE_TYPES.includes(raw)) {
+      issues.push(shape);
+      return null;
+    }
+    value = { type: raw };
+  }
+  if (!isObject(value)) {
+    issues.push(shape);
+    return null;
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'type' && key !== 'paths') issues.push(`${at}.deliverable.${key} is not allowed`);
+  }
+  if (typeof value.type !== 'string' || !DELIVERABLE_TYPES.includes(value.type)) {
+    issues.push(shape);
+    return null;
+  }
+  const type = value.type;
+  if (type === 'report' || type === 'outward') {
+    if (value.paths !== undefined) issues.push(`${at}.deliverable.paths is not allowed for ${type}`);
+    return { type };
+  }
+  if (type === 'data' || type === 'media') {
+    if (value.paths === undefined || (Array.isArray(value.paths) && value.paths.length === 0)) {
+      issues.push(`${at}.deliverable.paths is required for ${type}`);
+      return { type };
+    }
+  } else if (value.paths === undefined || (Array.isArray(value.paths) && value.paths.length === 0)) {
+    return { type };
+  }
+  if (!Array.isArray(value.paths)) {
+    normalizeOwnedFiles(value.paths, `${at}.deliverable.paths`, issues);
+    return { type };
+  }
+  const paths = normalizeOwnedFiles(value.paths, `${at}.deliverable.paths`, issues);
+  return paths.length ? { type, paths } : { type };
 }
 
 // Program-level fallbacks an author may set once instead of repeating on
@@ -451,7 +507,9 @@ export function validateActionProgram(program, runtime = {}) {
       return;
     }
     for (const key of Object.keys(raw)) if (!ACTION_FIELDS.has(key)) {
-      issues.push(`${at}.${key} is not allowed`);
+      issues.push(key === 'evidence'
+        ? `${at}.evidence is not accepted yet: command and schema evidence arrive in a later release; for judged evidence use a check step with evidenceFor`
+        : `${at}.${key} is not allowed`);
     }
     const action = clone(raw);
     if (!hasId(action.id)) issues.push(`${at}.id must be a valid kebab-case ID`);
@@ -472,11 +530,31 @@ export function validateActionProgram(program, runtime = {}) {
     if (action.kind !== undefined && !Object.hasOwn(KIND_DEFAULTS, action.kind)) {
       issues.push(`${at}.kind must be ${ACTION_KINDS.join('|')}`);
     }
+    // Program mode only (D17), then kind/role agreement (D12). A matching role
+    // is dropped before routing so the step is validated as its kind.
+    if ((action.role !== undefined || action.deliverable !== undefined) && runtime.relaxedGraph !== true) {
+      issues.push(`${at}.role and deliverable need a program-mode run`);
+    }
+    if (action.kind !== undefined && action.role !== undefined) {
+      // An unknown kind already has its own issue; there is no role to compare.
+      const expectedRole = Object.hasOwn(KIND_ROLES, action.kind) ? KIND_ROLES[action.kind] : action.role;
+      if (expectedRole !== action.role) {
+        issues.push(`${at}.role "${action.role}" does not match kind "${action.kind}" (kind ${action.kind} is role ${expectedRole}); give one of them`);
+      }
+      delete action.role;
+    }
     // Resolve once, here, and write the resolved values back below: dispatch,
     // reports, and advisories all read concrete lane/effort/reasoning.
     const routing = resolveActionRouting(action, defaults);
-    if (!LANES.has(routing.lane)) issues.push(`${at}.lane must be analyze|build|chore`);
-    if (!EFFORTS.has(routing.effort)) issues.push(`${at}.effort must be high|medium|low`);
+    // A role-only step the role table cannot route (unknown role, combine
+    // with no deliverable, a deliverable the role does not take) gets its
+    // own role or deliverable issue below; a generic lane or effort issue
+    // would only repeat it.
+    const roleUnrouted = action.kind === undefined && action.role !== undefined;
+    const laneGiven = action.lane !== undefined;
+    const deliverableGiven = action.deliverable !== undefined;
+    if (!LANES.has(routing.lane) && !(roleUnrouted && action.lane === undefined)) issues.push(`${at}.lane must be analyze|build|chore`);
+    if (!EFFORTS.has(routing.effort) && !(roleUnrouted && action.effort === undefined)) issues.push(`${at}.effort must be high|medium|low`);
     // Optional caller override. `effort` still picks the model tier; this only
     // sets how hard that model thinks, and it outranks every configured level.
     if (action.reasoning !== undefined && !isReasoningLevel(action.reasoning)) {
@@ -489,7 +567,50 @@ export function validateActionProgram(program, runtime = {}) {
     if (LANES.has(routing.lane)) action.lane = routing.lane;
     if (EFFORTS.has(routing.effort)) action.effort = routing.effort;
     if (routing.reasoning !== null) action.reasoning = routing.reasoning;
-    if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze') {
+    const roleOnly = action.role !== undefined && action.kind === undefined;
+    const roleKnown = roleOnly && typeof action.role === 'string' && ROLES.includes(action.role);
+    if (roleOnly && !roleKnown) issues.push(`${at}.role must be ${ROLES.join('|')}`);
+    if (roleKnown && action.role === 'act') {
+      // No lane resolves when the deliverable is not outward; that deliverable
+      // issue is the real problem, and the author set no lane to blame.
+      if (routing.lane !== null && routing.lane !== 'analyze') issues.push(`${at} act steps use lane analyze; they do not write workspace files`);
+      if (ownedFiles.length || evidenceFor.length) issues.push(`${at} act steps must have empty ownedFiles and evidenceFor`);
+    }
+    if (roleKnown && action.role === 'combine' && action.deliverable === undefined) {
+      issues.push(`${at} combine steps must declare a deliverable: files (merging written work, build/high), data or media (build/medium), or report (condensing or comparing results, analyze/medium)`);
+    }
+    // The act rule above already names evidenceFor.
+    if (roleKnown && evidenceFor.length && action.role !== 'check' && action.role !== 'act') {
+      issues.push(`${at} only check steps take evidenceFor`);
+    }
+    if (roleKnown && action.deliverable !== undefined) {
+      const explicitType = deliverableTypeOf(action.deliverable);
+      if (explicitType && explicitType !== 'outward' && !ROLE_DELIVERABLES[action.role].includes(explicitType)) {
+        issues.push(`${at}.deliverable ${explicitType} is not allowed for role ${action.role}; ${action.role} takes ${ROLE_DELIVERABLES[action.role].join('|')}`);
+      }
+    }
+    let resolvedDeliverable = null;
+    if (action.deliverable !== undefined) resolvedDeliverable = normalizeDeliverable(action.deliverable, at, issues);
+    else if (roleKnown && ROLE_DEFAULT_DELIVERABLE[action.role]) resolvedDeliverable = { type: ROLE_DEFAULT_DELIVERABLE[action.role] };
+    if (resolvedDeliverable) {
+      const type = resolvedDeliverable.type;
+      if (Array.isArray(resolvedDeliverable.paths) && ownedFiles.length) {
+        const missing = resolvedDeliverable.paths.filter((file) => !ownedFiles.includes(file));
+        if (missing.length) issues.push(`${at}.deliverable.paths must be listed in ownedFiles (missing: ${missing.join(', ')})`);
+      }
+      if (LANES.has(routing.lane) && !laneFitsDeliverable(routing.lane, type)) {
+        if (WRITING_DELIVERABLES.includes(type)) issues.push(`${at} a ${type} deliverable needs lane build or chore; analyze steps are read-only`);
+        else if (type === 'report' || type === 'outward') issues.push(`${at} a ${type} deliverable is for analyze steps; build and chore steps deliver files, data or media`);
+      }
+      if (action.kind === 'digest') issues.push(`${at} digest actions take no deliverable; the kernel writes their report`);
+      // A role's default deliverable on a step that wrongly has evidenceFor is
+      // not the author's; "only check steps take evidenceFor" covers it.
+      if (evidenceFor.length && type !== 'report' && (deliverableGiven || !roleKnown)) issues.push(`${at} steps with evidenceFor take no deliverable other than report`);
+      if (type === 'outward' && action.role !== 'act') issues.push(`${at}.deliverable outward needs role act`);
+      if (roleKnown || action.deliverable !== undefined) action.deliverable = resolvedDeliverable;
+    }
+    const roleLaneOnWrongEvidence = roleKnown && action.role !== 'check' && !laneGiven;
+    if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze' && !roleLaneOnWrongEvidence) {
       issues.push(`${at} evidence actions must use lane analyze`);
     }
     if (enforceRoutingPolicy && ownedFiles.length && action.lane === 'analyze') {

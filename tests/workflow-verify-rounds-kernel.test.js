@@ -16,6 +16,7 @@ import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { repairInheritedPaths } from '../src/workflow/verify-rounds.js';
 import { formatV2HandbackLines, summarizeV2Result } from '../src/workflow/v2-outcome.js';
 import { initialWatchMemory, notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 import { clearTimeBoxHistoryCache } from '../src/workflow/time-box.js';
@@ -63,7 +64,7 @@ const fail = (evidence, concerns = []) => ({ status: 'failed', evidence: [eviden
  * returns the step's report; `scenario.judge(id, ids, { targetDir, task })`
  * returns the evidence for one verify step's requirements.
  */
-async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-abcdef', onEvent = null, requirements = REQUIREMENTS } = {}) {
+async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-abcdef', onEvent = null, requirements = REQUIREMENTS, prepare = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-loop-kernel-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -73,6 +74,7 @@ async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-a
   writeFileSync(join(workspace, 'src', 'a.js'), 'export const alpha = () => 0;\n');
   writeFileSync(join(workspace, 'src', 'b.js'), 'export const beta = () => 0;\n');
   writeFileSync(join(workspace, 'src', 'c.js'), 'export const gamma = () => 0;\n');
+  prepare?.(workspace);
   const git = (...args) => execFileSync('git', ['-C', workspace, ...args], { stdio: 'pipe' });
   git('init', '-q');
   git('add', '.');
@@ -512,4 +514,122 @@ test('removing the kernel\'s repair in progress stops the loop; the run finishes
   assert.equal(run.result.verified, false);
   assert.deepEqual(run.result.callerDecision.requirements.map((entry) => [entry.id, entry.status, entry.round]), [['alpha', 'failed', 1]]);
   assert.equal(run.result.callerDecision.verifyRounds, '1/3');
+});
+
+test('a failing requirement affected only by an act step is not repaired', async (t) => {
+  const programDoc = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      {
+        id: 'send', purpose: 'Post the release note', dependsOn: [], affects: ['alpha'], ownedFiles: [],
+        prompt: 'Post the note.', role: 'act', evidenceFor: [], inputs: [], produces: [],
+      },
+      {
+        id: 'verify', purpose: 'Check the post', dependsOn: ['send'], affects: [], ownedFiles: [],
+        prompt: 'Inspect the post.', kind: 'adversarial-acceptance', evidenceFor: ['alpha'], inputs: [], produces: [],
+      },
+    ],
+  };
+  const { run, loop, ids } = await runLoop(t, {
+    work: { send: () => 'Posted note 42 at https://example.com/posts/42' },
+    judge: () => ({ alpha: fail('the post is missing the required line') }),
+  }, {
+    programDoc, requirements: [REQUIREMENTS[0]], runId: 'wf-d20act-abcdef',
+  });
+  assert.equal(ids.includes('repair-1'), false);
+  assert.equal(loop.stoppedBy, 'act-step');
+  assert.equal(run.result.verifyRounds.stoppedBy, 'act-step');
+  const [entry] = run.result.callerDecision.requirements;
+  assert.equal(entry.id, 'alpha');
+  assert.equal(entry.status, 'failed');
+  const token = run.state.shortId;
+  assert.equal(entry.next, `an act step affects alpha; Bullswarm never repeats an outward action on its own. Check what was done, then add an act step if it must be redone: bullswarm workflow plan export ${token} --out plan.json, edit it, then plan revise`);
+});
+
+test('a requirement affected only by report steps repairs as an analyze report', async (t) => {
+  const investigate = (id) => ({
+    id, purpose: `Study ${id}`, dependsOn: [], affects: ['alpha'], ownedFiles: [],
+    prompt: 'Write what you found.', role: 'investigate', deliverable: 'report', evidenceFor: [], inputs: [], produces: [],
+  });
+  const programDoc = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      investigate('study-a'),
+      investigate('study-b'),
+      {
+        id: 'verify', purpose: 'Check the studies', dependsOn: ['study-a', 'study-b'], affects: [], ownedFiles: [],
+        prompt: 'Read both reports.', kind: 'adversarial-acceptance', evidenceFor: ['alpha'], inputs: [], produces: [],
+      },
+    ],
+  };
+  const { run, ids } = await runLoop(t, {
+    work: {
+      'study-a': () => 'alpha returns 1 today',
+      'study-b': () => 'the spec asks for 2',
+      'repair-1': () => 'alpha should return 2. The two studies agree.',
+    },
+    judge: (id) => (id === 'verify'
+      ? { alpha: fail('neither study shows alpha returning 2') }
+      : { alpha: pass('the repair report names the return value') }),
+  }, {
+    programDoc, requirements: [REQUIREMENTS[0]], runId: 'wf-d20rep-abcdef',
+  });
+  assert.equal(ids.includes('repair-1'), true);
+  const repair = run.state.program.actions.find((action) => action.id === 'repair-1');
+  assert.equal(repair.lane, 'analyze');
+  assert.deepEqual(repair.deliverable, { type: 'report' });
+  assert.deepEqual(repair.ownedFiles, []);
+  const attempt = run.state.attempts.find((item) => item.actionId === 'repair-1');
+  assert.equal(attempt.status, 'succeeded');
+  assert.deepEqual(attempt.deliverable, { type: 'report', gated: true, produced: true });
+  assert.ok(readFileSync(attempt.outputFile, 'utf8').length > 0);
+});
+
+test('a repair of an ignored data path inherits that path and the rewrite counts', async (t) => {
+  const programDoc = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      {
+        id: 'summarize', purpose: 'Write the summary', dependsOn: [], affects: ['alpha'], ownedFiles: [],
+        prompt: 'Write out/summary.json.', role: 'produce',
+        deliverable: { type: 'data', paths: ['out/summary.json'] },
+        evidenceFor: [], inputs: [], produces: [],
+      },
+      {
+        id: 'verify', purpose: 'Check the summary', dependsOn: ['summarize'], affects: [], ownedFiles: [],
+        prompt: 'Read out/summary.json.', kind: 'adversarial-acceptance', evidenceFor: ['alpha'], inputs: [], produces: [],
+      },
+    ],
+  };
+  const { run, loop } = await runLoop(t, {
+    work: {
+      summarize: ({ targetDir }) => {
+        writeFileSync(join(targetDir, 'out', 'summary.json'), '{"ok":false}\n');
+        return 'Wrote out/summary.json';
+      },
+      'repair-1': ({ targetDir }) => {
+        writeFileSync(join(targetDir, 'out', 'summary.json'), '{"ok":true}\n');
+        return 'Rewrote out/summary.json';
+      },
+    },
+    judge: (_id, _ids, { targetDir }) => (read(targetDir, 'out/summary.json').includes('"ok":true')
+      ? { alpha: pass('out/summary.json is fixed') }
+      : { alpha: fail('out/summary.json is still wrong') }),
+  }, {
+    programDoc,
+    requirements: [{ id: 'alpha', text: 'out/summary.json records ok true.' }],
+    runId: 'wf-d20dat-abcdef',
+    prepare: (workspace) => {
+      writeFileSync(join(workspace, '.gitignore'), 'out/\n');
+      mkdirSync(join(workspace, 'out'));
+    },
+  });
+  assert.deepEqual(repairInheritedPaths(run.state, 'repair-1'), ['out/summary.json']);
+  const repair = run.state.program.actions.find((action) => action.id === 'repair-1');
+  assert.equal(repair.kind, 'implement');
+  assert.equal(repair.deliverable, undefined);
+  const attempt = run.state.attempts.find((item) => item.actionId === 'repair-1');
+  assert.equal(attempt.status, 'succeeded');
+  assert.ok(attempt.changedFiles.includes('out/summary.json'));
+  assert.deepEqual(loop.rounds[0].changedFiles, ['out/summary.json']);
 });

@@ -6,11 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2GoalDocument, createV2State, serializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
 import {
-  V2PlannerValidationError, V2_PROGRAM_EXAMPLE, applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt,
+  V2PlannerValidationError, V2_PROGRAM_EXAMPLE, V2_PROGRAM_ACTION_FIELDS, V2_ROLE_PROGRAM_EXAMPLE, applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt,
   buildPlannerPreflight, createV2PlannerContext, parseV2PlannerResponse, readPlannerCandidate, plannerCorrectionRequest,
   v2PlannerContractRules, validateV2PlannerResponse,
 } from '../src/workflow/v2-planner.js';
 import { KIND_DEFAULTS } from '../src/workflow/action-validator.js';
+import {
+  DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, ROLE_ROUTING,
+} from '../src/workflow/step-vocabulary.js';
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
@@ -272,7 +275,7 @@ test('every planner rule set states the reasoning field once', () => {
 test('program planner guidance keeps writer inputs, slices and delivery explicit', () => {
   const expected = 'Use `dependsOn` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. ' +
     'After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit `timeBox` sized for the full suite. ' +
-    'Make the gate kind `check` and the commit and PR steps kind `mechanical`: a build-lane attempt other than `integration` that succeeds but changes no file and leaves HEAD in place fails as `no-op`.';
+    'Make the gate a `check` step and the commit and PR steps kind `mechanical` (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as `not-produced`; a build-lane step with no declared deliverable, other than `integration`, fails the same way when it changes no file and makes no commit.';
   assert.ok(v2PlannerContractRules({ executionMode: 'program' }).includes(expected));
 });
 
@@ -302,11 +305,12 @@ test('the planning contract documents kind, its derived table, program defaults,
   assert.match(rule, /A kind outside that closed list is a validation error/);
   assert.match(rule, /all-writers-high/);
   assert.match(rule, /docs-at-high/);
-  // The worked example a caller copies uses kind on every action and omits
-  // the two fields kind supplies.
+  // The worked example a program-mode caller copies uses role on every action
+  // and omits the two fields the role supplies.
   const example = contract.program.example.program.actions;
-  assert.deepEqual(example.map((action) => action.kind), ['implement', 'check']);
+  assert.deepEqual(example.map((action) => action.role), ['produce', 'check']);
   for (const action of example) {
+    assert.equal('kind' in action, false, action.id);
     assert.equal('lane' in action, false, action.id);
     assert.equal('effort' in action, false, action.id);
   }
@@ -436,4 +440,104 @@ test('a program may carry timeBox and verifyRounds, and still cannot declare rep
   const loopKey = response();
   loopKey.program.defaults = { repair: 3 };
   assert.throws(() => validateV2PlannerResponse(loopKey, programState()), V2PlannerValidationError);
+});
+
+function goalFor(executionMode) {
+  return createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode, concurrency: 2 },
+  });
+}
+
+test('the program-mode contract carries roles, kind roles, deliverable and evidence types, and the role example', () => {
+  const contract = buildV2PlannerContract(goalFor('program'));
+  assert.deepEqual(Object.keys(contract.program.roles), [...ROLES]);
+  for (const role of ROLES) {
+    assert.deepEqual(contract.program.roles[role], {
+      kinds: Object.keys(KIND_ROLES).filter((kind) => KIND_ROLES[kind] === role),
+      defaultDeliverable: ROLE_DEFAULT_DELIVERABLE[role] ?? null,
+      deliverables: [...ROLE_DELIVERABLES[role]],
+      routing: JSON.parse(JSON.stringify(ROLE_ROUTING[role])),
+    }, role);
+  }
+  assert.equal(contract.program.roles.combine.defaultDeliverable, null);
+  assert.deepEqual(contract.program.roles.combine.kinds, ['digest', 'integration']);
+  assert.deepEqual(contract.program.kindRoles, { ...KIND_ROLES });
+  assert.deepEqual(contract.program.deliverableTypes, [...DELIVERABLE_TYPES]);
+  assert.deepEqual(contract.program.evidenceTypes.types, [...EVIDENCE_TYPES]);
+  assert.deepEqual(contract.program.evidenceTypes.usable, ['review']);
+  assert.match(contract.program.evidenceTypes.note, /check step with evidenceFor/);
+  // kinds and the original note stay; the role note is a second note.
+  assert.deepEqual(contract.program.kinds, KIND_DEFAULTS);
+  assert.match(contract.program.defaults.note, /action > kind > program defaults > lane default/);
+  assert.equal(contract.program.defaults.roleNote, 'a role-only action resolves action > role > program defaults > lane default; kind and role never both survive normalisation');
+  assert.deepEqual(contract.program.example, JSON.parse(JSON.stringify(V2_ROLE_PROGRAM_EXAMPLE)));
+  assert.match(contract.program.actionFields.role, /^optional investigate \| produce \| transform \| combine \| check \| act — /);
+  assert.match(contract.program.actionFields.deliverable, /^optional files \| report \| data \| media \| outward, or \{type, paths\} — /);
+  assert.equal(contract.program.actionFields.lane, 'analyze | build | chore — omit when kind supplies it, or when role does');
+  assert.equal(contract.program.actionFields.effort, 'high | medium | low — omit to take it from kind, role, program defaults, or the lane default');
+  assert.match(contract.program.actionFields.produces, /data-flow labels, not the deliverable/);
+  const role = contract.rules.filter((rule) => rule.includes('`role` field'));
+  const deliverable = contract.rules.filter((rule) => rule.includes('`deliverable` field'));
+  assert.equal(role.length, 1);
+  assert.equal(deliverable.length, 1);
+  for (const [kind, name] of Object.entries(KIND_ROLES)) assert.ok(role[0].includes(`${kind}=${name}`), kind);
+  assert.match(role[0], /a kind keeps its own routing and gate/);
+  assert.match(role[0], /In new programs, give work steps a role and a deliverable\. Use a kind for commit, formatter and PR steps \(`mechanical`\), for `digest`, or when you want a kind's exact routing/);
+  assert.match(role[0], /combine: files=build\/high, data=build\/medium/);
+  assert.match(role[0], /A role outside that closed list is a validation error/);
+  assert.match(role[0], /Kind and role may both appear only if they agree/);
+  assert.match(role[0], /never judged by files, and the kernel never repairs a requirement it affects/);
+  assert.match(deliverable[0], /When ownedFiles is not empty, every deliverable path must be listed in it/);
+  assert.match(deliverable[0], /files, data and media need build or chore; report and outward need analyze/);
+  assert.match(deliverable[0], /`produces`\/`inputs` are data-flow labels between steps, not the deliverable/);
+  const repair = contract.rules.find((rule) => rule.includes('bounded repair loop'));
+  assert.ok(repair.endsWith('The kernel never repairs a requirement an `act` step affects; it hands it back.'), repair);
+});
+
+test('the verified-mode contract has no role vocabulary, and keeps its kind example and field docs', () => {
+  const contract = buildV2PlannerContract(goalFor('verified'));
+  for (const key of ['roles', 'kindRoles', 'deliverableTypes', 'evidenceTypes']) assert.equal(key in contract.program, false, key);
+  assert.equal('roleNote' in contract.program.defaults, false);
+  assert.deepEqual(contract.program.example, JSON.parse(JSON.stringify(V2_PROGRAM_EXAMPLE)));
+  assert.deepEqual(contract.program.actionFields, { ...V2_PROGRAM_ACTION_FIELDS });
+  assert.equal('role' in contract.program.actionFields, false);
+  assert.equal('deliverable' in contract.program.actionFields, false);
+  assert.equal(contract.program.actionFields.lane, 'analyze | build | chore — omit when kind supplies it');
+  const rules = v2PlannerContractRules({ executionMode: 'verified' });
+  assert.equal(rules.filter((rule) => /`role` field|`deliverable` field|`act` step/.test(rule)).length, 0);
+  // The verified example still uses kinds and never a role.
+  assert.deepEqual(V2_PROGRAM_EXAMPLE.program.actions.map((action) => [action.kind, 'role' in action]), [['implement', false], ['check', false]]);
+});
+
+test('every planner rule set states the kind field exactly once, and the role rules never claim it', () => {
+  for (const executionMode of ['program', 'verified']) {
+    for (const workspaceMode of ['shared', 'isolated']) {
+      const rules = v2PlannerContractRules({ executionMode, workspaceMode });
+      assert.equal(rules.filter((rule) => rule.includes('`kind` field')).length, 1, `${executionMode}/${workspaceMode}`);
+    }
+  }
+  const program = v2PlannerContractRules({ executionMode: 'program' });
+  const kindIndex = program.findIndex((rule) => rule.includes('`kind` field'));
+  assert.ok(program[kindIndex + 1].includes('`role` field'));
+  assert.ok(program[kindIndex + 2].includes('`deliverable` field'));
+  // The dispatched program-mode prompt renders the same role rules.
+  assert.match(buildV2PlannerPrompt(createV2PlannerContext(programState(), { scout: null })), /optional per-action `role` field/);
+});
+
+test('the role example validates as a program-mode plan and resolves the same routing as the kind example', () => {
+  const accepted = validateV2PlannerResponse(clone(V2_ROLE_PROGRAM_EXAMPLE), createV2State(createV2GoalDocument({
+    goal: 'Fix the parser', cwd: '/tmp/repo', settings: { executionMode: 'program', concurrency: 2 },
+    requirements: [{ id: 'requirement-1', text: 'The parser handles trailing commas' }],
+  }), { runId: 'wf-roles-abcdef', shortId: 'rol234' }));
+  assert.deepEqual(
+    accepted.program.actions.map((action) => [action.id, action.role, action.lane, action.effort, action.deliverable]),
+    [['fix-parser', 'produce', 'build', 'medium', { type: 'files' }], ['check-parser', 'check', 'analyze', 'medium', { type: 'report' }]],
+  );
+  // A verified run refuses the role example (D17).
+  assert.throws(() => validateV2PlannerResponse(clone(V2_ROLE_PROGRAM_EXAMPLE), createV2State(createV2GoalDocument({
+    goal: 'Fix the parser', cwd: '/tmp/repo', settings: { concurrency: 2 },
+    requirements: [{ id: 'requirement-1', text: 'The parser handles trailing commas' }],
+  }), { runId: 'wf-rolev-abcdef', shortId: 'rlv234' })), (error) => error.issues.some((issue) => issue.includes('role and deliverable need a program-mode run')));
 });

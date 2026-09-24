@@ -2033,6 +2033,9 @@ function stepPresentation({
     },
     task: {
       kind: textOrNull(action?.kind),
+      // Only a step that stores a role carries the field, so kind-only
+      // presentations stay byte-identical.
+      ...(textOrNull(action?.role) ? { role: textOrNull(action.role) } : {}),
       lane: textOrNull(action?.lane),
       promptLines: String(prompt ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 3),
       owns: basenames(action?.ownedFiles),

@@ -75,7 +75,9 @@ export function deriveV2DependencyStages(actions, revision) {
   }
   return [...groups].sort(([a], [b]) => a - b).map(([level, members]) => {
     const description = members.length === 1 ? members[0].id
-      : members.every((action) => action.lane === 'analyze') ? 'Parallel analysis' : 'Parallel work';
+      // An act step runs on the analyze lane but acts on the outside world,
+      // so a level holding one is work, not analysis.
+      : members.every((action) => action.lane === 'analyze') && !members.some((action) => action.role === 'act') ? 'Parallel analysis' : 'Parallel work';
     return {
       id: `r${revision}-level-${level + 1}`,
       label: `${revision > 1 ? `Follow-up ${revision - 1}: ` : ''}Phase ${level + 1} · ${description}`,

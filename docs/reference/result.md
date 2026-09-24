@@ -75,7 +75,7 @@ The full document is `schemaVersion: "bullswarm.workflow.result.v2"`. Allowed to
 | `executionMode` | `"program"` on caller-authored (and dispatched-planner) programs |
 | `workspace` | Git status inventory on program runs: `cwd`, `changedFiles`, `baselineChangedFiles`, `warnings`. Not per-worker attribution; files stay in the target directory |
 | `requirements[]` | ledger: `id`, `text`, `mandatory`, `status` (`pending`/`passed`/`failed`/`blocked`), `workRevision`, `evidence[]` |
-| `actions[]` | `id`, `purpose`, `status`, `outputFile`, `artifactIds`, `reasoning`, `kind`, `bytes`, and on program runs `failure` |
+| `actions[]` | `id`, `purpose`, `status`, `outputFile`, `artifactIds`, `reasoning`, `kind`, `role` when the step stated one, `bytes`, and on program runs `failure` |
 | `verifyRounds` | program runs from 0.35.2 on: the repair loop's record, `{ max, used, stoppedBy, phases[] }`, one phase per verify round and per repair (`used: 0` when no evidence step ran). See [Verify rounds](#verify-rounds) |
 | `callerDecision` | program runs from 0.35.2 on: `null`, or what is still open and one suggested next step each: the mandatory requirements the last closed round left failing, and every declared requirement no evidence step covers (`not judged · no evidence step covers it`, on a verified run too). See [The caller-decision block](#the-caller-decision-block) |
 | `gaps` | `null` on a verified completed run; otherwise `bullswarm.workflow.gaps.v2` with open requirements and failed/blocked/cancelled/interrupted actions |
@@ -89,11 +89,11 @@ Each requirement `evidence[]` entry is `{ sourceAction, status, evidence, concer
 
 Each action `bytes` is `{ taskFile, authorPrompt, kernel, dependencyInputs, output }` — the task file the kernel wrote, the action's own prompt, the remainder after subtracting that prompt, the sum of dependency output files (0 when there are none), and the durable out file. Missing values are `null`, never guessed.
 
-`failure` is `{ kind, message? }`. Kinds a plain `workflow resume` can retry: `provider`, `quota`, `auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`, `stalled`. A check that failed the work, or a semantic failure, is not retried; add a fix step or name the id in `plan revise --rerun`.
+`failure` is `{ kind, message? }`. Kinds a plain `workflow resume` can retry: `provider`, `quota`, `auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`, `stalled`. A check that failed the work, a semantic failure, or `not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit) is not retried; add a fix step or name the id in `plan revise --rerun`.
 
 ## Verify rounds
 
-When a mandatory requirement fails its evidence, the kernel repairs it itself: at most 3 verify rounds, each failing round followed by one `repair-<n>` step (see [Verify rounds](/reference/program#verify-rounds) for what each round judges). The result records what that cost, in `verifyRounds`:
+When a mandatory requirement fails its evidence, the kernel repairs it itself: at most 3 verify rounds, each failing round followed by one `repair-<n>` step. A repair whose affecting steps all declare a `report` is a read-only `analyze` step with deliverable `report`; a requirement an `act` step affects gets no repair and comes back in `callerDecision` (see [Verify rounds](/reference/program#verify-rounds) for what each round judges). The result records what that cost, in `verifyRounds`:
 
 ```json
 "verifyRounds": { "max": 3, "used": 3, "stoppedBy": "rounds", "phases": [
@@ -109,7 +109,7 @@ Angle brackets are placeholders, not figures.
 |---|---|
 | `max` | the cap in force: `defaults.verifyRounds`, else 3 |
 | `used` | rounds opened; on a run that stopped because a step failed, the last one may not have closed |
-| `stoppedBy` | `null` while the loop has not stopped, then `passed` (nothing left failing, or a repair left nothing to re-check), `rounds` (the cap was reached with requirements failing), `revision` (a plan revision removed the kernel's step or its round's verify steps, or the kernel could not add its step) or `step-failed` (a step failed or was blocked after a round had closed) |
+| `stoppedBy` | `null` while the loop has not stopped, then `passed` (nothing left failing, or a repair left nothing to re-check), `rounds` (the cap was reached with requirements failing), `revision` (a plan revision removed the kernel's step or its round's verify steps, or the kernel could not add its step), `step-failed` (a step failed or was blocked after a round had closed) or `act-step` (a failing requirement an act step affects; the kernel never repeats outward actions) |
 | `phases[]` | one entry per verify round (`kind: "verify"`) and per repair (`kind: "repair"`), in order |
 | `phases[].steps` | the ids of the steps that made up the phase |
 | `phases[].judged`, `.failed` | (verify) how many requirements the round judged, and which failed or were blocked |
@@ -137,7 +137,7 @@ After the last round, whatever is still failing is yours to decide. The block is
 | `requirements[].id`, `.status` | a mandatory requirement that has not passed: `failed`, `blocked`, or `pending` when the last round it was given recorded no evidence for it; or a requirement no evidence step covers, with the status `not judged · no evidence step covers it` (it never counts as passed and never starts a repair) |
 | `requirements[].round` | the round that last judged it (`1` for a requirement that was not judged) |
 | `requirements[].evidence` | the first line of its latest evidence, at most 200 characters (the requirement's own text when it was not judged) |
-| `requirements[].next` | for a requirement that was not judged, `add an evidence step whose evidenceFor names <id>, then judge it: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise`; otherwise the first item of `## Suggested next step` in the last repair report that covered it; if there is none, `add a step that fixes <id> (owning <up to 3 files>) and rerun <last verify step>: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise` |
+| `requirements[].next` | for a requirement that was not judged, `add an evidence step whose evidenceFor names <id>, then judge it: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise`; for a requirement an act step affects, `an act step affects <id>; Bullswarm never repeats an outward action on its own. Check what was done, then add an act step if it must be redone: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise`; otherwise the first item of `## Suggested next step` in the last repair report that covered it; if there is none, `add a step that fixes <id> (owning <up to 3 files>) and rerun <last verify step>: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise` |
 
 With a cap above 1 the run's `reason` then reads `… but not verified after verify rounds 3/3: …`. `bullswarm workflow runs result <shortId> --json --summary` copies `verifyRounds` once a round has run and `callerDecision` when it is not `null`. When the summary must shrink to fit its budget, the phases shrink to `{ kind, round, wallMinutes, pools, cost }` and then `evidence` to 120 characters; ids and `next` are never dropped. Only when that is not enough and dropping the phase rows alone brings the summary under budget does it keep `phases: []` (the full result keeps them). In text, `runs result` and `workflow watch` print the block when there is a decision or more than one round ran:
 

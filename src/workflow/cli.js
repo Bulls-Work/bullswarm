@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns, cmdReindex } from './runs-cli.js';
@@ -17,6 +17,7 @@ import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
+import { DELIVERABLE_TYPES, EVIDENCE_TYPES, declaredDeliverable } from './step-vocabulary.js';
 import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import {
   runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest,
@@ -31,7 +32,7 @@ import { isProgramWorkflow } from './execution-policy.js';
 import { requestCancel } from './dashboard.js';
 import {
   buildV2PlannerContract, normalizeCallerPlannerResponse, validateV2PlannerResponse,
-  V2PlannerValidationError,
+  V2PlannerValidationError, v2RoleCatalog, workspacePathIssues,
 } from './v2-planner.js';
 import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadState } from '../lib/state.js';
@@ -715,22 +716,8 @@ function loadCallerProgram(opts) {
 // synchronously and nothing is launched or dispatched.
 function previewValidateInitialProgram(doc, response) {
   const preview = createV2DurableState(doc, { runId: 'wf-preview-000000', shortId: 'previe' });
-  return validateV2PlannerResponse(response, preview, { boundary: 'initial', requiredScoutUnits: [] });
-}
-
-// The validator cannot see the workspace. A directory named as an owned file
-// passes it, and then every write the step makes fails as out of scope.
-function ownedDirectoryIssues(program, cwd) {
-  const issues = [];
-  (program?.actions ?? []).forEach((action, index) => {
-    (Array.isArray(action?.ownedFiles) ? action.ownedFiles : []).forEach((file, fileIndex) => {
-      if (typeof file !== 'string' || !file) return;
-      let directory = false;
-      try { directory = statSync(resolve(cwd, file)).isDirectory(); } catch { directory = false; }
-      if (directory) issues.push(`program.actions[${index}].ownedFiles[${fileIndex}] names a directory ("${file}"); list the exact files step ${action.id} may change`);
-    });
-  });
-  return issues;
+  // The callers run workspacePathIssues next to their pinned-pool check.
+  return validateV2PlannerResponse(response, preview, { boundary: 'initial', requiredScoutUnits: [], workspacePaths: false });
 }
 
 // A pinned pool with no model on a step's tier fails that step within a second
@@ -911,7 +898,7 @@ async function wfGoal(opts) {
       throw err;
     }
     const workspaceIssues = [
-      ...ownedDirectoryIssues(previewed.program, doc.intent.cwd),
+      ...workspacePathIssues(previewed.program, doc.intent.cwd, { isolated: doc.config.settings.workspaceMode === 'isolated' }),
       ...pinnedPoolIssues(doc, previewed.program, pools),
     ];
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
@@ -1031,7 +1018,7 @@ async function planValidate(opts) {
     return 2;
   }
   // Everything a launch refuses, validate refuses too.
-  const workspaceIssues = ownedDirectoryIssues(accepted.program, doc.intent.cwd);
+  const workspaceIssues = workspacePathIssues(accepted.program, doc.intent.cwd, { isolated: doc.config.settings.workspaceMode === 'isolated' });
   const routing = doc.config?.workerRouting ?? {};
   if (routing.strictPool ?? routing.pool) {
     const { pools } = await livePoolNames();
@@ -1047,6 +1034,8 @@ async function planValidate(opts) {
       actions: accepted.program.actions.map((action) => ({
         id: action.id,
         ...(action.kind ? { kind: action.kind } : {}),
+        ...(action.role ? { role: action.role } : {}),
+        ...(action.deliverable ? { deliverable: action.deliverable } : {}),
         lane: action.lane, effort: action.effort,
         ...(action.reasoning ? { reasoning: action.reasoning } : {}),
         dependsOn: action.dependsOn,
@@ -1061,7 +1050,7 @@ async function planValidate(opts) {
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
   else {
     console.log(`✓ program valid against the contract: ${payload.program.actions.length} action${payload.program.actions.length === 1 ? '' : 's'} for ${payload.requirements.length} requirement${payload.requirements.length === 1 ? '' : 's'} (nothing launched)`);
-    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
+    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.role ? ` role=${action.role}` : ''}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
     printAdvisories(payload.advisories, { stream: console.log });
     console.log(`  launch   ${next.launch}`);
   }
@@ -1275,7 +1264,8 @@ function planExport(opts) {
     actions: state.program.actions.map((definition) => {
       const runtime = runtimeById.get(definition.id);
       return {
-        id: definition.id, purpose: definition.purpose, status: runtime?.status ?? 'pending',
+        id: definition.id, purpose: definition.purpose, ...(definition.role ? { role: definition.role } : {}),
+        status: runtime?.status ?? 'pending',
         attempts: runtime?.attempts ?? 0, dependsOn: definition.dependsOn, outputFile: runtime?.outputFile ?? null,
       };
     }),
@@ -1351,7 +1341,7 @@ async function planRevise(opts) {
   const precheck = planV2Revision(current, body, { pendingSteeringIds: peekSteering(current, run.runDir).map((entry) => entry.id) });
   const id = current.shortId ?? current.runId;
   if (precheck.ok) {
-    const directories = ownedDirectoryIssues(body.program, doc.intent.cwd);
+    const directories = workspacePathIssues(body.program, doc.intent.cwd, { isolated: current.config.settings.workspaceMode === 'isolated' });
     if (directories.length) Object.assign(precheck, { ok: false, issues: directories });
   }
   if (!precheck.ok) {
@@ -1619,6 +1609,12 @@ async function wfCapabilities(opts) {
         // Reported from the validator table, not restated, so a new kind is
         // visible to a probing agent the moment the closed list gains it.
         actionKinds: JSON.parse(JSON.stringify(KIND_DEFAULTS)),
+        // Program-mode vocabulary beside kinds: the roles (each kind belongs to
+        // one), the deliverable types a step may promise, and the evidence
+        // types, of which only review (a check step with evidenceFor) is usable.
+        actionRoles: v2RoleCatalog(),
+        deliverableTypes: [...DELIVERABLE_TYPES],
+        evidenceTypes: { types: [...EVIDENCE_TYPES], usable: ['review'] },
         completionAuthority: 'kernel action results; requirement evidence is reported separately',
         features: {
           plannerCreatesBoundedProgram: true,
@@ -1954,6 +1950,8 @@ function v2ActionJson(resolved, state, actionId) {
       // `kind` only when the author supplied one; lane and effort are always
       // the values acceptance resolved, which is what dispatch used.
       ...(action.kind ? { kind: action.kind } : {}),
+      ...(action.role ? { role: action.role } : {}),
+      ...(action.deliverable ? { deliverable: action.deliverable } : {}),
       lane: action.lane,
       effort: action.effort,
       ...(action.reasoning ? { reasoning: action.reasoning } : {}),

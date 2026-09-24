@@ -246,7 +246,8 @@ function printV2ProgramRouting(state) {
   const status = new Map((state.actions ?? []).map((entry) => [entry.id, entry.status]));
   for (const action of actions) {
     const kind = action.kind ? `  kind ${action.kind}` : '';
-    console.log(`  ${String(action.id).padEnd(24)} ${action.lane ?? '?'}/${action.effort ?? '?'}${kind}  ${status.get(action.id) ?? 'unknown'}`);
+    const role = action.role ? `  role ${action.role}` : '';
+    console.log(`  ${String(action.id).padEnd(24)} ${action.lane ?? '?'}/${action.effort ?? '?'}${kind}${role}  ${status.get(action.id) ?? 'unknown'}`);
   }
 }
 

@@ -297,3 +297,39 @@ test('the probe finds a running attempt\'s stream beside its task file', (t) => 
   // Finished attempts are never scored.
   assert.equal(probe({ attempt: entry.attempt, action: entry.action, nowMs: last + 15 * 60_000 }).score, 0);
 });
+
+test('a writing step with an ignored deliverable path that was just written has no no-file-change signal', (t) => {
+  const dir = makeGitRepo(t);
+  writeFileSync(join(dir, '.gitignore'), 'out/\n');
+  execFileSync('git', ['-C', dir, 'add', '.gitignore']);
+  execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', 'ignore out']);
+  mkdirSync(join(dir, 'out'));
+  const summary = join(dir, 'out', 'summary.json');
+  writeFileSync(summary, '{"jsFiles":1}\n');
+  const startedAt = Date.parse('2026-09-19T10:00:00.000Z');
+  const facts = {
+    lastEventAt: startedAt + 12 * 60_000,
+    open: [{ id: 'command-example', kind: 'bash' }],
+    commandAts: [2, 4, 6, 8, 10, 12].map((minute) => startedAt + minute * 60_000),
+    lastCommandAt: startedAt + 12 * 60_000,
+    lastFileChangeAt: startedAt + 60_000,
+    streak: null,
+  };
+  const action = {
+    id: 'summary', lane: 'build', ownedFiles: [],
+    deliverable: { type: 'data', paths: ['out/summary.json'] },
+  };
+  const attempt = {
+    id: 'summary-1', actionId: 'summary', ordinal: 1, status: 'running',
+    startedAt: new Date(startedAt).toISOString(),
+  };
+  const nowMs = startedAt + 40 * 60_000;
+  utimesSync(summary, new Date(startedAt + 25 * 60_000), new Date(startedAt + 25 * 60_000));
+  const recent = createStaleProbe({ state: { intent: { cwd: dir } }, readFacts: () => facts });
+  const recentScore = recent({ attempt, action, nowMs });
+  assert.equal(recentScore.signals.some((signal) => signal.id === 'no-file-change'), false, JSON.stringify(recentScore));
+  utimesSync(summary, new Date(startedAt - 60_000), new Date(startedAt - 60_000));
+  const stale = createStaleProbe({ state: { intent: { cwd: dir } }, readFacts: () => facts });
+  const staleScoreResult = stale({ attempt, action, nowMs });
+  assert.equal(staleScoreResult.signals.some((signal) => signal.id === 'no-file-change'), true);
+});

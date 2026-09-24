@@ -15,6 +15,10 @@ A **pool** is one installed agent CLI, or one account of that CLI. Two Claude ac
 
 A **lane** is the nature of the work, never a pool. `analyze` is read-only exploration, `build` is implementation that edits files, and `chore` is small mechanical edits. `bullswarm run` requires one with `--lane`, and the router picks among the pools whose connector declares that lane — there is no fixed lane-to-pool table.
 
+## Role and deliverable
+
+In a workflow program, a step's **role** says what it does — `investigate`, `produce`, `transform`, `combine`, `check` or `act` — and its **deliverable** says what it leaves behind: `files`, a `report`, `data` or `media` at exact paths, or `outward` actions such as a sent message. The role and deliverable set the step's lane and effort. A step whose declared deliverable was not produced fails as `not-produced`. Each kind (`implement`, `check`, …) belongs to one role and keeps its own routing. [Program format](/reference/program#roles-and-deliverables) has the tables.
+
 ## Quota pace and surplus
 
 **Surplus** is `elapsed% − used%` for a pool's own subscription window, both numbers read from the provider's usage meter. A positive surplus means quota is piling up unspent, and quota that is not spent by the reset is lost — so the pool furthest behind its pace wins the lane. `bullswarm pools` prints it as `surplus=`.

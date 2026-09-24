@@ -46,6 +46,34 @@ test('fallbacks: a pair under 5 uses its kind, a kind under 5 or no kind uses 20
   assert.equal(resolveTimeBox({ action: { kind: 'implement' }, pool: 'codex', history: { pairs: new Map(), kinds: new Map() } }).minutes, 20);
 });
 
+test('a role-only step keys history by its role; a kind step keeps its kind even when it also names a role', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-time-box-role-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(join(home, 'workflows', 'wf-acme-role'), { recursive: true });
+  const attempts = [10, 12, 14, 16, 18].flatMap((minutes, index) => [
+    { actionId: 'draft', status: 'succeeded', pool: 'codex', wallSec: minutes * 60, attempt: index + 1 },
+    { actionId: 'build', status: 'succeeded', pool: 'codex', wallSec: 40 * 60, attempt: index + 1 },
+  ]);
+  writeFileSync(join(home, 'workflows', 'wf-acme-role', 'state.json'), JSON.stringify({
+    program: { actions: [
+      { id: 'draft', role: 'produce', lane: 'build', effort: 'medium' },
+      { id: 'build', kind: 'implement', role: 'produce', lane: 'build', effort: 'medium' },
+    ] },
+    attempts,
+  }));
+  const read = readTimeBoxHistory(home);
+  assert.deepEqual(read.kinds.get('produce'), [10, 12, 14, 16, 18]);
+  assert.deepEqual(read.pairs.get('codex|produce'), [10, 12, 14, 16, 18]);
+  assert.equal(read.kinds.get('implement').length, 5);
+  // 1.5 × median 14 = 21 → 20. The source label stays `pair`: no new source.
+  assert.deepEqual(resolveTimeBox({ action: { role: 'produce' }, pool: 'codex', history: read }), {
+    minutes: 20, wrapUpMinutes: 14, source: 'pair', n: 5, medianMinutes: 14,
+  });
+  assert.equal(resolveTimeBox({ action: { role: 'produce' }, pool: 'grok', history: read }).source, 'kind');
+  // The kind wins over the role, so kind-authored steps read kind history.
+  assert.equal(resolveTimeBox({ action: { kind: 'implement', role: 'produce' }, pool: 'codex', history: read }).medianMinutes, 40);
+});
+
 test('opencode attempts never feed a default, as a pair or inside a kind', () => {
   // The fixture holds three succeeded opencode `implement` attempts (28.51,
   // 115.22 and 27.32 min). Counted, the kind would read 85 attempts with a
