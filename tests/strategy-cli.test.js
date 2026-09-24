@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import { autoSetup } from '../src/setup.js';
 import {
   buildStrategy, discoverConnectorModels, resolveDispatchModel, selectedModelsForTier,
 } from '../src/lib/strategy.js';
+import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 import { loadConnectors } from '../src/lib/config.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import {
@@ -16,6 +18,7 @@ import {
 import {
   inputKeys, recommendationLines, renderAnalysisProgress, renderRecommendationReview,
   renderSetupChoice, renderStrategyDashboard, visibleModels,
+  reasoningChoices, reasoningRows, tierReasoning, startStrategyDashboard,
 } from '../src/strategy-dashboard.js';
 import { loadEpochBenchmarks, rungEvidence } from '../src/lib/epoch-benchmarks.js';
 
@@ -471,9 +474,12 @@ test('strategy inventory and dashboard show provider toggles, tier matrix, and e
   assert.equal(inventory.routes.high.model, 'smart');
   const screen = renderStrategyDashboard(inventory, { width: 60, height: 30 });
   assert.match(screen, /Providers/);
-  assert.match(screen, /H smart/);
-  assert.match(screen, /M —/);
-  assert.match(screen, /L —/);
+  // Each tier's model sits in the provider's detail card, beside its reasoning.
+  const detail = renderStrategyDashboard(inventory, { view: 'models', focus: 'tiers', width: 60, height: 30 });
+  assert.match(detail, /High\s+tier default/);
+  assert.match(detail, /^\S?\s+smart\s/m);
+  assert.match(detail, /Medium\s+— no model/);
+  assert.match(detail, /Low\s+— no model/);
   assert.match(screen, /Routing now · by spare quota at each dispatch, unless pinned/);
   assert.match(screen, /worker\/smart/);
   assert.equal(inventory.routes.high.pin, null);
@@ -533,7 +539,10 @@ test('model matrix filters by typing and sorts assigned models before disabled m
   const screen = renderStrategyDashboard(inventory, {
     view: 'models', providerIndex: 0, modelIndex: 1, tierIndex: 0, search: 'gpt', width: 110, height: 30,
   });
-  assert.match(screen, /Search: gpt/);
+  assert.match(screen, /Filter: gpt/);
+  assert.match(renderStrategyDashboard(inventory, {
+    view: 'models', search: 'gp', searching: true, width: 110, height: 30,
+  }), /Search: gp▏/);
   assert.match(screen, /High/);
   assert.match(screen, /Medium/);
   assert.match(screen, /Low/);
@@ -798,6 +807,41 @@ test('set-reasoning persists tier and pool levels, and reset-reasoning removes t
   } finally { console.log = originalLog; f.cleanup(); }
 });
 
+test('a per-model reasoning level beats its pool level, only for that model, and resets with its pool', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    const run = (args) => cmdStrategy(args, { bullswarmDir: f.dir });
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'medium', '--pool', 'codex', '--yes']), 0);
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'max', '--pool', 'codex', '--model', 'gpt-6-Astra', '--yes']), 0);
+    const strategy = loadState(f.dir).strategy;
+    // Model ids keep their case.
+    assert.deepEqual(strategy.reasoning.models, { codex: { 'gpt-6-Astra': { high: 'max' } } });
+    const codex = loadConnectors(f.dir, { packaged: true }).codex;
+    const at = (model) => resolveReasoningLevel({ connector: codex, tier: 'high', model, strategy });
+    assert.deepEqual(at('gpt-6-Astra'), { requested: 'max', applied: 'max', source: 'strategy-model', clamped: false });
+    assert.equal(at('gpt-6-sol').source, 'strategy-pool');
+    assert.equal(at('gpt-6-sol').applied, 'medium');
+    // A run-wide override still beats it.
+    assert.equal(resolveReasoningLevel({ connector: codex, tier: 'high', model: 'gpt-6-Astra', strategy, runOverride: 'low' }).applied, 'low');
+
+    assert.equal(await run(['reset-reasoning', '--pool', 'codex', '--model', 'gpt-6-Astra', '--yes']), 0);
+    assert.equal(loadState(f.dir).strategy.reasoning.models, undefined);
+    assert.deepEqual(loadState(f.dir).strategy.reasoning.pools, { codex: { high: 'medium' } });
+
+    assert.equal(await run(['set-reasoning', '--tier', 'low', '--level', 'low', '--pool', 'codex', '--model', 'gpt-6-luna', '--yes']), 0);
+    assert.equal(await run(['reset-reasoning', '--pool', 'codex', '--yes']), 0);
+    assert.equal(loadState(f.dir).strategy.reasoning, undefined, 'a pool reset clears its model levels too');
+
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'max', '--model', 'gpt-6-luna', '--yes']), 2, '--model needs --pool');
+    } finally { console.error = originalError; }
+  } finally { console.log = originalLog; f.cleanup(); }
+});
+
 test('a tier reset also clears that tier from every per-pool reasoning override', async () => {
   const f = fixture();
   const originalLog = console.log;
@@ -938,7 +982,70 @@ test('a pool with no reasoning support adds no reasoning note to the dashboard r
     },
   });
   assert.deepEqual(inventory.routes.high.reasoning, { level: null, source: 'unsupported' });
-  assert.doesNotMatch(renderStrategyDashboard(inventory, { width: 100, height: 30 }), /reasoning/);
+  const screen = renderStrategyDashboard(inventory, { width: 100, height: 30 });
+  assert.doesNotMatch(screen, /· reasoning/);
+  assert.match(screen, /n\/a\s+CLI has no setting/);
+});
+
+test('setup screen changes a tier\'s reasoning with arrow keys and saves it per provider', async () => {
+  const f = fixture();
+  try {
+    const block = { flag: '--effort', levels: ['low', 'medium', 'high'], defaults: { high: 'high' } };
+    const pools = [reasoningPool('deep', block, { pace: 3 }), reasoningPool('flat', null)];
+    const report = { capturedAt: new Date().toISOString(), discoveries: {}, suggestions: {} };
+    const loadInventory = async () => strategyInventory({ pools, state: loadState(f.dir), report });
+    const inventory = await loadInventory();
+    const deep = inventory.providers.find((p) => p.name === 'deep');
+    assert.deepEqual(deep.reasoningLevels, ['low', 'medium', 'high']);
+    assert.deepEqual(reasoningChoices(deep), [null, 'low', 'medium', 'high', 'default']);
+    assert.deepEqual(reasoningChoices(inventory.providers.find((p) => p.name === 'flat')), []);
+    assert.deepEqual(tierReasoning(inventory, deep, 'high'), { stored: null, level: 'high', source: 'connector' });
+
+    const input = new EventEmitter();
+    const frames = [];
+    const output = { columns: 110, rows: 32, write: (text) => frames.push(text) };
+    const done = startStrategyDashboard({ bullswarmDir: f.dir, loadInventory, input, output });
+    const press = async (keys) => {
+      input.emit('data', keys);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    await new Promise((resolve) => setImmediate(resolve));
+    // N skips the recommendations; Enter opens `deep` on its High row, which
+    // shows auto (high); ← steps down from what it shows, to medium.
+    await press('n');
+    await press('\r');
+    await press('\x1b[D');
+    assert.deepEqual(loadState(f.dir).strategy.reasoning.pools.deep, { high: 'medium' });
+    assert.match(frames.at(-1), /deep high: reasoning medium \(saved\)/);
+    // → twice: high, then "CLI decides"; → again stays there.
+    await press('\x1b[C');
+    await press('\x1b[C');
+    await press('\x1b[C');
+    assert.deepEqual(loadState(f.dir).strategy.reasoning.pools.deep, { high: 'default' });
+    // Backspace returns to auto, which clears the provider's own level.
+    await press('\x7f');
+    assert.equal(loadState(f.dir).strategy?.reasoning?.pools?.deep, undefined);
+    // A model selected on High gets its own row under the tier row; → on it
+    // saves a level for that model only.
+    const withModel = {
+      ...inventory,
+      providers: inventory.providers.map((p) => (p.name !== 'deep' ? p : {
+        ...p, models: [{ id: 'smart', effectiveTiers: ['high'], disabled: false }],
+      })),
+    };
+    assert.deepEqual(reasoningRows(withModel.providers[0]).slice(0, 2), [
+      { tier: 'high', model: null }, { tier: 'high', model: 'smart' },
+    ]);
+    const modelRows = renderStrategyDashboard(withModel, { view: 'models', focus: 'tiers', reasoningIndex: 1, width: 110, height: 32 });
+    assert.match(modelRows, /›\s+smart\s+\x1b\[7m◂ /);
+    assert.match(modelRows, /same as High/);
+    // `/` searches, so typing "f" filters instead of finishing setup.
+    await press('/f');
+    assert.match(frames.at(-1), /Search: f▏/);
+    await press('\x1b');
+    await press('F');
+    assert.equal(await done, 0);
+  } finally { f.cleanup(); }
 });
 
 // --- rungs -------------------------------------------------------------------

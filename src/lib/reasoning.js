@@ -8,8 +8,9 @@
 //        flag for it would break the spawn outright.
 //   RS2. Exactly ONE level is resolved per attempt, through one precedence
 //        chain: explicit per-action override > run-wide override > strategy
-//        per-pool level > strategy per-tier level > connector default for the
-//        effort tier > nothing. Every dispatch path calls this resolver, so
+//        per-model level (one pool's model on one tier) > strategy per-pool
+//        level > strategy per-tier level > connector default for the effort
+//        tier > nothing. Every dispatch path calls this resolver, so
 //        the dry-run preview, the attempt record, the decision log and the
 //        spawned argv cannot drift apart.
 //   RS3. `default` is a real answer, not a missing one: it means "pass
@@ -39,7 +40,7 @@ export const REASONING_DEFAULT = 'default';
 
 /** Every `source` value resolveReasoningLevel can report. */
 export const REASONING_SOURCES = [
-  'action', 'run', 'strategy-pool', 'recommendation', 'strategy-tier', 'connector',
+  'action', 'run', 'strategy-model', 'strategy-pool', 'recommendation', 'strategy-tier', 'connector',
   'none', 'unsupported', 'skipped-model',
 ];
 
@@ -79,6 +80,14 @@ function levelsOnScale(connector, discovered) {
     if (typeof level === 'string' && REASONING_LEVELS.includes(level)) seen.add(level);
   }
   return REASONING_LEVELS.filter((level) => seen.has(level));
+}
+
+/**
+ * The common-scale levels this connector's CLI accepts, weakest → strongest,
+ * for screens that offer a choice. Empty when the connector declares none.
+ */
+export function connectorReasoningLevels(connector) {
+  return levelsOnScale(connector, null);
 }
 
 /** RS4: strongest supported level not above the request, else the weakest. */
@@ -130,6 +139,8 @@ export function resolveReasoningLevel({
   const tierKey = typeof tier === 'string' ? tier : null;
   const configured = strategy?.reasoning ?? null;
   const poolLevel = pool && tierKey ? configured?.pools?.[pool]?.[tierKey] : null;
+  const modelLevel = pool && tierKey && typeof model === 'string' && model
+    ? configured?.models?.[pool]?.[model]?.[tierKey] : null;
   // RS7: the per-pool slot holds either an operator's level or one a
   // recommendation wrote for one model.
   const recommended = pool && tierKey ? strategy?.recommendedReasoning?.[pool]?.[tierKey] : null;
@@ -139,6 +150,7 @@ export function resolveReasoningLevel({
   const layers = [
     ['action', actionOverride],
     ['run', runOverride],
+    ['strategy-model', modelLevel],
     [fromRecommendation ? 'recommendation' : 'strategy-pool', otherModel ? null : poolLevel],
     ['strategy-tier', tierKey ? configured?.tiers?.[tierKey] : null],
     ['connector', tierKey ? connector?.reasoning?.defaults?.[tierKey] : null],

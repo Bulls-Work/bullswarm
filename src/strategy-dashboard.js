@@ -1,6 +1,6 @@
 import { updateState } from './lib/state.js';
 import {
-  STRATEGY_TIERS, setModelDisabled, setModelTierSelection, clearTierAssignment,
+  STRATEGY_TIERS, setModelDisabled, setModelTierSelection, clearTierAssignment, setStrategyReasoning,
 } from './lib/strategy.js';
 import { formatMoney } from './lib/usage-basis.js';
 import { glyphs, spinnerGlyph } from './lib/glyphs.js';
@@ -57,28 +57,17 @@ function visibleLength(value) {
 }
 
 function providerLines(inventory, selected, width) {
-  const lines = inventory.providers.flatMap((provider, index) => {
+  const lines = inventory.providers.map((provider, index) => {
     const marker = index === selected ? '›' : ' ';
     const enabled = provider.enabled ? glyphs().ongoing : glyphs().pending;
     // Usage is what the meter last reported; in-flight is what this pool is
     // running right now, which routing subtracts before it compares pools.
-    const load = provider.inflight ? ` ·${provider.inflight}${glyphs().inflight}` : '';
-    const meter = `${provider.usedPct == null ? 'usage ?' : `${provider.usedPct}% used`}${load}`;
-    const cellWidth = Math.max(7, Math.floor((width - 10) / STRATEGY_TIERS.length));
-    const selections = STRATEGY_TIERS.map((tier) => {
-      const models = provider.models
-        .filter((model) => effectiveModelTiers(model).includes(tier))
-        .map((model) => model.id.split('/').at(-1));
-      const choice = models.length > 1 ? `${models[0]} +${models.length - 1}` : (models[0] ?? '—');
-      return pad(`${tier[0].toUpperCase()} ${choice}`, cellWidth);
-    }).join(' · ');
-    return [
-      `${marker} ${enabled} ${pad(provider.name, Math.max(8, width - 29))} ${pad(meter, 14)} ${provider.models.length} models`,
-      `    ${selections}`,
-    ];
+    const load = provider.inflight ? ` ${provider.inflight}${glyphs().inflight}` : '';
+    const usage = `${provider.usedPct == null ? '—' : `${provider.usedPct}%`}${load}`;
+    return `${marker} ${enabled} ${pad(provider.name, Math.max(6, width - 14))} ${usage.padStart(9)}`;
   });
   const selectedFinish = selected === inventory.providers.length;
-  lines.push(`${selectedFinish ? '›' : ' '} ${selectedFinish ? INVERSE_ON : ''}${glyphs().ok} Finish setup${selectedFinish ? INVERSE_OFF : ''}`);
+  lines.push('', `${selectedFinish ? '›' : ' '} ${selectedFinish ? INVERSE_ON : ''}${glyphs().ok} Finish setup${selectedFinish ? INVERSE_OFF : ''}`);
   return lines;
 }
 
@@ -97,17 +86,20 @@ export function visibleModels(provider, query = '') {
     .sort((a, b) => Number(modelEnabled(b)) - Number(modelEnabled(a)) || a.id.localeCompare(b.id));
 }
 
+function tierName(tier) {
+  return `${tier[0].toUpperCase()}${tier.slice(1)}`;
+}
+
 function tierCell(model, tier, selected) {
   const enabled = effectiveModelTiers(model).includes(tier);
-  const label = `${enabled ? glyphs().ok : ' '} ${tier[0].toUpperCase()}${tier.slice(1)}`;
-  const cell = `[${label}]`;
+  const cell = `[${enabled ? glyphs().ok : ' '} ${tierName(tier)}]`;
   return selected ? `${INVERSE_ON}${cell}${INVERSE_OFF}` : cell;
 }
 
 function modelLines(models, selected, selectedTier, width, focused = true) {
   const tierWidth = 32;
   return models.map((model, index) => {
-    const marker = index === selected ? '›' : ' ';
+    const marker = focused && index === selected ? '›' : ' ';
     const cells = STRATEGY_TIERS.map((tier, tierIndex) => tierCell(
       model, tier, focused && index === selected && tierIndex === selectedTier,
     )).join(' ');
@@ -118,12 +110,116 @@ function modelLines(models, selected, selectedTier, width, focused = true) {
   });
 }
 
+/**
+ * The choices ←/→ steps through for one reasoning row: `null` (auto — no
+ * level of its own, so the next layer down applies), each level the CLI
+ * accepts, then `default` (pass nothing; the CLI decides). Empty when the CLI
+ * has no reasoning setting at all.
+ */
+export function reasoningChoices(provider) {
+  const levels = provider?.reasoningLevels ?? [];
+  return levels.length ? [null, ...levels, 'default'] : [];
+}
+
+function tierModels(provider, tier) {
+  return (provider?.models ?? []).filter((model) => effectiveModelTiers(model).includes(tier));
+}
+
+/**
+ * The editable reasoning rows for one provider: each tier's own level, then
+ * one row per model selected on that tier, whose level beats the tier's.
+ */
+export function reasoningRows(provider) {
+  return STRATEGY_TIERS.flatMap((tier) => [
+    { tier, model: null },
+    ...tierModels(provider, tier).map((model) => ({ tier, model: model.id })),
+  ]);
+}
+
+/**
+ * What one row will run at and who chose it. `stored` is the level saved on
+ * that exact row (null = auto, falling through to the layer below).
+ */
+export function tierReasoning(inventory, provider, tier, modelId = null) {
+  const pool = provider?.name;
+  if (modelId) {
+    const stored = inventory.reasoning?.models?.[pool]?.[modelId]?.[tier] ?? null;
+    const resolved = (provider?.models ?? []).find((model) => model.id === modelId)?.reasoning?.[tier];
+    return { stored, level: resolved?.level ?? null, source: resolved?.source ?? 'none' };
+  }
+  const stored = inventory.reasoning?.pools?.[pool]?.[tier] ?? null;
+  const effective = inventory.reasoning?.effective?.[pool]?.[tier] ?? { level: null, source: 'none' };
+  return { stored, level: effective.level, source: effective.source };
+}
+
+function reasoningNote({ stored, source }, tier = null) {
+  if (source === 'unsupported') return 'CLI has no setting';
+  if (source === 'skipped-model') return 'model ignores it';
+  if (stored === 'default') return 'you set: CLI decides';
+  if (source === 'strategy-model') return 'you set for this model';
+  if (source === 'recommendation') return 'recommended';
+  // A model row with no level of its own runs whatever its tier row says.
+  if (tier) return `same as ${tierName(tier)}`;
+  if (source === 'strategy-pool') return 'you set this';
+  if (source === 'strategy-tier') return 'auto (your all-provider level)';
+  if (source === 'connector') return 'auto (Bullswarm default)';
+  return 'auto (CLI decides)';
+}
+
+function tierLines(inventory, provider, selected, width) {
+  const modelWidth = Math.max(12, Math.min(26, width - 48));
+  const editable = reasoningChoices(provider).length > 0;
+  const lines = [`  ${'Effort'.padEnd(8)}${pad('Model', modelWidth)}   ${'Reasoning'.padEnd(11)}`];
+  for (const [index, row] of reasoningRows(provider).entries()) {
+    const reasoning = tierReasoning(inventory, provider, row.tier, row.model);
+    const focused = index === selected;
+    const value = reasoning.source === 'unsupported' ? 'n/a' : (reasoning.level ?? 'CLI default');
+    const cell = focused && editable ? `${INVERSE_ON}◂ ${value} ▸${INVERSE_OFF}` : `  ${value}  `;
+    const models = tierModels(provider, row.tier);
+    const label = row.model
+      ? pad(`  ${row.model.split('/').at(-1)}`, modelWidth + 8)
+      : `${tierName(row.tier).padEnd(8)}${pad(models.length ? 'tier default' : '— no model', modelWidth)}`;
+    lines.push(`${focused ? '›' : ' '} ${label} ${pad(cell, 13)} ${reasoningNote(reasoning, row.model ? row.tier : null)}`);
+  }
+  return lines;
+}
+
+function providerSummary(provider) {
+  if (!provider) return 'Setup ready · press Enter to finish';
+  const usage = provider.usedPct == null ? 'usage unknown' : `${provider.usedPct}% used`;
+  return `${provider.name} · ${provider.enabled ? 'on' : 'off (Space in the list turns it on)'} · ${usage} · ${provider.models.length} models`;
+}
+
+// The right-hand pane (or the whole screen when narrow): the provider's three
+// rungs — model plus reasoning per effort tier — then its model matrix.
+function detailLines(inventory, provider, {
+  focus = null, tierIndex = 0, reasoningIndex = 0, modelIndex = 0, search = '', searching = false,
+  width, height,
+}) {
+  const lines = [providerSummary(provider)];
+  if (!provider) return lines;
+  lines.push(
+    '',
+    ...tierLines(inventory, provider, focus === 'tiers' ? reasoningIndex : -1, width),
+    '  Reasoning: how hard the model thinks. A model row beats its tier row.',
+    '',
+  );
+  const models = visibleModels(provider, search);
+  const filter = searching
+    ? `Search: ${search}▏`
+    : search ? `Filter: ${search} (/ to edit)` : '/ to search';
+  lines.push(`Models for each tier · ${filter} · ${models.length}/${provider.models.length}`);
+  const rows = models.length
+    ? modelLines(models, modelIndex, tierIndex, width, focus === 'models')
+    : ['  No matching models.'];
+  lines.push(...selectedWindow(rows, modelIndex, Math.max(1, height - lines.length)));
+  return lines;
+}
+
 function routeLines(inventory) {
   return STRATEGY_TIERS.map((tier) => {
     const route = inventory.routes[tier];
-    const label = `${tier[0].toUpperCase()}${tier.slice(1)}`.padEnd(6);
-    // Reasoning depth is display-only here: the CLI owns every mutation, so
-    // the control center shows what each tier would actually be sent.
+    const label = tierName(tier).padEnd(6);
     const depth = route?.reasoning?.level ? ` · reasoning ${route.reasoning.level}` : '';
     // Only a pin fixes a tier's pool; every other tier is re-picked by spare
     // quota at each dispatch, so the line says which it is.
@@ -140,59 +236,52 @@ function selectedWindow(lines, selected, count) {
   return lines.slice(start, start + count);
 }
 
+function footer(view, focus, searching) {
+  if (view === 'providers') return '↑/↓ provider · Space on/off · Enter/→ edit models and reasoning · F finish · Ctrl+R refresh';
+  if (searching) return 'Type to filter models · Enter keep filter · Esc clear';
+  if (focus === 'tiers') return '↑/↓ move · ←/→ change reasoning · Backspace back to auto · ↓ past the last row for models · Esc providers · F finish';
+  return '↑/↓ model · ←/→ tier · Enter use/stop for tier · / search · Esc providers · F finish';
+}
+
 export function renderStrategyDashboard(inventory, {
   view = 'providers', providerIndex = 0, modelIndex = 0, width = 100, height = 30, message = '',
-  title = 'Bullswarm strategy', tierIndex = 0, search = '',
+  title = 'Bullswarm strategy', tierIndex = 0, search = '', focus = 'models', reasoningIndex = 0,
+  searching = false,
 } = {}) {
   const narrow = width < 78;
   const provider = inventory.providers[providerIndex] ?? null;
   const lines = [
-    `${title} · ${inventory.providers.filter((p) => p.enabled).length}/${inventory.providers.length} providers on · live routing preview`,
+    `${title} · ${inventory.providers.filter((p) => p.enabled).length} of ${inventory.providers.length} providers on`,
     '',
   ];
   const bodyHeight = Math.max(4, height - 11);
-  const models = visibleModels(provider, search);
+  const detailFocus = view === 'providers' ? null : focus;
+  const detail = (paneWidth) => detailLines(inventory, provider, {
+    focus: detailFocus, tierIndex, reasoningIndex, modelIndex, search, searching, width: paneWidth, height: bodyHeight,
+  });
   if (narrow) {
     if (view === 'providers') {
-      lines.push('Providers · Space toggle · Enter/→ models');
-      lines.push(...selectedWindow(
-        providerLines(inventory, providerIndex, width),
-        Math.min(providerIndex * 2, inventory.providers.length * 2),
-        bodyHeight - 1,
-      ));
+      lines.push('Providers');
+      lines.push(...selectedWindow(providerLines(inventory, providerIndex, width), providerIndex, bodyHeight - 1));
     } else {
-      lines.push(`Models · ${provider?.name ?? 'none'} · ${provider?.enabled ? 'provider on' : 'provider off'}`);
-      lines.push(`Search: ${search || 'type to filter'} · ${models.length}/${provider?.models.length ?? 0} models`);
-      const rows = models.length ? modelLines(models, modelIndex, tierIndex, width, view === 'models') : ['  No matching models.'];
-      lines.push(...selectedWindow(rows, modelIndex, bodyHeight - 2));
+      lines.push(...detail(width));
     }
   } else {
-    const leftWidth = Math.min(40, Math.floor(width * 0.38));
+    const longest = Math.max(8, ...inventory.providers.map((p) => p.name.length));
+    const leftWidth = Math.min(Math.floor(width * 0.4), longest + 16);
     const rightWidth = width - leftWidth - 3;
     const left = [
-      `Providers${view === 'providers' ? ' · focused' : ''}`,
-      ...selectedWindow(
-        providerLines(inventory, providerIndex, leftWidth),
-        Math.min(providerIndex * 2, inventory.providers.length * 2),
-        bodyHeight - 1,
-      ),
+      `Providers${view === 'providers' ? ' ‹' : ''}`,
+      ...selectedWindow(providerLines(inventory, providerIndex, leftWidth), providerIndex, bodyHeight - 1),
     ];
-    const rows = models.length ? modelLines(models, modelIndex, tierIndex, rightWidth, view === 'models') : ['  No matching models.'];
-    const right = [
-      provider
-        ? `Models · ${provider.name}${view === 'models' ? ' · focused' : ''} · Search: ${search || 'type to filter'}`
-        : 'Setup ready · press Enter to finish',
-      ...(provider ? selectedWindow(rows, modelIndex, bodyHeight - 1) : []),
-    ];
+    const right = detail(rightWidth);
     for (let i = 0; i < bodyHeight; i++) {
       lines.push(`${pad(left[i] ?? '', leftWidth)} │ ${clip(right[i] ?? '', rightWidth)}`);
     }
   }
   lines.push('', 'Routing now · by spare quota at each dispatch, unless pinned');
   lines.push(...routeLines(inventory));
-  lines.push('', message || (view === 'providers'
-    ? '↑/↓ select · Space enable/disable · Enter/→ open · F finish · Ctrl+R refresh'
-    : '↑/↓ model · ←/→ tier · Enter toggle · type search · Backspace · Esc providers · F finish'));
+  lines.push('', message || footer(view, focus, searching));
   return lines.slice(0, Math.max(8, height)).map((line) => clip(line, width)).join('\n');
 }
 
@@ -335,6 +424,15 @@ function persistProvider(bullswarmDir, pool, enabled) {
   });
 }
 
+// `level` null clears that row's own level, so the layer below applies
+// again — the same write as `strategy set-reasoning --pool [--model]`.
+function persistReasoning(bullswarmDir, pool, tier, level, model = null) {
+  updateState(bullswarmDir, (state) => {
+    state.strategy ??= {};
+    setStrategyReasoning(state.strategy, { tier, level, pool, model });
+  });
+}
+
 function persistModel(bullswarmDir, inventory, pool, model, tiers, changedTier = null, disabled = false) {
   if (disabled) {
     updateState(bullswarmDir, (state) => {
@@ -382,6 +480,11 @@ export async function startStrategyDashboard({
   let modelIndex = 0;
   let tierIndex = 0;
   let search = '';
+  let searching = false;
+  // In the provider detail, the cursor is on either the reasoning rows (one
+  // per tier) or the model matrix below them.
+  let focus = 'tiers';
+  let reasoningIndex = 0;
   let recommendationOffset = 0;
   let message = '';
   let busy = false;
@@ -400,7 +503,8 @@ export async function startStrategyDashboard({
     title, offset: recommendationOffset, ...dimensions(),
   })}`);
   const render = () => output.write(`${CLEAR}${renderStrategyDashboard(inventory, {
-    view, providerIndex, modelIndex, tierIndex, search, message, title, ...dimensions(),
+    view, providerIndex, modelIndex, tierIndex, search, message, title, focus, reasoningIndex, searching,
+    ...dimensions(),
   })}`);
   const update = async (refresh = false, showProgress = false, analyze = false, renderAfter = true) => {
     const selectedId = visibleModels(inventory?.providers?.[providerIndex], search)[modelIndex]?.id ?? null;
@@ -514,6 +618,16 @@ export async function startStrategyDashboard({
         return;
       }
       if (screen === 'loading' || !inventory) return;
+      // A saved-change note lasts until the next key, then the key help returns.
+      message = '';
+      if (searching) {
+        if (key === ESC) { search = ''; searching = false; modelIndex = 0; }
+        else if (enter || down || up) searching = false;
+        else if (key === '\x7f' || key === '\b') { search = search.slice(0, -1); modelIndex = 0; }
+        else if (/^[ -~]$/.test(key)) { search += key; modelIndex = 0; }
+        render();
+        return;
+      }
       if (key === 'f' || key === 'F') return finish();
       if (view === 'providers') {
         if (key === 'q' || key === 'Q') return finish();
@@ -522,7 +636,7 @@ export async function startStrategyDashboard({
         if (right || enter) {
           if (providerIndex === inventory.providers.length) return finish();
           if (inventory.providers[providerIndex]) {
-            view = 'models'; modelIndex = 0; tierIndex = 0; search = '';
+            view = 'models'; modelIndex = 0; tierIndex = 0; search = ''; focus = 'tiers'; reasoningIndex = 0;
           }
         }
         if (key === ' ') {
@@ -538,31 +652,66 @@ export async function startStrategyDashboard({
         const provider = inventory.providers[providerIndex];
         const models = visibleModels(provider, search);
         const model = models[modelIndex];
-        if (down) modelIndex = Math.min(Math.max(0, models.length - 1), modelIndex + 1);
-        if (up) modelIndex = Math.max(0, modelIndex - 1);
-        if (left) tierIndex = Math.max(0, tierIndex - 1);
-        if (right) tierIndex = Math.min(STRATEGY_TIERS.length - 1, tierIndex + 1);
         if (key === ESC) {
           if (search) { search = ''; modelIndex = 0; }
           else view = 'providers';
         }
-        if (key === '\x7f' || key === '\b') {
-          search = search.slice(0, -1);
-          modelIndex = 0;
-        } else if (/^[a-zA-Z0-9._:/~-]$/.test(key)) {
-          search += key;
-          modelIndex = 0;
-        }
-        if (model && (enter || key === ' ')) {
-          const tier = STRATEGY_TIERS[tierIndex];
-          const current = effectiveModelTiers(model);
-          const tiers = current.includes(tier)
-            ? current.filter((entry) => entry !== tier)
-            : [...current, tier];
-          persistModel(bullswarmDir, inventory, provider.name, model.id, tiers, tier, tiers.length === 0);
-          message = `${model.id}: ${tiers.length ? tiers.join(', ') : 'off'}`;
-          await update();
+        if (key === '/') {
+          focus = 'models';
+          searching = true;
+          render();
           return;
+        }
+        if (focus === 'tiers') {
+          const rows = reasoningRows(provider);
+          reasoningIndex = Math.min(reasoningIndex, rows.length - 1);
+          if (up) reasoningIndex = Math.max(0, reasoningIndex - 1);
+          if (down) {
+            if (reasoningIndex < rows.length - 1) reasoningIndex += 1;
+            else if (models.length) { focus = 'models'; modelIndex = 0; }
+          }
+          const back = key === '\x7f' || key === '\b';
+          if (left || right || back) {
+            const { tier, model: rowModel } = rows[reasoningIndex];
+            const choices = reasoningChoices(provider);
+            if (!choices.length) {
+              message = `${provider.name} has no reasoning setting to change`;
+              render();
+              return;
+            }
+            // Step from the level the row shows, so → on "auto (xhigh)" gives
+            // max, not the first choice; Backspace returns the row to auto.
+            const shown = tierReasoning(inventory, provider, tier, rowModel);
+            const from = shown.stored ?? (choices.includes(shown.level) ? shown.level : null);
+            const current = Math.max(0, choices.indexOf(from));
+            const next = back ? null : choices[Math.max(1, Math.min(choices.length - 1, current + (right ? 1 : -1)))];
+            if (next !== shown.stored) {
+              persistReasoning(bullswarmDir, provider.name, tier, next, rowModel);
+              const where = rowModel ? `${provider.name}/${rowModel} ${tier}` : `${provider.name} ${tier}`;
+              message = `${where}: reasoning ${next ?? (rowModel ? `same as ${tier}` : 'auto')} (saved)`;
+              await update();
+              return;
+            }
+          }
+        } else {
+          if (down) modelIndex = Math.min(Math.max(0, models.length - 1), modelIndex + 1);
+          if (up) {
+            if (modelIndex > 0) modelIndex -= 1;
+            else { focus = 'tiers'; reasoningIndex = reasoningRows(provider).length - 1; }
+          }
+          if (left) tierIndex = Math.max(0, tierIndex - 1);
+          if (right) tierIndex = Math.min(STRATEGY_TIERS.length - 1, tierIndex + 1);
+          if (model && (enter || key === ' ')) {
+            const tier = STRATEGY_TIERS[tierIndex];
+            const current = effectiveModelTiers(model);
+            const tiers = current.includes(tier)
+              ? current.filter((entry) => entry !== tier)
+              : [...current, tier];
+            persistModel(bullswarmDir, inventory, provider.name, model.id, tiers, tier, tiers.length === 0);
+            message = `${model.id}: ${tiers.length ? tiers.join(', ') : 'off'} (saved)`;
+            await update();
+            return;
+          }
         }
       }
       if (key === '\x12') {

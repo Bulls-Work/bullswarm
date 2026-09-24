@@ -218,6 +218,9 @@ function normalizeReasoningTiers(value) {
   return normalized;
 }
 
+// `models` is `{ [pool]: { [model]: { [tier]: level } } }`: one pool's model
+// on one tier, above that pool's own level. It is left out of the result when
+// empty, so a home that never set one reads exactly as before.
 export function getStrategyReasoning(strategy = {}) {
   const raw = strategy?.reasoning ?? {};
   const pools = {};
@@ -225,14 +228,32 @@ export function getStrategyReasoning(strategy = {}) {
     const normalized = normalizeReasoningTiers(tiers);
     if (Object.keys(normalized).length) pools[pool] = normalized;
   }
-  return { tiers: normalizeReasoningTiers(raw.tiers), pools };
+  const models = {};
+  for (const [pool, byModel] of Object.entries(raw.models ?? {})) {
+    for (const [model, tiers] of Object.entries(byModel ?? {})) {
+      const normalized = normalizeReasoningTiers(tiers);
+      if (Object.keys(normalized).length) (models[pool] ??= {})[model] = normalized;
+    }
+  }
+  return {
+    tiers: normalizeReasoningTiers(raw.tiers),
+    pools,
+    ...(Object.keys(models).length ? { models } : {}),
+  };
 }
 
 function storeStrategyReasoning(strategy, reasoning) {
   for (const [pool, tiers] of Object.entries(reasoning.pools)) {
     if (!Object.keys(tiers).length) delete reasoning.pools[pool];
   }
-  if (Object.keys(reasoning.tiers).length || Object.keys(reasoning.pools).length) {
+  for (const [pool, byModel] of Object.entries(reasoning.models ?? {})) {
+    for (const [model, tiers] of Object.entries(byModel)) {
+      if (!Object.keys(tiers).length) delete byModel[model];
+    }
+    if (!Object.keys(byModel).length) delete reasoning.models[pool];
+  }
+  if (reasoning.models && !Object.keys(reasoning.models).length) delete reasoning.models;
+  if (Object.keys(reasoning.tiers).length || Object.keys(reasoning.pools).length || reasoning.models) {
     strategy.reasoning = reasoning;
   } else {
     delete strategy.reasoning;
@@ -293,11 +314,21 @@ function dropRecommendedMarks(strategy, matches) {
   return dropped;
 }
 
-/** Set (level) or remove (level null) one tier level, globally or per pool. */
-export function setStrategyReasoning(strategy, { tier, level, pool = null } = {}) {
+/**
+ * Set (level) or remove (level null) one tier level: globally, per pool, or
+ * for one pool's model (`model` needs `pool`).
+ */
+export function setStrategyReasoning(strategy, { tier, level, pool = null, model = null } = {}) {
   assertReasoningTier(tier);
   if (level != null) assertReasoningLevel(level);
   const reasoning = getStrategyReasoning(strategy);
+  if (model != null) {
+    if (!pool) throw new Error('a model reasoning level needs --pool');
+    const target = ((reasoning.models ??= {})[pool] ??= {})[model] ??= {};
+    if (level == null) delete target[tier];
+    else target[tier] = level;
+    return storeStrategyReasoning(strategy, reasoning);
+  }
   const target = pool ? (reasoning.pools[pool] ??= {}) : reasoning.tiers;
   if (level == null) delete target[tier];
   else target[tier] = level;
@@ -314,22 +345,42 @@ export function setStrategyReasoning(strategy, { tier, level, pool = null } = {}
   return storeStrategyReasoning(strategy, reasoning);
 }
 
-/** Clear everything (no arguments), one pool, one tier, or one pool+tier. */
-export function clearStrategyReasoning(strategy, { tier = null, pool = null } = {}) {
+/**
+ * Clear everything (no arguments), one pool, one tier, or one pool+tier;
+ * with `model` (and `pool`), only that model's own levels. Clearing a pool or
+ * a tier also clears the model levels inside it.
+ */
+export function clearStrategyReasoning(strategy, { tier = null, pool = null, model = null } = {}) {
   if (tier != null) assertReasoningTier(tier);
+  if (model != null) {
+    if (!pool) throw new Error('a model reasoning level needs --pool');
+    const reasoning = getStrategyReasoning(strategy);
+    const levels = reasoning.models?.[pool]?.[model];
+    if (levels && tier) delete levels[tier];
+    else if (levels) delete reasoning.models[pool][model];
+    return storeStrategyReasoning(strategy, reasoning);
+  }
   if (tier == null && pool == null) {
     delete strategy.reasoning;
     delete strategy.recommendedReasoning;
     return { tiers: {}, pools: {} };
   }
   const reasoning = getStrategyReasoning(strategy);
-  if (pool && tier) delete reasoning.pools[pool]?.[tier];
-  else if (pool) delete reasoning.pools[pool];
-  else {
+  const modelLevels = (only) => Object.values(reasoning.models?.[only] ?? {});
+  if (pool && tier) {
+    delete reasoning.pools[pool]?.[tier];
+    for (const tiers of modelLevels(pool)) delete tiers[tier];
+  } else if (pool) {
+    delete reasoning.pools[pool];
+    delete reasoning.models?.[pool];
+  } else {
     // A tier reset returns that effort tier to connector defaults everywhere,
     // the same way `strategy reset-tier` clears a tier from every selection.
     delete reasoning.tiers[tier];
     for (const tiers of Object.values(reasoning.pools)) delete tiers[tier];
+    for (const p of Object.keys(reasoning.models ?? {})) {
+      for (const tiers of modelLevels(p)) delete tiers[tier];
+    }
   }
   dropRecommendedMarks(strategy, (p, t) => (pool == null || p === pool) && (tier == null || t === tier));
   return storeStrategyReasoning(strategy, reasoning);

@@ -437,7 +437,7 @@ Concepts (rungs, allow-lists, autopilot) are in [Configuration](/reference/confi
 
 ### tui
 
-Open the full-screen provider and model strategy control center. Analysis previews one OpenRouter-backed default per provider/tier before Y applies it. Provider Space toggles and model-tier Enter toggles persist immediately; select Finish setup or press F to exit.
+Open the full-screen provider and model strategy control center. Analysis previews one OpenRouter-backed default per provider/tier before Y applies it. Enter on a provider opens its card: one row per effort tier with its reasoning level, an indented row for each model selected on that tier, then the model matrix. ←/→ on a tier row steps that provider's reasoning through auto, the levels its CLI accepts, and "CLI decides" (`default`), the same write as `strategy set-reasoning --pool`; on a model row it sets a level for that model only (`--pool --model`), which beats the tier row. `/` searches the models. Provider Space toggles, reasoning changes, and model-tier Enter toggles persist immediately; select Finish setup or press F to exit.
 
 ```bash
 # Browse providers, models, effort tiers, meters, and effective routes.

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- setup: the setup screen (`bullswarm setup`, `strategy tui`) can now set
+  reasoning. Opening a provider shows each effort tier's model and reasoning
+  level with who chose it; ←/→ on a tier steps auto → the levels that CLI
+  accepts → "CLI decides", and saves it for that provider as
+  `strategy set-rung --reasoning` would. Provider names are no longer cut off,
+  and model search now starts with `/`, so typing `f` or `q` in a search no
+  longer finishes setup. `strategy inventory --json` lists each provider's
+  `reasoningLevels`.
+
+- strategy: reasoning can be set per model. When a tier has more than one
+  model on a provider, each can think at its own level:
+  `strategy set-reasoning --tier high --level max --pool claude-code --model
+  claude-fable-5-1 --yes`, `reasoning.models` in `strategy configure`, or the
+  indented model rows on the setup screen. It sits above the provider's level
+  and below `run --reasoning`; resolved levels report source
+  `strategy-model`, and each model in `strategy inventory --json` carries the
+  level it would run at.
+
 - docs: the README keeps two screenshots and a plainer tone, and its quick
   start is now a prompt you paste into your agent; the other dashboard screens
   moved to a new gallery page on the docs site.

@@ -126,7 +126,7 @@ const setupText = rich({
   ],
   examples: [
     { cmd: 'bullswarm --setup', note: 'open this same control center from a machine where bare `bullswarm` would open the dashboard' },
-    { cmd: 'bullswarm setup', note: 'browse providers, models, effort tiers, meters, and effective routes interactively' },
+    { cmd: 'bullswarm setup', note: 'browse providers, models, effort tiers, meters, and effective routes interactively; open a provider and use ←/→ on a tier to set its reasoning level' },
     { cmd: 'bullswarm setup --wizard', note: 'use the broader question-based configuration flow, including reasoning depth per effort tier' },
     { cmd: 'bullswarm setup --yes --integrate --agents claude,codex', note: 'non-interactive initialization plus agent integration; safe in CI or from an agent' },
   ],
@@ -662,7 +662,7 @@ const strategyResetTierText = rich({
 });
 
 const strategySetReasoningText = rich({
-  usage: 'bullswarm strategy set-reasoning --tier <high|medium|low> --level <low|medium|high|xhigh|max|default> [--pool <name>] --yes',
+  usage: 'bullswarm strategy set-reasoning --tier <high|medium|low> --level <low|medium|high|xhigh|max|default> [--pool <name> [--model <id>]] --yes',
   purpose: 'Set how hard one effort tier thinks. This is a separate dimension from the model: '
     + 'the tier chooses WHICH model runs, reasoning chooses HOW DEEPLY it thinks before answering.',
   args: [],
@@ -670,23 +670,28 @@ const strategySetReasoningText = rich({
     { flag: '--tier <high|medium|low>', desc: 'effort tier to configure' },
     { flag: '--level <level>', desc: 'low, medium, high, xhigh, max, or default (pass nothing and let the worker CLI decide)' },
     { flag: '--pool <name>', desc: 'apply to one provider pool only', default: 'every pool' },
+    { flag: '--model <id>', desc: 'apply only when that pool runs this model on the tier; beats the pool level', default: 'every model' },
     { flag: '--yes', desc: 'required approval' },
   ],
   safety: [
     'changes what every later dispatch on that tier sends to the worker CLI',
     'a level a CLI cannot express is clamped down to the strongest level it accepts, never up',
   ],
-  examples: [{ cmd: 'bullswarm strategy set-reasoning --tier high --level xhigh --yes' }],
+  examples: [
+    { cmd: 'bullswarm strategy set-reasoning --tier high --level xhigh --yes' },
+    { cmd: 'bullswarm strategy set-reasoning --tier high --level max --pool claude-code --model claude-fable-5-1 --yes', note: 'one model on one provider' },
+  ],
   next: 'Use strategy inventory --json to see the effective level and its source per pool.',
 });
 
 const strategyResetReasoningText = rich({
-  usage: 'bullswarm strategy reset-reasoning [--tier <high|medium|low>] [--pool <name>] --yes',
+  usage: 'bullswarm strategy reset-reasoning [--tier <high|medium|low>] [--pool <name> [--model <id>]] --yes',
   purpose: 'Remove configured reasoning levels so the affected tiers fall back to each connector\'s own defaults.',
   args: [],
   options: [
     { flag: '--tier <high|medium|low>', desc: 'clear one effort tier everywhere', default: 'every tier' },
-    { flag: '--pool <name>', desc: 'clear one provider pool only', default: 'the global tier defaults too' },
+    { flag: '--pool <name>', desc: 'clear one provider pool only, including its model levels', default: 'the global tier defaults too' },
+    { flag: '--model <id>', desc: 'with --pool, clear only that model\'s own levels' },
     { flag: '--yes', desc: 'required approval' },
   ],
   safety: [

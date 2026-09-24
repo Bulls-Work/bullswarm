@@ -13,7 +13,9 @@ import {
   TIER_LANES, clearTierAssignment, applyRecommendedReasoning, getRecommendedReasoning,
   sortLegacyPins, dropStrategyReport, releaseAppliedPins, pinRung,
 } from './lib/strategy.js';
-import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './lib/reasoning.js';
+import {
+  connectorReasoningLevels, isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel,
+} from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
 import { attachForecast, inflightPenaltyFrom } from './lib/forecast.js';
 import { expectedMinutesFor } from './lib/spend.js';
@@ -263,6 +265,12 @@ function reasoningLines(reasoning) {
     lines.push(`  ${pool} override: ${STRATEGY_TIERS.filter((tier) => tiers[tier])
       .map((tier) => `${tier}=${tiers[tier]}${mark(tier)}`).join(' \u00b7 ')}`);
   }
+  for (const [pool, byModel] of Object.entries(reasoning.models ?? {})) {
+    for (const [model, tiers] of Object.entries(byModel)) {
+      lines.push(`  ${pool}/${model} override: ${STRATEGY_TIERS.filter((tier) => tiers[tier])
+        .map((tier) => `${tier}=${tiers[tier]}`).join(' \u00b7 ')}`);
+    }
+  }
   const width = Math.max(0, ...Object.keys(reasoning.effective ?? {}).map((pool) => pool.length));
   for (const [pool, tiers] of Object.entries(reasoning.effective ?? {})) {
     lines.push(`  ${pool.padEnd(width)}  ${STRATEGY_TIERS
@@ -326,7 +334,22 @@ function validateReasoningSection(section, connectors) {
       pools[pool] = tierMap(value, `reasoning.pools.${pool}`);
     }
   }
-  return { tiers: tierMap(section.tiers, 'reasoning.tiers'), pools };
+  const models = {};
+  if (section.models != null) {
+    if (typeof section.models !== 'object' || Array.isArray(section.models)) {
+      throw new Error('reasoning.models must map a pool name to { model: tier levels }');
+    }
+    for (const [pool, byModel] of Object.entries(section.models)) {
+      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+      if (!byModel || typeof byModel !== 'object' || Array.isArray(byModel)) {
+        throw new Error(`reasoning.models.${pool} must map a model id to its tier levels`);
+      }
+      for (const [model, value] of Object.entries(byModel)) {
+        (models[pool] ??= {})[model] = tierMap(value, `reasoning.models.${pool}.${model}`);
+      }
+    }
+  }
+  return { tiers: tierMap(section.tiers, 'reasoning.tiers'), pools, models };
 }
 
 function applyReasoningSection(strategy, reasoning) {
@@ -337,6 +360,13 @@ function applyReasoningSection(strategy, reasoning) {
   for (const [pool, tiers] of Object.entries(reasoning.pools)) {
     for (const [tier, level] of Object.entries(tiers)) {
       setStrategyReasoning(strategy, { tier, level, pool });
+    }
+  }
+  for (const [pool, byModel] of Object.entries(reasoning.models ?? {})) {
+    for (const [model, tiers] of Object.entries(byModel)) {
+      for (const [tier, level] of Object.entries(tiers)) {
+        setStrategyReasoning(strategy, { tier, level, pool, model });
+      }
     }
   }
 }
@@ -589,6 +619,19 @@ export function renderRungs(rows) {
   return [line(header), ...body.map(line)].join('\n');
 }
 
+// What each selected model would be sent on each of its tiers, resolved with
+// the model so a per-model level, a clamp, or a skipped model shows as it will run.
+function withModelReasoning(model, pool, strategy) {
+  const tiers = model.disabled ? [] : (model.effectiveTiers ?? []);
+  if (!tiers.length) return model;
+  const reasoning = {};
+  for (const tier of tiers) {
+    const resolved = resolveReasoningLevel({ connector: pool.connector ?? pool, tier, model: model.id, strategy });
+    reasoning[tier] = { level: resolved.applied, source: resolved.source };
+  }
+  return { ...model, reasoning };
+}
+
 export function strategyInventory({ pools, state, report, evidence = null }) {
   const visible = pools
     .filter((pool) => !(pool.testFixture === true && pool.enabled === false))
@@ -609,7 +652,10 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
       meterSource: pool.meterSource,
       lanes: pool.lanes ?? [],
       capabilities: pool.capabilities ?? [],
-      models: modelsForPool(pool, report.discoveries?.[pool.name], state),
+      // The levels the setup screen offers when you change a tier's reasoning.
+      reasoningLevels: connectorReasoningLevels(pool.connector ?? pool),
+      models: modelsForPool(pool, report.discoveries?.[pool.name], state)
+        .map((model) => withModelReasoning(model, pool, state.strategy ?? {})),
     }));
   const routes = {};
   for (const tier of STRATEGY_TIERS) {
@@ -1081,24 +1127,32 @@ export async function cmdStrategy(args, {
       if (opts.yes !== true) throw new Error(`strategy ${sub} changes routing; pass --yes to approve`);
       const pool = reasoningFlag(opts.pool, sub);
       if (pool !== null && !loadConnectors(bullswarmDir, PACKAGED)[pool]) throw new Error(`unknown pool "${pool}"`);
+      // Model ids keep their case; only pool, tier and level are lowercased.
+      if (opts.model === true) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+      const model = typeof opts.model === 'string' && opts.model.trim() ? opts.model.trim() : null;
+      if (model && !pool) throw new Error(`strategy ${sub} --model needs --pool`);
       if (sub === 'set-reasoning') {
         const tier = assertReasoningTier(reasoningFlag(opts.tier, sub));
         const level = assertReasoningLevel(reasoningFlag(opts.level, sub));
         let reasoning = null;
         updateState(bullswarmDir, (state) => {
           state.strategy ??= {};
-          reasoning = setStrategyReasoning(state.strategy, { tier, level, pool });
+          reasoning = setStrategyReasoning(state.strategy, { tier, level, pool, model });
         });
-        console.log(JSON.stringify({ action: 'reasoning-updated', tier, level, pool, reasoning }, null, 2));
+        console.log(JSON.stringify({
+          action: 'reasoning-updated', tier, level, pool, ...(model ? { model } : {}), reasoning,
+        }, null, 2));
         return 0;
       }
       const tier = opts.tier === undefined ? null : assertReasoningTier(reasoningFlag(opts.tier, sub));
       let reasoning = null;
       updateState(bullswarmDir, (state) => {
         state.strategy ??= {};
-        reasoning = clearStrategyReasoning(state.strategy, { tier, pool });
+        reasoning = clearStrategyReasoning(state.strategy, { tier, pool, model });
       });
-      console.log(JSON.stringify({ action: 'reasoning-reset', tier, pool, reasoning }, null, 2));
+      console.log(JSON.stringify({
+        action: 'reasoning-reset', tier, pool, ...(model ? { model } : {}), reasoning,
+      }, null, 2));
       return 0;
     }
     if (sub === 'configure') {
@@ -1280,7 +1334,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }
