@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.6 — set reasoning per tier and per model from the setup screen
+
 - setup: the setup screen (`bullswarm setup`, `strategy tui`) can now set
   reasoning. Opening a provider shows each effort tier's model and reasoning
   level with who chose it; ←/→ on a tier steps auto → the levels that CLI
