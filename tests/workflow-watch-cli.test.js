@@ -241,3 +241,93 @@ test('an early return prints `◐ <step> returned early · N not done` instead o
   try { assert.equal(renderWatchEvent(notable[0]), '- verify returned early · 2 not done'); }
   finally { if (previous === undefined) delete process.env.BULLSWARM_ASCII; else process.env.BULLSWARM_ASCII = previous; }
 });
+
+// Stage-2 proof labels (§2.10, §2.11): what backs a finished step, the
+// retry after a failed check, and the proof line at the end of the run.
+test('a succeeded step line names what backs it; an event without proof reads as before', () => {
+  const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
+  const finished = (proof, extra = {}) => ({ type: 'action.finished', payload: { actionId: 'integrate', status: 'succeeded', ...extra, ...(proof ? { proof } : {}) } });
+  const events = [
+    finished({ by: ['command'], reviewPending: false }),
+    finished({ by: ['command', 'schema'], reviewPending: false }),
+    finished({ by: ['command'], reviewPending: true }),
+    finished({ by: [], reviewPending: true }),
+    finished({ by: [], reviewPending: false }),
+    finished({ by: ['review'], reviewPending: false }, { returnedEarly: { count: 2 } }),
+    finished(null),
+    finished(null, { returnedEarly: { count: 1 } }),
+  ];
+  const notable = notableWatchEvents({ events, state, nowMs: Date.parse(state.actions.find((action) => action.id === 'integrate').finishedAt) + 180_000 }).notable;
+  const lines = notable.map((event) => renderWatchEvent(event));
+  const duration = lines[6].split(' · ').at(-1);
+  assert.deepEqual(lines, [
+    `✓ integrate finished · proven by command · ${duration}`,
+    `✓ integrate finished · proven by command, schema · ${duration}`,
+    `✓ integrate finished · proven by command · review pending · ${duration}`,
+    `✓ integrate finished · review pending · ${duration}`,
+    `✓ integrate finished · unproven · ${duration}`,
+    '◐ integrate returned early · 2 not done · proven by review',
+    `✓ integrate finished · ${duration}`,
+    '◐ integrate returned early · 1 not done',
+  ]);
+  // The notable entry carries the proof only when the event did; JSONL spreads it.
+  assert.deepEqual(notable[0].proof, { by: ['command'], reviewPending: false });
+  assert.equal(Object.hasOwn(notable[6], 'proof'), false);
+  assert.equal(notable.every((event) => watchTrouble(event) === null), true, 'a label is never trouble');
+  // A proof on a failed event (never written) is ignored.
+  const failed = notableWatchEvents({ events: [{ type: 'action.finished', payload: { actionId: 'integrate', status: 'failed', failureKind: 'failed-evidence', why: 'x', proof: { by: [], reviewPending: false } } }], state }).notable[0];
+  assert.equal(Object.hasOwn(failed, 'proof'), false);
+});
+
+test('failed-evidence reads as the existing failed line, and its same-pool retry has its own verbose line', () => {
+  const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
+  const why = 'node scripts/stamp.mjs log.md → changed the deliverable: log.md';
+  assert.equal(
+    renderWatchEvent({ type: 'action.finished', actionId: 'forever', status: 'failed', failureKind: 'failed-evidence', why, durationSec: 300 }),
+    `✗ forever failed · failed-evidence: ${why} · 5m00s`,
+  );
+  const retried = [
+    { type: 'attempt.finished', payload: { actionId: 'integrate', attemptId: 'integrate-1', status: 'interrupted', failureKind: 'failed-evidence', willRetry: true } },
+    { type: 'attempt.started', payload: { actionId: 'integrate', attemptId: 'integrate-2', pool: 'example-pool', model: 'example-model' } },
+  ];
+  const verbose = notableWatchEvents({ events: retried, state, verbose: true }).notable.map((event) => renderWatchEvent(event));
+  assert.equal(verbose[0], `${glyphs().reroute} integrate retrying · failed-evidence · same pool, failure attached`);
+  assert.equal(notableWatchEvents({ events: retried, state }).notable.some((event) => event.type === 'attempt.retrying'), false, 'verbose only');
+  // Without a retry (act step, second failure) nothing is remembered: a later
+  // attempt the caller starts is not called a retry.
+  const final = [
+    { type: 'attempt.finished', payload: { actionId: 'integrate', attemptId: 'integrate-1', status: 'failed', failureKind: 'failed-evidence', willRetry: false } },
+    { type: 'attempt.started', payload: { actionId: 'integrate', attemptId: 'integrate-2', pool: 'example-pool', model: 'example-model' } },
+  ];
+  assert.equal(notableWatchEvents({ events: final, state, verbose: true }).notable.some((event) => event.type === 'attempt.retrying'), false);
+  // Other kinds keep today's line.
+  assert.equal(renderWatchEvent({ type: 'attempt.retrying', actionId: 'integrate', failureKind: 'process' }), `${glyphs().reroute} integrate retrying · process`);
+});
+
+test('the final block prints the proof line after reason, and the JSONL record carries proof, only with the marker', async (t) => {
+  const nowMs = minutesAfterLastEvent(1);
+  const finishedRun = (marked) => {
+    const run = stagedRun(t, { nowMs });
+    if (marked) writeFileSync(join(run.runDir, 'features.json'), JSON.stringify({ deliverableGate: 1, proofLabels: 1 }));
+    run.finish('completed');
+    return run;
+  };
+  const plain = watch(finishedRun(false), { now: () => nowMs });
+  assert.equal(await plain.promise, 0);
+  assert.equal(plain.lines.some((line) => line.startsWith('proof:')), false, 'a saved run without the marker');
+  const marked = watch(finishedRun(true), { now: () => nowMs });
+  assert.equal(await marked.promise, 0);
+  const reason = marked.lines.findIndex((line) => line.startsWith('reason: '));
+  assert.ok(reason > 0, marked.lines.join('\n'));
+  assert.equal(marked.lines[reason + 1], 'proof: 4 steps proven (review 4)');
+  assert.deepEqual(marked.lines.filter((line) => line !== 'proof: 4 steps proven (review 4)'), plain.lines, 'nothing else changes');
+
+  const jsonlPlain = watch(finishedRun(false), { jsonl: true, now: () => nowMs });
+  assert.equal(await jsonlPlain.promise, 0);
+  assert.equal(Object.hasOwn(JSON.parse(jsonlPlain.lines.at(-1)), 'proof'), false);
+  const jsonlMarked = watch(finishedRun(true), { jsonl: true, now: () => nowMs });
+  assert.equal(await jsonlMarked.promise, 0);
+  const record = JSON.parse(jsonlMarked.lines.at(-1));
+  assert.equal(record.type, 'finished');
+  assert.deepEqual(record.proof, { proven: 4, byType: { command: 0, schema: 0, review: 4 }, unproven: 0, unprovenSteps: [] });
+});

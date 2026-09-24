@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './v2-runtime.js';
 import { pickPool, isBenched, isFree, isQuarantined } from '../lib/route.js';
 import {
@@ -20,7 +20,10 @@ import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/fore
 import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
-import { declaredDeliverable, roleOf } from './step-vocabulary.js';
+import { declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary.js';
+import {
+  evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope, runStepEvidence,
+} from './evidence-runner.js';
 
 const MECHANICAL_KINDS = new Set(['auth', 'quota', 'throttle', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
 /** Kinds that make the SAME pool unusable, so a retry must move elsewhere. */
@@ -76,6 +79,7 @@ function classifyFailure(verdict, pool = null) {
   if (verdict?.ok) return null;
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
   if (verdict?.failureKind === 'not-produced') return 'not-produced';
+  if (verdict?.failureKind === 'failed-evidence') return 'failed-evidence';
   // Quota outranks the quarantine hint: a usage limit also asks for a
   // quarantine, but it is a healthy credential with an empty window, and only
   // it carries a real reset deadline.
@@ -195,6 +199,15 @@ function artifactBesideTask(taskFile, kind, ext) {
   const name = basename(taskFile);
   const trimmed = name.startsWith('task-') ? name.slice(5).replace(/\.[^.]+$/, '') : 'attempt';
   return join(dirname(taskFile), `${kind}-${trimmed}${ext}`);
+}
+
+// `evidence-<step>-attempt-<n>-<k>.log` beside the task. `<n>` comes from the
+// task file, which carries the run-wide attempt number (a resumed step's
+// first attempt in this dispatch is not attempt 1 of the step).
+function evidenceLogFile(taskFile, actionId, ordinal, index) {
+  const name = basename(taskFile);
+  const stem = name.startsWith('task-') ? name.slice(5).replace(/\.[^.]+$/, '') : `${actionId}-attempt-${ordinal}`;
+  return join(dirname(taskFile), `evidence-${stem}-${index}.log`);
 }
 
 function withAttemptArtifacts(files) {
@@ -621,6 +634,9 @@ function durableHandoffFacts(attempt, runDir) {
     streamFile,
     hasEventStream: Boolean(streamFile && streamFile.endsWith('.jsonl')),
     lastEvents,
+    // Only when the attempt ran its checks, so every other handoff stays
+    // byte-identical.
+    ...(Array.isArray(attempt.evidenceResults) ? { evidenceResults: clone(attempt.evidenceResults) } : {}),
   };
 }
 
@@ -864,12 +880,22 @@ export async function dispatchV2Action({
   legacyGate = true,
   earlierWork = { produced: false, unknown: false },
   extraSnapshotPaths = [],
+  // Stage 2 (E14): false once an attempt of the step's current definition
+  // already failed with failed-evidence, so the one evidence retry survives a
+  // kernel restart. The checks themselves are read from `action.evidence`.
+  evidenceRetryAvailable = true,
+  // `(event) => void` for each evidence item's started / running / finished.
+  onEvidence = null,
+  // The step runs in an isolated copy of its own (E5): the private-copy scope.
+  privateWorkspace = false,
 } = {}) {
   if (!action || typeof action.id !== 'string') throw new TypeError('action is required');
   if (typeof taskText !== 'string' || !taskText) throw new TypeError('taskText is required');
   if (!Array.isArray(pools)) throw new TypeError('pools must be an array');
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   const watch = dependencies.watchOnce ?? watchOnce;
+  const runEvidence = dependencies.runStepEvidence ?? runStepEvidence;
+  const choosePool = dependencies.pickPool ?? pickPool;
   const execFile = dependencies.execFile ?? execFileSync;
   const loadCoreState = dependencies.loadState ?? loadState;
   // Injectable for tests; the default is the locked read-modify-write. A test
@@ -977,18 +1003,47 @@ export async function dispatchV2Action({
   let stepPathsBefore = new Map();
   const stepChanged = new Set();
   let stepBaselineReady = false;
+  // Stage 2 evidence (E14): the checks, the schema hashes at the step
+  // baseline (E26), and the one same-pool retry. `pinNext` pins exactly one
+  // pick; `pendingRefresh` is the forced refresh that decided the pool was
+  // still eligible, reused by that pick; `pinnedRecord` is the attempt the
+  // pinned pick retries, corrected in place if the pick finds no pool.
+  const evidenceItems = declaredEvidence(action);
+  let schemaBaseline = null;
+  let evidenceRetryUsed = false;
+  let pinNext = null;
+  let pendingRefresh = null;
+  let pinnedRecord = null;
+  let pinnedResults = null;
+  const correctPinnedRetry = (poolName) => {
+    const why = evidenceFailureWhy(pinnedResults, { suffix: ` · no retry: ${poolName} is no longer eligible` })
+      ?? `${pinnedRecord.why ?? 'failed evidence'} · no retry: ${poolName} is no longer eligible`;
+    Object.assign(pinnedRecord, { status: 'failed', willRetry: false, why });
+    onAttempt?.('corrected', clone(pinnedRecord));
+    return {
+      ok: false, status: 'failed', failureKind: 'failed-evidence', attempts,
+      verdict: { ...(last ?? {}), ok: false, failureKind: 'failed-evidence', why },
+    };
+  };
 
-  while (remaining.length || (last && retriesUsed < maxMechanicalRetries)) {
+  while (remaining.length || (last && retriesUsed < maxMechanicalRetries) || pinNext) {
     if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
     const replay = replayPool;
     replayPool = null;
+    const pin = pinNext;
+    pinNext = null;
     // Meters and quarantines move while an action is in flight. Re-read them
     // before every pick so a pool that just hit its limit — here or in another
-    // run — is no longer a candidate.
-    if (typeof refreshPools === 'function') {
+    // run — is no longer a candidate. A forced refresh already taken to decide
+    // an evidence retry is this pick's refresh (E14).
+    if (typeof refreshPools === 'function' || pendingRefresh) {
       let refreshed = null;
-      try { refreshed = await refreshPools({ force: forceRefresh }); }
-      catch { refreshed = null; }
+      if (pendingRefresh) refreshed = pendingRefresh;
+      else {
+        try { refreshed = await refreshPools({ force: forceRefresh }); }
+        catch { refreshed = null; }
+      }
+      pendingRefresh = null;
       forceRefresh = false;
       if (Array.isArray(refreshed) && refreshed.length) {
         allPools = refreshed;
@@ -1002,7 +1057,12 @@ export async function dispatchV2Action({
         }
       }
     }
-    const routePools = remaining.length ? remaining : candidates;
+    // An evidence retry is pinned to its pool for this one pick: the router
+    // ranks every pool it is given, so re-queuing alone would move it.
+    const routePools = pin
+      ? prepare(allPools).filter((candidate) => candidate.name === pin)
+      : remaining.length ? remaining : candidates;
+    const pickStrictPool = pin ?? strictPool;
     const pickAt = now();
     // Keep active benches in the router's view even though they cannot be
     // selected. Route owns the human explanation (benched with its deadline);
@@ -1024,26 +1084,30 @@ export async function dispatchV2Action({
     const routingPools = [
       ...routePools.filter((candidate) => !liveBenchedNames.has(candidate.name)),
       ...routeBenchCandidates,
-    ].filter((candidate) => !failedProbes.has(candidate.name));
+    ].filter((candidate) => !failedProbes.has(candidate.name) && (!pin || candidate.name === pin));
     // The ledger is re-read HERE, before every pick and every retry, not on
     // the refresher's 15s throttle: up to four kernel actions start within
     // milliseconds of each other, and each has to see the assignments the
     // others just registered. Cheap by construction — a directory read, no
     // meter poll and no network.
     attachForecast(routingPools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
-    const route = pickPool(action.lane ?? 'chore', routingPools, {
+    const route = choosePool(action.lane ?? 'chore', routingPools, {
       callerEligible: false,
       callerSession: false,
       preferredPool: effectivePreferredPool,
       // `routingPools` is already filtered to the pin; the router needs the
       // name so routeWhy says the pick was pinned, not compared.
-      strictPool,
+      strictPool: pickStrictPool,
       effortTier: effort,
       now: pickAt,
       candidateMinutes: expected.expectedMinutes,
       inflightPenaltyPct,
       evidence,
     });
+    // The pool was eligible on the forced refresh, but the pinned pick still
+    // found none (a race inside the pick): the stored attempt promised a retry
+    // that does not happen, so it is corrected, and no other pool is tried.
+    if (!route.pick && pin) return correctPinnedRetry(pin);
     if (!route.pick) break;
     const pool = route.pick.connector;
     lastPool = pool;
@@ -1073,6 +1137,8 @@ export async function dispatchV2Action({
         updateCoreState(bullswarmDir, (fresh) => {
           recordPoolStrike(fresh, pool.name, reason, pickAt);
         });
+        // A pinned evidence retry never moves to another pool.
+        if (pin) return correctPinnedRetry(pin);
         fallbackWhy = fallbackWhy
           ? `${fallbackWhy} · ${reason} on ${pool.name}`
           : `${reason} on ${pool.name}`;
@@ -1093,6 +1159,8 @@ export async function dispatchV2Action({
       stepHeadBefore = headAtStart;
       baselinePaths = gateBaselinePaths(action, territory.git === true);
       stepPathsBefore = statDeliverablePaths(targetDir, baselinePaths);
+      // E26: a schema file that changes after this point is recorded as a fact.
+      schemaBaseline = evidenceItems.length ? evidenceSchemaBaseline(evidenceItems, targetDir) : null;
       stepBaselineReady = true;
     }
     const incomingHandoff = priorHandoff;
@@ -1206,15 +1274,27 @@ export async function dispatchV2Action({
       if (ledgerEntry) withLedger(() => releaseAssignment(bullswarmDir, ledgerEntry.id));
       if (workerPid) onWorkerExit?.(workerPid);
     }
-    // stage 2: evidence runner runs here
-    const outputBytes = fileBytes(files.outFile);
+    // The worker's end (E17): spend, time boxes and phase minutes read the
+    // attempt window, and the checks below must not inflate it.
+    const workerFinishedAt = new Date(now()).toISOString();
     if (snapshot.ok) {
       for (const file of snapshot.changedFiles) stepChanged.add(file);
     }
+    // The saved file is the attribution record; later sibling edits are not
+    // replayed into it. Written before the gate and the checks (E4), so a
+    // kernel that dies mid-check still leaves it for the durable handoff.
+    if (snapshot.ok) writeFileIfChanged(files.diffFile, snapshot.statText ? `${snapshot.statText}\n` : '');
+    const outputBytes = fileBytes(files.outFile);
     const pathsAfter = statDeliverablePaths(targetDir, baselinePaths);
+    // E30: on a step that declares evidence, a verdict whose only failure is
+    // the text heuristic does not skip the checks; the facts decide.
+    const textVerdictWhy = evidenceItems.length && classifyFailure(verdict, pool) === 'semantic'
+      ? String(verdict?.why ?? 'no reason recorded')
+      : null;
+    const gateVerdict = textVerdictWhy != null ? { ...verdict, ok: true } : verdict;
     const judged = deliverableVerdict({
       action,
-      verdict,
+      verdict: gateVerdict,
       legacyGate,
       snapshotOk: snapshot.ok,
       changed: [...stepChanged].sort(),
@@ -1225,19 +1305,118 @@ export async function dispatchV2Action({
       outputBytes,
       earlierWork: stepEarlier,
     });
-    if (verdict?.ok && judged.failWhy) {
+    if (gateVerdict?.ok && judged.failWhy) {
       verdict = { ...verdict, ok: false, why: judged.failWhy, failureKind: 'not-produced' };
     }
     deliverableFact = judged.fact;
-    // The saved file is the attribution record; later sibling edits are not
-    // replayed into it.
-    if (snapshot.ok) writeFileIfChanged(files.diffFile, snapshot.statText ? `${snapshot.statText}\n` : '');
+    // Evidence (E4, E15): only when the verdict is still (provisionally) ok.
+    // A stop that arrived as the worker finished records every item as
+    // stopped instead of letting the step succeed with its checks unrun.
+    let evidenceRun = null;
+    if (evidenceItems.length && gateVerdict?.ok && !judged.failWhy) {
+      const realTarget = (() => { try { return realpathSync(targetDir); } catch { return targetDir; } })();
+      const owned = Array.isArray(action.ownedFiles) ? action.ownedFiles.filter(Boolean) : [];
+      const lane = action.lane ?? 'chore';
+      const mode = privateWorkspace
+        ? 'private'
+        : owned.length
+          ? 'restricted'
+          : (lane === 'build' || lane === 'chore') && trackedFiles(realTarget, execFile) != null
+            ? 'unrestricted'
+            : 'other';
+      const taskDir = dirname(files.taskFile);
+      evidenceRun = await runEvidence(evidenceItems, {
+        cwd: realTarget,
+        env: evidenceEnv(parentEnv, { cwd: realTarget, stepId: action.id, outFile: files.outFile, runDir: taskDir }),
+        outFile: files.outFile,
+        logFileFor: (k) => evidenceLogFile(files.taskFile, action.id, ordinal, k),
+        scope: evidenceScope({
+          mode,
+          cwd: realTarget,
+          ownedFiles: owned,
+          declaredPaths: declaredDeliverable(action)?.paths ?? [],
+          extraPaths: uniquePaths(Array.isArray(extraSnapshotPaths) ? extraSnapshotPaths : []),
+          outFile: files.outFile,
+          execFile,
+        }),
+        schemaBaseline,
+        // The kernel's own registry, not the ledger wrapper: a kernel stop
+        // must reach a running check's process group.
+        onSpawn,
+        onWorkerExit,
+        shouldCancel: () => Boolean(shouldCancel?.()),
+        onEvidence: onEvidence ? (event) => onEvidence({ actionId: action.id, ...event }) : null,
+        now,
+      });
+      // What the checks created outside a private copy's scope never reaches
+      // the ownership gate or the merge-back (E11).
+      if (mode === 'private' && evidenceRun.createdOutOfScope?.length) {
+        removeCreatedOutOfScope(realTarget, evidenceRun.createdOutOfScope);
+      }
+      const results = clone(evidenceRun.results ?? []);
+      const note = textVerdictWhy != null
+        ? {
+          at: new Date(now()).toISOString(),
+          kind: 'text-verdict',
+          text: evidenceRun.failed
+            ? `the output read as failed (${textVerdictWhy}); the evidence ran anyway, and an item failed`
+            : `the output read as failed (${textVerdictWhy}); every evidence item passed`,
+        }
+        : null;
+      if (evidenceRun.stopped) {
+        verdict = { ...verdict, ok: false, cancelled: true, why: 'evidence stopped', evidenceResults: results };
+      } else if (evidenceRun.failed) {
+        verdict = {
+          ...verdict, ok: false, failureKind: 'failed-evidence',
+          why: evidenceRun.why ?? evidenceFailureWhy(results), evidenceResults: results,
+        };
+      } else {
+        // A text-only failure the checks overruled keeps its reason in the
+        // note, not as the why of a succeeded attempt.
+        verdict = {
+          ...verdict, ok: true, evidenceResults: results,
+          ...(textVerdictWhy != null ? { why: 'every evidence item passed' } : {}),
+        };
+      }
+      // The note says the facts outranked the text; it stays on a failure too.
+      if (note && !evidenceRun.stopped) {
+        verdict.notes = [...(Array.isArray(verdict.notes) ? verdict.notes : []), note];
+      }
+    }
+    const evidenceResults = evidenceRun ? verdict.evidenceResults : null;
     const streamFile = verdict?.meta?.streamFile
       ?? (files.streamFile && existsSync(files.streamFile) ? files.streamFile : null)
       ?? (files.stdoutFile && existsSync(files.stdoutFile) ? files.stdoutFile : null);
     const lastEvents = lastResponseEvents(streamFile);
-    const finishedAt = new Date(now()).toISOString();
+    const finishedAt = workerFinishedAt;
     const kind = classifyFailure(verdict, pool);
+    // The one evidence retry (E14), decided before the record is built so the
+    // stored attempt never promises a retry that does not happen. (e) first:
+    // an act step or a check that could not run goes to the caller at once.
+    let canRetryEvidence = false;
+    if (kind === 'failed-evidence') {
+      let suffix = '';
+      if (roleOf(action) === 'act') suffix = ' · act steps are not retried';
+      else if (!evidenceRun?.checkFault && evidenceRetryAvailable && maxMechanicalRetries > 0 && !evidenceRetryUsed) {
+        // (d): a forced refresh, reused by the pinned pick (an empty or failed
+        // refresh keeps the current list, and the pick does not refresh again).
+        if (typeof refreshPools === 'function') {
+          let refreshed = null;
+          try { refreshed = await refreshPools({ force: true }); }
+          catch { refreshed = null; }
+          pendingRefresh = Array.isArray(refreshed) ? refreshed : [];
+        }
+        const eligibleNow = prepare(pendingRefresh?.length ? pendingRefresh : allPools);
+        if (eligibleNow.some((candidate) => candidate.name === pool.name)) canRetryEvidence = true;
+        else {
+          pendingRefresh = null;
+          suffix = ` · no retry: ${pool.name} is no longer eligible`;
+        }
+      }
+      if (suffix) {
+        verdict = { ...verdict, why: evidenceFailureWhy(evidenceResults, { suffix }) ?? `${verdict.why ?? 'failed evidence'}${suffix}` };
+      }
+    }
     // One dead upstream credential is ONE outage however many pool names front
     // it. The in-memory candidate list predates the quarantine written below,
     // and a refresher is optional, so the group is dropped here as well — the
@@ -1271,7 +1450,7 @@ export async function dispatchV2Action({
     const canRetryThrottle = kind === 'throttle'
       && verdict?.throttleRetrySamePool !== false
       && throttleRetries < MAX_THROTTLE_RETRIES;
-    const willRecover = canCorrectSchema || canRetryThrottle || canRetryMechanically;
+    const willRecover = canCorrectSchema || canRetryThrottle || canRetryMechanically || canRetryEvidence;
     Object.assign(record, {
       finishedAt,
       status: verdict.ok
@@ -1289,6 +1468,8 @@ export async function dispatchV2Action({
       outputFile: files.outFile,
       ...(outputBytes != null ? { outputBytes } : {}),
       ...(deliverableFact ? { deliverable: deliverableFact } : {}),
+      // Only when the checks ran (E15): absence is the exact fact.
+      ...(evidenceResults ? { evidenceResults: clone(evidenceResults) } : {}),
       ...(streamFile ? { streamFile } : {}),
       // The path list itself (at most 200; the count stays complete): the
       // repair loop's carry-forward rule and the durable handoff read it.
@@ -1314,7 +1495,9 @@ export async function dispatchV2Action({
     // A schema-invalid answer still completed a real provider turn. Resume
     // that same physical conversation for the bounded correction instead of
     // opening a second session and losing the model's immediate context.
-    const sessionEstablished = verdict.ok || kind === 'schema' || kind === 'semantic';
+    // A failed check follows a finished worker turn too: its retry continues
+    // that conversation with the check output attached.
+    const sessionEstablished = verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence';
     if (session && sessionEstablished) {
       record.session.lastUsedAt = finishedAt;
       currentSession = clone(record.session);
@@ -1349,6 +1532,39 @@ export async function dispatchV2Action({
     if (kind === 'quota') forceRefresh = true;
     if (verdict.ok) return { ok: true, status: 'succeeded', attempts, verdict, session: currentSession };
     if (kind === 'cancelled') return { ok: false, status: 'cancelled', failureKind: kind, attempts, verdict };
+    if (canRetryEvidence) {
+      // One retry on the same pool with the check output attached (E14). It
+      // does not spend the mechanical allowance.
+      evidenceRetryUsed = true;
+      const block = formatHandoff({
+        pool: pool.name,
+        model: record.model,
+        startedAt,
+        finishedAt,
+        failureKind: kind,
+        why: verdict.why ?? null,
+        diffStatText: snapshot.statText,
+        diffFile: snapshot.ok ? files.diffFile : null,
+        changedFiles: snapshot.changedFiles,
+        outputFile: files.outFile,
+        partialOutput: null,
+        outputBytes,
+        streamFile,
+        hasEventStream: connector.eventStream != null,
+        lastEvents,
+        evidenceResults: clone(evidenceResults),
+      });
+      nextTask = `${baseTaskText}\n\n${block}`;
+      priorHandoff = {
+        from: `${action.id}-${ordinal}`,
+        bytes: Buffer.byteLength(block, 'utf8'),
+      };
+      pinNext = pool.name;
+      pinnedRecord = record;
+      pinnedResults = clone(evidenceResults);
+      fallbackWhy = 'retry on the same pool after failed evidence';
+      continue;
+    }
     if (!MECHANICAL_KINDS.has(kind)) return { ok: false, status: 'failed', failureKind: kind, attempts, verdict };
 
     if (kind === 'stalled' && canRetryMechanically) {

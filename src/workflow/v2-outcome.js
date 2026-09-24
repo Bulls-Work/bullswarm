@@ -4,6 +4,8 @@ import { NOT_JUDGED_STATUS, verifyLoopResult } from './verify-rounds.js';
 import { validateV2DurableState } from './v2-state.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { aggregateAttemptUsage } from './rollup.js';
+import { declaredEvidence, evidenceResultsIssues } from './step-vocabulary.js';
+import { readRunFeatures } from './run-features.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -127,7 +129,7 @@ function validateResultUsageBytes(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'bytes', 'routeWhy', 'routeCandidates', 'usage']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'evidenceResults', 'bytes', 'routeWhy', 'routeCandidates', 'usage']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -143,6 +145,12 @@ function validateResultAction(value, name) {
   // `role` is written only for steps that store one, so older envelopes and
   // kind-only steps carry no field at all.
   if (value.role !== undefined) resultString(value.role, `${name}.role`);
+  // Present only for steps that declare evidence: null when the latest
+  // attempt ran none (E15), otherwise that attempt's per-item results.
+  if (value.evidenceResults !== undefined && value.evidenceResults !== null) {
+    const issues = evidenceResultsIssues(value.evidenceResults, `${name}.evidenceResults`);
+    if (issues.length) resultFail(issues[0]);
+  }
   validateResultBytes(value.bytes, `${name}.bytes`);
   if (value.usage !== undefined && value.usage !== null) validateUsageAggregate(value.usage, `${name}.usage`);
 }
@@ -558,6 +566,9 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         // durable action; `kind` is what a reader needs to know WHY.
         kind: definition.kind ?? null,
         ...(definition.role ? { role: definition.role } : {}),
+        // Only steps that declare checks carry the key, so older result
+        // shapes stay byte-identical.
+        ...(declaredEvidence(definition).length ? { evidenceResults: clone(attempt?.evidenceResults ?? null) } : {}),
         bytes: lastAttemptBytes(state, definition.id),
         usage: actionUsage,
         routeWhy: attempt?.routeWhy ?? null,
@@ -739,7 +750,15 @@ function fitResultSummary(summary) {
   if (fits) return fits;
   // Nothing fits (a run with many steps: `usage.steps` is never cut). The
   // round rows are dropped only when that alone reaches the budget.
-  return candidates.at(loopKeys ? -2 : -1);
+  const smallest = candidates.at(loopKeys ? -2 : -1);
+  // The top-level `proof` is never dropped, so it can push a many-step run
+  // over. Only such a summary (a new run's) then also sheds the unknown (null)
+  // fields of its per-step usage; a saved run's stays byte-identical.
+  if (!summary.proof || !smallest.usage?.steps) return smallest;
+  return {
+    ...smallest,
+    usage: { ...smallest.usage, steps: Object.fromEntries(Object.entries(smallest.usage.steps).map(([id, step]) => [id, dropNullFields(step)])) },
+  };
 }
 
 // Results written before 0.30.0 carry no handback; derive the same view from
@@ -850,19 +869,111 @@ export function formatV2HandbackLines(summary) {
   return lines;
 }
 
+// What can back a finished step, in the order labels list them (E22). Stage 3
+// adds `choice` (D34); every builder below iterates over the types it is
+// given, so that extension needs no reshaping here.
+export const PROOF_TYPES = Object.freeze(['command', 'schema', 'review']);
+
+function isReviewStep(definition) {
+  return Array.isArray(definition?.evidenceFor) && definition.evidenceFor.length > 0;
+}
+
+/**
+ * What backs one succeeded step (E22): `{ by, reviewPending }`, or null for a
+ * step that gets no label (a review or digest step, a step that did not
+ * succeed, or, when `features` is given, a run without the `proofLabels`
+ * marker and a step that declares no evidence, E23). `by` lists the evidence
+ * types the latest succeeded attempt passed, then `review` when every
+ * requirement the step affects has passed. `reviewPending` is computed only
+ * `atFinish`: every affected requirement is checked by a live review step and
+ * not all of them have passed yet.
+ */
+export function stepProof(state, definition, { atFinish = false, features } = {}) {
+  if (!definition || isReviewStep(definition) || definition.kind === 'digest') return null;
+  if (features !== undefined && features?.proofLabels !== 1 && !declaredEvidence(definition).length) return null;
+  const runtime = (state?.actions ?? []).find((action) => action.id === definition.id) ?? null;
+  if (!atFinish && runtime?.status !== 'succeeded') return null;
+  const attempt = (state?.attempts ?? []).findLast((entry) => entry.actionId === definition.id && entry.status === 'succeeded');
+  const passed = new Set((attempt?.evidenceResults ?? []).filter((item) => item?.status === 'passed').map((item) => item.type));
+  const affects = Array.isArray(definition.affects) ? definition.affects : [];
+  const requirements = state?.ledger?.requirements ?? {};
+  const reviewed = affects.length > 0 && affects.every((id) => requirements[id]?.status === 'passed');
+  const by = PROOF_TYPES.filter((type) => (type === 'review' ? reviewed : passed.has(type)));
+  let reviewPending = false;
+  if (atFinish && affects.length && !reviewed) {
+    const statusOf = new Map((state?.actions ?? []).map((action) => [action.id, action.status]));
+    const covered = new Set((state?.program?.actions ?? [])
+      .filter((action) => action.id !== definition.id && isReviewStep(action) && statusOf.get(action.id) !== 'removed')
+      .flatMap((action) => action.evidenceFor));
+    reviewPending = affects.every((id) => covered.has(id));
+  }
+  return { by, reviewPending };
+}
+
+/** The words after `finished` on a step's line: `proven by command, schema`,
+ * `review pending`, or `unproven`. */
+export function formatV2ProofLabel(proof) {
+  if (!proof) return null;
+  const by = proof.by ?? [];
+  if (by.length) return `proven by ${by.join(', ')}${proof.reviewPending ? ' · review pending' : ''}`;
+  return proof.reviewPending ? 'review pending' : 'unproven';
+}
+
+// The summary's top-level proof (§2.8): how many labelled rows are proven,
+// by which type, and which are not.
+function summaryProof(rows) {
+  const labelled = rows.filter((row) => Array.isArray(row.proof));
+  if (!labelled.length) return null;
+  const byType = Object.fromEntries(PROOF_TYPES.map((type) => [type, labelled.filter((row) => row.proof.includes(type)).length]));
+  const unprovenRows = labelled.filter((row) => !row.proof.length);
+  return {
+    proven: labelled.length - unprovenRows.length,
+    byType,
+    unproven: unprovenRows.length,
+    unprovenSteps: unprovenRows.slice(0, 4).map((row) => row.id),
+  };
+}
+
+/**
+ * The end-of-run proof line (§2.10), or null when no step carries a label:
+ * `proof: 4 steps proven (command 3, schema 1, review 1) · 1 finished · unproven: readme`.
+ */
+export function formatV2ProofLine(summary) {
+  const proof = summary?.proof;
+  if (!proof) return null;
+  const parts = [];
+  if (proof.proven > 0) {
+    const types = Object.entries(proof.byType ?? {}).filter(([, count]) => count > 0).map(([type, count]) => `${type} ${count}`);
+    parts.push(`${proof.proven} step${proof.proven === 1 ? '' : 's'} proven${types.length ? ` (${types.join(', ')})` : ''}`);
+  }
+  if (proof.unproven > 0) {
+    const names = proof.unprovenSteps ?? [];
+    const more = proof.unproven - names.length;
+    parts.push(`${proof.unproven} finished · unproven${names.length ? `: ${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : ''}`);
+  }
+  return parts.length ? `proof: ${parts.join(' · ')}` : null;
+}
+
 function runDirOf(actions, runDir) {
   if (typeof runDir === 'string' && runDir) return runDir;
   const sample = actions.map((action) => action.outFile).find((file) => typeof file === 'string' && file.includes('/'));
   return sample ? sample.slice(0, sample.lastIndexOf('/')) : null;
 }
 
-export function summarizeV2Result(envelope, state = null, { runDir = null } = {}) {
+export function summarizeV2Result(envelope, state = null, { runDir = null, features } = {}) {
   const concerns = envelope.requirements.flatMap((requirement) =>
     requirement.evidence.flatMap((entry) => entry.concerns ?? []));
   const shortId = envelope.shortId ?? envelope.runId;
+  let runFeatures = features;
+  if (runFeatures === undefined) {
+    const dir = runDirOf(envelope.actions.map((action) => ({ outFile: fallback(action.outFile, action.outputFile) })), runDir);
+    runFeatures = dir ? readRunFeatures(dir) : {};
+  }
   const actions = envelope.actions.map((action) => {
     const definition = stateActionFor(state, action.id);
     const attempt = latestAttemptFor(state, action.id);
+    // A label only under the marker, or on a step that declares evidence (E23).
+    const proof = action.status === 'succeeded' ? stepProof(state, definition, { features: runFeatures ?? {} }) : null;
     return {
       id: action.id,
       kind: fallback(action.kind, definition?.kind),
@@ -870,6 +981,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
       lane: fallback(action.lane, definition?.lane),
       effort: fallback(action.effort, definition?.effort),
       status: action.status,
+      ...(proof ? { proof: proof.by } : {}),
       pool: fallback(action.pool, attempt?.pool),
       model: fallback(action.model, attempt?.model),
       reasoning: appliedReasoning(fallback(action.reasoning, attempt?.reasoning)),
@@ -879,6 +991,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
     };
   });
   const handback = envelope.handback ?? legacyHandback(envelope);
+  const proof = summaryProof(actions);
   return fitResultSummary({
     schemaVersion: 'bullswarm.workflow.result-summary.v1',
     runId: envelope.runId,
@@ -903,6 +1016,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
           ?? firstLine(handback?.unresolvedRequirements?.find((entry) => entry.id === requirement.id)?.why, 200),
     })),
     actions,
+    ...(proof ? { proof } : {}),
     concerns: {
       count: concerns.length,
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),

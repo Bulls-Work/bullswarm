@@ -104,7 +104,7 @@ test('the planning contract describes the digest kind in both execution modes', 
     assert.ok(rule, `${executionMode} contract must carry the digest rule`);
     assert.match(rule, /three or more writers feed a single integrator/);
     assert.match(rule, /20 KB/);
-    assert.match(rule, /No evidence action may depend on a digest/);
+    assert.match(rule, /No review step may depend on a digest/);
   }
 });
 
@@ -168,7 +168,7 @@ test('workflow capabilities reports the step roles beside the unchanged kind lis
   assert.deepEqual(engine.actionRoles.combine.routing.files, { lane: 'build', effort: 'high' });
   assert.deepEqual(engine.actionRoles.act.deliverables, ['outward']);
   assert.deepEqual(engine.deliverableTypes, [...DELIVERABLE_TYPES]);
-  assert.deepEqual(engine.evidenceTypes, { types: [...EVIDENCE_TYPES], usable: ['review'] });
+  assert.deepEqual(engine.evidenceTypes, { types: [...EVIDENCE_TYPES], usable: ['command', 'schema', 'review'] });
 });
 
 test('three writers → digest → integrator: the integrator reads only the digest and can drill down', { timeout: 120_000 }, (t) => {

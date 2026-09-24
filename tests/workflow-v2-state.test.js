@@ -351,6 +351,41 @@ test('an attempt deliverable loads, and a role-authored program round-trips', ()
   }, /written must be a string array of at most 50 entries/);
 });
 
+test('attempt evidenceResults load, and a malformed entry is refused', () => {
+  const state = roleProgramState();
+  state.program.actions[0].evidence = [
+    { type: 'command', cmd: 'node --test tests/owned.test.js' },
+    { type: 'schema', file: 'out/summary.json', schema: 'schemas/summary.json' },
+  ];
+  const command = {
+    type: 'command', cmd: 'node --test tests/owned.test.js', timeoutSec: 120,
+    status: 'passed', exit: 0, durationMs: 1830, tail: '# pass 3', log: '/tmp/acme-run/evidence-write-work-attempt-2-1.log', why: null,
+  };
+  const schema = {
+    type: 'schema', file: 'out/summary.json', schema: 'schemas/summary.json', timeoutSec: 120,
+    status: 'failed', exit: 1, durationMs: 140, errorCount: 2,
+    errors: ['$.rows[1].date must match pattern ^\\d{4}-\\d{2}-\\d{2}$'], notes: ['format is not checked (1 place)'],
+    schemaChanged: true, tail: '{"ok":false}', log: '/tmp/acme-run/evidence-write-work-attempt-2-2.log', why: 'not valid: 2 errors',
+  };
+  const stopped = { type: 'command', cmd: 'npm test', timeoutSec: 600, status: 'not-run', exit: null, durationMs: 0, tail: '', why: 'stopped' };
+  state.attempts[1].evidenceResults = [command, schema, stopped];
+  const loaded = deserializeV2DurableState(serializeV2DurableState(state));
+  assert.deepEqual(loaded.attempts[1].evidenceResults, [command, schema, stopped]);
+  assert.deepEqual(loaded, state);
+  const reject = (evidenceResults, pattern) => {
+    const copy = structuredClone(state);
+    copy.attempts[1] = { ...copy.attempts[1], evidenceResults };
+    assert.throws(() => validateV2DurableState(copy), pattern);
+  };
+  reject([{ ...command, extra: 1 }], /evidenceResults\[0\]\.extra is not allowed/);
+  reject([{ ...command, status: 'skipped' }], /evidenceResults\[0\]\.status must be passed\|failed\|not-run/);
+  reject(Array.from({ length: 6 }, () => command), /evidenceResults must have at most 5 items/);
+  reject([{ ...command, result: 'ok' }], /evidenceResults\[0\]\.result is a legacy autonomous field/);
+  reject([{ ...schema, errors: Array.from({ length: 6 }, (_, index) => `$.rows[${index}] is not allowed`) }], /errors must be an array of at most 5 strings/);
+  reject([{ ...schema, errors: ['x'.repeat(201)] }], /errors must be an array of at most 5 strings of at most 200 characters/);
+  reject({ status: 'passed' }, /evidenceResults must be an array/);
+});
+
 test('verifyLoop.stoppedBy act-step loads', () => {
   const state = roleProgramState();
   state.verifyLoop = {

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import { acceptCallerPlannerResponse, buildProgramWorkTask, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { CHECKER_PATH } from '../src/workflow/evidence-runner.js';
 
 const KIND_ONLY_BRIEF = `Bullswarm program action: write
 Purpose: Deliver write
@@ -60,6 +61,65 @@ test('a kind-only step brief stays byte-identical', () => {
   const action = baseAction();
   const text = buildProgramWorkTask(briefState(action, '/tmp/acme-repo'), action, '/tmp/acme-repo', null);
   assert.equal(text, KIND_ONLY_BRIEF);
+});
+
+test('a brief with evidence carries the check paragraph after the deliverable line', () => {
+  const action = baseAction({
+    deliverable: { type: 'files' }, ownedFiles: ['write.txt'],
+    evidence: [
+      { type: 'command', cmd: 'node --test tests/write.test.js' },
+      { type: 'schema', file: 'out/rows.jsonl', schema: 'schemas/row.json', timeoutSec: 30 },
+    ],
+  });
+  const text = buildProgramWorkTask(briefState(action, '/tmp/acme-repo'), action, '/tmp/acme-repo', null);
+  const lines = text.split('\n');
+  const at = lines.findIndex((line) => line.startsWith('Declared deliverable'));
+  assert.deepEqual(lines.slice(at + 1, at + 5), [
+    'Bullswarm will run these after you finish, in /tmp/acme-repo, and fails this step if any of them fails:',
+    '- command: `node --test tests/write.test.js` (passes on exit code 0; stopped after 120s)',
+    `- schema: out/rows.jsonl must match the JSON schema schemas/row.json (check it yourself: node ${CHECKER_PATH} out/rows.jsonl schemas/row.json)`,
+    'Run them yourself before you finish and fix what fails. Do not change what they check (tests, schemas, scripts) to make them pass. A check that modifies your deliverable fails.',
+  ]);
+  assert.equal(lines[at + 5], '');
+  assert.doesNotMatch(text, /BULLSWARM_STEP_OUTPUT|Never repeat an action|Only your territory files are merged back/);
+  // A kind-only step with evidence: right after the "Deliver only" line.
+  const kindOnly = baseAction({ evidence: [{ type: 'command', cmd: 'test -s write.txt' }] });
+  const kindText = buildProgramWorkTask(briefState(kindOnly, '/tmp/acme-repo'), kindOnly, '/tmp/acme-repo', null);
+  const kindLines = kindText.split('\n');
+  const deliverOnly = kindLines.findIndex((line) => line.startsWith('Deliver only your action purpose'));
+  assert.equal(kindLines[deliverOnly + 1], 'Bullswarm will run these after you finish, in /tmp/acme-repo, and fails this step if any of them fails:');
+  // Removing the lines gives back the kind-only golden brief byte for byte.
+  assert.equal(kindLines.filter((_, index) => index < deliverOnly + 1 || index > deliverOnly + 3).join('\n'), KIND_ONLY_BRIEF);
+});
+
+test('act, $output and isolated briefs carry their conditional evidence lines', () => {
+  const act = baseAction({
+    kind: undefined, role: 'act', lane: 'analyze', ownedFiles: [], deliverable: { type: 'outward' },
+    prompt: 'Post the note to the board.',
+    evidence: [{ type: 'command', cmd: "grep -q 'confirmed 42' /tmp/acme-outbox.txt" }],
+  });
+  const actText = buildProgramWorkTask(briefState(act, '/tmp/acme-repo'), act, '/tmp/acme-repo', null);
+  assert.match(actText, /\nNever repeat an action to make a check pass; a failed check goes to the caller, not back to you\.\n/);
+
+  const report = baseAction({
+    kind: undefined, role: 'investigate', lane: 'analyze', ownedFiles: [], deliverable: { type: 'report' },
+    evidence: [{ type: 'schema', file: '$output', schema: 'schemas/findings.json' }],
+  });
+  const reportText = buildProgramWorkTask(briefState(report, '/tmp/acme-repo'), report, '/tmp/acme-repo', null);
+  assert.match(reportText, /\n- schema: your final response must be only JSON that matches the JSON schema schemas\/findings\.json; Bullswarm checks the saved response\n/);
+  assert.match(reportText, /\nChecks that read your final response \(\$BULLSWARM_STEP_OUTPUT\) can only run after you finish; make your final response exactly what they expect\.\n/);
+  const byCommand = baseAction({ evidence: [{ type: 'command', cmd: 'node scripts/cite.mjs "$BULLSWARM_STEP_OUTPUT"' }] });
+  assert.match(buildProgramWorkTask(briefState(byCommand, '/tmp/acme-repo'), byCommand, '/tmp/acme-repo', null), /Checks that read your final response/);
+
+  // An isolated copy: the command names the copy, and the by-product line is there.
+  const isolated = baseAction({ evidence: [{ type: 'command', cmd: 'node --test /tmp/acme-repo/tests/write.test.js' }] });
+  const copy = '/tmp/acme-home/workflows/wf-x/workspaces/write-attempt-1';
+  const isolatedText = buildProgramWorkTask(briefState(isolated, '/tmp/acme-repo'), isolated, copy, null);
+  assert.match(isolatedText, new RegExp(`\\n- command: \`node --test ${copy}/tests/write\\.test\\.js\``));
+  assert.equal(isolatedText.includes('/tmp/acme-repo'), false);
+  assert.match(isolatedText, /\nOnly your territory files are merged back\. Delete any file a check you ran created outside them before you finish, or the step fails as out of scope\.\n/);
+  // The stored definition keeps the caller's path.
+  assert.equal(isolated.evidence[0].cmd, 'node --test /tmp/acme-repo/tests/write.test.js');
 });
 
 test('an act brief uses the act line, including the git sentence', () => {
@@ -212,7 +272,7 @@ async function resumeBuild(t, { marker = false, prior = null, runId = 'wf-gate01
   return { run, seen, runDir };
 }
 
-test('a new run writes features.json with deliverableGate 1', async (t) => {
+test('a new run writes features.json with deliverableGate 1 and proofLabels 1', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-marker-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -256,7 +316,7 @@ test('a new run writes features.json with deliverableGate 1', async (t) => {
     },
   });
   assert.equal(existsSync(join(result.runDir, 'features.json')), true);
-  assert.deepEqual(JSON.parse(readFileSync(join(result.runDir, 'features.json'), 'utf8')), { deliverableGate: 1 });
+  assert.deepEqual(JSON.parse(readFileSync(join(result.runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
 });
 
 test('resuming without the marker lets an unchanged build step pass', async (t) => {
@@ -269,7 +329,9 @@ test('resuming without the marker lets an unchanged build step pass', async (t) 
 });
 
 test('resuming a marked run fails an unchanged build step as not-produced', async (t) => {
-  const { run, seen } = await resumeBuild(t, { marker: true, runId: 'wf-marked-abcdef' });
+  const { run, seen, runDir } = await resumeBuild(t, { marker: true, runId: 'wf-marked-abcdef' });
+  // A stage-1 marker is never rewritten by a resume (E23).
+  assert.equal(readFileSync(join(runDir, 'features.json'), 'utf8'), `${JSON.stringify({ deliverableGate: 1 }, null, 2)}\n`);
   assert.equal(seen[0].legacyGate, true);
   assert.equal(run.state.attempts[0].status, 'failed');
   assert.equal(run.state.attempts[0].failureKind, 'not-produced');

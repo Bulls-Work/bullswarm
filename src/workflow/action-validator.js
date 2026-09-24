@@ -3,11 +3,11 @@
 import { isReasoningLevel } from '../lib/reasoning.js';
 import {
   DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_ROLES, ROLES,
-  ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, WRITING_DELIVERABLES,
+  ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, STEP_EVIDENCE_TYPES, WRITING_DELIVERABLES,
   deliverableTypeOf, laneFitsDeliverable, roleRouting,
 } from './step-vocabulary.js';
 
-export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, EVIDENCE_TYPES };
+export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES };
 
 export const ACTION_PROGRAM_SCHEMA_VERSION = 'bullswarm.workflow.program.v2';
 
@@ -48,7 +48,7 @@ const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions', 'defaults', 'verifyR
 const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning', 'timeBox', 'verifyRounds']);
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
-  'kind', 'role', 'lane', 'effort', 'deliverable', 'evidenceFor', 'inputs', 'produces', 'reasoning',
+  'kind', 'role', 'lane', 'effort', 'deliverable', 'evidence', 'evidenceFor', 'inputs', 'produces', 'reasoning',
   'timeBox',
 ]);
 // The soft time box, in whole minutes; 0 leaves the paragraph out. A guide
@@ -188,6 +188,40 @@ function uniqueStrings(value, at, issues, { ids = false } = {}) {
   return [...value];
 }
 
+// One exact relative file path, or null with the reason in `issues`.
+function normalizeOwnedPath(raw, at, issues) {
+  if (typeof raw !== 'string' || !raw.length) {
+    issues.push(`${at} must be a non-empty relative path`);
+    return null;
+  }
+  if (raw.includes('\0')) {
+    issues.push(`${at} must not contain NUL bytes`);
+    return null;
+  }
+  if (raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\')) {
+    issues.push(`${at} must be relative`);
+    return null;
+  }
+  // The kernel checks ownership against exact files. A trailing slash or a
+  // glob used to pass here (normalized away) and then stop the kernel right
+  // after launch, leaving a run that never started (2026-09-10).
+  if (/[\\/]$/.test(raw) || raw.includes('*') || raw.includes('?')) {
+    issues.push(`${at} must name one exact file, not a directory or glob ("${raw}")`);
+    return null;
+  }
+  const parts = raw.split(/[\\/]/);
+  if (parts.includes('..')) {
+    issues.push(`${at} must not contain dot-dot traversal`);
+    return null;
+  }
+  const normalized = parts.filter(Boolean).join('/').replace(/^\.\//, '');
+  if (!normalized || normalized === '.') {
+    issues.push(`${at} must not be empty`);
+    return null;
+  }
+  return normalized;
+}
+
 function normalizeOwnedFiles(value, at, issues) {
   if (!Array.isArray(value)) {
     issues.push(`${at} must be an array`);
@@ -196,35 +230,8 @@ function normalizeOwnedFiles(value, at, issues) {
   const seen = new Set();
   const result = [];
   for (const [index, raw] of value.entries()) {
-    if (typeof raw !== 'string' || !raw.length) {
-      issues.push(`${at}[${index}] must be a non-empty relative path`);
-      continue;
-    }
-    if (raw.includes('\0')) {
-      issues.push(`${at}[${index}] must not contain NUL bytes`);
-      continue;
-    }
-    if (raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\')) {
-      issues.push(`${at}[${index}] must be relative`);
-      continue;
-    }
-    // The kernel checks ownership against exact files. A trailing slash or a
-    // glob used to pass here (normalized away) and then stop the kernel right
-    // after launch, leaving a run that never started (2026-09-10).
-    if (/[\\/]$/.test(raw) || raw.includes('*') || raw.includes('?')) {
-      issues.push(`${at}[${index}] must name one exact file, not a directory or glob ("${raw}")`);
-      continue;
-    }
-    const parts = raw.split(/[\\/]/);
-    if (parts.includes('..')) {
-      issues.push(`${at}[${index}] must not contain dot-dot traversal`);
-      continue;
-    }
-    const normalized = parts.filter(Boolean).join('/').replace(/^\.\//, '');
-    if (!normalized || normalized === '.') {
-      issues.push(`${at}[${index}] must not be empty`);
-      continue;
-    }
+    const normalized = normalizeOwnedPath(raw, `${at}[${index}]`, issues);
+    if (normalized === null) continue;
     if (seen.has(normalized)) issues.push(`${at} contains duplicate "${normalized}"`);
     seen.add(normalized);
     result.push(normalized);
@@ -274,6 +281,81 @@ function normalizeDeliverable(raw, at, issues) {
   }
   const paths = normalizeOwnedFiles(value.paths, `${at}.deliverable.paths`, issues);
   return paths.length ? { type, paths } : { type };
+}
+
+const EVIDENCE_MAX_ITEMS = 5;
+const EVIDENCE_CMD_MAX_BYTES = 2000;
+const EVIDENCE_TIMEOUT_MAX_SEC = 600;
+const EVIDENCE_OUTPUT_FILE = '$output';
+const EVIDENCE_ITEM_KEYS = Object.freeze({
+  command: Object.freeze(['type', 'cmd', 'timeoutSec']),
+  schema: Object.freeze(['type', 'file', 'schema', 'format', 'timeoutSec']),
+});
+
+// The checks Bullswarm runs after the worker (E1-E3, E7, E29). Returns the
+// normalised items, or undefined when there are none (`[]` is dropped) or the
+// field is refused. Items keep their order and exactly the keys the author
+// gave, written in one fixed key order so a second pass changes nothing; the
+// default timeoutSec and format are never written back.
+function normalizeEvidence(raw, at, issues, { relaxedGraph, kind, evidenceFor, evidenceAllowed = true }) {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length > EVIDENCE_MAX_ITEMS) {
+    issues.push(`${at}.evidence must be an array of at most ${EVIDENCE_MAX_ITEMS} items`);
+    return undefined;
+  }
+  if (!raw.length) return undefined;
+  const refusals = [];
+  if (relaxedGraph !== true) refusals.push(`${at}.evidence needs a program-mode run`);
+  else if (!evidenceAllowed) refusals.push(`${at}.evidence is the caller's to declare; a dispatched planner cannot add checks (the caller adds them with bullswarm workflow plan revise)`);
+  if (kind === 'digest') refusals.push(`${at} digest steps take no evidence; the kernel writes their report`);
+  if (evidenceFor.length) refusals.push(`${at} review steps (evidenceFor) take no evidence; put the commands the reviewer must run in its prompt`);
+  if (refusals.length) {
+    issues.push(...refusals);
+    return undefined;
+  }
+  return raw.map((item, index) => {
+    const itemAt = `${at}.evidence[${index}]`;
+    if (!isObject(item)) {
+      issues.push(`${itemAt} must be an object {type, …}`);
+      return item;
+    }
+    if (!STEP_EVIDENCE_TYPES.includes(item.type)) {
+      issues.push(`${itemAt}.type must be command or schema; review evidence is a check step with evidenceFor, and a choice is recorded by the caller`);
+      return item;
+    }
+    const keys = EVIDENCE_ITEM_KEYS[item.type];
+    for (const key of Object.keys(item)) if (!keys.includes(key)) issues.push(`${itemAt}.${key} is not allowed for a ${item.type} item`);
+    const result = { type: item.type };
+    if (item.type === 'command') {
+      const cmd = typeof item.cmd === 'string' ? item.cmd.trim() : null;
+      if (cmd === null || !cmd.length || /[\n\r\0]/.test(cmd) || Buffer.byteLength(cmd, 'utf8') > EVIDENCE_CMD_MAX_BYTES) {
+        issues.push(`${itemAt}.cmd must be one line of 1 to ${EVIDENCE_CMD_MAX_BYTES} bytes`);
+      }
+      result.cmd = cmd ?? item.cmd;
+    } else {
+      if (item.file === EVIDENCE_OUTPUT_FILE) result.file = EVIDENCE_OUTPUT_FILE;
+      else {
+        const file = normalizeOwnedPath(item.file, `${itemAt}.file`, issues);
+        // "./$output" would normalise to the reserved value and change meaning
+        // on the next pass; the reserved value is only ever written verbatim.
+        if (file === EVIDENCE_OUTPUT_FILE) issues.push(`${itemAt}.file "${item.file}" names a workspace file called $output; write "$output" exactly for your final response`);
+        result.file = file ?? item.file;
+      }
+      const schema = normalizeOwnedPath(item.schema, `${itemAt}.schema`, issues);
+      result.schema = schema ?? item.schema;
+      if (item.format !== undefined) {
+        if (item.format !== 'json' && item.format !== 'jsonl') issues.push(`${itemAt}.format must be json or jsonl`);
+        result.format = item.format;
+      }
+    }
+    if (item.timeoutSec !== undefined) {
+      if (!(Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= EVIDENCE_TIMEOUT_MAX_SEC)) {
+        issues.push(`${itemAt}.timeoutSec must be an integer from 1 to ${EVIDENCE_TIMEOUT_MAX_SEC} (default 120)`);
+      }
+      result.timeoutSec = item.timeoutSec;
+    }
+    return result;
+  });
 }
 
 // Program-level fallbacks an author may set once instead of repeating on
@@ -506,11 +588,7 @@ export function validateActionProgram(program, runtime = {}) {
       issues.push(`${at} must be an object`);
       return;
     }
-    for (const key of Object.keys(raw)) if (!ACTION_FIELDS.has(key)) {
-      issues.push(key === 'evidence'
-        ? `${at}.evidence is not accepted yet: command and schema evidence arrive in a later release; for judged evidence use a check step with evidenceFor`
-        : `${at}.${key} is not allowed`);
-    }
+    for (const key of Object.keys(raw)) if (!ACTION_FIELDS.has(key)) issues.push(`${at}.${key} is not allowed`);
     const action = clone(raw);
     if (!hasId(action.id)) issues.push(`${at}.id must be a valid kebab-case ID`);
     else if (allIds.has(action.id)) issues.push(`${at}.id "${action.id}" is duplicated`);
@@ -609,6 +687,14 @@ export function validateActionProgram(program, runtime = {}) {
       if (type === 'outward' && action.role !== 'act') issues.push(`${at}.deliverable outward needs role act`);
       if (roleKnown || action.deliverable !== undefined) action.deliverable = resolvedDeliverable;
     }
+    const evidence = normalizeEvidence(action.evidence, at, issues, {
+      relaxedGraph: runtime.relaxedGraph,
+      kind: action.kind,
+      evidenceFor,
+      evidenceAllowed: runtime.evidenceAllowed !== false,
+    });
+    if (evidence) action.evidence = evidence;
+    else delete action.evidence;
     const roleLaneOnWrongEvidence = roleKnown && action.role !== 'check' && !laneGiven;
     if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze' && !roleLaneOnWrongEvidence) {
       issues.push(`${at} evidence actions must use lane analyze`);
@@ -661,7 +747,9 @@ export function validateActionProgram(program, runtime = {}) {
 
   const forbidden = ['type', 'verify', 'repair', 'fanout', 'pool', 'model', 'preferredPool', 'taskFile', 'timeoutSec', 'completion', 'decision', 'onError', 'phase', 'requiresCapabilities'];
   for (const action of rawActions) for (const field of forbidden) if (Object.hasOwn(action ?? {}, field)) {
-    issues.push(`actions[${rawActions.indexOf(action)}].${field} is not allowed in V2`);
+    issues.push(field === 'timeoutSec'
+      ? `actions[${rawActions.indexOf(action)}].timeoutSec is not allowed in V2; a time limit belongs on an evidence item (evidence[].timeoutSec)`
+      : `actions[${rawActions.indexOf(action)}].${field} is not allowed in V2`);
   }
   const { all: requirementIds, mandatory: mandatoryRequirementIds } = runtimeRequirements(runtime, issues);
   const freshEvidence = runtime.freshEvidenceRequirementIds ?? [];

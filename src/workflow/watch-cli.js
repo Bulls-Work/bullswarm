@@ -17,7 +17,7 @@ import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-po
 import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { isDeliveredWorkflowStatus } from './status.js';
-import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
+import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { createStaleProbe } from '../lib/stale.js';
 
 function readJson(path) {
@@ -482,6 +482,9 @@ export function notableWatchEvents({
     // Stopped by the caller's restart: not a retry, and the handoff line
     // comes from the next attempt's own start event.
     if (failureKind === 'restarted') { retry.delete(actionId); return; }
+    // A failed check is retried once on the same pool with its output
+    // attached (E14); without that retry the step's own finish line says why.
+    if (failureKind === 'failed-evidence' && payload.willRetry !== true) { retry.delete(actionId); return; }
     const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId);
     const rememberHandoff = () => {
       if (payload.willRetry !== true || failureKind === 'schema') return;
@@ -553,6 +556,8 @@ export function notableWatchEvents({
           // earlier finish keeps its own line).
           ...(status === 'succeeded' && Number.isInteger(payload.returnedEarly?.count) && payload.returnedEarly.count > 0
             ? { returnedEarly: payload.returnedEarly.count } : {}),
+          // What backs the step (E22); events of older runs carry none.
+          ...(status === 'succeeded' && payload.proof && typeof payload.proof === 'object' ? { proof: payload.proof } : {}),
         });
         break;
       }
@@ -817,8 +822,14 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
       return `${glyphs().ongoing} watching ${event.shortId ?? event.runId} · ${event.status} · ` +
         `${event.running} running, ${event.waiting} waiting · +${formatDuration(event.elapsedSec)}`;
     case 'action.finished':
-      if (event.status === 'succeeded' && event.returnedEarly > 0) return `${glyphs().early} ${event.actionId} returned early · ${event.returnedEarly} not done`;
-      if (event.status === 'succeeded') return `${glyphs().ok} ${event.actionId} finished · ${formatDuration(event.durationSec)}`;
+      if (event.status === 'succeeded' && event.returnedEarly > 0) {
+        const label = formatV2ProofLabel(event.proof);
+        return `${glyphs().early} ${event.actionId} returned early · ${event.returnedEarly} not done${label ? ` · ${label}` : ''}`;
+      }
+      if (event.status === 'succeeded') {
+        const label = formatV2ProofLabel(event.proof);
+        return `${glyphs().ok} ${event.actionId} finished · ${label ? `${label} · ` : ''}${formatDuration(event.durationSec)}`;
+      }
       if (event.status === 'blocked') return `${glyphs().blocked} ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;
       if (event.status === 'cancelled' && event.failureKind === 'superseded') return `${glyphs().reroute} ${event.actionId} stopped · replaced by a plan revision`;
       if (event.status === 'cancelled' && event.failureKind === 'paused') return `${glyphs().waiting} ${event.actionId} stopped · runs again after resume`;
@@ -855,7 +866,8 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
     case 'action.started':
       return `${glyphs().started} ${event.actionId} started · ${event.pool ?? '?'}/${event.model ?? '?'} · attempt ${event.attempt ?? '?'}`;
     case 'attempt.retrying':
-      return `${glyphs().reroute} ${event.actionId} retrying · ${event.failureKind}`;
+      return `${glyphs().reroute} ${event.actionId} retrying · ${event.failureKind}`
+        + (event.failureKind === 'failed-evidence' ? ' · same pool, failure attached' : '');
     case 'attempt.stalled':
       return `${glyphs().warn} ${event.actionId} stalled on ${event.pool ?? '?'} · `
         + `silent for ${formatDuration(event.silentSec)} · `
@@ -1138,11 +1150,14 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           emitLine({
             type: 'finished', status: snapshot.status, delivered: isDeliveredWorkflowStatus(snapshot.status),
             ...(summary ? { verified: summary.verified, reason: summary.reason, ...(summary.handback ? { handback: summary.handback } : {}) } : {}),
+            ...(summary?.proof ? { proof: summary.proof } : {}),
           });
         } else if (!jsonl && snapshot.terminal) {
           const rounds = summary?.callerDecision && summary.verifyRounds?.max > 1 ? ` · verify rounds ${summary.callerDecision.verifyRounds}` : '';
           output.write(`outcome: ${snapshot.status}${summary ? ` · ${summary.verified ? 'verified' : 'not verified'}${rounds}` : ''}\n`);
           if (summary?.reason) output.write(`reason: ${summary.reason}\n`);
+          const proofLine = formatV2ProofLine(summary);
+          if (proofLine) output.write(`${proofLine}\n`);
           const handback = formatV2HandbackLines(summary);
           if (handback.length) output.write(`${handback.join('\n')}\n`);
           output.write(`next: bullswarm workflow runs result ${snapshot.shortId ?? snapshot.runId} --json --summary\n`);

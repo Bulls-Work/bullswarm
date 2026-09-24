@@ -1,14 +1,16 @@
 import { ACTION_PROGRAM_SCHEMA_VERSION, KIND_DEFAULTS, PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram } from './action-validator.js';
 import {
   DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, ROLE_ROUTING,
-  declaredDeliverable,
+  STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, declaredDeliverable,
 } from './step-vocabulary.js';
+import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
+import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS, SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
 import { readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
-import { validateV2DurableState, validateV2GoalDocument } from './v2-state.js';
+import { validateV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import { deriveV2PresentationStages, deriveV2DependencyStages, deriveV2LiveStages } from './v2-presentation.js';
 import { extractScoutUnitIds } from './goal.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
@@ -93,6 +95,37 @@ export function workspacePathIssues(program, cwd, { isolated = false } = {}) {
       if (isDirectoryAt(cwd, file)) issues.push(`${at} names a directory ("${file}"); list the exact files step ${action.id} leaves behind`);
       else if (isolated && gitIgnores(cwd, file)) issues.push(`${at} is git-ignored ("${file}"); an isolated run copies back only files git would track`);
     });
+    (Array.isArray(action?.evidence) ? action.evidence : []).forEach((item, itemIndex) => {
+      const at = `program.actions[${index}].evidence[${itemIndex}]`;
+      if (item?.type !== 'schema') return;
+      if (item.file !== '$output' && isDirectoryAt(cwd, item.file)) {
+        issues.push(`${at}.file names a directory ("${item.file}")`);
+      }
+      if (isDirectoryAt(cwd, item.schema)) {
+        issues.push(`${at}.schema names a directory ("${item.schema}")`);
+        return;
+      }
+      let schemaBytes;
+      try { schemaBytes = readFileSync(resolve(cwd, item.schema)); }
+      catch { return; }
+      if (schemaBytes.length > SCHEMA_MAX_SCHEMA_BYTES) {
+        issues.push(`${at}.schema is too large ("${item.schema}"); the limit is 1 MiB`);
+        return;
+      }
+      let schema;
+      try { schema = JSON.parse(schemaBytes.toString('utf8')); }
+      catch (error) {
+        issues.push(`${at}.schema is not valid JSON ("${item.schema}"): ${error.message}`);
+        return;
+      }
+      for (const problem of schemaSubsetIssues(schema)) {
+        if (problem.keyword === '$schema-value') {
+          issues.push(`${at}.schema uses unsupported keyword "$schema-value" at ${problem.at} ("${item.schema}"); see the schema subset in docs/reference/program.md`);
+        } else {
+          issues.push(`${at}.schema uses unsupported keyword "${problem.keyword}" at ${problem.at} ("${item.schema}"); see the schema subset in docs/reference/program.md`);
+        }
+      }
+    });
   });
   return issues;
 }
@@ -114,7 +147,10 @@ export function validateV2PlannerResponse(response, state, {
     if (response.reason !== undefined) issues.push('reason is allowed only for kind=exhausted');
     if (!plain(response.program)) issues.push('program must be an object for kind=program');
     else try {
-      program = validateActionProgram(response.program, runtimeFromState(state));
+      program = validateActionProgram(response.program, {
+        ...runtimeFromState(state),
+        evidenceAllowed: v2PlannerMode(state) === 'caller',
+      });
       const removed = removedActionIds(state);
       for (const action of program.actions) if (removed.has(action.id)) {
         issues.push(`action id "${action.id}" belongs to a step a plan revision removed; restore it with bullswarm workflow plan revise instead`);
@@ -235,11 +271,14 @@ const ROLE_ROUTING_TEXT = ROLES.map((role) => `${role}: ${Object.entries(ROLE_RO
 const KIND_ROLES_TEXT = Object.entries(KIND_ROLES).map(([kind, role]) => `${kind}=${role}`).join(', ');
 const ROLE_FIELD_RULE = `The optional per-action \`role\` field says what a step does: ${ROLES.join(', ')}. Each kind belongs to one role (${KIND_ROLES_TEXT}), and a kind keeps its own routing and gate. In new programs, give work steps a role and a deliverable. Use a kind for commit, formatter and PR steps (\`mechanical\`), for \`digest\`, or when you want a kind's exact routing. A role-only step takes lane/effort from its role and resolved deliverable: ${ROLE_ROUTING_TEXT}. Resolution per field: an explicit action \`lane\`/\`effort\` wins, then the kind table, then the role table, then program \`defaults\`, then the lane default. A role outside that closed list is a validation error. Kind and role may both appear only if they agree; the stored step then keeps only the kind. An \`act\` step acts outside the workspace (send, post, publish, deploy): it uses lane analyze, owns no files, is read-only on the workspace, is never judged by files, and the kernel never repairs a requirement it affects.`;
 const DELIVERABLE_FIELD_RULE = `The optional per-action \`deliverable\` field says what the step promises to leave: ${DELIVERABLE_TYPES.join(', ')}, or an object {type, paths}. Defaults per role: ${Object.entries(ROLE_DEFAULT_DELIVERABLE).map(([role, type]) => `${role}=${type}`).join(', ')}; combine has no default and must declare one. Allowed per role: ${ROLES.map((role) => `${role} takes ${ROLE_DELIVERABLES[role].join('|')}`).join('; ')}. \`outward\` needs role act, a \`digest\` takes no deliverable, and a step with evidenceFor takes none or \`report\`. \`data\` and \`media\` need exact relative file \`paths\`; \`files\` may name paths; \`report\` and \`outward\` take none. When ownedFiles is not empty, every deliverable path must be listed in it. The lane must fit the deliverable: files, data and media need build or chore; report and outward need analyze. \`produces\`/\`inputs\` are data-flow labels between steps, not the deliverable.`;
+const EVIDENCE_FIELD_RULE = `A step may declare \`evidence\`: up to ${EVIDENCE_MAX_ITEMS} checks Bullswarm runs itself after the worker finishes, in the step's workspace. {type:'command', cmd, timeoutSec?} passes on exit code 0. {type:'schema', file, schema, format?, timeoutSec?} passes when the JSON (or JSONL) file matches the schema (subset in the contract); file: "$output" checks the step's own final response, and commands can read it at $BULLSWARM_STEP_OUTPUT. timeoutSec defaults to ${EVIDENCE_DEFAULT_TIMEOUT_SEC}, at most ${EVIDENCE_MAX_TIMEOUT_SEC}; be generous, and run each check once by hand before launch, because a wrong check costs a whole worker rerun to fix. The worker sees them. A failing check fails the attempt as \`failed-evidence\`; Bullswarm retries once on the same pool with the output attached, then the step fails and waits for you. A failed check on an act step, and a check that cannot run (a missing or unsupported schema), come straight back to you. Scope commands to the step: siblings edit the same tree. Put a whole-suite command on a step that runs alone or last. Checks must be read-only; a check that changes the step's files fails. Review steps and digests take no evidence. A finished step without evidence reads \`finished · unproven\` unless a review passes its requirements.`;
+const DISPATCHED_EVIDENCE_RULE = 'Do not declare evidence; put the acceptance commands a worker must run in its prompt. The caller adds checks Bullswarm runs.';
+const reviewStepRule = (text) => text.replaceAll('evidence actions', 'review steps').replaceAll('evidence action', 'review step').replaceAll('Evidence actions', 'Review steps');
 
 // The digest kind, stated once for every rendering of the contract. Extractive
 // by construction: a digest that judged its sources would be delegated
 // reasoning, and evidence must read the real artifacts.
-const DIGEST_KIND_RULE = 'A `kind: "digest"` action (analyze/low) is an extractive condensation of the outputs of the actions it depends on: the kernel supplies its whole task, which quotes each source verbatim — delivered items, validation numbers, commands and their output, unfinished work, and every shared-file or integrator request — one section per source, with no verdicts and no work of its own. Your prompt for it is focus guidance only. Insert one when three or more writers feed a single integrator, or when any consumer\'s dependency outputs would exceed roughly 20 KB, and have that consumer depend on the digest instead of the raw writers; the digest entry in its dependency artifacts still names every digested source so it can drill down. A digest must depend on at least one action, has empty evidenceFor, owns no files, and needs no `affects`. No evidence action may depend on a digest — evidence reads the real artifacts, never another agent\'s summary.';
+const DIGEST_KIND_RULE = 'A `kind: "digest"` action (analyze/low) is an extractive condensation of the outputs of the actions it depends on: the kernel supplies its whole task, which quotes each source verbatim — delivered items, validation numbers, commands and their output, unfinished work, and every shared-file or integrator request — one section per source, with no verdicts and no work of its own. Your prompt for it is focus guidance only. Insert one when three or more writers feed a single integrator, or when any consumer\'s dependency outputs would exceed roughly 20 KB, and have that consumer depend on the digest instead of the raw writers; the digest entry in its dependency artifacts still names every digested source so it can drill down. A digest must depend on at least one action, has empty evidenceFor, owns no files, and needs no `affects`. No review step may depend on a digest — review reads the real artifacts, never another agent\'s summary.';
 
 // `effort` picks the model tier; `reasoning` picks how hard that model
 // thinks. They are independent, so the contract states the field once and both
@@ -261,25 +300,26 @@ const REPAIR_LOOP_RULE = 'When a mandatory requirement fails its evidence, the k
 export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary = 'initial', plannerMode = 'dispatched', executionMode = 'verified', workspaceMode = 'shared' } = {}) {
   if (!['dispatched', 'caller'].includes(plannerMode)) throw new TypeError('plannerMode must be dispatched or caller');
   if (executionMode === 'program') return [
-    'Author the complete bounded dependency graph once. The kernel runs it to the end and returns every action result. It does not request automatic gap rounds or require evidence actions to finish.',
+    'Author the complete bounded dependency graph once. The kernel runs it to the end and returns every action result. It does not request automatic gap rounds or require review steps to finish.',
     'dependsOn expresses the ordering you need. Independent actions start up to the concurrency cap, and a dependent starts as soon as its own inputs are ready. A failed action skips its dependents; other branches continue. Never create artificial dependencies merely to group phases.',
     'Every action has a self-contained prompt describing its purpose, repository context, expected files, and concrete acceptance commands. Dependency output artifacts are passed to the worker; ask it to read them, including outstanding requests for shared-file changes.',
     'Plan coherent acceptance slices: keep behavior and its focused tests together. Cover each requested outcome. Scout units and numeric targets are advisory, not reasons for rejecting an otherwise useful program.',
-    'Use `dependsOn` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit `timeBox` sized for the full suite. Make the gate a `check` step and the commit and PR steps kind `mechanical` (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as `not-produced`; a build-lane step with no declared deliverable, other than `integration`, fails the same way when it changes no file and makes no commit.',
+    `Use \`dependsOn\` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit \`timeBox\` sized for the full suite. ${plannerMode === 'caller' ? 'Make the gate a `check` step and declare its suite as `evidence` so Bullswarm runs it; commit and PR steps are kind `mechanical`' : 'Make the gate a `check` step and the commit and PR steps kind `mechanical`'} (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as \`not-produced\`; a build-lane step with no declared deliverable, other than \`integration\`, fails the same way when it changes no file and makes no commit.`,
     'Use analyze for read-only investigation or evidence, build for contextual implementation, and chore with low effort for deterministic mechanical edits. Medium is the default for ordinary analysis and implementation. Reserve high for architecture, ambiguous tradeoffs, or cross-cutting integration judgment.',
     KIND_FIELD_RULE,
     ROLE_FIELD_RULE,
     DELIVERABLE_FIELD_RULE,
+    ...(plannerMode === 'caller' ? [EVIDENCE_FIELD_RULE] : [DISPATCHED_EVIDENCE_RULE]),
     DIGEST_KIND_RULE,
     REASONING_FIELD_RULE,
     TIME_BOX_RULE,
     workspaceMode === 'isolated'
-      ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Deliverable paths must be files git would track: a git-ignored path is refused, because isolation copies back only tracked files. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
+      ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Deliverable paths must be files git would track: a git-ignored path is refused, because isolation copies back only tracked files. Order overlapping writers. Review steps inspect the integrated target workspace.'
       : 'All agents share the target worktree. ownedFiles lists intended territory and provides overlap scheduling hints; it is not an exact-file enforcement gate. Overlapping territories are serialized automatically. An analyze action is read-only. A build/chore action with empty ownedFiles is an unrestricted integrator and runs alone.',
     'Build shared contracts first, then fan out independent territories. Tell workers that others share the tree, to preserve sibling edits, avoid whole-repository formatting and git resets, and report cross-territory requests instead of making conflicting edits. Never commit unless the user explicitly requires a commit.',
     'After a parallel implementation wave, include one integrator depending on all writers. It reads their outputs, applies cross-territory requests, reconciles shared files, and runs the repository acceptance commands. In a shared workspace, use build with empty ownedFiles to let that sole integrator fix any file.',
     'Judge acceptance with observable behavior and the repository checks. Reproduce regressions where applicable, run focused tests after changes, then the requested full gates on the integrated tree. Preserve every acceptance qualifier; do not accept vacuous tests or a green unrelated suite as proof.',
-    'Evidence actions are optional. To request structured independent judgment, use analyze with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.',
+    reviewStepRule('Evidence actions are optional. To request structured independent judgment, use analyze with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.'),
     'The result status describes graph execution; verified separately records passing requirement evidence. Read per-action failures, outputs, and evidence before claiming the product is ready.',
     REPAIR_LOOP_RULE,
     'What the loop leaves is the caller\'s decision: read the `callerDecision` block of the result, then either take over, or add a step through a plan revision. Further investigation belongs in an explicitly authored follow-up program.',
@@ -294,8 +334,8 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Propose the smallest complete bounded action program that can satisfy the supplied requirements. The kernel, not you, decides completion and failure.',
     'The numeric values in context.targets are advisory planning targets, never execution ceilings. Prefer to stay within them by consolidating optional work, but exceed them whenever the smallest essential program needs more actions, agent dispatches, or gap rounds. Reaching or crossing a target is not a reason to return exhausted.',
     'context.execution.concurrency limits only how many dependency-ready actions run at once. It does not limit the total number of independent actions in the program; the scheduler will batch wider programs safely.',
-    'Use only generic actions. A work action declares affects and any exact ownedFiles. affects means the action directly owns and delivers a bounded acceptance slice of that requirement; merely editing a supporting test or sharing a file does not make an action affect every requirement associated with that file. An evidence action declares evidenceFor, has empty affects/ownedFiles, and independently inspects the work it judges.',
-    'Choose lane from the action itself, not from the overall goal: analyze is read-only investigation, judgment, or evidence; build changes behavior, documentation, or tests and requires contextual implementation; chore is only deterministic mechanical mutation with no design choice. Evidence actions must use analyze. Analyze actions cannot own files. Chore actions must use low effort.',
+    'Use only generic actions. A work action declares affects and any exact ownedFiles. affects means the action directly owns and delivers a bounded acceptance slice of that requirement; merely editing a supporting test or sharing a file does not make an action affect every requirement associated with that file. A review step declares evidenceFor, has empty affects/ownedFiles, and independently inspects the work it judges.',
+    'Choose lane from the action itself, not from the overall goal: analyze is read-only investigation, judgment, or review; build changes behavior, documentation, or tests and requires contextual implementation; chore is only deterministic mechanical mutation with no design choice. Review steps must use analyze. Analyze actions cannot own files. Chore actions must use low effort.',
     'Choose effort independently from lane, using the cheapest tier sufficient for this one action. Low is for fixed-procedure checks or mechanical edits whose success is objectively decidable. Medium is the default for normal bounded analysis or implementation with local decisions. High is exceptional: use it only when architecture, ambiguous tradeoffs, cross-cutting integration, or adversarial acceptance judgment materially determines correctness. If uncertain, choose medium.',
     'Do not choose high merely because an action uses analyze, supplies evidence, affects an important requirement, mentions many files, or belongs to a difficult overall goal. Do not choose low merely because an action is short. Examples: exact file comparison or formatting update = low; ordinary scoped feature plus focused test = medium; choosing an architecture across subsystems = high; running deterministic acceptance commands = low; interpreting ambiguous cross-cutting acceptance evidence = high.',
     KIND_FIELD_RULE,
@@ -303,7 +343,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     REASONING_FIELD_RULE,
     TIME_BOX_RULE,
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
-    'Every mandatory unresolved requirement needs an evidence action. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
+    'Every mandatory unresolved requirement needs a review step. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
     'For mutating behavioral work, keep implementation and its focused regression test under one coherent owner. The action must prove the regression on the untouched baseline, then exercise the real production entry point or state transition after the change; disconnected helpers, no-op assertions, and test-only behavior do not satisfy acceptance.',
     'For interactive or state-machine work, action prompts must require a transition matrix for every affected level and input, using distinguishable before/after fixtures and assertions on the resulting live state or selected item. An output assertion that only finds text already present before the input is vacuous and must not be proposed as acceptance evidence.',
     'For Node focused tests, action prompts must require `node --test-timeout=60000 --test <focused files>` and forbid raw `node --test` plus `--test-force-exit`. This bounds a broken test subprocess without imposing a wall-clock limit on a healthy long-running agent.',
@@ -312,11 +352,11 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Treat the scout\'s independently testable units as the default action boundaries. A single long requirement may be affected by several ordered actions, each closing one observable clause; multiple actions may therefore list the same requirement in affects. Do not merge scout units merely because they share a requirement ID or owned files. Merge only when the combined change is genuinely trivial for one bounded worker.',
     plannerMode === 'caller'
       ? 'context.scoutUnits (present only when a kernel scout ran) lists the scout\'s independently testable units as advisory default action boundaries. A caller planner is not required to reuse those IDs and the response is never rejected for a missing unit; still cover every clause a unit names with some action, or leave it explicitly to a later program revision.'
-      : 'Every exact ID in context.scoutUnits is a kernel-required work action. Use each ID unchanged on one non-evidence action and order shared-file units with dependencies. Do not rename, omit, or absorb one scout unit into another action; the response is rejected before dispatch if any unit is missing.',
+      : 'Every exact ID in context.scoutUnits is a kernel-required work action. Use each ID unchanged on one non-review action and order shared-file units with dependencies. Do not rename, omit, or absorb one scout unit into another action; the response is rejected before dispatch if any unit is missing.',
     'Goal requirements outrank the current implementation, current tests, and descriptive scout prose. Preserve exact universal and negative qualifiers such as every, always, any depth, same, narrow/mobile, must not, and fallback behavior in the responsible action prompts. If an existing test asserts contradictory behavior, the action must own and update both production code and that test; never instruct a worker to preserve the contradiction.',
     'A requirement may contain several sibling clauses assigned to different actions. List it in affects only when the action prompt names the exact clause it owns. Requirement context never expands ownedFiles: if another clause requires an unowned file or a different purpose, leave it to its own scout unit instead of asking this action to satisfy it.',
     'When several ordered work actions jointly affect one cross-cutting behavior, the scout\'s final acceptance unit must remain a mutation-capable action after those slices. Give it the relevant production files plus tests, require it to exercise every decisive qualifier over the integrated result, and authorize it to close any gap it finds. Do not turn that unit into tests-only regression work.',
-    'For evidence actions, the prompt describes only what to inspect and which concrete checks to run. Never prescribe a response JSON, object, schema, envelope, format, or fields such as ok/concerns/summary; the V2 kernel exclusively supplies and validates the evidence output contract.',
+    'For review steps, the prompt describes only what to inspect and which concrete checks to run. Never prescribe a response JSON, object, schema, envelope, format, or fields such as ok/concerns/summary; the V2 kernel exclusively supplies and validates the evidence output contract.',
     workspaceMutation === 'forbidden'
       ? 'This goal is deterministically read-only. Every action must have empty ownedFiles and must not modify workspace files; reports belong in the action output artifact.'
       : 'Workspace mutation is allowed only through exact ownedFiles declared by the action.',
@@ -357,11 +397,14 @@ function programActionFields(stateOrGoal) {
     ...V2_PROGRAM_ACTION_FIELDS,
     ...(isProgramWorkflow(stateOrGoal) ? {
       dependsOn: 'action IDs that must succeed before this action starts',
+      affects: 'requirement IDs this work step directly owns a bounded acceptance slice of (empty for review steps)',
       ownedFiles: stateOrGoal.config.settings.workspaceMode === 'isolated'
-        ? 'exact relative files a build/chore action may mutate; a non-empty list is required for isolated writers'
-        : 'intended relative file territories; empty for analyze or for an unrestricted shared build/chore integrator',
+        ? 'exact relative files a build/chore action may mutate; a non-empty list is required for isolated writers; empty for review steps'
+        : 'intended relative file territories; empty for review steps or for an unrestricted shared build/chore integrator',
+      evidenceFor: 'requirement IDs this review step independently judges (empty for work steps)',
       role: `optional ${ROLES.join(' | ')} — what the step does; derives lane and effort from the role and its deliverable`,
       deliverable: `optional ${DELIVERABLE_TYPES.join(' | ')}, or {type, paths} — what the step promises to leave; data and media need exact paths, listed in ownedFiles when ownedFiles is not empty`,
+      evidence: `optional up to ${EVIDENCE_MAX_ITEMS} checks Bullswarm runs after the worker: {type:"command", cmd, timeoutSec?} (exit 0 passes) or {type:"schema", file ("$output" = the final response), schema, format?, timeoutSec?}; timeoutSec 1-${EVIDENCE_MAX_TIMEOUT_SEC}, default ${EVIDENCE_DEFAULT_TIMEOUT_SEC}; not on review or digest steps; caller-authored only`,
       lane: 'analyze | build | chore — omit when kind supplies it, or when role does',
       effort: 'high | medium | low — omit to take it from kind, role, program defaults, or the lane default',
       produces: 'optional artifact IDs this action produces for later actions (data-flow labels, not the deliverable)',
@@ -400,6 +443,7 @@ export const V2_ROLE_PROGRAM_EXAMPLE = Object.freeze({
     ...V2_PROGRAM_EXAMPLE.program,
     actions: V2_PROGRAM_EXAMPLE.program.actions.map(({ kind, ...action }) => ({
       ...action,
+      ...(action.id === 'fix-parser' ? { evidence: [{ type: 'command', cmd: 'node --test tests/parser.test.js' }] } : {}),
       role: { 'fix-parser': 'produce', 'check-parser': 'check' }[action.id],
     })),
   },
@@ -474,8 +518,15 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
         deliverableTypes: [...DELIVERABLE_TYPES],
         evidenceTypes: {
           types: [...EVIDENCE_TYPES],
-          usable: ['review'],
-          note: 'vocabulary only in this release: review (a check step with evidenceFor) is usable today; an action-level `evidence` field is refused',
+          usable: [...USABLE_EVIDENCE_TYPES],
+          note: 'command and schema go in a step\'s evidence field; review is a check step with evidenceFor; choice is recorded by the caller',
+        },
+        stepEvidence: {
+          fieldTypes: [...STEP_EVIDENCE_TYPES], maxItems: EVIDENCE_MAX_ITEMS,
+          timeoutSec: { default: EVIDENCE_DEFAULT_TIMEOUT_SEC, max: EVIDENCE_MAX_TIMEOUT_SEC },
+          schemaKeywords: [...SCHEMA_ASSERTED_KEYWORDS], schemaIgnored: [...SCHEMA_IGNORED_KEYWORDS],
+          schemaFormats: ['json', 'jsonl'], outputFile: '$output', env: [...EVIDENCE_ENV_KEYS],
+          actRetry: false, checker: CHECKER_PATH,
         },
       } : {}),
       defaults: {
@@ -495,12 +546,12 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
       validation: isProgramWorkflow(goalDocument) ? [
         'IDs are kebab-case and unique; every dependency exists and the graph has no cycles',
         'ownedFiles are scheduling territories; overlapping writers serialize, and an unrestricted shared integrator runs alone',
-        'evidence actions are optional and depend on all work affecting the requirements they judge',
+        'review steps are optional and depend on all work affecting the requirements they judge',
         'declared input artifacts come from dependency ancestors; plain dependencies do not require an artifact declaration',
         'kernel-owned routing chooses pools and models from lane and effort',
       ] : [
-        'every requirement listed above that is mandatory needs at least one evidence action whose evidenceFor names it',
-        'evidence actions must depend (transitively) on every work action that affects the requirement they judge',
+        'every requirement listed above that is mandatory needs at least one review step whose evidenceFor names it',
+        'review steps must depend (transitively) on every work action that affects the requirement they judge',
         'two work actions with overlapping ownedFiles must be transitively ordered by dependsOn',
         'a work dependency must be justified by a consumed artifact or an overlapping owned path',
         'IDs are kebab-case and unique; no cycles; no pool, model, verify, repair, phase, fanout, or timeout fields',

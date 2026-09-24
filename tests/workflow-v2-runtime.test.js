@@ -65,6 +65,16 @@ test('normalizeAttempt retains the provider session record for durable callers',
   assert.equal(normalized.session.generation, 1);
 });
 
+test('normalizeAttempt copies evidenceResults only when the checks ran', () => {
+  const evidenceResults = [{ type: 'command', cmd: 'true', timeoutSec: 120, status: 'passed', exit: 0, durationMs: 4, tail: '', why: null }];
+  const base = { status: 'succeeded', pool: 'relay', model: 'gpt-5.6-luna', startedAt: '2026-09-24T01:00:00.000Z' };
+  const withChecks = normalizeAttempt({ ...base, evidenceResults }, { id: 'build-1', actionId: 'build', ordinal: 1 });
+  assert.deepEqual(withChecks.evidenceResults, evidenceResults);
+  assert.notEqual(withChecks.evidenceResults, evidenceResults, 'a copy, not the dispatch record');
+  const without = normalizeAttempt(base, { id: 'build-1', actionId: 'build', ordinal: 1 });
+  assert.equal(Object.hasOwn(without, 'evidenceResults'), false);
+});
+
 test('runs a complete V2 program and kernel—not planner—writes verified result', async () => {
   const f = setup();
   let evidenceTask = '';

@@ -525,6 +525,29 @@ test('revise: an untouched export of a kind, lane-only, role or mixed plan chang
   }
 });
 
+test('revise: evidence is part of the step definition and untouched evidence exports change nothing', async (t) => {
+  const f = fixture(t);
+  const action = work('a', { evidence: [{ type: 'command', cmd: 'node --test tests/a.test.js' }] });
+  const done = await start(f, 'wf-evrev-abcdef', [action], controller());
+  const document = exportV2Plan(done.state);
+  unchangedBy(done.state, document);
+
+  for (const changed of [
+    [{ type: 'command', cmd: 'node --test tests/b.test.js' }],
+    [{ type: 'command', cmd: 'node --test tests/a.test.js', timeoutSec: 30 }],
+    [{ type: 'schema', file: 'out/a.json', schema: 'schemas/a.json' }],
+    undefined,
+  ]) {
+    const edited = structuredClone(document);
+    const target = edited.program.actions.find((entry) => entry.id === 'a');
+    if (changed === undefined) delete target.evidence;
+    else target.evidence = changed;
+    const planned = planV2Revision(done.state, normalizeRevisionInput(edited));
+    assert.equal(planned.ok, true, JSON.stringify(planned.issues));
+    assert.deepEqual(planned.changes.amended, ['a']);
+  }
+});
+
 test('revise: adding the matching role to a kind step changes nothing, for every kind; replacing the kind with it is an amendment', async (t) => {
   const f = fixture(t);
   const done = await start(f, 'wf-vocabk-abcdef', kindPlan(), controller());

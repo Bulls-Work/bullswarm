@@ -17,13 +17,15 @@ import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
-import { DELIVERABLE_TYPES, EVIDENCE_TYPES, declaredDeliverable } from './step-vocabulary.js';
+import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, declaredDeliverable } from './step-vocabulary.js';
+import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
+import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS, SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
 import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import {
   runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest,
   pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run,
 } from './v2-runtime.js';
-import { formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
+import { formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { prepareV2DispatchPools, requestStepRestart, workerSilenceTimeoutSec } from './v2-dispatch.js';
 import {
   createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, REVISION_CHANGE_KINDS, V2RevisionError,
@@ -325,7 +327,10 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
       console.log(`workspace: ${result.result.workspace?.cwd ?? doc.intent.cwd}`);
     }
     console.log(`reason: ${result.result.reason}`);
-    for (const line of formatV2HandbackLines(summarizeV2Result(result.result, result.state, { runDir: result.runDir }))) console.log(line);
+    const summary = summarizeV2Result(result.result, result.state, { runDir: result.runDir });
+    const proofLine = formatV2ProofLine(summary);
+    if (proofLine) console.log(proofLine);
+    for (const line of formatV2HandbackLines(summary)) console.log(line);
   }
   return result.result.status === 'completed' ? 0 : 1;
 }
@@ -1036,6 +1041,7 @@ async function planValidate(opts) {
         ...(action.kind ? { kind: action.kind } : {}),
         ...(action.role ? { role: action.role } : {}),
         ...(action.deliverable ? { deliverable: action.deliverable } : {}),
+        ...(action.evidence ? { evidence: action.evidence } : {}),
         lane: action.lane, effort: action.effort,
         ...(action.reasoning ? { reasoning: action.reasoning } : {}),
         dependsOn: action.dependsOn,
@@ -1050,7 +1056,7 @@ async function planValidate(opts) {
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
   else {
     console.log(`✓ program valid against the contract: ${payload.program.actions.length} action${payload.program.actions.length === 1 ? '' : 's'} for ${payload.requirements.length} requirement${payload.requirements.length === 1 ? '' : 's'} (nothing launched)`);
-    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.role ? ` role=${action.role}` : ''}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
+    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.role ? ` role=${action.role}` : ''}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
     printAdvisories(payload.advisories, { stream: console.log });
     console.log(`  launch   ${next.launch}`);
   }
@@ -1614,7 +1620,14 @@ async function wfCapabilities(opts) {
         // types, of which only review (a check step with evidenceFor) is usable.
         actionRoles: v2RoleCatalog(),
         deliverableTypes: [...DELIVERABLE_TYPES],
-        evidenceTypes: { types: [...EVIDENCE_TYPES], usable: ['review'] },
+        evidenceTypes: { types: [...EVIDENCE_TYPES], usable: [...USABLE_EVIDENCE_TYPES] },
+        stepEvidence: {
+          fieldTypes: [...STEP_EVIDENCE_TYPES], maxItems: EVIDENCE_MAX_ITEMS,
+          timeoutSec: { default: EVIDENCE_DEFAULT_TIMEOUT_SEC, max: EVIDENCE_MAX_TIMEOUT_SEC },
+          schemaKeywords: [...SCHEMA_ASSERTED_KEYWORDS], schemaIgnored: [...SCHEMA_IGNORED_KEYWORDS],
+          schemaFormats: ['json', 'jsonl'], outputFile: '$output', env: [...EVIDENCE_ENV_KEYS],
+          actRetry: false, checker: CHECKER_PATH,
+        },
         completionAuthority: 'kernel action results; requirement evidence is reported separately',
         features: {
           plannerCreatesBoundedProgram: true,

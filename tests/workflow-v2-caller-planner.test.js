@@ -9,7 +9,7 @@ import { loadProviders } from '../src/lib/providers.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+  existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -1433,7 +1433,7 @@ test('CLI: a role-only program validates, dispatches on the role routing, judges
     assert.equal(report.verified, true);
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
     const runDir = join(f.home, 'workflows', report.runId);
-    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1 });
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
     const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
     assert.deepEqual(state.program.actions.map(shape), expected);
     const routed = state.attempts.map((attempt) => [attempt.actionId, attempt.routing?.lane, attempt.routing?.effort, attempt.status]);
@@ -1481,5 +1481,198 @@ test('CLI: a role-only program validates, dispatches on the role routing, judges
     assert.equal(shown.actionRecord.kind, undefined);
     assert.deepEqual(shown.actionRecord.deliverable, { type: 'outward' });
     assert.equal(shown.actionRecord.status, 'succeeded');
+  } finally { f.cleanup(); }
+});
+
+// Stage 2 end to end: the real binary, the fake worker below, and real checks
+// run by the evidence runner (a real /bin/sh and the real schema checker).
+// The target is outside git, so each writer's scope is its ownedFiles.
+const EVIDENCE_SCHEMA = {
+  type: 'object', required: ['files', 'ok'], additionalProperties: false,
+  properties: { files: { type: 'array', minItems: 1, items: { type: 'string' } }, ok: { const: true } },
+};
+
+const EVIDENCE_GOAL = [
+  '1. Create done.txt containing exactly caller-complete followed by a newline.',
+  '2. Write retry.txt containing the single line fixed.',
+  '3. Append one line to log.md.',
+].join('\n');
+
+function evidenceProgram() {
+  return {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    defaults: { reasoning: 'low' },
+    actions: [
+      {
+        id: 'create-done', purpose: 'Create done.txt', role: 'produce', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], evidenceFor: [], inputs: [], produces: ['done'],
+        prompt: 'Create done.txt with the exact line caller-complete.',
+        evidence: [{ type: 'command', cmd: 'grep -qx caller-complete done.txt' }],
+      },
+      {
+        id: 'retry-once', purpose: 'Write retry.txt', role: 'produce', dependsOn: [], affects: ['requirement-2'], ownedFiles: ['retry.txt'], evidenceFor: [], inputs: [], produces: [],
+        prompt: 'Write retry.txt with the single line fixed.',
+        evidence: [{ type: 'command', cmd: 'grep -qx fixed retry.txt || (echo "retry.txt says $(cat retry.txt)"; exit 1)', timeoutSec: 30 }],
+      },
+      {
+        id: 'summarize', purpose: 'Report the files as JSON', role: 'investigate', dependsOn: ['create-done'], affects: [], ownedFiles: [], evidenceFor: [], inputs: [], produces: [],
+        prompt: 'Answer with only JSON: {"files": [...], "ok": true}.',
+        evidence: [
+          { type: 'command', cmd: 'test "$BULLSWARM_EVIDENCE" = 1 && grep -q done.txt "$BULLSWARM_STEP_OUTPUT"' },
+          { type: 'schema', file: '$output', schema: 'schemas/summary.json' },
+        ],
+      },
+      {
+        id: 'always-fails', purpose: 'Append to log.md', role: 'produce', dependsOn: [], affects: ['requirement-3'], ownedFiles: ['log.md'], evidenceFor: [], inputs: [], produces: [],
+        prompt: 'Append one line to log.md.',
+        evidence: [{ type: 'command', cmd: 'echo "acme check failed" && exit 3' }],
+      },
+      {
+        id: 'survey-done', purpose: 'Report on done.txt', role: 'investigate', dependsOn: ['create-done'], affects: [], ownedFiles: [], evidenceFor: [], inputs: ['done'], produces: [],
+        prompt: 'Read done.txt and report its bytes. Do not modify any file.',
+      },
+      {
+        id: 'check-create-done', purpose: 'Inspect done.txt', role: 'check', dependsOn: ['create-done'], affects: [], ownedFiles: [], evidenceFor: ['requirement-1'], inputs: ['done'], produces: [],
+        prompt: 'Read done.txt and compare bytes.',
+      },
+    ],
+  };
+}
+
+function writeEvidenceWorker(f) {
+  writeFileSync(join(f.root, 'caller-worker.mjs'), [
+    'import { appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";',
+    'const task = readFileSync(process.argv[2], "utf8");',
+    'const id = task.match(/^Bullswarm (?:autonomous V2 evidence action|program action): ([\\w-]+)$/m)?.[1];',
+    'if (task.includes("autonomous V2 evidence action")) {',
+    '  const ok = existsSync("done.txt") && readFileSync("done.txt", "utf8") === "caller-complete\\n";',
+    '  const candidate = task.match(/exact durable path: \'([^\']+)\'/)?.[1];',
+    '  writeFileSync(candidate, JSON.stringify({schemaVersion:"bullswarm.workflow.evidence.v2",requirements:{"requirement-1":{status:ok?"passed":"failed",evidence:[ok?"done.txt has the exact line":"done.txt missing or wrong"],concerns:[]}}}));',
+    '  process.stdout.write("The durable evidence candidate validated.");',
+    '} else if (id === "create-done") {',
+    '  writeFileSync("done.txt", "caller-complete\\n");',
+    '  process.stdout.write("Wrote done.txt with the exact caller-complete line and read it back to confirm acceptance.");',
+    '} else if (id === "retry-once") {',
+    // The first attempt writes the wrong line; the retry sees the failed check in its brief and fixes it.
+    '  const fixed = task.includes("Evidence Bullswarm ran after that attempt");',
+    '  writeFileSync("retry.txt", fixed ? "fixed\\n" : "broken\\n");',
+    '  process.stdout.write(fixed ? "Rewrote retry.txt with the line fixed after reading the failed check output." : "Wrote retry.txt with a first draft of its single line.");',
+    '} else if (id === "summarize") {',
+    '  process.stdout.write("```json\\n" + JSON.stringify({ files: ["done.txt"], ok: true }) + "\\n```\\n");',
+    '} else if (id === "always-fails") {',
+    '  appendFileSync("log.md", "- appended by the fixture worker\\n");',
+    '  process.stdout.write("Appended one line to log.md and confirmed the file ends with it.");',
+    '} else {',
+    '  process.stdout.write("Read-only fixture step: reported on done.txt and changed no workspace file. It holds one line.");',
+    '}',
+  ].join('\n'));
+}
+
+test('CLI: evidence end to end — a passing check, a same-pool retry after a failed check, a schema check on the final response, and a step that fails twice', () => {
+  const f = cliFixture();
+  try {
+    writeEvidenceWorker(f);
+    mkdirSync(join(f.target, 'schemas'));
+    writeFileSync(join(f.target, 'schemas', 'summary.json'), JSON.stringify(EVIDENCE_SCHEMA));
+    writeFileSync(join(f.target, 'log.md'), '# Log\n');
+    const programPath = join(f.root, 'evidence.json');
+    writeFileSync(programPath, JSON.stringify(evidenceProgram()));
+
+    // Validate: each step with checks names their types.
+    const validated = cli(f, ['workflow', 'plan', 'validate', EVIDENCE_GOAL, '--cwd', f.target, '--program', programPath]);
+    assert.equal(validated.status, 0, validated.stderr || validated.stdout);
+    assert.match(validated.stdout, /create-done\s.* evidence=command /);
+    assert.match(validated.stdout, /summarize\s.* evidence=command,schema /);
+    assert.doesNotMatch(validated.stdout, /survey-done\s.*evidence=/);
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'validate must not create a run');
+
+    // Launch in the foreground: one step fails, so the run is partial.
+    const launched = cli(f, ['workflow', 'goal', EVIDENCE_GOAL, '--cwd', f.target, '--program', programPath, '--summary', 'Evidence program', '--foreground']);
+    assert.equal(launched.status, 1, launched.stderr || launched.stdout);
+    const lines = launched.stdout.split('\n');
+    const proofAt = lines.indexOf('proof: 3 steps proven (command 3, schema 1, review 1) · 1 finished · unproven: survey-done');
+    assert.equal(lines[proofAt - 1], 'reason: 1 of 6 steps did not succeed: always-fails failed (failed-evidence)', launched.stdout);
+
+    const [runId] = readdirSync(join(f.home, 'workflows'));
+    const runDir = join(f.home, 'workflows', runId);
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
+    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    const attemptsOf = (id) => state.attempts.filter((attempt) => attempt.actionId === id);
+
+    // A passing check.
+    const [created] = attemptsOf('create-done');
+    assert.equal(attemptsOf('create-done').length, 1);
+    assert.equal(created.status, 'succeeded');
+    assert.deepEqual(created.evidenceResults.map((item) => [item.type, item.status, item.exit]), [['command', 'passed', 0]]);
+    assert.equal(created.evidenceResults[0].log, join(runDir, 'evidence-create-done-attempt-1-1.log'));
+    assert.match(readFileSync(created.evidenceResults[0].log, 'utf8'), /^\$ grep -qx caller-complete done\.txt\n/);
+
+    // A failed check, then one retry pinned to the same pool with the check's output attached.
+    const [first, second] = attemptsOf('retry-once');
+    assert.equal(attemptsOf('retry-once').length, 2);
+    assert.deepEqual([first.status, first.failureKind], ['interrupted', 'failed-evidence']);
+    const events = readEvents(runDir);
+    const attemptFinished = (attempt) => events.find((event) => event.type === 'attempt.finished' && event.payload.attemptId === attempt.id).payload;
+    assert.equal(attemptFinished(first).willRetry, true);
+    assert.deepEqual(attemptFinished(first).evidenceOutcome, { passed: 0, failed: 1, notRun: 0, why: first.why });
+    assert.equal(first.evidenceResults[0].tail, 'retry.txt says broken');
+    assert.equal(second.status, 'succeeded');
+    assert.equal(second.pool, first.pool);
+    assert.match(second.routeWhy, /^retry on the same pool after failed evidence · /);
+    assert.equal(second.evidenceResults[0].status, 'passed');
+    const retryTask = readFileSync(second.taskFile, 'utf8');
+    assert.match(retryTask, /## Prior attempt on this step/);
+    assert.match(retryTask, /- Failure: failed-evidence — grep -qx fixed retry\.txt .* → exit 1: retry\.txt says broken/);
+    assert.match(retryTask, /- Evidence Bullswarm ran after that attempt:\n {2}- command `grep -qx fixed retry\.txt [^\n]*`: failed · exit 1 · \d+s\n/);
+    assert.match(retryTask, /\n {6}retry\.txt says broken\n/);
+    assert.equal(readFileSync(join(f.target, 'retry.txt'), 'utf8'), 'fixed\n');
+
+    // A schema check on the step's own final response (one fenced block, unwrapped).
+    const [summarized] = attemptsOf('summarize');
+    assert.equal(summarized.status, 'succeeded');
+    assert.deepEqual(summarized.evidenceResults.map((item) => [item.type, item.status]), [['command', 'passed'], ['schema', 'passed']]);
+    assert.equal(summarized.evidenceResults[1].file, '$output');
+    assert.deepEqual(summarized.evidenceResults[1].notes, ['unwrapped one fenced code block']);
+    assert.match(readFileSync(summarized.taskFile, 'utf8'), /- schema: your final response must be only JSON that matches the JSON schema schemas\/summary\.json; Bullswarm checks the saved response/);
+
+    // A check that fails twice: the step fails on the same pool and waits for the caller.
+    const failing = attemptsOf('always-fails');
+    assert.deepEqual(failing.map((attempt) => [attempt.status, attempt.failureKind]), [['interrupted', 'failed-evidence'], ['failed', 'failed-evidence']]);
+    assert.equal(failing[1].pool, failing[0].pool);
+    assert.equal(state.actions.find((action) => action.id === 'always-fails').lastFailure.kind, 'failed-evidence');
+
+    // The result envelope carries the latest attempt's results, only on steps that declare evidence.
+    const envelope = JSON.parse(readFileSync(join(runDir, 'result.json'), 'utf8'));
+    assert.equal(envelope.status, 'partial');
+    // The handback names the failed check (§2.7) and does not offer a plain retry.
+    assert.deepEqual(envelope.handback.unfinished, [{
+      id: 'always-fails', status: 'failed', failureKind: 'failed-evidence', retryable: false,
+      why: 'echo "acme check failed" && exit 3 → exit 3: acme check failed',
+    }]);
+    const row = (id) => envelope.actions.find((action) => action.id === id);
+    assert.deepEqual(row('retry-once').evidenceResults, second.evidenceResults);
+    assert.deepEqual(row('always-fails').evidenceResults, failing[1].evidenceResults);
+    assert.equal(Object.hasOwn(row('survey-done'), 'evidenceResults'), false);
+    assert.equal(Object.hasOwn(row('check-create-done'), 'evidenceResults'), false);
+    const finished = events.filter((event) => event.type === 'action.finished' && event.payload.status === 'succeeded');
+    assert.deepEqual(Object.fromEntries(finished.map((event) => [event.payload.actionId, event.payload.proof ?? null])), {
+      // At its finish the review had not run yet; by the end of the run it passed (see the proof line).
+      'create-done': { by: ['command'], reviewPending: true },
+      'retry-once': { by: ['command'], reviewPending: false },
+      summarize: { by: ['command', 'schema'], reviewPending: false },
+      'survey-done': { by: [], reviewPending: false },
+    });
+    assert.equal(events.some((event) => event.payload?.actionId === 'check-create-done' && Object.hasOwn(event.payload, 'proof')), false, 'a review step is never labelled');
+
+    // runs result prints the same proof line; resume has nothing a retry fixes and names the step.
+    const token = envelope.shortId ?? runId;
+    const resultText = cli(f, ['workflow', 'runs', 'result', token]);
+    assert.equal(resultText.status, 1, resultText.stderr); // a partial result exits 1
+    assert.match(resultText.stdout, /^# proof {2}3 steps proven \(command 3, schema 1, review 1\) · 1 finished · unproven: survey-done$/m);
+    const resumed = cli(f, ['workflow', 'resume', token, '--json']);
+    assert.equal(resumed.status, 1, resumed.stderr || resumed.stdout);
+    const refusal = JSON.parse(resumed.stdout);
+    assert.equal(refusal.status, 'nothing-to-retry');
+    assert.deepEqual(refusal.needsCaller.map((entry) => [entry.id, entry.failureKind]), [['always-fails', 'failed-evidence']]);
+    assert.equal(JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).attempts.length, state.attempts.length, 'resume relaunched nothing');
   } finally { f.cleanup(); }
 });

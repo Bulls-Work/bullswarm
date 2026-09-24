@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ACTION_KINDS, KIND_DEFAULTS, validateActionProgram } from '../src/workflow/action-validator.js';
-import { KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, roleRouting } from '../src/workflow/step-vocabulary.js';
+import { EVIDENCE_ENV_KEYS } from '../src/workflow/evidence-runner.js';
+import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from '../src/workflow/schema-check.js';
+import { KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, roleRouting } from '../src/workflow/step-vocabulary.js';
 import { deliverableVerdict, snapshotPossible } from '../src/workflow/v2-dispatch.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
 import { helpText } from '../src/help.js';
@@ -137,8 +139,13 @@ test('the example programs in both program references validate in program mode',
       assert.equal(accepted.actions.length, program.actions.length, path);
       // The example is written with roles: two produce steps, one combine
       // that merges files, and one check at high effort.
+      const actions = accepted.actions;
+      const byId = new Map(actions.map((action) => [action.id, action]));
       assert.deepEqual(
-        accepted.actions.map((action) => [action.role, action.deliverable?.type, action.lane, action.effort]),
+        ['since-flag', 'readme', 'integrate', 'verify'].map((id) => {
+          const action = byId.get(id);
+          return [action.role, action.deliverable?.type, action.lane, action.effort];
+        }),
         [
           ['produce', 'files', 'build', 'medium'],
           ['produce', 'files', 'build', 'medium'],
@@ -148,6 +155,14 @@ test('the example programs in both program references validate in program mode',
         path,
       );
       assert.ok(program.actions.every((action) => action.kind === undefined), `${path}: the example uses roles, not kinds`);
+      if (path === 'docs/guide/workflows.md') {
+        const records = actions.find((action) => action.id === 'records');
+        assert.deepEqual(records?.deliverable, { type: 'data', paths: ['out/records.json'] }, `${path}: schema example data deliverable`);
+        assert.deepEqual(records?.evidence?.map((item) => item.type), ['schema'], `${path}: schema example evidence`);
+      }
+      for (const action of actions.filter((item) => item.evidence)) {
+        assert.ok(action.evidence.every((item) => STEP_EVIDENCE_TYPES.includes(item.type)), `${path}: normalized evidence types`);
+      }
     }
   }
 });
@@ -166,6 +181,23 @@ function validate(actions) {
   }
 }
 const step = { purpose: 'p', prompt: 'x', dependsOn: [], affects: ['requirement-1'], ownedFiles: [], evidenceFor: [] };
+
+test('program references document evidence keywords and the public command environment', () => {
+  const keywordTable = (path, heading) => {
+    const text = read(path);
+    const start = text.indexOf(heading);
+    assert.notEqual(start, -1, `${path}: evidence section`);
+    const end = text.indexOf('## ', start + heading.length);
+    return text.slice(start, end < 0 ? undefined : end);
+  };
+  for (const path of PROGRAM_REFERENCES) {
+    const section = keywordTable(path, '## Evidence: command and schema');
+    for (const keyword of SCHEMA_ASSERTED_KEYWORDS) assert.ok(section.includes(`\`${keyword}\``), `${path}: asserted ${keyword}`);
+    for (const keyword of SCHEMA_IGNORED_KEYWORDS) assert.ok(section.includes(`\`${keyword}\``), `${path}: ignored ${keyword}`);
+    assert.deepEqual([...section.matchAll(/`(BULLSWARM_[A-Z_]+)(?:=1)?`/g)].map((match) => match[1]), EVIDENCE_ENV_KEYS, `${path}: public evidence env`);
+    for (const type of STEP_EVIDENCE_TYPES) assert.ok(section.includes(`\`${type}\``), `${path}: evidence type ${type}`);
+  }
+});
 
 test('the changelog and operations reference say what is new against 0.35.6', () => {
   // The code: a lane-only build step that changed nothing fails in a run started by this version.
@@ -246,7 +278,7 @@ test('the enforced rules and field rows name the deliverable path refusals', () 
 test('not-produced covers a build-lane step that changed nothing, and stoppedBy lists every stop', () => {
   const result = flat('docs/reference/result.md');
   assert.ok(result.includes('`not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit)'));
-  assert.match(helpText(['workflow', 'resume']), /a build-lane step with no declared deliverable that changed nothing\) is not rerun/);
+  assert.match(helpText(['workflow', 'resume']), /a declared deliverable that was not produced\) is not rerun/);
   const row = result.match(/\| `stoppedBy` \| ([^\n]*) \|/)[1];
   const listed = [...row.matchAll(/`([a-z-]+)` \(/g)].map((match) => match[1]);
   assert.deepEqual(listed, [...VERIFY_LOOP_STOPS]);

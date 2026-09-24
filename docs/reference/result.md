@@ -75,7 +75,7 @@ The full document is `schemaVersion: "bullswarm.workflow.result.v2"`. Allowed to
 | `executionMode` | `"program"` on caller-authored (and dispatched-planner) programs |
 | `workspace` | Git status inventory on program runs: `cwd`, `changedFiles`, `baselineChangedFiles`, `warnings`. Not per-worker attribution; files stay in the target directory |
 | `requirements[]` | ledger: `id`, `text`, `mandatory`, `status` (`pending`/`passed`/`failed`/`blocked`), `workRevision`, `evidence[]` |
-| `actions[]` | `id`, `purpose`, `status`, `outputFile`, `artifactIds`, `reasoning`, `kind`, `role` when the step stated one, `bytes`, and on program runs `failure` |
+| `actions[]` | `id`, `purpose`, `status`, `outputFile`, `artifactIds`, `reasoning`, `kind`, `role` when the step stated one, `evidenceResults` when the step declared evidence, `bytes`, and on program runs `failure` |
 | `verifyRounds` | program runs from 0.35.2 on: the repair loop's record, `{ max, used, stoppedBy, phases[] }`, one phase per verify round and per repair (`used: 0` when no evidence step ran). See [Verify rounds](#verify-rounds) |
 | `callerDecision` | program runs from 0.35.2 on: `null`, or what is still open and one suggested next step each: the mandatory requirements the last closed round left failing, and every declared requirement no evidence step covers (`not judged · no evidence step covers it`, on a verified run too). See [The caller-decision block](#the-caller-decision-block) |
 | `gaps` | `null` on a verified completed run; otherwise `bullswarm.workflow.gaps.v2` with open requirements and failed/blocked/cancelled/interrupted actions |
@@ -87,9 +87,19 @@ Requirement `status` values: `pending`, `passed`, `failed`, `blocked`. Action `s
 
 Each requirement `evidence[]` entry is `{ sourceAction, status, evidence, concerns, eventSequence, mechanicalFailure? }`. Only evidence from the current `workRevision` is current. Negative evidence does not open another planner round.
 
+A step that declares `evidence` adds `actions[].evidenceResults`; when a check did not run, the value is `null`. Each item records its declared type and fields, `status` (`passed`, `failed`, or `not-run`), `exit`, `durationMs`, `tail`, `log` and `why`, plus optional timeout, signal, side-effect and schema-error facts. For example:
+
+```json
+{"type":"schema","file":"out/records.json","schema":"schemas/record.json","timeoutSec":120,"status":"failed","exit":1,"durationMs":140,"errorCount":1,"errors":["$.date must be string"],"tail":"not valid: 1 error","log":"<runDir>/evidence-records-attempt-1-1.log","why":"not valid: 1 error"}
+```
+
+Evidence results are not added to the requirement ledger and do not make a requirement `verified`.
+
+The compact summary adds `proof` to each eligible action row and a top-level proof count. The row's array names `command`, `schema` and `review`; an empty array means `unproven`. `proof.byType` counts the labels, `proven` counts steps with one or more types, and `unproven` counts the other finished eligible steps. The row field is omitted for old runs without the `proofLabels` marker unless that step declares evidence; saved runs are not rewritten.
+
 Each action `bytes` is `{ taskFile, authorPrompt, kernel, dependencyInputs, output }` — the task file the kernel wrote, the action's own prompt, the remainder after subtracting that prompt, the sum of dependency output files (0 when there are none), and the durable out file. Missing values are `null`, never guessed.
 
-`failure` is `{ kind, message? }`. Kinds a plain `workflow resume` can retry: `provider`, `quota`, `auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`, `stalled`. A check that failed the work, a semantic failure, or `not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit) is not retried; add a fix step or name the id in `plan revise --rerun`.
+`failure` is `{ kind, message? }`. Kinds a plain `workflow resume` can retry: `provider`, `quota`, `auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`, `stalled`. A check that failed the work, a semantic failure, `not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit), or `failed-evidence` is not retried by `workflow resume`; add a fix step or name the id in `plan revise --rerun`.
 
 ## Verify rounds
 

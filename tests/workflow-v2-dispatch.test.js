@@ -1,15 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
-  classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, snapshotPossible, statDeliverablePaths, trackedDiffStatForTests,
+  classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, durableAttemptHandoff, snapshotPossible, statDeliverablePaths,
+  trackedDiffStatForTests,
 } from '../src/workflow/v2-dispatch.js';
 import { handoffBlock } from '../src/workflow/v2-runtime.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import { listAssignments } from '../src/lib/assignments.js';
+import { pickPool } from '../src/lib/route.js';
 import {
   createV2GoalDocument, createV2DurableState, deserializeV2DurableState,
 } from '../src/workflow/v2-state.js';
@@ -2203,4 +2205,679 @@ test('a quota verdict without its proof pauses nothing (quota.js Q6)', async () 
     pools: [connector('luna-1'), connector('luna-2')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
   });
   assert.equal(h.core.pools['luna-1']?.quarantine, undefined);
+});
+
+// --- stage 2: evidence inside dispatch (E4, E13-E17, E30) --------------------
+// Fake workers, the real evidence runner (real /bin/sh checks) and throwaway
+// git repos or plain folders.
+
+// A report step whose checks read its own final response, so a fake worker
+// decides pass or fail by what it writes to the out file.
+const reportStep = (evidence, extra = {}) => ({
+  id: 'ev-report', role: 'investigate', lane: 'analyze', effort: 'medium',
+  deliverable: { type: 'report' }, evidence, ...extra,
+});
+const failsUntilFixed = { type: 'command', cmd: 'grep -q fixed "$BULLSWARM_STEP_OUTPUT" || (echo \'first run: marker missing\'; exit 1)' };
+const answer = (text, verdict = good) => ({ paths }) => {
+  writeFileSync(paths.outFile, text);
+  return verdict;
+};
+const textFailure = { ok: false, why: 'failure pattern: ENOENT: no such file or directory', meta: { exitCode: 0, wallSec: 1 } };
+const passedRunner = (calls = []) => async (items, opts) => {
+  calls.push({ items, opts });
+  return {
+    results: items.map((item) => ({ type: 'command', cmd: item.cmd, timeoutSec: 120, status: 'passed', exit: 0, durationMs: 1, tail: '', why: null })),
+    failed: false, stopped: false, checkFault: false, why: null, createdOutOfScope: [],
+  };
+};
+
+// One dispatch with its seams recorded: the task each attempt was handed, the
+// onAttempt stages, the onEvidence events and the core state.
+async function withEvidence(prefix, {
+  action: step, watches, pools = [connector('sample-pool')], prepare, plain = false, dependencies: extraDeps = {}, ...dispatch
+}, check) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  const repo = plain ? join(root, 'plain') : gitWorkspace(root);
+  if (plain) mkdirSync(repo, { recursive: true });
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const tasks = [];
+  const lifecycle = [];
+  const events = [];
+  try {
+    if (prepare) prepare(repo);
+    const verdicts = typeof watches === 'function' ? watches(repo) : watches;
+    const h = harness(verdicts);
+    const inner = h.dependencies.watchOnce;
+    h.dependencies.watchOnce = async (c, task, dir, p, opts) => { tasks.push(task); return inner(c, task, dir, p, opts); };
+    const result = await dispatchV2Action({
+      action: step,
+      taskText: 'do the step',
+      targetDir: repo,
+      paths: (ordinal) => ({
+        taskFile: join(home, `task-${step.id}-attempt-${ordinal}.md`),
+        outFile: join(home, `out-${step.id}-attempt-${ordinal}.md`),
+      }),
+      pools,
+      bullswarmDir: home,
+      onAttempt: (stage, record) => lifecycle.push({ stage, record }),
+      onEvidence: (event) => events.push(event),
+      ...dispatch,
+      dependencies: { ...h.dependencies, ...extraDeps },
+    });
+    await check({ result, repo, home, tasks, lifecycle, events, core: h.core, clock: h.dependencies.now });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// A seeded shuffle, so each pinning round sees a different launch order.
+function shuffled(list, seed) {
+  const out = [...list];
+  let state = seed + 1;
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    const j = state % (i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+test('evidence: classifyFailure maps failed-evidence, and both schema paths keep their kind', () => {
+  assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'failed-evidence', why: 'x → exit 1' }), 'failed-evidence');
+  assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'failed-evidence', why: 'x', meta: { exitCode: 1 } }), 'failed-evidence');
+  assert.equal(classifyV2DispatchFailure({ ok: false, cancelled: true, why: 'evidence stopped' }), 'cancelled');
+  assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'schema', why: 'invalid' }), 'schema');
+  assert.equal(classifyV2DispatchFailure(textFailure), 'semantic');
+});
+
+test('evidence: a passing check keeps the verdict ok and the attempt carries evidenceResults', async () => {
+  await withEvidence('bs-ev-pass-', {
+    action: reportStep([{ type: 'command', cmd: 'test "$BULLSWARM_EVIDENCE" = 1 && test "$BULLSWARM_STEP_ID" = ev-report && test -s "$BULLSWARM_STEP_OUTPUT" && echo checked' }]),
+    watches: [answer('fixed report\n')],
+    plain: true,
+  }, ({ result, home, events, lifecycle }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts.length, 1);
+    const [attempt] = result.attempts;
+    assert.equal(attempt.status, 'succeeded');
+    assert.equal(attempt.failureKind, null);
+    assert.equal(attempt.evidenceResults.length, 1);
+    const [item] = attempt.evidenceResults;
+    assert.equal(item.status, 'passed');
+    assert.equal(item.exit, 0);
+    assert.equal(item.why, null);
+    assert.equal(item.tail, 'checked');
+    assert.equal(item.log, join(home, 'evidence-ev-report-attempt-1-1.log'));
+    assert.ok(existsSync(item.log));
+    // The completion receipt is written from this verdict (E31).
+    assert.deepEqual(result.verdict.evidenceResults, attempt.evidenceResults);
+    const finished = lifecycle.find((entry) => entry.stage === 'finished').record;
+    assert.deepEqual(finished.evidenceResults, attempt.evidenceResults);
+    assert.deepEqual(events.filter((event) => event.stage !== 'running').map((event) => [event.actionId, event.stage, event.index, event.of]), [
+      ['ev-report', 'started', 1, 1],
+      ['ev-report', 'finished', 1, 1],
+    ]);
+  });
+});
+
+test('evidence: a failed check retries once on the same pool, with the failure attached, while another pool ranks higher', { timeout: 60_000 }, async () => {
+  const names = ['pool-a', 'pool-b', 'pool-c'];
+  // After attempt 1 the meters say pool-a is the worst choice. Without the
+  // pin the router would move the retry (checked directly first).
+  const flipped = (order) => order.map((name) => connector(name, { pace: name === 'pool-a' ? -90 : 90 }));
+  assert.notEqual(pickPool('analyze', flipped(names), { callerEligible: false, callerSession: false, effortTier: 'medium' }).pick.pool, 'pool-a');
+  for (let round = 0; round < 20; round += 1) {
+    const order = shuffled(names, round);
+    const launch = order.map((name) => connector(name, { pace: name === 'pool-a' ? 90 : -90 }));
+    const refreshCalls = [];
+    const facts = [];
+    await withEvidence('bs-ev-pin-', {
+      action: reportStep([failsUntilFixed]),
+      watches: [answer('broken\n'), answer('fixed\n')],
+      plain: true,
+      pools: launch,
+      refreshPools: async (opts) => { refreshCalls.push(opts); return refreshCalls.length === 1 ? launch : flipped(shuffled(order, round + 7)); },
+      handoffBlock: (value) => { facts.push(value); return handoffBlock(value); },
+    }, ({ result, tasks }) => {
+      assert.equal(result.ok, true, `round ${round}`);
+      assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['pool-a', 'pool-a'], `round ${round}: ${order}`);
+      // One forced refresh decided (d), and the pinned pick reused it.
+      assert.deepEqual(refreshCalls, [{ force: false }, { force: true }], `round ${round}`);
+      assert.match(result.attempts[1].routeWhy, /^retry on the same pool after failed evidence · /);
+      if (round > 0) return;
+      const [first, second] = result.attempts;
+      assert.equal(first.status, 'interrupted');
+      assert.equal(first.willRetry, true);
+      assert.equal(first.failureKind, 'failed-evidence');
+      // The label is the cmd cut at a word boundary to 80 characters.
+      assert.equal(first.why, 'grep -q fixed "$BULLSWARM_STEP_OUTPUT" || (echo \'first run: marker missing\';… → exit 1: first run: marker missing');
+      assert.equal(first.evidenceResults[0].status, 'failed');
+      assert.equal(second.status, 'succeeded');
+      assert.equal(second.evidenceResults[0].status, 'passed');
+      assert.equal(second.handoff.from, 'ev-report-1');
+      assert.equal(tasks[0], 'do the step');
+      assert.match(tasks[1], /## Prior attempt on this step/);
+      assert.match(tasks[1], /- Failure: failed-evidence — /);
+      assert.match(tasks[1], /Evidence Bullswarm ran after that attempt/);
+      assert.match(tasks[1], /first run: marker missing/);
+      assert.equal(facts.length, 1);
+      assert.deepEqual(facts[0].evidenceResults, first.evidenceResults);
+      assert.equal(facts[0].failureKind, 'failed-evidence');
+    });
+  }
+});
+
+test('evidence: a check that fails twice fails the step on the same pool, and the decision log says failed-evidence', async () => {
+  await withEvidence('bs-ev-twice-', {
+    action: reportStep([failsUntilFixed]),
+    watches: [answer('broken\n'), answer('still broken\n')],
+    plain: true,
+    pools: [connector('pool-a'), connector('pool-b')],
+    preferredPool: 'pool-a',
+  }, ({ result, core }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.deepEqual(result.attempts.map((attempt) => [attempt.pool, attempt.status]), [['pool-a', 'interrupted'], ['pool-a', 'failed']]);
+    assert.equal(result.attempts[1].willRetry, false);
+    assert.doesNotMatch(result.attempts[1].why, /no retry|not retried/);
+    const rows = core.decisionLog.filter((row) => row.actionId === 'ev-report');
+    assert.deepEqual(rows.map((row) => [row.ok, row.failureKind]), [[false, 'failed-evidence'], [false, 'failed-evidence']]);
+    assert.equal(rows[0].ts, result.attempts[0].finishedAt);
+  });
+});
+
+test('evidence: no retry when the runtime says the step already used it, or when --retry-attempts is 0', async () => {
+  for (const options of [{ evidenceRetryAvailable: false }, { maxMechanicalRetries: 0 }]) {
+    const refreshCalls = [];
+    await withEvidence('bs-ev-noretry-', {
+      action: reportStep([failsUntilFixed]),
+      watches: [answer('broken\n'), answer('fixed\n')],
+      plain: true,
+      refreshPools: async (opts) => { refreshCalls.push(opts); return null; },
+      ...options,
+    }, ({ result }) => {
+      assert.equal(result.failureKind, 'failed-evidence', JSON.stringify(options));
+      assert.equal(result.attempts.length, 1);
+      assert.equal(result.attempts[0].status, 'failed');
+      assert.equal(result.attempts[0].willRetry, false);
+      assert.match(result.attempts[0].why, /→ exit 1: first run: marker missing$/);
+      assert.deepEqual(refreshCalls, [{ force: false }], 'no forced refresh without a retry to decide');
+    });
+  }
+});
+
+test('evidence: a pool quarantined between the attempts gets no retry, and the stored attempt never promised one', async () => {
+  const refreshCalls = [];
+  await withEvidence('bs-ev-quarantine-', {
+    action: reportStep([failsUntilFixed]),
+    watches: [answer('broken\n'), answer('fixed\n')],
+    plain: true,
+    pools: [connector('pool-a', { pace: 90 }), connector('pool-b', { pace: -90 })],
+    refreshPools: async (opts) => {
+      refreshCalls.push(opts);
+      return refreshCalls.length === 1
+        ? [connector('pool-a', { pace: 90 }), connector('pool-b', { pace: -90 })]
+        : [connector('pool-a', { quarantine: { until: Date.parse('2027-01-01T00:00:00Z'), reason: 'auth' } }), connector('pool-b')];
+    },
+  }, ({ result, lifecycle }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts.length, 1, 'no other pool is tried');
+    const [attempt] = result.attempts;
+    assert.equal(attempt.pool, 'pool-a');
+    assert.equal(attempt.status, 'failed');
+    assert.equal(attempt.willRetry, false);
+    assert.match(attempt.why, /→ exit 1: first run: marker missing · no retry: pool-a is no longer eligible$/);
+    const finished = lifecycle.filter((entry) => entry.stage === 'finished').map((entry) => entry.record);
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0].status, 'failed');
+    assert.equal(finished[0].willRetry, false);
+    assert.deepEqual(refreshCalls, [{ force: false }, { force: true }]);
+    assert.equal(lifecycle.some((entry) => entry.stage === 'corrected'), false);
+  });
+});
+
+test('evidence: a pinned pick that finds no pool after the refresh corrects the stored attempt and tries nothing else', async () => {
+  const picks = [];
+  await withEvidence('bs-ev-race-', {
+    action: reportStep([failsUntilFixed]),
+    watches: [answer('broken\n'), answer('fixed\n')],
+    plain: true,
+    pools: [connector('pool-a', { pace: 90 }), connector('pool-b', { pace: -90 }), connector('pool-c', { pace: -90 })],
+    dependencies: {
+      pickPool: (lane, list, opts) => {
+        picks.push({ names: list.map((entry) => entry.name), strictPool: opts.strictPool });
+        return picks.length === 1 ? pickPool(lane, list, opts) : { pick: null, why: 'no eligible pool', candidates: [] };
+      },
+    },
+  }, ({ result, lifecycle }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts.length, 1);
+    assert.deepEqual(picks.map((pick) => pick.strictPool), [null, 'pool-a']);
+    assert.deepEqual(picks[1].names, ['pool-a']);
+    const suffix = ' · no retry: pool-a is no longer eligible';
+    assert.ok(result.verdict.why.endsWith(suffix), result.verdict.why);
+    assert.equal(result.attempts[0].status, 'failed');
+    assert.equal(result.attempts[0].willRetry, false);
+    assert.ok(result.attempts[0].why.endsWith(suffix));
+    assert.deepEqual(lifecycle.map((entry) => entry.stage), ['started', 'finished', 'corrected']);
+    assert.equal(lifecycle[1].record.status, 'interrupted');
+    assert.equal(lifecycle[1].record.willRetry, true);
+    const corrected = lifecycle[2].record;
+    assert.equal(corrected.status, 'failed');
+    assert.equal(corrected.willRetry, false);
+    assert.ok(corrected.why.endsWith(suffix));
+    assert.equal(corrected.evidenceResults[0].status, 'failed');
+  });
+});
+
+test('evidence: a failed check on an act step goes to the caller at once, with no forced refresh', async () => {
+  const refreshCalls = [];
+  await withEvidence('bs-ev-act-', {
+    action: {
+      id: 'announce', role: 'act', lane: 'analyze', effort: 'medium',
+      deliverable: { type: 'outward' }, evidence: [{ type: 'command', cmd: 'test -f outbox.txt' }],
+    },
+    watches: [answer('posted\n'), answer('posted again\n')],
+    plain: true,
+    refreshPools: async (opts) => { refreshCalls.push(opts); return null; },
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts.length, 1);
+    assert.equal(result.attempts[0].status, 'failed');
+    assert.equal(result.attempts[0].why, 'test -f outbox.txt → exit 1 · act steps are not retried');
+    assert.deepEqual(refreshCalls, [{ force: false }]);
+  });
+});
+
+test('evidence: a check that could not run goes to the caller, and a missing data file gets the normal retry', async () => {
+  await withEvidence('bs-ev-fault-', {
+    action: reportStep([{ type: 'schema', file: 'data.json', schema: 'schemas/event.json' }]),
+    watches: [answer('done\n'), answer('done again\n')],
+    plain: true,
+    prepare: (dir) => writeFileSync(join(dir, 'data.json'), '{"a":1}\n'),
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts.length, 1);
+    assert.equal(result.attempts[0].status, 'failed');
+    assert.match(result.attempts[0].why, /^check could not run: schema schemas\/event\.json on data\.json → schema missing/);
+    assert.doesNotMatch(result.attempts[0].why, / · /);
+    assert.equal(result.attempts[0].evidenceResults[0].fault, 'check');
+    assert.equal(result.attempts[0].evidenceResults[0].exit, 2);
+  });
+  await withEvidence('bs-ev-data-', {
+    action: reportStep([{ type: 'schema', file: 'data.json', schema: 'schemas/event.json' }]),
+    watches: (dir) => [
+      answer('done\n'),
+      ({ paths: p }) => { writeFileSync(join(dir, 'data.json'), '{"a":1}\n'); writeFileSync(p.outFile, 'done\n'); return good; },
+    ],
+    plain: true,
+    prepare: (dir) => {
+      mkdirSync(join(dir, 'schemas'));
+      writeFileSync(join(dir, 'schemas', 'event.json'), '{"type":"object","required":["a"]}\n');
+    },
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts.length, 2);
+    assert.equal(result.attempts[0].failureKind, 'failed-evidence');
+    assert.match(result.attempts[0].why, /^schema schemas\/event\.json on data\.json → file missing/);
+    assert.equal(Object.hasOwn(result.attempts[0].evidenceResults[0], 'fault'), false);
+    assert.equal(result.attempts[1].evidenceResults[0].status, 'passed');
+  });
+});
+
+test('evidence: the gate runs first; a not-produced attempt and a failed worker run no evidence', async () => {
+  const calls = [];
+  await withEvidence('bs-ev-gate-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'true' }] }),
+    watches: [answer('done\n')],
+    evidenceRetryAvailable: true,
+    dependencies: { runStepEvidence: passedRunner(calls) },
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(calls.length, 0);
+    assert.equal(Object.hasOwn(result.attempts[0], 'evidenceResults'), false);
+  });
+  await withEvidence('bs-ev-worker-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'true' }] }),
+    watches: [{ ok: false, failureKind: 'process', why: 'exit 1', meta: { exitCode: 1 } }],
+    maxMechanicalRetries: 0,
+    dependencies: { runStepEvidence: passedRunner(calls) },
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'process');
+    assert.equal(calls.length, 0);
+    assert.equal(Object.hasOwn(result.attempts[0], 'evidenceResults'), false);
+  });
+});
+
+test('evidence: a text-only failure verdict does not skip the checks (E30)', async () => {
+  // Passing check: the facts outrank the text, and the note says so.
+  await withEvidence('bs-ev-text-pass-', {
+    action: reportStep([{ type: 'command', cmd: 'true' }]),
+    watches: [answer('ENOENT: no such file or directory\n', textFailure)],
+    plain: true,
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    const [attempt] = result.attempts;
+    assert.equal(attempt.status, 'succeeded');
+    assert.equal(attempt.why, 'every evidence item passed');
+    assert.equal(attempt.notes.length, 1);
+    assert.equal(attempt.notes[0].kind, 'text-verdict');
+    assert.equal(attempt.notes[0].text, 'the output read as failed (failure pattern: ENOENT: no such file or directory); every evidence item passed');
+    assert.equal(typeof attempt.notes[0].at, 'string');
+  });
+  // Failing check: failed-evidence, and the note stays.
+  await withEvidence('bs-ev-text-fail-', {
+    action: reportStep([{ type: 'command', cmd: 'false' }]),
+    watches: [answer('ENOENT: no such file or directory\n', textFailure)],
+    plain: true,
+    evidenceRetryAvailable: false,
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts[0].why, 'false → exit 1');
+    assert.equal(result.attempts[0].notes[0].kind, 'text-verdict');
+  });
+  // A no-op worker on a files deliverable: not-produced, and no checks run.
+  const calls = [];
+  await withEvidence('bs-ev-text-noop-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'true' }] }),
+    watches: [answer('ENOENT: no such file or directory\n', textFailure)],
+    dependencies: { runStepEvidence: passedRunner(calls) },
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(calls.length, 0);
+  });
+  // The same output on a step without evidence keeps today's rule.
+  await withEvidence('bs-ev-text-none-', {
+    action: reportStep(undefined),
+    watches: [answer('ENOENT: no such file or directory\n', textFailure)],
+    plain: true,
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'semantic');
+    assert.equal(Object.hasOwn(result.attempts[0], 'evidenceResults'), false);
+    assert.equal(Object.hasOwn(result.attempts[0], 'notes'), false);
+  });
+});
+
+test('evidence: the retry continues the worker conversation', async () => {
+  const seen = [];
+  const pool = connector('pool-a', { conversation: { newArgs: ['--session', '{sessionId}'], resumeArgs: ['--resume', '{sessionId}'] } });
+  const talk = (text) => ({ paths: p, opts }) => { seen.push(opts.conversation); writeFileSync(p.outFile, text); return good; };
+  await withEvidence('bs-ev-session-', {
+    action: reportStep([failsUntilFixed]),
+    watches: [talk('broken\n'), talk('fixed\n')],
+    plain: true,
+    pools: [pool],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts[1].continued, true);
+    assert.deepEqual(seen, [{ sessionId: 'session-fixed', resume: false }, { sessionId: 'session-fixed', resume: true }]);
+  });
+});
+
+test('evidence: finishedAt is the worker end, and the diff file exists when the checks start (E4, E17)', async () => {
+  const seen = [];
+  const runner = async (items, opts) => {
+    seen.push({ at: opts.now(), diffExists: existsSync(join(dirname(opts.logFileFor(1)), 'diff-write-work-attempt-1.txt')), cwd: opts.cwd, env: opts.env });
+    return passedRunner()(items, opts);
+  };
+  await withEvidence('bs-ev-timing-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'true' }] }),
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+    dependencies: { runStepEvidence: runner },
+  }, ({ result, core, repo, home }) => {
+    assert.equal(result.ok, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].diffExists, true);
+    assert.ok(Date.parse(result.attempts[0].finishedAt) < seen[0].at, 'finishedAt is taken before the runner starts');
+    assert.equal(core.decisionLog.at(-1).ts, result.attempts[0].finishedAt);
+    assert.equal(seen[0].cwd, realpathSync(repo));
+    assert.equal(seen[0].env.BULLSWARM_EVIDENCE, '1');
+    assert.equal(seen[0].env.BULLSWARM_STEP_ID, 'write-work');
+    assert.equal(seen[0].env.BULLSWARM_RUN_DIR, home);
+    assert.equal(seen[0].env.BULLSWARM_STEP_OUTPUT, join(home, 'out-write-work-attempt-1.md'));
+  });
+});
+
+test('evidence: a stop during a check records it stopped and cancelled, never failed or retried', { timeout: 30_000 }, async () => {
+  let stop = false;
+  await withEvidence('bs-ev-cancel-', {
+    action: reportStep([{ type: 'command', cmd: 'sleep 20' }, { type: 'command', cmd: 'true' }]),
+    watches: [answer('done\n')],
+    plain: true,
+    shouldCancel: () => stop,
+    onEvidence: (event) => { if (event.stage === 'started' && event.index === 1) setTimeout(() => { stop = true; }, 300); },
+  }, ({ result }) => {
+    assert.equal(result.status, 'cancelled');
+    assert.equal(result.failureKind, 'cancelled');
+    assert.equal(result.attempts.length, 1);
+    const [attempt] = result.attempts;
+    assert.equal(attempt.status, 'cancelled');
+    assert.equal(attempt.why, 'evidence stopped');
+    assert.equal(attempt.willRetry, false);
+    assert.deepEqual(attempt.evidenceResults.map((item) => [item.status, item.why]), [['not-run', 'stopped'], ['not-run', 'stopped']]);
+  });
+});
+
+test('evidence: a check that aborts on its own is a failed check, never a stop (E16)', { timeout: 30_000 }, async () => {
+  await withEvidence('bs-ev-abort-', {
+    action: reportStep([{ type: 'command', cmd: `"${process.execPath}" -e "process.abort()"` }]),
+    watches: [answer('done\n')],
+    plain: true,
+    shouldCancel: () => false,
+    evidenceRetryAvailable: false,
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    const [attempt] = result.attempts;
+    assert.equal(attempt.status, 'failed');
+    assert.equal(attempt.evidenceResults[0].status, 'failed');
+    assert.equal(attempt.evidenceResults[0].signal, 'SIGABRT');
+    assert.match(attempt.why, /→ killed by SIGABRT/);
+  });
+});
+
+test('evidence scope: a restricted step fails a check that edits its owned file', async () => {
+  await withEvidence('bs-ev-restricted-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'echo more >> owned.txt' }, { type: 'command', cmd: 'true' }] }),
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+    evidenceRetryAvailable: false,
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    const items = result.attempts[0].evidenceResults;
+    assert.equal(items[0].status, 'failed');
+    assert.deepEqual(items[0].changed, ['owned.txt']);
+    assert.deepEqual([items[1].status, items[1].why], ['not-run', 'not run: an earlier item changed the deliverable']);
+    assert.equal(result.attempts[0].why, 'echo more >> owned.txt → changed the deliverable: owned.txt');
+  });
+});
+
+test('evidence scope: an unrestricted writer reports untracked by-products and fails an edit to a tracked file', async () => {
+  await withEvidence('bs-ev-unrestricted-', {
+    action: { id: 'whole', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' },
+      evidence: [{ type: 'command', cmd: 'echo "<x/>" > junit.xml' }, { type: 'command', cmd: 'echo more >> other.txt' }] },
+    prepare: (dir) => {
+      writeFileSync(join(dir, 'other.txt'), 'tracked\n');
+      execFileSync('git', ['-C', dir, 'add', 'other.txt']);
+      execFileSync('git', ['-C', dir, 'commit', '-qm', 'other']);
+    },
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+    evidenceRetryAvailable: false,
+  }, ({ result, repo }) => {
+    const items = result.attempts[0].evidenceResults;
+    assert.deepEqual([items[0].status, items[0].touched], ['passed', ['junit.xml']]);
+    assert.deepEqual([items[1].status, items[1].changed], ['failed', ['other.txt']]);
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.ok(existsSync(join(repo, 'junit.xml')), 'nothing is removed in a shared workspace');
+  });
+});
+
+test('evidence scope: an analyze step only guards its own output, and a commit is a fact', async () => {
+  await withEvidence('bs-ev-other-', {
+    action: reportStep([
+      { type: 'command', cmd: 'echo more >> owned.txt' },
+      { type: 'command', cmd: 'git commit -q --allow-empty -m sibling' },
+    ]),
+    watches: [answer('done\n')],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    const items = result.attempts[0].evidenceResults;
+    assert.equal(items[0].status, 'passed');
+    assert.equal(Object.hasOwn(items[0], 'changed'), false);
+    assert.equal(items[1].status, 'passed');
+    assert.equal(items[1].headMoved, true);
+  });
+});
+
+test('evidence scope: a private copy removes what a passing check created, and fails an edit to a tracked file', async () => {
+  await withEvidence('bs-ev-private-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'mkdir -p test-results && echo "<x/>" > test-results/junit.xml' }] }),
+    privateWorkspace: true,
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+  }, ({ result, repo }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].evidenceResults[0].touched, ['test-results/junit.xml']);
+    assert.equal(existsSync(join(repo, 'test-results', 'junit.xml')), false);
+    assert.equal(existsSync(join(repo, 'test-results')), false, 'the emptied folder goes too');
+  });
+  await withEvidence('bs-ev-private-tracked-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'echo more >> other.txt' }] }),
+    privateWorkspace: true,
+    prepare: (dir) => {
+      writeFileSync(join(dir, 'other.txt'), 'tracked\n');
+      execFileSync('git', ['-C', dir, 'add', 'other.txt']);
+      execFileSync('git', ['-C', dir, 'commit', '-qm', 'other']);
+    },
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+    evidenceRetryAvailable: false,
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.deepEqual(result.attempts[0].evidenceResults[0].changed, ['other.txt']);
+  });
+});
+
+test('evidence: a private copy outside git removes the files a check created', async () => {
+  await withEvidence('bs-ev-private-plain-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'echo x > by-product.log' }] }),
+    privateWorkspace: true,
+    plain: true,
+    prepare: (dir) => writeFileSync(join(dir, 'owned.txt'), 'base\n'),
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+  }, ({ result, repo }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].evidenceResults[0].touched, ['by-product.log']);
+    assert.equal(existsSync(join(repo, 'by-product.log')), false);
+    assert.equal(readFileSync(join(repo, 'owned.txt'), 'utf8'), 'work\n');
+  });
+});
+
+test('evidence: the durable handoff carries evidenceResults only when the attempt ran checks', () => {
+  const seen = [];
+  const format = (facts) => { seen.push(facts); return 'block'; };
+  const attempt = { id: 'ev-report-1', pool: 'pool-a', failureKind: 'failed-evidence', why: 'false → exit 1' };
+  durableAttemptHandoff(attempt, null, format);
+  durableAttemptHandoff({ ...attempt, evidenceResults: [{ type: 'command', cmd: 'false', timeoutSec: 120, status: 'failed', exit: 1, durationMs: 3, tail: '', why: 'exit 1' }] }, null, format);
+  assert.equal(Object.hasOwn(seen[0], 'evidenceResults'), false);
+  assert.equal(seen[1].evidenceResults[0].why, 'exit 1');
+});
+
+test('evidence scope: a workspace in a repository subfolder uses workspace-relative paths', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-ev-subfolder-'));
+  const repo = gitWorkspace(root);
+  const workspace = join(repo, 'app');
+  mkdirSync(workspace);
+  writeFileSync(join(workspace, 'tracked.txt'), 'base\n');
+  execFileSync('git', ['-C', repo, 'add', 'app/tracked.txt']);
+  execFileSync('git', ['-C', repo, 'commit', '-qm', 'app']);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  try {
+    const h = harness([({ paths: p }) => { writeFileSync(join(workspace, 'tracked.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }]);
+    const result = await dispatchV2Action({
+      action: { id: 'app-work', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' },
+        evidence: [
+          { type: 'command', cmd: 'echo x > report.xml && echo y >> ../owned.txt' },
+          { type: 'command', cmd: 'echo more >> tracked.txt' },
+        ] },
+      taskText: 'work in app', targetDir: workspace,
+      paths: (ordinal) => ({ taskFile: join(home, `task-app-work-attempt-${ordinal}.md`), outFile: join(home, `out-app-work-attempt-${ordinal}.md`) }),
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies, evidenceRetryAvailable: false,
+    });
+    const items = result.attempts[0].evidenceResults;
+    assert.deepEqual([items[0].status, items[0].touched], ['passed', ['report.xml']], 'a file outside the workspace is not its deliverable');
+    assert.deepEqual([items[1].status, items[1].changed], ['failed', ['tracked.txt']]);
+    assert.equal(result.failureKind, 'failed-evidence');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('evidence scope: a workspace its repository ignores only guards the declared paths and the output', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-ev-ignored-dir-'));
+  const repo = gitWorkspace(root);
+  writeFileSync(join(repo, '.gitignore'), 'scratch/\n');
+  const workspace = join(repo, 'scratch');
+  mkdirSync(workspace);
+  writeFileSync(join(workspace, 'notes.txt'), 'base\n');
+  const home = join(root, 'home');
+  mkdirSync(home);
+  try {
+    const h = harness([({ paths: p }) => { writeFileSync(join(workspace, 'notes.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }]);
+    const result = await dispatchV2Action({
+      action: { id: 'scratch', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' },
+        evidence: [{ type: 'command', cmd: 'echo more >> notes.txt' }] },
+      taskText: 'work in scratch', targetDir: workspace,
+      paths: (ordinal) => ({ taskFile: join(home, `task-scratch-attempt-${ordinal}.md`), outFile: join(home, `out-scratch-attempt-${ordinal}.md`) }),
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, true);
+    const [item] = result.attempts[0].evidenceResults;
+    assert.equal(item.status, 'passed');
+    assert.equal(Object.hasOwn(item, 'touched'), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('evidence: a schema the worker edited is recorded as schemaChanged (E26)', async () => {
+  await withEvidence('bs-ev-schema-changed-', {
+    action: reportStep([{ type: 'schema', file: 'data.json', schema: 'schema.json' }]),
+    plain: true,
+    prepare: (dir) => {
+      writeFileSync(join(dir, 'schema.json'), '{"type":"object","required":["b"]}\n');
+      writeFileSync(join(dir, 'data.json'), '{"a":1}\n');
+    },
+    watches: (dir) => [({ paths: p }) => {
+      writeFileSync(join(dir, 'schema.json'), '{"type":"object"}\n');
+      writeFileSync(p.outFile, 'done\n');
+      return good;
+    }],
+  }, ({ result }) => {
+    assert.equal(result.ok, true);
+    const [item] = result.attempts[0].evidenceResults;
+    assert.equal(item.status, 'passed');
+    assert.equal(item.schemaChanged, true);
+  });
+});
+
+test('evidence: log files carry the run-wide attempt number from the task file, so a resumed step never overwrites earlier logs', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-ev-lognames-'));
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const workspace = join(root, 'plain');
+  mkdirSync(workspace);
+  try {
+    // The runtime's third attempt of this step is this dispatch's first.
+    const runWide = (ordinal) => ({ taskFile: join(home, `task-ev-report-attempt-${ordinal + 2}.md`), outFile: join(home, `out-ev-report-attempt-${ordinal + 2}.md`) });
+    const h = harness([answer('broken\n'), answer('fixed\n')]);
+    const result = await dispatchV2Action({
+      action: reportStep([failsUntilFixed]), taskText: 'resume the step', targetDir: workspace, paths: runWide,
+      pools: [connector('sample-pool')], bullswarmDir: home, dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts.map((attempt) => attempt.evidenceResults[0].log), [
+      join(home, 'evidence-ev-report-attempt-3-1.log'),
+      join(home, 'evidence-ev-report-attempt-4-1.log'),
+    ]);
+    assert.match(readFileSync(join(home, 'evidence-ev-report-attempt-3-1.log'), 'utf8'), /first run: marker missing/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,7 +1,7 @@
 import { withV2Cancellation } from './v2-cancellation.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent, readEvents } from './events.js';
 import {
   commitV2Revision, exportV2Plan, pendingRevisionRequests, planV2Revision, queueRevisionRequest,
@@ -31,13 +31,15 @@ import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
 } from './evidence-output.js';
 import {
-  consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, v2RetryPlan,
+  consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, stepProof, v2RetryPlan,
 } from './v2-outcome.js';
 import {
   appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
   markStepRestartApplied, readStepRestarts, requeueRestartedStep, snapshotPossible,
 } from './v2-dispatch.js';
-import { declaredDeliverable, roleOf } from './step-vocabulary.js';
+import { declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary.js';
+import { evidenceBriefLines, rewriteEvidenceCwd } from './evidence-runner.js';
+import { STAGE2_RUN_FEATURES, readRunFeatures, writeRunFeatures } from './run-features.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
 import {
@@ -494,14 +496,6 @@ const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.strin
 function settings(state) { return { ...DEFAULTS, ...(state.config.settings ?? {}) }; }
 function statePath(runDir) { return join(runDir, 'state.json'); }
 function goalPath(runDir) { return join(runDir, 'goal.json'); }
-function featuresPath(runDir) { return join(runDir, 'features.json'); }
-
-// The D16 marker. Missing or unreadable means the legacy lane rule stays off,
-// so a run started before stage 1 resumes with its original semantics.
-function legacyGateFor(runDir) {
-  const marker = readJsonSafe(featuresPath(runDir), null);
-  return marker?.deliverableGate === 1;
-}
 
 // When the step's current definition began: the last applied revision that
 // amended or added it, or null for the original plan. Resume, reopen, rerun,
@@ -607,7 +601,35 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     // under `## Not done` (time-box.js). Neither changes how the attempt ran.
     ...(record.timeBox !== undefined ? { timeBox: clone(record.timeBox) } : {}),
     ...(record.returnedEarly !== undefined ? { returnedEarly: clone(record.returnedEarly) } : {}),
+    // What each declared check did (E20). Absent when the checks never ran
+    // (E15): absence is the exact fact.
+    ...(Array.isArray(record.evidenceResults) ? { evidenceResults: clone(record.evidenceResults) } : {}),
   };
+}
+
+// The `attempt.finished` payload key `evidenceOutcome` (§2.8), only when the
+// attempt ran its checks.
+function evidenceOutcomePayload(record) {
+  const results = Array.isArray(record?.evidenceResults) ? record.evidenceResults : null;
+  if (!results) return {};
+  const count = (status) => results.filter((item) => item?.status === status).length;
+  const failed = count('failed');
+  const stopped = results.some((item) => item?.status === 'not-run' && item.why === 'stopped');
+  return {
+    evidenceOutcome: {
+      passed: count('passed'), failed, notRun: count('not-run'),
+      why: failed ? record.why ?? null : stopped ? 'evidence stopped' : null,
+    },
+  };
+}
+
+// The completion receipt's verdict. It carries the attempt's check results
+// (E31), so reconcileResume can restore them when the kernel dies between the
+// receipt and the stored attempt.
+function receiptVerdict(verdict, record) {
+  const base = verdict ?? { ok: true, outFile: record.outFile ?? record.outputFile };
+  if (!Array.isArray(record.evidenceResults) || Array.isArray(base.evidenceResults)) return base;
+  return { ...base, evidenceResults: clone(record.evidenceResults) };
 }
 
 // A succeeded work attempt whose report lists items under `## Not done`
@@ -1105,7 +1127,9 @@ function deliverableBriefLine(action, targetDir) {
     : line;
 }
 
-export function buildProgramWorkTask(state, action, targetDir, runDir = null) {
+// `privateWorkspace`: the step runs in an isolated copy of its own (E5); the
+// copy is never the caller's workspace, so that is the default test.
+export function buildProgramWorkTask(state, action, targetDir, runDir = null, { privateWorkspace = targetDir !== state.intent.cwd } = {}) {
   const strict = enforcesOwnership(state);
   // A kernel repair carries its brief after the prompt: the failing evidence,
   // discovery items, not-done items and the durable handoffs (verify-rounds.js).
@@ -1117,6 +1141,12 @@ export function buildProgramWorkTask(state, action, targetDir, runDir = null) {
   const deliverableLine = action.role == null && action.deliverable == null
     ? null
     : deliverableBriefLine(action, targetDir);
+  // The checks Bullswarm runs after the worker (§2.11), only when the step
+  // declares them. An isolated copy sees its own path in each `cmd`, the same
+  // rule the prompt follows.
+  const evidenceLines = evidenceBriefLines(rewriteEvidenceCwd(declaredEvidence(action), state.intent.cwd, targetDir), {
+    targetDir, role: roleOf(action), privateWorkspace: Boolean(privateWorkspace),
+  });
   return [
     `Bullswarm program action: ${action.id}`,
     `Purpose: ${action.purpose}`,
@@ -1134,6 +1164,7 @@ export function buildProgramWorkTask(state, action, targetDir, runDir = null) {
     ...state.intent.requirements.filter((item) => action.affects.includes(item.id)).map((item) => `Requirement context (${item.id}): ${item.text}`),
     'Deliver only your action purpose. Exercise observable behavior and run the focused checks; report exact validation and anything unfinished. Do not claim success based only on editing files or unrelated green tests.',
     ...(deliverableLine ? [deliverableLine] : []),
+    ...evidenceLines,
     '', targetDir === state.intent.cwd ? action.prompt : action.prompt.split(state.intent.cwd).join(targetDir),
     ...(brief ? ['', brief] : []),
     '',
@@ -1267,8 +1298,50 @@ export function handoffBlock(facts = {}) {
   } else if (facts.hasEventStream === false) {
     lines.push(`- Last response events: none decoded (the ${facts.pool ?? 'unknown'} connector declares no eventStream; see the stream file)`);
   }
+  // Only when the attempt ran its checks, so every other handoff stays
+  // byte-identical (§2.11).
+  if (Array.isArray(facts.evidenceResults) && facts.evidenceResults.length) lines.push(...evidenceHandoffLines(facts.evidenceResults));
   lines.push('- Those edits are unverified. You decide whether to keep, fix or revert them, and you must report which.');
   return lines.join('\n');
+}
+
+const HANDOFF_TAIL_LINES = 10;
+const HANDOFF_LINE_CHARS = 200;
+
+function cutHandoffLine(text) {
+  const chars = [...String(text)];
+  return chars.length > HANDOFF_LINE_CHARS ? `${chars.slice(0, HANDOFF_LINE_CHARS - 1).join('')}…` : String(text);
+}
+
+// One evidence item as the retry reads it: what ran, how it ended, where the
+// full log is, and its last lines (a schema item's first errors instead of the
+// checker's JSON report line).
+function evidenceHandoffLines(results) {
+  const lines = ['- Evidence Bullswarm ran after that attempt:'];
+  for (const item of results) {
+    const what = item.type === 'schema'
+      ? `schema ${item.file === '$output' ? 'your final response' : item.file} against ${item.schema}`
+      : `command \`${item.cmd}\``;
+    const seconds = `${Math.max(0, Math.round(Number(item.durationMs ?? 0) / 1000))}s`;
+    if (item.status === 'passed') lines.push(`  - ${what}: passed · ${seconds}`);
+    else if (item.status === 'not-run') lines.push(`  - ${what}: not run · ${String(item.why ?? 'not run').replace(/^not run: /, '')}`);
+    else {
+      lines.push(`  - ${what}: failed · ${item.why ?? 'failed'} · ${seconds}`);
+      if (item.log) lines.push(`    output: ${item.log}`);
+      const shown = item.type === 'schema' && Array.isArray(item.errors) && item.errors.length
+        ? { heading: 'errors:', rows: item.errors }
+        : { heading: 'last lines:', rows: String(item.tail ?? '').split('\n').filter((line) => line.trim()) };
+      const rows = shown.rows.slice(-HANDOFF_TAIL_LINES);
+      if (rows.length) {
+        lines.push(`    ${shown.heading}`);
+        for (const row of rows) lines.push(`      ${cutHandoffLine(row)}`);
+      }
+    }
+    if (Array.isArray(item.touched) && item.touched.length) lines.push(`    also: touched ${item.touched.join(', ')}`);
+    if (item.headMoved === true) lines.push('    also: HEAD moved while it ran (another step may have committed)');
+  }
+  lines.push('- Fix the work so every evidence item passes. Do not change what the checks test to make them pass.');
+  return lines;
 }
 
 function reconcileResume(state, at, runDir) {
@@ -1284,6 +1357,9 @@ function reconcileResume(state, at, runDir) {
       if (receipt.attemptId === attempt.id && receipt.verdict?.ok) Object.assign(attempt, {
         status: 'succeeded', finishedAt: receipt.finishedAt ?? at,
         failureKind: null, why: 'recovered durable dispatch completion',
+        // The checks passed before the kernel died (E31): the recovered
+        // attempt keeps their results, so its label reads what ran.
+        ...(Array.isArray(receipt.verdict.evidenceResults) ? { evidenceResults: clone(receipt.verdict.evidenceResults) } : {}),
       });
     }
   }
@@ -1440,10 +1516,16 @@ async function runV2Kernel({
     // checkout is there, the remote is there. Stamp it now so the rollup and
     // every later reindex agree on which project this run belongs to.
     recordGoalProject(runDir, goalDocument.intent.cwd, { now });
-    writeJsonAtomic(featuresPath(runDir), { deliverableGate: 1 });
+    // The run's marker (D16, E23): a new run gets every key this code knows;
+    // a resumed run keeps the file it was started with, never rewritten.
+    writeRunFeatures(runDir, { ...STAGE2_RUN_FEATURES });
     state = createV2DurableState(goalDocument, { runId: id, shortId: nextShortId(bullswarmDir) });
   }
-  const legacyGate = legacyGateFor(runDir);
+  // Read once. Missing or unreadable is `{}`: the legacy lane rule stays off
+  // and only steps that declare evidence carry a proof label, so a run started
+  // before stage 1 or 2 resumes with its original semantics.
+  const runFeatures = readRunFeatures(runDir);
+  const legacyGate = runFeatures.deliverableGate === 1;
 
   let scoutReport = typeof scout === 'string' && scout.trim() ? scout.trim() : null;
   if (!scoutReport && state.preflight.scout.status === 'succeeded' && state.preflight.scout.outputFile && existsSync(state.preflight.scout.outputFile)) {
@@ -1895,15 +1977,17 @@ async function runV2Kernel({
       }
     }
     emit('action.started', { actionId: action.id, purpose: action.purpose, evidence: action.evidenceFor.length > 0 });
-    const evidence = action.evidenceFor.length > 0;
+    // A review step (evidenceFor): the kernel's JSON contract, routed away from
+    // the writers. Not the step's own `evidence` checks (E20).
+    const review = action.evidenceFor.length > 0;
     const baseAttemptOrdinal = runtime.attempts;
-    const contract = evidence ? { schemaVersion: EVIDENCE_CONTRACT_SCHEMA_VERSION, evidenceFor: clone(action.evidenceFor) } : null;
-    const contractPath = evidence ? join(runDir, `contract-${action.id}.json`) : null;
-    const candidatePath = evidence ? join(runDir, `candidate-${action.id}.json`) : null;
+    const contract = review ? { schemaVersion: EVIDENCE_CONTRACT_SCHEMA_VERSION, evidenceFor: clone(action.evidenceFor) } : null;
+    const contractPath = review ? join(runDir, `contract-${action.id}.json`) : null;
+    const candidatePath = review ? join(runDir, `candidate-${action.id}.json`) : null;
     if (contract) writeJsonAtomic(contractPath, contract);
     if (candidatePath && !receipt) rmSync(candidatePath, { force: true });
     let isolated = receipt?.isolated ?? null;
-    if (!receipt && !evidence && action.ownedFiles.length && schedulerWorkspaceMode === 'isolated') {
+    if (!receipt && !review && action.ownedFiles.length && schedulerWorkspaceMode === 'isolated') {
       isolated = createWorkspace({
         sourceDir: state.intent.cwd, runDir, actionId: `${action.id}-attempt-${baseAttemptOrdinal + 1}-${Date.now().toString(36)}`,
         maxFiles: config.maxManifestFiles,
@@ -1932,11 +2016,11 @@ async function runV2Kernel({
     // Composed once, so the byte ledger below measures exactly the text this
     // attempt was handed rather than a second rendering of it.
     const digest = action.kind === 'digest';
-    const taskText = evidence
+    const taskText = review
       ? buildEvidenceTask(state, action, contractPath, candidatePath)
       : digest ? buildDigestTask(state, action, targetDir) : buildWorkTask(state, action, targetDir, runDir);
-    const observedRequirementBytes = embeddedRequirementBytes(state, action, { evidence, digest });
-    const writerPools = evidence
+    const observedRequirementBytes = embeddedRequirementBytes(state, action, { evidence: review, digest });
+    const writerPools = review
       ? [...new Set(state.attempts
         .filter((attempt) => attempt.status === 'succeeded'
           && (definition(state, attempt.actionId)?.affects ?? [])
@@ -1958,7 +2042,17 @@ async function runV2Kernel({
     const dispatchedTaskText = durablePriorHandoff
       ? `${taskText}\n\n${durablePriorHandoff.block}`
       : taskText;
-    const dispatchedBytes = attemptBytes(state, action, dispatchedTaskText, { evidence, digest });
+    const dispatchedBytes = attemptBytes(state, action, dispatchedTaskText, { evidence: review, digest });
+    // The step's own checks (E14): one evidence retry per current definition.
+    // A revise, rerun or amend raises supersededAttempts and grants a fresh
+    // one; a kernel resume does not.
+    const evidenceRetryAvailable = !state.attempts.some((attempt) => attempt.actionId === action.id
+      && attempt.ordinal > (runtime.supersededAttempts ?? 0) && attempt.failureKind === 'failed-evidence');
+    // An isolated copy runs each `cmd` against its own path, as its brief says;
+    // the stored definition keeps the caller's path.
+    const dispatchedAction = isolated && declaredEvidence(action).length
+      ? { ...action, evidence: rewriteEvidenceCwd(declaredEvidence(action), state.intent.cwd, targetDir) }
+      : action;
     // Every dispatched task (work, digest and evidence) closes with a soft
     // time box, composed per attempt at dispatch (the pool and the clock exist
     // only then). A box that cannot be composed is left out, never fatal.
@@ -1967,7 +2061,7 @@ async function runV2Kernel({
       let boxed = null;
       try {
         boxed = timeBoxForAttempt({
-          action, pool, startedAt, evidence,
+          action, pool, startedAt, evidence: review,
           history: () => readTimeBoxHistory(bullswarmDir),
           timeZone: timeBoxTimeZone,
         });
@@ -1976,13 +2070,13 @@ async function runV2Kernel({
       return boxed;
     };
     try { result = receipt ? { ok: true, status: 'succeeded', verdict: receipt.verdict, attempts: [] } : await dispatch({
-      action,
+      action: dispatchedAction,
       legacyGate,
       earlierWork: earlierWorkFor(state, action.id, { isolated: Boolean(isolated) }),
       extraSnapshotPaths: extraSnapshotPathsFor(state, action.id),
       taskText: dispatchedTaskText,
       targetDir,
-      paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),
+      paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${review ? 'json' : 'md'}`) }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
       preferredPool: restart?.pool ?? state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
@@ -1994,13 +2088,17 @@ async function runV2Kernel({
       // inspected work so the router can prefer a different eligible pool. A
       // writer remains a valid fallback when it is the only eligible choice;
       // the route reason names that exception for operators.
-      evidence: evidence ? { writerPools } : null,
+      evidence: review ? { writerPools } : null,
       maxMechanicalRetries: config.maxMechanicalRetries,
+      evidenceRetryAvailable,
+      // The checks run in the isolated copy before integration (E5), with the
+      // private-copy side-effect scope.
+      privateWorkspace: Boolean(isolated),
       // A plan revision or a pause --now can stop this one action while the
       // rest of the run carries on.
       shouldCancel: () => stopRequested.has(action.id) || refreshCancellation(), onSpawn, onWorkerExit,
-      outputValidator: evidence ? () => readEvidenceCandidate(candidatePath, contract) : null,
-      correctionTask: evidence ? correctionTask : null,
+      outputValidator: review ? () => readEvidenceCandidate(candidatePath, contract) : null,
+      correctionTask: review ? correctionTask : null,
       handoffBlock,
       resumeHandoff: durablePriorHandoff,
       runDir,
@@ -2039,15 +2137,49 @@ async function runV2Kernel({
         } else if (stage === 'captured') {
           lease.assertOwner();
           if (recordAttemptCapture(workerAttempt(), record)) persist();
+        } else if (stage === 'corrected') {
+          // E14 (d): the stored attempt promised an evidence retry the pinned
+          // pick could not make. Its status and why change; it adds no usage,
+          // writes no receipt and settles nothing.
+          lease.assertOwner();
+          const attemptId = Number.isInteger(record.ordinal) ? `${action.id}-${baseAttemptOrdinal + record.ordinal}` : currentAttemptId;
+          const attempt = state.attempts.find((item) => item.id === attemptId);
+          if (attempt) Object.assign(attempt, { status: record.status, why: record.why ?? attempt.why ?? null });
+          persist();
+          emit('attempt.finished', {
+            actionId: action.id,
+            attemptId,
+            status: record.status,
+            failureKind: record.failureKind ?? attempt?.failureKind ?? null,
+            pool: record.pool ?? attempt?.pool ?? null,
+            model: record.model ?? attempt?.model ?? null,
+            why: record.why ?? null,
+            willRetry: false,
+            outputFile: attempt?.outputFile ?? record.outputFile ?? record.outFile ?? null,
+            ...evidenceOutcomePayload(record),
+            corrected: true,
+          });
         } else {
           lease.assertOwner();
+          // A kernel signal during the checks (E16): the attempt did not fail
+          // and was not cancelled by the caller; it runs again on resume, which
+          // hands it on as it does a worker the kernel killed.
+          if (interrupted && record.status === 'cancelled'
+            && Array.isArray(record.evidenceResults) && record.evidenceResults.some((item) => item?.why === 'stopped')) {
+            record = {
+              ...record, status: 'interrupted', failureKind: 'interrupted',
+              why: 'kernel stopped during evidence; the attempt runs again on resume',
+            };
+          }
           // An attempt stopped by a plan revision or a pause is not a failure of
           // its pool: record why it stopped, the same kind action.finished carries.
           const stop = record.status === 'cancelled' && !interrupted ? stopRequested.get(action.id) ?? null : null;
           if (stop) record = { ...record, failureKind: stop.kind, why: stop.message };
+          // The receipt carries the check results (E31), so a kernel that dies
+          // before the attempt below is stored still recovers them.
           if (record.status === 'succeeded') writeCompletionReceipt(receiptPath, {
             attemptId: currentAttemptId, finishedAt: record.finishedAt, before, isolated,
-            verdict: verdict ?? { ok: true, outFile: record.outFile ?? record.outputFile },
+            verdict: receiptVerdict(verdict, record),
           });
           const attempt = state.attempts.find((item) => item.id === currentAttemptId);
           if (attempt) {
@@ -2055,7 +2187,7 @@ async function runV2Kernel({
             Object.assign(attempt, normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal: attempt.ordinal }));
             settleFinishedAttempt(attempt, prior);
             observeAttemptBytes(attempt, { authorPrompt: dispatchedBytes.authorPrompt, requirements: observedRequirementBytes });
-            if (record.status === 'succeeded' && !evidence && !digest) recordReturnedEarly(attempt);
+            if (record.status === 'succeeded' && !review && !digest) recordReturnedEarly(attempt);
           }
           addUsage(state, attempt ? { ...record, usage: attempt.usage } : record);
           emit('attempt.finished', {
@@ -2077,6 +2209,7 @@ async function runV2Kernel({
             ...(attempt?.outputSource ? { outputSource: attempt.outputSource } : {}),
             ...(attempt?.notes ? { notes: clone(attempt.notes) } : (record.notes ? { notes: clone(record.notes) } : {})),
             ...(attempt?.outputSamples ? { outputSamples: clone(attempt.outputSamples) } : (record.outputSamples ? { outputSamples: clone(record.outputSamples) } : {})),
+            ...evidenceOutcomePayload(record),
             ...(record.stalled ? {
               stalled: true,
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
@@ -2131,12 +2264,25 @@ async function runV2Kernel({
         attempt.lastAgentEvent = clone(event);
         persistWorkerProgress();
       },
+      // Each check's start, 30 s heartbeat and end count as activity (E18), so
+      // a long silent check never reads as a stale attempt.
+      onEvidence: (event) => {
+        const attempt = workerAttempt();
+        if (attempt) attempt.lastActivityAt = now();
+        persistWorkerProgress();
+        if (event?.stage !== 'started' && event?.stage !== 'finished') return;
+        emit('attempt.evidence_item', {
+          actionId: action.id, attemptId: currentAttemptId, stage: event.stage,
+          index: event.index ?? null, of: event.of ?? null, type: event.type ?? null, label: event.label ?? null,
+          ...(event.stage === 'finished' ? { status: event.status ?? null, why: event.why ?? null, durationMs: event.durationMs ?? null } : {}),
+        });
+      },
     }); } catch (error) {
       releaseWorkspace();
       throw error;
     }
     runtime.finishedAt = now();
-    runtime.outputFile = evidence && result.ok
+    runtime.outputFile = review && result.ok
       ? candidatePath
       : result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null;
     if (!result.ok) {
@@ -2203,7 +2349,7 @@ async function runV2Kernel({
         emit('action.workspace_integrated', { actionId: action.id, files: integration.integrated });
       }
     }
-    if (evidence) {
+    if (review) {
       const inspectedRevisions = Object.fromEntries(action.evidenceFor.map((id) => [id, state.ledger.requirements[id].workRevision]));
       const sequence = state.events.sequence + 1;
       state.ledger = applyEvidence(state.ledger, {
@@ -2221,9 +2367,13 @@ async function runV2Kernel({
       const finished = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded');
       if (finished && finished.returnedEarly === undefined && !digest) recordReturnedEarly(finished);
       persist();
+      // What backs the step (E22): only in a run marked proofLabels, or for a
+      // step that declares evidence (E23); never for review or digest steps.
+      const proof = stepProof(state, action, { atFinish: true, features: runFeatures });
       emit('action.finished', {
         actionId: action.id, status: 'succeeded', outputFile: runtime.outputFile, artifacts: runtime.artifactIds,
         ...(finished?.returnedEarly ? { returnedEarly: { count: finished.returnedEarly.count } } : {}),
+        ...(proof ? { proof } : {}),
       });
     }
     releaseWorkspace();

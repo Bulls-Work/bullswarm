@@ -1169,7 +1169,7 @@ const workflowResumeText = rich({
   safety: [
     'planner mode, routing pins, and settings are durable; --program, --orchestrator, --scout, and --suggested-plan are rejected here (use workflow plan revise to change the plan)',
     'dispatches real coding-agent CLI processes for any unfinished actions, the same as workflow goal',
-    'a failed step whose failure is about the work itself (a check that failed it, a semantic failure, a declared deliverable that was not produced, or a build-lane step with no declared deliverable that changed nothing) is not rerun; add a fix step or name it in plan revise --rerun',
+    'a failed step whose failure is about the work itself (a check that failed it, failed evidence, a semantic failure, a declared deliverable that was not produced) is not rerun; add a fix step or name it in plan revise --rerun',
   ],
   examples: [
     { cmd: 'bullswarm workflow resume ab12cd --watch' },
@@ -1183,7 +1183,7 @@ const workflowPlanContractText = rich({
   purpose: 'Print everything a caller planner needs to author a valid initial program for a goal: '
     + 'the requirement IDs the kernel will derive from the goal text (numbered clauses become '
     + 'requirement-1..n), read-only constraints, the planning rules, the generic action fields, the '
-    + 'validation the kernel enforces, the response envelope, and one worked example.',
+     + 'validation the kernel enforces, the response envelope, evidence checks Bullswarm runs after steps, and one worked example.',
   args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal; numbering clauses 1. 2. 3. yields one requirement per clause' }],
   options: [
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in', default: 'current directory' },

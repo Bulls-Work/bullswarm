@@ -269,6 +269,13 @@ test('help describes the bare command as the dashboard with setup as the fallbac
   assert.match(helpText(['workflow']), /open the dashboard \(Home, Runs, Run, Step, Budget, Stats, Fleet, Help\)/);
 });
 
+test('workflow help documents failed evidence and the planner contract evidence field', () => {
+  const resume = helpText(['workflow', 'resume']);
+  assert.match(resume, /a check that failed it, failed evidence, a semantic failure/);
+  const contract = helpText(['workflow', 'plan', 'contract']);
+  assert.match(contract, /evidence checks Bullswarm runs after steps/);
+});
+
 test('workflow reindex help exposes the exact usage line and flags', () => {
   const text = helpText(['workflow', 'reindex']);
   assert.equal(text.split('\n')[0], 'Usage: bullswarm workflow reindex [--json] [--force]');

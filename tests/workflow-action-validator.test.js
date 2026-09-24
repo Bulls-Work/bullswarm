@@ -671,8 +671,8 @@ test('every role and deliverable message has a case', () => {
     'actions[0] steps with evidenceFor take no deliverable other than report',
   );
   has(
-    [kindWork('implement', { evidence: ['review'] })],
-    'actions[0].evidence is not accepted yet: command and schema evidence arrive in a later release; for judged evidence use a check step with evidenceFor',
+    [kindWork('implement', { evidence: [{ type: 'review' }] })],
+    'actions[0].evidence[0].type must be command or schema; review evidence is a check step with evidenceFor, and a choice is recorded by the caller',
   );
 });
 
@@ -695,10 +695,9 @@ test('act is accepted when the goal forbids workspace mutation; outward is only 
   assert.ok(issuesOf([roleStep('transform', { deliverable: 'outward', lane: 'analyze' })]).includes('actions[0].deliverable outward needs role act'));
 });
 
-test('evidence is not accepted yet, and proofs is an unknown field', () => {
-  assert.ok(issuesOf([kindWork('implement', { evidence: { type: 'review' } })]).includes(
-    'actions[0].evidence is not accepted yet: command and schema evidence arrive in a later release; for judged evidence use a check step with evidenceFor',
-  ));
+test('evidence is accepted, and proofs is still an unknown field', () => {
+  assert.deepEqual(accept([kindWork('implement', { evidence: [{ type: 'command', cmd: 'npm test' }] })]).evidence, [{ type: 'command', cmd: 'npm test' }]);
+  assert.ok(issuesOf([kindWork('implement', { evidence: { type: 'review' } })]).includes('actions[0].evidence must be an array of at most 5 items'));
   assert.ok(issuesOf([kindWork('implement', { proofs: ['review'] })]).includes('actions[0].proofs is not allowed'));
 });
 
@@ -785,4 +784,156 @@ test('a data or media deliverable with non-array paths says must be an array, li
     assert.ok(issuesOf([roleStep('produce', { deliverable: { type } })]).includes(`actions[0].deliverable.paths is required for ${type}`));
     assert.ok(issuesOf([roleStep('produce', { deliverable: { type, paths: [] } })]).includes(`actions[0].deliverable.paths is required for ${type}`));
   }
+});
+
+// --- evidence (stage 2) -------------------------------------------------------
+
+const command = (cmd = 'node --test tests/slug.test.js', over = {}) => ({ type: 'command', cmd, ...over });
+const schemaItem = (over = {}) => ({ type: 'schema', file: 'out/events.json', schema: 'schemas/event.json', ...over });
+const evidenceIssues = (evidence, over = {}, runtime = relaxed) => issuesOf([kindWork('implement', { evidence, ...over })], runtime);
+const hasIssue = (issues, message) => assert.ok(issues.includes(message), `${message}\n---\n${issues.join('\n')}`);
+
+test('evidence shapes normalise: cmd trimmed, paths normalised, author keys kept, defaults not written back', () => {
+  const step = accept([kindWork('implement', {
+    evidence: [
+      { cmd: '  node --test tests/slug.test.js  ', type: 'command' },
+      command('npm run lint', { timeoutSec: 600 }),
+      schemaItem({ file: './out//events.json', schema: 'schemas//event.json', timeoutSec: 1 }),
+      schemaItem({ file: 'out/rows.jsonl', format: 'jsonl' }),
+      schemaItem({ file: '$output', schema: 'schemas/report.json' }),
+    ],
+  })]);
+  assert.deepEqual(step.evidence, [
+    { type: 'command', cmd: 'node --test tests/slug.test.js' },
+    { type: 'command', cmd: 'npm run lint', timeoutSec: 600 },
+    { type: 'schema', file: 'out/events.json', schema: 'schemas/event.json', timeoutSec: 1 },
+    { type: 'schema', file: 'out/rows.jsonl', schema: 'schemas/event.json', format: 'jsonl' },
+    { type: 'schema', file: '$output', schema: 'schemas/report.json' },
+  ]);
+  assert.equal(Object.hasOwn(step.evidence[0], 'timeoutSec'), false);
+  assert.equal(Object.hasOwn(step.evidence[2], 'format'), false);
+  assert.equal(Object.hasOwn(step.evidence[4], 'format'), false);
+});
+
+test('normalising a program with evidence twice is a fixed point, and evidence: [] is dropped', () => {
+  const input = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      kindWork('implement', { id: 'make', evidence: [command(' npm test '), schemaItem({ file: './out/a.json', format: 'json' })] }),
+      roleStep('check', { id: 'gate', dependsOn: ['make'], affects: [], evidence: [command('npm run e2e', { timeoutSec: 300 })] }),
+      kindWork('implement', { id: 'plain', evidence: [] }),
+    ],
+  };
+  const once = validateActionProgram(input, relaxed);
+  assert.equal(JSON.stringify(validateActionProgram(once, relaxed)), JSON.stringify(once));
+  assert.deepEqual(once.actions[0].evidence, [{ type: 'command', cmd: 'npm test' }, { type: 'schema', file: 'out/a.json', schema: 'schemas/event.json', format: 'json' }]);
+  assert.equal(Object.hasOwn(once.actions[2], 'evidence'), false);
+  const withoutField = validateActionProgram({ ...input, actions: [input.actions[0], input.actions[1], kindWork('implement', { id: 'plain' })] }, relaxed);
+  assert.equal(JSON.stringify(withoutField), JSON.stringify(once));
+  // The caller's input is never mutated.
+  assert.equal(input.actions[0].evidence[0].cmd, ' npm test ');
+});
+
+test('an action without evidence normalises exactly as before', () => {
+  const step = accept([kindWork('implement')]);
+  assert.equal(Object.hasOwn(step, 'evidence'), false);
+});
+
+test('evidence needs a program-mode run; digest and review steps refuse it', () => {
+  const verified = { mandatoryRequirements: ['result'], requireMandatoryEvidence: false };
+  hasIssue(evidenceIssues([command()], {}, verified), 'actions[0].evidence needs a program-mode run');
+  // An empty list is dropped wherever it appears.
+  assert.equal(Object.hasOwn(accept([kindWork('implement', { evidence: [] })], verified), 'evidence'), false);
+  hasIssue(
+    issuesOf([kindWork('implement', { id: 'source' }), kindWork('digest', { dependsOn: ['source'], ownedFiles: [], affects: [], evidence: [command()] })]),
+    'actions[1] digest steps take no evidence; the kernel writes their report',
+  );
+  hasIssue(
+    issuesOf([roleStep('check', { affects: [], evidenceFor: ['result'], evidence: [command()] })]),
+    'actions[0] review steps (evidenceFor) take no evidence; put the commands the reviewer must run in its prompt',
+  );
+  hasIssue(
+    issuesOf([kindWork('check', { ownedFiles: [], affects: [], evidenceFor: ['result'], evidence: [schemaItem()] })]),
+    'actions[0] review steps (evidenceFor) take no evidence; put the commands the reviewer must run in its prompt',
+  );
+});
+
+test('kind steps, act steps and a check step without evidenceFor accept evidence', () => {
+  assert.equal(accept([kindWork('mechanical', { evidence: [command()] })]).evidence.length, 1);
+  assert.equal(accept([kindWork('io-read', { ownedFiles: [], evidence: [schemaItem({ file: '$output' })] })]).evidence.length, 1);
+  const act = accept([roleStep('act', { evidence: [command("grep -q 'confirmed 42' /tmp/outbox.txt")] })]);
+  assert.equal(act.role, 'act');
+  assert.deepEqual(act.evidence, [{ type: 'command', cmd: "grep -q 'confirmed 42' /tmp/outbox.txt" }]);
+  const gate = accept([roleStep('check', { affects: [], evidence: [command('npm test', { timeoutSec: 600 })] })]);
+  assert.deepEqual(gate.evidenceFor, []);
+  assert.deepEqual(gate.evidence, [{ type: 'command', cmd: 'npm test', timeoutSec: 600 }]);
+  assert.equal(accept([kindWork('check', { ownedFiles: [], affects: [], evidence: [command()] })]).evidence.length, 1);
+});
+
+test('every evidence field message', () => {
+  hasIssue(evidenceIssues({ type: 'command', cmd: 'x' }), 'actions[0].evidence must be an array of at most 5 items');
+  hasIssue(evidenceIssues('npm test'), 'actions[0].evidence must be an array of at most 5 items');
+  hasIssue(evidenceIssues([1, 2, 3, 4, 5, 6].map((n) => command(`echo ${n}`))), 'actions[0].evidence must be an array of at most 5 items');
+  assert.equal(accept([kindWork('implement', { evidence: [1, 2, 3, 4, 5].map((n) => command(`echo ${n}`)) })]).evidence.length, 5);
+  hasIssue(evidenceIssues(['npm test']), 'actions[0].evidence[0] must be an object {type, …}');
+  hasIssue(evidenceIssues([command(), null]), 'actions[0].evidence[1] must be an object {type, …}');
+  const typeMessage = (k) => `actions[0].evidence[${k}].type must be command or schema; review evidence is a check step with evidenceFor, and a choice is recorded by the caller`;
+  hasIssue(evidenceIssues([{ type: 'review' }]), typeMessage(0));
+  hasIssue(evidenceIssues([command(), { type: 'choice', note: 'ok' }]), typeMessage(1));
+  hasIssue(evidenceIssues([{ cmd: 'npm test' }]), typeMessage(0));
+  hasIssue(evidenceIssues([command('npm test', { file: 'a.json' })]), 'actions[0].evidence[0].file is not allowed for a command item');
+  hasIssue(evidenceIssues([command('npm test', { format: 'json' })]), 'actions[0].evidence[0].format is not allowed for a command item');
+  hasIssue(evidenceIssues([schemaItem({ cmd: 'npm test' })]), 'actions[0].evidence[0].cmd is not allowed for a schema item');
+  hasIssue(evidenceIssues([schemaItem({ expectExit: 1 })]), 'actions[0].evidence[0].expectExit is not allowed for a schema item');
+  const cmdMessage = 'actions[0].evidence[0].cmd must be one line of 1 to 2000 bytes';
+  for (const cmd of [undefined, '', '   ', 'npm test\nnpm run lint', 'npm test\rx', 'a\0b', 'x'.repeat(2001), 'é'.repeat(1001), 42]) {
+    hasIssue(evidenceIssues([cmd === undefined ? { type: 'command' } : command(cmd)]), cmdMessage);
+  }
+  assert.equal(accept([kindWork('implement', { evidence: [command('x'.repeat(2000))] })]).evidence[0].cmd.length, 2000);
+  assert.equal(accept([kindWork('implement', { evidence: [command(`  ${'x'.repeat(2000)}  `)] })]).evidence[0].cmd.length, 2000);
+  hasIssue(evidenceIssues([schemaItem({ format: 'yaml' })]), 'actions[0].evidence[0].format must be json or jsonl');
+  const timeoutMessage = 'actions[0].evidence[0].timeoutSec must be an integer from 1 to 600 (default 120)';
+  for (const timeoutSec of [0, 601, 1.5, '120', null, -1]) {
+    hasIssue(evidenceIssues([command('npm test', { timeoutSec })]), timeoutMessage);
+    hasIssue(evidenceIssues([schemaItem({ timeoutSec })]), timeoutMessage);
+  }
+  hasIssue(evidenceIssues([command('npm test', { timeoutSec: 601 })]), timeoutMessage);
+});
+
+test('evidence file and schema paths use the ownedFiles rules; $output is kept verbatim', () => {
+  assert.equal(accept([kindWork('implement', { evidence: [schemaItem({ file: '$output' })] })]).evidence[0].file, '$output');
+  assert.equal(accept([kindWork('implement', { evidence: [schemaItem({ file: '$outputs' })] })]).evidence[0].file, '$outputs');
+  assert.equal(accept([kindWork('implement', { evidence: [schemaItem({ file: '$output/x' })] })]).evidence[0].file, '$output/x');
+  hasIssue(
+    evidenceIssues([schemaItem({ file: './$output' })]),
+    'actions[0].evidence[0].file "./$output" names a workspace file called $output; write "$output" exactly for your final response',
+  );
+  for (const [field, label] of [['file', 'file'], ['schema', 'schema']]) {
+    const at = `actions[0].evidence[0].${label}`;
+    hasIssue(evidenceIssues([schemaItem({ [field]: undefined })]), `${at} must be a non-empty relative path`);
+    hasIssue(evidenceIssues([schemaItem({ [field]: '' })]), `${at} must be a non-empty relative path`);
+    hasIssue(evidenceIssues([schemaItem({ [field]: '/etc/passwd' })]), `${at} must be relative`);
+    hasIssue(evidenceIssues([schemaItem({ [field]: '../up.json' })]), `${at} must not contain dot-dot traversal`);
+    hasIssue(evidenceIssues([schemaItem({ [field]: 'out/*.json' })]), `${at} must name one exact file, not a directory or glob ("out/*.json")`);
+    hasIssue(evidenceIssues([schemaItem({ [field]: 'out/' })]), `${at} must name one exact file, not a directory or glob ("out/")`);
+    hasIssue(evidenceIssues([schemaItem({ [field]: 'a\0b' })]), `${at} must not contain NUL bytes`);
+  }
+  // The reserved value is only for file; a schema literally named $output is an ordinary path.
+  assert.equal(accept([kindWork('implement', { evidence: [schemaItem({ schema: '$output' })] })]).evidence[0].schema, '$output');
+});
+
+test('evidenceAllowed: false refuses any non-empty evidence with the dispatched-planner message', () => {
+  const planner = { ...relaxed, evidenceAllowed: false };
+  hasIssue(
+    evidenceIssues([command()], {}, planner),
+    "actions[0].evidence is the caller's to declare; a dispatched planner cannot add checks (the caller adds them with bullswarm workflow plan revise)",
+  );
+  assert.equal(Object.hasOwn(accept([kindWork('implement', { evidence: [] })], planner), 'evidence'), false);
+  assert.equal(accept([kindWork('implement', { evidence: [command()] })], { ...relaxed, evidenceAllowed: true }).evidence.length, 1);
+});
+
+test('a top-level timeoutSec points to the evidence item', () => {
+  const issues = issuesOf([kindWork('implement', { timeoutSec: 300 })]);
+  hasIssue(issues, 'actions[0].timeoutSec is not allowed in V2; a time limit belongs on an evidence item (evidence[].timeoutSec)');
+  hasIssue(issuesOf([kindWork('implement', { pool: 'acme' })]), 'actions[0].pool is not allowed in V2');
 });

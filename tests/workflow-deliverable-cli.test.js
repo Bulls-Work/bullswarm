@@ -13,10 +13,16 @@ import { join, resolve } from 'node:path';
 import { createV2DurableState, createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { parseV2PlannerResponse, readPlannerCandidate, v2PlannerContractRules, validateV2PlannerResponse } from '../src/workflow/v2-planner.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES } from '../src/workflow/step-vocabulary.js';
+import { EVIDENCE_ENV_KEYS } from '../src/workflow/evidence-runner.js';
+import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from '../src/workflow/schema-check.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
 const GOAL = '1. Write the summary data file.';
 const DIRECTORY = 'program.actions[0].deliverable.paths[0] names a directory ("reports"); list the exact files step summary leaves behind';
+const SCHEMA_DIRECTORY = 'program.actions[0].evidence[1].schema names a directory ("reports")';
+const SCHEMA_INVALID = 'program.actions[0].evidence[1].schema is not valid JSON ("schemas/event.json")';
+const SCHEMA_UNSUPPORTED = 'program.actions[0].evidence[1].schema uses unsupported keyword "if" at # ("schemas/event.json"); see the schema subset in docs/reference/program.md';
 const IGNORED = 'program.actions[0].deliverable.paths[0] is git-ignored ("out/summary.json"); an isolated run copies back only files git would track';
 
 const summary = (paths, ownedFiles = []) => ({
@@ -31,9 +37,11 @@ function fixture(t) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'home');
   const workspace = join(root, 'acme');
-  mkdirSync(home);
+  mkdirSync(join(home, 'connectors'), { recursive: true });
   mkdirSync(join(workspace, 'reports'), { recursive: true });
-  writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, pools: {}, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } }));
+  const echoConnector = JSON.parse(readFileSync(new URL('../src/providers/echo/connector.json', import.meta.url), 'utf8'));
+  writeFileSync(join(home, 'connectors', 'echo.json'), JSON.stringify(echoConnector));
+  writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, pools: { echo: { enabled: true } }, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } }));
   const git = (...args) => {
     const run = spawnSync('git', ['-C', workspace, ...args], { encoding: 'utf8' });
     assert.equal(run.status, 0, run.stderr);
@@ -82,6 +90,66 @@ test('plan validate and launch refuse a deliverable path that names a directory'
     id: 'summary', role: 'produce', deliverable: { type: 'data', paths: ['reports/summary.json'] },
     lane: 'build', effort: 'medium', dependsOn: [], affects: ['requirement-1'], evidenceFor: [], ownedFiles: [],
   });
+});
+
+test('plan validate exposes evidence types and refuses existing invalid schema paths', (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.workspace, 'schemas'), { recursive: true });
+  writeFileSync(join(f.workspace, 'schemas', 'event.json'), JSON.stringify({ type: 'object', properties: { date: { type: 'string' } } }));
+  const withEvidence = (schema = 'schemas/event.json') => programOf({
+    id: 'summary', purpose: 'Write the summary data file', role: 'produce',
+    evidence: [{ type: 'command', cmd: 'node --test tests/summary.test.js' }, { type: 'schema', file: 'out/summary.json', schema }],
+    deliverable: { type: 'data', paths: ['reports/out.json'] }, dependsOn: [], affects: ['requirement-1'], ownedFiles: [], evidenceFor: [],
+    prompt: 'Write the summary data file and report its content.',
+  });
+  const plan = f.write('evidence.json', withEvidence());
+  const text = f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', plan);
+  assert.equal(text.status, 0, text.stderr || text.stdout);
+  assert.match(text.stdout, /evidence=command,schema/);
+  const json = JSON.parse(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', plan, '--json').stdout);
+  assert.deepEqual(json.program.actions[0].evidence, [
+    { type: 'command', cmd: 'node --test tests/summary.test.js' },
+    { type: 'schema', file: 'out/summary.json', schema: 'schemas/event.json' },
+  ]);
+
+  assert.deepEqual(issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', f.write('schema-dir.json', withEvidence('reports')), '--json')), [SCHEMA_DIRECTORY]);
+  writeFileSync(join(f.workspace, 'schemas', 'event.json'), '{');
+  const invalidJson = issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', plan, '--json'));
+  assert.match(invalidJson[0], /^program\.actions\[0\]\.evidence\[1\]\.schema is not valid JSON/);
+  writeFileSync(join(f.workspace, 'schemas', 'event.json'), JSON.stringify({ if: { type: 'string' } }));
+  assert.deepEqual(issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', plan, '--json')), [SCHEMA_UNSUPPORTED]);
+});
+
+test('foreground launch prints the proof line for a step with passing command evidence', (t) => {
+  const f = fixture(t);
+  const program = programOf({
+    id: 'summary', purpose: 'Write the summary data file', kind: 'io-read', effort: 'low',
+    evidence: [{ type: 'command', cmd: 'node -e "process.exit(0)"' }],
+    dependsOn: [], affects: ['requirement-1'], ownedFiles: [], evidenceFor: [],
+    prompt: 'Return a short report.',
+  });
+  const programPath = f.write('foreground-evidence.json', program);
+  const result = f.cli('workflow', 'goal', GOAL, '--cwd', f.workspace, '--program', programPath, '--foreground');
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /proof: 1 steps? proven \(command 1\)/);
+});
+
+test('workflow capabilities exposes step evidence schema and environment details', (t) => {
+  const f = fixture(t);
+  const capabilities = f.cli('workflow', 'capabilities');
+  assert.equal(capabilities.status, 0, capabilities.stderr || capabilities.stdout);
+  const engine = JSON.parse(capabilities.stdout).engines.autonomousV2;
+  assert.deepEqual(engine.evidenceTypes.usable, [...USABLE_EVIDENCE_TYPES]);
+  assert.deepEqual(engine.stepEvidence.fieldTypes, [...STEP_EVIDENCE_TYPES]);
+  assert.equal(engine.stepEvidence.maxItems, 5);
+  assert.deepEqual(engine.stepEvidence.timeoutSec, { default: 120, max: 600 });
+  assert.deepEqual(engine.stepEvidence.schemaKeywords, [...SCHEMA_ASSERTED_KEYWORDS]);
+  assert.deepEqual(engine.stepEvidence.schemaIgnored, [...SCHEMA_IGNORED_KEYWORDS]);
+  assert.deepEqual(engine.stepEvidence.schemaFormats, ['json', 'jsonl']);
+  assert.equal(engine.stepEvidence.outputFile, '$output');
+  assert.deepEqual(engine.stepEvidence.env, [...EVIDENCE_ENV_KEYS]);
+  assert.equal(engine.stepEvidence.actRetry, false);
+  assert.equal(typeof engine.stepEvidence.checker, 'string');
 });
 
 test('a kind-only validate payload and line carry no role or deliverable', (t) => {

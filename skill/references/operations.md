@@ -187,8 +187,8 @@ bytes or 8 KB, whichever is larger. Use one when three or more writers feed a
 single integrator, or when a consumer's dependency outputs exceed roughly
 20 KB. Four rules are enforced at `plan validate` and at launch, each exit 2:
 a digest must depend on at least one action, must have empty `evidenceFor`,
-must have empty `ownedFiles`, and no evidence action may list a digest in its
-`dependsOn` — evidence reads the real artifacts. A consumer that depends on a
+must have empty `ownedFiles`, and no review step may list a digest in its
+`dependsOn` — review reads the real artifacts. A consumer that depends on a
 digest gets the digest entry in its `Dependency artifacts` list plus a
 `digestOf` array naming each digested source, so it can still open the
 originals.
@@ -326,7 +326,7 @@ plan by id:
   restored, or rerun action in the new graph. It becomes pending and runs again
   once its inputs succeed.
 
-A removed or reset evidence action's records turn stale
+A removed or reset review step's records turn stale
 (`staleReason: revision-discarded`) and the requirement status is recomputed.
 
 Validation happens twice, in the CLI before anything is written and in the
@@ -437,6 +437,19 @@ on:
   evidence line, or `no evidence recorded for the current work`.
 - `handback.unreadSteering[]`: `{id, message, queuedAt}`.
 
+A `failed-evidence` result means a declared command or schema check failed.
+Bullswarm retries once on the same pool with the check output attached; after
+the retry the step waits for you. Failed checks on `act` steps and checks that
+cannot run go to you without a retry. Signal deaths of checks are failures;
+a kernel stop, pause or revision is not a failed check. Full output is saved
+in `evidence-<step>-attempt-<n>-<k>.log`. `workflow resume` does not rerun
+`failed-evidence`; fix or amend the step, or add a check step with its own
+evidence to prove finished work without rerunning it. New runs label finished
+steps `proven by command`, `proven by schema` or `proven by review`; otherwise
+the label is `finished · unproven`. Watch and result summaries include a
+`proof:` count line.
+- `handback.unreadSteering[]`: `{id, message, queuedAt}`.
+
 `runs result --summary` adds `handback.options`, one command per choice
 (`continue`, `retry` when a step is retryable, `takeOver`, `restart`). An open
 requirement keeps its `why` for as long as the 4 KB budget allows; concerns and
@@ -468,6 +481,12 @@ resume`; and relaunches the kernel. A step that failed for any other reason
 (the worker reported failure, `ownership`, `not-produced`) stays failed:
 change the plan with `plan revise`. With nothing retryable, resume prints
 `nothing to retry`, lists the steps that need you, starts nothing, and exits 1.
+
+| Failure | What happens |
+|---|---|
+| `failed-evidence` | One retry on the same pool with the check output attached; then the step waits for you. An `act` step or a check that cannot run goes to you without a retry. `workflow resume` does not rerun it. |
+| Evidence killed by a signal | The check fails (`killed by SIG…`); a kernel stop, pause or revision is not a failed check. |
+| Evidence log | Full output is saved as `evidence-<step>-attempt-<n>-<k>.log`. |
 
 The silence cutoff is `BULLSWARM_WORKER_SILENCE_SEC` (default 3600). It
 measures silence, not run time: every byte a worker writes restarts it.

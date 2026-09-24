@@ -233,18 +233,25 @@ Semantics for v1:
 
 - **Brief.** Evidence is listed in the worker's brief with the words "Bullswarm
   will run these after you finish".
-- **Order.** Bullswarm runs evidence after the deliverable snapshot and before
-  the "not produced" gate.
-- **Result.** Each item records `{ type, status, exit, tail }`. A failure gives
-  `failureKind: failed-evidence`, and the failure rule applies.
+- **Order.** Bullswarm runs evidence after the deliverable snapshot, once the
+  "not produced" gate has passed; a step that produced nothing is not checked.
+- **Result.** Each item records its type, status, exit, output tail and any
+  side-effect facts. A failure gives `failureKind: failed-evidence`; one retry
+  runs on the same pool with the failure attached. After that, the step returns
+  to the caller. An act step and a check that cannot run go to the caller
+  without a retry.
 - **Timeouts.** `timeoutSec` defaults to 120 and is capped at 600.
-- **Side effects.** Evidence must not change the deliverable. A change fails
-  the item.
-- **No evidence.** A step without evidence is `unproven`. Review rubrics are
-  guidance for the reviewing step, not computed verdicts.
+- **Side effects.** Evidence must not change the deliverable (tracked files,
+  declared paths or owned files). A change fails the item; untracked
+  by-products are recorded. A failed check on an act step goes to the caller
+  without a retry.
+- **No evidence.** A step without evidence is `unproven`; new runs label it
+  `finished · unproven`. Passing command or schema checks labels it `proven by
+  command` or `proven by schema`. Review rubrics are guidance for the reviewing
+  step, not computed verdicts.
 - **Known gap.** A worker can weaken the check its evidence runs. v1 accepts
-  this; later, review steps rerun declared evidence and inspect changes to
-  check files.
+  this and records when a schema file changed; later, review steps rerun
+  declared evidence and inspect changes to check files.
 
 Where it plugs in:
 
@@ -254,14 +261,18 @@ Where it plugs in:
 - `dispatchV2Action` in `src/workflow/v2-dispatch.js`;
 - `summarizeV2Result` in `src/workflow/v2-outcome.js`.
 
-Replay on a week of real software runs. The counts are recorded defects that
-command evidence on the step that caused them would have failed:
+Replay on three real software runs. Counts use offline checks against the
+recorded defect and fixed trees. A defect is observed only when the check could
+have been declared at the owning step; checks that depend on the later fix are
+argued, not observed. See section 7.6 of the stage-2 spec for the counting rule.
 
-| Run | Caught at the owning step | Not caught |
-|---|---|---|
-| a 23-step release batch | 7 of 7 | — |
-| a 9-writer prototype | 5 | 1 needed a browser |
-| a 27-step dashboard tidy-up | 25 | 6 |
+| Run | Caught, observed | Caught, argued | Not caught |
+|---|---:|---:|---:|
+| a 23-step release batch | 7 of 7 | — | — |
+| a 9-writer prototype | 5 | — | 1 needed a browser |
+| a 27-step dashboard tidy-up | 25 | — | 6 |
+
+Observed replay counts: pending
 
 ## Project record
 
@@ -482,9 +493,10 @@ only, unproven", and the caller spot-checks what matters.
    change the no-op gate to "declared deliverable not produced", or limit it to
    file deliverables.
 2. **Step vocabulary.** Roles, deliverables and evidence types, with today's
-   kinds kept as aliases.
+   kinds each belonging to one role while keeping their exact routing.
 3. **Evidence v1.** Command and schema evidence, the brief paragraph, the
-   runner, `failed-evidence`, and evidence in the digest.
+   runner, `failed-evidence`, evidence in the digest, and the `proven by` /
+   `finished · unproven` labels.
 4. **Failure rule.** One retry, then the caller; `verifyRounds` default 1; the
    watcher's needs-you block; `step rerun --avoid`, `step accept`, `route`;
    review placement becomes opt-in.

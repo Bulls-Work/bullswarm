@@ -256,7 +256,7 @@ test('the planning contract documents the per-action reasoning override and echo
   const bare = buildV2PlannerContract(createV2GoalDocument({
     goal: 'Create and check report.md', cwd: '/tmp',
     requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
-    settings: { executionMode: 'program' },
+    settings: { executionMode: 'program', plannerMode: 'caller' },
   }));
   assert.deepEqual([bare.reasoning.worker, bare.reasoning.planner], [null, null]);
 });
@@ -277,6 +277,11 @@ test('program planner guidance keeps writer inputs, slices and delivery explicit
     'After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit `timeBox` sized for the full suite. ' +
     'Make the gate a `check` step and the commit and PR steps kind `mechanical` (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as `not-produced`; a build-lane step with no declared deliverable, other than `integration`, fails the same way when it changes no file and makes no commit.';
   assert.ok(v2PlannerContractRules({ executionMode: 'program' }).includes(expected));
+  // Only the caller may declare evidence (E29), so only its rule set tells it to put the gate's suite there.
+  const caller = expected.replace('Make the gate a `check` step and the commit and PR steps kind `mechanical`',
+    'Make the gate a `check` step and declare its suite as `evidence` so Bullswarm runs it; commit and PR steps are kind `mechanical`');
+  assert.ok(v2PlannerContractRules({ executionMode: 'program', plannerMode: 'caller' }).includes(caller));
+  assert.equal(v2PlannerContractRules({ executionMode: 'program' }).some((rule) => rule.includes('declare its suite as `evidence`')), false);
 });
 
 test('the planning contract documents kind, its derived table, program defaults, and the advisories', () => {
@@ -466,8 +471,17 @@ test('the program-mode contract carries roles, kind roles, deliverable and evide
   assert.deepEqual(contract.program.kindRoles, { ...KIND_ROLES });
   assert.deepEqual(contract.program.deliverableTypes, [...DELIVERABLE_TYPES]);
   assert.deepEqual(contract.program.evidenceTypes.types, [...EVIDENCE_TYPES]);
-  assert.deepEqual(contract.program.evidenceTypes.usable, ['review']);
-  assert.match(contract.program.evidenceTypes.note, /check step with evidenceFor/);
+  assert.deepEqual(contract.program.evidenceTypes.usable, ['command', 'schema', 'review']);
+  assert.match(contract.program.evidenceTypes.note, /command and schema go in a step's evidence field/);
+  assert.deepEqual(contract.program.stepEvidence.fieldTypes, ['command', 'schema']);
+  assert.equal(contract.program.stepEvidence.maxItems, 5);
+  assert.deepEqual(contract.program.stepEvidence.timeoutSec, { default: 120, max: 600 });
+  assert.deepEqual(contract.program.stepEvidence.schemaFormats, ['json', 'jsonl']);
+  assert.equal(contract.program.stepEvidence.outputFile, '$output');
+  assert.deepEqual(contract.program.stepEvidence.env, ['BULLSWARM_EVIDENCE', 'BULLSWARM_STEP_ID', 'BULLSWARM_STEP_OUTPUT', 'BULLSWARM_RUN_DIR']);
+  assert.equal(contract.program.stepEvidence.actRetry, false);
+  assert.match(contract.program.actionFields.evidence, /caller-authored only/);
+  assert.match(contract.program.evidenceTypes.note, /review is a check step with evidenceFor/);
   // kinds and the original note stay; the role note is a second note.
   assert.deepEqual(contract.program.kinds, KIND_DEFAULTS);
   assert.match(contract.program.defaults.note, /action > kind > program defaults > lane default/);
@@ -498,12 +512,13 @@ test('the program-mode contract carries roles, kind roles, deliverable and evide
 
 test('the verified-mode contract has no role vocabulary, and keeps its kind example and field docs', () => {
   const contract = buildV2PlannerContract(goalFor('verified'));
-  for (const key of ['roles', 'kindRoles', 'deliverableTypes', 'evidenceTypes']) assert.equal(key in contract.program, false, key);
+  for (const key of ['roles', 'kindRoles', 'deliverableTypes', 'evidenceTypes', 'stepEvidence']) assert.equal(key in contract.program, false, key);
   assert.equal('roleNote' in contract.program.defaults, false);
   assert.deepEqual(contract.program.example, JSON.parse(JSON.stringify(V2_PROGRAM_EXAMPLE)));
   assert.deepEqual(contract.program.actionFields, { ...V2_PROGRAM_ACTION_FIELDS });
   assert.equal('role' in contract.program.actionFields, false);
   assert.equal('deliverable' in contract.program.actionFields, false);
+  assert.match(contract.program.actionFields.evidenceFor, /evidence action independently judges/);
   assert.equal(contract.program.actionFields.lane, 'analyze | build | chore — omit when kind supplies it');
   const rules = v2PlannerContractRules({ executionMode: 'verified' });
   assert.equal(rules.filter((rule) => /`role` field|`deliverable` field|`act` step/.test(rule)).length, 0);
@@ -526,15 +541,36 @@ test('every planner rule set states the kind field exactly once, and the role ru
   assert.match(buildV2PlannerPrompt(createV2PlannerContext(programState(), { scout: null })), /optional per-action `role` field/);
 });
 
+test('E29 permits caller evidence and refuses it from a dispatched planner', () => {
+  const caller = programState();
+  caller.config.settings.plannerMode = 'caller';
+  const planned = response();
+  planned.program.actions[0].evidence = [{ type: 'command', cmd: 'node --test tests/report.test.js' }];
+  assert.equal(validateV2PlannerResponse(planned, caller).program.actions[0].evidence[0].type, 'command');
+
+  const dispatched = programState();
+  assert.throws(() => validateV2PlannerResponse(planned, dispatched), (error) =>
+    error instanceof V2PlannerValidationError
+      && error.issues.includes("actions[0].evidence is the caller's to declare; a dispatched planner cannot add checks (the caller adds them with bullswarm workflow plan revise)"));
+
+  for (const plannerMode of ['caller', 'dispatched']) {
+    const rules = v2PlannerContractRules({ executionMode: 'program', plannerMode }).join('\n');
+    if (plannerMode === 'caller') assert.match(rules, /A step may declare `evidence`/);
+    else assert.match(rules, /Do not declare evidence; put the acceptance commands a worker must run in its prompt/);
+  }
+});
+
 test('the role example validates as a program-mode plan and resolves the same routing as the kind example', () => {
-  const accepted = validateV2PlannerResponse(clone(V2_ROLE_PROGRAM_EXAMPLE), createV2State(createV2GoalDocument({
-    goal: 'Fix the parser', cwd: '/tmp/repo', settings: { executionMode: 'program', concurrency: 2 },
+  const roleExample = clone(V2_ROLE_PROGRAM_EXAMPLE);
+  const accepted = validateV2PlannerResponse(roleExample, createV2State(createV2GoalDocument({
+    goal: 'Fix the parser', cwd: '/tmp/repo', settings: { executionMode: 'program', plannerMode: 'caller', concurrency: 2 },
     requirements: [{ id: 'requirement-1', text: 'The parser handles trailing commas' }],
   }), { runId: 'wf-roles-abcdef', shortId: 'rol234' }));
   assert.deepEqual(
     accepted.program.actions.map((action) => [action.id, action.role, action.lane, action.effort, action.deliverable]),
     [['fix-parser', 'produce', 'build', 'medium', { type: 'files' }], ['check-parser', 'check', 'analyze', 'medium', { type: 'report' }]],
   );
+  assert.deepEqual(accepted.program.actions[0].evidence, [{ type: 'command', cmd: 'node --test tests/parser.test.js' }]);
   // A verified run refuses the role example (D17).
   assert.throws(() => validateV2PlannerResponse(clone(V2_ROLE_PROGRAM_EXAMPLE), createV2State(createV2GoalDocument({
     goal: 'Fix the parser', cwd: '/tmp/repo', settings: { concurrency: 2 },

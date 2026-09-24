@@ -64,6 +64,17 @@ Acceptance is its own `check` step (or `kind: adversarial-acceptance` for high e
 
 `verified` is computed separately from `completed`: it records whether every mandatory requirement has fresh passing evidence, so a run can finish and still be unverified.
 
+## Have Bullswarm run checks
+
+Use command evidence for tests or other facts a command can check, and schema
+evidence when output must match a JSON or JSONL shape. Keep commands scoped to
+their step; put a whole-suite check on the step that runs alone or last. Checks
+run after the deliverable gate and must not change the deliverable. A failure
+gets one same-pool retry, then returns to you. A report can be checked with
+`file: "$output"` or a command that reads `$BULLSWARM_STEP_OUTPUT`. A check
+step with its own evidence can prove already-finished work without rerunning
+it. See [Evidence in the program reference](/reference/program#evidence-command-and-schema).
+
 ## Condense with a digest
 
 Use a `digest` action when three or more writers feed a single reader, or when a reader's dependency outputs would exceed roughly 20 KB. The kernel writes the whole digest task — your prompt is focus guidance only — and it quotes each source's delivered items, numbers, and shared-file requests verbatim, so the reader gets `digestOf` links instead of raw files.
@@ -127,6 +138,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
       "dependsOn": [],
       "affects": ["requirement-1"],
       "ownedFiles": ["src/workflow/runs-cli.js", "tests/runs-list.test.js"],
+      "evidence": [{ "type": "command", "cmd": "node --test tests/runs-list.test.js" }],
       "evidenceFor": [],
       "prompt": "In <cwd>, add a --since <time> flag to `bullswarm workflow runs list` in src/workflow/runs-cli.js with a unit test in tests/runs-list.test.js. Others share this tree: preserve their edits and report any file you need outside your territory. Run `npm test` and quote the summary line."
     },
@@ -141,11 +153,23 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
       "prompt": "In <cwd>, document the --since <time> flag of `bullswarm workflow runs list` in the runs section of README.md, matching the style of the neighbouring flags. Edit README.md only."
     },
     {
+      "id": "records",
+      "role": "produce",
+      "deliverable": { "type": "data", "paths": ["out/records.json"] },
+      "purpose": "Write records that match the documented format",
+      "dependsOn": [],
+      "affects": ["requirement-2"],
+      "ownedFiles": ["out/records.json"],
+      "evidence": [{ "type": "schema", "file": "out/records.json", "schema": "schemas/record.json" }],
+      "evidenceFor": [],
+      "prompt": "In <cwd>, write out/records.json as records that match schemas/record.json."
+    },
+    {
       "id": "integrate",
       "role": "combine",
       "deliverable": "files",
       "purpose": "Reconcile both edits and run the full suite",
-      "dependsOn": ["since-flag", "readme"],
+      "dependsOn": ["since-flag", "readme", "records"],
       "affects": ["requirement-1", "requirement-2"],
       "ownedFiles": [],
       "evidenceFor": [],

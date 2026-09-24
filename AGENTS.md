@@ -20,11 +20,14 @@ The redesign rewords items 1, 5, 6 and 7, and each stage updates this file.
 Stage 1 (step vocabulary) has landed: program-mode steps may state a role and a
 deliverable, each kind belongs to one role and keeps its exact routing, and
 the no-op gate is now 'declared deliverable not produced' (failure kind
-`not-produced`), measured over the whole step.
+`not-produced`), measured over the whole step. Stage 2 (evidence v1) has landed:
+program steps may declare command and schema `evidence` that the kernel runs
+after the worker, a failure is `failed-evidence` with one same-pool retry, and
+finished steps in new runs are labelled `proven by …` or `finished · unproven`.
 
 ## Non-negotiable doctrine
 
-1. Judge delegate output by CONTENT, not exit code (see `src/lib/verify.js`).
+1. Judge delegate output by what can be checked, never by the delegate's exit code or its own report: the content (`src/lib/verify.js`) and, when a step declares them, the command and schema evidence Bullswarm runs itself (`src/workflow/evidence-runner.js`).
 2. Pace by meter surplus = elapsed% (from provider resets_at) − used%.
    Weekly/monthly windows pace; 5h windows are burst gates only (M1–M5 in
    `src/meters/framework.js`).

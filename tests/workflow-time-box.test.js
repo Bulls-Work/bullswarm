@@ -309,6 +309,7 @@ test('the kernel boxes every work and evidence task, records the box and the ear
     .filter((event) => event.type === 'action.finished')
     .map((event) => renderWatchEvent(event, { now: clock }));
   assert.equal(lines.length, 3);
-  assert.match(lines[0], /^(◐|-) build returned early · 2 not done$/);
+  // A new run labels every step (E23): verify has not passed build's requirement yet.
+  assert.match(lines[0], /^(◐|-) build returned early · 2 not done · review pending$/);
   assert.equal(lines.filter((line) => /^(✓|\+) unboxed finished · /.test(line)).length, 1);
 });

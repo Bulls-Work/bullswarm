@@ -16,6 +16,7 @@ import {
   DEFAULT_STALE_THRESHOLDS, actionWrites, attemptStreamPath, createStaleProbe, createStreamFactsReader,
   emptyStreamFacts, foldStreamRecord, ownedFilesChangedAt, staleScore, streamFacts,
 } from '../src/lib/stale.js';
+import { EVIDENCE_HEARTBEAT_MS } from '../src/workflow/evidence-runner.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = join(ROOT, 'tests', 'fixtures', 'home-351', 'workflows');
@@ -117,6 +118,33 @@ test('quiet time excludes a command in flight and counts once nothing is running
   // Without an event stream, silence is all there is to go on, and it says so.
   const bytesOnly = staleScore({ attempt: running(attempt, { lastActivityAt: records[bashAt + 1].at }), facts: null, nowMs: ms(records[bashAt + 1].at) + 11 * 60_000 });
   assert.deepEqual(bytesOnly.reasons, ['no output for 11m']);
+});
+
+test('evidence heartbeats keep a long silent check from reading as quiet (E18)', () => {
+  // The worker's stream ends (its result came back, nothing runs), then the
+  // kernel runs a silent check for 11 minutes. The runtime's onEvidence handler
+  // sets lastActivityAt at the item's start and on every 30 s heartbeat.
+  const { records, attempt } = stream('wf-mu8thu2e-27c504', 'stream-verify-attempt-1.jsonl');
+  const bashAt = records.findIndex((record) => record.kind === 'Bash' && record.status === 'running');
+  const closed = streamFacts(records.slice(0, bashAt + 2));
+  assert.equal(closed.open.length, 0);
+  const checkStart = ms(records[bashAt + 1].at);
+  const end = checkStart + 11 * 60_000;
+  let lastActivityAt = checkStart;
+  for (let nowMs = checkStart; nowMs <= end; nowMs += 15_000) {
+    // Heartbeats land every EVIDENCE_HEARTBEAT_MS while the item runs.
+    const beats = Math.floor((nowMs - checkStart) / EVIDENCE_HEARTBEAT_MS);
+    lastActivityAt = checkStart + beats * EVIDENCE_HEARTBEAT_MS;
+    const score = staleScore({
+      attempt: running(attempt, { lastActivityAt: new Date(lastActivityAt).toISOString() }), facts: closed, nowMs,
+    });
+    assert.equal(score.signals.some((signal) => signal.id === 'quiet'), false, `quiet at +${(nowMs - checkStart) / 1000}s`);
+    assert.equal(score.stale, false);
+  }
+  // The same 11 minutes without the heartbeats is quiet, and stale on its own.
+  const silent = staleScore({ attempt: running(attempt), facts: closed, nowMs: end });
+  assert.equal(silent.signals.some((signal) => signal.id === 'quiet'), true);
+  assert.equal(silent.stale, true);
 });
 
 test('replaying the real healthy attempts never reads as stale', () => {

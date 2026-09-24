@@ -64,13 +64,34 @@ author the graph.
 - **Finish after integration.** Put the full browser/e2e gate, commit, and PR
   in separate ordered steps after integration, in that sequence. Give the
   browser/e2e step an explicit `timeBox` sized for the full suite. Make the
-  browser/e2e gate a `check` step, and the commit and PR steps
-  `kind: mechanical` (not judged, and with empty ownedFiles they run alone). A
+  browser/e2e gate a `check` step and declare its suite as `evidence` so
+  Bullswarm runs it. Keep the commit and PR steps `kind: mechanical` (not
+  judged, and with empty ownedFiles they run alone). A
   step whose declared deliverable was not produced fails as `not-produced`,
   and so does a build-lane step with no declared deliverable that changes no
   file and makes no commit. An integrator is not judged by files, so a clean
   integrator still passes. An `act` step is for outward actions such as
   sending messages; it is never judged by files.
+- **Evidence: checks Bullswarm runs.** Add a command or schema check for
+  anything a machine can check. Scope commands to the step; put a whole-suite
+  command on the step that runs alone or last. Checks are read-only: a change
+  to the deliverable fails the item. Untracked by-products are reported as
+  `touched`, not failed; declare a new file as a deliverable path to protect it.
+  Each check has a timeout (default 120 seconds); choose a generous value and
+  run it once by hand before launch, because fixing a wrong check reruns the
+  worker. Watch-mode test runners need `--run` or `CI=1` in the command. A report
+  can be checked with `file: "$output"` or a command reading
+  `$BULLSWARM_STEP_OUTPUT`. Checks see `BULLSWARM_EVIDENCE=1`,
+  `BULLSWARM_STEP_ID`, `BULLSWARM_STEP_OUTPUT` and `BULLSWARM_RUN_DIR`; the
+  first tells a script Bullswarm is running it. One failed check gets one
+  same-pool retry with output attached, then the step returns to you. If the
+  worker fails first, the result says `evidence not run`. A failed check on an
+  `act` step or a check that cannot run comes straight to you.
+  Only the caller declares checks; a dispatched planner cannot. A finished step
+  without checks reads `finished · unproven`; passing checks read `proven by
+  command` or `proven by schema`. Add a `check` step with its own evidence to
+  prove finished work without rerunning it. An old kernel refuses `evidence`:
+  pause, revise, resume.
 - **Check independently when acceptance matters.** One `check` step (or
   `kind: adversarial-acceptance` for high effort) with empty `affects` and
   `ownedFiles`, `evidenceFor` set to the

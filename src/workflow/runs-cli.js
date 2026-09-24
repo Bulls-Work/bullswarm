@@ -27,7 +27,7 @@ import { appendRollupIndex, readRollup, rollupIndexPath, writeLegacyRollup, writ
 import { readGoalProject } from './goal.js';
 import { projectName } from '../lib/project.js';
 import { isTerminalWorkflowStatus } from './status.js';
-import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
+import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { aggregateAttemptUsage } from './rollup.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
@@ -392,9 +392,12 @@ function runsResult(idToken, opts) {
   console.log(`# status  ${stable.status}  result ready`);
   console.log(`# verified  ${stable.verified ? 'yes' : 'no'}`);
   console.log(`# outcome  ${stable.reason}`);
+  const summary = summarizeV2Result(stable, state, { runDir });
+  const proofLine = formatV2ProofLine(summary);
+  if (proofLine) console.log(`# proof  ${proofLine.replace(/^proof: /, '')}`);
   console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
   if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
-  for (const line of formatV2HandbackLines(summarizeV2Result(stable, state, { runDir }))) console.log(line);
+  for (const line of formatV2HandbackLines(summary)) console.log(line);
   // The stable envelope records outcomes, not routing. The durable state
   // next to it holds the accepted program, so the routing each action ran
   // on — including its `kind` — is reported from there.

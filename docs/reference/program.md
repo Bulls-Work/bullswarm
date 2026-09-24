@@ -40,11 +40,12 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 | `affects` | yes | requirement IDs this action's work contributes to; an action with `ownedFiles` must list at least one |
 | `ownedFiles` | yes | repo-relative paths this action may edit; `[]` on a build-lane action means no territory limit (the integrator); analyze-lane actions edit nothing |
 | `prompt` | yes | the self-contained task text with the absolute workspace path written in (nothing is substituted); for a `digest`, one line of focus appended to the kernel-written task |
-| `evidenceFor` | yes | requirement IDs this action judges; `[]` unless it is evidence |
+| `evidenceFor` | yes | requirement IDs this action judges; `[]` unless it is a review step |
 | `role` | role, kind or lane | one of the roles below; program-mode runs only |
 | `kind` | role, kind or lane | one of the kinds below; each belongs to one role and keeps its own routing and gate (table below) |
 | `lane` | role, kind or lane | `analyze` (read-only), `build` (edits), `chore` (mechanical edits); only when there is no role or kind |
 | `deliverable` | no | `files`, `report`, `data`, `media`, `outward`, or `{type, paths}`; data and media need `paths`; every path must be an exact file, not a directory, and be listed in `ownedFiles` when it is not empty (`files` paths too); an isolated run refuses a git-ignored path |
+| `evidence` | no | up to 5 checks Bullswarm runs after the worker: `{type: "command", cmd, timeoutSec?}` or `{type: "schema", file, schema, format?, timeoutSec?}`; `$output` checks the step's final response; `format` is `json` or `jsonl` |
 | `effort` | no | `high`, `medium`, `low`; overrides the role's or kind's effort |
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, `default`; how hard the picked model thinks |
 | `timeBox` | no | whole minutes, 0–240: the soft time box written into this step's task; `0` leaves the paragraph out. Omit it to take `defaults.timeBox`, else the box computed from this home's recorded attempts |
@@ -148,6 +149,21 @@ When a step ends, Bullswarm checks its deliverable. A step that did not produce 
 
 A step with `evidenceFor`, and a `digest`, are never judged. The rule for a step with no deliverable applies only to runs started by this version; saved runs keep their original rules when resumed. "During the step" covers every attempt of the step, so a retry, resume or rerun that finds its work already done is not failed. A rerun of a step that failed `not-produced` is judged again. In an isolated run, only work from a step that succeeded counts.
 
+## Evidence: command and schema
+
+A program step may declare up to five checks in `evidence`. Bullswarm runs them in order after the worker and after the `not-produced` gate passes. If the worker fails first, evidence is not run. Otherwise every item runs unless an earlier item changed the deliverable or the run was stopped. A failed check gives `failed-evidence` and one retry on the same pool with its output attached. After the retry, the step waits for you. A failed check on an `act` step, or a check that cannot run, goes straight to you without a retry. `workflow resume` does not retry `failed-evidence`.
+
+| Type | Passes when | Fields |
+|---|---|---|
+| `command` | The one-line shell command exits 0 | `cmd`; optional `timeoutSec` |
+| `schema` | The file matches the supported JSON Schema subset | `file`, `schema`; optional `format` (`json` or `jsonl`) and `timeoutSec` |
+
+`timeoutSec` is an integer from 1 to 600, default 120. A top-level action `timeoutSec` is refused. The asserted JSON Schema keywords are `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `minProperties`, `maxProperties`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf`, `not` and `$ref`. Ignored annotations and containers are `$schema`, `$id`, `$comment`, `$defs`, `definitions`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` and `format`. Local `#` references work. `format` is not checked; unsupported keywords and non-local references are refused, never skipped. `jsonl` checks each non-empty line. `file: "$output"` checks the step's saved final response; one fenced JSON block is unwrapped. Run the checker by hand with `node <package>/bin/check-schema.js <file> <schema>`.
+
+Checks receive `BULLSWARM_EVIDENCE=1`, `BULLSWARM_STEP_ID`, `BULLSWARM_STEP_OUTPUT` (absolute path to this attempt's response), and `BULLSWARM_RUN_DIR`. The kernel's depth limit also applies to commands. In an isolated run, commands run in the isolated copy. Checks must be read-only: changing the deliverable fails the item. Untracked by-products are recorded as `touched` rather than failed; declare a new file as a deliverable path when it must be protected. Scope a command to its step. Put a whole-suite command on a step that runs alone or last, and pass `--run` or `CI=1` yourself when a test runner watches files. Run every check once by hand before launch and give it a generous timeout: changing a wrong check amends the step and reruns its worker. To prove finished work without rerunning it, add a `check` step with its own `evidence`; it does not rerun the work. An old kernel refuses `evidence`; pause, revise, then resume. Only the caller declares `evidence`; a dispatched planner cannot add it.
+
+A passing check labels a step `proven by command` or `proven by schema`; a review that passes all requirements the step affects adds `review`. Without evidence, a finished step in a new run reads `finished · unproven`. Older runs keep their saved labels.
+
 An `act` step works outside the workspace. It runs on lane `analyze`, its `ownedFiles` and `evidenceFor` are empty, and its deliverable is `outward`. Its task says not to modify workspace files and not to stage, commit, stash, check out or reset anything, and to list every action it took. It is never judged by files. It may list requirements in `affects`, but the kernel never repairs a requirement an act step affects: a failing one comes back to you. It is allowed in a read-only goal, because it does not change the workspace.
 
 Use a `digest` when three or more writers feed one reader, or a reader's inputs would exceed about 20 KB. The reader depends on the digest, not the raw writers, and receives `digestOf` links to them. Evidence never depends on a digest.
@@ -163,8 +179,8 @@ A requirement needs no writer: coverage by `evidenceFor` alone is accepted, and 
 Validate and launch apply the same rules. A kind outside the table, a lane outside `analyze|build|chore`, or an effort outside `high|medium|low` exits 2 before anything runs. So does a role outside the six, a role that disagrees with the kind, a deliverable a role does not take, a deliverable whose lane does not fit, or a data or media deliverable without paths, and `role` or `deliverable` in a run that is not program mode.
 
 - A goal that starts with `read-only`, or says repository files must not be modified, forbids mutation: every `ownedFiles` must be `[]`.
-- Kind `digest`, the kernel-written combine, needs at least one `dependsOn`, empty `evidenceFor`, empty `ownedFiles`, and no evidence action may list it in `dependsOn`. Only the direct dependency is checked; evidence may depend on an action that itself read a digest.
-- An evidence action's prompt describes what to inspect only. A directive such as "return only JSON" is rejected; the kernel owns the evidence format.
+- Kind `digest`, the kernel-written combine, needs at least one `dependsOn`, empty `evidenceFor`, empty `ownedFiles`, and no review step may list it in `dependsOn`. Only the direct dependency is checked; a review step may depend on an action that itself read a digest.
+- A review step's prompt describes what to inspect only. A directive such as "return only JSON" is rejected; the kernel owns the evidence format.
 - `ownedFiles` must name exact files, not a directory or a glob. Validate also refuses a pinned pool that cannot run a step.
 - A deliverable path must be an exact file, not a directory. When `ownedFiles` is not empty, every deliverable path, `files` paths included, must be listed in it. An isolated run refuses a git-ignored deliverable path, because it copies back only files git would track.
 - `timeBox` is a whole number of minutes from 0 to 240 and `verifyRounds` a whole number from 1 to 3; anything else, and any `repair` field, exits 2.
@@ -186,6 +202,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README.` Replace `<cwd>` i
       "dependsOn": [],
       "affects": ["requirement-1"],
       "ownedFiles": ["src/workflow/runs-cli.js", "tests/runs-list.test.js"],
+      "evidence": [{ "type": "command", "cmd": "node --test tests/runs-list.test.js" }],
       "evidenceFor": [],
       "prompt": "In <cwd>, add a --since <time> flag to `bullswarm workflow runs list` in src/workflow/runs-cli.js with a unit test in tests/runs-list.test.js. Others share this tree: preserve their edits and report any file you need outside your territory. Run `npm test` and quote the summary line."
     },
@@ -211,11 +228,23 @@ Goal: `1. Add --since to runs list. 2. Document it in README.` Replace `<cwd>` i
       "prompt": "In <cwd>, read both dependency outputs, resolve any shared-file requests they raised, make the README wording match the flag as implemented, run `npm test`, and quote the summary line."
     },
     {
+      "id": "records",
+      "role": "produce",
+      "deliverable": { "type": "data", "paths": ["out/records.json"] },
+      "purpose": "Write records that match the documented format",
+      "dependsOn": [],
+      "affects": ["requirement-2"],
+      "ownedFiles": ["out/records.json"],
+      "evidence": [{ "type": "schema", "file": "out/records.json", "schema": "schemas/record.json" }],
+      "evidenceFor": [],
+      "prompt": "In <cwd>, write out/records.json as records that match schemas/record.json."
+    },
+    {
       "id": "verify",
       "role": "check",
       "effort": "high",
       "purpose": "Independently confirm the flag works and is documented",
-      "dependsOn": ["since-flag", "readme", "integrate"],
+      "dependsOn": ["since-flag", "readme", "integrate", "records"],
       "affects": [],
       "ownedFiles": [],
       "evidenceFor": ["requirement-1", "requirement-2"],

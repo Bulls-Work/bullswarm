@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
-import { DELIVERABLE_TYPES } from './step-vocabulary.js';
+import { DELIVERABLE_TYPES, evidenceResultsIssues } from './step-vocabulary.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 
@@ -80,6 +80,10 @@ const ATTEMPT_FIELDS = new Set([
   // `missing` appear when paths were declared; `carried` only when an earlier
   // dispatch of this step decided the result (D19).
   'deliverable',
+  // Stage 2 (E20): what each declared evidence item did after the worker
+  // finished. Present only when the checks ran (E15); at most 5 entries with a
+  // closed key set (step-vocabulary.js `evidenceResultsIssues`).
+  'evidenceResults',
 ]);
 const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried']);
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
@@ -891,6 +895,16 @@ function validateAttemptDeliverable(value, at) {
   if (value.carried !== undefined && value.carried !== true) fail(`${at}.carried must be true`);
 }
 
+function validateAttemptEvidenceResults(value, at) {
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      if (isObject(item)) for (const key of Object.keys(item)) if (LEGACY_FIELDS.has(key)) fail(`${at}[${index}].${key} is a legacy autonomous field`);
+    }
+  }
+  const issues = evidenceResultsIssues(value, at);
+  if (issues.length) fail(issues[0]);
+}
+
 function validateAttempts(attempts, program) {
   if (!Array.isArray(attempts)) fail('state.attempts must be an array');
   const programIds = new Set(program.actions.map((action) => action.id));
@@ -931,6 +945,7 @@ function validateAttempts(attempts, program) {
     if (attempt.changedFiles !== undefined && (!Array.isArray(attempt.changedFiles) || attempt.changedFiles.length > 200
       || attempt.changedFiles.some((file) => typeof file !== 'string' || !file))) fail(`state.attempts[${index}].changedFiles must list at most 200 paths`);
     if (attempt.deliverable !== undefined) validateAttemptDeliverable(attempt.deliverable, `state.attempts[${index}].deliverable`);
+    if (attempt.evidenceResults !== undefined) validateAttemptEvidenceResults(attempt.evidenceResults, `state.attempts[${index}].evidenceResults`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
   }

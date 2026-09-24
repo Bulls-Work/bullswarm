@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { applyEvidence } from '../src/workflow/ledger.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import {
-  consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope,
-  evaluateV2Progress, serializeV2ResultEnvelope,
+  V2_RETRYABLE_FAILURE_KINDS, consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope,
+  evaluateV2Progress, serializeV2ResultEnvelope, v2RetryPlan, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
 
 const goal = () => createV2GoalDocument({
@@ -254,4 +254,84 @@ test('result envelope carries last-attempt bytes and usage totals; missing value
   assert.equal(without.actions[0].bytes, null);
   assert.equal(without.actions[1].bytes, null);
   assert.equal(without.usage.bytes, null);
+});
+
+// A program-mode run whose `build` step declares one command check and whose
+// `notes` step declares none (stage 2, §2.8).
+function evidenceState({ build = {}, attempts = [] } = {}) {
+  const state = createV2State(createV2GoalDocument({
+    goal: 'Ship the acme widget', cwd: '/tmp/acme',
+    settings: { concurrency: 2, workspaceMode: 'shared', executionMode: 'program' },
+    requirements: [{ id: 'widget-works', text: 'The widget works' }],
+  }), { runId: 'wf-test-evidnc', shortId: 'evd234' });
+  state.lifecycle = { status: 'running', startedAt: '2026-09-24T01:00:00Z', finishedAt: null, resultFile: null };
+  state.program = {
+    schemaVersion: 'bullswarm.workflow.program.v2', revision: 1,
+    actions: [
+      { id: 'build', purpose: 'Build the widget', dependsOn: [], affects: ['widget-works'], ownedFiles: ['widget.js'], prompt: 'Write widget.js.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], evidence: [{ type: 'command', cmd: 'node --test tests/widget.test.js' }] },
+      { id: 'notes', purpose: 'Write notes', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Summarise.', lane: 'analyze', effort: 'low', evidenceFor: [], inputs: [], produces: [] },
+    ],
+  };
+  const count = (id) => attempts.filter((attempt) => attempt.actionId === id).length;
+  state.actions = [
+    { id: 'build', status: 'succeeded', attempts: count('build'), programRevision: 1, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: '/tmp/acme-run/out-build-attempt-1.md', artifactIds: [], lastFailure: null, ...build },
+    { id: 'notes', status: 'succeeded', attempts: count('notes'), programRevision: 1, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: '/tmp/acme-run/out-notes-attempt-1.md', artifactIds: [], lastFailure: null },
+  ];
+  state.attempts = attempts;
+  state.presentation = { stages: [{ id: 'r1-implementation', label: 'Implementation', revision: 1, actionIds: ['build', 'notes'], startedAt: null, completedAt: null }] };
+  return state;
+}
+
+const FAILED_CHECK = {
+  type: 'command', cmd: 'node --test tests/widget.test.js', timeoutSec: 120, status: 'failed', exit: 1, durationMs: 1830,
+  tail: 'not ok 1 - joins words with one hyphen', log: '/tmp/acme-run/evidence-build-attempt-1-1.log', why: 'exit 1',
+};
+
+test('evidenceResults: only steps that declare evidence carry the key; null when the latest attempt ran none', () => {
+  // The worker process died, so no check ran (E15).
+  const state = evidenceState({
+    build: { status: 'failed', lastFailure: { kind: 'process', message: 'worker exited with code 1' } },
+    attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'process' }],
+  });
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
+  assert.equal(result.actions[0].evidenceResults, null);
+  assert.equal(Object.hasOwn(result.actions[1], 'evidenceResults'), false, 'a step without evidence keeps the older shape');
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+
+  // The exact-field validator accepts results and refuses malformed ones.
+  const withResults = structuredClone(result);
+  withResults.actions[0].evidenceResults = [FAILED_CHECK];
+  assert.equal(validateV2ResultEnvelope(withResults), true);
+  const bad = (mutate) => { const value = structuredClone(withResults); mutate(value.actions[0]); return value; };
+  assert.throws(() => validateV2ResultEnvelope(bad((action) => { action.evidenceResults = [{ ...FAILED_CHECK, verdict: 'x' }]; })), /actions\[0\]\.evidenceResults\[0\]\.verdict is not allowed/);
+  assert.throws(() => validateV2ResultEnvelope(bad((action) => { action.evidenceResults = [{ ...FAILED_CHECK, status: 'maybe' }]; })), /evidenceResults\[0\]\.status/);
+  assert.throws(() => validateV2ResultEnvelope(bad((action) => { action.evidenceResults = Array(6).fill(FAILED_CHECK); })), /at most 5 items/);
+  assert.throws(() => validateV2ResultEnvelope(bad((action) => { action.evidenceResults = 'passed'; })), /must be an array/);
+});
+
+test('a failed-evidence step needs the caller: not retryable, listed in needsCaller, and its handback why is the §2.7 line', () => {
+  assert.equal(V2_RETRYABLE_FAILURE_KINDS.includes('failed-evidence'), false);
+  const why = 'node --test tests/widget.test.js → exit 1: not ok 1 - joins words with one hyphen';
+  const state = evidenceState({
+    build: { status: 'failed', lastFailure: { kind: 'failed-evidence', message: why } },
+    attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'process' }],
+  });
+  assert.deepEqual(v2RetryPlan(state), { rerun: [], blocked: [], needsCaller: [{ id: 'build', status: 'failed', failureKind: 'failed-evidence' }] });
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
+  assert.deepEqual(result.handback.unfinished, [{ id: 'build', status: 'failed', failureKind: 'failed-evidence', why, retryable: false }]);
+  assert.deepEqual(result.actions[0].failure, { kind: 'failed-evidence', message: why });
+});
+
+test('the envelope carries the latest attempt\'s evidenceResults', () => {
+  const passed = { ...FAILED_CHECK, status: 'passed', exit: 0, tail: 'ok 1', why: null, log: '/tmp/acme-run/evidence-build-attempt-2-1.log' };
+  const state = evidenceState({
+    build: { status: 'succeeded' },
+    attempts: [
+      { id: 'build-1', actionId: 'build', ordinal: 1, status: 'interrupted', failureKind: 'failed-evidence', evidenceResults: [FAILED_CHECK] },
+      { id: 'build-2', actionId: 'build', ordinal: 2, status: 'succeeded', evidenceResults: [passed] },
+    ],
+  });
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
+  assert.deepEqual(result.actions[0].evidenceResults, [passed]);
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
 });
