@@ -45,7 +45,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 | `kind` | role, kind or lane | one of the kinds below; each belongs to one role and keeps its own routing and gate (table below) |
 | `lane` | role, kind or lane | `analyze` (read-only), `build` (edits), `chore` (mechanical edits); only when there is no role or kind |
 | `deliverable` | no | `files`, `report`, `data`, `media`, `outward`, or `{type, paths}`; data and media need `paths`; every path must be an exact file, not a directory, and be listed in `ownedFiles` when it is not empty (`files` paths too); an isolated run refuses a git-ignored path |
-| `evidence` | no | up to 5 checks Bullswarm runs after the worker: `{type: "command", cmd, timeoutSec?}` or `{type: "schema", file, schema, format?, timeoutSec?}`; `$output` checks the step's final response; `format` is `json` or `jsonl` |
+| `evidence` | no | up to 5 checks Bullswarm runs after the worker: `{type: "command", cmd, timeoutSec?}` or `{type: "schema", file, schema, format?, timeoutSec?}`; `$output` checks the step's final response; `format` is `json` or `jsonl`; refused on review and digest steps |
 | `effort` | no | `high`, `medium`, `low`; overrides the role's or kind's effort |
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, `default`; how hard the picked model thinks |
 | `timeBox` | no | whole minutes, 0–240: the soft time box written into this step's task; `0` leaves the paragraph out. Omit it to take `defaults.timeBox`, else the box computed from this home's recorded attempts |
@@ -71,17 +71,17 @@ The box is resolved for each attempt, so a retry on another pool gets its own cl
 
 ## Verify rounds
 
-When a mandatory requirement fails its evidence step, the kernel does not wait for you. It runs a bounded repair loop of at most 3 verify rounds:
+When a mandatory requirement fails its review step, the kernel does not wait for you. It runs a bounded repair loop of at most 3 verify rounds:
 
 | Round | What it judges | What follows a failure |
 |---|---|---|
-| 1 | every declared requirement: those an evidence step names are judged; one no evidence step names is recorded as `not judged · no evidence step covers it` | a `repair-1` step: the failed requirements with the verifier's evidence, the not-done items and handoffs of the steps that affect them, and ownership of the union of those steps' `ownedFiles`; when every affecting step declares a `report`, a read-only `analyze` step with deliverable `report` and no files instead. A requirement an `act` step affects gets no repair and comes back to you; when only those fail, the loop stops with `stoppedBy: act-step` |
+| 1 | every declared requirement: those a review step names are judged; one no review step names is recorded as `not judged · no evidence step covers it` | a `repair-1` step: the failed requirements with the verifier's evidence, the not-done items and handoffs of the steps that affect them, and ownership of the union of those steps' `ownedFiles`; when every affecting step declares a `report`, a read-only `analyze` step with deliverable `report` and no files instead. A requirement an `act` step affects gets no repair and comes back to you; when only those fail, the loop stops with `stoppedBy: act-step` |
 | 2 (`verify-round-2`) | the failed requirements again, plus any passed requirement whose evidence names a file the repair changed; it also looks for regressions in the repaired files and the same defect elsewhere | a `repair-2` step that also fixes what round 2 discovered |
 | 3 (`verify-round-3`) | final closure: only whether each open requirement now passes; it adds nothing new | none: the run ends |
 
 `defaults.verifyRounds` sets the cap from 1 to 3 (default 3; `1` keeps today's single round). A requirement that passed carries forward and is not judged again unless a repair touched a file its evidence names. The run ends as soon as nothing is failing, as `completed · verified`, or after round 3 as `completed · not verified · verify rounds 3/3` with a `callerDecision` block on the [result envelope](/reference/result). There is never a fourth round.
 
-A requirement no evidence step covers is never judged and never counts as passed. Round 1 records it as `not judged · no evidence step covers it`, it does not start a repair by itself (only a failed or blocked requirement does), and it appears in the `callerDecision` block of the [result](/reference/result) and in `runs result --summary` when the run ends. A mandatory one keeps the run from being `verified`; an optional one leaves the verdict to the mandatory requirements, and the block still names it. To have it judged, add an evidence step whose `evidenceFor` names it.
+A requirement no review step covers is never judged and never counts as passed. Round 1 records it as `not judged · no evidence step covers it`, it does not start a repair by itself (only a failed or blocked requirement does), and it appears in the `callerDecision` block of the [result](/reference/result) and in `runs result --summary` when the run ends. A mandatory one keeps the run from being `verified`; an optional one leaves the verdict to the mandatory requirements, and the block still names it. To have it judged, add a review step whose `evidenceFor` names it.
 
 The `repair-<n>` and `verify-round-<n>` steps are ordinary program steps that the kernel adds, so they appear in `plan export`, cost and pages like any other step. You never write one, and a `repair` field or type is rejected. A plan revision during the loop is still accepted, but only the kernel counts rounds: a revision never adds, resets or refunds one, and deleting the kernel step in progress stops the loop. `defaults.verifyRounds` in a revision sets the cap for the rest of the run, never below the rounds already closed, and a revision that changes only the cap is accepted.
 
@@ -149,24 +149,42 @@ When a step ends, Bullswarm checks its deliverable. A step that did not produce 
 
 A step with `evidenceFor`, and a `digest`, are never judged. The rule for a step with no deliverable applies only to runs started by this version; saved runs keep their original rules when resumed. "During the step" covers every attempt of the step, so a retry, resume or rerun that finds its work already done is not failed. A rerun of a step that failed `not-produced` is judged again. In an isolated run, only work from a step that succeeded counts.
 
+An `act` step works outside the workspace. It runs on lane `analyze`, its `ownedFiles` and `evidenceFor` are empty, and its deliverable is `outward`. Its task says not to modify workspace files and not to stage, commit, stash, check out or reset anything, and to list every action it took. It is never judged by files. It may list requirements in `affects`, but the kernel never repairs a requirement an act step affects: a failing one comes back to you. It is allowed in a read-only goal, because it does not change the workspace.
+
+Use a `digest` when three or more writers feed one reader, or a reader's inputs would exceed about 20 KB. The reader depends on the digest, not the raw writers, and receives `digestOf` links to them. No review step depends on a digest.
+
 ## Evidence: command and schema
 
-A program step may declare up to five checks in `evidence`. Bullswarm runs them in order after the worker and after the `not-produced` gate passes. If the worker fails first, evidence is not run. Otherwise every item runs unless an earlier item changed the deliverable or the run was stopped. A failed check gives `failed-evidence` and one retry on the same pool with its output attached. After the retry, the step waits for you. A failed check on an `act` step, or a check that cannot run, goes straight to you without a retry. `workflow resume` does not retry `failed-evidence`.
+A program step may declare up to five checks in `evidence`. Bullswarm runs them in order after the worker and after the `not-produced` gate passes. If the worker fails first, no check runs: the step's handback line and watch's failed line read `evidence not run`, and the result has `evidenceResults: null`. Otherwise every item runs unless an earlier item changed the deliverable or the run was stopped. A failed check gives `failed-evidence` and one retry on the same pool with its output attached. After the retry, the step waits for you. A failed check on an `act` step, or a check that cannot run, goes straight to you without a retry. `workflow resume` does not retry `failed-evidence`.
+
+`evidence` is refused on a review step (one with `evidenceFor`), on a `digest` (the kernel writes its report), in a run that is not program mode, and from a dispatched planner: only the caller declares checks. So a review step and a digest take no `evidence`. Put the commands a reviewer must run in its prompt, or add a separate `check` step with `evidence` and an empty `evidenceFor`.
 
 | Type | Passes when | Fields |
 |---|---|---|
 | `command` | The one-line shell command exits 0 | `cmd`; optional `timeoutSec` |
 | `schema` | The file matches the supported JSON Schema subset | `file`, `schema`; optional `format` (`json` or `jsonl`) and `timeoutSec` |
 
-`timeoutSec` is an integer from 1 to 600, default 120. A top-level action `timeoutSec` is refused. The asserted JSON Schema keywords are `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `minProperties`, `maxProperties`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf`, `not` and `$ref`. Ignored annotations and containers are `$schema`, `$id`, `$comment`, `$defs`, `definitions`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` and `format`. Local `#` references work. `format` is not checked; unsupported keywords and non-local references are refused, never skipped. `jsonl` checks each non-empty line. `file: "$output"` checks the step's saved final response; one fenced JSON block is unwrapped. Run the checker by hand with `node <package>/bin/check-schema.js <file> <schema>`.
+`timeoutSec` is an integer from 1 to 600, default 120. A top-level action `timeoutSec` is refused. Schema files use the subset in this section: asserted keywords `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `minProperties`, `maxProperties`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf`, `not`, and `$ref`. Ignored annotations and containers are `$schema`, `$id`, `$comment`, `$defs`, `definitions`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` and `format`. Local `#` references work, and every `$ref` target is checked as a schema. `format` is not checked; unsupported keywords and non-local references are refused, never skipped. `jsonl` checks each non-empty line; a JSONL file with no records fails with `no records`, so a step that may produce nothing should declare a JSON array. `file: "$output"` checks the step's saved final response; one fenced JSON block is unwrapped. Run the checker by hand with `node <package>/bin/check-schema.js <file> <schema>`; put `--` before a path that starts with `-`.
 
-Checks receive `BULLSWARM_EVIDENCE=1`, `BULLSWARM_STEP_ID`, `BULLSWARM_STEP_OUTPUT` (absolute path to this attempt's response), and `BULLSWARM_RUN_DIR`. The kernel's depth limit also applies to commands. In an isolated run, commands run in the isolated copy. Checks must be read-only: changing the deliverable fails the item. Untracked by-products are recorded as `touched` rather than failed; declare a new file as a deliverable path when it must be protected. Scope a command to its step. Put a whole-suite command on a step that runs alone or last, and pass `--run` or `CI=1` yourself when a test runner watches files. Run every check once by hand before launch and give it a generous timeout: changing a wrong check amends the step and reruns its worker. To prove finished work without rerunning it, add a `check` step with its own `evidence`; it does not rerun the work. An old kernel refuses `evidence`; pause, revise, then resume. Only the caller declares `evidence`; a dispatched planner cannot add it.
+Validate, launch and revise read each schema file. A refused keyword reads `…schema uses unsupported keyword …`; any other problem reads `…schema is not a supported schema ("P"): <reason>`. With `--isolation`, a git-ignored path is refused, because the isolated copy will not contain it: `…schema is git-ignored ("P"); the isolated copy will not contain it, so the check could not run`, and, for a `file` other than `$output`, `…file is git-ignored ("P"); the isolated copy will not contain it, and an isolated run copies back only files git would track`.
 
-A passing check labels a step `proven by command` or `proven by schema`; a review that passes all requirements the step affects adds `review`. Without evidence, a finished step in a new run reads `finished · unproven`. Older runs keep their saved labels.
+Each item ends with a `status` and a `why`:
 
-An `act` step works outside the workspace. It runs on lane `analyze`, its `ownedFiles` and `evidenceFor` are empty, and its deliverable is `outward`. Its task says not to modify workspace files and not to stage, commit, stash, check out or reset anything, and to list every action it took. It is never judged by files. It may list requirements in `affects`, but the kernel never repairs a requirement an act step affects: a failing one comes back to you. It is allowed in a read-only goal, because it does not change the workspace.
+- `passed`: the command exited 0, or the file matched the schema, and the deliverable did not change.
+- `failed`: `exit <n>`; `timed out after <n>s`; `killed by <SIGNAL>` (a crash such as `SIGABRT`, never a kernel stop, pause or revision); `could not start: <message>`; the schema checker's reason, such as `not valid: 1 error`; or `changed the deliverable: <paths>`.
+- `not-run`: `not run: an earlier item changed the deliverable`, or `stopped` when a pause, revision, cancel or kernel stop ended the checks. A kernel stop leaves the step `interrupted`, and `workflow resume` runs it again. An `act` step is the exception, because its worker may already have acted: when a kernel stop or crash, `pause --now`, `step restart` or `workflow cancel` ends its checks, it comes back to you as `failed-evidence`. `workflow resume` does not rerun it, a `step restart` during its checks is refused, and `plan revise --rerun` runs it again.
 
-Use a `digest` when three or more writers feed one reader, or a reader's inputs would exceed about 20 KB. The reader depends on the digest, not the raw writers, and receives `digestOf` links to them. Evidence never depends on a digest.
+A schema item that cannot be checked is split by whose fault it is. A missing or unparsable data file (`file missing: out/x.json`, `not JSON: …`) is the worker's: the item fails and the step gets its same-pool retry. A missing, unreadable or unsupported schema, or a file too large to check, is the check's: the item records `fault: "check"`, the step's reason starts `check could not run:`, and the step comes straight to you without a retry. Fix the check with `plan revise`.
+
+Checks receive `BULLSWARM_EVIDENCE=1`, `BULLSWARM_STEP_ID`, `BULLSWARM_STEP_OUTPUT` (absolute path to this attempt's response), and `BULLSWARM_RUN_DIR`. The kernel's depth limit also applies to commands. In an isolated run, commands run in the isolated copy.
+
+Checks must be read-only. Before the first item and after each one, Bullswarm hashes the deliverable: the step's `ownedFiles`, declared deliverable paths and saved response, plus every tracked file and HEAD in an isolated copy or for a build or chore step with no `ownedFiles` (it runs alone). A change fails the item with `changed the deliverable: …`, and the later items do not run. Untracked by-products there are recorded as `touched` rather than failed; declare a new file as a deliverable path when it must be protected. In an isolated copy, after the last item, Bullswarm removes the files the checks created and puts back untracked files they rewrote or deleted (up to 16 MB in total), so none of them is merged back. One it cannot put back is named in an attempt note, `check by-product not restored: <paths>`, and is left out of the ownership check and the merge-back. Elsewhere HEAD is not compared: when it moves while an item runs (another step may have committed), the item records `headMoved: true` as a fact and does not fail.
+
+Scope a command to its step. Put a whole-suite command on a step that runs alone or last, and pass `--run` or `CI=1` yourself when a test runner watches files. Run every check once by hand before launch and give it a generous timeout: changing a wrong check amends the step and reruns its worker. A suite that runs longer than 600 seconds cannot be one item: split it into several items or keep it in the step's prompt. To prove finished work without rerunning it, add a `check` step with its own `evidence`; it does not rerun the work. An old kernel refuses `evidence`; pause, revise, then resume.
+
+Each check's result is in the full `bullswarm workflow runs result <id> --json` envelope (not `--summary`) under `actions[].evidenceResults`: `status`, `exit`, `tail`, `why` and the log path. `bullswarm workflow action show <id> <step>` shows the same for each attempt under `attempts[].evidenceResults`. Each item's full output is in `evidence-<step>-attempt-<n>-<k>.log` in the run directory.
+
+Each finished step in a new run carries a proof label. Passing checks label it `proven by command` or `proven by schema`, and a review that passes every requirement the step affects adds `review`. A step without evidence reads `proven by review` once that review passes, `review pending` at the end of the run while a review step still covers its requirements, and `finished · unproven` otherwise. A step that did not pass a check is not labelled proven. Labels are derived, not saved: runs started before this version show labels only on steps that declare evidence.
 
 ## Requirement IDs
 
@@ -189,7 +207,7 @@ Exit 0 always carries `advisories`. `all-writers-high` and `docs-at-high` name a
 
 ## Example
 
-Goal: `1. Add --since to runs list. 2. Document it in README.` Replace `<cwd>` in each prompt with the absolute workspace path; nothing is substituted at dispatch.
+Goal: `1. Add --since to runs list. 2. Document it in README. 3. Write the run records file.` Replace `<cwd>` in each prompt with the absolute workspace path; nothing is substituted at dispatch.
 
 ```json
 {
@@ -217,6 +235,18 @@ Goal: `1. Add --since to runs list. 2. Document it in README.` Replace `<cwd>` i
       "prompt": "In <cwd>, document the --since <time> flag of `bullswarm workflow runs list` in the runs section of README.md, matching the style of the neighbouring flags. Edit README.md only."
     },
     {
+      "id": "records",
+      "role": "produce",
+      "deliverable": { "type": "data", "paths": ["out/records.json"] },
+      "purpose": "Write records that match the documented format",
+      "dependsOn": [],
+      "affects": ["requirement-3"],
+      "ownedFiles": ["out/records.json"],
+      "evidence": [{ "type": "schema", "file": "out/records.json", "schema": "schemas/record.json" }],
+      "evidenceFor": [],
+      "prompt": "In <cwd>, write out/records.json as records that match schemas/record.json."
+    },
+    {
       "id": "integrate",
       "role": "combine",
       "deliverable": "files",
@@ -228,27 +258,15 @@ Goal: `1. Add --since to runs list. 2. Document it in README.` Replace `<cwd>` i
       "prompt": "In <cwd>, read both dependency outputs, resolve any shared-file requests they raised, make the README wording match the flag as implemented, run `npm test`, and quote the summary line."
     },
     {
-      "id": "records",
-      "role": "produce",
-      "deliverable": { "type": "data", "paths": ["out/records.json"] },
-      "purpose": "Write records that match the documented format",
-      "dependsOn": [],
-      "affects": ["requirement-2"],
-      "ownedFiles": ["out/records.json"],
-      "evidence": [{ "type": "schema", "file": "out/records.json", "schema": "schemas/record.json" }],
-      "evidenceFor": [],
-      "prompt": "In <cwd>, write out/records.json as records that match schemas/record.json."
-    },
-    {
       "id": "verify",
       "role": "check",
       "effort": "high",
-      "purpose": "Independently confirm the flag works and is documented",
-      "dependsOn": ["since-flag", "readme", "integrate", "records"],
+      "purpose": "Independently confirm the flag works and is documented, and the records file exists",
+      "dependsOn": ["since-flag", "readme", "records", "integrate"],
       "affects": [],
       "ownedFiles": [],
-      "evidenceFor": ["requirement-1", "requirement-2"],
-      "prompt": "In <cwd>, exercise `bullswarm workflow runs list --since <time> --json` against a fixture home with runs on both sides of the bound, and check that README.md describes the flag and its accepted time forms. Inspect only; try to break it."
+      "evidenceFor": ["requirement-1", "requirement-2", "requirement-3"],
+      "prompt": "In <cwd>, exercise `bullswarm workflow runs list --since <time> --json` against a fixture home with runs on both sides of the bound, check that README.md describes the flag and its accepted time forms, and check that out/records.json exists. Inspect only; try to break it."
     }
   ]
 }
@@ -256,7 +274,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README.` Replace `<cwd>` i
 
 ```bash
 # Dry-run the program against the same contract launch will enforce.
-bullswarm workflow plan validate "1. Add --since to runs list. 2. Document it in README." --cwd . --program plan.json --json
+bullswarm workflow plan validate "1. Add --since to runs list. 2. Document it in README. 3. Write the run records file." --cwd . --program plan.json --json
 ```
 
 ## Next steps

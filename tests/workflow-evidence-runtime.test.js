@@ -12,11 +12,11 @@ import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import {
-  acceptCallerPlannerResponse, handoffBlock, pauseV2Run, runV2AutonomousWorkflow,
+  acceptCallerPlannerResponse, handoffBlock, pauseV2Run, runV2AutonomousWorkflow, unpauseV2Run,
 } from '../src/workflow/v2-runtime.js';
-import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { dispatchV2Action, requestStepRestart } from '../src/workflow/v2-dispatch.js';
 import { readRunFeatures } from '../src/workflow/run-features.js';
-import { formatV2ProofLabel } from '../src/workflow/v2-outcome.js';
+import { formatV2ProofLabel, v2RetryPlan } from '../src/workflow/v2-outcome.js';
 import { staleScore } from '../src/lib/stale.js';
 
 const REQUIREMENT = { id: 'deliver', text: 'Deliver the requested files and validate them.' };
@@ -386,7 +386,8 @@ test('a kernel signal during a check stores the attempt interrupted, and resume 
   });
   assert.match(seen[0].taskText, /## Prior attempt on this step/);
   assert.match(seen[0].taskText, /- Failure: interrupted — kernel stopped during evidence; the attempt runs again on resume/);
-  assert.match(seen[0].taskText, /\n {2}- command `node --test tests\/write\.test\.js`: not run · stopped\n/);
+  assert.match(seen[0].taskText, /\n {2}- command `node --test tests\/write\.test\.js`: not run · stopped\n- Its checks were stopped before they finished; Bullswarm runs them again after this attempt\.\n/);
+  assert.doesNotMatch(seen[0].taskText, /Fix the work so every evidence item passes/, 'F9: no check judged the work');
   assert.equal(seen[0].evidenceRetryAvailable, true, 'a stop never spends the evidence retry');
   assert.equal(resumed.state.actions[0].status, 'succeeded');
   assert.equal(resumed.state.attempts[1].status, 'succeeded');
@@ -554,4 +555,271 @@ test('the evidence log files live beside the task in the run directory', async (
   assert.deepEqual(logs, ['evidence-write-attempt-1-1.log', 'evidence-write-attempt-1-2.log']);
   assert.match(readFileSync(join(run.runDir, logs[0]), 'utf8'), /acme-log-line/);
   assert.deepEqual(run.state.attempts[0].evidenceResults.map((item) => item.log), logs.map((name) => join(run.runDir, name)));
+});
+
+test('a handoff whose checks were all stopped says they run again, never "fix the work" (F9)', () => {
+  const block = handoffBlock({
+    pool: 'codex', model: 'gpt-5.6-luna',
+    startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z',
+    failureKind: 'interrupted', why: 'kernel stopped during evidence; the attempt runs again on resume',
+    diffStatText: ' write.txt | 1 +', diffFile: '/tmp/acme-run/diff-write-attempt-1.txt', changedFiles: ['write.txt'],
+    outputFile: '/tmp/acme-run/out-write-attempt-1.md', outputBytes: 5, streamFile: '/tmp/acme-run/stream-write-attempt-1.jsonl',
+    lastEvents: [],
+    evidenceResults: [
+      { type: 'command', cmd: 'npm test', timeoutSec: 600, status: 'not-run', exit: null, durationMs: 0, tail: '', why: 'stopped' },
+      { type: 'schema', file: '$output', schema: 'schemas/report.json', timeoutSec: 120, status: 'not-run', exit: null, durationMs: 0, tail: '', why: 'stopped' },
+    ],
+  });
+  const lines = block.split('\n');
+  assert.deepEqual(lines.slice(lines.indexOf('- Evidence Bullswarm ran after that attempt:')), [
+    '- Evidence Bullswarm ran after that attempt:',
+    '  - command `npm test`: not run · stopped',
+    '  - schema your final response against schemas/report.json: not run · stopped',
+    '- Its checks were stopped before they finished; Bullswarm runs them again after this attempt.',
+    '- Those edits are unverified. You decide whether to keep, fix or revert them, and you must report which.',
+  ]);
+  assert.doesNotMatch(block, /Fix the work/);
+});
+
+// An act step: its worker sends (counted), and its read-back check runs after.
+const announce = (over = {}) => step({
+  id: 'announce', purpose: 'Announce the release', role: 'act', lane: 'analyze', ownedFiles: [],
+  prompt: 'Post the release announcement.', evidence: [{ type: 'command', cmd: 'grep -q SENT outbox.txt' }], ...over,
+});
+const stoppedRun = (items) => ({
+  results: items.map((item) => ({ type: 'command', cmd: item.cmd, timeoutSec: 120, status: 'not-run', exit: null, durationMs: 0, tail: '', why: 'stopped' })),
+  failed: false, stopped: true, checkFault: false, why: 'evidence stopped', createdOutOfScope: [],
+});
+const ACT_STOP_WHY = / during its checks; the worker had finished and may already have acted, so it runs again only on an explicit plan revise --rerun · act steps are not retried$/;
+
+function assertActWentToCaller(state, runDir, cause) {
+  const [attempt] = state.attempts;
+  assert.equal(state.attempts.length, 1);
+  assert.equal(attempt.status, 'failed');
+  assert.equal(attempt.failureKind, 'failed-evidence');
+  assert.match(attempt.why, new RegExp(`^${cause}${ACT_STOP_WHY.source}`));
+  assert.deepEqual(attempt.evidenceResults.map((item) => [item.status, item.why]), [['not-run', 'stopped']]);
+  assert.equal(Object.hasOwn(attempt, 'notes'), false, 'the running-checks note never outlives the attempt');
+  const action = state.actions[0];
+  assert.equal(action.status, 'failed');
+  assert.deepEqual(action.lastFailure, { kind: 'failed-evidence', message: attempt.why });
+  const finished = eventsOf(runDir, 'action.finished').at(-1).payload;
+  assert.equal(finished.failureKind, 'failed-evidence');
+  // failed-evidence is not resume-retryable: `workflow resume` hands it to the caller.
+  assert.deepEqual(v2RetryPlan(state), { rerun: [], blocked: [], needsCaller: [{ id: 'announce', status: 'failed', failureKind: 'failed-evidence' }] });
+}
+
+async function resumeCounting(f, runId, count) {
+  const seen = [];
+  const resumed = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+    dependencies: { refreshPools: async () => null, dispatchV2Action: realDispatch({ seen, worker: count }) },
+  });
+  return { resumed, seen };
+}
+
+test('a kernel signal during an act step\'s checks sends it to the caller, and resume never runs its worker again (F14)', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-evacts-abcdef';
+  const signalKernel = kernelSignalFrom(new Set(process.listeners('SIGTERM')));
+  let sends = 0;
+  const count = () => { sends += 1; };
+  const first = await launch(f, {
+    runId,
+    actions: [announce()],
+    dispatch: realDispatch({
+      worker: count,
+      runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
+        onEvidence?.({ stage: 'started', index: 1, of: items.length, type: 'command', label: items[0].cmd });
+        signalKernel();
+        assert.equal(shouldCancel(), true);
+        return stoppedRun(items);
+      },
+    }),
+  });
+  assert.equal(sends, 1);
+  assert.equal(first.state.lifecycle.status, 'interrupted');
+  assertActWentToCaller(first.state, first.runDir, 'stopped by a kernel signal');
+
+  const { resumed, seen } = await resumeCounting(f, runId, count);
+  assert.equal(seen.length, 0, 'resume dispatched nothing');
+  assert.equal(sends, 1);
+  assertActWentToCaller(resumed.state, first.runDir, 'stopped by a kernel signal');
+});
+
+test('pause --now during an act step\'s checks sends it to the caller, and unpause + resume never run its worker again (F14)', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-evactp-abcdef';
+  let sends = 0;
+  const count = () => { sends += 1; };
+  const first = await launch(f, {
+    runId,
+    actions: [announce()],
+    dispatch: realDispatch({
+      worker: count,
+      runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
+        onEvidence?.({ stage: 'started', index: 1, of: items.length, type: 'command', label: items[0].cmd });
+        await pauseV2Run({ bullswarmDir: f.bullswarmDir, runId, mode: 'now' });
+        const deadline = Date.now() + 5000;
+        while (!shouldCancel() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(shouldCancel(), true);
+        return stoppedRun(items);
+      },
+    }),
+    dependencies: { controlPollMs: 20 },
+  });
+  assert.equal(sends, 1);
+  assert.equal(first.state.lifecycle.status, 'paused');
+  assertActWentToCaller(first.state, first.runDir, 'stopped by workflow pause --now');
+  assert.deepEqual(eventsOf(first.runDir, 'workflow.paused').at(-1).payload.requeued, [], 'the pause never requeues it');
+
+  unpauseV2Run({ bullswarmDir: f.bullswarmDir, runId });
+  const { resumed, seen } = await resumeCounting(f, runId, count);
+  assert.equal(seen.length, 0, 'resume dispatched nothing');
+  assert.equal(sends, 1);
+  assertActWentToCaller(resumed.state, first.runDir, 'stopped by workflow pause --now');
+});
+
+test('a step restart during an act step\'s checks is refused: the step goes to the caller and its worker never runs again (F14)', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-evactr-abcdef';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  let sends = 0;
+  const run = await launch(f, {
+    runId,
+    actions: [announce()],
+    dispatch: realDispatch({
+      worker: () => { sends += 1; },
+      runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
+        onEvidence?.({ stage: 'started', index: 1, of: items.length, type: 'command', label: items[0].cmd });
+        // Asked once: a rerun worker (the defect) must end the run, not loop.
+        if (sends > 1) return { ...stoppedRun(items), stopped: false, why: null, results: stoppedRun(items).results.map((item) => ({ ...item, status: 'passed', exit: 0, why: null })) };
+        requestStepRestart(runDir, { actionId: 'announce', attemptId: 'announce-1', id: 'restart-acme0001' });
+        const deadline = Date.now() + 5000;
+        while (!shouldCancel() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(shouldCancel(), true);
+        return stoppedRun(items);
+      },
+    }),
+    dependencies: { controlPollMs: 20 },
+  });
+  assert.equal(sends, 1);
+  assertActWentToCaller(run.state, run.runDir, 'stopped by workflow step restart');
+  const refused = eventsOf(run.runDir, 'step.restart_refused').map((event) => event.payload);
+  assert.equal(refused.length, 1);
+  assert.equal(refused[0].actionId, 'announce');
+  assert.match(refused[0].why, /act step/);
+  assert.equal(eventsOf(run.runDir, 'step.restarted').length, 0);
+  assert.equal(existsSync(join(run.runDir, 'restart-announce.json')), false, 'the intent is cleared');
+});
+
+test('workflow cancel during an act step\'s checks sends it to the caller, so workflow resume never runs its worker again (F14)', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-evactc-abcdef';
+  let sends = 0;
+  const run = await launch(f, {
+    runId,
+    actions: [announce()],
+    dispatch: realDispatch({
+      worker: () => { sends += 1; },
+      runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
+        onEvidence?.({ stage: 'started', index: 1, of: items.length, type: 'command', label: items[0].cmd });
+        writeFileSync(join(f.bullswarmDir, 'workflows', runId, 'cancellation.json'), JSON.stringify({ requested: true, requestedAt: '2026-09-24T10:00:05.000Z', reason: 'acme test' }));
+        assert.equal(shouldCancel(), true);
+        return stoppedRun(items);
+      },
+    }),
+  });
+  assert.equal(sends, 1);
+  assert.equal(run.state.lifecycle.status, 'cancelled');
+  assertActWentToCaller(run.state, run.runDir, 'stopped by workflow cancel');
+});
+
+test('a kernel that dies during an act step\'s checks leaves it for the caller on resume; other steps still rerun (F14)', async (t) => {
+  for (const [label, action, runId] of [['act', announce(), 'wf-evactd-abcdef'], ['build', step({ evidence: [{ type: 'command', cmd: 'test -s write.txt' }] }), 'wf-evbldd-abcdef']]) {
+    const f = fixture(t);
+    const runDir = join(f.bullswarmDir, 'workflows', runId);
+    const snapshot = join(f.root, 'snapshot');
+    let sends = 0;
+    const count = ({ targetDir }) => { sends += 1; writeFileSync(join(targetDir, 'write.txt'), 'ok\n'); };
+    await launch(f, {
+      runId,
+      actions: [action],
+      dispatch: realDispatch({
+        worker: count,
+        // The run directory exactly as a kernel killed while its first check
+        // ran leaves it (the started event is persisted with the attempt).
+        runStepEvidence: async (items, { onEvidence }) => {
+          onEvidence?.({ stage: 'started', index: 1, of: items.length, type: 'command', label: items[0].cmd });
+          cpSync(runDir, snapshot, { recursive: true, filter: (source) => basename(source) !== 'kernel.lock' });
+          return {
+            results: items.map((item) => ({ type: 'command', cmd: item.cmd, timeoutSec: 120, status: 'passed', exit: 0, durationMs: 5, tail: '', why: null })),
+            failed: false, stopped: false, checkFault: false, why: null, createdOutOfScope: [],
+          };
+        },
+      }),
+    });
+    rmSync(runDir, { recursive: true, force: true });
+    renameSync(snapshot, runDir);
+    const stored = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).attempts[0];
+    assert.equal(stored.status, 'running', label);
+    assert.deepEqual(stored.notes.map((note) => note.kind), ['evidence-running'], label);
+
+    const { resumed, seen } = await resumeCounting(f, runId, count);
+    const [attempt] = resumed.state.attempts;
+    assert.equal(Object.hasOwn(attempt, 'notes'), false, label);
+    if (label === 'act') {
+      assert.equal(seen.length, 0, 'resume dispatched nothing');
+      assert.equal(sends, 1);
+      assert.equal(attempt.status, 'failed');
+      assert.equal(attempt.failureKind, 'failed-evidence');
+      assert.match(attempt.why, new RegExp(`^the kernel died${ACT_STOP_WHY.source}`));
+      assert.deepEqual(attempt.evidenceResults.map((item) => [item.type, item.cmd, item.status, item.why]), [['command', 'grep -q SENT outbox.txt', 'not-run', 'stopped']]);
+      assert.deepEqual(resumed.state.actions[0].lastFailure, { kind: 'failed-evidence', message: attempt.why });
+      assert.equal(resumed.state.actions[0].status, 'failed');
+      // Watchers read the event log: the resumed kernel says the step failed.
+      assert.deepEqual(eventsOf(runDir, 'action.finished').map(({ payload }) => [payload.actionId, payload.status, payload.failureKind, payload.why]),
+        [[resumed.state.actions[0].id, 'failed', 'failed-evidence', attempt.why]]);
+    } else {
+      // Not an act step: E16 as before, the attempt is interrupted and reruns.
+      assert.equal(attempt.status, 'interrupted');
+      assert.equal(attempt.failureKind, 'interrupted');
+      assert.equal(seen.length, 1);
+      assert.equal(resumed.state.actions[0].status, 'succeeded');
+    }
+  }
+});
+
+test('while its checks run, a writer\'s attempt carries the running-checks note, so it never reads as stale (F15)', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-evstal-abcdef';
+  let onDisk = null;
+  const run = await launch(f, {
+    runId,
+    actions: [step({ evidence: [{ type: 'command', cmd: 'test -s write.txt', timeoutSec: 600 }] })],
+    dispatch: realDispatch({
+      worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'ok\n'),
+      runStepEvidence: async (items, { onEvidence }) => {
+        onEvidence?.({ stage: 'started', index: 1, of: 1, type: 'command', label: items[0].cmd });
+        onDisk = JSON.parse(readFileSync(join(f.bullswarmDir, 'workflows', runId, 'state.json'), 'utf8')).attempts[0];
+        return {
+          results: [{ type: 'command', cmd: items[0].cmd, timeoutSec: 600, status: 'passed', exit: 0, durationMs: 5, tail: '', why: null }],
+          failed: false, stopped: false, checkFault: false, why: null, createdOutOfScope: [],
+        };
+      },
+    }),
+  });
+  assert.equal(onDisk.status, 'running');
+  assert.deepEqual(onDisk.notes.map((note) => note.kind), ['evidence-running']);
+  // The review probe's numbers: last file change long ago, six worker commands
+  // after it, and well past three times the expected minutes.
+  const startedAt = Date.parse(onDisk.startedAt);
+  const facts = { lastEventAt: startedAt, open: [], lastFileChangeAt: startedAt, commandAts: [1, 2, 3, 4, 5, 6].map((m) => startedAt + m * 60_000), streak: null, lastCommandAt: startedAt + 6 * 60_000 };
+  const nowMs = startedAt + 30 * 60_000;
+  const attempt = { ...onDisk, lastActivityAt: new Date(nowMs - 10_000).toISOString(), routing: { forecast: { expectedMinutes: 9 } } };
+  assert.equal(staleScore({ attempt, facts, fileChangedAt: startedAt, writes: true, nowMs }).stale, false);
+  const [finished] = run.state.attempts;
+  assert.equal(finished.status, 'succeeded');
+  assert.equal(Object.hasOwn(finished, 'notes'), false, 'the note is gone once the attempt finishes');
+  assert.equal(Object.hasOwn(eventsOf(run.runDir, 'attempt.finished').at(-1).payload, 'notes'), false);
 });

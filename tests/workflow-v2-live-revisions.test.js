@@ -20,6 +20,7 @@ import {
 import { peekSteering, queueSteering } from '../src/workflow/steering.js';
 import { projectV2DependencyStages } from '../src/workflow/v2-presentation.js';
 import { ACTION_KINDS, KIND_ROLES } from '../src/workflow/action-validator.js';
+import { validateV2PlannerResponse } from '../src/workflow/v2-planner.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
 const requirements = [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }];
@@ -546,6 +547,49 @@ test('revise: evidence is part of the step definition and untouched evidence exp
     assert.equal(planned.ok, true, JSON.stringify(planned.issues));
     assert.deepEqual(planned.changes.amended, ['a']);
   }
+});
+
+// E29: only a dispatched planner's own program may not carry evidence. A plan
+// revision is always the caller's, so `plan revise` of an --orchestrator
+// (dispatched) run accepts the same evidence program.
+test('CLI: plan revise of a dispatched-planner (--orchestrator) run accepts evidence the caller adds', async (t) => {
+  const f = fixture(t, { plannerMode: 'dispatched' });
+  const ctl = controller();
+  // The kernel dispatches its own planner; this one answers with the plan.
+  const dispatch = async (options) => {
+    if (options.action.id !== 'workflow-planner') return ctl.dispatch(options);
+    const files = options.paths(1);
+    writeFileSync(options.taskText.match(/exact durable path: '([^']+)'/)[1], JSON.stringify(initial([work('a')])));
+    const structured = options.outputValidator('prose');
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured, outFile: files.outFile, meta: { exitCode: 0 } } };
+  };
+  const done = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId: 'wf-evdsp-abcdef',
+    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+  });
+  assert.equal(done.result.status, 'completed');
+  assert.equal(readState(f, done.runId).config.settings.plannerMode, 'dispatched');
+  const evidence = [{ type: 'command', cmd: 'node --test tests/a.test.js' }];
+
+  // The dispatched planner itself may not declare it.
+  const withEvidence = structuredClone(initial([work('a', { evidence })]));
+  assert.throws(() => validateV2PlannerResponse(withEvidence, done.state, { boundary: 'steering', workspacePaths: false }),
+    (error) => error.issues.some((issue) => issue.includes("evidence is the caller's to declare")));
+
+  const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' };
+  const cli = (...args) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: 'utf8', cwd: f.workspace });
+  const out = join(f.root, 'plan.json');
+  assert.equal(cli('workflow', 'plan', 'export', done.shortId, '--out', out).status, 0);
+  const document = JSON.parse(readFileSync(out, 'utf8'));
+  document.program.actions.find((action) => action.id === 'a').evidence = evidence;
+  writeFileSync(out, JSON.stringify(document));
+  const revised = cli('workflow', 'plan', 'revise', done.shortId, '--program', out, '--json');
+  assert.equal(revised.status, 0, revised.stdout || revised.stderr);
+  const payload = JSON.parse(revised.stdout);
+  assert.equal(payload.status, 'applied', revised.stdout);
+  const state = readState(f, done.runId);
+  assert.deepEqual(state.program.actions.find((action) => action.id === 'a').evidence, evidence);
+  assert.equal(state.config.settings.plannerMode, 'dispatched');
 });
 
 test('revise: adding the matching role to a kind step changes nothing, for every kind; replacing the kind with it is an amendment', async (t) => {

@@ -12,7 +12,8 @@
 import { spawn as nodeSpawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync,
+  appendFileSync, chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync,
+  symlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +43,9 @@ const ITEM_WHY_CHARS = 1000;
 const DEPTH_ENV = 'BULLSWARM_DEPTH';
 const GIT_OPTS = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 };
 const IGNORED_TREES = new Set(['node_modules']);
+// The most bytes of pre-existing out-of-scope files a private copy keeps at
+// item 1 so a check that rewrites or deletes one can be undone (E11).
+export const EVIDENCE_KEPT_BYTES = 16 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Text helpers
@@ -88,6 +92,12 @@ function cutAtWord(text, max) {
   return `${(space >= max / 2 ? head.slice(0, space) : head).trimEnd()}…`;
 }
 
+// POSIX-quote a word only when the shell would split or expand it.
+function shellWord(value) {
+  const text = String(value ?? '');
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", `'"'"'`)}'`;
+}
+
 function listPaths(paths) {
   return [...paths].slice(0, MAX_LISTED_PATHS);
 }
@@ -131,7 +141,10 @@ export function evidenceBriefLines(items, { targetDir, checkerPath = CHECKER_PAT
       const format = evidenceItemFormat(item);
       const byName = /\.(jsonl|ndjson)$/i.test(item.file) ? 'jsonl' : 'json';
       const flag = format === byName ? '' : ` --format ${format}`;
-      lines.push(`- schema: ${item.file} must match the JSON schema ${item.schema} (check it yourself: node ${checkerPath}${flag} ${item.file} ${item.schema})`);
+      // `--` only when a path starts with '-', so the usual line stays short.
+      const dashes = [item.file, item.schema].some((path) => String(path).startsWith('-')) ? ' --' : '';
+      const self = `node ${shellWord(checkerPath)}${flag}${dashes} ${shellWord(item.file)} ${shellWord(item.schema)}`;
+      lines.push(`- schema: ${item.file} must match the JSON schema ${item.schema} (check it yourself: ${self})`);
     }
   }
   lines.push('Run them yourself before you finish and fix what fails. Do not change what they check (tests, schemas, scripts) to make them pass. A check that modifies your deliverable fails.');
@@ -222,9 +235,10 @@ export function runEvidenceItem(item, {
   const schemaItem = item?.type === 'schema';
   const command = schemaItem ? execPath : '/bin/sh';
   const args = schemaItem
-    ? [checkerPath, '--json', '--format', evidenceItemFormat(item), ...(isOutputItem(item) ? ['--unfence'] : []),
+    ? [checkerPath, '--json', '--format', evidenceItemFormat(item), ...(isOutputItem(item) ? ['--unfence'] : []), '--',
       isOutputItem(item) ? resolve(outFile) : item.file, item.schema]
     : ['-c', item.cmd];
+  const childEnv = schemaItem ? checkerEnv(env) : env;
   const shown = schemaItem ? `${command} ${args.join(' ')}` : item.cmd;
   const header = [`$ ${clipUtf8(shown, 8192)}`, `cwd: ${realCwd}`, `timeout: ${timeoutSec}s`];
   const capture = new BoundedCapture(EVIDENCE_LOG_BYTES);
@@ -267,7 +281,7 @@ export function runEvidenceItem(item, {
     );
 
     try {
-      child = spawn(command, args, { cwd: realCwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(command, args, { cwd: realCwd, env: childEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
       couldNotStart(error);
       return;
@@ -334,7 +348,8 @@ export function runEvidenceItem(item, {
         }
         const exit = code ?? null;
         if (schemaItem) {
-          finish(schemaOutcome(exit, parseCheckerReport(capture.text())), `exit ${exit}`);
+          const text = capture.text();
+          finish(schemaOutcome(exit, parseCheckerReport(text), text), `exit ${exit}`);
           return;
         }
         finish(exit === 0
@@ -348,7 +363,16 @@ export function runEvidenceItem(item, {
   });
 }
 
-function schemaOutcome(exit, report) {
+/**
+ * The checker's env: the kernel's, without NODE_* variables. A preload
+ * (`NODE_OPTIONS=--require …`) that resolves from the kernel's cwd but not
+ * the workspace would crash the checker before it reports (F2).
+ */
+export function checkerEnv(env = process.env) {
+  return Object.fromEntries(Object.entries(env ?? {}).filter(([key]) => !key.startsWith('NODE_')));
+}
+
+function schemaOutcome(exit, report, text = '') {
   const extra = {};
   if (report) {
     if (report.errorCount > 0) extra.errorCount = report.errorCount;
@@ -361,14 +385,23 @@ function schemaOutcome(exit, report) {
   if (report && (exit === 1 || exit === 2) && report.exit === exit && report.why) {
     return { status: 'failed', exit, why: String(report.why), ...extra, ...(exit === 2 && report.fault === 'check' ? { fault: 'check' } : {}) };
   }
+  if (!report) {
+    // The checker died before its report: the check never ran (E19).
+    const line = lastTailLine(stripAnsi(text));
+    return { status: 'failed', exit, why: `checker produced no report: ${line ?? `exit ${exit}`}`, fault: 'check' };
+  }
   return { status: 'failed', exit, why: `exit ${exit}`, ...extra };
 }
 
 // ---------------------------------------------------------------------------
 // Side-effect scope (E11, §2.5)
 
+function sha1Bytes(bytes) {
+  return createHash('sha1').update(bytes).digest('hex');
+}
+
 function sha1File(absolutePath) {
-  try { return createHash('sha1').update(readFileSync(absolutePath)).digest('hex'); } catch { return null; }
+  try { return sha1Bytes(readFileSync(absolutePath)); } catch { return null; }
 }
 
 function gitText(execFile, args, cwd) {
@@ -487,33 +520,94 @@ export function evidenceSchemaBaseline(items, cwd) {
   return baseline;
 }
 
+// A key that appears or disappears is a change even when its hash is null
+// (a directory entry such as a nested repository's `fixture/`).
 function changedKeys(before, after) {
   const keys = new Set([...(before?.keys() ?? []), ...(after?.keys() ?? [])]);
-  return [...keys].filter((key) => (before?.get(key) ?? null) !== (after?.get(key) ?? null)).sort();
+  return [...keys].filter((key) => Boolean(before?.has(key)) !== Boolean(after?.has(key))
+    || (before?.get(key) ?? null) !== (after?.get(key) ?? null)).sort();
 }
+
+const exists = (path) => { try { lstatSync(path); return true; } catch { return false; } };
 
 /**
  * Delete the files a check created outside a private copy's scope, then any
- * directory that became empty (never `cwd` itself). Returns the removed paths.
+ * directory that became empty (never `cwd` itself). A directory entry (git
+ * lists an untracked nested repository as `name/`) is removed with its
+ * contents. Returns `{ removed, unremoved }`: `unremoved` holds the entries
+ * still present afterwards (or outside `cwd`).
  */
 export function removeCreatedOutOfScope(cwd, paths) {
   const root = realPath(cwd);
   const removed = [];
+  const unremoved = [];
   const parents = new Set();
   for (const path of paths ?? []) {
     const target = resolve(root, path);
-    if (target === root || !target.startsWith(`${root}${sep}`)) continue;
-    try {
-      lstatSync(target);
-      rmSync(target, { force: true });
-      removed.push(path);
-      for (let dir = dirname(target); dir !== root && dir.startsWith(`${root}${sep}`); dir = dirname(dir)) parents.add(dir);
-    } catch { /* already gone */ }
+    if (target === root || !target.startsWith(`${root}${sep}`)) { unremoved.push(path); continue; }
+    if (!exists(target)) continue;
+    try { rmSync(target, { force: true, recursive: String(path).endsWith('/') }); } catch { /* checked below */ }
+    if (exists(target)) { unremoved.push(path); continue; }
+    removed.push(path);
+    for (let dir = dirname(target); dir !== root && dir.startsWith(`${root}${sep}`); dir = dirname(dir)) parents.add(dir);
   }
   for (const dir of [...parents].sort((a, b) => b.length - a.length)) {
     try { rmdirSync(dir); } catch { /* not empty */ }
   }
-  return removed;
+  return { removed, unremoved };
+}
+
+// The bytes (or link target) and mode of each pre-existing out-of-scope file,
+// in path order, until EVIDENCE_KEPT_BYTES; a file past the bound is not kept.
+function keepOutOfScope(root, listing, maxBytes) {
+  const kept = new Map();
+  let total = 0;
+  for (const path of [...listing.keys()].sort()) {
+    if (path.endsWith('/')) continue;
+    const absolute = join(root, path);
+    try {
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) { kept.set(path, { link: readlinkSync(absolute) }); continue; }
+      if (!stat.isFile() || total + stat.size > maxBytes) continue;
+      const bytes = readFileSync(absolute);
+      if (total + bytes.length > maxBytes) continue;
+      total += bytes.length;
+      kept.set(path, { bytes, mode: stat.mode & 0o7777 });
+    } catch { /* gone or unreadable: not kept */ }
+  }
+  return kept;
+}
+
+/**
+ * Put back the pre-existing unignored untracked files outside a private
+ * copy's scope that the checks changed or deleted (E11), from the bytes
+ * runStepEvidence kept at item 1. Call it with the runStepEvidence result.
+ * Returns `{ restored, unrestored }`: `unrestored` holds each changed path
+ * that could not be put back byte-identical (over the kept-bytes bound, a
+ * directory entry, or a failed write); it is still changed in the copy.
+ */
+export function restoreChangedOutOfScope(cwd, evidenceRun) {
+  const root = realPath(cwd);
+  const kept = evidenceRun?.keptOutOfScope instanceof Map ? evidenceRun.keptOutOfScope : new Map();
+  const before = evidenceRun?.untrackedAtStart instanceof Map ? evidenceRun.untrackedAtStart : new Map();
+  const restored = [];
+  const unrestored = [];
+  for (const path of evidenceRun?.changedOutOfScope ?? []) {
+    const target = resolve(root, path);
+    const copy = kept.get(path);
+    if (!copy || target === root || !target.startsWith(`${root}${sep}`)) { unrestored.push(path); continue; }
+    try {
+      if (exists(target)) rmSync(target, { recursive: true, force: true });
+      mkdirSync(dirname(target), { recursive: true });
+      if (copy.link != null) symlinkSync(copy.link, target);
+      else { writeFileSync(target, copy.bytes); chmodSync(target, copy.mode); }
+    } catch { /* checked below */ }
+    const same = copy.link != null
+      ? (() => { try { return readlinkSync(target) === copy.link; } catch { return false; } })()
+      : sha1File(target) === (before.get(path) ?? sha1Bytes(copy.bytes));
+    (same ? restored : unrestored).push(path);
+  }
+  return { restored, unrestored };
 }
 
 // ---------------------------------------------------------------------------
@@ -543,13 +637,16 @@ function displayPath(path, root) {
 
 /**
  * Run a step's evidence items in order (E10). Resolves to
- * `{ results, failed, stopped, checkFault, why, createdOutOfScope }`.
+ * `{ results, failed, stopped, checkFault, why, createdOutOfScope,
+ *    changedOutOfScope }`; the last two are private-copy paths for
+ * removeCreatedOutOfScope and restoreChangedOutOfScope.
  * `why` is the §2.7 step why when an item failed, `evidence stopped` on a stop.
  */
 export async function runStepEvidence(items, {
   cwd, env = process.env, outFile, logFileFor = () => null, scope = null, schemaBaseline = null,
   onSpawn = null, onWorkerExit = null, shouldCancel = () => false, onEvidence = null,
   spawn = nodeSpawn, now = Date.now, killGrace, heartbeatMs, pollMs, checkerPath, execPath,
+  keptBytes = EVIDENCE_KEPT_BYTES,
 } = {}) {
   const list = Array.isArray(items) ? items.slice(0, EVIDENCE_MAX_ITEMS) : [];
   const root = realPath(cwd);
@@ -562,6 +659,7 @@ export async function runStepEvidence(items, {
   let prevHead = scope ? scope.head() : null;
   const firstUntracked = scope ? scope.untracked() : null;
   let prevUntracked = firstUntracked;
+  const kept = scope?.mode === 'private' && firstUntracked && list.length ? keepOutOfScope(root, firstUntracked, keptBytes) : new Map();
 
   for (let index = 0; index < list.length; index += 1) {
     const item = list[index];
@@ -641,21 +739,29 @@ export async function runStepEvidence(items, {
   }
 
   let createdOutOfScope = [];
+  let changedOutOfScope = [];
   if (scope?.mode === 'private' && firstUntracked) {
     const finalListing = scope.untracked() ?? new Map();
     createdOutOfScope = [...finalListing.keys()].filter((path) => !firstUntracked.has(path)).sort();
+    changedOutOfScope = [...firstUntracked.keys()]
+      .filter((path) => !finalListing.has(path) || finalListing.get(path) !== firstUntracked.get(path)).sort();
   }
   const failed = results.some((result) => result.status === 'failed');
   const stopped = stop === 'stopped';
   const checkFault = results.some((result) => result.status === 'failed' && result.fault === 'check');
-  return {
+  const outcome = {
     results,
     failed,
     stopped,
     checkFault,
     why: stopped ? 'evidence stopped' : (failed ? evidenceFailureWhy(results) : null),
     createdOutOfScope,
+    changedOutOfScope,
   };
+  // What restoreChangedOutOfScope needs, kept off the enumerable result.
+  Object.defineProperty(outcome, 'keptOutOfScope', { value: kept, enumerable: false });
+  Object.defineProperty(outcome, 'untrackedAtStart', { value: firstUntracked ?? new Map(), enumerable: false });
+  return outcome;
 }
 
 function lastTailLine(tail) {
@@ -665,14 +771,16 @@ function lastTailLine(tail) {
 
 /**
  * The §2.7 step why: `<label> → <item why>[: <detail>][ (+N more failed)]`,
- * `check could not run: ` first for a check fault, cut to 240 characters
+ * led by the first check fault when any (`check could not run: ` first),
+ * else the first failure, cut to 240 characters
  * before `suffix` (` · act steps are not retried`, ` · no retry: …`), which
  * is always kept.
  */
 export function evidenceFailureWhy(results, { suffix = '' } = {}) {
   const failures = (results ?? []).filter((result) => result?.status === 'failed');
   if (!failures.length) return null;
-  const first = failures[0];
+  // A check that could not run is why there is no retry, so it leads.
+  const first = failures.find((result) => result.fault === 'check') ?? failures[0];
   const itemWhy = String(first.why ?? 'failed');
   let detail = '';
   if (/^exit -?\d+$/.test(itemWhy) || /^killed by /.test(itemWhy)) {

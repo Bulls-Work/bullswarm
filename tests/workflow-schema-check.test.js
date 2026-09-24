@@ -194,6 +194,36 @@ test('every refused keyword gives its exact message and pointer', () => {
   assert.equal(schemaSubsetIssues({ properties: { x: { if: {} } } })[0].at, '#/properties/x');
 });
 
+test('a $ref target is walked as a schema: a keyword reached only through $ref is refused, never skipped', (t) => {
+  const messages = (schema) => schemaSubsetIssues(schema).map((issue) => issue.message);
+  assert.deepEqual(messages({ examples: [{ if: { type: 'string' }, then: { minLength: 99 } }], $ref: '#/examples/0' }),
+    ['unsupported keyword "if" at #/examples/0', 'unsupported keyword "then" at #/examples/0']);
+  assert.deepEqual(messages({ description: 'anything', $ref: '#/description' }), ['schema at #/description must be an object or a boolean']);
+  assert.deepEqual(messages({ properties: { if: { type: 'string' }, dependentRequired: {} }, $ref: '#/properties' }),
+    ['unsupported keyword "if" at #/properties', 'unsupported keyword "dependentRequired" at #/properties']);
+  assert.deepEqual(messages({ definitions: { event: { type: 'object', required: ['id'] } }, $ref: '#/definitions' }),
+    ['unsupported keyword "event" at #/definitions']);
+  // A target also walked in place, and a $ref cycle, add no repeated issues.
+  assert.deepEqual(messages({ $ref: '#/$defs/a', $defs: { a: { if: {} } } }), ['unsupported keyword "if" at #/$defs/a']);
+  assert.deepEqual(messages({ $ref: '#/$defs/a', $defs: { a: { $ref: '#/$defs/b' }, b: { $ref: '#/$defs/a' } } }), []);
+  assert.deepEqual(messages({ $ref: '#/$defs/a%2Fb', $defs: { 'a/b': { contains: {} } } }), ['unsupported keyword "contains" at #/$defs/a~1b']);
+
+  const dir = tempDir(t);
+  write(dir, 'd.json', '"x"');
+  write(dir, 'ref-examples.json', { examples: [{ if: { type: 'string' }, then: { minLength: 99 } }], $ref: '#/examples/0' });
+  const refused = checkSchemaFiles({ cwd: dir, file: 'd.json', schema: 'ref-examples.json' });
+  assert.deepEqual([refused.exit, refused.fault, refused.why], [2, 'check', 'unsupported keyword "if" at #/examples/0']);
+});
+
+test('a malformed percent escape in a $ref is a schema issue, not a thrown URIError', (t) => {
+  assert.deepEqual(schemaSubsetIssues({ $ref: '#/a%' }).map((issue) => issue.message), ['$ref "#/a%" does not resolve at #']);
+  const dir = tempDir(t);
+  write(dir, 's.json', { $ref: '#/a%' });
+  write(dir, 'd.json', '1');
+  const result = checkSchemaFiles({ cwd: dir, file: 'd.json', schema: 's.json' });
+  assert.deepEqual([result.exit, result.fault, result.why], [2, 'check', '$ref "#/a%" does not resolve at #']);
+});
+
 test('annotations are ignored and format adds a counted note', (t) => {
   const schema = {
     $schema: 'https://json-schema.org/draft/2020-12/schema', $id: 'https://example.com/s', $comment: 'c',
@@ -289,6 +319,14 @@ test('JSONL: blank lines skipped, line-prefixed errors, format overrides the ext
   write(dir, 'lines.json', '{"id":1}\n{"id":2}\n');
   assert.equal(checkSchemaFiles({ cwd: dir, file: 'lines.json', schema: 's.json' }).fault, 'data');
   assert.equal(checkSchemaFiles({ cwd: dir, file: 'lines.json', schema: 's.json', format: 'jsonl' }).exit, 0);
+  // Zero records proves nothing: a data failure (exit 1, no fault), so the step gets its retry.
+  for (const body of ['', '\n\n   \n']) {
+    write(dir, 'empty.jsonl', body);
+    const empty = checkSchemaFiles({ cwd: dir, file: 'empty.jsonl', schema: 's.json' });
+    assert.deepEqual([empty.exit, empty.fault, empty.errorCount, empty.why], [1, null, 0, 'no records'], JSON.stringify(body));
+  }
+  write(dir, 'empty.json', '');
+  assert.deepEqual(checkSchemaFiles({ cwd: dir, file: 'empty.json', schema: 's.json', format: 'jsonl' }).why, 'no records');
   write(dir, 'one.jsonl', '{\n"id": 1\n}\n');
   assert.equal(checkSchemaFiles({ cwd: dir, file: 'one.jsonl', schema: 's.json' }).fault, 'data');
   assert.equal(checkSchemaFiles({ cwd: dir, file: 'one.jsonl', schema: 's.json', format: 'json' }).exit, 0);
@@ -404,6 +442,15 @@ test('bin/check-schema.js: exit codes, human output and --json output', (t) => {
     assert.equal(result.status, 2, args.join(' '));
     assert.equal(result.stderr, `${usage}\n`);
   }
+  write(dir, '-dash.json', { events: [] });
+  assert.equal(cli(dir, ['--json', '--', '-dash.json', 'schemas/event.json']).status, 0, 'after --, a path may start with -');
+  assert.equal(cli(dir, ['-dash.json', 'schemas/event.json']).status, 2, 'before --, it is an unknown option');
+  write(dir, 'empty.jsonl', '');
+  const empty = cli(dir, ['--json', 'empty.jsonl', 'schemas/event.json']);
+  assert.equal(empty.status, 1);
+  assert.deepEqual(JSON.parse(empty.stdout), { ok: false, exit: 1, errorCount: 0, errors: [], notes: ['format is not checked (1 place)'], why: 'no records', fault: null });
+  assert.equal(cli(dir, ['empty.jsonl', 'schemas/event.json']).stdout, 'empty.jsonl does not match schemas/event.json: no records\nnote: format is not checked (1 place)\n');
+
   const usageJson = cli(dir, ['--json', 'a']);
   assert.equal(usageJson.status, 2);
   assert.deepEqual(JSON.parse(usageJson.stdout), { ok: false, exit: 2, errorCount: 0, errors: [], notes: [], why: usage, fault: 'check' });

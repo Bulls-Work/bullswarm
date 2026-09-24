@@ -42,13 +42,18 @@ function resolvePointer(root, ref) {
   if (ref === '#') return { found: true, value: root };
   if (!ref.startsWith('#/')) return { found: false };
   let node = root;
+  const keys = [];
   for (const raw of ref.slice(2).split('/')) {
-    const key = decodeURIComponent(raw).replaceAll('~1', '/').replaceAll('~0', '~');
+    let decoded;
+    try { decoded = decodeURIComponent(raw); } catch { return { found: false }; }
+    const key = decoded.replaceAll('~1', '/').replaceAll('~0', '~');
     if (Array.isArray(node) && /^(0|[1-9]\d*)$/.test(key) && Number(key) < node.length) node = node[Number(key)];
     else if (isObject(node) && hasOwn(node, key)) node = node[key];
     else return { found: false };
+    keys.push(key);
   }
-  return { found: true, value: node };
+  // `at` is the canonical pointer, as the subset walk spells it.
+  return { found: true, value: node, at: childPointer('#', ...keys) };
 }
 
 /**
@@ -59,6 +64,9 @@ export function schemaSubsetIssues(schema) {
   const issues = [];
   let formatPlaces = 0;
   const refuse = (keyword, at, message) => issues.push({ keyword, at, message: message ?? `unsupported keyword "${keyword}" at ${at}` });
+  // Each schema object is walked once, so a $ref target reached twice (or a
+  // $ref cycle) adds no repeated issues and terminates.
+  const walked = new Set();
   const walk = (node, at, depth) => {
     if (depth > SCHEMA_MAX_DEPTH) {
       if (!issues.some((issue) => issue.message === DEPTH_MESSAGE)) refuse('$depth', at, DEPTH_MESSAGE);
@@ -66,6 +74,8 @@ export function schemaSubsetIssues(schema) {
     }
     if (typeof node === 'boolean') return;
     if (!isObject(node)) { refuse('$schema-value', at, `schema at ${at} must be an object or a boolean`); return; }
+    if (walked.has(node)) return;
+    walked.add(node);
     for (const key of Object.keys(node)) {
       const value = node[key];
       const here = childPointer(at, key);
@@ -78,13 +88,19 @@ export function schemaSubsetIssues(schema) {
       }
       if (!ASSERTED.has(key)) { refuse(key, at); continue; }
       switch (key) {
-        case '$ref':
+        case '$ref': {
           if (typeof value !== 'string' || !(value === '#' || value.startsWith('#/'))) {
             refuse(key, at, `$ref ${JSON.stringify(value)} is not local`);
-          } else if (!resolvePointer(schema, value).found) {
-            refuse(key, at, `$ref ${JSON.stringify(value)} does not resolve at ${at}`);
+            break;
           }
+          const target = resolvePointer(schema, value);
+          if (!target.found) refuse(key, at, `$ref ${JSON.stringify(value)} does not resolve at ${at}`);
+          // The validator applies whatever the $ref reaches, so the target is
+          // walked as a schema: a keyword reached only through a $ref (into
+          // examples, description, properties itself…) is refused too.
+          else walk(target.value, target.at, depth + 1);
           break;
+        }
         case 'type': {
           const names = Array.isArray(value) ? value : [value];
           if (!names.length || names.some((name) => typeof name !== 'string' || !TYPE_NAMES.has(name))) {
@@ -341,9 +357,10 @@ function errorsWhy(count, capped) {
 
 /**
  * Check a data file against a schema file. Returns
- * `{ exit, errorCount, errors, notes, why, fault }`: exit 0 valid, 1 invalid,
- * 2 cannot check (`fault` `data` for a missing or unparsable data file, `check`
- * for every schema-side reason and the data size cap; null otherwise).
+ * `{ exit, errorCount, errors, notes, why, fault }`: exit 0 valid, 1 invalid
+ * (a JSONL file with no records is invalid, why `no records`), 2 cannot
+ * check (`fault` `data` for a missing or unparsable data file, `check` for
+ * every schema-side reason and the data size cap; null otherwise).
  */
 export function checkSchemaFiles({ cwd = process.cwd(), file, schema, format, unfence = false, maxErrors = SCHEMA_MAX_ERRORS } = {}) {
   const fail = (fault, why, notes = []) => ({ exit: 2, errorCount: 0, errors: [], notes, why, fault });
@@ -389,6 +406,9 @@ export function checkSchemaFiles({ cwd = process.cwd(), file, schema, format, un
         return fail('data', `line ${index + 1}: not JSON: ${error.message}`, notes);
       }
     }
+    // Zero records proves nothing: a data failure the worker can fix. A step
+    // that may produce nothing declares a JSON array instead.
+    if (!records.length) return { exit: 1, errorCount: 0, errors: [], notes, why: 'no records', fault: null };
   }
 
   const errors = [];

@@ -147,6 +147,39 @@ test('evidence heartbeats keep a long silent check from reading as quiet (E18)',
   assert.equal(silent.stale, true);
 });
 
+test('a writer whose checks are running never reads as stale; only a stopped check heartbeat does (E18, F15)', () => {
+  // The review probe: a restricted build step whose worker ran 0–10 min (last
+  // file change at 4 min, then 6 commands), then 20 min of declared checks
+  // with heartbeats. The watcher polls at 30 min.
+  const T0 = Date.parse('2026-09-24T10:00:00Z');
+  const min = (m) => T0 + m * 60_000;
+  const iso = (m) => new Date(min(m)).toISOString();
+  const attempt = { status: 'running', startedAt: iso(0), lastActivityAt: iso(29.8), routing: { forecast: { expectedMinutes: 9 } } };
+  const facts = { lastEventAt: min(10), open: [], lastFileChangeAt: min(4), commandAts: [5, 6, 7, 8, 9, 9.5].map(min), streak: null, lastCommandAt: min(9.5) };
+  const input = { facts, fileChangedAt: min(4), writes: true, nowMs: min(30) };
+  // Without the phase fact the worker's signals fire on check time.
+  const blind = staleScore({ attempt, ...input });
+  assert.equal(blind.stale, true);
+  assert.deepEqual(blind.signals.map((signal) => signal.id).sort(), ['no-file-change', 'wall']);
+
+  // The kernel's running-checks note (stamped when the first check starts).
+  const checking = { ...attempt, notes: [{ at: iso(10), kind: 'evidence-running', text: 'the worker finished; Bullswarm is running the step\'s checks' }] };
+  assert.deepEqual(staleScore({ attempt: checking, ...input }), { score: 0, stale: false, staleSince: null, signals: [], reasons: [] });
+  // A worker streak (the same command 3× before it exited) no longer counts.
+  const streak = { key: 'bash\u0000npm test', kind: 'bash', summary: 'npm test', count: 3, nthAt: min(9) };
+  assert.equal(staleScore({ attempt: checking, ...input, facts: { ...facts, streak } }).score, 0);
+
+  // A kernel whose heartbeat stopped is still quiet, even with a tool call the
+  // exited worker left open in its stream.
+  const hung = staleScore({
+    attempt: { ...checking, lastActivityAt: iso(15) }, ...input,
+    facts: { ...facts, open: [{ id: 'call-acme', kind: 'bash', at: min(9.5) }] },
+  });
+  assert.equal(hung.stale, true);
+  assert.deepEqual(hung.signals.map((signal) => signal.id), ['quiet']);
+  assert.equal(hung.reasons[0], 'no check heartbeat for 15m');
+});
+
 test('replaying the real healthy attempts never reads as stale', () => {
   // Every 15 seconds of each real attempt's life, the score sees exactly the
   // records written by then. None of them was stuck; the 49-minute codex step

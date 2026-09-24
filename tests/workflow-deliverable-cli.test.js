@@ -120,6 +120,88 @@ test('plan validate exposes evidence types and refuses existing invalid schema p
   assert.deepEqual(issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', plan, '--json')), [SCHEMA_UNSUPPORTED]);
 });
 
+// Only a real keyword refusal reads "uses unsupported keyword"; any other
+// problem keeps the checker's own precise reason, never a made-up keyword.
+test('validate, launch and revise print each schema problem with its own precise reason', async (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.workspace, 'schemas'), { recursive: true });
+  const schemaAt = 'schemas/event.json';
+  const plan = f.write('precise.json', programOf({
+    id: 'summary', purpose: 'Write the summary data file', role: 'produce',
+    evidence: [{ type: 'schema', file: 'reports/out.json', schema: schemaAt }],
+    deliverable: { type: 'data', paths: ['reports/out.json'] }, dependsOn: [], affects: ['requirement-1'], ownedFiles: [], evidenceFor: [],
+    prompt: 'Write the summary data file and report its content.',
+  }));
+  const at = 'program.actions[0].evidence[0].schema';
+  const precise = (message) => `${at} is not a supported schema ("${schemaAt}"): ${message}; see the schema subset in docs/reference/program.md`;
+  let deep = { type: 'object' };
+  for (let level = 0; level < 70; level += 1) deep = { not: deep };
+  const cases = [
+    [{ properties: { x: { $ref: 'http://example.com/s.json' } } }, [precise('$ref "http://example.com/s.json" is not local')]],
+    [{ properties: { x: { type: 'str' } } }, [precise('type at #/properties/x must name object, array, string, number, integer, boolean or null')]],
+    [{ $ref: '#/$defs/missing' }, [precise('$ref "#/$defs/missing" does not resolve at #')]],
+    [[1, 2], [precise('schema at # must be an object or a boolean')]],
+    [{ minLength: -1 }, [precise('minLength at # must be a non-negative integer')]],
+    [{ required: 'id' }, [precise('required at # must be an array of strings')]],
+    [{ if: { type: 'string' } }, [`${at} uses unsupported keyword "if" at # ("${schemaAt}"); see the schema subset in docs/reference/program.md`]],
+  ];
+  for (const [schema, expected] of cases) {
+    writeFileSync(join(f.workspace, schemaAt), JSON.stringify(schema));
+    assert.deepEqual(issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', plan, '--json')), expected, JSON.stringify(schema));
+  }
+  writeFileSync(join(f.workspace, schemaAt), JSON.stringify(deep));
+  const tooDeep = issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', plan, '--json'));
+  assert.equal(tooDeep.length, 1);
+  assert.match(tooDeep[0], /is not a supported schema \("schemas\/event\.json"\): /);
+  assert.doesNotMatch(tooDeep.join('\n'), /unsupported keyword|\$depth|\$schema-value/);
+
+  // Launch and revise print the same precise reason.
+  writeFileSync(join(f.workspace, schemaAt), JSON.stringify({ properties: { x: { type: 'str' } } }));
+  const badType = [precise('type at #/properties/x must name object, array, string, number, integer, boolean or null')];
+  assert.deepEqual(issuesOf(f.cli('workflow', 'goal', GOAL, '--cwd', f.workspace, '--program', plan, '--json')), badType);
+  assert.deepEqual(runsIn(f.home), [], 'a refused launch starts no run');
+  const { done, document } = await finishedRun(f, 'wf-prcsch-abcdef', 'shared');
+  const revised = structuredClone(document);
+  revised.program.actions[0].evidence = [{ type: 'schema', file: '$output', schema: schemaAt }];
+  const issues = reviseIssues(f, done.shortId, revised, 'rev-precise.json');
+  assert.deepEqual(issues, badType);
+});
+
+// An isolated copy holds only files git would track, so a git-ignored schema
+// (or data file) is not there: the check could only fail after the worker ran.
+test('an isolated run refuses a git-ignored evidence schema or file path; a shared run accepts it', async (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.workspace, 'out'), { recursive: true });
+  writeFileSync(join(f.workspace, 'out', 's.json'), JSON.stringify({ type: 'object' }));
+  const withSchema = (item) => programOf({
+    id: 'survey', purpose: 'Report the data files', role: 'investigate', evidence: [item],
+    dependsOn: [], affects: ['requirement-1'], ownedFiles: [], evidenceFor: [],
+    prompt: 'List the data files and do not modify anything.',
+  });
+  const ignoredSchema = f.write('ignored-schema.json', withSchema({ type: 'schema', file: '$output', schema: 'out/s.json' }));
+  const ignoredFile = f.write('ignored-file.json', withSchema({ type: 'schema', file: 'out/data.json', schema: 'reports/keep.md' }));
+  const SCHEMA_IGNORED = 'program.actions[0].evidence[0].schema is git-ignored ("out/s.json"); the isolated copy will not contain it, so the check could not run';
+  const FILE_IGNORED = 'program.actions[0].evidence[0].file is git-ignored ("out/data.json"); the isolated copy will not contain it, and an isolated run copies back only files git would track';
+  assert.deepEqual(issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--isolation', '--program', ignoredSchema, '--json')), [SCHEMA_IGNORED]);
+  assert.deepEqual(issuesOf(f.cli('workflow', 'goal', GOAL, '--cwd', f.workspace, '--isolation', '--program', ignoredSchema, '--json')), [SCHEMA_IGNORED]);
+  assert.deepEqual(runsIn(f.home), [], 'a refused launch starts no run');
+  const human = f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--isolation', '--program', ignoredSchema);
+  assert.equal(human.status, 2);
+  assert.match(human.stdout + human.stderr, /the isolated copy will not contain it/);
+  const fileIssues = issuesOf(f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--isolation', '--program', ignoredFile, '--json'));
+  assert.equal(fileIssues[0], FILE_IGNORED);
+  // A shared run works in the real tree, where the file exists.
+  const shared = f.cli('workflow', 'plan', 'validate', GOAL, '--cwd', f.workspace, '--program', ignoredSchema, '--json');
+  assert.equal(shared.status, 0, shared.stdout || shared.stderr);
+  // Revise of an isolated run refuses it too, and leaves the run unchanged.
+  const isolated = await finishedRun(f, 'wf-evdign-abcdef', 'isolated');
+  const revised = structuredClone(isolated.document);
+  revised.program.actions[0].evidence = [{ type: 'schema', file: '$output', schema: 'out/s.json' }];
+  assert.deepEqual(reviseIssues(f, isolated.done.shortId, revised, 'rev-ignored-schema.json'), [SCHEMA_IGNORED]);
+  const state = JSON.parse(readFileSync(join(f.home, 'workflows', isolated.done.runId, 'state.json'), 'utf8'));
+  assert.equal(state.program.revision, 1, 'a refused revision leaves the run unchanged');
+});
+
 test('foreground launch prints the proof line for a step with passing command evidence', (t) => {
   const f = fixture(t);
   const program = programOf({

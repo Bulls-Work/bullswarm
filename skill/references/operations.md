@@ -209,7 +209,7 @@ without one) next to lane and effort.
 Two kernel behaviours act on every program run, and both stay out of your way
 until a step is late or a check fails.
 
-**The soft time box.** Each work and evidence step's task ends with a
+**The soft time box.** Each work and review step's task ends with a
 paragraph: the box in minutes, the start clock, a wrap-up point at 70% of the
 box, and an invitation to stop and write `## Done`, `## Not done` (one line per
 unfinished item, or `- none`) and `## Suggested next step`. The box is the
@@ -235,7 +235,7 @@ items are quoted in the tasks of the verifiers that judge the requirements the
 step affects. Nothing is retried and nothing fails: this is an honest partial
 report, and the caller reads it only when the run ends not verified.
 
-**The verify loop.** A program with an evidence step gets up to 3 verify
+**The verify loop.** A program with a review step gets up to 3 verify
 rounds; `defaults.verifyRounds` (1-3, default 3, 1 = a single round) sets the
 cap. Round 1 judges every requirement. When a mandatory requirement fails or is
 blocked and rounds remain, the kernel adds one step through a kernel-source
@@ -386,6 +386,9 @@ attempt's persisted event stream (`stream-<step>-attempt-<n>.jsonl` and its
 | repeat | the same command 3 times in a row with no file change between | 1 |
 | wall | running longer than 3× the router's expected minutes for its lane and effort (`routing.forecast.expectedMinutes`) | 1 |
 
+While Bullswarm runs a step's declared checks, only quiet counts, read from
+the checks' heartbeat (`no check heartbeat for <N>m`).
+
 At a score of 2 the watcher prints `⚠ <step> looks stale: <reasons>` once per
 attempt. The line wakes `--next` and `--until trouble`, and the human `next:`
 block adds `or restart: bullswarm workflow step restart <shortId> <step>`. The
@@ -444,11 +447,15 @@ cannot run go to you without a retry. Signal deaths of checks are failures;
 a kernel stop, pause or revision is not a failed check. Full output is saved
 in `evidence-<step>-attempt-<n>-<k>.log`. `workflow resume` does not rerun
 `failed-evidence`; fix or amend the step, or add a check step with its own
-evidence to prove finished work without rerunning it. New runs label finished
-steps `proven by command`, `proven by schema` or `proven by review`; otherwise
-the label is `finished · unproven`. Watch and result summaries include a
-`proof:` count line.
-- `handback.unreadSteering[]`: `{id, message, queuedAt}`.
+evidence to prove finished work without rerunning it. A step whose worker
+failed first ran no check: its handback line and watch's failed line read
+`evidence not run`, and `evidenceResults` is `null`. Each check's `status`,
+`exit`, `tail` and `why` are in `runs result <id> --json` under
+`actions[].evidenceResults`, and in `workflow action show <id> <step>`. New
+runs label finished steps `proven by command`, `proven by schema` or `proven
+by review`; a step without evidence reads `review pending` while a review step
+still covers its requirements, and `finished · unproven` otherwise. Watch and
+result summaries include a `proof:` count line.
 
 `runs result --summary` adds `handback.options`, one command per choice
 (`continue`, `retry` when a step is retryable, `takeOver`, `restart`). An open

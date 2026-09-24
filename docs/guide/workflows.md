@@ -71,15 +71,18 @@ evidence when output must match a JSON or JSONL shape. Keep commands scoped to
 their step; put a whole-suite check on the step that runs alone or last. Checks
 run after the deliverable gate and must not change the deliverable. A failure
 gets one same-pool retry, then returns to you. A report can be checked with
-`file: "$output"` or a command that reads `$BULLSWARM_STEP_OUTPUT`. A check
-step with its own evidence can prove already-finished work without rerunning
-it. See [Evidence in the program reference](/reference/program#evidence-command-and-schema).
+`file: "$output"` or a command that reads `$BULLSWARM_STEP_OUTPUT`. A review
+step (one with `evidenceFor`) and a digest take no evidence: put the commands a
+reviewer must run in its prompt, or add a separate `check` step with evidence
+and an empty `evidenceFor`. Such a step can also prove already-finished work
+without rerunning it. Each check's result is in `runs result <id> --json` under
+`actions[].evidenceResults`. See [Evidence in the program reference](/reference/program#evidence-command-and-schema).
 
 ## Condense with a digest
 
 Use a `digest` action when three or more writers feed a single reader, or when a reader's dependency outputs would exceed roughly 20 KB. The kernel writes the whole digest task — your prompt is focus guidance only — and it quotes each source's delivered items, numbers, and shared-file requests verbatim, so the reader gets `digestOf` links instead of raw files.
 
-A digest must depend on at least one action and owns no files. Evidence never depends on a digest: evidence reads the real artifacts.
+A digest must depend on at least one action and owns no files. No review step depends on a digest: a reviewer reads the real artifacts.
 
 ## Effort comes from the role or kind
 
@@ -125,7 +128,7 @@ Use exactly the same goal text for validate and launch: requirements are derived
 
 ## A complete small program
 
-Goal: `1. Add --since to runs list. 2. Document it in README.`
+Goal: `1. Add --since to runs list. 2. Document it in README. 3. Write the run records file.`
 
 ```json
 {
@@ -158,7 +161,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
       "deliverable": { "type": "data", "paths": ["out/records.json"] },
       "purpose": "Write records that match the documented format",
       "dependsOn": [],
-      "affects": ["requirement-2"],
+      "affects": ["requirement-3"],
       "ownedFiles": ["out/records.json"],
       "evidence": [{ "type": "schema", "file": "out/records.json", "schema": "schemas/record.json" }],
       "evidenceFor": [],
@@ -169,7 +172,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
       "role": "combine",
       "deliverable": "files",
       "purpose": "Reconcile both edits and run the full suite",
-      "dependsOn": ["since-flag", "readme", "records"],
+      "dependsOn": ["since-flag", "readme"],
       "affects": ["requirement-1", "requirement-2"],
       "ownedFiles": [],
       "evidenceFor": [],
@@ -179,25 +182,25 @@ Goal: `1. Add --since to runs list. 2. Document it in README.`
       "id": "verify",
       "role": "check",
       "effort": "high",
-      "purpose": "Independently confirm the flag works and is documented",
-      "dependsOn": ["since-flag", "readme", "integrate"],
+      "purpose": "Independently confirm the flag works and is documented, and the records file exists",
+      "dependsOn": ["since-flag", "readme", "records", "integrate"],
       "affects": [],
       "ownedFiles": [],
-      "evidenceFor": ["requirement-1", "requirement-2"],
-      "prompt": "In <cwd>, exercise `bullswarm workflow runs list --since <time> --json` against a fixture home with runs on both sides of the bound, and check that README.md describes the flag and its accepted time forms. Inspect only; try to break it."
+      "evidenceFor": ["requirement-1", "requirement-2", "requirement-3"],
+      "prompt": "In <cwd>, exercise `bullswarm workflow runs list --since <time> --json` against a fixture home with runs on both sides of the bound, check that README.md describes the flag and its accepted time forms, and check that out/records.json exists. Inspect only; try to break it."
     }
   ]
 }
 ```
 
-`<cwd>` stands for your absolute repository path — nothing is substituted, so write the real path into every prompt. Two writers run at once, the integrator waits for both, and the acceptance step runs last:
+`<cwd>` stands for your absolute repository path — nothing is substituted, so write the real path into every prompt. Three writers run at once, the integrator waits for the code and README writers, and the acceptance step runs last:
 
 ```bash
 # validate the file above against the same goal text
-bullswarm workflow plan validate "1. Add --since to runs list. 2. Document it in README." --cwd /abs/path/to/repo --program plan.json --json
+bullswarm workflow plan validate "1. Add --since to runs list. 2. Document it in README. 3. Write the run records file." --cwd /abs/path/to/repo --program plan.json --json
 
 # once it validates, launch it
-bullswarm workflow goal "1. Add --since to runs list. 2. Document it in README." --cwd /abs/path/to/repo --program plan.json --json
+bullswarm workflow goal "1. Add --since to runs list. 2. Document it in README. 3. Write the run records file." --cwd /abs/path/to/repo --program plan.json --json
 ```
 
 ## Steer a live run

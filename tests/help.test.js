@@ -272,6 +272,8 @@ test('help describes the bare command as the dashboard with setup as the fallbac
 test('workflow help documents failed evidence and the planner contract evidence field', () => {
   const resume = helpText(['workflow', 'resume']);
   assert.match(resume, /a check that failed it, failed evidence, a semantic failure/);
+  // The stage-1 clause stays: such a step still fails not-produced and is not rerun.
+  assert.ok(resume.includes('(a check that failed it, failed evidence, a semantic failure, a declared deliverable that was not produced, or a build-lane step with no declared deliverable that changed nothing) is not rerun; add a fix step or name it in plan revise --rerun'));
   const contract = helpText(['workflow', 'plan', 'contract']);
   assert.match(contract, /evidence checks Bullswarm runs after steps/);
 });

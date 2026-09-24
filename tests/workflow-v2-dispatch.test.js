@@ -8,7 +8,8 @@ import {
   classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, durableAttemptHandoff, snapshotPossible, statDeliverablePaths,
   trackedDiffStatForTests,
 } from '../src/workflow/v2-dispatch.js';
-import { handoffBlock } from '../src/workflow/v2-runtime.js';
+import { handoffBlock, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import { listAssignments } from '../src/lib/assignments.js';
 import { pickPool } from '../src/lib/route.js';
@@ -2438,6 +2439,46 @@ test('evidence: a pool quarantined between the attempts gets no retry, and the s
   });
 });
 
+test('evidence: a pool whose live 5h meter ran out during attempt 1 gets no retry at once, with no interrupted-then-corrected pair', async () => {
+  const refreshCalls = [];
+  const picks = [];
+  await withEvidence('bs-ev-exhausted-', {
+    action: reportStep([failsUntilFixed]),
+    watches: [answer('broken\n'), answer('fixed\n')],
+    plain: true,
+    pools: [connector('pool-a'), connector('pool-b')],
+    preferredPool: 'pool-a',
+    // The fake meter: a live read of 100% on the forced refresh.
+    refreshPools: async (opts) => {
+      refreshCalls.push(opts);
+      return opts.force
+        ? [connector('pool-a', { fiveHourUsedPct: 100, meterSource: 'live' }), connector('pool-b')]
+        : [connector('pool-a'), connector('pool-b')];
+    },
+    dependencies: {
+      pickPool: (lane, list, opts) => {
+        picks.push(opts.strictPool);
+        return pickPool(lane, list, opts);
+      },
+    },
+  }, ({ result, lifecycle }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts.length, 1, 'no other pool is tried');
+    const [attempt] = result.attempts;
+    assert.equal(attempt.pool, 'pool-a');
+    assert.equal(attempt.status, 'failed');
+    assert.equal(attempt.willRetry, false);
+    assert.match(attempt.why, /→ exit 1: first run: marker missing · no retry: pool-a is no longer eligible$/);
+    assert.ok(result.verdict.why.endsWith(' · no retry: pool-a is no longer eligible'), result.verdict.why);
+    assert.deepEqual(lifecycle.map((entry) => entry.stage), ['started', 'finished']);
+    assert.equal(lifecycle[1].record.status, 'failed');
+    assert.equal(lifecycle[1].record.willRetry, false);
+    assert.deepEqual(refreshCalls, [{ force: false }, { force: true }]);
+    assert.deepEqual(picks, [null], 'the exhausted pool is never handed to a pinned pick');
+  });
+});
+
 test('evidence: a pinned pick that finds no pool after the refresh corrects the stored attempt and tries nothing else', async () => {
   const picks = [];
   await withEvidence('bs-ev-race-', {
@@ -2771,6 +2812,122 @@ test('evidence: a private copy outside git removes the files a check created', a
     assert.deepEqual(result.attempts[0].evidenceResults[0].touched, ['by-product.log']);
     assert.equal(existsSync(join(repo, 'by-product.log')), false);
     assert.equal(readFileSync(join(repo, 'owned.txt'), 'utf8'), 'work\n');
+  });
+});
+
+test('evidence: a private copy puts back a pre-existing untracked file a check rewrote or deleted, and names one it could not', async () => {
+  const kept = { 'tsconfig.tsbuildinfo': '{"v":1}\n', 'junit.xml': '<old/>\n' };
+  await withEvidence('bs-ev-private-restore-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'echo \'{"v":2}\' > tsconfig.tsbuildinfo && rm junit.xml' }] }),
+    privateWorkspace: true,
+    prepare: (dir) => { for (const [name, text] of Object.entries(kept)) writeFileSync(join(dir, name), text); },
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+  }, ({ result, repo }) => {
+    assert.equal(result.ok, true);
+    const [attempt] = result.attempts;
+    assert.deepEqual(attempt.evidenceResults[0].touched, ['junit.xml', 'tsconfig.tsbuildinfo']);
+    for (const [name, text] of Object.entries(kept)) assert.equal(readFileSync(join(repo, name), 'utf8'), text, name);
+    assert.equal(Object.hasOwn(result, 'checkByProducts'), false, 'everything was put back');
+    assert.equal(Object.hasOwn(attempt, 'notes'), false);
+  });
+  // Past the kept-bytes bound the file cannot be put back: dispatch names it
+  // as a check by-product for the ownership gate instead of leaving it to
+  // read as the worker's edit.
+  await withEvidence('bs-ev-private-unrestored-', {
+    action: produceFiles({ evidence: [{ type: 'command', cmd: 'echo \'{"v":2}\' > tsconfig.tsbuildinfo' }] }),
+    privateWorkspace: true,
+    prepare: (dir) => writeFileSync(join(dir, 'tsconfig.tsbuildinfo'), '{"v":1}\n'),
+    watches: (dir) => [({ paths: p }) => { writeFileSync(join(dir, 'owned.txt'), 'work\n'); writeFileSync(p.outFile, 'done\n'); return good; }],
+    dependencies: { runStepEvidence: (items, opts) => runStepEvidence(items, { ...opts, keptBytes: 2 }) },
+  }, ({ result, repo }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.checkByProducts, ['tsconfig.tsbuildinfo']);
+    assert.equal(readFileSync(join(repo, 'tsconfig.tsbuildinfo'), 'utf8'), '{"v":2}\n');
+    const [attempt] = result.attempts;
+    assert.deepEqual(attempt.notes.map((note) => [note.kind, note.text]), [
+      ['check-by-product', 'check by-product not restored: tsconfig.tsbuildinfo'],
+    ]);
+  });
+});
+
+// An isolated program run whose one check rewrites a pre-existing untracked
+// tsconfig.tsbuildinfo in the step's private copy. `keptBytes` is passed to
+// the runner, so a small bound leaves the file impossible to put back.
+async function isolatedByProductRun(prefix, { keptBytes } = {}, check) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    const repo = gitWorkspace(root);
+    const home = join(root, 'home');
+    mkdirSync(home);
+    writeFileSync(join(repo, 'tsconfig.tsbuildinfo'), '{"v":1}\n');
+    const goalDocument = createV2GoalDocument({
+      goal: 'Deliver write.txt', cwd: repo,
+      requirements: [{ id: 'deliver', text: 'Deliver write.txt and check it.' }],
+      settings: { executionMode: 'program', workspaceMode: 'isolated', scout: false, plannerMode: 'caller', concurrency: 1 },
+    });
+    const pool = {
+      ...connector('pool-a'),
+      strategyAssignments: Object.fromEntries(['low', 'medium', 'high'].map((tier) => [tier, { pool: 'pool-a', model: 'gpt-5.6-luna' }])),
+    };
+    const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+    const run = await runV2AutonomousWorkflow({
+      bullswarmDir: home, goalDocument, pools: [], runId: 'wf-acme-abc123', parentEnv: {},
+      initialPlannerResponse: {
+        schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write and check.',
+        program: {
+          schemaVersion: 'bullswarm.workflow.program.v2',
+          actions: [{
+            id: 'write', purpose: 'Deliver write.txt', dependsOn: [], affects: ['deliver'], ownedFiles: ['write.txt'],
+            prompt: 'Write write.txt.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+            evidence: [{ type: 'command', cmd: 'test -s write.txt && echo \'{"v":2}\' > tsconfig.tsbuildinfo' }],
+          }],
+        },
+      },
+      dependencies: {
+        refreshPools: async () => null,
+        dispatchV2Action: (options) => dispatchV2Action({
+          ...options, pools: [pool],
+          dependencies: {
+            watchOnce: async (_pool, _task, targetDir, files) => {
+              writeFileSync(join(targetDir, 'write.txt'), 'ok\n');
+              writeFileSync(files.outFile, 'done\n');
+              return good;
+            },
+            ...(keptBytes != null ? { runStepEvidence: (items, opts) => runStepEvidence(items, { ...opts, keptBytes }) } : {}),
+            loadState: () => structuredClone(core),
+            saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
+            now: () => Date.now(),
+            uuid: () => 'session-fixed',
+          },
+        }),
+      },
+    });
+    await check({ run, repo });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+test('evidence (runtime): an isolated run whose check rewrites a pre-existing untracked tsconfig.tsbuildinfo succeeds and merges the work back', async () => {
+  await isolatedByProductRun('bs-ev-iso-restore-', {}, ({ run, repo }) => {
+    const [step] = run.state.actions;
+    assert.equal(step.status, 'succeeded', JSON.stringify(step.lastFailure));
+    const [item] = run.state.attempts.at(-1).evidenceResults;
+    assert.equal(item.status, 'passed');
+    assert.deepEqual(item.touched, ['tsconfig.tsbuildinfo']);
+    assert.equal(readFileSync(join(repo, 'write.txt'), 'utf8'), 'ok\n');
+    assert.equal(readFileSync(join(repo, 'tsconfig.tsbuildinfo'), 'utf8'), '{"v":1}\n');
+  });
+});
+
+test('evidence (runtime): a check by-product that cannot be put back never fails the ownership gate and never merges back', async () => {
+  await isolatedByProductRun('bs-ev-iso-unrestored-', { keptBytes: 2 }, ({ run, repo }) => {
+    const [step] = run.state.actions;
+    assert.equal(step.status, 'succeeded', JSON.stringify(step.lastFailure));
+    const attempt = run.state.attempts.at(-1);
+    assert.deepEqual(attempt.notes.map((note) => [note.kind, note.text]), [
+      ['check-by-product', 'check by-product not restored: tsconfig.tsbuildinfo'],
+    ]);
+    assert.equal(readFileSync(join(repo, 'write.txt'), 'utf8'), 'ok\n');
+    assert.equal(readFileSync(join(repo, 'tsconfig.tsbuildinfo'), 'utf8'), '{"v":1}\n', 'the by-product stays in the copy');
   });
 });
 

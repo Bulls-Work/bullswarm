@@ -100,9 +100,15 @@ export function workspacePathIssues(program, cwd, { isolated = false } = {}) {
       if (item?.type !== 'schema') return;
       if (item.file !== '$output' && isDirectoryAt(cwd, item.file)) {
         issues.push(`${at}.file names a directory ("${item.file}")`);
+      } else if (item.file !== '$output' && isolated && gitIgnores(cwd, item.file)) {
+        issues.push(`${at}.file is git-ignored ("${item.file}"); the isolated copy will not contain it, and an isolated run copies back only files git would track`);
       }
       if (isDirectoryAt(cwd, item.schema)) {
         issues.push(`${at}.schema names a directory ("${item.schema}")`);
+        return;
+      }
+      if (isolated && gitIgnores(cwd, item.schema)) {
+        issues.push(`${at}.schema is git-ignored ("${item.schema}"); the isolated copy will not contain it, so the check could not run`);
         return;
       }
       let schemaBytes;
@@ -118,11 +124,14 @@ export function workspacePathIssues(program, cwd, { isolated = false } = {}) {
         issues.push(`${at}.schema is not valid JSON ("${item.schema}"): ${error.message}`);
         return;
       }
+      // Only a real keyword refusal reads "uses unsupported keyword"; every
+      // other problem (a bad value, a non-local or unresolved $ref, too deep,
+      // not a schema at all) keeps the checker's own precise message.
       for (const problem of schemaSubsetIssues(schema)) {
-        if (problem.keyword === '$schema-value') {
-          issues.push(`${at}.schema uses unsupported keyword "$schema-value" at ${problem.at} ("${item.schema}"); see the schema subset in docs/reference/program.md`);
-        } else {
+        if (problem.message === `unsupported keyword "${problem.keyword}" at ${problem.at}`) {
           issues.push(`${at}.schema uses unsupported keyword "${problem.keyword}" at ${problem.at} ("${item.schema}"); see the schema subset in docs/reference/program.md`);
+        } else {
+          issues.push(`${at}.schema is not a supported schema ("${item.schema}"): ${problem.message}; see the schema subset in docs/reference/program.md`);
         }
       }
     });
@@ -273,7 +282,6 @@ const ROLE_FIELD_RULE = `The optional per-action \`role\` field says what a step
 const DELIVERABLE_FIELD_RULE = `The optional per-action \`deliverable\` field says what the step promises to leave: ${DELIVERABLE_TYPES.join(', ')}, or an object {type, paths}. Defaults per role: ${Object.entries(ROLE_DEFAULT_DELIVERABLE).map(([role, type]) => `${role}=${type}`).join(', ')}; combine has no default and must declare one. Allowed per role: ${ROLES.map((role) => `${role} takes ${ROLE_DELIVERABLES[role].join('|')}`).join('; ')}. \`outward\` needs role act, a \`digest\` takes no deliverable, and a step with evidenceFor takes none or \`report\`. \`data\` and \`media\` need exact relative file \`paths\`; \`files\` may name paths; \`report\` and \`outward\` take none. When ownedFiles is not empty, every deliverable path must be listed in it. The lane must fit the deliverable: files, data and media need build or chore; report and outward need analyze. \`produces\`/\`inputs\` are data-flow labels between steps, not the deliverable.`;
 const EVIDENCE_FIELD_RULE = `A step may declare \`evidence\`: up to ${EVIDENCE_MAX_ITEMS} checks Bullswarm runs itself after the worker finishes, in the step's workspace. {type:'command', cmd, timeoutSec?} passes on exit code 0. {type:'schema', file, schema, format?, timeoutSec?} passes when the JSON (or JSONL) file matches the schema (subset in the contract); file: "$output" checks the step's own final response, and commands can read it at $BULLSWARM_STEP_OUTPUT. timeoutSec defaults to ${EVIDENCE_DEFAULT_TIMEOUT_SEC}, at most ${EVIDENCE_MAX_TIMEOUT_SEC}; be generous, and run each check once by hand before launch, because a wrong check costs a whole worker rerun to fix. The worker sees them. A failing check fails the attempt as \`failed-evidence\`; Bullswarm retries once on the same pool with the output attached, then the step fails and waits for you. A failed check on an act step, and a check that cannot run (a missing or unsupported schema), come straight back to you. Scope commands to the step: siblings edit the same tree. Put a whole-suite command on a step that runs alone or last. Checks must be read-only; a check that changes the step's files fails. Review steps and digests take no evidence. A finished step without evidence reads \`finished · unproven\` unless a review passes its requirements.`;
 const DISPATCHED_EVIDENCE_RULE = 'Do not declare evidence; put the acceptance commands a worker must run in its prompt. The caller adds checks Bullswarm runs.';
-const reviewStepRule = (text) => text.replaceAll('evidence actions', 'review steps').replaceAll('evidence action', 'review step').replaceAll('Evidence actions', 'Review steps');
 
 // The digest kind, stated once for every rendering of the contract. Extractive
 // by construction: a digest that judged its sources would be delegated
@@ -304,7 +312,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'dependsOn expresses the ordering you need. Independent actions start up to the concurrency cap, and a dependent starts as soon as its own inputs are ready. A failed action skips its dependents; other branches continue. Never create artificial dependencies merely to group phases.',
     'Every action has a self-contained prompt describing its purpose, repository context, expected files, and concrete acceptance commands. Dependency output artifacts are passed to the worker; ask it to read them, including outstanding requests for shared-file changes.',
     'Plan coherent acceptance slices: keep behavior and its focused tests together. Cover each requested outcome. Scout units and numeric targets are advisory, not reasons for rejecting an otherwise useful program.',
-    `Use \`dependsOn\` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit \`timeBox\` sized for the full suite. ${plannerMode === 'caller' ? 'Make the gate a `check` step and declare its suite as `evidence` so Bullswarm runs it; commit and PR steps are kind `mechanical`' : 'Make the gate a `check` step and the commit and PR steps kind `mechanical`'} (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as \`not-produced\`; a build-lane step with no declared deliverable, other than \`integration\`, fails the same way when it changes no file and makes no commit.`,
+    `Use \`dependsOn\` for files or contracts a writer needs before it can compile or prove its change; keep each behavior with its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate actions in that order, with an explicit \`timeBox\` sized for the full suite. ${plannerMode === 'caller' ? `Make the gate a \`check\` step and declare its suite as \`evidence\` so Bullswarm runs it (a check item times out at ${EVIDENCE_MAX_TIMEOUT_SEC} seconds at most, so put a longer suite in the step's prompt or split it into several items); commit and PR steps are kind \`mechanical\`` : 'Make the gate a `check` step and the commit and PR steps kind `mechanical`'} (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as \`not-produced\`; a build-lane step with no declared deliverable, other than \`integration\`, fails the same way when it changes no file and makes no commit.`,
     'Use analyze for read-only investigation or evidence, build for contextual implementation, and chore with low effort for deterministic mechanical edits. Medium is the default for ordinary analysis and implementation. Reserve high for architecture, ambiguous tradeoffs, or cross-cutting integration judgment.',
     KIND_FIELD_RULE,
     ROLE_FIELD_RULE,
@@ -319,7 +327,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Build shared contracts first, then fan out independent territories. Tell workers that others share the tree, to preserve sibling edits, avoid whole-repository formatting and git resets, and report cross-territory requests instead of making conflicting edits. Never commit unless the user explicitly requires a commit.',
     'After a parallel implementation wave, include one integrator depending on all writers. It reads their outputs, applies cross-territory requests, reconciles shared files, and runs the repository acceptance commands. In a shared workspace, use build with empty ownedFiles to let that sole integrator fix any file.',
     'Judge acceptance with observable behavior and the repository checks. Reproduce regressions where applicable, run focused tests after changes, then the requested full gates on the integrated tree. Preserve every acceptance qualifier; do not accept vacuous tests or a green unrelated suite as proof.',
-    reviewStepRule('Evidence actions are optional. To request structured independent judgment, use analyze with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.'),
+    'Review steps are optional. To request structured independent judgment, use a check step (analyze) with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.',
     'The result status describes graph execution; verified separately records passing requirement evidence. Read per-action failures, outputs, and evidence before claiming the product is ready.',
     REPAIR_LOOP_RULE,
     'What the loop leaves is the caller\'s decision: read the `callerDecision` block of the result, then either take over, or add a step through a plan revision. Further investigation belongs in an explicitly authored follow-up program.',

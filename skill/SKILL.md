@@ -64,14 +64,16 @@ author the graph.
 - **Finish after integration.** Put the full browser/e2e gate, commit, and PR
   in separate ordered steps after integration, in that sequence. Give the
   browser/e2e step an explicit `timeBox` sized for the full suite. Make the
-  browser/e2e gate a `check` step and declare its suite as `evidence` so
-  Bullswarm runs it. Keep the commit and PR steps `kind: mechanical` (not
-  judged, and with empty ownedFiles they run alone). A
-  step whose declared deliverable was not produced fails as `not-produced`,
-  and so does a build-lane step with no declared deliverable that changes no
-  file and makes no commit. An integrator is not judged by files, so a clean
-  integrator still passes. An `act` step is for outward actions such as
-  sending messages; it is never judged by files.
+  browser/e2e gate a `check` step with an empty `evidenceFor` and declare its
+  suite as `evidence` so Bullswarm runs it, when the suite finishes within 10
+  minutes (`timeoutSec` is at most 600); otherwise split it into several items
+  or keep the command in the gate's prompt. Keep the commit and PR steps `kind:
+  mechanical` (not judged, and with empty ownedFiles they run alone). A step
+  whose declared deliverable was not produced fails as `not-produced`, and so
+  does a build-lane step with no declared deliverable that changes no file and
+  makes no commit. An integrator is not judged by files, so a clean integrator
+  still passes. An `act` step is for outward actions such as sending messages;
+  it is never judged by files.
 - **Evidence: checks Bullswarm runs.** Add a command or schema check for
   anything a machine can check. Scope commands to the step; put a whole-suite
   command on the step that runs alone or last. Checks are read-only: a change
@@ -85,13 +87,23 @@ author the graph.
   `BULLSWARM_STEP_ID`, `BULLSWARM_STEP_OUTPUT` and `BULLSWARM_RUN_DIR`; the
   first tells a script Bullswarm is running it. One failed check gets one
   same-pool retry with output attached, then the step returns to you. If the
-  worker fails first, the result says `evidence not run`. A failed check on an
-  `act` step or a check that cannot run comes straight to you.
-  Only the caller declares checks; a dispatched planner cannot. A finished step
-  without checks reads `finished · unproven`; passing checks read `proven by
-  command` or `proven by schema`. Add a `check` step with its own evidence to
-  prove finished work without rerunning it. An old kernel refuses `evidence`:
-  pause, revise, resume.
+  worker fails first, no check runs: the step's handback line and watch's
+  failed line read `evidence not run`, and the JSON has
+  `evidenceResults: null`. A failed check on an `act` step or a check that
+  cannot run comes straight to you. Only the caller declares checks; a
+  dispatched planner cannot. A review step (non-empty `evidenceFor`) and a
+  digest take no `evidence`: put the commands a reviewer must run in its
+  prompt, or add a separate `check` step with `evidence` and an empty
+  `evidenceFor`. Each check's result is in `runs result <id> --json` under
+  `actions[].evidenceResults` (`status`, `exit`, `tail`, `why`) and in
+  `workflow action show <id> <step>`. Passing checks read `proven by command`
+  or `proven by schema`; a step without checks reads `proven by review` once
+  a review passes every requirement it affects, `review pending` while one
+  still covers them, and `finished · unproven` otherwise. When you report the
+  outcome, quote the run's proof line as printed (`proof: …` at the end of
+  watch, `# proof` in `runs result`) instead of paraphrasing it. Add a `check`
+  step with its own evidence to prove finished work without rerunning it. An
+  old kernel refuses `evidence`: pause, revise, resume.
 - **Check independently when acceptance matters.** One `check` step (or
   `kind: adversarial-acceptance` for high effort) with empty `affects` and
   `ownedFiles`, `evidenceFor` set to the
@@ -104,7 +116,7 @@ author the graph.
   combine) when three or more outputs
   feed one reader, or a reader's inputs exceed about 20 KB. The reader depends
   on the digest instead of the raw writers and gets `digestOf` links to them;
-  the digest keeps every shared-file request. Evidence never depends on a
+  the digest keeps every shared-file request. No review step depends on a
   digest.
 - **Effort.** Writers are `produce` steps. High belongs to three kinds of
   step: a `combine` step that merges written code (the sole writer after
@@ -227,6 +239,8 @@ The watcher scores each running step and prints `⚠ <step> looks stale:
 - `running 47m, over 3× the expected 15m`: well past what the router expected.
 
 Quiet alone is enough to print the line; otherwise two reasons must hold.
+While Bullswarm runs a step's declared checks, only quiet counts, read from
+the checks' heartbeat: `no check heartbeat for <N>m`.
 Nothing is stopped for you. Choose one:
 
 - Let it run: start the `next:` watch again. This attempt is not reported a

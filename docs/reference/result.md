@@ -87,10 +87,10 @@ Requirement `status` values: `pending`, `passed`, `failed`, `blocked`. Action `s
 
 Each requirement `evidence[]` entry is `{ sourceAction, status, evidence, concerns, eventSequence, mechanicalFailure? }`. Only evidence from the current `workRevision` is current. Negative evidence does not open another planner round.
 
-A step that declares `evidence` adds `actions[].evidenceResults`; when a check did not run, the value is `null`. Each item records its declared type and fields, `status` (`passed`, `failed`, or `not-run`), `exit`, `durationMs`, `tail`, `log` and `why`, plus optional timeout, signal, side-effect and schema-error facts. For example:
+A step that declares `evidence` adds `actions[].evidenceResults`; when the worker failed first and no check ran, the value is `null`, and the step's handback line reads `evidence not run`. Each item records its declared type and fields, `status` (`passed`, `failed`, or `not-run`), `exit`, `durationMs`, `tail`, `log` and `why`, plus optional timeout, signal, side-effect and schema-error facts. A schema item's `tail` is the checker's `--json` report line. This item is copied from a real run of a schema check on `[{"date":20260901}]` against a schema that requires `date` to be a string:
 
 ```json
-{"type":"schema","file":"out/records.json","schema":"schemas/record.json","timeoutSec":120,"status":"failed","exit":1,"durationMs":140,"errorCount":1,"errors":["$.date must be string"],"tail":"not valid: 1 error","log":"<runDir>/evidence-records-attempt-1-1.log","why":"not valid: 1 error"}
+{"type":"schema","file":"out/records.json","schema":"schemas/record.json","timeoutSec":120,"status":"failed","exit":1,"durationMs":47,"errorCount":1,"errors":["$[0].date must be string (got integer)"],"tail":"{\"ok\":false,\"exit\":1,\"errorCount\":1,\"errors\":[\"$[0].date must be string (got integer)\"],\"notes\":[],\"why\":\"not valid: 1 error\",\"fault\":null}","log":"<runDir>/evidence-records-attempt-1-1.log","why":"not valid: 1 error"}
 ```
 
 Evidence results are not added to the requirement ledger and do not make a requirement `verified`.
@@ -234,7 +234,7 @@ Anything short of a verified run with no unread guidance is handed back. The run
 
 | Field | Meaning |
 |---|---|
-| `unfinished[]` | `{ id, status, failureKind, why, retryAfter?, retryable }` for every action that is not `succeeded` or `removed` |
+| `unfinished[]` | `{ id, status, failureKind, why, retryAfter?, retryable }` for every action that is not `succeeded` or `removed`; in the compact summary, a failed step that declares evidence and whose worker failed before any check ran adds `evidenceNotRun: true` |
 | `unresolvedRequirements[]` | `{ id, status, why }` for every requirement that is not `passed` |
 | `unreadSteering[]` | `{ id, message, queuedAt }` guidance queued with `workflow steer` that nobody acted on |
 

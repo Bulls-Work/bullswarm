@@ -183,8 +183,8 @@ itself into plan mode and edited nothing. Two details:
 - **Act steps.** An act step's deliverable is its recorded actions, so it is
   not judged by files.
 
-A step without evidence reports `finished · unproven` and still unblocks its
-dependents.
+A step without evidence reports `finished · unproven` unless a review passes
+the requirements it affects, and still unblocks its dependents.
 
 ## Layer 3: options
 
@@ -223,10 +223,12 @@ merged back when its gate passes. A merge conflict is a failed gate.
 Schema, on any step:
 
 ```json
-"evidence": [
-  { "type": "command", "cmd": "npm test -- tests/probe.test.js", "timeoutSec": 120 },
-  { "type": "schema", "file": "out/records.json", "schema": "schemas/record.json" }
-]
+{
+  "evidence": [
+    { "type": "command", "cmd": "npm test -- tests/probe.test.js", "timeoutSec": 120 },
+    { "type": "schema", "file": "out/records.json", "schema": "schemas/record.json" }
+  ]
+}
 ```
 
 Semantics for v1:
@@ -245,10 +247,13 @@ Semantics for v1:
   declared paths or owned files). A change fails the item; untracked
   by-products are recorded. A failed check on an act step goes to the caller
   without a retry.
-- **No evidence.** A step without evidence is `unproven`; new runs label it
-  `finished · unproven`. Passing command or schema checks labels it `proven by
-  command` or `proven by schema`. Review rubrics are guidance for the reviewing
-  step, not computed verdicts.
+- **No evidence.** In a new run, a finished step without evidence reads
+  `proven by review` once a review passes every requirement it affects,
+  `review pending` while a review step still covers them, and `finished ·
+  unproven` otherwise. Passing command or schema checks add `proven by command`
+  or `proven by schema`. Labels are derived, not saved: runs started before
+  this version show labels only on steps that declare evidence. Review rubrics
+  are guidance for the reviewing step, not computed verdicts.
 - **Known gap.** A worker can weaken the check its evidence runs. v1 accepts
   this and records when a schema file changed; later, review steps rerun
   declared evidence and inspect changes to check files.
@@ -261,18 +266,25 @@ Where it plugs in:
 - `dispatchV2Action` in `src/workflow/v2-dispatch.js`;
 - `summarizeV2Result` in `src/workflow/v2-outcome.js`.
 
-Replay on three real software runs. Counts use offline checks against the
-recorded defect and fixed trees. A defect is observed only when the check could
-have been declared at the owning step; checks that depend on the later fix are
-argued, not observed. See section 7.6 of the stage-2 spec for the counting rule.
+Replay on three real software runs, measured on 2026-09-25 with offline
+checks against each run's recorded defect and fixed trees. A defect counts as
+caught, observed only when a check that could have been declared when the
+owning step ran failed on the defect tree and passed on the fixed tree; argued
+when no tree pair exists or the check depends on a file the fix changed; not
+caught when it needs a browser or a judgment or no step owned the file; and
+inconclusive when the fixed tree fails too.
 
-| Run | Caught, observed | Caught, argued | Not caught |
-|---|---:|---:|---:|
-| a 23-step release batch | 7 of 7 | — | — |
-| a 9-writer prototype | 5 | — | 1 needed a browser |
-| a 27-step dashboard tidy-up | 25 | — | 6 |
+| Run | Defects | Caught, observed | Caught, argued | Not caught | Inconclusive |
+|---|---:|---:|---:|---:|---:|
+| a 23-step release batch | 9 | 5 | 1 | 1 | 2 |
+| a 9-writer prototype | 6 | 3 | 0 | 3 | 0 |
+| a 27-step dashboard tidy-up | 44 | 11 | 12 | 20 | 1 |
+| Total | 59 | 19 | 13 | 24 | 3 |
 
-Observed replay counts: pending
+The earlier estimates (7 of 7; 5 caught and 1 not; 25 caught and 6 not) were
+not supported by the replay. 18 of the 19 observed catches needed a new check
+the caller would write from the step's prompt, and only 1 came from a check
+already in the repository.
 
 ## Project record
 

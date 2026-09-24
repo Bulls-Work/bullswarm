@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './v2-runtime.js';
-import { pickPool, isBenched, isFree, isQuarantined } from '../lib/route.js';
+import { LANES, pickPool, isBenched, isExhausted, isFree, isQuarantined } from '../lib/route.js';
 import {
   assertDepthAllowed, childDepthEnv, clearPoolStrikes, loadState, quarantinePool,
   quarantineUpstreamSiblings, recordPoolStrike, updateState, upstreamGroupOf,
@@ -22,7 +22,8 @@ import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary.js';
 import {
-  evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope, runStepEvidence,
+  evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope,
+  restoreChangedOutOfScope, runStepEvidence,
 } from './evidence-runner.js';
 
 const MECHANICAL_KINDS = new Set(['auth', 'quota', 'throttle', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
@@ -1015,6 +1016,10 @@ export async function dispatchV2Action({
   let pendingRefresh = null;
   let pinnedRecord = null;
   let pinnedResults = null;
+  // Paths the checks left changed in a private copy that could not be put
+  // back (E11): the ownership gate reads them as check by-products, not as
+  // the worker's edits.
+  const checkByProducts = new Set();
   const correctPinnedRetry = (poolName) => {
     const why = evidenceFailureWhy(pinnedResults, { suffix: ` · no retry: ${poolName} is no longer eligible` })
       ?? `${pinnedRecord.why ?? 'failed evidence'} · no retry: ${poolName} is no longer eligible`;
@@ -1349,9 +1354,19 @@ export async function dispatchV2Action({
         now,
       });
       // What the checks created outside a private copy's scope never reaches
-      // the ownership gate or the merge-back (E11).
-      if (mode === 'private' && evidenceRun.createdOutOfScope?.length) {
-        removeCreatedOutOfScope(realTarget, evidenceRun.createdOutOfScope);
+      // the ownership gate or the merge-back, and a pre-existing untracked
+      // file they rewrote or deleted is put back (E11). The step is alone in
+      // its copy, so neither can undo a sibling's work.
+      let leftover = [];
+      if (mode === 'private') {
+        const removal = evidenceRun.createdOutOfScope?.length
+          ? removeCreatedOutOfScope(realTarget, evidenceRun.createdOutOfScope)
+          : null;
+        const restoral = evidenceRun.changedOutOfScope?.length
+          ? restoreChangedOutOfScope(realTarget, evidenceRun)
+          : null;
+        leftover = uniquePaths([...(removal?.unremoved ?? []), ...(restoral?.unrestored ?? [])]).sort();
+        for (const path of leftover) checkByProducts.add(path);
       }
       const results = clone(evidenceRun.results ?? []);
       const note = textVerdictWhy != null
@@ -1382,6 +1397,13 @@ export async function dispatchV2Action({
       if (note && !evidenceRun.stopped) {
         verdict.notes = [...(Array.isArray(verdict.notes) ? verdict.notes : []), note];
       }
+      if (leftover.length) {
+        verdict.notes = [...(Array.isArray(verdict.notes) ? verdict.notes : []), {
+          at: new Date(now()).toISOString(),
+          kind: 'check-by-product',
+          text: `check by-product not restored: ${leftover.join(', ')}`,
+        }];
+      }
     }
     const evidenceResults = evidenceRun ? verdict.evidenceResults : null;
     const streamFile = verdict?.meta?.streamFile
@@ -1406,7 +1428,13 @@ export async function dispatchV2Action({
           catch { refreshed = null; }
           pendingRefresh = Array.isArray(refreshed) ? refreshed : [];
         }
-        const eligibleNow = prepare(pendingRefresh?.length ? pendingRefresh : allPools);
+        // The pinned pick's own filter, not prepare() alone: pickPool also
+        // drops a pool off its lane or whose live 5h meter is used up, the
+        // usual way a pool stops being eligible after a finished worker.
+        const lane = action.lane ?? 'chore';
+        const decidedAt = now();
+        const eligibleNow = prepare(pendingRefresh?.length ? pendingRefresh : allPools)
+          .filter((candidate) => (candidate.lanes ?? LANES).includes(lane) && !isExhausted(candidate, decidedAt));
         if (eligibleNow.some((candidate) => candidate.name === pool.name)) canRetryEvidence = true;
         else {
           pendingRefresh = null;
@@ -1530,7 +1558,12 @@ export async function dispatchV2Action({
     // A quota failure invalidates this run's meter picture: poll live before
     // choosing where the work goes next.
     if (kind === 'quota') forceRefresh = true;
-    if (verdict.ok) return { ok: true, status: 'succeeded', attempts, verdict, session: currentSession };
+    if (verdict.ok) {
+      return {
+        ok: true, status: 'succeeded', attempts, verdict, session: currentSession,
+        ...(checkByProducts.size ? { checkByProducts: [...checkByProducts].sort() } : {}),
+      };
+    }
     if (kind === 'cancelled') return { ok: false, status: 'cancelled', failureKind: kind, attempts, verdict };
     if (canRetryEvidence) {
       // One retry on the same pool with the check output attached (E14). It

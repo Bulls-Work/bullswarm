@@ -23,8 +23,10 @@ In a workflow program, a step's **role** says what it does — `investigate`, `p
 
 **Evidence** is a command or schema check Bullswarm runs after a workflow
 worker finishes. A passing check backs the step's `proven by command` or
-`proven by schema` label; a finished step without evidence is labelled
-`finished · unproven` in new runs. Review remains a separate check step.
+`proven by schema` label. In new runs, a finished step without evidence reads
+`proven by review` once a review passes every requirement it affects,
+`review pending` while a review step still covers them, and
+`finished · unproven` otherwise. Review remains a separate check step.
 [Program format](/reference/program#evidence-command-and-schema) explains the
 check rules and result details.
 

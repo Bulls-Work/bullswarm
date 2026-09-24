@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  deserializeV2ResultEnvelope, formatV2ProofLine, summarizeV2Result, validateV2ResultEnvelope,
+  deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLine, summarizeV2Result, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
@@ -202,4 +202,72 @@ test('runs result prints `# proof` after `# outcome` only for a run with the mar
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// F16: the verifier's shape. A partial program run (one step finished, one
+// failed on quota, one blocked) padded until its unlabelled summary sits just
+// under the budget. The marker adds `proof`, which must not cost a handback line.
+function nearBudgetRun(padding, { loop = false } = {}) {
+  const quotaWhy = 'usage limit: "You\'ve hit your session limit · resets 10:30pm (UTC)" while writing the integration notes for the acme release branch and its checks';
+  const envelope = {
+    runId: 'wf-test-nearbudget', shortId: 'near01', status: 'partial', verified: false, executionMode: 'program',
+    reason: 'integrate failed (quota); verify blocked', finishedAt: '2026-09-24T01:10:00Z', goal: 'Ship the acme command-line release',
+    requirements: [
+      { id: 'r1', status: 'unresolved', mandatory: true, evidence: [{ evidence: ['The integration step did not run to the end, so the release notes and the combined checks were never produced for review.'] }] },
+      { id: 'r2', status: 'unresolved', mandatory: true, evidence: [{ evidence: ['Nothing verified the command-line output against the documented examples because the verify step was blocked by integrate.'] }] },
+    ],
+    actions: ['cli', 'integrate', 'verify'].map((id) => ({
+      id, kind: id === 'verify' ? 'review' : 'implement', status: { cli: 'succeeded', integrate: 'failed', verify: 'blocked' }[id],
+      outputFile: `/runs/acme/out-${id}-attempt-1.md`, reasoning: 'medium', bytes: { output: 2048, prompt: 4096 },
+    })),
+    usage: { total: 3, byPool: { [`acme-${'x'.repeat(padding)}`]: 3 } },
+    ...(loop ? {
+      verifyRounds: { max: 2, used: 2, stoppedBy: 'rounds', phases: [1, 2].flatMap((round) => [
+        { kind: 'verify', round, steps: ['verify'], judged: 2, failed: ['r1'], wallMinutes: 4, pools: ['acme-pool'], apiUsd: null, unmeasured: 1, cost: 'subscription' },
+        { kind: 'repair', round, steps: ['integrate'], requirements: ['r1'], wallMinutes: 6, pools: ['acme-pool'], apiUsd: null, unmeasured: 1, cost: 'subscription' },
+      ]) },
+      callerDecision: { verifyRounds: '2/2', requirements: [{ id: 'r1', status: 'unresolved', round: 2, evidence: 'The release notes were still missing after the second repair round, and the combined checks never ran.', next: 'bullswarm workflow plan revise near01 --program plan.json' }] },
+    } : {}),
+    handback: {
+      unfinished: [
+        { id: 'integrate', status: 'failed', failureKind: 'quota', why: quotaWhy, retryable: true },
+        { id: 'verify', status: 'blocked', failureKind: 'dependency', why: 'blocked by integrate, which failed before it produced the combined checks this review needs', retryable: true },
+      ],
+      unresolvedRequirements: [], unreadSteering: [],
+    },
+  };
+  const state = {
+    program: { actions: [
+      { id: 'cli', kind: 'implement', affects: ['r1'], evidenceFor: [] },
+      { id: 'integrate', kind: 'implement', affects: ['r1'], evidenceFor: [] },
+      { id: 'verify', kind: 'review', affects: [], evidenceFor: ['r1', 'r2'] },
+    ] },
+    actions: [{ id: 'cli', status: 'succeeded' }, { id: 'integrate', status: 'failed' }, { id: 'verify', status: 'blocked' }],
+    attempts: [], ledger: { requirements: { r1: { id: 'r1', status: 'unresolved' }, r2: { id: 'r2', status: 'unresolved' } } },
+  };
+  return { envelope, state };
+}
+
+test('F16: near the byte budget, the proof object never costs a handback line', () => {
+  const size = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+  // Sweep the padding across every fit level: wherever the unlabelled summary
+  // lands, the marked one prints the same handback lines and still fits.
+  let fullReason = 0;
+  for (const loop of [false, true]) for (let padding = 0; padding <= 3000; padding += 10) {
+    const { envelope, state } = nearBudgetRun(padding, { loop });
+    const saved = summarizeV2Result(envelope, state, { runDir: '/runs/acme', features: {} });
+    const fresh = summarizeV2Result(envelope, state, { runDir: '/runs/acme', features: { deliverableGate: 1, proofLabels: 1 } });
+    assert.equal(Object.hasOwn(saved, 'proof'), false);
+    assert.equal(fresh.proof.unproven, 1, `padding ${padding}: the proof counts stay`);
+    assert.equal(fresh.proof.proven, 0);
+    // Where the run without labels is already at its smallest levels, the
+    // summary may run over, by no more than the proof's own bytes.
+    const proofBytes = Buffer.byteLength(`,"proof":${JSON.stringify(fresh.proof)}`, 'utf8');
+    if (size(saved) < 4096) assert.ok(size(fresh) < 4096 + proofBytes, `padding ${padding}: ${size(fresh)} bytes`);
+    if (size(saved) < 4096 - proofBytes) assert.ok(size(fresh) < 4096, `padding ${padding}: ${size(fresh)} bytes must fit`);
+    const lines = formatV2HandbackLines(saved);
+    assert.deepEqual(formatV2HandbackLines(fresh), lines, `padding ${padding}: the same handback lines with and without the marker`);
+    if (lines.includes(`  step integrate: failed (quota) — ${envelope.handback.unfinished[0].why}`)) fullReason += 1;
+  }
+  assert.ok(fullReason > 0, 'some paddings keep the whole quota reason');
 });

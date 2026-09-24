@@ -38,7 +38,8 @@ import {
   markStepRestartApplied, readStepRestarts, requeueRestartedStep, snapshotPossible,
 } from './v2-dispatch.js';
 import { declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary.js';
-import { evidenceBriefLines, rewriteEvidenceCwd } from './evidence-runner.js';
+import { evidenceBriefLines, evidenceItemTimeoutSec, rewriteEvidenceCwd } from './evidence-runner.js';
+import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
 import { STAGE2_RUN_FEATURES, readRunFeatures, writeRunFeatures } from './run-features.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
@@ -1340,10 +1341,41 @@ function evidenceHandoffLines(results) {
     if (Array.isArray(item.touched) && item.touched.length) lines.push(`    also: touched ${item.touched.join(', ')}`);
     if (item.headMoved === true) lines.push('    also: HEAD moved while it ran (another step may have committed)');
   }
-  lines.push('- Fix the work so every evidence item passes. Do not change what the checks test to make them pass.');
+  // Every item stopped before it finished: no check judged the work (F9).
+  const stopped = results.every((item) => item?.status === 'not-run' && item?.why === 'stopped');
+  lines.push(stopped
+    ? '- Its checks were stopped before they finished; Bullswarm runs them again after this attempt.'
+    : '- Fix the work so every evidence item passes. Do not change what the checks test to make them pass.');
   return lines;
 }
 
+// An act step's worker has finished before its checks start, so it may
+// already have sent, posted or deployed. A stop during the checks never
+// queues that worker again (P3): the attempt goes to the caller as
+// failed-evidence, and only an explicit plan revise --rerun runs it again.
+function actStoppedDuringChecksWhy(cause) {
+  return `${cause} during its checks; the worker had finished and may already have acted, so it runs again only on an explicit plan revise --rerun · act steps are not retried`;
+}
+
+// A declared item a dead kernel never recorded an end for.
+function stoppedEvidenceEntry(item) {
+  const base = item?.type === 'schema'
+    ? { type: 'schema', file: item.file, schema: item.schema, ...(item.format ? { format: item.format } : {}) }
+    : { type: 'command', cmd: item?.cmd };
+  return { ...base, timeoutSec: evidenceItemTimeoutSec(item), status: 'not-run', exit: null, durationMs: 0, tail: '', why: 'stopped' };
+}
+
+// The running-checks note (E18, src/lib/stale.js) lives only while the
+// attempt runs; a finished or recovered attempt never keeps it.
+function clearEvidenceRunning(attempt) {
+  if (!Array.isArray(attempt?.notes)) return;
+  const notes = attempt.notes.filter((note) => note?.kind !== EVIDENCE_RUNNING_NOTE);
+  if (notes.length) attempt.notes = notes;
+  else delete attempt.notes;
+}
+
+// Returns the act steps it sent to the caller, `[{ actionId, why }]`, so the
+// kernel can emit their action.finished once the event log is open.
 function reconcileResume(state, at, runDir) {
   // The receipt precedes the attempt snapshot. Recover either side of that
   // atomic-write boundary without dispatching successful work a second time.
@@ -1361,13 +1393,28 @@ function reconcileResume(state, at, runDir) {
         // attempt keeps their results, so its label reads what ran.
         ...(Array.isArray(receipt.verdict.evidenceResults) ? { evidenceResults: clone(receipt.verdict.evidenceResults) } : {}),
       });
+      if (attempt.status === 'succeeded') clearEvidenceRunning(attempt);
     }
   }
+  // Act steps whose kernel died during their checks: they go to the caller.
+  const toCaller = new Map();
   for (const attempt of state.attempts) if (attempt.status === 'running') {
-    attempt.status = 'interrupted';
-    attempt.finishedAt = at;
-    attempt.failureKind = 'interrupted';
-    attempt.why = 'runner stopped before the attempt reached a durable terminal state';
+    const checking = evidenceRunning(attempt);
+    clearEvidenceRunning(attempt);
+    const declared = definition(state, attempt.actionId);
+    if (checking && roleOf(declared) === 'act') {
+      Object.assign(attempt, {
+        status: 'failed', finishedAt: at, failureKind: 'failed-evidence',
+        why: actStoppedDuringChecksWhy('the kernel died'),
+        evidenceResults: declaredEvidence(declared).map(stoppedEvidenceEntry),
+      });
+      toCaller.set(attempt.actionId, attempt.why);
+    } else {
+      attempt.status = 'interrupted';
+      attempt.finishedAt = at;
+      attempt.failureKind = 'interrupted';
+      attempt.why = 'runner stopped before the attempt reached a durable terminal state';
+    }
     // The worker may have left partial output, a stream and a diff snapshot
     // on disk before the kernel died; the record should say so, as it would
     // have had the attempt finished normally.
@@ -1382,6 +1429,10 @@ function reconcileResume(state, at, runDir) {
     attempt.why = 'runner stopped before the planner turn reached a durable terminal state';
   }
   for (const action of state.actions) if (['running', 'waiting', 'interrupted'].includes(action.status)) {
+    if (toCaller.has(action.id)) {
+      Object.assign(action, { status: 'failed', finishedAt: at, lastFailure: { kind: 'failed-evidence', message: toCaller.get(action.id) } });
+      continue;
+    }
     const declared = definition(state, action.id);
     const completedAttempt = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded');
     if (!completedAttempt && declared?.affects?.length) {
@@ -1407,6 +1458,7 @@ function reconcileResume(state, at, runDir) {
     }
   }
   if (!TERMINAL.has(state.lifecycle.status)) state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
+  return [...toCaller].map(([actionId, why]) => ({ actionId, why }));
 }
 
 async function runV2Kernel({
@@ -1459,6 +1511,7 @@ async function runV2Kernel({
   mkdirSync(runDir, { recursive: true });
 
   let state;
+  let actStepsToCaller = [];
   if (resuming) {
     if (!existsSync(goalPath(runDir)) || !existsSync(statePath(runDir))) throw new Error('unsupported old autonomous run: V2 goal.json and state.json are required');
     const durableGoal = JSON.parse(readFileSync(goalPath(runDir), 'utf8'));
@@ -1508,7 +1561,7 @@ async function runV2Kernel({
     const forceDeadline = Date.now() + 1000;
     while (survivors.some(liveWorker) && Date.now() < forceDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
     if (survivors.some(liveWorker)) throw new Error('previous kernel workers are still alive; refusing to replay actions');
-    reconcileResume(state, now(), runDir);
+    actStepsToCaller = reconcileResume(state, now(), runDir);
   } else {
     validateV2GoalDocument(goalDocument);
     writeJsonAtomic(goalPath(runDir), goalDocument);
@@ -1587,6 +1640,9 @@ async function runV2Kernel({
   // Actions to stop while the run itself goes on: actionId -> {kind, message},
   // where kind is superseded (a plan revision replaced the step) or paused.
   const stopRequested = new Map();
+  // Act steps a step restart stopped during their checks (F14): the restart
+  // is refused, since the step went to the caller.
+  const actStoppedByRestart = new Set();
   const workers = new Map();
   const workersPath = join(runDir, 'workers.json');
   const onSpawn = (pid) => {
@@ -1619,6 +1675,11 @@ async function runV2Kernel({
   state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
   persist();
   emit(resuming ? 'workflow.resumed' : 'workflow.started', { runId: id, shortId: state.shortId, intentId: state.intentId, goal: state.intent.goal });
+  // An act step whose kernel died during its checks (F14) finished as failed
+  // in reconcileResume, before the event log was open: say so now.
+  for (const { actionId, why } of actStepsToCaller) {
+    emit('action.finished', { actionId, status: 'failed', failureKind: 'failed-evidence', why });
+  }
 
   let plannerExhausted = false;
   let limitsExhausted = false;
@@ -2005,6 +2066,8 @@ async function runV2Kernel({
     let before = receipt?.before ?? null;
     if (!receipt && enforcesOwnership(state) && action.ownedFiles.length) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
     let currentAttemptId = null;
+    // Set when this act step's checks were stopped (F14): it goes to the caller.
+    let actStoppedWhy = null;
     let lastProgressPersist = 0;
     const workerAttempt = () => state.attempts.find((item) => item.id === currentAttemptId);
     const persistWorkerProgress = () => {
@@ -2161,20 +2224,32 @@ async function runV2Kernel({
           });
         } else {
           lease.assertOwner();
-          // A kernel signal during the checks (E16): the attempt did not fail
-          // and was not cancelled by the caller; it runs again on resume, which
-          // hands it on as it does a worker the kernel killed.
-          if (interrupted && record.status === 'cancelled'
-            && Array.isArray(record.evidenceResults) && record.evidenceResults.some((item) => item?.why === 'stopped')) {
+          const stop = record.status === 'cancelled' && !interrupted ? stopRequested.get(action.id) ?? null : null;
+          const checksStopped = record.status === 'cancelled'
+            && Array.isArray(record.evidenceResults) && record.evidenceResults.some((item) => item?.why === 'stopped');
+          if (checksStopped && roleOf(action) === 'act' && stop?.kind !== 'superseded') {
+            // F14: whatever stopped them (a kernel signal, pause --now, a step
+            // restart, workflow cancel), an act step's stopped checks send it
+            // to the caller. A plan revision already decided what follows.
+            let cause = 'stopped by workflow cancel';
+            if (interrupted) cause = 'stopped by a kernel signal';
+            else if (stop?.kind === 'paused') cause = 'stopped by workflow pause --now';
+            else if (stop?.kind === 'restarted') cause = 'stopped by workflow step restart';
+            actStoppedWhy = actStoppedDuringChecksWhy(cause);
+            record = { ...record, status: 'failed', failureKind: 'failed-evidence', willRetry: false, why: actStoppedWhy };
+          } else if (interrupted && checksStopped) {
+            // A kernel signal during the checks (E16): the attempt did not fail
+            // and was not cancelled by the caller; it runs again on resume, which
+            // hands it on as it does a worker the kernel killed.
             record = {
               ...record, status: 'interrupted', failureKind: 'interrupted',
               why: 'kernel stopped during evidence; the attempt runs again on resume',
             };
+          } else if (stop) {
+            // An attempt stopped by a plan revision or a pause is not a failure of
+            // its pool: record why it stopped, the same kind action.finished carries.
+            record = { ...record, failureKind: stop.kind, why: stop.message };
           }
-          // An attempt stopped by a plan revision or a pause is not a failure of
-          // its pool: record why it stopped, the same kind action.finished carries.
-          const stop = record.status === 'cancelled' && !interrupted ? stopRequested.get(action.id) ?? null : null;
-          if (stop) record = { ...record, failureKind: stop.kind, why: stop.message };
           // The receipt carries the check results (E31), so a kernel that dies
           // before the attempt below is stored still recovers them.
           if (record.status === 'succeeded') writeCompletionReceipt(receiptPath, {
@@ -2185,6 +2260,7 @@ async function runV2Kernel({
           if (attempt) {
             const prior = { capture: attempt.capture, usage: attempt.usage };
             Object.assign(attempt, normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal: attempt.ordinal }));
+            clearEvidenceRunning(attempt);
             settleFinishedAttempt(attempt, prior);
             observeAttemptBytes(attempt, { authorPrompt: dispatchedBytes.authorPrompt, requirements: observedRequirementBytes });
             if (record.status === 'succeeded' && !review && !digest) recordReturnedEarly(attempt);
@@ -2268,7 +2344,16 @@ async function runV2Kernel({
       // a long silent check never reads as a stale attempt.
       onEvidence: (event) => {
         const attempt = workerAttempt();
-        if (attempt) attempt.lastActivityAt = now();
+        if (attempt) {
+          attempt.lastActivityAt = now();
+          // The first check's start marks the checks phase: the stale probe
+          // stops scoring the exited worker (F15), and a kernel that dies now
+          // leaves the fact for reconcileResume (F14). The started event
+          // below persists it at once.
+          if (event?.stage === 'started' && !evidenceRunning(attempt)) {
+            attempt.notes = [...(attempt.notes ?? []), { at: attempt.lastActivityAt, kind: EVIDENCE_RUNNING_NOTE, text: 'the worker finished; Bullswarm is running the step\'s checks' }];
+          }
+        }
         persistWorkerProgress();
         if (event?.stage !== 'started' && event?.stage !== 'finished') return;
         emit('attempt.evidence_item', {
@@ -2285,6 +2370,18 @@ async function runV2Kernel({
     runtime.outputFile = review && result.ok
       ? candidatePath
       : result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null;
+    if (!result.ok && actStoppedWhy) {
+      // An act step whose checks were stopped (F14): never requeued by a
+      // resume, a pause or a restart; the caller decides.
+      if (stopRequested.get(action.id)?.kind === 'restarted') actStoppedByRestart.add(action.id);
+      runtime.status = 'failed';
+      runtime.lastFailure = { kind: 'failed-evidence', message: actStoppedWhy };
+      persist();
+      emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'failed-evidence', why: actStoppedWhy });
+      releaseWorkspace();
+      completePresentationStages();
+      return;
+    }
     if (!result.ok) {
       // Stopped on purpose (a plan revision replaced it, or pause --now): the
       // step is cancelled here and the revision or pause decides what follows.
@@ -2317,19 +2414,24 @@ async function runV2Kernel({
       return;
     }
     if (before) {
+      // What a step's own checks left changed in its private copy and could
+      // not put back (E11) is a check by-product, not the worker's work: it
+      // never fails the gate and never merges back.
+      const byProducts = new Set(isolated ? result.checkByProducts ?? [] : []);
       const after = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
       const ownership = checkOwnership({ before, after, ownedFiles: action.ownedFiles });
-      if (!ownership.ok) {
+      const outOfScope = ownership.outOfScope.filter((path) => !byProducts.has(path));
+      if (outOfScope.length) {
         runtime.status = 'failed';
-        runtime.lastFailure = { kind: 'ownership', message: `out-of-scope mutation: ${ownership.outOfScope.join(', ')}`, ownership };
+        runtime.lastFailure = { kind: 'ownership', message: `out-of-scope mutation: ${outOfScope.join(', ')}`, ownership };
         persist();
-        emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'ownership', outOfScope: ownership.outOfScope });
+        emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'ownership', outOfScope });
         releaseWorkspace();
         completePresentationStages();
         return;
       }
       if (isolated) {
-        const integration = integrateWorkspace(isolated, { ownedFiles: action.ownedFiles, maxFiles: config.maxManifestFiles });
+        const integration = integrateWorkspace(isolated, { ownedFiles: action.ownedFiles, maxFiles: config.maxManifestFiles, checkByProducts: [...byProducts] });
         if (!integration.ok) {
           runtime.status = 'failed';
           const paths = integration.concurrent ?? integration.ownership?.outOfScope ?? [];
@@ -2654,6 +2756,14 @@ async function runV2Kernel({
       stopRequested.set(request.actionId, { kind: 'restarted', message: `stopped by the caller with workflow step restart (${request.id})` });
       await Promise.allSettled([task]);
       stopRequested.delete(request.actionId);
+      if (actStoppedByRestart.delete(request.actionId)) {
+        clearStepRestart(runDir, request.actionId);
+        emit('step.restart_refused', {
+          requestId: request.id, actionId: request.actionId,
+          why: 'an act step whose worker had finished may already have acted; its checks were stopped and it went to you (run it again with plan revise --rerun)',
+        });
+        return;
+      }
     }
     const outcome = requeueRestartedStep(state, request);
     if (!outcome.requeued) {

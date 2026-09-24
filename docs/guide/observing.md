@@ -612,6 +612,9 @@ cannot be read, that check contributes nothing and the score uses the stream.
 | repeat | the same command 3 times in a row, no file change between | 1 |
 | wall | past 3× the router's expected minutes for the step's lane and effort | 1 |
 
+While Bullswarm runs a step's declared checks, only quiet counts, read from
+the checks' heartbeat (`no check heartbeat for <N>m`).
+
 At a score of 2 it prints one line per attempt, for example `⚠ verify looks
 stale: quiet 12m with no command running`. The line wakes `--next` and `--until
 trouble`, whose exit adds the command that answers it:

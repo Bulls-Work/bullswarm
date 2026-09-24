@@ -15,6 +15,11 @@
 //   wall             wall time past a multiple of the router's expected
 //                    minutes for this lane and effort
 //
+// Once the kernel runs the step's declared checks (E18), the worker has
+// exited and each check runs under a hard timeout: the attempt then carries
+// the kernel's running-checks note, the three worker signals are off, and
+// quiet reads the checks' 30 s heartbeat alone.
+//
 // The score is the sum of the firing signals' weights; the attempt is stale at
 // DEFAULT_STALE_THRESHOLDS.staleScore. Quiet alone is enough (the agent is
 // doing nothing at all); any two of the others are. Nothing here stops,
@@ -62,6 +67,10 @@ const FILE_CHANGE_KINDS = new Set([
   'str_replace', 'str_replace_editor', 'str_replace_based_edit_tool',
 ]);
 
+// The note kind the kernel stamps on a running attempt when its first check
+// starts, removed when the attempt finishes (src/workflow/v2-runtime.js).
+export const EVIDENCE_RUNNING_NOTE = 'evidence-running';
+
 const MAX_OWNED_FILES = 200;
 const MAX_COMMAND_TIMES = 256;
 const WORKSPACE_STAT_TTL_MS = 10_000;
@@ -69,6 +78,11 @@ const WORKSPACE_STAT_TTL_MS = 10_000;
 function toMs(value) {
   const ms = typeof value === 'number' ? value : Date.parse(value ?? '');
   return Number.isFinite(ms) ? ms : null;
+}
+
+/** Whether the kernel is running the attempt's checks (its worker has exited). */
+export function evidenceRunning(attempt) {
+  return Array.isArray(attempt?.notes) && attempt.notes.some((entry) => entry?.kind === EVIDENCE_RUNNING_NOTE);
 }
 
 function fileChangeKind(kind) {
@@ -349,7 +363,8 @@ export function actionWrites(action) {
  * Score one running attempt. Every input is plain data, so the score is
  * deterministic for a given `nowMs`:
  *   attempt           the durable attempt record (startedAt, lastActivityAt,
- *                     lastEventAt, routing.forecast.expectedMinutes)
+ *                     lastEventAt, routing.forecast.expectedMinutes, and the
+ *                     running-checks note in `notes`)
  *   facts             streamFacts()/reader output, or null with no event stream
  *   fileChangedAt     latest mtime of the step's owned files, or, when it owns
  *                     none, of the git-changed files in its workspace; null
@@ -374,27 +389,28 @@ export function staleScore({
   const empty = { score: 0, stale: false, staleSince: null, signals: [], reasons: [] };
   if (attempt?.status !== 'running' || startedAt == null) return empty;
   const signals = [];
+  // The checks are running: nothing the worker did or took counts any more.
+  const checking = evidenceRunning(attempt);
 
-  // quiet: silence while no command is in flight.
+  // quiet: silence while no command is in flight. During the checks, a call
+  // the exited worker left open is not in flight; the heartbeat is.
   const activityAt = Math.max(
     startedAt,
     facts?.lastEventAt ?? 0,
     toMs(attempt.lastActivityAt) ?? 0,
     toMs(attempt.lastEventAt) ?? 0,
   );
-  const commandRunning = Boolean(facts?.open?.length);
+  const commandRunning = !checking && Boolean(facts?.open?.length);
   const quietMs = nowMs - activityAt;
   if (!commandRunning && quietMs >= limits.quietSec * 1000) {
-    signals.push({
-      id: 'quiet', firedAt: activityAt + limits.quietSec * 1000,
-      reason: facts
-        ? `quiet ${formatMinutes(quietMs)} with no command running`
-        : `no output for ${formatMinutes(quietMs)}`,
-    });
+    let reason = `no output for ${formatMinutes(quietMs)}`;
+    if (checking) reason = `no check heartbeat for ${formatMinutes(quietMs)}`;
+    else if (facts) reason = `quiet ${formatMinutes(quietMs)} with no command running`;
+    signals.push({ id: 'quiet', firedAt: activityAt + limits.quietSec * 1000, reason });
   }
 
   // no-file-change: a writer keeps running commands but changes nothing.
-  if (writes && facts) {
+  if (writes && facts && !checking) {
     const workspaceChangedAt = fileChangedAt != null && fileChangedAt >= startedAt ? fileChangedAt : 0;
     const changedAt = Math.max(startedAt, facts.lastFileChangeAt ?? 0, workspaceChangedAt);
     const sinceChange = nowMs - changedAt;
@@ -409,7 +425,7 @@ export function staleScore({
   }
 
   // repeat: the same command several times in a row, nothing changed between.
-  const streak = facts?.streak;
+  const streak = checking ? null : facts?.streak;
   if (streak && streak.count >= limits.repeatCount) {
     signals.push({
       id: 'repeat', firedAt: streak.nthAt ?? facts.lastCommandAt ?? nowMs,
@@ -419,7 +435,7 @@ export function staleScore({
 
   // wall: well past what the router expected this lane/effort to take.
   const expected = expectedMinutes !== undefined ? Number(expectedMinutes) : Number(attempt.routing?.forecast?.expectedMinutes);
-  if (Number.isFinite(expected) && expected > 0) {
+  if (!checking && Number.isFinite(expected) && expected > 0) {
     const limitMs = limits.wallFactor * expected * 60_000;
     const elapsed = nowMs - startedAt;
     if (elapsed >= limitMs) {

@@ -145,3 +145,14 @@ test('git submodules are manifest file trees, not invalid directory entries', (t
   const ownership = checkOwnership({ before, after: captureWorkspaceManifest(repo), ownedFiles: ['file.txt'] });
   assert.deepEqual(ownership.outOfScope, ['vendor/file.txt']);
 });
+
+test('an untracked nested repository is expanded with one slash, never name//file', (t) => {
+  const repo = mkdtempSync(join(tmpdir(), 'acme-nested-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  writeFileSync(join(repo, 'file.txt'), 'x\n');
+  mkdirSync(join(repo, 'fixture-repo'));
+  execFileSync('git', ['init', '-q'], { cwd: join(repo, 'fixture-repo') });
+  writeFileSync(join(repo, 'fixture-repo', 'f.txt'), 'x\n');
+  assert.deepEqual(Object.keys(captureWorkspaceManifest(repo)).sort(), ['file.txt', 'fixture-repo/f.txt']);
+});

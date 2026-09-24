@@ -331,3 +331,36 @@ test('the final block prints the proof line after reason, and the JSONL record c
   assert.equal(record.type, 'finished');
   assert.deepEqual(record.proof, { proven: 4, byType: { command: 0, schema: 0, review: 4 }, unproven: 0, unprovenSteps: [] });
 });
+
+test('F23: a failed step that declares evidence and failed before it ran reads `evidence not run`; other failed lines read as before', () => {
+  const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
+  state.program.actions.push(
+    { id: 'widget', purpose: 'Build the widget', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Write widget.js.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], evidence: [{ type: 'command', cmd: 'node --test tests/widget.test.js' }] },
+    { id: 'notes', purpose: 'Write notes', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Summarise.', lane: 'analyze', effort: 'low', evidenceFor: [], inputs: [], produces: [] },
+  );
+  const checked = [{ type: 'command', cmd: 'node --test tests/widget.test.js', timeoutSec: 120, status: 'failed', exit: 1, durationMs: 900, tail: 'not ok 1', log: '/runs/acme/evidence-widget-attempt-1-1.log', why: 'exit 1' }];
+  state.attempts.push(
+    { id: 'widget-1', actionId: 'widget', ordinal: 1, status: 'failed', failureKind: 'failed-evidence', finishedAt: '2026-09-24T01:05:00.000Z', evidenceResults: checked },
+    { id: 'widget-2', actionId: 'widget', ordinal: 2, status: 'failed', failureKind: 'process', finishedAt: '2026-09-24T01:09:00.000Z' },
+    { id: 'notes-1', actionId: 'notes', ordinal: 1, status: 'failed', failureKind: 'process', finishedAt: '2026-09-24T01:09:00.000Z' },
+  );
+  const finished = (actionId, failureKind, why, committedAt) => ({ type: 'action.finished', committedAt, payload: { actionId, status: 'failed', failureKind, why } });
+  const lines = notableWatchEvents({
+    events: [
+      finished('widget', 'failed-evidence', 'node --test tests/widget.test.js → exit 1: not ok 1', '2026-09-24T01:05:01.000Z'),
+      finished('widget', 'process', 'worker exited with code 1', '2026-09-24T01:09:01.000Z'),
+      finished('notes', 'process', 'worker exited with code 1', '2026-09-24T01:09:01.000Z'),
+    ],
+    state,
+  }).notable.map((event) => renderWatchEvent(event).replace(/ · [^·]+$/, ''));
+  assert.deepEqual(lines, [
+    `${glyphs().fail} widget failed · failed-evidence: node --test tests/widget.test.js → exit 1: not ok 1`,
+    `${glyphs().fail} widget failed · process: worker exited with code 1 · evidence not run`,
+    `${glyphs().fail} notes failed · process: worker exited with code 1`,
+  ]);
+  // An event without the flag renders exactly as before.
+  assert.equal(
+    renderWatchEvent({ type: 'action.finished', actionId: 'notes', status: 'failed', failureKind: 'process', why: 'worker exited with code 1', durationSec: 300 }),
+    `${glyphs().fail} notes failed · process: worker exited with code 1 · 5m00s`,
+  );
+});

@@ -1,16 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ACTION_KINDS, KIND_DEFAULTS, validateActionProgram } from '../src/workflow/action-validator.js';
-import { EVIDENCE_ENV_KEYS } from '../src/workflow/evidence-runner.js';
+import { EVIDENCE_ENV_KEYS, EVIDENCE_MAX_TIMEOUT_SEC, runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from '../src/workflow/schema-check.js';
-import { KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, roleRouting } from '../src/workflow/step-vocabulary.js';
+import { KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, evidenceResultsIssues, roleRouting } from '../src/workflow/step-vocabulary.js';
+import { formatV2ProofLabel, stepProof } from '../src/workflow/v2-outcome.js';
 import { deliverableVerdict, snapshotPossible } from '../src/workflow/v2-dispatch.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
 import { helpText } from '../src/help.js';
+import { extractGoalRequirements } from '../src/workflow/goal.js';
 
 // Stage 1 docs drift check: the role, kind and difference tables in the docs
 // must say what the code tables say, and the example programs must validate.
@@ -137,29 +139,37 @@ test('the example programs in both program references validate in program mode',
       const requirements = [...new Set(program.actions.flatMap((action) => [...action.affects, ...action.evidenceFor]))];
       const accepted = validateActionProgram(structuredClone(program), { relaxedGraph: true, requirements });
       assert.equal(accepted.actions.length, program.actions.length, path);
-      // The example is written with roles: two produce steps, one combine
-      // that merges files, and one check at high effort.
+      // The example is written with roles: three produce steps, one combine
+      // that merges files, and one check at high effort. The full ordered
+      // list is pinned, so a moved, added or dropped step fails here.
       const actions = accepted.actions;
-      const byId = new Map(actions.map((action) => [action.id, action]));
       assert.deepEqual(
-        ['since-flag', 'readme', 'integrate', 'verify'].map((id) => {
-          const action = byId.get(id);
-          return [action.role, action.deliverable?.type, action.lane, action.effort];
-        }),
+        actions.map((action) => [action.id, action.role, action.deliverable?.type, action.lane, action.effort, action.dependsOn, action.affects, action.evidenceFor]),
         [
-          ['produce', 'files', 'build', 'medium'],
-          ['produce', 'files', 'build', 'medium'],
-          ['combine', 'files', 'build', 'high'],
-          ['check', 'report', 'analyze', 'high'],
+          ['since-flag', 'produce', 'files', 'build', 'medium', [], ['requirement-1'], []],
+          ['readme', 'produce', 'files', 'build', 'medium', [], ['requirement-2'], []],
+          ['records', 'produce', 'data', 'build', 'medium', [], ['requirement-3'], []],
+          ['integrate', 'combine', 'files', 'build', 'high', ['since-flag', 'readme'], ['requirement-1', 'requirement-2'], []],
+          ['verify', 'check', 'report', 'analyze', 'high', ['since-flag', 'readme', 'records', 'integrate'], [], ['requirement-1', 'requirement-2', 'requirement-3']],
         ],
         path,
       );
       assert.ok(program.actions.every((action) => action.kind === undefined), `${path}: the example uses roles, not kinds`);
-      if (path === 'docs/guide/workflows.md') {
-        const records = actions.find((action) => action.id === 'records');
-        assert.deepEqual(records?.deliverable, { type: 'data', paths: ['out/records.json'] }, `${path}: schema example data deliverable`);
-        assert.deepEqual(records?.evidence?.map((item) => item.type), ['schema'], `${path}: schema example evidence`);
-      }
+      // One command item and one schema item, each on a step whose prompt
+      // makes the file the check reads.
+      assert.deepEqual(
+        actions.filter((action) => action.evidence).map((action) => [action.id, action.evidence]),
+        [
+          ['since-flag', [{ type: 'command', cmd: 'node --test tests/runs-list.test.js' }]],
+          ['records', [{ type: 'schema', file: 'out/records.json', schema: 'schemas/record.json' }]],
+        ],
+        `${path}: example evidence`,
+      );
+      const records = actions.find((action) => action.id === 'records');
+      assert.deepEqual(records.deliverable, { type: 'data', paths: ['out/records.json'] }, `${path}: schema example data deliverable`);
+      assert.match(records.prompt, /write out\/records\.json/, `${path}: the records prompt writes the file its check reads`);
+      const goal = read(path).match(/Goal: `([^`]+)`/)[1];
+      assert.equal(extractGoalRequirements(goal).length, 3, `${path}: the goal numbers every requirement the example uses`);
       for (const action of actions.filter((item) => item.evidence)) {
         assert.ok(action.evidence.every((item) => STEP_EVIDENCE_TYPES.includes(item.type)), `${path}: normalized evidence types`);
       }
@@ -278,7 +288,8 @@ test('the enforced rules and field rows name the deliverable path refusals', () 
 test('not-produced covers a build-lane step that changed nothing, and stoppedBy lists every stop', () => {
   const result = flat('docs/reference/result.md');
   assert.ok(result.includes('`not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit)'));
-  assert.match(helpText(['workflow', 'resume']), /a declared deliverable that was not produced\) is not rerun/);
+  // F18: help and the result reference list the same not-rerun cases.
+  assert.match(helpText(['workflow', 'resume']), /\(a check that failed it, failed evidence, a semantic failure, a declared deliverable that was not produced, or a build-lane step with no declared deliverable that changed nothing\) is not rerun/);
   const row = result.match(/\| `stoppedBy` \| ([^\n]*) \|/)[1];
   const listed = [...row.matchAll(/`([a-z-]+)` \(/g)].map((match) => match[1]);
   assert.deepEqual(listed, [...VERIFY_LOOP_STOPS]);
@@ -306,4 +317,256 @@ test('a rerun after not-produced is judged again, and a workspace git cannot see
     assert.ok(text.includes('a workspace git cannot see (not a repository, or a folder the repository ignores) is judged only on exact `ownedFiles`'), `${path}: files row`);
   }
   assert.ok(flat('CHANGELOG.md').includes('a rerun of a step that failed `not-produced` is judged again'));
+});
+
+// Stage-2 docs review (F22-F34, F19) and the fresh-caller run: each claim is
+// checked against the code first, then against the docs that state it.
+
+const EVIDENCE_HEADING = '## Evidence: command and schema';
+const issuesOf = (actions, options) => {
+  try {
+    validateActionProgram(program(actions), options);
+    return '';
+  } catch (error) {
+    return (error.issues ?? [error.message]).join('; ');
+  }
+};
+function evidenceSection(path) {
+  const text = read(path);
+  const start = text.indexOf(EVIDENCE_HEADING);
+  assert.notEqual(start, -1, `${path}: evidence section`);
+  const end = text.indexOf('\n## ', start + EVIDENCE_HEADING.length);
+  return text.slice(start, end < 0 ? undefined : end).replace(/\s+/g, ' ');
+}
+
+test('the design doc replay table carries the measured counts and states the counting rule', () => {
+  const path = 'docs/design/redesign-mechanics-principles-options.md';
+  const [table] = tablesWithHeader(path, ['run', 'defects', 'caught, observed', 'caught, argued', 'not caught', 'inconclusive']);
+  assert.ok(table, `${path}: replay table`);
+  assert.deepEqual(table.rows, [
+    ['a 23-step release batch', '9', '5', '1', '1', '2'],
+    ['a 9-writer prototype', '6', '3', '0', '3', '0'],
+    ['a 27-step dashboard tidy-up', '44', '11', '12', '20', '1'],
+    ['Total', '59', '19', '13', '24', '3'],
+  ]);
+  const numbers = table.rows.map((row) => row.slice(1).map(Number));
+  for (const [defects, ...parts] of numbers) assert.equal(parts.reduce((a, b) => a + b, 0), defects, 'each row adds up');
+  for (let column = 0; column < 5; column += 1) assert.equal(numbers.slice(0, 3).reduce((sum, row) => sum + row[column], 0), numbers[3][column], 'totals add up');
+  const text = flat(path);
+  assert.doesNotMatch(text, /Observed replay counts: pending|section 7\.6|stage-2 spec/, `${path}: no pending line or pointer to an untracked spec`);
+  assert.ok(text.includes('A defect counts as caught, observed only when a check that could have been declared when the owning step ran failed on the defect tree and passed on the fixed tree; argued when no tree pair exists or the check depends on a file the fix changed; not caught when it needs a browser or a judgment or no step owned the file; and inconclusive when the fixed tree fails too.'), `${path}: counting rule`);
+  assert.ok(text.includes('The earlier estimates (7 of 7; 5 caught and 1 not; 25 caught and 6 not) were not supported by the replay.'), `${path}: estimates retracted`);
+  assert.ok(text.includes('18 of the 19 observed catches needed a new check the caller would write from the step\'s prompt, and only 1 came from a check already in the repository.'), `${path}: where catches came from`);
+});
+
+test('review steps and digests take no evidence, and the docs say where to put reviewer commands', () => {
+  const review = { ...step, id: 'rev', role: 'check', affects: [], evidenceFor: ['requirement-1'], evidence: [{ type: 'command', cmd: 'true' }] };
+  assert.match(issuesOf([{ ...step, id: 'w', role: 'produce', ownedFiles: ['a.js'] }, { ...review, dependsOn: ['w'] }], { relaxedGraph: true, requirements: ['requirement-1'] }),
+    /review steps \(evidenceFor\) take no evidence; put the commands the reviewer must run in its prompt/);
+  const digest = { ...step, id: 'dg', kind: 'digest', affects: [], dependsOn: ['w'], evidence: [{ type: 'command', cmd: 'true' }] };
+  assert.throws(() => validate([{ ...step, id: 'w', role: 'produce', ownedFiles: ['a.js'] }, digest]), /digest steps take no evidence/);
+  assert.match(issuesOf([{ ...step, id: 'w', lane: 'build', ownedFiles: ['a.js'], evidence: [{ type: 'command', cmd: 'true' }] }], { requirements: ['requirement-1'] }), /evidence needs a program-mode run/);
+  // A separate check step with evidence and no evidenceFor is accepted.
+  const [, reprove] = validate([{ ...step, id: 'w', role: 'produce', ownedFiles: ['a.js'] }, { ...step, id: 'reprove', role: 'check', affects: [], dependsOn: ['w'], evidence: [{ type: 'command', cmd: 'npm test' }] }]).actions;
+  assert.deepEqual(reprove.evidence, [{ type: 'command', cmd: 'npm test' }]);
+  for (const path of PROGRAM_REFERENCES) {
+    const section = evidenceSection(path);
+    assert.ok(section.includes('`evidence` is refused on a review step (one with `evidenceFor`), on a `digest` (the kernel writes its report), in a run that is not program mode, and from a dispatched planner'), `${path}: where evidence is refused`);
+    assert.ok(section.includes('Put the commands a reviewer must run in its prompt, or add a separate `check` step with `evidence` and an empty `evidenceFor`.'), `${path}: what to do instead`);
+    assert.match(flat(path), /\| `evidence` \| no \| [^\n]*refused on review and digest steps \|/, `${path}: field row`);
+  }
+  assert.ok(flat('skill/SKILL.md').includes('A review step (non-empty `evidenceFor`) and a digest take no `evidence`: put the commands a reviewer must run in its prompt, or add a separate `check` step with `evidence` and an empty `evidenceFor`.'));
+  assert.ok(flat('docs/guide/workflows.md').includes('A review step (one with `evidenceFor`) and a digest take no evidence'));
+});
+
+test('the docs say where each check result is', () => {
+  const where = /`(?:bullswarm workflow )?runs result <id> --json`[^.]* under `actions\[\]\.evidenceResults`/;
+  for (const path of ['skill/SKILL.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md', 'docs/guide/workflows.md', 'CHANGELOG.md']) {
+    assert.match(flat(path), where, `${path}: result location`);
+  }
+  for (const path of ['skill/SKILL.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md']) {
+    assert.match(flat(path), /`(?:bullswarm )?workflow action show <id> <step>`/, `${path}: action show`);
+  }
+  assert.match(flat('skill/SKILL.md'), /`actions\[\]\.evidenceResults` \(`status`, `exit`, `tail`, `why`\)/);
+});
+
+test('evidence not run: the docs name the display line and the null result field', () => {
+  // The result field: a step that declares evidence and whose worker failed
+  // first carries evidenceResults: null (E15).
+  assert.match(read('src/workflow/v2-outcome.js'), /evidenceResults: clone\(attempt\?\.evidenceResults \?\? null\)/);
+  // The display: the handback line and watch's failed line (E15).
+  assert.match(read('src/workflow/v2-outcome.js'), /' · evidence not run'/);
+  assert.match(read('src/workflow/watch-cli.js'), /' · evidence not run'/);
+  const skill = flat('skill/SKILL.md');
+  assert.doesNotMatch(skill, /the result says `evidence not run`/);
+  assert.ok(skill.includes("If the worker fails first, no check runs: the step's handback line and watch's failed line read `evidence not run`, and the JSON has `evidenceResults: null`."));
+  for (const path of PROGRAM_REFERENCES) assert.ok(evidenceSection(path).includes("If the worker fails first, no check runs: the step's handback line and watch's failed line read `evidence not run`, and the result has `evidenceResults: null`."), path);
+  assert.ok(flat('docs/reference/result.md').includes('when the worker failed first and no check ran, the value is `null`, and the step\'s handback line reads `evidence not run`'));
+});
+
+test('the Evidence section follows the act and digest paragraphs in both program references', () => {
+  for (const path of PROGRAM_REFERENCES) {
+    const text = read(path);
+    const roles = text.indexOf('## Roles and deliverables');
+    const act = text.indexOf('An `act` step works outside the workspace.');
+    const evidence = text.indexOf(EVIDENCE_HEADING);
+    const requirements = text.indexOf('## Requirement IDs');
+    assert.ok(roles < act && act < evidence && evidence < requirements, `${path}: act paragraph under Roles and deliverables, then Evidence, then Requirement IDs`);
+    const digest = text.indexOf('Use a `digest` when');
+    if (digest !== -1) assert.ok(roles < digest && digest < evidence, `${path}: digest paragraph under Roles and deliverables`);
+  }
+  // A step that declares evidence may depend on a digest; the rule is about review steps.
+  const writers = ['a', 'b', 'c'].map((id) => ({ ...step, id, role: 'produce', ownedFiles: [`${id}.js`] }));
+  const dg = { ...step, id: 'dg', kind: 'digest', affects: [], dependsOn: ['a', 'b', 'c'] };
+  const merge = { ...step, id: 'merge', role: 'combine', deliverable: 'files', dependsOn: ['dg'], evidence: [{ type: 'command', cmd: 'npm test' }] };
+  const review = { ...step, id: 'verify', role: 'check', affects: [], evidenceFor: ['requirement-1'] };
+  assert.equal(issuesOf([...writers, dg, merge, { ...review, dependsOn: ['a', 'b', 'c', 'merge'] }], { relaxedGraph: true, requirements: ['requirement-1'] }), '');
+  assert.match(issuesOf([...writers, dg, merge, { ...review, dependsOn: ['a', 'b', 'c', 'dg', 'merge'] }], { relaxedGraph: true, requirements: ['requirement-1'] }), /must not depend on digest dg/);
+  for (const path of [...PROGRAM_REFERENCES, 'skill/SKILL.md', 'docs/guide/workflows.md']) {
+    assert.doesNotMatch(flat(path), /Evidence never depends on a digest/, `${path}: digest rule names review steps`);
+  }
+  assert.ok(flat('docs/reference/program.md').includes('No review step depends on a digest.'));
+  assert.ok(flat('skill/SKILL.md').includes('No review step depends on a digest.'));
+});
+
+test('the operations handback list names unreadSteering once, before the failed-evidence paragraph', () => {
+  const text = read('skill/references/operations.md');
+  assert.equal(text.split('- `handback.unreadSteering[]`').length - 1, 1);
+  assert.ok(text.indexOf('- `handback.unreadSteering[]`') < text.indexOf('A `failed-evidence` result means'));
+});
+
+test('proof labels for a step without evidence read as stepProof computes them', () => {
+  const def = { id: 'w', role: 'produce', affects: ['requirement-1'], ownedFiles: ['a.js'], evidenceFor: [], dependsOn: [] };
+  const reviewer = { id: 'rev', role: 'check', affects: [], ownedFiles: [], evidenceFor: ['requirement-1'], dependsOn: ['w'] };
+  const state = (requirementStatus) => ({
+    actions: [{ id: 'w', status: 'succeeded' }, { id: 'rev', status: 'pending' }],
+    attempts: [{ actionId: 'w', status: 'succeeded' }],
+    ledger: { requirements: { 'requirement-1': { status: requirementStatus } } },
+    program: { actions: [def, reviewer] },
+  });
+  const features = { proofLabels: 1 };
+  assert.equal(formatV2ProofLabel(stepProof(state('passed'), def, { features })), 'proven by review');
+  assert.equal(formatV2ProofLabel(stepProof(state('pending'), def, { atFinish: true, features })), 'review pending');
+  assert.equal(formatV2ProofLabel(stepProof({ ...state('pending'), program: { actions: [def] } }, def, { atFinish: true, features })), 'unproven');
+  // Runs without the proofLabels marker show no label on a step without evidence.
+  assert.equal(stepProof(state('passed'), def, { features: {} }), null);
+  for (const path of ['skill/SKILL.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md', 'docs/design/redesign-mechanics-principles-options.md', 'CHANGELOG.md']) {
+    const text = flat(path);
+    assert.ok(text.includes('`review pending`'), `${path}: review pending`);
+    assert.ok(text.includes('`finished · unproven`'), `${path}: unproven`);
+    assert.doesNotMatch(text, /Older runs keep their saved labels|Without evidence, a finished step in a new run reads `finished · unproven`\./, `${path}: labels are derived`);
+  }
+  for (const path of PROGRAM_REFERENCES) {
+    assert.ok(evidenceSection(path).includes('A step without evidence reads `proven by review` once that review passes, `review pending` at the end of the run while a review step still covers its requirements, and `finished · unproven` otherwise.'), path);
+    assert.ok(evidenceSection(path).includes('Labels are derived, not saved: runs started before this version show labels only on steps that declare evidence.'), path);
+  }
+});
+
+test('both Evidence sections cover item outcomes, headMoved and the fault split', async () => {
+  // The code: the runner's item outcomes, the headMoved fact, and fault: check.
+  const runner = read('src/workflow/evidence-runner.js');
+  for (const fact of ['timed out after', 'killed by ${signal}', 'could not start: ', 'not run: an earlier item changed the deliverable', 'changed the deliverable: ', "entry.headMoved = true", "fault === 'check'"]) {
+    assert.ok(runner.includes(fact), `runner: ${fact}`);
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-docs-fault-'));
+  try {
+    writeFileSync(join(dir, 'd.json'), '{}');
+    const noSchema = await runStepEvidence([{ type: 'schema', file: 'd.json', schema: 'missing.json' }], { cwd: dir, outFile: join(dir, 'o.md') });
+    assert.equal(noSchema.results[0].fault, 'check');
+    assert.equal(noSchema.checkFault, true);
+    const noData = await runStepEvidence([{ type: 'schema', file: 'absent.json', schema: 'd.json' }], { cwd: dir, outFile: join(dir, 'o.md') });
+    assert.equal(noData.results[0].fault, undefined);
+    assert.equal(noData.checkFault, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  for (const path of PROGRAM_REFERENCES) {
+    const section = evidenceSection(path);
+    for (const phrase of ['`exit <n>`', '`timed out after <n>s`', '`killed by <SIGNAL>`', '`could not start: <message>`', '`changed the deliverable: <paths>`', '`not run: an earlier item changed the deliverable`', '`stopped`', '`headMoved: true`', '`touched`', '`fault: "check"`', '`check could not run:`', '`file missing: out/x.json`']) {
+      assert.ok(section.includes(phrase), `${path}: ${phrase}`);
+    }
+  }
+});
+
+test('the evidenceResults example in the result reference is a real runner result', async () => {
+  const block = read('docs/reference/result.md').match(/```json\n(\{"type":"schema"[^\n]*\})\n```/)[1];
+  const documented = JSON.parse(block);
+  assert.deepEqual(evidenceResultsIssues([documented], 'evidenceResults'), []);
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-docs-result-'));
+  try {
+    mkdirSync(join(dir, 'out'));
+    mkdirSync(join(dir, 'schemas'));
+    writeFileSync(join(dir, 'out/records.json'), '[{"date":20260901}]\n');
+    writeFileSync(join(dir, 'schemas/record.json'), JSON.stringify({ type: 'array', items: { type: 'object', properties: { date: { type: 'string' } } } }));
+    const { results } = await runStepEvidence([{ type: 'schema', file: 'out/records.json', schema: 'schemas/record.json' }], {
+      cwd: dir, outFile: join(dir, 'o.md'), logFileFor: (k) => join(dir, `evidence-records-attempt-1-${k}.log`),
+    });
+    const real = { ...results[0], log: `<runDir>/${results[0].log.split('/').pop()}` };
+    assert.deepEqual({ ...documented, durationMs: 0 }, { ...real, durationMs: 0 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the changelog describes what ships, without internal stage names', () => {
+  const text = read('CHANGELOG.md');
+  const unreleased = text.slice(text.indexOf('## Unreleased'), text.indexOf('\n## ', text.indexOf('## Unreleased') + 5));
+  assert.doesNotMatch(unreleased, /\bstage[ -]?[0-9]\b/i);
+});
+
+test('the e2e gate advice names the 600-second cap', () => {
+  assert.equal(EVIDENCE_MAX_TIMEOUT_SEC, 600);
+  assert.throws(() => validate([{ ...step, id: 'gate', role: 'check', affects: [], evidence: [{ type: 'command', cmd: 'npm run e2e', timeoutSec: 601 }] }]), /timeoutSec must be an integer from 1 to 600/);
+  const skill = flat('skill/SKILL.md');
+  const gate = skill.slice(skill.indexOf('**Finish after integration.**'), skill.indexOf('**Evidence: checks Bullswarm runs.**'));
+  assert.ok(gate.includes('when the suite finishes within 10 minutes (`timeoutSec` is at most 600); otherwise split it into several items or keep the command in the gate\'s prompt'), 'skill gate paragraph');
+  for (const path of PROGRAM_REFERENCES) assert.ok(evidenceSection(path).includes('A suite that runs longer than 600 seconds cannot be one item'), path);
+});
+
+test('every JSON example with evidence in the docs validates on a program step', () => {
+  const docs = ['skill/references/program.md', 'docs/reference/program.md', 'docs/guide/workflows.md', 'docs/design/redesign-mechanics-principles-options.md'];
+  let checked = 0;
+  for (const path of docs) {
+    for (const [, body] of read(path).matchAll(/```json\n([\s\S]*?)```/g)) {
+      const value = JSON.parse(body);
+      const steps = value.schemaVersion ? value.actions : [value];
+      for (const example of steps.filter((item) => item.evidence)) {
+        const writer = { ...step, id: 'w', role: 'produce', ownedFiles: ['out/records.json', 'tests/probe.test.js'], deliverable: { type: 'data', paths: ['out/records.json'] }, evidence: example.evidence };
+        assert.deepEqual(validate([writer]).actions[0].evidence, example.evidence, `${path}: ${JSON.stringify(example.evidence)}`);
+        checked += 1;
+      }
+    }
+  }
+  assert.equal(checked, 7, 'two evidence steps in each program example and the design doc fragment');
+});
+
+test('the docs carry the fix round: no-record JSONL, $ref targets, on-disk schema messages, act-step stops, restored by-products, the check heartbeat', () => {
+  // Each documented string is one the code really prints.
+  const source = (path) => read(path);
+  assert.match(source('src/workflow/schema-check.js'), /why: 'no records'/);
+  assert.match(source('src/workflow/v2-planner.js'), /schema is not a supported schema \(/);
+  assert.match(source('src/workflow/v2-planner.js'), /schema is git-ignored \("\$\{item\.schema\}"\); the isolated copy will not contain it, so the check could not run/);
+  assert.match(source('src/workflow/v2-dispatch.js'), /check by-product not restored: /);
+  assert.match(source('src/lib/stale.js'), /no check heartbeat for /);
+  assert.match(source('src/workflow/v2-outcome.js'), /evidenceNotRun: true/);
+  for (const path of PROGRAM_REFERENCES) {
+    const section = evidenceSection(path);
+    for (const phrase of [
+      'every `$ref` target is checked as a schema',
+      'a JSONL file with no records fails with `no records`',
+      'put `--` before a path that starts with `-`',
+      '`…schema is not a supported schema ("P"): <reason>`',
+      '`…schema is git-ignored ("P"); the isolated copy will not contain it, so the check could not run`',
+      'An `act` step is the exception',
+      'a `step restart` during its checks is refused',
+      '`check by-product not restored: <paths>`',
+    ]) assert.ok(section.includes(phrase), `${path}: ${phrase}`);
+  }
+  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/observing.md']) {
+    assert.ok(flat(path).includes("While Bullswarm runs a step's declared checks, only quiet counts, read from the checks' heartbeat"), path);
+    assert.ok(flat(path).includes('no check heartbeat for <N>m'), path);
+  }
+  assert.ok(flat('docs/reference/result.md').includes('adds `evidenceNotRun: true`'));
+  assert.ok(flat('docs/guide/concepts.md').includes('`review pending` while a review step still covers them'), 'concepts: labels as stepProof computes them (F27)');
+  assert.ok(flat('skill/SKILL.md').includes("quote the run's proof line as printed"), 'Run E: the caller quotes the proof line');
 });

@@ -84,11 +84,27 @@ export function createIsolatedWorkspace({ sourceDir, runDir, actionId, maxFiles 
 }
 
 /** Ownership-check and atomically attribute only declared files back to main. */
-export function integrateIsolatedWorkspace(workspace, { ownedFiles, maxFiles = 50_000 } = {}) {
+// `checkByProducts`: out-of-scope paths the step's own checks left changed
+// and could not put back (E11). They neither fail the gate nor merge back.
+export function integrateIsolatedWorkspace(workspace, { ownedFiles, maxFiles = 50_000, checkByProducts = [] } = {}) {
   if (!workspace?.targetDir || !workspace?.sourceDir) throw new TypeError('workspace is required');
   const declared = normalizeOwnedFiles(ownedFiles);
   const isolatedAfter = captureWorkspaceManifest(workspace.targetDir, { maxFiles });
-  const ownership = checkOwnership({ before: workspace.isolatedBefore, after: isolatedAfter, ownedFiles: declared });
+  const checked = checkOwnership({ before: workspace.isolatedBefore, after: isolatedAfter, ownedFiles: declared });
+  const byProducts = new Set(checkByProducts);
+  const keep = (file) => !byProducts.has(file);
+  const outOfScope = checked.outOfScope.filter(keep);
+  const ownership = byProducts.size
+    ? {
+      ...checked,
+      ok: outOfScope.length === 0,
+      changed: checked.changed.filter(keep),
+      created: checked.created.filter(keep),
+      modified: checked.modified.filter(keep),
+      deleted: checked.deleted.filter(keep),
+      outOfScope,
+    }
+    : checked;
   if (!ownership.ok) return { ok: false, kind: 'ownership', ownership };
   const mainNow = captureWorkspaceManifest(workspace.sourceDir, { maxFiles });
   const concurrent = compareManifests(workspace.mainBefore, mainNow).changed.filter((file) =>

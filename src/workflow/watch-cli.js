@@ -19,6 +19,7 @@ import { presentationStageStatus, projectV2DependencyStages } from './v2-present
 import { isDeliveredWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { createStaleProbe } from '../lib/stale.js';
+import { declaredEvidence } from './step-vocabulary.js';
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -309,6 +310,18 @@ function actionDurationSec(runtime, event, nowMs) {
   return secondsBetween(runtime.startedAt, runtime.finishedAt ?? event?.committedAt ?? new Date(nowMs).toISOString());
 }
 
+// A failed step that declares evidence and whose worker failed first (E15):
+// the attempt that failed, the last one finished by this event, ran no check.
+function evidenceNotRun(state, payload, event) {
+  if (payload.failureKind === 'failed-evidence') return false;
+  const definition = (state.program?.actions ?? []).find((action) => action.id === payload.actionId);
+  if (!declaredEvidence(definition).length) return false;
+  const attempts = (state.attempts ?? []).filter((entry) => entry.actionId === payload.actionId);
+  const at = Date.parse(event?.committedAt ?? '');
+  const attempt = (Number.isFinite(at) ? attempts.findLast((entry) => Date.parse(entry.finishedAt ?? '') <= at) : null) ?? attempts.at(-1);
+  return !Array.isArray(attempt?.evidenceResults);
+}
+
 function attemptOrdinal(state, attemptId) {
   const known = (state.attempts ?? []).find((attempt) => attempt.id === attemptId)?.ordinal;
   if (Number.isFinite(known)) return known;
@@ -558,6 +571,7 @@ export function notableWatchEvents({
             ? { returnedEarly: payload.returnedEarly.count } : {}),
           // What backs the step (E22); events of older runs carry none.
           ...(status === 'succeeded' && payload.proof && typeof payload.proof === 'object' ? { proof: payload.proof } : {}),
+          ...(status === 'failed' && evidenceNotRun(state, payload, event) ? { evidenceNotRun: true } : {}),
         });
         break;
       }
@@ -835,7 +849,7 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
       if (event.status === 'cancelled' && event.failureKind === 'paused') return `${glyphs().waiting} ${event.actionId} stopped · runs again after resume`;
       if (event.status === 'cancelled') return `${glyphs().fail} ${event.actionId} cancelled · ${formatDuration(event.durationSec)}`;
       return `${glyphs().fail} ${event.actionId} ${event.status} · ${event.failureKind ?? 'unknown'}: ` +
-        `${event.why ?? 'no reason recorded'} · ${formatDuration(event.durationSec)}`;
+        `${event.why ?? 'no reason recorded'}${event.evidenceNotRun ? ' · evidence not run' : ''} · ${formatDuration(event.durationSec)}`;
     case 'evidence.recorded':
       return `${glyphs().evidence} ${event.actionId} evidence · ` +
         (event.requirements.map((item) => `${item.id} ${item.status}`).join(', ') || 'no requirements');

@@ -5,10 +5,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { captureWorkspaceManifest } from '../src/workflow/ownership.js';
 import {
   CHECKER_PATH, EVIDENCE_ENV_KEYS, EVIDENCE_LOG_BYTES, EVIDENCE_TAIL_BYTES,
-  evidenceBriefLines, evidenceEnv, evidenceSchemaBaseline, evidenceFailureWhy, evidenceItemLabel, evidenceScope,
-  removeCreatedOutOfScope, rewriteEvidenceCwd, runEvidenceItem, runStepEvidence, stripAnsi, tailLines,
+  checkerEnv, evidenceBriefLines, evidenceEnv, evidenceSchemaBaseline, evidenceFailureWhy, evidenceItemLabel, evidenceScope,
+  removeCreatedOutOfScope, restoreChangedOutOfScope, rewriteEvidenceCwd, runEvidenceItem, runStepEvidence, stripAnsi, tailLines,
 } from '../src/workflow/evidence-runner.js';
 
 const GIT_ID = ['-c', 'user.email=dev@example.com', '-c', 'user.name=AcmeDev', '-c', 'commit.gpgsign=false'];
@@ -354,7 +355,7 @@ test('private copy: created by-products are touched and listed for removal; trac
   const byproduct = await scoped(t, 'private', repo, [cmd('mkdir -p test-results && echo r > test-results/junit.xml')], owned);
   assert.deepEqual(pick(byproduct.results[0], ['status', 'touched']), { status: 'passed', touched: ['test-results/junit.xml'] });
   assert.deepEqual(byproduct.createdOutOfScope, ['test-results/junit.xml']);
-  assert.deepEqual(removeCreatedOutOfScope(repo.root, byproduct.createdOutOfScope), ['test-results/junit.xml']);
+  assert.deepEqual(removeCreatedOutOfScope(repo.root, byproduct.createdOutOfScope), { removed: ['test-results/junit.xml'], unremoved: [] });
   assert.equal(existsSync(join(repo.root, 'test-results')), false, 'the emptied directory is removed too');
 
   write(repo.root, 'leftover.txt', 'worker\n');
@@ -498,7 +499,8 @@ test('schema exit 2: a missing data file has no fault key; a missing schema is f
   assert.equal('fault' in run.results[0], false);
   assert.deepEqual(pick(run.results[1], ['status', 'exit', 'fault', 'why']), { status: 'failed', exit: 2, fault: 'check', why: 'schema missing: missing.json' });
   assert.equal(run.checkFault, true);
-  assert.equal(run.why, 'schema s.json on out/x.json → file missing: out/x.json (+1 more failed)');
+  assert.equal(run.why, 'check could not run: schema missing.json on s.json → schema missing: missing.json (+1 more failed)',
+    'the check fault leads whatever the item order: it is why there is no retry');
 
   const onlyCheck = await runStepEvidence([{ type: 'schema', file: 'out/x.json', schema: 's2.json' }], stepOptions(cwd, runDir, outFile));
   assert.equal(onlyCheck.why, 'check could not run: schema s2.json on out/x.json → schema missing: s2.json');
@@ -523,6 +525,11 @@ test('evidenceFailureWhy: cutting, more-failed, schema form, no tail after chang
   }]), 'schema schemas/event.json on out/events.json → not valid: 2 errors: $.events[1].date must match pattern ^\\d{4}$');
   assert.equal(evidenceFailureWhy([{ type: 'schema', file: 'out/x.json', schema: 's.json', status: 'failed', exit: 2, fault: 'check', why: 'schema missing: s.json' }]),
     'check could not run: schema s.json on out/x.json → schema missing: s.json');
+
+  const fault = { type: 'schema', file: 'out/x.json', schema: 'schemas/x.json', status: 'failed', exit: 2, why: 'schema missing: schemas/x.json', fault: 'check' };
+  assert.equal(evidenceFailureWhy([failed(), fault]), 'check could not run: schema schemas/x.json on out/x.json → schema missing: schemas/x.json (+1 more failed)');
+  assert.equal(evidenceFailureWhy([failed(), fault, failed()], { suffix: ' · act steps are not retried' }),
+    'check could not run: schema schemas/x.json on out/x.json → schema missing: schemas/x.json (+2 more failed) · act steps are not retried');
 
   const longLine = `FAIL ${'x'.repeat(300)}`;
   const cutLine = evidenceFailureWhy([failed({ tail: longLine })]);
@@ -575,12 +582,108 @@ test('labels and the brief paragraph', () => {
   assert.deepEqual(evidenceBriefLines([], { targetDir: '/w' }), []);
 });
 
+test('the brief\'s check-it-yourself command is shell-quoted, with -- before a path that starts with -', () => {
+  const line = (item, checkerPath) => evidenceBriefLines([item], { targetDir: '/w', checkerPath })[1];
+  assert.equal(line({ type: 'schema', file: 'out/my events.json', schema: 'schemas/event.json' }, '/Users/Jane Doe/lib/bullswarm/bin/check-schema.js'),
+    "- schema: out/my events.json must match the JSON schema schemas/event.json (check it yourself: node '/Users/Jane Doe/lib/bullswarm/bin/check-schema.js' 'out/my events.json' schemas/event.json)");
+  assert.equal(line({ type: 'schema', file: "it's.json", schema: '-s.json', format: 'jsonl' }, '/opt/acme/check-schema.js'),
+    "- schema: it's.json must match the JSON schema -s.json (check it yourself: node /opt/acme/check-schema.js --format jsonl -- 'it'\"'\"'s.json' -s.json)");
+});
+
 test('rewriteEvidenceCwd replaces the caller cwd in commands only', () => {
   const items = [cmd('node /src/acme/scripts/check.mjs /src/acme/out'), { type: 'schema', file: 'o.json', schema: 's.json' }];
   const rewritten = rewriteEvidenceCwd(items, '/src/acme', '/copies/acme-1');
   assert.deepEqual(rewritten, [cmd('node /copies/acme-1/scripts/check.mjs /copies/acme-1/out'), items[1]]);
   assert.equal(items[0].cmd, 'node /src/acme/scripts/check.mjs /src/acme/out');
   assert.equal(rewriteEvidenceCwd(items, '/src/acme', '/src/acme'), items);
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes
+
+test('private copy: a check that rewrites or deletes a pre-existing untracked file is restored byte-identical', async (t) => {
+  const repo = gitRepo(t, { 'src/owned.js': 'o\n' });
+  write(repo.root, 'tsconfig.tsbuildinfo', '{"v":1}');
+  write(repo.root, 'reports/junit.xml', '<old/>');
+  write(repo.root, 'keep.txt', 'same\n');
+  execFileSync('chmod', ['0751', join(repo.root, 'reports/junit.xml')]);
+  const before = captureWorkspaceManifest(repo.root);
+  const run = await scoped(t, 'private', repo, [
+    cmd('test -s src/owned.js && echo \'{"v":2}\' > tsconfig.tsbuildinfo && rm reports/junit.xml && echo new > made.tmp'),
+  ], { ownedFiles: ['src/owned.js'] });
+  assert.deepEqual(pick(run.results[0], ['status', 'touched']), { status: 'passed', touched: ['made.tmp', 'reports/junit.xml', 'tsconfig.tsbuildinfo'] });
+  assert.deepEqual(run.changedOutOfScope, ['reports/junit.xml', 'tsconfig.tsbuildinfo']);
+  assert.deepEqual(run.createdOutOfScope, ['made.tmp']);
+  assert.equal(JSON.stringify(run).includes('keptOutOfScope'), false, 'the kept bytes never reach stored JSON');
+  assert.deepEqual(removeCreatedOutOfScope(repo.root, run.createdOutOfScope), { removed: ['made.tmp'], unremoved: [] });
+  assert.deepEqual(restoreChangedOutOfScope(repo.root, run), { restored: ['reports/junit.xml', 'tsconfig.tsbuildinfo'], unrestored: [] });
+  assert.equal(readFileSync(join(repo.root, 'tsconfig.tsbuildinfo'), 'utf8'), '{"v":1}');
+  assert.equal(statSync(join(repo.root, 'reports/junit.xml')).mode & 0o777, 0o751);
+  assert.deepEqual(captureWorkspaceManifest(repo.root), before, 'the ownership gate sees no change');
+
+  // Past the kept-bytes bound a file is not kept: unrestored, named for dispatch.
+  write(repo.root, 'big.bin', 'x'.repeat(64));
+  const bounded = await scoped(t, 'private', repo, [cmd('echo y > big.bin && echo z > keep.txt')], { keptBytes: 20 });
+  assert.deepEqual(bounded.changedOutOfScope, ['big.bin', 'keep.txt']);
+  assert.deepEqual(restoreChangedOutOfScope(repo.root, bounded), { restored: ['keep.txt'], unrestored: ['big.bin'] });
+  assert.equal(readFileSync(join(repo.root, 'keep.txt'), 'utf8'), 'same\n');
+
+  // Only a private copy keeps and restores.
+  const restricted = await scoped(t, 'restricted', repo, [cmd('echo w > keep.txt')], { ownedFiles: ['src/owned.js'] });
+  assert.deepEqual(restricted.changedOutOfScope, []);
+  assert.deepEqual(restoreChangedOutOfScope(repo.root, restricted), { restored: [], unrestored: [] });
+});
+
+test('private copy: a nested repository a check leaves is touched and removed recursively; unremovable entries are reported', async (t) => {
+  const repo = gitRepo(t, { 'src/owned.js': 'o\n' });
+  const run = await scoped(t, 'private', repo, [
+    cmd('mkdir fixture-repo && cd fixture-repo && git init -q && echo x > f.txt'),
+    cmd('mkdir -p real-dir && echo y > real-dir/y.txt && ln -s real-dir dir-link'),
+  ], { ownedFiles: ['src/owned.js'] });
+  assert.deepEqual(run.results[0].touched, ['fixture-repo/']);
+  assert.deepEqual(run.results[1].touched, ['dir-link', 'real-dir/y.txt']);
+  assert.deepEqual(run.createdOutOfScope, ['dir-link', 'fixture-repo/', 'real-dir/y.txt']);
+  assert.deepEqual(removeCreatedOutOfScope(repo.root, run.createdOutOfScope), { removed: ['dir-link', 'fixture-repo/', 'real-dir/y.txt'], unremoved: [] });
+  for (const name of ['fixture-repo', 'dir-link', 'real-dir']) assert.equal(existsSync(join(repo.root, name)), false, name);
+  assert.deepEqual(removeCreatedOutOfScope(repo.root, ['../outside.txt']), { removed: [], unremoved: ['../outside.txt'] });
+});
+
+test('a schema checker that dies without its report is fault check; NODE_* preloads never reach it', async (t) => {
+  const { runDir, outFile } = runFiles(t);
+  const cwd = tempDir(t);
+  write(cwd, 's.json', '{"type":"object"}');
+  write(cwd, 'd.json', '{}');
+  const item = { type: 'schema', file: 'd.json', schema: 's.json' };
+  const crash = write(cwd, 'crash.mjs', 'console.log("starting"); console.error("Error: cannot find module dotenv/config"); process.exit(1);\n');
+  const run = await runStepEvidence([item], stepOptions(cwd, runDir, outFile, { checkerPath: crash }));
+  assert.deepEqual(pick(run.results[0], ['status', 'exit', 'fault', 'why']),
+    { status: 'failed', exit: 1, fault: 'check', why: 'checker produced no report: Error: cannot find module dotenv/config' });
+  assert.equal(run.checkFault, true);
+  const silent = write(cwd, 'silent.mjs', 'process.exit(3);\n');
+  const quiet = await runStepEvidence([item], stepOptions(cwd, runDir, outFile, { checkerPath: silent }));
+  assert.deepEqual(pick(quiet.results[0], ['fault', 'why']), { fault: 'check', why: 'checker produced no report: exit 3' });
+
+  const env = evidenceEnv({ ...process.env, NODE_OPTIONS: '--require ./missing-preload.cjs', NODE_PATH: '/nowhere' }, { cwd, stepId: 'step', outFile, runDir });
+  const preload = await runStepEvidence([item], { ...stepOptions(cwd, runDir, outFile), env });
+  assert.deepEqual(pick(preload.results[0], ['status', 'exit']), { status: 'passed', exit: 0 });
+  const stripped = checkerEnv({ NODE_OPTIONS: '--require x', NODE_V8_COVERAGE: '/c', PATH: '/bin', BULLSWARM_STEP_ID: 's' });
+  assert.deepEqual(stripped, { PATH: '/bin', BULLSWARM_STEP_ID: 's' });
+  const command = await runStepEvidence([cmd('test "$NODE_OPTIONS" = "--require ./missing-preload.cjs"')], { ...stepOptions(cwd, runDir, outFile), env: { ...env, NODE_OPTIONS: '--require ./missing-preload.cjs' } });
+  assert.equal(command.results[0].status, 'passed', 'a command check keeps the env as it is');
+});
+
+test('a schema item whose data file starts with - is checked, not read as an option', async (t) => {
+  const { runDir, outFile } = runFiles(t);
+  const cwd = tempDir(t);
+  write(cwd, '-s.json', '{"type":"object","required":["id"]}');
+  write(cwd, '-dash.json', '{"id":1}');
+  write(cwd, '-bad.json', '{}');
+  const run = await runStepEvidence([
+    { type: 'schema', file: '-dash.json', schema: '-s.json' },
+    { type: 'schema', file: '-bad.json', schema: '-s.json' },
+  ], stepOptions(cwd, runDir, outFile));
+  assert.deepEqual(pick(run.results[0], ['status', 'exit']), { status: 'passed', exit: 0 });
+  assert.deepEqual(pick(run.results[1], ['status', 'exit', 'why', 'fault']), { status: 'failed', exit: 1, why: 'not valid: 1 error', fault: undefined });
 });
 
 function pick(object, keys) {

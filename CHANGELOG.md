@@ -14,7 +14,6 @@
   stored, so annotating an exported plan changes nothing. An `act` step works
   outside the workspace (send, post, publish, deploy): it may not edit
   workspace files, and the kernel never repairs a requirement it affects.
-  Stage 1 refused command and schema evidence until the stage-2 runner landed.
 - workflow: a step whose declared deliverable was not produced fails as
   `not-produced`. A `files` deliverable needs a changed file or a new commit.
   A deliverable with `paths` needs every path present and at least one
@@ -50,19 +49,27 @@
   step's task. A check sees `BULLSWARM_EVIDENCE=1`, `BULLSWARM_STEP_ID`,
   `BULLSWARM_STEP_OUTPUT` and `BULLSWARM_RUN_DIR`; `"file": "$output"`
   checks the step's own final response. A check that changes the step's files
-  fails; untracked by-products are reported, not failed. A failing check
+  fails; untracked by-products are reported, not failed, and in an isolated
+  copy the ones a check created are removed and the ones it changed are put
+  back, so they never reach the merge. A failing check
   fails the attempt as `failed-evidence`: Bullswarm retries once on the same
   pool with the check's output attached, and after that the step fails and
   waits for you (`workflow resume` does not rerun it). A failed check on an
   act step, and a check that cannot run (a missing or unsupported schema),
-  come straight back to you. Only the caller declares evidence; a dispatched
-  planner cannot. Schema checks cover the JSON Schema subset listed in the
-  program reference; any other keyword is refused, never skipped.
+  come straight back to you, and so does an act step whose checks were
+  stopped, because its worker may already have acted. Only the caller declares evidence; a dispatched
+  planner cannot, and review steps and digests take none. Each check's
+  result is in `runs result <id> --json` under `actions[].evidenceResults`;
+  when the worker fails first, no check runs and that value is `null`. Schema
+  checks cover the JSON Schema subset listed in the program reference; any
+  other keyword is refused, never skipped, and a JSONL file with no records
+  fails.
   `node <package>/bin/check-schema.js <file> <schema>` runs the same check by
   hand.
 - workflow: each finished step in a new run says what backs it: `proven by
   command`, `schema` or `review` (a check step passed every requirement the
-  step affects), or `finished · unproven`. `watch`, `runs result` and the
+  step affects), `review pending` while a check step still covers them, or
+  `finished · unproven`. `watch`, `runs result` and the
   result summary show it, with a one-line count at the end of the run. Runs
   started before this version show no labels.
 - command-code: headless runs no longer pass `--tools-all`. The default tool

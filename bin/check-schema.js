@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // check-schema <file> <schema> [--json] [--format json|jsonl] [--unfence]
+// Everything after `--` is positional, so a path may start with '-'.
 // Exit 0 valid, 1 invalid, 2 cannot check (or a usage error). The evidence
 // runner calls this by absolute path; it has no package.json bin entry.
 
@@ -13,6 +14,7 @@ function parseArgs(argv) {
   const options = { json: false, format: undefined, unfence: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === '--') { positional.push(...argv.slice(index + 1)); break; }
     if (arg === '--json') options.json = true;
     else if (arg === '--unfence') options.unfence = true;
     else if (arg === '--format') {

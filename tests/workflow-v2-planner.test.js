@@ -279,9 +279,29 @@ test('program planner guidance keeps writer inputs, slices and delivery explicit
   assert.ok(v2PlannerContractRules({ executionMode: 'program' }).includes(expected));
   // Only the caller may declare evidence (E29), so only its rule set tells it to put the gate's suite there.
   const caller = expected.replace('Make the gate a `check` step and the commit and PR steps kind `mechanical`',
-    'Make the gate a `check` step and declare its suite as `evidence` so Bullswarm runs it; commit and PR steps are kind `mechanical`');
+    'Make the gate a `check` step and declare its suite as `evidence` so Bullswarm runs it (a check item times out at 600 seconds at most, so put a longer suite in the step\'s prompt or split it into several items); commit and PR steps are kind `mechanical`');
   assert.ok(v2PlannerContractRules({ executionMode: 'program', plannerMode: 'caller' }).includes(caller));
   assert.equal(v2PlannerContractRules({ executionMode: 'program' }).some((rule) => rule.includes('declare its suite as `evidence`')), false);
+});
+
+// Spec §4: the rules name review steps, never "evidence actions", and the
+// program-mode sentence reads exactly as written (no word-for-word rewrite).
+test('the reworded review-step rules read exactly as the spec gives them', () => {
+  const reviewRule = 'Review steps are optional. To request structured independent judgment, use a check step (analyze) with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.';
+  for (const plannerMode of ['caller', 'dispatched']) {
+    for (const workspaceMode of ['shared', 'isolated']) {
+      const rules = v2PlannerContractRules({ executionMode: 'program', plannerMode, workspaceMode });
+      assert.ok(rules.includes(reviewRule), `${plannerMode}/${workspaceMode}`);
+      assert.equal(rules.some((rule) => /evidence actions?/i.test(rule)), false, `${plannerMode}/${workspaceMode}`);
+    }
+  }
+  const verified = v2PlannerContractRules({ executionMode: 'verified' });
+  for (const exact of [
+    'Use only generic actions. A work action declares affects and any exact ownedFiles. affects means the action directly owns and delivers a bounded acceptance slice of that requirement; merely editing a supporting test or sharing a file does not make an action affect every requirement associated with that file. A review step declares evidenceFor, has empty affects/ownedFiles, and independently inspects the work it judges.',
+    'For review steps, the prompt describes only what to inspect and which concrete checks to run. Never prescribe a response JSON, object, schema, envelope, format, or fields such as ok/concerns/summary; the V2 kernel exclusively supplies and validates the evidence output contract.',
+  ]) assert.ok(verified.includes(exact), exact);
+  assert.ok(verified.some((rule) => rule.startsWith('Every mandatory unresolved requirement needs a review step. ')));
+  assert.equal(verified.some((rule) => /evidence actions?/i.test(rule)), false);
 });
 
 test('the planning contract documents kind, its derived table, program defaults, and the advisories', () => {

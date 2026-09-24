@@ -4,8 +4,9 @@ import { applyEvidence } from '../src/workflow/ledger.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import {
   V2_RETRYABLE_FAILURE_KINDS, consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope,
-  evaluateV2Progress, serializeV2ResultEnvelope, v2RetryPlan, validateV2ResultEnvelope,
+  evaluateV2Progress, formatV2HandbackLines, serializeV2ResultEnvelope, summarizeV2Result, v2RetryPlan, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
+import { evidenceFailureWhy } from '../src/workflow/evidence-runner.js';
 
 const goal = () => createV2GoalDocument({
   goal: 'Deliver a report', cwd: '/tmp/repo', settings: { concurrency: 2, workspaceMode: 'isolated' },
@@ -334,4 +335,67 @@ test('the envelope carries the latest attempt\'s evidenceResults', () => {
   const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
   assert.deepEqual(result.actions[0].evidenceResults, [passed]);
   assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+});
+
+test('F17: a failed-evidence reason longer than the handback keeps its suffix; the middle is cut instead', () => {
+  const longCheck = {
+    ...FAILED_CHECK,
+    cmd: "node scripts/read-back.mjs --channel release-announcements --expect 'Release 2.4.0 is live' --retries 3",
+    tail: 'posting check\nread-back failed: message "Release 2.4.0 is live" not found in the last 50 messages of #release-announcements (checked 3 times)',
+  };
+  const cases = [
+    [[longCheck], ' · act steps are not retried'],
+    [[longCheck], ' · no retry: acme-pool is no longer eligible'],
+    [[longCheck, FAILED_CHECK, FAILED_CHECK], ''],
+  ];
+  for (const [results, suffix] of cases) {
+    const why = evidenceFailureWhy(results, { suffix });
+    const tail = `${results.length > 1 ? ` (+${results.length - 1} more failed)` : ''}${suffix}`;
+    assert.ok(why.length > 160 && why.endsWith(tail), `the stored reason is over 160 characters and ends with ${tail}: ${why}`);
+    const state = evidenceState({
+      build: { status: 'failed', lastFailure: { kind: 'failed-evidence', message: why } },
+      attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'failed-evidence', why, evidenceResults: results }],
+    });
+    const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
+    assert.equal(result.handback.unfinished[0].why, why, 'result.json keeps the whole reason');
+    const summary = summarizeV2Result(result, state, { runDir: '/tmp/acme-run', features: { deliverableGate: 1, proofLabels: 1 } });
+    const clipped = summary.handback.unfinished[0].why;
+    assert.ok(clipped.length <= 160, clipped);
+    assert.ok(clipped.endsWith(`…${tail}`), `the suffix survives the cut: ${clipped}`);
+    assert.ok(clipped.startsWith(why.slice(0, 60)), 'the reason still opens with the check label');
+    const line = formatV2HandbackLines(summary).find((entry) => entry.startsWith('  step build:'));
+    assert.equal(line, `  step build: failed (failed-evidence) — ${clipped}`);
+  }
+  // A long reason with no kept suffix is cut at its end, as before.
+  const plain = `worker exited with code 1 ${'x'.repeat(200)}`;
+  const state = evidenceState({ build: { status: 'failed', lastFailure: { kind: 'process', message: plain } }, attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'process' }] });
+  const summary = summarizeV2Result(createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' }), state, { runDir: '/tmp/acme-run', features: {} });
+  assert.equal(summary.handback.unfinished[0].why, plain.slice(0, 160));
+});
+
+test('F23: a failed step whose worker failed before its evidence ran reads `evidence not run` in its handback line', () => {
+  const summaryOf = (state) => summarizeV2Result(createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' }), state, { runDir: '/tmp/acme-run', features: { deliverableGate: 1, proofLabels: 1 } });
+  const stepLine = (summary, id) => formatV2HandbackLines(summary).find((line) => line.startsWith(`  step ${id}:`));
+  const failedFirst = evidenceState({
+    build: { status: 'failed', lastFailure: { kind: 'process', message: 'worker exited with code 1' } },
+    attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'process' }],
+  });
+  const result = createV2ResultEnvelope(failedFirst, { finishedAt: '2026-09-24T01:10:00Z' });
+  assert.equal(result.actions[0].evidenceResults, null, 'the result JSON keeps null');
+  const summary = summaryOf(failedFirst);
+  assert.equal(summary.handback.unfinished[0].evidenceNotRun, true);
+  assert.equal(stepLine(summary, 'build'), '  step build: failed (process) — worker exited with code 1 · evidence not run');
+  // A failed check ran: its own reason, no label.
+  const why = 'node --test tests/widget.test.js → exit 1: not ok 1 - joins words with one hyphen';
+  const checked = evidenceState({
+    build: { status: 'failed', lastFailure: { kind: 'failed-evidence', message: why } },
+    attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'failed-evidence', evidenceResults: [FAILED_CHECK] }],
+  });
+  assert.equal(stepLine(summaryOf(checked), 'build'), `  step build: failed (failed-evidence) — ${why}`);
+  // A step that declares no evidence reads as before.
+  const plain = evidenceState({ attempts: [{ id: 'notes-1', actionId: 'notes', ordinal: 1, status: 'failed', failureKind: 'process' }] });
+  plain.actions[1] = { ...plain.actions[1], status: 'failed', lastFailure: { kind: 'process', message: 'worker exited with code 1' } };
+  const plainSummary = summaryOf(plain);
+  assert.equal(Object.hasOwn(plainSummary.handback.unfinished[0], 'evidenceNotRun'), false);
+  assert.equal(stepLine(plainSummary, 'notes'), '  step notes: failed (process) — worker exited with code 1');
 });

@@ -593,6 +593,20 @@ function firstLine(value, limit) {
   return line || null;
 }
 
+// The tail a failed-evidence reason always keeps (§2.7): how many other
+// checks failed, and why no retry follows.
+const KEPT_WHY_SUFFIX = /(?: \(\+\d+ more failed\))?(?: · (?:act steps are not retried|no retry: \S.* is no longer eligible))?$/;
+
+// A handback reason cut to `limit`: when it ends with a kept suffix, the
+// middle goes (marked with an ellipsis) so the suffix survives (F17).
+function clipWhy(value, limit) {
+  const line = firstLine(value, Infinity);
+  if (!line || line.length <= limit) return line;
+  const suffix = line.match(KEPT_WHY_SUFFIX)[0];
+  if (!suffix || suffix.length + 2 > limit) return firstLine(line, limit);
+  return `${line.slice(0, limit - suffix.length - 1).trimEnd()}…${suffix}`;
+}
+
 // A reason line is read by a person: cut it between words and mark the cut,
 // so "It contains no menti" never reads as the whole finding.
 function clipAtWord(text, limit) {
@@ -718,17 +732,18 @@ function fitResultSummary(summary) {
         ...entry,
         // A retry deadline without its cause is not an actionable handback.
         // Preserve the paused-pool explanation even in the smallest summary.
-        why: firstLine(entry.why, entry.retryAfter ? Math.max(limit, 200) : limit),
+        why: clipWhy(entry.why, entry.retryAfter ? Math.max(limit, 200) : limit),
       })),
       ...(unfinished.length > selected.length ? { unfinishedOmitted: unfinished.length - selected.length } : {}),
       unreadSteering: unreadSteering.map((entry) => ({ ...entry, message: firstLine(entry.message, Math.max(limit, 80)) ?? '' })),
     };
   };
   const loopKeys = Object.hasOwn(summary, 'verifyRounds') || Object.hasOwn(summary, 'callerDecision');
-  const build = (step, level) => {
-    const actions = actionsAt(step.actions);
+  // `source` is the summary, or the summary without its proof labels.
+  const build = (source, step, level) => {
+    const actions = Object.hasOwn(source, 'proof') ? actionsAt(step.actions) : actionsAt(step.actions).map(({ proof: _proof, ...action }) => action);
     return {
-      ...summary,
+      ...source,
       actions,
       requirements: requirementsAt(step.why),
       concerns: concernsAt(step.concern, step.concerns),
@@ -739,26 +754,60 @@ function fitResultSummary(summary) {
     };
   };
   const [firstStep, ...laterSteps] = RESULT_SUMMARY_FIT_STEPS;
-  const candidates = loopKeys
+  const plan = loopKeys
     ? [
-      ...LOOP_FIT_LEVELS.map((level) => build(firstStep, level)),
-      ...laterSteps.map((step) => build(step, LOOP_FIT_LEVELS.at(-1))),
-      build(RESULT_SUMMARY_FIT_STEPS.at(-1), LOOP_LAST_RESORT),
+      ...LOOP_FIT_LEVELS.map((level) => [firstStep, level]),
+      ...laterSteps.map((step) => [step, LOOP_FIT_LEVELS.at(-1)]),
+      [RESULT_SUMMARY_FIT_STEPS.at(-1), LOOP_LAST_RESORT],
     ]
-    : RESULT_SUMMARY_FIT_STEPS.map((step) => build(step, LOOP_FIT_LEVELS[0]));
-  const fits = candidates.find((candidate) => summarySize(candidate) < RESULT_SUMMARY_BYTE_BUDGET);
-  if (fits) return fits;
+    : RESULT_SUMMARY_FIT_STEPS.map((step) => [step, LOOP_FIT_LEVELS[0]]);
   // Nothing fits (a run with many steps: `usage.steps` is never cut). The
   // round rows are dropped only when that alone reaches the budget.
-  const smallest = candidates.at(loopKeys ? -2 : -1);
-  // The top-level `proof` is never dropped, so it can push a many-step run
-  // over. Only such a summary (a new run's) then also sheds the unknown (null)
-  // fields of its per-step usage; a saved run's stays byte-identical.
-  if (!summary.proof || !smallest.usage?.steps) return smallest;
-  return {
-    ...smallest,
-    usage: { ...smallest.usage, steps: Object.fromEntries(Object.entries(smallest.usage.steps).map(([id, step]) => [id, dropNullFields(step)])) },
+  const smallestAt = plan.length - (loopKeys ? 2 : 1);
+  const fitIndex = (source) => {
+    const index = plan.findIndex(([step, level]) => summarySize(build(source, step, level)) < RESULT_SUMMARY_BYTE_BUDGET);
+    return index === -1 ? smallestAt : index;
   };
+  if (!summary.proof) {
+    const [step, level] = plan[fitIndex(summary)];
+    return build(summary, step, level);
+  }
+  // A summary with proof labels (a new run's) picks its handback detail as if
+  // it had none: the level the same run fits at without `proof` is the floor
+  // for every handback reason, step count, requirement reason and round row,
+  // so the labels never cost the caller a handback line (F16). Only optional
+  // fields give way: step detail, concerns, then the unproven step names (the
+  // proof counts stay), then the unknown (null) per-step usage fields.
+  const { proof, ...unlabelled } = summary;
+  const floorAt = fitIndex(unlabelled);
+  const [floor, floorLevel] = plan[floorAt];
+  const floored = ([step, level]) => [{
+    ...step,
+    why: Math.max(step.why, floor.why),
+    handbackWhy: Math.max(step.handbackWhy, floor.handbackWhy),
+    handbackCount: Math.max(step.handbackCount, floor.handbackCount),
+  }, {
+    phases: level.phases === 'none' && floorLevel.phases !== 'none' ? 'compact' : level.phases,
+    evidence: Math.max(level.evidence, floorLevel.evidence),
+  }];
+  const withProof = (candidate, value) => ({ ...candidate, proof: value });
+  const shedUsage = (candidate) => (candidate.usage?.steps
+    ? { ...candidate, usage: { ...candidate.usage, steps: Object.fromEntries(Object.entries(candidate.usage.steps).map(([id, step]) => [id, dropNullFields(step)])) } }
+    : candidate);
+  const proofs = [proof, { ...proof, unprovenSteps: [] }];
+  const candidates = plan.flatMap((entry) => {
+    const candidate = build(summary, ...floored(entry));
+    return proofs.map((value) => withProof(candidate, value));
+  });
+  for (const entry of new Set([plan[smallestAt], plan.at(-1)])) {
+    const smallest = build(summary, ...floored(entry));
+    candidates.push(...proofs.map((value) => shedUsage(withProof(smallest, value))));
+  }
+  // When even that does not fit (the run without labels was already at its
+  // smallest levels), the summary runs over, as any summary does when nothing
+  // fits, with its whole proof: a handback line is never the cost.
+  return candidates.find((candidate) => summarySize(candidate) < RESULT_SUMMARY_BYTE_BUDGET)
+    ?? shedUsage(withProof(build(summary, ...floored(plan[Math.max(floorAt, smallestAt)])), proof));
 }
 
 // Results written before 0.30.0 carry no handback; derive the same view from
@@ -786,12 +835,18 @@ function summaryHandback(envelope, handback, token) {
   // gets through once the first of them is back.
   const retryAfter = retryable.length && waits.length === retryable.length ? new Date(Math.min(...waits)).toISOString() : null;
   const rerunIds = retryable.map((entry) => entry.id);
+  // A failed step that declares evidence but whose worker failed first (E15):
+  // the result row holds `evidenceResults: null`, and the line says so.
+  const notRun = new Set(envelope.actions
+    .filter((action) => action.status === 'failed' && Object.hasOwn(action, 'evidenceResults') && action.evidenceResults === null)
+    .map((action) => action.id));
   return {
     unfinished: handback.unfinished.map((entry) => ({
       id: entry.id,
       status: entry.status,
       failureKind: entry.failureKind ?? null,
-      why: firstLine(entry.why, 160),
+      why: clipWhy(entry.why, 160),
+      ...(entry.status === 'failed' && notRun.has(entry.id) ? { evidenceNotRun: true } : {}),
       ...(entry.retryAfter ? { retryAfter: entry.retryAfter } : {}),
       retryable: entry.retryable,
     })),
@@ -849,7 +904,7 @@ export function formatV2HandbackLines(summary) {
   const lines = [...loopLines];
   for (const entry of handback.unfinished) {
     const kind = entry.failureKind && entry.failureKind !== entry.status ? ` (${entry.failureKind})` : '';
-    lines.push(`  step ${entry.id}: ${entry.status}${kind}${entry.why ? ` — ${entry.why}` : ''}${entry.retryAfter ? ` · its pool is back at ${entry.retryAfter}` : ''}`);
+    lines.push(`  step ${entry.id}: ${entry.status}${kind}${entry.why ? ` — ${entry.why}` : ''}${entry.evidenceNotRun ? ' · evidence not run' : ''}${entry.retryAfter ? ` · its pool is back at ${entry.retryAfter}` : ''}`);
   }
   if (handback.unfinishedOmitted) lines.push(`  … and ${handback.unfinishedOmitted} more unfinished step(s)`);
   // A requirement the decision block already names is not listed twice.

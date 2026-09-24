@@ -154,7 +154,8 @@ export function captureWorkspaceManifest(root, { maxFiles = 50_000 } = {}) {
   // files so unrelated edits work and mutations inside them remain visible.
   const files = (gitFiles(absoluteRoot) ?? walkFiles(absoluteRoot)).flatMap((file) => {
     try {
-      if (lstatSync(join(absoluteRoot, file)).isDirectory()) return walkFiles(join(absoluteRoot, file)).map((nested) => `${file}/${nested}`);
+      // git lists an untracked nested repository as `name/`: one slash only.
+      if (lstatSync(join(absoluteRoot, file)).isDirectory()) return walkFiles(join(absoluteRoot, file)).map((nested) => `${file.replace(/\/+$/, '')}/${nested}`);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     return [file];
   }).filter((file) => !isIgnoredTree(file));
