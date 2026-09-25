@@ -23,6 +23,7 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `ok` | `true` when the content judge passed **and** the process exited 0. `false` on a failed judge, a non-zero exit, spawn failure, timeout, stall, quota, or auth |
 | `keepOnClaude` | `true` when routing kept the task on the calling agent instead of spawning a delegate. `ok` is then `true` and `pick.pool` is `null` |
 | `why` | one-line reason. Success is `verified`. A non-zero exit with passing content is `verified content but non-zero exit` |
+| `id` | once a delegate ran: the run's decision-log id (`null` only when the in-flight ledger could not be written). Pass it, or `outFile`, to a later run's `--independent-of`. In a `run --batch` array it is `runId`, and `id` is the line's |
 | `pick.pool` | pool that ran, or `null` when kept on the caller |
 | `pick.model` | model id sent to the CLI |
 | `pick.command` | argv template (`spawn.cmd`). On `--dry-run` this is the resolved argv including the clamped reasoning flag |
@@ -35,15 +36,17 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `dryRun` | `true` on `--dry-run`. Nothing was spawned, logged, or registered in the assignment ledger |
 | `forecast` | the numbers routing compared: `inflight`, `projectedFiveHourPct`, `forecastFiveHourPct`, `expectedMinutes`, `ratePerMinute`, `estimateSource` |
 | `candidates` | routing candidate rows (dry-run and keep-on-caller include this) |
-| `routeFilter` | only with a route filter flag (`--avoid-pool`, `--use-provider`, `--avoid-provider`, `--independent-of`), dry-run included: `summary`, `left`, `filteredOut` (`pool`, `provider`, `why`), `callerFilteredOut`, `independentOf`, `empty`. See [Route filters](/reference/cli#route-filters) |
+| `routeFilter` | only with a route filter flag (`--avoid-pool`, `--use-provider`, `--avoid-provider`, `--independent-of`), dry-run included: `summary`, `left`, `filteredOut` (`pool`, `provider`, `why`), `callerFilteredOut`, `independentOf`, `empty`. When `empty` is `true`, nothing ran and the command exited 1. See [Route filters](/reference/cli#route-filters) |
 | `reasoning` | `{ requested, applied, source, clamped }` — the level this attempt actually ran at |
 | `meta.exitCode`, `meta.signal`, `meta.timedOut`, `meta.stalled`, `meta.cancelled` | process observation |
 | `meta.wallSec`, `meta.outBytes` | duration and extracted output size |
 | `meta.usage` | complete v2 attempt usage: provider-reported, transcript-summed, estimated, or unknown exclusive token classes; `api.usd` is the local dated rate-card calculation and `subscription.usd` is the separately measured or calibrated quota-window amount |
 | `structured` | only when an output validator ran (workflow evidence): `{ ok, errors, value? }` |
-| `answer`, `answerCheck`, `workerOk` | only with `--answer-schema`: the parsed typed answer, its schema check `{ ok, errors, file, why }`, and the worker's own verdict. `ok` then also needs `answerCheck.ok` — see [Typed answers](/reference/cli#typed-answers) |
+| `answer` | only with `--answer-schema`: the parsed typed answer, or `null` when the file is missing or not JSON |
+| `answerCheck` | only with `--answer-schema`: the schema check, `{ ok, errors, file, why }`. `ok` then also needs `answerCheck.ok` — see [Typed answers](/reference/cli#typed-answers) |
+| `workerOk` | only with `--answer-schema`: the worker's own verdict, apart from the check |
 
-`--dry-run` prints `ok`, `dryRun: true`, `keepOnClaude`, `why`, `forecast`, `candidates`, `pick` (resolved argv including the clamped reasoning flag), and `reasoning`. It omits `outFile`, `taskFile`, `contentUsableDespiteExit`, `meta`, and the failure fields, because nothing was spawned. `--dry-run` with no eligible pool and `keepOnClaude: true` still exits 0. `--dry-run` that cannot pick and cannot keep the task sets `ok: false` and exits 1.
+`--dry-run` prints `ok`, `dryRun: true`, `keepOnClaude`, `why`, `forecast`, `candidates`, `pick` (resolved argv including the clamped reasoning flag), and `reasoning`. It omits `id`, `outFile`, `taskFile`, `contentUsableDespiteExit`, `meta`, and the failure fields, because nothing was spawned. `--dry-run` with no eligible pool and `keepOnClaude: true` still exits 0. `--dry-run` that cannot pick and cannot keep the task sets `ok: false` and exits 1.
 
 ::: warning
 `ok: true` with `keepOnClaude: true` means the caller should do the work itself. It is not a completed delegate. The skill documents this as `keepOnClaude: true`.

@@ -19,13 +19,17 @@ work directly unless it explicitly requires nested delegation.
 
 One `bullswarm run` per bounded outcome: a review, a localized fix, a study
 with one deliverable. When the work has stages, loops or one step per item,
-you drive them: your own loop, or a Claude Code Workflow script whose agents
-each shell out to `bullswarm run`. Give each step `--answer-schema` so it
-returns checked JSON you can branch on; [compose.md](references/compose.md)
-has three recipes. Use a workflow (`workflow goal`) when the work must outlive
-this session, or when parallel writers share one worktree and need an
-integration step. Decide from the request itself; there is no classifier
-command.
+you drive them: your own loop, or a Claude Code Workflow script whose agent
+shells out to `bullswarm run`. Give each step `--answer-schema` so it
+returns checked JSON you can branch on, and a checker `--independent-of
+<earlier run>` so it never shares that run's provider (`--use-provider`,
+`--avoid-provider` and `--avoid-pool` narrow the pick too; a filter that
+leaves no pool exits 1). `run --batch tasks.jsonl --json` runs many steps
+from one call, one attempt each, so one Workflow agent can launch them all;
+[compose.md](references/compose.md) has three recipes. Use a workflow
+(`workflow goal`) when the work must outlive this session, or when parallel
+writers share one worktree and need an integration step. Decide from the
+request itself; there is no classifier command.
 
 ## 2a. One run, or a flow of runs
 

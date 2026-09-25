@@ -732,6 +732,8 @@ async function cmdRun(opts) {
   // Checked before anything is recorded, so the decision log and the task
   // ledger say what the verdict says.
   if (typedAnswer) verdict = withAnswerCheck(verdict, checkAnswer(typedAnswer));
+  // The decision-log entry's id, so a later run can be --independent-of it.
+  verdict.id = ledgerEntry?.id ?? null;
   verdict.routeWhy = route.why;
   verdict.routeCandidates = route.candidates;
   Object.assign(verdict, routeFilterField);

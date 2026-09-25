@@ -257,7 +257,7 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--avoid-pool <pool>` | route filter: never use this pool (its id or label); repeat the flag or give a comma list. See [Route filters](#route-filters) | none |
 | `--use-provider <provider>` | route filter: use only pools of this provider; repeat or comma list | any provider |
 | `--avoid-provider <provider>` | route filter: never use a pool of this provider; repeat or comma list | none |
-| `--independent-of <run>` | route filter: never use the provider that ran an earlier run (its `outFile` or decision-log `id`); repeatable | none |
+| `--independent-of <run>` | route filter: never use the provider that ran an earlier run (the `outFile` or `id` from its `--json` verdict); repeatable | none |
 | `--json` | print the machine-readable verdict document | human-readable summary line |
 
 One attempt only: a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. The JSON shape is in [Result envelope](/reference/result).
@@ -288,7 +288,7 @@ The schema is read before routing. A schema that is unreadable, not JSON, or use
 | `answerCheck.notes` | only when there is one: `unwrapped one fenced code block`, or `format is not checked (<n> places)` |
 | `workerOk` | the worker's own verdict, apart from the check. It is also in the run's decision-log entry, and a pool's ok share counts it, not `ok` |
 
-When the check fails, `ok` is `false` and the command exits 1. `why` reads `answer check failed (<reason>) · <the worker's why>`, or just the worker's `why` when the worker failed too. A valid answer beside a reply that is empty or has no result in it (exit 0) passes: the answer is the result, and `why` reads `answer valid (reply: <reason>)`. Nothing is retried: the caller decides whether to rerun, change the schema, or read `outFile`. A file named with `--answer-file` that already exists and is not rewritten by this run fails the check (`answer file not rewritten by this run`), so a loop can reuse one path safely. Without `--json`, one `answer:` line says `valid` or `INVALID` with the first errors and the file. When routing keeps the task on the caller (`keepOnClaude: true`), nothing runs and the verdict has no `answer`; pass `--no-caller` when every step must return one.
+When the check fails, `ok` is `false` and the command exits 1. `why` reads `answer check failed (<reason>) · <the worker's why>`, or just the worker's `why` when the worker failed too. Once the worker has written a JSON answer, a reply that is empty or has no result in it (exit 0) is not the worker failing, because the answer is the result: a valid answer passes with `why` `answer valid (reply: <reason>)`, and an invalid one fails the check alone, with `workerOk: true` and `why` `answer check failed (<reason>) · reply: <reason>`. Nothing is retried: the caller decides whether to rerun, change the schema, or read `outFile`. A file named with `--answer-file` that already exists and is not rewritten by this run fails the check (`answer file not rewritten by this run`), so a loop can reuse one path safely. Without `--json`, one `answer:` line says `valid` or `INVALID` with the first errors and the file. When routing keeps the task on the caller (`keepOnClaude: true`), nothing runs and the verdict has no `answer`; pass `--no-caller` when every step must return one.
 
 The schema uses the same subset as a workflow schema check. Asserted keywords: `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `minProperties`, `maxProperties`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf`, `not`, and `$ref`. Ignored annotations and containers: `$schema`, `$id`, `$comment`, `$defs`, `definitions`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` and `format`. Only local `#` references work. `format` is not checked. Any other keyword, a non-local reference, the array form of `items`, and a boolean `exclusiveMinimum` or `exclusiveMaximum` are refused, never skipped. A schema file may be up to 1 MiB and an answer up to 32 MiB.
 
@@ -313,10 +313,11 @@ bullswarm run --lane analyze --add-dir . --no-caller --independent-of ~/.bullswa
   (`; passes the filters but disabled: <pool>`). Nothing runs and nothing is
   logged. This holds with `--dry-run` too.
 - **`--independent-of <run>`** reads this home's decision log. `<run>` is the
-  `outFile` from the earlier run's `--json` verdict, or its decision-log `id`.
-  Every pool of the provider that ran it is taken out. A run that is not in the
-  log exits 2: it is still running, it stayed with the caller, it was only a
-  `--dry-run`, or it is older than the last 500 decisions.
+  `outFile` or the `id` from the earlier run's `--json` verdict (`runId` in a
+  `run --batch` array). Every pool of the provider that ran it is taken out.
+  A run that is not in the log exits 2: it is still running, it stayed with
+  the caller, it was only a `--dry-run`, or it is older than the last 500
+  decisions.
 - **Names are checked.** A pool that is not configured, or a provider that no
   configured pool uses, exits 2. A pool label resolves to its id.
 - **What you see.** The `--json` verdict carries `routeFilter`: `summary`,
@@ -375,6 +376,7 @@ Each line is one JSON object:
 ```json
 {"id": "auth", "lane": "analyze", "addDir": ".", "prompt": "Does src/auth.js check token expiry? Answer with file:line."}
 {"id": "db", "lane": "chore", "taskFile": "tasks/db.md", "effort": "low"}
+{"id": "check-1", "lane": "analyze", "taskFile": "check-1.md", "answerSchema": "check.schema.json", "independentOf": "/abs/runs/out-<stamp>.md"}
 ```
 
 | Key | Meaning |
@@ -384,25 +386,28 @@ Each line is one JSON object:
 | `prompt` or `taskFile` | exactly one, as `--prompt` or `--task-file` |
 | `addDir` | as `--add-dir` (default: the current directory) |
 | `effort`, `reasoning` | as `--effort` and `--reasoning` |
+| `answerSchema`, `answerFile` | as `--answer-schema` and `--answer-file`: a [typed answer](#typed-answers) for that task |
 | `avoidPool`, `useProvider`, `avoidProvider`, `independentOf` | the [route filters](#route-filters) `--avoid-pool`, `--use-provider`, `--avoid-provider` and `--independent-of`; each takes one value or a list. `independentOf` names a finished run, so not a line of the same batch |
 
 Relative paths resolve against the current directory, as the flags do.
 
 - **Checked before anything runs.** A line that is not a JSON object, a missing
-  or bad value, a duplicate `id`, an unknown key, or a route filter that names
-  no configured pool or provider or no finished run exits 2, with one message
-  per problem. `answerSchema` and `answerFile` are refused the same way until
-  `run` has `--answer-schema`.
+  or bad value, a duplicate `id`, an unknown key, a schema that cannot be
+  checked, an `answerFile` without `answerSchema` or one another line also
+  names, or a route filter that names no configured pool or provider or no
+  finished run exits 2, with one message per problem.
 - **Each task is a normal single run.** Same routing, same checks, same records
   (an assignment while it runs, a decision-log entry after), one attempt, no
   retry. A usage limit fails that task only.
 - **At most N at a time** (`--concurrency`, default 4). Tasks start in file
   order, and each one is routed only after the task before it has booked its
   pool in the in-flight ledger, so routing sees the batch's own picks.
-- **One array out.** Each element is that task's `run --json` verdict plus `id`
-  and `exit` (the code a single run would have exited with). Exit 0 when every
-  task is ok, 1 when any failed; the array says which. A task that routing keeps
-  on the caller comes back `ok: true, keepOnClaude: true` and did not run.
+- **One array out.** Each element is that task's `run --json` verdict with the
+  line's `id`, the run's own decision-log id as `runId` (give it, or `outFile`,
+  to a later `independentOf`), and `exit` (the code a single run would have
+  exited with). Exit 0 when every task is ok, 1 when any failed; the array
+  says which. A task that routing keeps on the caller comes back `ok: true,
+  keepOnClaude: true` and did not run.
 - **Batch-wide flags:** only `--concurrency`, `--json`, `--no-caller`,
   `--timeout` and `--dry-run`, applied to every task. Any other `run` flag exits
   2: set it on each line. `--dry-run` previews each line on its own; previews

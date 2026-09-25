@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -140,16 +140,66 @@ test('run --batch: a bad line exits 2 before anything runs, naming every bad lin
   } finally { f.cleanup(); }
 });
 
-test('run --batch refuses the typed-answer keys until run has those flags', () => {
+test('run --batch: a line with answerSchema gets its checked answer, with its route filter', () => {
   const f = echoHome();
   try {
+    writeFileSync(join(f.dir, 'schema.json'), JSON.stringify({
+      type: 'object', required: ['n'], properties: { n: { type: 'integer' } },
+    }));
     const file = tasksFile(f.dir, [
-      { id: 'a', lane: 'analyze', prompt: 'x', answerSchema: 'schema.json', answerFile: 'a.json' },
+      // Relative paths resolve against the current directory, as the flags do.
+      { id: 'typed', lane: 'chore', prompt: 'ANSWER:{"n": 3}', answerSchema: 'schema.json', answerFile: 'typed.json', useProvider: ['echo'] },
+      { id: 'invalid', lane: 'chore', prompt: 'ANSWER:{"n": "three"}', answerSchema: 'schema.json' },
+      { id: 'plain', lane: 'chore', prompt: 'no answer asked' },
+    ]);
+    const result = bullswarm(f.dir, ['run', '--batch', file, '--no-caller', '--json']);
+    assert.equal(result.status, 1, result.stderr);
+    const [typed, invalid, plain] = JSON.parse(result.stdout);
+
+    assert.deepEqual([typed.id, typed.ok, typed.exit], ['typed', true, 0]);
+    assert.deepEqual(typed.answer, { n: 3 });
+    assert.equal(typed.answerCheck.ok, true);
+    assert.equal(realpathSync(typed.answerCheck.file), realpathSync(join(f.dir, 'typed.json')), '"answerFile" became --answer-file');
+    assert.equal(typed.routeFilter.summary, 'providers echo', '"useProvider" became --use-provider');
+
+    assert.deepEqual([invalid.ok, invalid.exit, invalid.workerOk], [false, 1, true]);
+    assert.equal(invalid.answerCheck.ok, false);
+    assert.match(invalid.why, /^answer check failed/);
+
+    assert.equal(plain.ok, true);
+    assert.equal('answer' in plain, false, 'a line without "answerSchema" is an untyped run');
+
+    // `id` stays the line's; the run's own decision-log id is `runId`.
+    const log = readState(f.dir).decisionLog;
+    assert.deepEqual([typed, invalid, plain].map((v) => log.filter((d) => d.id === v.runId).length), [1, 1, 1]);
+    assert.equal(log.find((d) => d.id === invalid.runId).workerOk, true);
+  } finally { f.cleanup(); }
+});
+
+test('run --batch: the typed-answer keys are checked before anything runs', () => {
+  const f = echoHome();
+  try {
+    writeFileSync(join(f.dir, 'schema.json'), JSON.stringify({ type: 'object' }));
+    writeFileSync(join(f.dir, 'if.json'), JSON.stringify({ type: 'object', if: {} }));
+    writeFileSync(join(f.dir, 'broken.json'), '{ type: object');
+    const file = tasksFile(f.dir, [
+      { id: 'lone', lane: 'chore', prompt: 'x', answerFile: 'a.json' },
+      { id: 'missing', lane: 'chore', prompt: 'x', answerSchema: 'nope.json' },
+      { id: 'keyword', lane: 'chore', prompt: 'x', answerSchema: 'if.json' },
+      { id: 'broken', lane: 'chore', prompt: 'x', answerSchema: 'broken.json' },
+      { id: 'one', lane: 'chore', prompt: 'x', answerSchema: 'schema.json', answerFile: 'same.json' },
+      { id: 'two', lane: 'chore', prompt: 'x', answerSchema: 'schema.json', answerFile: join(f.dir, 'same.json') },
     ]);
     const result = bullswarm(f.dir, ['run', '--batch', file, '--json']);
     assert.equal(result.status, 2, result.stdout);
-    assert.match(result.stderr, /line 1: "answerSchema" is not supported yet: this version's run has no --answer-schema/);
-    assert.match(result.stderr, /line 1: "answerFile" is not supported yet: this version's run has no --answer-file/);
+    assert.equal(result.stdout, '', 'no verdict array: nothing ran');
+    assert.match(result.stderr, /line 1: "answerFile" needs "answerSchema"/);
+    assert.match(result.stderr, /line 2: "answerSchema" unreadable: ENOENT/);
+    assert.match(result.stderr, /line 3: "answerSchema" unsupported keyword "if"/);
+    assert.match(result.stderr, /line 4: "answerSchema" is not JSON/);
+    assert.match(result.stderr, /line 6: "answerFile" .*same\.json is already used on line 5/);
+    assert.doesNotMatch(result.stderr, /line 5:/);
+    assert.match(result.stderr, /nothing ran/);
     nothingRan(f.dir);
   } finally { f.cleanup(); }
 });
@@ -160,18 +210,22 @@ test('run --batch passes each line\'s route filters to its own run', () => {
     const first = bullswarm(f.dir, ['run', '--batch', tasksFile(f.dir, [{ id: 'finder', lane: 'chore', prompt: 'find' }]), '--no-caller', '--json']);
     assert.equal(first.status, 0, first.stderr);
     const [finder] = JSON.parse(first.stdout);
+    assert.equal(finder.id, 'finder');
+    assert.equal(readState(f.dir).decisionLog[0].id, finder.runId, 'runId is the decision-log id');
     const file = tasksFile(f.dir, [
       { id: 'same', lane: 'chore', prompt: 'x', useProvider: 'echo' },
       { id: 'avoid', lane: 'chore', prompt: 'y', avoidPool: ['echo'] },
       { id: 'checker', lane: 'chore', prompt: 'z', independentOf: finder.outFile },
+      { id: 'by-id', lane: 'chore', prompt: 'z', independentOf: [finder.runId] },
     ]);
     const result = bullswarm(f.dir, ['run', '--batch', file, '--no-caller', '--json']);
     assert.equal(result.status, 1, result.stderr);
     const verdicts = JSON.parse(result.stdout);
-    assert.deepEqual(verdicts.map((v) => [v.id, v.ok]), [['same', true], ['avoid', false], ['checker', false]]);
+    assert.deepEqual(verdicts.map((v) => [v.id, v.ok]), [['same', true], ['avoid', false], ['checker', false], ['by-id', false]]);
     assert.match(verdicts[1].why, /no pool left after route filters/);
     // The only pool ran the finder, so an independent checker has nowhere to go.
     assert.match(verdicts[2].why, /independent/);
+    assert.match(verdicts[3].why, new RegExp(`independent of ${finder.runId}`));
     assert.ok(verdicts.every((v) => v.routeFilter), 'each verdict reports its own filter');
   } finally { f.cleanup(); }
 });

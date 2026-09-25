@@ -46,8 +46,10 @@ test('a wrong answer and a missing answer both fail with reasons', () => {
   assert.equal(bad.answerCheck.ok, false);
   assert.equal(bad.answerCheck.errors.length, 2);
   assert.deepEqual(bad.answer, { n: 'three', tags: ['z'] }, 'the caller still sees what the worker wrote');
+  assert.equal(bad.answered, true, 'the worker wrote JSON, even if it breaks the schema');
   const missing = checkAnswer({ answerFile: join(dir, 'nope.json'), schemaFile });
   assert.equal(missing.answer, null);
+  assert.equal(missing.answered, false);
   assert.equal(missing.answerCheck.ok, false);
   assert.match(missing.answerCheck.why, /file missing/);
 });
@@ -68,6 +70,7 @@ test('a file that was not written since the run started is stale, not an answer'
   assert.equal(r.answerCheck.ok, false);
   assert.equal(r.answerCheck.why, 'answer file not rewritten by this run');
   assert.equal(r.answer, null, 'the old value is never handed back as this run\'s answer');
+  assert.equal(r.answered, false);
 });
 
 test('schema is vetted up front and quoted in the task instruction', () => {
@@ -113,11 +116,20 @@ test('a thin reply beside a valid answer passes; every other worker failure stil
     assert.equal(passed.ok, true, why);
     assert.equal(passed.workerOk, true, why);
     assert.equal(passed.why, `answer valid (reply: ${why})`);
-    // With no valid answer the thin reply is the cause, as before.
+    // With no answer at all the thin reply is the cause, as before.
     const failed = withAnswerCheck(thin(why), invalid);
     assert.equal(failed.ok, false);
     assert.equal(failed.workerOk, false);
     assert.equal(failed.why, why);
+    // An answer the worker wrote that breaks the schema fails the check
+    // alone: the worker did its part (a live worker replies "done" to a
+    // schema nothing can satisfy).
+    const wrong = withAnswerCheck(thin(why), {
+      answer: { n: 3 }, answered: true, answerCheck: { ok: false, errors: ['$.n must be >= 5'], why: 'not valid: 1 error' },
+    });
+    assert.equal(wrong.ok, false);
+    assert.equal(wrong.workerOk, true);
+    assert.equal(wrong.why, `answer check failed (not valid: 1 error) · reply: ${why}`);
   }
   for (const verdict of [
     thin('announcement without substance', { meta: { exitCode: 1 } }),
@@ -269,6 +281,17 @@ test('a worker that writes a valid answer and replies only with an announcement:
     const bare = bullswarm(h.root, run(h.root, '--json', '--answer-schema', schemaFile, '--prompt', 'INTENT: say little'));
     assert.equal(bare.status, 1, bare.stdout + bare.stderr);
     assert.equal(JSON.parse(bare.stdout).why, 'announcement without substance');
+    assert.equal(JSON.parse(bare.stdout).workerOk, false);
+
+    // An answer that breaks the schema beside the same reply fails the check
+    // only: the worker wrote its answer, so `workerOk` stays true.
+    const wrong = bullswarm(h.root, run(h.root, '--json', '--answer-schema', schemaFile, '--prompt', 'ANSWER:{"n": "four", "tags": []}\nINTENT: say little'));
+    assert.equal(wrong.status, 1, wrong.stdout + wrong.stderr);
+    const invalid = JSON.parse(wrong.stdout);
+    assert.deepEqual([invalid.ok, invalid.workerOk], [false, true]);
+    assert.equal(invalid.why, 'answer check failed (not valid: 1 error) · reply: announcement without substance');
+    assert.deepEqual(invalid.answer, { n: 'four', tags: [] });
+    assert.equal(lastDecision(h.root).workerOk, true);
   } finally { h.cleanup(); }
 });
 

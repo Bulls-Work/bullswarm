@@ -285,4 +285,9 @@ test('a writer run, then a checker --independent-of its outFile, lands on anothe
   assert.equal(log.length, 2);
   assert.equal(log[1].pool, 'beta');
   assert.match(log[1].routeWhy, / · route: independent of [0-9a-f-]{36} \(providers alpha\)$/, 'the decision log records the route');
+  // The verdict carries its decision-log id, which --independent-of takes as well.
+  assert.deepEqual([written.id, checked.id], [log[0].id, log[1].id]);
+  const byId = preview(home, ['--no-caller', '--independent-of', written.id]);
+  assert.equal(byId.status, 0, byId.stderr);
+  assert.equal(JSON.parse(byId.stdout).pick.pool, 'beta');
 }));

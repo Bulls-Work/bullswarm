@@ -106,7 +106,7 @@ The verdict then carries `answer` (the parsed JSON) and `answerCheck` (`ok`, `er
 
 ## Compose your own flow
 
-A flow with stages, loops or one step per item does not need a workflow. Keep the control flow in your own script, or in a Claude Code Workflow script whose agents each run one `bullswarm run`, and branch on each step's typed answer. This loop fixes and reviews until the review passes, at most three rounds:
+A flow with stages, loops or one step per item does not need a workflow. Keep the control flow in your own script, or in a Claude Code Workflow script whose one agent runs the commands, and branch on each step's typed answer. This loop fixes and reviews until the review passes, at most three rounds, each review on a provider other than the fix it reviews:
 
 ```bash
 cp fix.md task.md
@@ -114,13 +114,14 @@ for round in 1 2 3; do
   bullswarm run --lane build --no-caller --json --add-dir "$REPO" \
     --task-file task.md > fix.json || { jq -r .why fix.json; break; }
   bullswarm run --lane analyze --no-caller --json --add-dir "$REPO" --task-file review.md \
+    --independent-of "$(jq -r .outFile fix.json)" \
     --answer-schema review.schema.json > review.json || { jq -r .why review.json; break; }
   jq -e '.answer.passed' review.json > /dev/null && { echo "passed in round $round"; break; }
   { cat fix.md; echo; echo '## The last review found'; jq -r '.answer.problems[]' review.json; } > task.md
 done
 ```
 
-`--no-caller` makes every step a delegate, so no step comes back `keepOnClaude: true` without an answer. Background jobs and `wait` fan a step out over many items. The packaged skill's `references/compose.md` has this loop and two more recipes: check each finding in parallel, and let a judge pick among several proposals. Use a [workflow](/guide/workflows) instead when the work must outlive your session, or when parallel writers share one worktree and need an integration step.
+`--no-caller` makes every step a delegate, so no step comes back `keepOnClaude: true` without an answer. `--independent-of` keeps the review off the provider that ran the fix; when only that provider is free, the review exits 1 with `no pool left after route filters` and the loop stops. [`run --batch`](/reference/cli#many-tasks-in-one-call) fans a step out over many items in one call. The packaged skill's `references/compose.md` has this loop and two more recipes: check each finding in one batch, and let a judge pick among several proposals. Use a [workflow](/guide/workflows) instead when the work must outlive your session, or when parallel writers share one worktree and need an integration step.
 
 ## Re-judge saved outputs
 

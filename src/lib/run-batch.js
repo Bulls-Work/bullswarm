@@ -13,9 +13,10 @@
 // finished without dispatching), so routing sees the batch's own picks the
 // same way it sees any other process's work.
 
-import { readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { usageLine } from '../help.js';
+import { loadAnswerSchema } from './answer.js';
 import { loadConnectors } from './config.js';
 import { withPoolLabels } from './pool-labels.js';
 import { isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS } from './reasoning.js';
@@ -27,8 +28,8 @@ const DEFAULT_CONCURRENCY = 4;
 const EFFORTS = ['high', 'medium', 'low'];
 
 // The `run` flags that apply to the whole batch. Everything a task needs
-// (lane, directory, task text, effort, reasoning, route filters) is set per
-// line instead.
+// (lane, directory, task text, effort, reasoning, typed answer, route
+// filters) is set per line instead.
 const BATCH_FLAGS = ['batch', 'concurrency', 'json', 'no-caller', 'timeout', 'dry-run', 'help'];
 
 const text = (value) => (typeof value === 'string' && value.trim() ? null : 'must be a non-empty string');
@@ -51,6 +52,14 @@ function taskFile(value) {
   }
 }
 
+// The schema is vetted as the single run vets it, so a bad schema stops the
+// batch before its first task: `"answerSchema" is not JSON: …`.
+function schemaFile(value) {
+  if (text(value)) return text(value);
+  const { error } = loadAnswerSchema(value);
+  return error ? error.replace(/^--answer-schema:?\s*/, '') : null;
+}
+
 // A route key takes one value or a list; each value is what one flag takes.
 const oneOrMore = (v) => {
   const list = Array.isArray(v) ? v : [v];
@@ -70,6 +79,9 @@ const LINE_KEYS = {
     flag: 'reasoning',
     check: (v) => (isReasoningLevel(v) ? null : `must be one of ${[...REASONING_LEVELS, REASONING_DEFAULT].join(', ')} (got ${JSON.stringify(v)})`),
   },
+  // Typed answer (src/lib/answer.js).
+  answerSchema: { flag: 'answer-schema', path: true, check: schemaFile },
+  answerFile: { flag: 'answer-file', path: true, check: text },
   // Route filters (src/lib/run-route.js), checked in full before anything runs.
   avoidPool: { flag: 'avoid-pool', list: true, route: true, check: oneOrMore },
   useProvider: { flag: 'use-provider', list: true, route: true, check: oneOrMore },
@@ -77,26 +89,29 @@ const LINE_KEYS = {
   independentOf: { flag: 'independent-of', list: true, route: true, check: oneOrMore },
 };
 
-// Keys a sibling `run` feature will read, refused until this version's
-// single run has the flag, so a line never silently loses what it asked for.
-const NOT_YET = {
-  answerSchema: 'answer-schema',
-  answerFile: 'answer-file',
-};
+// One file under two spellings is one file (macOS /tmp is /private/tmp). The
+// answer file may not exist yet, so its directory is what gets resolved.
+function fileKey(path) {
+  const abs = resolve(path);
+  try {
+    return join(realpathSync(dirname(abs)), basename(abs));
+  } catch {
+    return abs;
+  }
+}
 
 /** Problems with one parsed line, as `"key" …` phrases (empty when it is good). */
 function lineProblems(task) {
   const problems = [];
   for (const key of Object.keys(task)) {
     if (key === 'id' || LINE_KEYS[key]) continue;
-    problems.push(NOT_YET[key]
-      ? `"${key}" is not supported yet: this version's run has no --${NOT_YET[key]}`
-      : `unknown key "${key}" (allowed: id, ${Object.keys(LINE_KEYS).join(', ')})`);
+    problems.push(`unknown key "${key}" (allowed: id, ${Object.keys(LINE_KEYS).join(', ')})`);
   }
   if (typeof task.id !== 'string' || !task.id.trim()) problems.push('"id" must be a non-empty string');
   if (task.lane === undefined) problems.push(`"lane" is required (${LANES.join('|')})`);
   if (task.prompt === undefined && task.taskFile === undefined) problems.push('needs "prompt" or "taskFile"');
   if (task.prompt !== undefined && task.taskFile !== undefined) problems.push('choose one of "prompt" or "taskFile"');
+  if (task.answerFile !== undefined && task.answerSchema === undefined) problems.push('"answerFile" needs "answerSchema"');
   for (const [key, spec] of Object.entries(LINE_KEYS)) {
     if (task[key] === undefined) continue;
     const problem = spec.check(task[key]);
@@ -116,6 +131,8 @@ function readTasks(file) {
   const tasks = [];
   const errors = [];
   const lineOfId = new Map();
+  // Two tasks that run at once must not write one answer file.
+  const lineOfAnswerFile = new Map();
   raw.split(/\r?\n/).forEach((source, index) => {
     const line = index + 1;
     if (!source.trim()) return;
@@ -135,6 +152,11 @@ function readTasks(file) {
     if (typeof task.id === 'string' && task.id.trim()) {
       if (lineOfId.has(task.id)) errors.push(`line ${line}: id "${task.id}" is already used on line ${lineOfId.get(task.id)}`);
       else lineOfId.set(task.id, line);
+    }
+    if (typeof task.answerFile === 'string' && task.answerFile.trim()) {
+      const path = fileKey(task.answerFile);
+      if (lineOfAnswerFile.has(path)) errors.push(`line ${line}: "answerFile" ${task.answerFile} is already used on line ${lineOfAnswerFile.get(path)}`);
+      else lineOfAnswerFile.set(path, line);
     }
     // A line with a bad shape is not route-checked: its fields mean nothing yet.
     tasks.push({ line, task, checked: !problems.length });
@@ -279,9 +301,10 @@ export async function cmdRunBatch(opts, {
         onVerdict: (v) => { verdict = v; release(); },
         onDispatch: () => release(),
       });
-      return verdict
-        ? { id: task.id, exit, ...verdict }
-        : { id: task.id, exit, ok: false, keepOnClaude: false, why: `run refused the task with exit ${exit} (see stderr)` };
+      if (!verdict) return { id: task.id, exit, ok: false, keepOnClaude: false, why: `run refused the task with exit ${exit} (see stderr)` };
+      // `id` is the line's; the run's own decision-log id is `runId`.
+      const { id: runId, ...rest } = verdict;
+      return { id: task.id, exit, ...(runId === undefined ? {} : { runId }), ...rest };
     } catch (err) {
       return { id: task.id, exit: 1, ok: false, keepOnClaude: false, why: `run failed: ${err?.message ?? err}` };
     } finally {

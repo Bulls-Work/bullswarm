@@ -2,10 +2,12 @@
 
 There are exactly two ways to start work: `bullswarm run` for one bounded
 outcome, and `bullswarm workflow goal` for a program you author. A flow you
-drive yourself is many `bullswarm run` steps with typed answers
-([compose.md](compose.md)). Decide the shape yourself — there is no preview or
-classifier command. Read this reference only after that decision, when the
-task needs direct commands, workflow operation, or recovery.
+drive yourself is many `bullswarm run` steps with typed answers, route filters
+(`--independent-of`, `--use-provider`, `--avoid-provider`, `--avoid-pool`) and
+`run --batch` for many at once ([compose.md](compose.md)). Decide the shape
+yourself — there is no preview or classifier command. Read this reference
+only after that decision, when the task needs direct commands, workflow
+operation, or recovery.
 
 Unrecognized `--flags` are a usage error on every command: Bullswarm prints
 `unknown flag --name` plus that command's synopsis and exits 2, before

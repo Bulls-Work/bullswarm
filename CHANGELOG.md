@@ -7,31 +7,44 @@
   or one next to the run's output), and the verdict carries `answer`,
   `answerCheck` (`ok`, `errors`, `file`, `why`) and `workerOk`, the worker's
   own verdict. A missing or invalid answer, or a named file this run did not
-  rewrite, sets `ok: false` and exits 1, with no retry. A valid answer beside
-  an empty or result-free reply passes. A schema that is unreadable, not JSON,
-  or uses a keyword outside the workflow schema subset exits 2 before any
-  worker starts. A pool's ok share, its incumbency and `health` count
-  `workerOk`, so a failed check against the caller's schema is not held
-  against the pool. Runs without the flag are unchanged.
+  rewrite, sets `ok: false` and exits 1, with no retry. Once the worker has
+  written a JSON answer, an empty or result-free reply is not a worker
+  failure: a valid answer passes, and an invalid one fails the check alone
+  (`workerOk: true`). A schema that is unreadable, not JSON, or uses a
+  keyword outside the workflow schema subset exits 2 before any worker
+  starts. A pool's ok share, its incumbency and `health` count `workerOk`, so
+  a failed check against the caller's schema is not held against the pool.
+  Runs without the flag are unchanged.
+- run: your own code can decide who runs a step. `--avoid-pool`,
+  `--use-provider`, `--avoid-provider` and `--independent-of <run>` are hard
+  route filters applied before pace, and they hold the calling agent too.
+  When they leave no pool, the run exits 1 with the reason (`no pool left
+  after route filters (…)`) instead of widening them. `--independent-of`
+  takes an earlier run's `outFile` or `id` and keeps every pool of that run's
+  provider out. The `--json` verdict now carries `id` (the run's decision-log
+  id) and, with a filter, `routeFilter` (the pools it kept and took out, and
+  why).
+- run: `run --batch <tasks.jsonl> [--concurrency N]` hands out many tasks in
+  one call. Each line is one run with its own lane, task, typed answer
+  (`answerSchema`, `answerFile`) and route filters, and each runs once: no
+  retry, no saved state. It prints one array of verdicts in file order, each
+  with the line's `id`, the run's `runId` and `exit`, and exits 1 when any
+  task failed. A bad line, a schema that cannot be checked, two lines naming
+  one answer file, or a filter that names nothing real exits 2 before
+  anything runs.
 - skill: a caller that keeps the control flow chains `run` steps with typed
   answers. `skill/references/compose.md` has three recipes: check each
-  finding in parallel, fix until the review passes, and let a judge pick
-  among proposals. `workflow goal` is for work that must outlive the session
-  or parallel writers that need an integration step.
+  finding in one batch, each checker on a provider other than the finder's;
+  fix until a review on another provider passes; and let a judge pick among
+  proposals from different providers. It also shows how a Claude Code
+  Workflow script hands a whole fan-out to one agent that runs `run --batch`.
+  `workflow goal` is for work that must outlive the session, or parallel
+  writers that need an integration step.
 - MCP: `bullswarm_run` takes `noCaller`, `answerSchema` and `answerFile`, and
   returns `stderr` when a failed call printed there (a usage error does). The
   task goes to `run` as one value, so task text that starts with `--` is no
   longer read as a flag. Calls that overlap each get their own output back;
   they used to get each other's, or nothing.
-- run: your own code can now decide who checks whom, and hand out many tasks
-  in one call. `--avoid-pool`, `--use-provider`, `--avoid-provider` and
-  `--independent-of <run>` are hard route filters applied before pace; they
-  hold the calling agent too, and when they leave no pool the run exits 1 with
-  the reason instead of widening. `--independent-of` takes an earlier run's
-  `outFile` or decision-log id and keeps every pool of that run's provider out.
-  `run --batch <tasks.jsonl> [--concurrency N]` runs each line as its own
-  single run (one attempt, no retry, no saved state) and prints one array of
-  verdicts in file order; it exits 1 when any task failed.
 - workflow: every step gets one automatic retry, then comes back to you. A
   crashed, silent or signed-out worker is retried once on another pool that can
   run the step (the same pool when it is the only one, except after a sign-in
