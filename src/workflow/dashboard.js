@@ -10,16 +10,15 @@ import { readJsonSafe, readJsonForUpdate, writeJsonAtomic } from '../lib/fsjson.
 import { join } from 'node:path';
 import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, isOngoing, legacyRunLine, readKernelStderrTail } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
-import { isDeliveredWorkflowStatus } from './status.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
-import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
+import { isProgramWorkflow } from './execution-policy.js';
 import { asciiGlyphsPreferred, glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { integrationStatus, installIntegration } from '../integrate.js';
-import { loadUsage, parseMouse, METER_COLORS, meterBar, paceWord, untilText } from './usage-view.js';
+import { loadUsage, parseMouse, METER_COLORS } from './usage-view.js';
 // The 0.33.0 pages: the render kit, the two aggregation models, and the four
 // view modules each territory owns. The shell composes them and owns no
 // arithmetic of its own beyond laying the lines out.
-import { absentLine, chartRowCount, columns, compactRow, columnBars, cut, formatDashboardValue, periodToggle, progressBar, rule, seriesColor, shareBar, sparkline, tabsRow } from './dash-kit.js';
+import { columns, cut, formatDashboardValue, rule, sparkline, tabsRow } from './dash-kit.js';
 import { PERIODS, TREND_METRICS, modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from './stats-model.js';
 import { biggestRuns, budgetModel } from './budget-model.js';
 import { budgetLines, budgetNotes } from './budget-view.js';
@@ -33,9 +32,6 @@ import { readMeterHistoryDays } from '../meters/registry.js';
 import { listTasks, taskKey } from '../lib/tasks.js';
 import { attemptOutputSeries } from './v2-state.js';
 import { formatMoneyPair } from '../lib/usage-basis.js';
-import {
-  taskToday,
-} from './home-model.js';
 import {
   homePage,
 } from './home-view.js';
@@ -54,7 +50,6 @@ import {
   runEconomics,
 } from './run-model.js';
 import {
-  runFrame,
   renderWorkflowOverviewPanel,
   workflowTimelineLines,
   runPage,
@@ -207,8 +202,6 @@ export function writeClipboard(text, { platform = process.platform, env = proces
   }
   return { ok: false, tool: null, reason: tools.length ? `${tools.join(' and ')} failed` : 'no pbcopy, wl-copy or xclip on this machine' };
 }
-/** Lines of the goal the Preflight segment shows before an ellipsis. */
-const GOAL_PREVIEW_LINES = 5;
 const SIDEBAR_WIDTH = 34;
 const V2_TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 /** A run directory that wrote one of these has finished; the index has it. */
@@ -280,7 +273,6 @@ function navigationFooter({
 }
 
 function breadcrumbSegments(row, { depth = 0, phase = null, agent = null } = {}) {
-  const state = row?.state ?? {};
   const run = row ? `${row.shortId ?? row.runId ?? '------'} · ${workflowRunLabel(row)}` : null;
   const segments = ['Workflows'];
   if (run) segments.push(run);
@@ -1006,11 +998,6 @@ export function blank() {
   return asciiGlyphsPreferred() ? '-' : '—';
 }
 
-/** `≈` with the basis beside it, or the ascii twin. */
-export function about() {
-  return asciiGlyphsPreferred() ? '~' : '≈';
-}
-
 const TOKEN_SOURCE_RANK = Object.freeze({
   unknown: 0,
   'estimated:utf8-bytes/4': 1,
@@ -1044,10 +1031,6 @@ function worstSubscriptionBasis(current, candidate) {
   const next = subscriptionBasisOf(candidate);
   if (current == null) return next;
   return SUBSCRIPTION_BASIS_RANK[next] < SUBSCRIPTION_BASIS_RANK[current] ? next : current;
-}
-
-function usageBasisText(value, tokenSource) {
-  return formatMoneyPair({ api: { usd: value, tokenSource: tokenSourceOf(tokenSource, value) } });
 }
 
 /**
@@ -1374,132 +1357,6 @@ function installResultLines(result) {
   return lines;
 }
 
-/**
- * The action a painted row names, when it is one of the run's actions.
- * Boundary-checked so `implement` never matches `implement-two`.
- */
-function tileText(tile, width) {
-  const value = tile.value ?? blank();
-  const spark = tile.spark ? `  ${tile.spark}` : '';
-  return cut(`${value}${spark}`, width);
-}
-
-function todayPoolMinute(value, nowMs) {
-  const started = Date.parse(value?.startedAt ?? '');
-  const finished = Date.parse(value?.finishedAt ?? value?.endedAt ?? '');
-  const wall = finiteOrNull(value?.wallSec);
-  if (wall != null && wall >= 0) return wall / 60;
-  const duration = finiteOrNull(value?.durationMs);
-  if (duration != null && duration >= 0) return duration / 60_000;
-  if (!Number.isFinite(started) || dayKey(value?.startedAt) !== dayKey(nowMs)) return 0;
-  return Math.max(0, (Number.isFinite(finished) ? finished : nowMs) - started) / 60_000;
-}
-
-function todayLivePoolMinute(value, nowMs) {
-  const started = Date.parse(value?.startedAt ?? '');
-  if (!Number.isFinite(started)) return 0;
-  const dayStart = new Date(nowMs);
-  dayStart.setHours(0, 0, 0, 0);
-  return Math.max(0, nowMs - Math.max(started, dayStart.getTime())) / 60_000;
-}
-
-/** Metered pools that did work today, followed by the remaining meters. */
-function homeLicencePools(model, nowMs) {
-  const metered = (model.stats?.overview?.today?.licence?.pools ?? [])
-    .filter((pool) => pool?.name && pool.usedPct != null)
-    .map((pool) => ({ ...pool, _todayMinutes: 0, _workedToday: false }));
-  if (!metered.length) return { pools: [], omitted: 0 };
-  const byName = new Map(metered.map((pool) => [pool.name, pool]));
-  const add = (name, minutes, worked = true) => {
-    const pool = byName.get(name);
-    if (!pool) return;
-    pool._workedToday ||= worked;
-    const amount = finiteOrNull(minutes);
-    if (amount != null && amount >= 0) pool._todayMinutes += amount;
-  };
-
-  // The spent tile attributes finished workflow rollups to their finish day.
-  for (const record of model.rollups ?? []) {
-    if (dayKey(record?.finishedAt) !== dayKey(nowMs)) continue;
-    for (const [name, entry] of Object.entries(record?.pools ?? {})) {
-      const attempts = finiteOrNull(entry?.attempts) ?? 0;
-      const minutes = finiteOrNull(entry?.minutes);
-      add(name, minutes, attempts > 0 || (minutes != null && minutes > 0));
-    }
-  }
-  // Standalone `bullswarm run` tasks are not workflow rollups, but are still
-  // today's worker minutes and must keep their metered pool visible.
-  for (const task of model.tasks?.finished ?? []) {
-    if (!taskToday(task, nowMs, { finished: true })) continue;
-    add(task.pool, todayPoolMinute(task, nowMs));
-  }
-  for (const task of model.tasks?.inflight ?? []) {
-    if (!taskToday(task, nowMs)) continue;
-    add(task.pool, todayPoolMinute(task, nowMs));
-  }
-
-  const assignmentKeys = new Set();
-  for (const assignment of model.assignments ?? []) {
-    if (!assignment?.pool || !assignment.startedAt) continue;
-    assignmentKeys.add(`${assignment.runId ?? ''}:${assignment.actionId ?? assignment.id ?? ''}`);
-    add(assignment.pool, todayLivePoolMinute(assignment, nowMs));
-  }
-  // A live workflow assignment can briefly be absent while its state record is
-  // already running. Include that durable attempt without double-counting an
-  // assignment we just saw.
-  for (const run of model.runs ?? []) {
-    for (const attempt of run?.state?.attempts ?? []) {
-      if (!attempt?.pool || attempt.status !== 'running' || !attempt.startedAt) continue;
-      const key = `${run.runId ?? ''}:${attempt.actionId ?? attempt.id ?? ''}`;
-      if (assignmentKeys.has(key)) continue;
-      add(attempt.pool, todayLivePoolMinute(attempt, nowMs));
-    }
-  }
-
-  const worked = metered.filter((pool) => pool._workedToday)
-    .sort((a, b) => b._todayMinutes - a._todayMinutes || a.name.localeCompare(b.name));
-  const idle = metered.filter((pool) => !pool._workedToday)
-    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0) || a.name.localeCompare(b.name));
-  return { pools: [...worked, ...idle], omitted: 0 };
-}
-
-function licencePoolName(value, cellWidth) {
-  const full = String(value ?? '');
-  const suffix = full.includes(':') ? full.slice(full.lastIndexOf(':') + 1) : full;
-  // A pool identity is kept whole when the cell has ordinary room. If it
-  // cannot fit, switch at the provider boundary; never paint an ellipsis into
-  // a pool name that looks like a different provider.
-  if (cellWidth >= 12 && full.length <= Math.max(12, cellWidth - 8)) return full;
-  const suffixRoom = Math.max(1, cellWidth - 8);
-  return suffix.length <= suffixRoom ? suffix : '';
-}
-
-/**
- * Keep the Home tile honest when a short viewport cannot paint every meter.
- * Worked pools are always retained; only the idle tail may collapse into the
- * explicit `+N pools` row.
- */
-function homeLicenceDisplay(order, { narrow = false, bodyHeight = null, height = 36 } = {}) {
-  const pools = order?.pools ?? [];
-  const worked = pools.filter((pool) => pool._workedToday);
-  // Home reserves room for its summary, in-flight block and recent history.
-  // A normal frame therefore grows naturally; only genuinely short frames
-  // exercise the summary row.
-  const available = Number(bodyHeight) || Math.max(1, Number(height) - 2);
-  const reserve = narrow ? 8 : 9;
-  const rowBudget = Math.max(1, available - reserve);
-  if (pools.length <= rowBudget || !pools.length) return { pools, omitted: 0 };
-  const idle = pools.filter((pool) => !pool._workedToday);
-  const idleSlots = Math.max(0, rowBudget - worked.length - 1);
-  const shown = [...worked, ...idle.slice(0, idleSlots)];
-  return { pools: shown, omitted: Math.max(0, pools.length - shown.length) };
-}
-
-/**
- * `widget-lib@cmd ▇▇▇▇▇▇░░░░ 15m/17m`, the per-step bar the prototype draws
- * beside the plan strip.
- *
- */
 function integrationLines(model, opts, body) {
   const { width } = opts;
   body.push('');
@@ -1529,32 +1386,6 @@ function integrationLines(model, opts, body) {
   body.push(rule('run it', null, width));
   for (const command of DASHBOARD_COMMANDS) body.push(dimText(`   ${command}`, width));
   return ' bullswarm · runs';
-}
-
-// ------------------------------------------------------------ Run and Step
-
-/**
- * Plan-strip metadata is all-or-nothing for pool and model names. A short
- * cell drops the pool first, then the model; it never paints `openc…` (or any
- * other partial pool name) as if that were an identity.
- */
-function planAttemptMeta(attempt, width) {
-  const cols = Math.max(0, Number(width) || 0);
-  const pool = attempt?.pool ? String(attempt.pool) : null;
-  const model = attempt?.model ? String(attempt.model) : null;
-  const effortValue = attempt?.effort ?? attempt?.routing?.effort;
-  const effort = effortValue ? String(effortValue) : null;
-  const candidates = [
-    [pool, model, effort],
-    [model, effort],
-    [effort],
-    [],
-  ];
-  for (const candidate of candidates) {
-    const text = candidate.filter(Boolean).join(' · ');
-    if (!text || text.length <= cols) return text;
-  }
-  return '';
 }
 
 /** Budget: every pool's licence meter, its money and what still fits. */
@@ -1783,20 +1614,6 @@ function statsPage(model, opts, body) {
   pushView(body, statsView);
   body.anchor = { tabs: 1 };
   return ` Stats · ${tab}`;
-}
-
-/** History: every workflow by date, newest first, older days on scroll. */
-function historyPage(model, opts, body) {
-  const { width } = opts;
-  // `historyDays` files each record under the day it belongs to (history.js
-  // H5), so the page draws the rows the model carries rather than rejoining
-  // the index by day key here.
-  const days = model.days ?? [];
-  pushView(body, historyLines(days, { width, ansi: meterAnsi() }));
-  if (!days.length) {
-    body.push(dimText(' bullswarm workflow reindex backfills the history index from the run directories', width));
-  }
-  return ` History · ${days.length} day${days.length === 1 ? '' : 's'}`;
 }
 
 /** History's note: how many days are loaded, right above the bottom nav. */
@@ -3957,7 +3774,6 @@ export {
   tokenSourceOf,
   worstTokenSource,
   worstSubscriptionBasis,
-  usageBasisText,
   ageText,
   clockAt,
   okMark,

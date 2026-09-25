@@ -162,5 +162,3 @@ export function buildEvidencePreflight(contractPath, candidatePath, checkerPath 
     '5. End your response with only a short confirmation that the durable evidence candidate validated.',
   ].join('\n');
 }
-
-export const evidenceOutputPreflight = buildEvidencePreflight;

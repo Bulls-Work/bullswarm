@@ -2,13 +2,13 @@
 
 import { isReasoningLevel } from '../lib/reasoning.js';
 import {
-  DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_ROLES, ROLES,
+  DELIVERABLE_TYPES, KIND_ROLES, ROLES,
   ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, STEP_EVIDENCE_TYPES, WRITING_DELIVERABLES,
   deliverableTypeOf, laneFitsDeliverable, roleRouting,
 } from './step-vocabulary.js';
 import { normalizeRoute } from './step-route.js';
 
-export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES };
+export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, STEP_EVIDENCE_TYPES };
 
 export const ACTION_PROGRAM_SCHEMA_VERSION = 'bullswarm.workflow.program.v2';
 
@@ -879,5 +879,3 @@ export function validateActionProgram(program, runtime = {}) {
     ...(defaults.verifyRounds !== undefined ? { verifyRounds: defaults.verifyRounds } : {}),
   };
 }
-
-export const validateProgram = validateActionProgram;

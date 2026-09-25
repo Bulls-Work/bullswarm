@@ -246,10 +246,6 @@ function countText(value, word) {
   const number = finite(value);
   return number == null ? 'value unavailable' : `${number} ${word}${number === 1 ? '' : 's'}`;
 }
-function percentText(value) {
-  const number = finite(value);
-  return number == null ? 'value unavailable' : `${Number((number * 100).toFixed(1))}%`;
-}
 function reasonFor(field, row = null) {
   if (row?.missingReason) return row.missingReason;
   if (field === 'apiEquivalentUsd') return 'cost not recorded';

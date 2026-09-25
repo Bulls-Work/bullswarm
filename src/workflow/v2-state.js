@@ -1361,12 +1361,6 @@ export function v2PlannerMode(stateOrGoal) {
 }
 export function validateV2GoalDocument(document) { validateGoal(document); return true; }
 export function validateV2DurableState(state) { validateState(state); return true; }
-export function serializeV2GoalDocument(document) { validateGoal(document); return JSON.stringify(document); }
-export function deserializeV2GoalDocument(serialized) {
-  if (typeof serialized !== 'string') fail('serialized goal document must be a string');
-  let value; try { value = JSON.parse(serialized); } catch { fail('serialized goal document must be valid JSON'); }
-  validateGoal(value); return clone(value);
-}
 export function serializeV2DurableState(state) { validateState(state); return JSON.stringify(state); }
 export function deserializeV2DurableState(serialized) {
   if (typeof serialized !== 'string') fail('serialized state must be a string');

@@ -21,13 +21,12 @@ import { aggregateAttemptUsage, readRollup, rollupRecord, writeRunRollup } from 
 import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
 import { isTerminalWorkflowStatus } from './status.js';
-import { helpText, usageLine } from '../help.js';
+import { helpText } from '../help.js';
 import { reconcilePricing } from './reconcile.js';
 import { resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 
 export const REPRICE_RETENTION_CAVEAT =
   'provider transcripts are pruned. Attempts older than the retention window will resolve to unknown, and the honest dashboard consequence is a visible gap in the history chart, not a silent zero.';
-export const REPRICE_USAGE = usageLine(['workflow', 'reprice']);
 
 const TOKEN_SOURCES = new Set([
   'provider-reported',
@@ -952,5 +951,3 @@ export function cmdReprice(args = [], {
   }
   return report.failures.length ? 1 : 0;
 }
-
-export { parseArgs as parseRepriceArgs };

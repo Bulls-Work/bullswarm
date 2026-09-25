@@ -19,10 +19,10 @@
 
 import { glyphs } from '../lib/glyphs.js';
 import { taskKey } from '../lib/tasks.js';
-import { formatMoney, formatUsageBasis } from '../lib/usage-basis.js';
+import { formatUsageBasis } from '../lib/usage-basis.js';
 import { runMinutesInfo, runProject, runStepCounts } from './home-model.js';
 import { poolUsageAggregate, recordSpendFacts, spendFacts } from './spend-facts.js';
-import { compactRow, cut, formatDashboardValue, rule } from './dash-kit.js';
+import { cut, rule } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -174,32 +174,6 @@ function costInfo(value, tokenSource) {
   };
 }
 
-function apiEstimate(value, tokenSource, { compact = false } = {}) {
-  const info = costInfo(value, tokenSource);
-  return info.text === 'cost unknown' ? '(cost unknown)' : compact ? info.text : `(${info.text} API)`;
-}
-
-/**
- * The scope's money in the Runs list's own words.
- *
- * A whole scope keeps the estimate label it always had. A scope holding
- * attempts nobody priced reads `at least $X · N unmeasured` — the Run spend
- * block's own wording, through its own helper — so the row can never pass a
- * lower bound off as the whole sum. Nothing recorded stays `(cost unknown)`.
- */
-function apiEstimateFor(info, { compact = false } = {}) {
-  const whole = apiEstimate(info?.value ?? null, info?.tokenSource, { compact });
-  const facts = info?.facts ?? null;
-  const amount = finite(facts?.apiKnownSubtotalUsd);
-  if (amount == null || !(facts.unmeasured > 0 || facts.running > 0)) return whole;
-  const counted = [
-    facts.running > 0 ? `${facts.running} running` : null,
-    facts.unmeasured > 0 ? `${facts.unmeasured} unmeasured` : null,
-  ].filter(Boolean).join(' · ');
-  const text = `at least ${formatMoney(amount)}${counted ? ` · ${counted}` : ''}`;
-  return compact ? text : `(${text})`;
-}
-
 function recordCostInfo(run) {
   const empty = { ...costInfo(null, 'unknown'), known: null, facts: null, counts: { attempts: 0, priced: 0, measured: 0, running: 0 } };
   if (!run || typeof run !== 'object') return empty;
@@ -322,46 +296,10 @@ function minutesText(minutes) {
     : `${total}m`;
 }
 
-function durationText(run) {
-  if (typeof run?.duration === 'string' && /[a-z]/i.test(run.duration.trim())) return run.duration.trim();
-  if (typeof run?.durationText === 'string' && run.durationText.trim()) return run.durationText.trim();
-  const { minutes, span } = durationFacts(run);
-  if (minutes == null) return 'duration unavailable';
-  return span ? `span ${minutesText(minutes)}` : minutesText(minutes);
-}
-
-function displayedDuration(run) {
-  if (unfinishedRun(run)) {
-    // The summary already carries the words `elapsed unavailable`; repeating
-    // that sentence in a fixed duration cell would steal the whole goal on a
-    // wide row. A measured live duration remains a real duration; otherwise
-    // the cell has no number to show.
-    return run.running && finite(run.elapsedMinutes) != null
-      ? elapsedText(run).replace(/ elapsed$/, '')
-      : '—';
-  }
-  return durationText(run);
-}
-
-// How long a run still in flight has been going, from its recorded start to
-// the instant the model measured. A run with no readable start says so rather
-// than printing a bare unit.
-function elapsedText(run) {
-  const minutes = finite(run?.elapsedMinutes);
-  return minutes == null ? 'elapsed unavailable' : `${minutesText(minutes)} elapsed`;
-}
-
 // Statuses that claim a kernel is working right now. A run whose kernel is
 // gone keeps one of these in its state forever, so the reader says interrupted
 // — the same substitution `workflow runs` makes, so the two never disagree.
 const LIVE_STATUS_WORDS = new Set(['queued', 'planning', 'running', 'ready-to-finalize']);
-
-function unfinishedWord(run) {
-  if (run?.running === true || run?.ongoing === true) return 'running';
-  const status = statusValue(run);
-  if (!status) return 'stopped';
-  return LIVE_STATUS_WORDS.has(status) ? 'interrupted' : status;
-}
 
 function unfinishedRun(run) {
   const hasFinish = Boolean(run?.finishedAt || run?.endedAt || run?.completedAt);
@@ -383,11 +321,6 @@ function shortId(run) {
   if (short != null && textOf(short, '')) return textOf(short, '');
   const id = runId(run);
   return id.length > 6 ? id.slice(-6) : id;
-}
-
-function project(run) {
-  const value = run?.project ?? run?.projectName ?? run?.repository;
-  return textOf(value, 'unknown project');
 }
 
 function goal(run) {
@@ -437,61 +370,6 @@ function topLevelDays(value) {
     if (keyed.length) return keyed;
   }
   return [];
-}
-
-function daySpend(day, runs) {
-  const stated = finite(day?.spendUsd ?? day?.apiEquivalentUsd ?? day?.spend);
-  if (stated != null) return stated;
-  let total = null;
-  for (const run of runs.filter((entry) => !isTask(entry))) {
-    const cost = isLegacy(run) ? costInfo(null, 'unknown') : recordCostInfo(run);
-    if (cost.value != null) total = (total ?? 0) + cost.value;
-  }
-  return total;
-}
-
-/**
- * The day's spend, with the coverage that produced it.
- *
- * The day's stated `spendUsd` sums only the strict whole-scope amounts its
- * runs recorded, so a day holding one partly-priced run and one whole run
- * states the whole run's amount and looks complete. The rows themselves know
- * better: when any of them leaves attempts unpriced, the view sums their
- * recorded amounts and the count of attempts that are missing, so the day
- * rule reads `at least $X · N unmeasured` instead of a total it does not
- * have.
- */
-function daySpendInfo(day, runs) {
-  const stated = finite(day?.spendUsd ?? day?.apiEquivalentUsd ?? day?.spend);
-  const entries = runs
-    .filter((run) => !isTask(run) && !isLegacy(run))
-    .map((run) => recordCostInfo(run));
-  const partial = entries.some((info) => info.facts != null
-    && (info.facts.unmeasured > 0 || info.facts.running > 0));
-  if (stated != null && !partial) {
-    let tokenSource = tokenSourceOf(day?.tokenSource, stated);
-    for (const info of entries) tokenSource = worstTokenSource(tokenSource, info.tokenSource);
-    return { ...costInfo(stated, tokenSource), facts: spendFacts({ apiKnownSubtotalUsd: stated }) };
-  }
-  let total = null;
-  let known = null;
-  let attempts = 0;
-  let priced = 0;
-  let measured = 0;
-  let tokenSource = tokenSourceOf(day?.tokenSource, stated);
-  for (const info of entries) {
-    tokenSource = worstTokenSource(tokenSource, info.tokenSource);
-    if (info.value != null) total = (total ?? 0) + info.value;
-    if (info.known != null) known = (known ?? 0) + info.known;
-    attempts += info.counts?.attempts ?? 0;
-    priced += info.counts?.priced ?? 0;
-    measured += info.counts?.measured ?? 0;
-  }
-  return {
-    ...costInfo(total, tokenSource),
-    known,
-    facts: spendFacts({ attempts, pricedAttempts: priced, measuredAttempts: measured, apiKnownSubtotalUsd: known }),
-  };
 }
 
 function dayCount(day, runs) {
@@ -566,17 +444,6 @@ function markRole(mark, run) {
   if (mark === glyphs().ok) return 'green';
   if (mark === glyphs().fail) return 'red';
   return 'dim';
-}
-
-function rowSummary(run) {
-  const base = goal(run);
-  if (isLegacy(run)) return `legacy · read-only · ${base}`;
-  if (unfinishedRun(run)) {
-    return run.running === true
-      ? `running · ${elapsedText(run)} · no result yet · ${base}`
-      : `${unfinishedWord(run)} · no result recorded · ${base}`;
-  }
-  return base;
 }
 
 function taskId(task) {

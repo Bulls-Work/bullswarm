@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
-import { parseAttemptStream, taskStepModel, toolCallUpdates } from '../src/workflow/step-model.js';
+import { parseAttemptStream, toolCallUpdates } from '../src/workflow/step-model.js';
+import { taskStepModel } from '../src/workflow/task-step.js';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const connector = JSON.parse(readFileSync(join(repo, 'src/providers/grok/connector.json'), 'utf8'));

@@ -8,8 +8,6 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 import {
-  adaptTaskRecord,
-  taskRecordToStepInput,
   taskStepInput,
   taskStepModel,
 } from '../src/workflow/task-step.js';
@@ -117,8 +115,6 @@ test('task adapter reads the record and copied sibling artifacts without followi
     assert.equal(input.row.state.attempts[0].outputFile, join(root, 'out-copy.md'));
     assert.equal(input.row.state.attempts[0].streamFile, null);
     assert.equal(input.row.state.attempts[0].usage, null);
-    assert.equal(adaptTaskRecord, taskStepInput);
-    assert.equal(taskRecordToStepInput, taskStepInput);
 
     const model = taskStepModel(recordPath, { runsDir: root, nowMs: NOW });
     assert.deepEqual(model.task.lines, ['Inspect the copied task.', 'Keep unknowns honest.']);

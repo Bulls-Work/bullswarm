@@ -61,10 +61,6 @@ export function formatMoney(value, tokens = null) {
   return `$${smallAmount(number)}`;
 }
 
-// Descriptive alias for callers that need to distinguish this from pair
-// formatting while keeping the same single implementation.
-export const formatMoneyAmount = formatMoney;
-
 function windowLabel(window) {
   if (window === '5h') return '5h';
   if (window === 'weekly') return 'wk';

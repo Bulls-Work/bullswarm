@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns, cmdReindex } from './runs-cli.js';
@@ -17,9 +17,9 @@ import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
-import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, declaredDeliverable, poolCausedPools } from './step-vocabulary.js';
+import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
-import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS, SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
+import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
 import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import {
   runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest,
@@ -249,64 +249,9 @@ function goalUsage() {
   return helpText(['workflow', 'goal']);
 }
 
-// The exhausted decision is only meaningful at a gap boundary (the initial
-// boundary requires a program; steering asks for an update), so it is only
-// advertised there.
-function callerPlannerNextCommands(token, boundary) {
-  return {
-    show: `bullswarm workflow plan show ${token} --json`,
-    submit: callerPlannerSubmitCommand(token),
-    ...(boundary === 'gaps' ? { exhausted: `bullswarm workflow plan submit ${token} --exhausted --reason "<why no bounded action remains>"` } : {}),
-  };
-}
-
 function cancellationSummary(cancellation) {
   if (!cancellation?.requested) return null;
   return { requested: true, requestedAt: cancellation.requestedAt ?? null, reason: cancellation.reason ?? null, source: cancellation.source ?? null };
-}
-
-function plannerAwaitingDocument({ runId, shortId, awaiting, cancellation = null }) {
-  const token = shortId ?? runId;
-  const cancelling = cancellationSummary(cancellation);
-  return {
-    action: 'planner-awaiting',
-    runId, shortId,
-    status: 'waiting',
-    plannerMode: 'caller',
-    boundary: awaiting.boundary,
-    turn: awaiting.turn,
-    requestPath: awaiting.requestPath,
-    candidatePath: awaiting.candidatePath,
-    correction: awaiting.correction ?? null,
-    cancellation: cancelling,
-    next: cancelling
-      ? { finalize: `bullswarm workflow cancel ${token} --json` }
-      : callerPlannerNextCommands(token, awaiting.boundary),
-    note: cancelling
-      ? 'cancellation was requested while the run was paused; no kernel is alive, so workflow cancel finalizes it and records the cancelled result (no program can be submitted)'
-      : awaiting.boundary === 'initial'
-        ? 'the kernel is waiting for the caller to author the initial program'
-        : awaiting.boundary === 'gaps'
-          ? 'the kernel consolidated the remaining gaps and is waiting for the caller to author the next program revision (or declare exhausted)'
-          : 'queued steering needs a caller-authored program update',
-  };
-}
-
-function printPlannerAwaiting(doc) {
-  console.log(`workflow ${doc.shortId ?? doc.runId} is waiting for its caller planner (${doc.boundary} boundary, turn ${doc.turn})`);
-  if (doc.correction) {
-    console.log('  the previous program was rejected before dispatch:');
-    for (const issue of doc.correction.issues) console.log(`    - ${issue}`);
-  }
-  console.log(`  request  ${doc.requestPath}`);
-  if (doc.cancellation) {
-    console.log(`  cancel   requested ${doc.cancellation.requestedAt ?? ''} (${doc.cancellation.reason ?? 'operator requested stop'}); no program can be submitted`);
-    console.log(`  finalize ${doc.next.finalize}`);
-    return;
-  }
-  console.log(`  show     ${doc.next.show}`);
-  console.log(`  submit   ${doc.next.submit}`);
-  if (doc.next.exhausted) console.log(`  or       ${doc.next.exhausted}`);
 }
 
 async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initialPlannerResponse = null }) {
@@ -855,7 +800,6 @@ async function wfGoal(opts) {
   let planning;
   try { planning = resolvePlanning(opts); }
   catch (err) { console.error(`✗ ${err.message}`); return 2; }
-  const callerPlanner = planning.mode === 'caller';
   const { names, pools } = await livePoolNames();
   let doc;
   let resumeRunId = null;

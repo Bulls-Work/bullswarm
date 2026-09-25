@@ -6,8 +6,9 @@ import { join } from 'node:path';
 
 import {
   METER_COLORS, severityColor, meterBar, paceWord, poolWindows, untilText,
-  poolSummaryLines, loadUsage, parseMouse, formatUsageMoney, usageMoneyPair,
+  loadUsage, parseMouse,
 } from '../src/workflow/usage-view.js';
+import { formatMoneyPair } from '../src/lib/usage-basis.js';
 import { registerAssignment } from '../src/lib/assignments.js';
 
 const NOW = Date.parse('2026-09-09T11:09:44.982Z');
@@ -246,54 +247,6 @@ test('untilText rounds to the window\'s own vocabulary', () => {
   assert.equal(untilText(null, NOW), '');
 });
 
-// --- compact pool rows -------------------------------------------------------
-
-test('poolSummaryLines draws one row per enabled pool', () => {
-  const pools = [
-    { name: 'alpha', enabled: true, usedPct: 32, elapsedPct: 27, pace: 35.9, incumbentLane: ['high', 'medium'], quarantine: null },
-    { name: 'beta', enabled: false, usedPct: 10, elapsedPct: 5, pace: 0, incumbentLane: [] },
-    { name: 'gamma', enabled: true, usedPct: null, elapsedPct: null, pace: null, incumbentLane: [] },
-  ];
-  const assignments = [
-    { pool: 'alpha', actionId: 'build-app', lane: 'high' },
-    { pool: 'alpha', actionId: null, lane: 'check' },
-    { pool: 'beta', actionId: 'hidden', lane: 'low' },
-  ];
-  const lines = poolSummaryLines(pools, assignments, { width: 100, ansi: false });
-  assert.deepEqual(lines, [
-    'alpha           ##|.......  32%/27%  +35.9  build-app, check  ← high/medium',
-    'gamma           ··········   —  no meter',
-  ]);
-});
-
-test('poolSummaryLines colours the pace by severity and the work in cyan', () => {
-  const pools = [{ name: 'alpha', enabled: true, usedPct: 32, elapsedPct: 27, pace: 35.9, incumbentLane: [], quarantine: null }];
-  const [line] = poolSummaryLines(pools, [{ pool: 'alpha', actionId: 'build-app', lane: 'high' }]);
-  assert.ok(line.includes('\x1b[48;2;182;189;115m'), 'a green bar at 32% used');
-  assert.ok(line.includes('\x1b[38;2;182;189;115m'), 'green pace');
-  assert.ok(line.includes('\x1b[36m'), 'cyan running ids');
-  assert.ok(strip(line).endsWith('  32%/27%  +35.9  build-app'));
-
-  const [quarantined] = poolSummaryLines([
-    { name: 'alpha', enabled: true, usedPct: 91, elapsedPct: 60, pace: null, incumbentLane: [], quarantine: { until: NOW + 60_000, reason: 'quota', kind: 'auto' } },
-  ]);
-  // A paused pool names its deadline and, for a quota pause, its proof.
-  assert.match(strip(quarantined), /paused until .+ · auth$/);
-  assert.ok(quarantined.includes('\x1b[38;2;191;108;105m'), 'red state word');
-  const [metered] = poolSummaryLines([
-    { name: 'alpha', enabled: true, usedPct: 96, elapsedPct: 60, pace: null, incumbentLane: [], quarantine: {
-      until: NOW + 60_000, kind: 'quota', rule: 'meter', meterWindow: { window: 'weekly', usedPct: 96 },
-    } },
-  ], [], { width: 200 });
-  assert.match(strip(metered), /paused until .+ · meter weekly 96%$/);
-});
-
-test('poolSummaryLines clips a row to the width it is given', () => {
-  const pools = [{ name: 'alpha', enabled: true, usedPct: 32, elapsedPct: 27, pace: 35.9, incumbentLane: [], quarantine: null }];
-  const [line] = poolSummaryLines(pools, [{ pool: 'alpha', actionId: 'a-very-long-action-id', lane: 'high' }], { width: 30, ansi: false });
-  assert.equal(line.length, 30);
-});
-
 // --- the loader --------------------------------------------------------------
 
 /** A fixture home: two local connectors, strategy state, a fresh meter cache. */
@@ -426,19 +379,14 @@ test('parseMouse ignores what is not a click', () => {
 
 test('usage money rows use the shared API/subscription pair and mark estimates', () => {
   const result = JSON.parse(readFileSync(new URL('./fixtures/transcripts/claude-result-event.json', import.meta.url), 'utf8'));
-  const observed = formatUsageMoney({
+  const observed = formatMoneyPair({
     api: { usd: result.total_cost_usd },
     tokenSource: 'provider-reported',
     subscription: { usd: 0.10349075975359343, deltaPct: 1.5, window: 'weekly', basis: 'observed:meter-delta' },
   });
   assert.equal(observed, '$0.61 api · 1.5% wk $0.10 sub');
-  assert.equal(usageMoneyPair({
-    api: { usd: result.total_cost_usd },
-    tokenSource: 'provider-reported',
-    subscription: { usd: 0.10349075975359343, deltaPct: 1.5, window: 'weekly', basis: 'observed:meter-delta' },
-  }), observed);
 
-  const estimated = formatUsageMoney({
+  const estimated = formatMoneyPair({
     api: { usd: 1.23 }, tokenSource: 'estimated:utf8-bytes/4', subscription: null,
   });
   assert.equal(estimated, '~ $1.23 api estimated · sub unknown (no meter/calibration)');

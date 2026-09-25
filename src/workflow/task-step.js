@@ -339,8 +339,4 @@ export function taskStepModel(input, {
   return model;
 }
 
-export const adaptTaskRecord = taskStepInput;
-export const taskRecordToStepInput = taskStepInput;
-export const buildTaskStepModel = taskStepModel;
-
 export default taskStepModel;

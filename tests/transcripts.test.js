@@ -4,6 +4,7 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,8 +12,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { readTranscriptUsage } from '../src/lib/transcripts/index.js';
-import { parseClaudeResultEvent } from '../src/lib/transcripts/claude-code.js';
-import { parseCodexStdout } from '../src/lib/transcripts/codex.js';
+import { claudeTokens } from '../src/lib/transcripts/claude-code.js';
 
 const FIXTURES = fileURLToPath(new URL('./fixtures/transcripts/', import.meta.url));
 const CODEX_ID = '01a0ba3c-3045-7013-928b-53a20891542b';
@@ -37,22 +37,6 @@ function codexHome(targetHome, date = '2026/09/19') {
   copy('codex-rollout.jsonl', path);
   return path;
 }
-
-test('Codex stdout fixture decodes provider counters into exclusive classes', () => {
-  const result = parseCodexStdout(join(FIXTURES, 'codex-stdout.jsonl'));
-  assert.equal(result.confidence, 'exact');
-  assert.equal(result.sessionId, CODEX_ID);
-  assert.deepEqual(result.tokens, {
-    standardRead: 14157,
-    cacheRead: 6912,
-    cacheWrite5m: null,
-    cacheWrite1h: null,
-    cacheWrite: 0,
-    output: 7,
-    reasoning: 13,
-    totalKnown: 21089,
-  });
-});
 
 test('Codex rollout fixture uses the last cumulative total and reports the real model', () => {
   const { dir, cleanup } = home();
@@ -100,11 +84,9 @@ test('Claude session fixture keeps the last streaming row per message identity',
   } finally { cleanup(); }
 });
 
-test('Claude result fixture preserves thinking as reasoning and subtracts it from output', () => {
-  const result = parseClaudeResultEvent(join(FIXTURES, 'claude-result-event.json'));
-  assert.equal(result.model, 'claude-fable-5');
-  assert.equal(result.sessionId, 'e83661db-cd13-4a23-824c-5c335353c19b');
-  assert.deepEqual(result.tokens, {
+test('Claude usage keeps thinking as reasoning and subtracts it from output', () => {
+  const result = JSON.parse(readFileSync(join(FIXTURES, 'claude-result-event.json'), 'utf8'));
+  assert.deepEqual(claudeTokens(result.usage), {
     standardRead: 2,
     cacheRead: 0,
     cacheWrite5m: 0,

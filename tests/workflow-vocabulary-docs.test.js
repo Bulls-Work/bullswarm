@@ -24,6 +24,7 @@ import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
 import { helpText } from '../src/help.js';
 import { extractGoalRequirements } from '../src/workflow/goal.js';
+import { pickPool } from '../src/lib/route.js';
 
 // Stage 1 docs drift check: the role, kind and difference tables in the docs
 // must say what the code tables say, and the example programs must validate.
@@ -758,7 +759,7 @@ test('the skill says a usage limit or no free pool comes back to you, with the b
   assert.ok(skill.includes('even when the notice names no reset'));
   assert.ok(skill.includes('One that names a longer wait comes back to you at once, with `back at` at the end of that wait.'));
   // A backoff whose pool is out comes back at once, with that pool's own return.
-  const backoffLost = 'One whose pool is no longer free for the backoff (paused, at its 5-hour limit, nearly spent or benched in the meantime) comes back to you at once too: as `out of quota` when that pool is out on a usage limit, with `back at` its return when that is known.';
+  const backoffLost = 'One whose pool is no longer free for the backoff (paused, at its 5-hour, weekly or monthly limit, nearly spent or benched in the meantime) comes back to you at once too: as `out of quota` when that pool is out on a usage limit, with `back at` its return when that is known.';
   // A process failure retries by itself, on the same pool when it is the only
   // one (except after a sign-in failure): the pages never say it always moves.
   const processRetry = 'A sign-in failure, a provider error or a worker that died at start still gets the step\'s one automatic retry by itself, on another free pool when there is one.';
@@ -941,6 +942,70 @@ test('no skill page, guide, reference or help text describes a step that waits f
   assert.ok(watch.includes('it ends `back to you` and a needs-you block follows'));
   assert.ok(helpText(['strategy', 'set-pausing']).includes('a spent usage window still ends the step and sends it back to the caller, whatever the switch'));
   assert.ok(flat('docs/reference/cli.md').includes('a spent usage window still ends the step and comes back to you, whatever the switch'));
+});
+
+test('the pages give the limit rules the code applies: the last-mile reason, any spent window, auth with pausing off', async () => {
+  const { BURST_BLOCK_PCT, windowSpent } = await import('../src/meters/framework.js');
+  const pages = [
+    'skill/SKILL.md', 'skill/references/operations.md', 'skill/references/program.md', 'docs/reference/program.md',
+    'docs/guide/workflows.md', 'docs/guide/observing.md', 'docs/guide/routing.md', 'docs/guide/concepts.md',
+    'docs/reference/cli.md', 'docs/reference/result.md', 'docs/reference/configuration.md', 'AGENTS.md',
+  ];
+  // The router's last-mile reason, as pickPool prints it, promises no retry.
+  const near = { name: 'claude-code:acme', costRank: 2, lanes: ['analyze', 'build', 'chore'], pace: -5, fiveHourUsedPct: 88.1 };
+  const { why } = pickPool('build', [near], { callerEligible: false, callerSession: false, now: 1_000_000_000_000 });
+  const clause = why.split(' · ').find((part) => part.startsWith('last mile: '));
+  assert.equal(clause, 'last mile: claude-code:acme 88.1% of 5h, a limit mid-attempt goes back to the caller');
+  assert.ok(flat('docs/guide/routing.md').includes(`\`${clause}\``));
+  const generic = clause.replace('claude-code:acme', '<pool>');
+  assert.ok(flat('skill/references/operations.md').includes(`\`${generic}\``));
+  assert.ok(flat('CHANGELOG.md').includes(`\`${generic}\``));
+  for (const path of pages) {
+    for (const phrase of ['handoff covers the wall', 'handoff retry covers', 'deterministic retry if the wall', 'limit notices are retried']) {
+      assert.ok(!flat(path).includes(phrase), `${path}: ${phrase}`);
+    }
+  }
+  // Any metered window at 100% keeps its pool out until the reset, and the
+  // held list names that window.
+  assert.equal(BURST_BLOCK_PCT, 100);
+  const resetsAt = '2026-09-28T00:00:00.000Z';
+  assert.deepEqual(windowSpent({ meterSnapshot: { seven_day: { utilization: 100, resets_at: resetsAt } } }, Date.parse('2026-09-25T00:00:00Z')), { window: 'weekly', resetsAt });
+  assert.equal(windowSpent({ meterSnapshot: { seven_day: { utilization: 100, resets_at: resetsAt } } }, Date.parse('2026-09-29T00:00:00Z')), null);
+  assert.equal(windowSpent({ meterSnapshot: { monthly: { utilization: 100, resets_at: resetsAt } } }, Date.parse('2026-09-25T00:00:00Z')).window, 'monthly');
+  assert.ok(read('src/workflow/v2-dispatch.js').includes('`at its ${spent.window} limit`'));
+  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/guide/routing.md']) {
+    assert.ok(flat(path).includes('at its weekly limit until <time>'), `${path}: weekly limit`);
+  }
+  assert.ok(flat('CHANGELOG.md').includes('`<pool> at its weekly limit until <time>` (or `monthly`)'));
+  const concepts = flat('docs/guide/concepts.md');
+  assert.ok(concepts.includes('at 100% the pool is not dispatched at all'));
+  assert.ok(concepts.includes('Any metered window at 100% — 5-hour, weekly or monthly — keeps the pool out of every pick until that window resets.'));
+  assert.ok(!concepts.includes('90%'));
+  // The meter read after a usage limit keeps the pool out only when it shows
+  // a window at 100%: a fresh 97% reading leaves the pool eligible, so no page
+  // promises that later steps never get the pool.
+  assert.equal(windowSpent({ fiveHourUsedPct: 97, fiveHourResetsAt: resetsAt }, Date.parse('2026-09-25T00:00:00Z')), null);
+  const reread = [...pages, 'skill/references/program.md', 'docs/reference/providers.md', 'CHANGELOG.md'];
+  for (const path of reread) {
+    for (const phrase of ['so later steps are not given', 'so later work is not given', 'Routing then keeps the pool out of later steps', 'routing keeps it out of later steps until']) {
+      assert.ok(!flat(path).includes(phrase), `${path}: ${phrase}`);
+    }
+  }
+  const pausing = helpText(['strategy', 'set-pausing']).replace(/\s+/g, ' ');
+  assert.ok(pausing.includes('the pool\'s meter is read again at once, so a window it shows at 100% keeps the pool out of later steps until that window resets'));
+  // A sign-in failure stays `auth` with pausing off; the switch only pauses.
+  assert.ok(pausing.includes('Either way a sign-in failure is failure kind auth, and the step\'s retry skips every pool that shares its credential.'));
+  assert.ok(flat('docs/reference/cli.md').includes('A sign-in failure is failure kind `auth` either way, and the step\'s retry skips every pool that shares that credential.'));
+  assert.ok(flat('CHANGELOG.md').includes('with automatic pausing off (`strategy set-pausing off`), a sign-in failure is still a sign-in failure (`auth`)'));
+  const offLine = read('src/cli.js').match(/'(automatic pausing is off: [^']*)'/)[1];
+  assert.ok(!offLine.includes('retried') && !offLine.includes('moves to another pool'), offLine);
+  assert.ok(flat('docs/reference/cli.md').includes(`\`set-pausing off\` prints \`${offLine}\``));
+  assert.ok(flat('CHANGELOG.md').includes(`\`${offLine.slice(offLine.indexOf('a spent usage window'), offLine.indexOf(' · '))}\``));
+  // The bench reasons the code writes: stall, provider (an empty free answer too), probe.
+  for (const path of ['docs/reference/cli.md', 'docs/guide/routing.md']) assert.ok(!flat(path).includes('**empty output**') && !flat(path).includes('`empty output` or `probe`'), path);
+  assert.ok(flat('docs/reference/cli.md').includes('A bench reason is one of `stall`, `provider` or `probe`.'));
+  // A single run writes three files: task, out, and one raw capture.
+  assert.ok(concepts.includes('Each `bullswarm run` writes three files under `~/.bullswarm/runs/`'));
 });
 
 // A marked program run with one failed retryable step, one failed gate step,

@@ -86,10 +86,6 @@ export function compareManifests(before, after) {
   return { created, modified, deleted, changed: [...created, ...modified, ...deleted].sort() };
 }
 
-export function changedManifestPaths(before, after) {
-  return compareManifests(before, after).changed;
-}
-
 export function checkOwnership({ before, after, ownedFiles } = {}) {
   const changes = compareManifests(before, after);
   const declared = normalizeOwnedFiles(ownedFiles, 'ownedFiles');

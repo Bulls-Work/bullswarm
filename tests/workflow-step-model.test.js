@@ -15,13 +15,13 @@ import { eventToolSummary,
   sharedFileRequests,
   stepClockText,
   stepPageModel,
-  taskStepModel,
   toolCallUpdates,
   toolKindsForPool,
   toolSummaryText,
   turnCountsText,
 } from '../src/workflow/step-model.js';
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
+import { taskStepModel } from '../src/workflow/task-step.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 import { workflowPanelModel } from '../src/workflow/run-model.js';
 
@@ -686,7 +686,7 @@ test('single-task adapter keeps ledger facts and marks workflow-only fields unav
     taskFile: fixture('task.md'),
     outFile: fixture('output.md'),
   }, { nowMs: fixedNow });
-  assert.equal(model.identity.actionId, 'task-1');
+  assert.equal(model.identity.actionId, 'build task');
   assert.equal(model.identity.project, null);
   assert.equal(model.route.lane, 'build');
   assert.equal(model.header.effort, null);

@@ -69,7 +69,7 @@ These are the non-negotiable rules the rest of the tool is built on. Everything 
 - **Content decides, never the exit code.** Every delegate CLI can exit 0 having done nothing, and a non-zero exit is never called success on its own. After a dispatch, `ok: true` means the saved output passed verification.
 - **Quota pace picks the pool.** Surplus is `elapsed% − used%` of a pool's own subscription window, and the pool furthest behind its pace wins, because unused quota expires with the clock. Lanes describe the work, never a fixed lane-to-pool map.
 - **Delegate output is evidence, not authority.** A delegate can propose; only the kernel — Bullswarm's own runtime, not an agent — validates a program, accepts evidence, and computes completion.
-- **Quarantine always lifts.** A pool benched for a usage limit comes back at the reset the provider named, then re-probes on its own; a lane never stays down because one pool is out.
+- **A pause always lifts.** A pool paused for a usage limit comes back at the reset its proof named (the provider's line, or its own meter's window), and one paused after a sign-in failure re-probes after 10 minutes; a lane never stays down because one pool is out. With `bullswarm strategy set-pausing off` nothing is paused at all.
 
 ## Where to go next
 

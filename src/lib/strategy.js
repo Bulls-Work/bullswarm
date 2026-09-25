@@ -12,7 +12,7 @@ import {
   isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel, suggestedReasoningLevel,
 } from './reasoning.js';
 import { attemptWindow } from './spend.js';
-import { pacingWindowFor } from '../meters/framework.js';
+import { pacingWindowFor, windowSpent } from '../meters/framework.js';
 // The canonical lane/effort tables. Imported, never restated: see
 // TIER_CONTEXTS below for the tier -> lane derivation they feed.
 import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-validator.js';
@@ -1252,7 +1252,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
         && !disabled.has(model.id.toLowerCase()));
     for (const tier of tiers) {
       const context = TIER_CONTEXTS[tier];
-      if (pool.enabled === false || pool.quarantine || pool.burstGate || !supportsContext(pool, context)) continue;
+      if (pool.enabled === false || pool.quarantine || windowSpent(pool) || !supportsContext(pool, context)) continue;
       const candidates = rankCandidates(eligible
         .filter((model) => model.tier === tier)
         .map((model) => ({ pool: pool.name, model, key: tierKey(model, pool, tier) })));
@@ -1285,7 +1285,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
     const context = TIER_CONTEXTS[tier];
     const candidates = [];
     for (const pool of pools) {
-      if (pool.enabled === false || pool.quarantine || pool.burstGate) continue;
+      if (pool.enabled === false || pool.quarantine || windowSpent(pool)) continue;
       if (!supportsContext(pool, context)) continue;
       const discovery = rankedDiscoveries[pool.name];
       // The same exclusions the pool's own suggestion honours, so a tier is

@@ -156,6 +156,35 @@ test('dated connector benchmark scores break ties only between models of equal q
   assert.deepEqual(ranked.suggestions.high.recommended, { pool: 'a', model: 'a1' });
 });
 
+// A pool with a metered window at its limit (framework.js
+// windowSpent) is recommended for no tier until that window resets, whether
+// the window is the 5-hour, the weekly or the monthly one.
+test('strategy recommends no tier on a pool whose weekly or monthly window is at its limit', () => {
+  const capable = { lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'] };
+  const connectors = { a: { name: 'a', ...capable }, b: { name: 'b', ...capable } };
+  const resetsAt = new Date(Date.now() + 3 * 24 * 3600_000).toISOString();
+  const discoveries = {
+    a: { models: [{ id: 'a1', tier: 'high', qualityRank: 6 }] },
+    b: { models: [{ id: 'b1', tier: 'high', qualityRank: 5 }] },
+  };
+  const withA = (extra) => buildStrategy({
+    connectors, state: {}, discoveries,
+    pools: [
+      { name: 'a', connector: connectors.a, enabled: true, costRank: 1, pace: 0, ...extra },
+      { name: 'b', connector: connectors.b, enabled: true, costRank: 1, pace: 0 },
+    ],
+  });
+  assert.deepEqual(withA({ usedPct: 99, pacingWindow: 'weekly', paceResetsAt: resetsAt }).suggestions.high.recommended, { pool: 'a', model: 'a1' });
+  for (const spent of [
+    { usedPct: 100, pacingWindow: 'weekly', paceResetsAt: resetsAt },
+    { meterSnapshot: { monthly: { utilization: 100, resets_at: resetsAt } } },
+  ]) {
+    const report = withA(spent);
+    assert.deepEqual(report.suggestions.high.recommended, { pool: 'b', model: 'b1' }, JSON.stringify(spent));
+    assert.deepEqual(report.providerSuggestions.a, {}, 'no tier is suggested on the spent pool');
+  }
+});
+
 test('high-tier strategy excludes a higher-scoring model without planning capability', () => {
   const connectors = {
     planner: { name: 'planner', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'] },

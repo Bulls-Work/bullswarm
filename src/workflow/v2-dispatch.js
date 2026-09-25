@@ -4,8 +4,9 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './v2-runtime.js';
 import {
-  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isBenched, isExhausted, isFree, isQuarantined,
+  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isBenched, isFree, isQuarantined,
 } from '../lib/route.js';
+import { windowSpent } from '../meters/framework.js';
 import {
   assertDepthAllowed, childDepthEnv, clearPoolStrikes, loadState, quarantinePool,
   quarantineUpstreamSiblings, recordPoolStrike, updateState, upstreamGroupOf,
@@ -118,30 +119,13 @@ function workerNeverStarted(verdict) {
   return verdict?.meta?.workerNotStarted === true || Boolean(verdict?.meta?.spawnError);
 }
 
-// A throttle verdict whose usage window is spent (quota.js decideQuotaPause):
-// the notice is window-worded ("hit your session limit", "out of credits"),
-// with or without a reset named, or pausing is off and the reset is known
-// (the provider named it, or the meter is full). A throttle-worded notice
-// ("too many requests") with no known reset is a transient rate limit.
-function spentWindow(quotaPause) {
-  return quotaPause?.limit === 'window' || (quotaPause?.rule === 'off' && toMs(quotaPause.holdUntil) != null);
-}
-
+// A spent usage window arrives as `quota` from the worker's verdict itself:
+// every dispatch under the usage-limit rules asks watchOnce for the
+// limits-to-caller reading (`usageLimitsToCaller`), whatever the switch.
 function markedFailureKind(verdict, pool = null) {
   const kind = classifyFailure(verdict, pool);
   if (kind && kind !== 'cancelled' && workerNeverStarted(verdict) && failureClassOf(kind) !== 'process') return 'process';
-  // Marked runs file every spent usage window as `quota`, whatever the
-  // pausing switch, so the caller sees one kind for one fact.
-  if (kind === 'throttle' && spentWindow(verdict?.quotaPause)) return 'quota';
   return kind;
-}
-
-// The planner and scout of a marked run (usageLimitsToCaller): a spent usage
-// window is `quota` as for a step; every other kind reads as unmarked runs
-// read it.
-function limitsFailureKind(verdict, pool = null) {
-  const kind = classifyFailure(verdict, pool);
-  return kind === 'throttle' && spentWindow(verdict?.quotaPause) ? 'quota' : kind;
 }
 
 // Marked usage-limit rules: when a rate limit names a wait too long to sit
@@ -171,8 +155,9 @@ function preparePools(pools, action, effort, {
   // when work can be retried, and to refuse a pin that can never run it.
   ignoreQuarantine = false,
   ignoreBench = false,
-  // Stage 3: a 5h-gated pool is still capable (it comes back at its reset).
-  // Passed only for the capable set of marked runs.
+  // Stage 3: a pool with a window at its limit (framework.js windowSpent) is
+  // still capable (it comes back at its reset). Passed only for the capable
+  // set of marked runs.
   ignoreBurstGate = false,
   // The step's route (step-route.js resolveRouteFilter): a hard filter on
   // every list this builds, before any ranking (D18).
@@ -180,7 +165,7 @@ function preparePools(pools, action, effort, {
 } = {}) {
   const available = [];
   for (const pool of pools) {
-    if (pool.enabled === false || (pool.burstGate === true && !ignoreBurstGate)) continue;
+    if (pool.enabled === false || (!ignoreBurstGate && windowSpent(pool, now))) continue;
     if (routeFilter && !poolPassesRoute(pool, routeFilter)) continue;
     if (!ignoreQuarantine && isQuarantined(pool, now)) continue;
     if (!ignoreBench && isBenched(pool, now)) continue;
@@ -1036,11 +1021,11 @@ export async function dispatchV2Action({
   const failedProbes = new Set();
   // `limitsOnly`: the usage-limit rules without the rest of the failure rule
   // (the planner and scout of a marked run). `limitsRule`: either one, for
-  // what the two share (a spent window is quota, the end names each pool's
-  // reason and when to try again).
+  // what the two share (the worker reads a spent window as quota, the end
+  // names each pool's reason and when to try again).
   const limitsOnly = usageLimitsToCaller === true && !failureRule;
   const limitsRule = failureRule || limitsOnly;
-  const failureKindOf = failureRule ? markedFailureKind : limitsOnly ? limitsFailureKind : classifyFailure;
+  const failureKindOf = failureRule ? markedFailureKind : classifyFailure;
   const liveQuarantines = dependencies.liveQuarantines ?? (() => {
     try { return loadCoreState(bullswarmDir).pools ?? {}; }
     catch { return {}; }
@@ -1256,7 +1241,7 @@ export async function dispatchV2Action({
     // pool whenever that pool can take work at this pick, and otherwise this
     // pick falls back to the untried eligible pools; the pin stays until an
     // attempt starts. A backoff replays its own pool only: when that pool can
-    // no longer take the step (paused, at its 5-hour wall, draining, benched)
+    // no longer take the step (paused, a window at its limit, draining, benched)
     // the step goes to the caller, never to another pool.
     let gatePick = null;
     let markedPools = null;
@@ -1395,7 +1380,7 @@ export async function dispatchV2Action({
     // that does not happen, so it is corrected, and no other pool is tried.
     if (!route.pick && pin) return correctPinnedRetry(pin);
     // Stage 3: the router refused the gate retry's pool (off its lane, or its
-    // live 5h meter is used up): the retry falls back to the other untried
+    // live meter is at its limit): the retry falls back to the other untried
     // pools at the next pick.
     if (!route.pick && gatePick) {
       gateBlocked = true;
@@ -1403,8 +1388,8 @@ export async function dispatchV2Action({
     }
     if (!route.pick) {
       // The router refused a backoff's own pool, or every pool a correction
-      // moved to off its nearly spent pool (off the lane, its live 5-hour
-      // meter used up): the caller, as above.
+      // moved to off its nearly spent pool (off the lane, or a live window at
+      // its limit): the caller, as above.
       if (backoffReplay || limitsReplay || movedPools) backoffBlocked = replay.name;
       break;
     }
@@ -1579,6 +1564,8 @@ export async function dispatchV2Action({
         onAgentProgress,
         bullswarmDir,
         poolName: pool.name,
+        // A spent usage window is `quota` whatever the pausing switch.
+        ...(limitsRule ? { usageLimitsToCaller: true } : {}),
         runId: runId ?? runIdFromPaths(files),
         attemptId: `${action.id}-${ordinal}`,
         startedAt,
@@ -1755,13 +1742,12 @@ export async function dispatchV2Action({
           catch { refreshed = null; }
           pendingRefresh = Array.isArray(refreshed) ? refreshed : [];
         }
-        // The pinned pick's own filter, not prepare() alone: pickPool also
-        // drops a pool off its lane or whose live 5h meter is used up, the
-        // usual way a pool stops being eligible after a finished worker.
+        // The pinned pick's own filter: prepare() drops a pool whose live
+        // meter is at its limit (windowSpent), the usual way a pool stops
+        // being eligible after a finished worker, and pickPool one off its lane.
         const lane = action.lane ?? 'chore';
-        const decidedAt = now();
         const eligibleNow = prepare(pendingRefresh?.length ? pendingRefresh : allPools)
-          .filter((candidate) => (candidate.lanes ?? LANES).includes(lane) && !isExhausted(candidate, decidedAt));
+          .filter((candidate) => (candidate.lanes ?? LANES).includes(lane));
         if (eligibleNow.some((candidate) => candidate.name === pool.name)) canRetryEvidence = true;
         else {
           pendingRefresh = null;
@@ -1778,10 +1764,35 @@ export async function dispatchV2Action({
     // next attempt of THIS action must not walk from one pool name to the next
     // sibling on the same credential into the same failure, as it did on
     // 2026-09-11.
-    const benchedGroup = verdict.quarantineHint && kind === 'auth' ? upstreamGroupOf(pool) : null;
+    const benchedGroup = kind === 'auth' ? upstreamGroupOf(pool) : null;
     if (benchedGroup) {
       for (let i = remaining.length - 1; i >= 0; i -= 1) {
         if (upstreamGroupOf(remaining[i]) === benchedGroup) remaining.splice(i, 1);
+      }
+    }
+    // The pools that can take work now, read live once for what follows this
+    // failure under the usage-limit rules.
+    let liveNow = null;
+    const pickableLive = () => (liveNow ??= prepare(allPools));
+    // The usage-limit rules (`limitsRule`: a marked step, or the planner or
+    // scout of a marked run), one decision for a rate limit. A wait the
+    // provider named that is too long to sit out is never slept: the caller is
+    // told when to try again. A transient one backs off on the same pool, never
+    // counted, only while that pool can still take the work; otherwise the
+    // caller, with that pool's reason. A usage limit is never retried, moved or
+    // waited out: the caller decides (owner decision, 2026-09-25). A marked act
+    // step whose worker started is not backed off either (D32).
+    let limitsBackoffNow = false;
+    if (limitsRule && !verdict.ok && kind !== 'cancelled') {
+      namedReturn = longThrottleReturn(kind, verdict, toMs(workerFinishedAt) ?? now());
+      backoffBlocked = null;
+      const actStarted = failureRule && roleOf(action) === 'act' && !workerNeverStarted(verdict);
+      if (kind === 'throttle' && namedReturn == null && throttleRetries < MAX_THROTTLE_RETRIES && !actStarted) {
+        if (!leftAfterProcessFailure.has(pool.name) && pickableLive().some((candidate) => candidate.name === pool.name)) {
+          limitsBackoffNow = true;
+        } else {
+          backoffBlocked = pool.name;
+        }
       }
     }
     // Stage 3 §2.1 (marked runs): what follows this failure, decided before
@@ -1807,16 +1818,11 @@ export async function dispatchV2Action({
       // candidates, plus the pool that just failed unless the step left it
       // after a process failure. `others`, the sole-candidate rule and the
       // backoff read the same set (D2, D4).
-      const pickableNow = prepare(allPools).filter((candidate) => (candidate.name === pool.name
+      const pickableNow = pickableLive().filter((candidate) => (candidate.name === pool.name
         ? !leftAfterProcessFailure.has(candidate.name)
         : !tried.has(candidate.name)));
       const others = pickableNow.filter((candidate) => candidate.name !== pool.name);
       const soleCandidate = pickableNow.length === 1 && pickableNow[0].name === pool.name;
-      // A wait the provider named for a rate limit, when it is too long to
-      // sit out: never slept; the caller is told when to try again.
-      namedReturn = longThrottleReturn(kind, verdict, toMs(workerFinishedAt) ?? now());
-      const longWait = namedReturn != null;
-      backoffBlocked = null;
       if (roleOf(action) === 'act' && !workerNeverStarted(verdict)) {
         // D32: once its worker started, an act step may have acted.
         next = null;
@@ -1832,38 +1838,16 @@ export async function dispatchV2Action({
         } else if (hasBudget) {
           next = { how: 'same-pool', gate: true, fresh: kind === 'not-produced' };
         }
-      } else if (kind === 'throttle' && !longWait && verdict?.throttleRetrySamePool !== false
-        && throttleRetries < MAX_THROTTLE_RETRIES) {
-        // A transient rate limit (no usage window spent; markedFailureKind
-        // files a spent window as `quota`): a short, bounded backoff on the
-        // same pool, never counted, taken only while that pool can still take
-        // the step; otherwise the caller, with that pool's reason. A usage
-        // limit is never retried, moved or waited out: the caller decides
-        // (owner decision, 2026-09-25).
-        if (pickableNow.some((candidate) => candidate.name === pool.name)) {
-          next = { how: 'wait', sameBackoff: true };
-          quotaNext = 'wait';
-        } else {
-          backoffBlocked = pool.name;
-        }
+      } else if (limitsBackoffNow) {
+        // The transient rate limit's backoff decided above.
+        next = { how: 'wait', sameBackoff: true };
+        quotaNext = 'wait';
       }
     }
     // The usage-limit rules alone (the planner and scout of a marked run): a
     // usage limit, and a rate limit that is not backed off, end the dispatch
-    // below with no retry and no move. A transient rate limit backs off on
-    // the same pool, never counted, while that pool can still take the work,
-    // and otherwise goes to the caller with that pool's reason.
+    // below with no retry and no move.
     const limitKind = limitsOnly && (kind === 'quota' || kind === 'throttle');
-    let limitsBackoffNow = false;
-    if (limitKind) {
-      namedReturn = longThrottleReturn(kind, verdict, toMs(workerFinishedAt) ?? now());
-      backoffBlocked = null;
-      if (kind === 'throttle' && namedReturn == null && verdict?.throttleRetrySamePool !== false
-        && throttleRetries < MAX_THROTTLE_RETRIES) {
-        if (prepare(allPools).some((candidate) => candidate.name === pool.name)) limitsBackoffNow = true;
-        else backoffBlocked = pool.name;
-      }
-    }
     const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
     const canCorrectSchema = kind === 'schema' && !correctionUsed && typeof correctionTask === 'function';
     // A free stall (and the provider-shaped verdict for literally empty free
@@ -2157,13 +2141,13 @@ export async function dispatchV2Action({
   // on quota. When every pool that can run it is paused, say when the first one
   // comes back, so the caller knows when `workflow resume` will get through.
   // Marked runs name each capable pool's reason (a usage limit, a bench, a
-  // process failure here), read a spent usage window as quota, and say why a
+  // process failure here), take a spent usage window as quota, and say why a
   // promised retry or a backoff did not happen; so do the planner and scout
   // of a marked run (`limitsRule`).
   const lane = action.lane ?? 'chore';
-  // In marked runs a 5h-gated pool is still capable: it comes back at its
-  // reset, so the reason is the 5-hour limit, never a missing tier (§2.1). A
-  // pool off the step's lane is not capable there.
+  // In marked runs a pool with a window at its limit is still capable: it
+  // comes back at that window's reset, so the reason is the limit, never a
+  // missing tier (§2.1). A pool off the step's lane is not capable there.
   const onLane = (pool) => !limitsRule || (pool.lanes ?? LANES).includes(lane);
   const capable = preparePools(allPools, action, effort, {
     preferredModel, strictPool, now: now(), ignoreQuarantine: true, ignoreBench: true, routeFilter,
@@ -2190,14 +2174,12 @@ export async function dispatchV2Action({
     ].filter(([, ms]) => ms != null && ms > endAt);
     if (limitsRule) {
       // Marked runs only: a pause with no end, a spent window whose reset is
-      // unknown, a 5-hour wall and a nearly spent window keep the pool out,
-      // even when their return is unknown.
+      // unknown, a metered window at its limit and a nearly spent window keep
+      // the pool out, even when their return is unknown.
       for (const record of quarantines) if (record.until == null) parts.push(pause(record));
       if (pool.name === lastPool?.name && lastKind === 'quota' && lastReset == null) parts.push(['out of quota', null, true]);
-      if (pool.burstGate === true) {
-        const reset = toMs(pool.fiveHourResetsAt);
-        parts.push(['at its 5-hour limit', reset != null && reset > endAt ? reset : null, true]);
-      }
+      const spent = windowSpent(pool, endAt);
+      if (spent) parts.push([`at its ${spent.window} limit`, toMs(spent.resetsAt), true]);
     }
     if (draining.has(pool.name)) {
       const view = draining.get(pool.name);

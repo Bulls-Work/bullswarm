@@ -268,13 +268,16 @@ A usage limit ends the step: a spent 5-hour or weekly window, or no credit
 left. The step comes straight back to you in a needs-you block (`✗ <step> needs
 you · out of quota …`), whatever the automatic pausing switch and even when the
 notice names no reset. Nothing waits, moves to another pool or retries by
-itself, and the rest of the run keeps going. The same happens when no pool that
-can run the step is free when it is picked: each one is nearly spent, at its
-5-hour limit, paused (for quota, or after a sign-in failure), or benched after
-repeated failures. Its `why` names every pool and its reason (`no pool with
-quota to spare: <pool> paused for quota until <time>; …`, or `no pool free: …`
-when a reason is not a usage limit, and the header then reads `no eligible
-pool`). When another pool that can run the step is free, routing picks it and
+itself, and the rest of the run keeps going. The pool's meter is read again at
+once, and a window it shows at 100% keeps the pool out of later steps until
+that window resets. The same
+happens when no pool that can run the step is free when it is picked: each one
+is nearly spent, at its 5-hour, weekly or monthly limit, paused (for quota, or
+after a sign-in failure), or benched after repeated failures. Its `why` names
+every pool and its reason (`no pool with quota to spare: <pool> paused for
+quota until <time>; …`, `<pool> at its weekly limit until <time>`, or `no pool
+free: …` when a reason is not a usage limit, and the header then reads `no
+eligible pool`). When another pool that can run the step is free, routing picks it and
 nothing comes back to you. A retry the step was promised (after a crash, a
 sign-in failure or a failed gate) that finds no free pool keeps its own
 failure, and its `why` ends `· no retry: <pool> <reason>; …`.
@@ -285,12 +288,13 @@ is at most 2 minutes), then comes back to you (`✗ <step> needs you · rate
 limited · backed off twice`), with automatic pausing on or off. A try after a
 backoff reads `· after a rate-limit backoff`. One that names a longer wait comes back to you
 at once, with `back at` at the end of that wait. One whose pool is no longer
-free for the backoff (paused, at its 5-hour limit, nearly spent or benched in
-the meantime) comes back to you at once too: as `out of quota` when that pool
-is out on a usage limit, with `back at` its return when that is known. A
-sign-in failure, a provider error or a worker that died at start still gets
-the step's one automatic retry by itself, on another free pool when there is
-one.
+free for the backoff (paused, at its 5-hour, weekly or monthly limit, nearly
+spent or benched in the meantime) comes back to you at once too: as `out of
+quota` when that pool is out on a usage limit, with `back at` its return when
+that is known. A sign-in failure, a provider error or a worker that died at
+start still gets the step's one automatic retry by itself, on another free
+pool when there is one. After a sign-in failure that retry skips every pool
+that shares the credential, whatever the pausing switch.
 
 When a return time is known, for this or any other failure, the block prints
 `back at <time>` (the failed pool's reset, the end of a rate limit's named

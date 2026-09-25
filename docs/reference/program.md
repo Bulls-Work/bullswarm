@@ -58,7 +58,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 
 | Failure | Automatic action | Then |
 |---|---|---|
-| `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`) | You decide |
+| `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`, whose retry also skips every pool that shares its credential, whatever the pausing switch) | You decide |
 | `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached | You decide |
 | `wait` | `quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry | You decide; the block shows `back at <time>` when the pool's return time is known |
 | `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
@@ -67,10 +67,13 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 Nothing waits for a pool. A limit notice is `quota` when it says a usage
 window, a quota or a balance is spent, with or without a reset named and
 whatever the pausing switch, or when the pool's meter shows the window full; a
-`too many requests` notice is `throttle`. A throttle that names a wait longer
+`too many requests` notice is `throttle`. After a `quota` the pool's meter is
+read again at once (or the pool is recorded as full until the reset when it
+cannot be read), and a window it shows at 100% keeps the pool out of later
+steps until that window resets. A throttle that names a wait longer
 than 2 minutes, or whose pool is no longer free for its backoff, comes back to
 you at once. When no pool that can run the step is free at its pick (nearly
-spent, at its 5-hour limit, paused or benched), the step comes back to you as
+spent, at its 5-hour, weekly or monthly limit, paused or benched), the step comes back to you as
 `quota` when every reason is a usage limit, else as `unavailable`, and its
 `why` names each pool and its reason.
 The dispatched planner and the preflight scout follow the same rule: a

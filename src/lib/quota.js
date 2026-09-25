@@ -9,9 +9,9 @@
 //       their reports and tool output routinely contains the words; killing a
 //       healthy worker for reading them costs more than a missed limit, which
 //       the final-output gate catches anyway.
-//   Q3. The deadline degrades honestly: the time parsed from the provider's
-//       own message, else that pool's cached 5h meter reset, else 30 minutes.
-//       Never a flat guess presented as a measurement.
+//   Q3. A deadline is only ever a measured one: the reset the provider's own
+//       message names, or the reset of the pool's own meter window
+//       (decideQuotaPause). With neither, no deadline is invented.
 //   Q4. Zero dependencies. Named time zones resolve through Intl only.
 //   Q5. A throttle is not a spent window. "Rate limit exceeded. Please wait a
 //       moment and try again." asks for a pause of seconds; pausing the pool
@@ -32,12 +32,16 @@
 //       `state.strategy.pausing: "off"` refuses EVERY pause a command takes on
 //       its own: quota, auth, the credential-group siblings that bench with an
 //       auth pause (state.js `quarantineUpstreamSiblings`), and the soft bench
-//       a second strike would write. Routing is untouched — meters are still
-//       read, pace and 5h headroom still gate, and a failed attempt still
-//       moves to another pool. `bullswarm strategy set-pausing on|off` writes
-//       it; `bullswarm pools` opens with `automatic pausing: off` while it is
-//       in effect. The owner asked for exactly this on 2026-09-21 15:40 HKT
-//       ("stop the quarantine logic at all").
+//       a second strike would write. A sign-in failure is `auth` either way.
+//       For a caller under the limits-to-caller rule (watch.js) it decides
+//       only whether a pool is paused for later work: a spent window is
+//       `quota` either way, its meter is re-read, and the refusal marker is
+//       written when that read fails. A run started by an earlier version
+//       reads a limit that paused nothing as a throttle. `bullswarm strategy
+//       set-pausing on|off` writes it; `bullswarm pools` opens with
+//       `automatic pausing: off` while it is in effect. The owner asked for
+//       exactly this on 2026-09-21 15:40 HKT ("stop the quarantine logic at
+//       all").
 
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -92,15 +96,19 @@ const WINDOW_WORDING =
   /\b(?:usage|session|daily|weekly|monthly|five[- ]hour|5[- ]?h(?:our)?)\s+(?:limit|quota|window|cap)\b|\bquota\b|\bcredits?\b|\bbilling\b/i;
 
 /**
- * A throttle that names its own wait is honoured up to this long; a wait
- * further out than this is not worth waiting for on the same pool, so the
- * attempt falls over to another pool instead (`retrySamePool: false`). It
- * still never pauses the pool (Q6).
+ * The longest wait a throttle may name and still be sat out on the same pool
+ * in a run started by an earlier version; a wait further out moves that
+ * attempt to another pool instead (`retrySamePool: false`). Runs started by
+ * this version sit out at most two minutes (v2-dispatch.js
+ * MARKED_THROTTLE_MAX_WAIT_MS). It never pauses the pool (Q6).
  */
 export const THROTTLE_MAX_WAIT_MS = 15 * 60_000;
 /** Short backoffs before each same-pool retry of a throttled attempt. */
 export const THROTTLE_BACKOFF_MS = Object.freeze([20_000, 60_000]);
-/** Same-pool retries a throttle earns before the step moves on. */
+/**
+ * Same-pool retries a throttle earns before it goes on: to the caller, or to
+ * another pool in a run started by an earlier version.
+ */
 export const MAX_THROTTLE_RETRIES = THROTTLE_BACKOFF_MS.length;
 
 /**
@@ -141,8 +149,6 @@ export const QUOTA_SIGNATURE_HEAD_CHARS = 40;
 const PROSE_LINE_PREFIX = /^(?:[-*+•]\s|>\s|#{1,6}\s|\d+[.)]\s)/;
 /** Reset wording sometimes lands on the line after the limit itself. */
 const QUOTA_CONTEXT_CHARS = 300;
-/** Fallback quarantine when neither the message nor the meter knows better. */
-export const DEFAULT_QUOTA_QUARANTINE_MS = 30 * 60_000;
 /** A reset further out than this is a parse artifact, not a reset. */
 export const MAX_RESET_AHEAD_MS = 7 * 24 * 60 * 60_000;
 
@@ -238,24 +244,14 @@ export function throttleBackoffMs(retry = 1, { waitMs = null } = {}) {
   return THROTTLE_BACKOFF_MS[index];
 }
 
-/** First declared-or-default quota phrase present in `text`, or null. */
-export function matchQuotaSignature(connector, text) {
-  const lower = String(text ?? '').toLowerCase();
-  if (!lower) return null;
-  for (const signature of quotaSignaturesFor(connector)) {
-    const needle = String(signature ?? '').toLowerCase();
-    if (needle && lower.includes(needle)) return signature;
-  }
-  return null;
-}
-
 /**
  * Quota signature WITH its matched line, a bounded context window and the
  * Q5/Q6 classification: `limit` is 'window' (the wording says a usage window
  * is spent) or 'throttle'; `transient` is true unless the notice ALSO names
  * its reset — only then does the message alone prove a pause. `waitMs` is
  * the wait the notice named, or null; `retrySamePool` is false when that
- * wait is longer than THROTTLE_MAX_WAIT_MS (fall over instead of waiting).
+ * wait is longer than THROTTLE_MAX_WAIT_MS (a run started by an earlier
+ * version then falls over instead of waiting).
  * The meter half of the rule is decideQuotaPause's.
  * Returns null unless the line is quota-shaped (Q2).
  */
@@ -305,11 +301,6 @@ function findQuotaNotice(connector, text) {
     }
   }
   return null;
-}
-
-/** The quota signature when the matched line is quota-shaped, else null. */
-export function matchLikelyQuotaFailure(connector, text) {
-  return findQuotaFailure(connector, text)?.signature ?? null;
 }
 
 // --- reset-time parsing ---------------------------------------------------
@@ -509,36 +500,6 @@ export function parseQuotaResetAt(text, { now = Date.now(), timeZone = null } = 
   return null;
 }
 
-/** `five_hour.resets_at` from a pool's cached meter snapshot, or null. */
-function cachedFiveHourReset(bullswarmDir, pool) {
-  if (typeof bullswarmDir !== 'string' || !bullswarmDir) return null;
-  if (typeof pool !== 'string' || !pool) return null;
-  try {
-    const snapshot = JSON.parse(readFileSync(join(bullswarmDir, 'meters', `${pool}.json`), 'utf8'));
-    return toMs(snapshot?.five_hour?.resets_at ?? null);
-  } catch {
-    // No snapshot, unreadable, or malformed — the caller has a fallback.
-    return null;
-  }
-}
-
-/**
- * Quarantine deadline for a quota failure, with the evidence that produced it.
- * @returns {{until: number, source: 'message'|'meter'|'default'}}
- */
-export function quotaQuarantineUntil({
-  text = '', pool = null, bullswarmDir = null, now = Date.now(), timeZone = null,
-} = {}) {
-  const nowMs = toMs(now) ?? Date.now();
-  const parsed = parseQuotaResetAt(text, { now: nowMs, timeZone });
-  if (parsed != null) return { until: parsed, source: 'message' };
-  const metered = cachedFiveHourReset(bullswarmDir, pool);
-  if (metered != null && metered > nowMs && metered - nowMs <= MAX_RESET_AHEAD_MS) {
-    return { until: metered, source: 'meter' };
-  }
-  return { until: nowMs + DEFAULT_QUOTA_QUARANTINE_MS, source: 'default' };
-}
-
 // --- the pause rule (Q6) ---------------------------------------------------
 
 /** A window this full on the pool's own meter proves the pool is spent. */
@@ -677,9 +638,8 @@ function quoted(line, max = 160) {
  *               its reset: paused until that reset.
  *   'meter'   — the pool's own meter reads >= QUOTA_PAUSE_METER_PCT on a
  *               window still running: paused until that window resets.
- * Otherwise the notice is 'transient' (back off, retry the same pool, then
- * fall over for this attempt only), and with the switch off (Q7) it is 'off'
- * — never a pause either way.
+ * Otherwise the notice is 'transient', and with the switch off (Q7) it is
+ * 'off' — never a pause either way.
  *
  * `failure` is a findQuotaFailure() result (or `text` to find one); `meter`
  * a meter snapshot (default: `<home>/meters/<pool>.json`); `pausing` the
@@ -687,16 +647,17 @@ function quoted(line, max = 160) {
  *
  * Every result carries `limit`, the notice's wording (classifyQuotaLimit):
  * 'window' when it says a usage window, a quota or a balance is spent, else
- * 'throttle' — whatever the rule and the switch decided. A marked workflow
- * step reads a 'window' notice as a usage limit, even a 'transient' one, and
- * hands it to its caller with no backoff.
+ * 'throttle' — whatever the rule and the switch decided. A caller under the
+ * limits-to-caller rule (watch.js `usageLimitsToCaller`) reads a 'window'
+ * notice, or one whose reset is known, as a usage limit whatever the switch.
  *
  * @returns {{pause: boolean, rule: 'message'|'meter'|'transient'|'off',
  *   limit: 'window'|'throttle',
  *   line: string|null, until: number|null, resetsAt: string|null,
  *   meter: object|null, meterWindow: object|null, waitMs: number|null,
  *   retrySamePool: boolean, decidedAt: string, why: string,
- *   holdUntil?: number|null}} `holdUntil` is on the 'off' result only.
+ *   holdUntil?: number|null}} `holdUntil`, on the 'off' result only, is the
+ *   reset a pause would have lasted until, else null.
  */
 export function decideQuotaPause({
   connector = null, failure = null, text = null, pool = null, bullswarmDir = null,
@@ -722,14 +683,11 @@ export function decideQuotaPause({
     decidedAt: isoOf(nowMs),
   };
   const none = { until: null, resetsAt: null, meterWindow: null };
+  const full = classified.explicit ? null : fullMeterWindow(reading);
   if (!on) {
-    // The deadline the two proofs below would have paused until. The 'off'
-    // result pauses nothing (quotaPauseProven() refuses it); when the
-    // deadline is known, a marked workflow step hands the limit to its
-    // caller, naming it as the time the pool is back.
-    const offWindow = classified.explicit ? null : fullMeterWindow(reading);
-    const holdUntil = classified.explicit ? classified.resetAt
-      : offWindow ? Date.parse(offWindow.resetsAt) : null;
+    // The 'off' result pauses nothing (quotaPauseProven() refuses it), but
+    // the reset the two proofs below would have paused until is still known.
+    const holdUntil = classified.explicit ? classified.resetAt : full ? Date.parse(full.resetsAt) : null;
     return {
       ...base, ...none, pause: false, rule: 'off', holdUntil: Number.isFinite(holdUntil) ? holdUntil : null,
       why: `limit notice ${said} · pool not paused: automatic pausing is off (bullswarm strategy set-pausing on)`
@@ -745,7 +703,6 @@ export function decideQuotaPause({
         + ` · meter ${summary ?? 'not read'}`,
     };
   }
-  const full = fullMeterWindow(reading);
   if (full) {
     const until = Date.parse(full.resetsAt);
     return {

@@ -87,21 +87,6 @@ export function withPoolLabel(record, home, field = 'pool') {
   return { ...record, [`${field}Label`]: poolLabel(record[field], home) };
 }
 
-/**
- * Produce a render-only clone where exact pool ids (including pool-keyed
- * objects) use their labels. Durable models are never passed through here.
- */
-export function labelDisplayTree(value, home) {
-  const labels = loadPoolLabels(home);
-  const visit = (node) => {
-    if (typeof node === 'string') return labels[node] ?? withPoolLabels(node, home);
-    if (Array.isArray(node)) return node.map(visit);
-    if (!node || typeof node !== 'object') return node;
-    return Object.fromEntries(Object.entries(node).map(([key, child]) => [labels[key] ?? key, visit(child)]));
-  };
-  return visit(value);
-}
-
 /** Test/process helper for a home whose files were replaced externally. */
 export function clearPoolLabelCache(home = null) {
   if (home == null) cache.clear();

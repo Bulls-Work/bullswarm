@@ -8,7 +8,7 @@ import {
   actAffectedRequirements, applyRevisionVerifyRounds, callerDecision, closeRound, createVerifyLoop, failingRequirements, firstSuggestedStep,
   inheritedRepairEvidence, loopStageLabel, loopVerdictText, narrowedFailingRequirements, NOT_JUDGED_STATUS, nextLoopStep, notJudgedRequirements,
   planRepairStep, planVerifyStep, recheckSet, repairInheritedPaths, requirementAcceptances, revisedVerifyRounds, roundBrief, roundPhases,
-  VERIFY_ROUNDS_MAX, verifyLoopResult, verifyRoundLabel,
+  verifyLoopResult, verifyRoundLabel,
 } from '../src/workflow/verify-rounds.js';
 import { validateActionProgram } from '../src/workflow/action-validator.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
@@ -457,7 +457,6 @@ test('act-affected failures are not repaired, and a report-only failure repairs 
 // --- Stage 3: fix cycles, the partial boundary, inherited route and evidence, acceptance ---
 
 test('createVerifyLoop with countsFixes reads verifyRounds as fix cycles (max = fixes + 1); without it, as total rounds', () => {
-  assert.equal(VERIFY_ROUNDS_MAX, 4);
   const fixes = (value) => createVerifyLoop(value, { countsFixes: true }).max;
   assert.deepEqual([fixes(undefined), fixes(0), fixes(1), fixes(2), fixes(3), fixes(7), fixes(-1), fixes('2')], [2, 1, 2, 3, 4, 4, 1, 2]);
   assert.deepEqual(createVerifyLoop(0, { countsFixes: true }), { max: 1, stoppedBy: null, rounds: [] });

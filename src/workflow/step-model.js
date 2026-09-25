@@ -14,15 +14,12 @@ import { basename, isAbsolute, join, relative } from 'node:path';
 import {
   workflowPanelModel,
   reasoningText,
-  durationText,
-  outputSparkline,
   taskPreview,
   outcomePreview,
   runEconomics,
 } from './dashboard.js';
 import { formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
 import { finiteOrNull } from '../lib/num.js';
-import { isFreeModel } from '../lib/usage.js';
 import { loadTemplates, ownsPoolName, providerDirs } from '../lib/providers.js';
 import { returnedEarlyItems, returnedEarlyText, timeBoxText } from './time-box.js';
 import { routeSummary } from './step-route.js';
@@ -1936,7 +1933,6 @@ function stepPresentation({
   const runningCommand = running
     ? presentedTurns.flatMap((turn) => turn.toolRows ?? []).findLast((tool) => tool?.inFlight && tool?.command)
     : null;
-  const nowValue = finiteOrNull(nowMs);
   const verdictText = verification.total
     ? `${verification.complete ? 'verified by the workflow' : 'not verified'} (${verification.passed}/${verification.total} requirements)`
     : identity?.verified === true ? 'verified' : identity?.verified === false ? 'not verified' : null;
@@ -2289,7 +2285,6 @@ export function stepPageModel(input, {
   const assignment = assignments.find((entry) => entry.runId === row.runId && entry.actionId === selectedActionId) ?? null;
   const expected = finiteOrNull(assignment?.expectedMinutes);
   const startedAt = selected?.startedAt ?? active?.startedAt ?? action.startedAt ?? null;
-  const ranFor = durationText(startedAt, selected?.finishedAt);
 
   const resultRecord = readResultEnvelope(row, state, runDir);
   const result = resultRecord.value;
@@ -2437,33 +2432,12 @@ export function stepPageModel(input, {
   });
   const bytes = finiteOrNull(selected?.outputBytesObserved ?? active?.outputBytesObserved ?? outputRecord?.bytes);
   const live = verdict.executionStatus === 'running' ? 'live' : 'recorded';
-  const headerSpark = live === 'live' ? outputSparkline(selected ?? active, row.runDir, 10) : '';
   const poolEconomics = (() => {
     try {
       return runEconomics(row, input?.pools ?? [], nowMs).pools
         .find((entry) => entry.name === (selected?.pool ?? active?.pool ?? selectedAgent?.pool)) ?? null;
     } catch { return null; }
   })();
-  const poolRecord = (Array.isArray(input?.pools) ? input.pools : [])
-    .find((entry) => entry?.name === (selected?.pool ?? active?.pool ?? selectedAgent?.pool)) ?? null;
-  const connector = poolRecord?.connector && typeof poolRecord.connector === 'object'
-    ? poolRecord.connector
-    : null;
-  const selectedModel = selected?.model ?? active?.model ?? null;
-  const freeModel = connector
-    ? isFreeModel(connector, selectedModel)
-    : typeof poolRecord?.free === 'boolean' ? poolRecord.free : null;
-  const meterType = textOrNull(connector?.meter?.type)
-    ?? (poolRecord?.meterSource && poolRecord.meterSource !== 'none' ? textOrNull(poolRecord.meterSource) : null);
-  const poolProfile = {
-    name: textOrNull(poolRecord?.name ?? selected?.pool ?? active?.pool),
-    model: textOrNull(selectedModel),
-    freeModel,
-    meterType,
-    meterSource: textOrNull(poolRecord?.meterSource),
-    pacingWindow: textOrNull(poolRecord?.pacingWindow ?? connector?.meter?.window),
-    available: Boolean(poolRecord),
-  };
   const turnsCaptured = activity.turns.length > 0;
   const toolDetailsCaptured = activity.events.some(eventHasToolDetails);
   const availability = {
@@ -2535,9 +2509,7 @@ export function stepPageModel(input, {
     // is the structured v2 pair used by the feature view.
     money: moneyDisplay,
     moneyPair: totalUsage,
-    selectedMoneyPair: selectedUsage,
     usage: totalUsage,
-    attemptUsage: selectedUsage,
     tokens: totalUsage.tokens,
     attemptTokens: selectedUsage.tokens,
     totalTokens: totalUsage.tokens,
@@ -2545,10 +2517,8 @@ export function stepPageModel(input, {
     view: VIEWS.has(view) ? view : 'overview',
     expandedTurn: activity.expandedTurn,
     turns: activity.turns,
-    turnSummaries: activity.turnSummaries,
     overviewRows: activity.overviewRows,
     header,
-    durationFacts,
     sectionOrder: ['header', 'task', 'activity', 'result', 'cost'],
     blocks: [
       { key: 'header', ...header },
@@ -2562,9 +2532,6 @@ export function stepPageModel(input, {
     // these; every field above stays for the callers that already read it.
     presentation,
     stepHeader: presentation.header,
-    resultCard: presentation.result,
-    taskCard: presentation.task,
-    costCard: presentation.cost,
     activeDurationMs,
     spanDurationMs,
     activeMinutes: activeDurationMs == null ? null : activeDurationMs / 60_000,
@@ -2572,30 +2539,22 @@ export function stepPageModel(input, {
     duration: header.duration,
     minutes: { active: activeDurationMs == null ? null : activeDurationMs / 60_000, span: spanDurationMs == null ? null : spanDurationMs / 60_000 },
     selectedEvent: activity.selectedEvent,
-    selectedEventDetail: activity.selectedEventDetail,
     // Keep the extraction renderer's arrays at the historical keys while
     // exposing rich objects for the Step feature view.
     outcome: output.lines,
     outcomeModel: outcome,
     task: taskBlock,
-    taskBlock,
-    taskModel: taskBlock,
     resultBlock,
     resultView: resultBlock,
-    resultModel: resultBlock,
     cost: costBlock,
     costBlock,
-    costModel: costBlock,
-    activityModel: activity,
     result: outcome.result,
-    resultEnvelope: outcome.result,
     resultPath: outcome.resultPath,
     execution: verdict.execution,
     verification: verdict.verification,
     workflow: verdict.workflow,
     prompt: prompt.lines,
     promptModel: prompt,
-    promptPreview: prompt.lines,
     artifacts: artifactModel({ runDir, taskFile, outputFile: outFile, streamFile: activity.path, resultFile: resultPath }),
     availability,
     streamAvailable: availability.streamAvailable,
@@ -2616,130 +2575,13 @@ export function stepPageModel(input, {
     assignment,
     expected,
     startedAt,
-    ranFor,
     pool: poolEconomics,
-    poolProfile,
-    attemptCost: selectedUsage.api.usd,
     taskFile,
     promptLines: prompt.lines,
     output: output.lines,
     outFile,
-    outcomePreview: output.lines,
-    outputModel: output,
     bytes,
     live,
-    headerSpark,
-  };
-  return model;
-}
-
-export const stepModel = stepPageModel;
-export const buildStepModel = stepPageModel;
-
-/**
- * Adapt a normalized single-task ledger row to the same Step projection.
- *
- * The ledger has no workflow result or verification. Stream and usage
- * fields are copied when the record carries them and left unavailable
- * when it does not. The adapter never manufactures an envelope, event,
- * verdict, or effort value.
- */
-export function taskStepModel(task, { nowMs = Date.now(), view = 'overview', expandedTurn = null, ...options } = {}) {
-  const record = task && typeof task === 'object' ? task : {};
-  const taskFile = textOrNull(record.taskFile);
-  const outputFile = textOrNull(record.outFile ?? record.outputFile);
-  const id = textOrNull(record.id) ?? (taskFile ? basename(taskFile) : 'task');
-  const status = record.ok === true ? 'succeeded'
-    : record.ok === false ? 'failed'
-      : record.startedAt && !record.endedAt ? 'running' : 'unknown';
-  const action = {
-    id,
-    status,
-    attempts: 1,
-    purpose: null,
-    startedAt: textOrNull(record.startedAt),
-    finishedAt: textOrNull(record.endedAt ?? record.finishedAt),
-    outputFile,
-  };
-  const attempt = {
-    id: `${id}-1`,
-    actionId: id,
-    ordinal: 1,
-    status,
-    pool: textOrNull(record.pool),
-    model: textOrNull(record.model),
-    startedAt: textOrNull(record.startedAt),
-    finishedAt: textOrNull(record.endedAt ?? record.finishedAt),
-    durationMs: finiteMs(record.durationMs),
-    taskFile,
-    outputFile,
-    streamFile: textOrNull(record.streamFile ?? record.eventStream ?? record.streamPath ?? record.stream),
-    routing: { lane: textOrNull(record.lane), effort: null },
-    usage: null,
-  };
-  // Keep the adapter from asking the workflow naming convention for a
-  // synthetic stream path. Records that predate stream persistence stay
-  // streamFile-null and the Step page reports that honestly.
-  const runDir = null;
-  const state = {
-    runId: `task:${id}`,
-    shortId: id.slice(0, 6),
-    workflow: null,
-    project: record.project ?? null,
-    intent: {},
-    lifecycle: {
-      status: status === 'succeeded' ? 'completed' : status === 'failed' ? 'failed' : status,
-      startedAt: attempt.startedAt,
-      finishedAt: attempt.finishedAt,
-      resultFile: null,
-    },
-    planner: { status: 'completed', attempts: [], turns: 0 },
-    program: { actions: [action] },
-    actions: [action],
-    attempts: [attempt],
-    presentation: { stages: [{ id: 'task', label: 'Task', actionIds: [id], startedAt: attempt.startedAt, completedAt: attempt.finishedAt }] },
-    outputs: outputFile ? { [id]: { outFile: outputFile } } : {},
-    ledger: { requirements: {} },
-  };
-  const row = {
-    runId: state.runId,
-    shortId: state.shortId,
-    runDir,
-    project: record.project ?? null,
-    state,
-  };
-  const model = stepPageModel({ row, pools: [] }, {
-    actionId: id,
-    nowMs,
-    view,
-    expandedTurn,
-    ...options,
-  });
-  model.taskRecord = clone(record);
-  model.taskResult = textOrNull(record.reason);
-  model.identity.project = record.project ?? null;
-  // A ledger task has no workflow result envelope; `unknown` from the generic
-  // state shim is normalized back to an unavailable workflow fact.
-  model.identity.workflowStatus = null;
-  model.verdict.workflow = { ...model.verdict.workflow, status: null };
-  model.verdict.workflowStatus = null;
-  model.workflow = { ...model.workflow, status: null };
-  model.cost = model.costBlock;
-  // A task reason is a result fact, not an independent verification verdict.
-  model.resultBlock = {
-    ...model.resultBlock,
-    taskReason: model.taskResult,
-    outcome: {
-      ...model.resultBlock.outcome,
-      reason: model.taskResult,
-      workflow: { ...model.resultBlock.outcome.workflow, status: null },
-    },
-  };
-  model.resultView = model.resultBlock;
-  model.outcomeModel = {
-    ...model.outcomeModel,
-    reason: model.taskResult,
-    workflow: { ...model.outcomeModel.workflow, status: null },
   };
   return model;
 }

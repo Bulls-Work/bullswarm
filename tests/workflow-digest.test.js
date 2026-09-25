@@ -10,8 +10,9 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
-  ACTION_KINDS, ActionValidationError, DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_DEFAULTS, KIND_ROLES, ROLES, validateActionProgram,
+  ACTION_KINDS, ActionValidationError, DELIVERABLE_TYPES, KIND_DEFAULTS, KIND_ROLES, ROLES, validateActionProgram,
 } from '../src/workflow/action-validator.js';
+import { EVIDENCE_TYPES } from '../src/workflow/step-vocabulary.js';
 import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
 
 const REPO = resolve('.');

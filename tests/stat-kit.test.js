@@ -6,7 +6,6 @@ import {
   renderColumnChart,
   renderLegend,
   renderPanel,
-  renderShareBar,
   renderStackedColumnChart,
   renderStatsSurface,
   renderSummaryCard,
@@ -56,10 +55,6 @@ const buckets = [
 
 test('every shared component stays inside 55, 120 and 200 columns', () => {
   for (const width of WIDTHS) {
-    assertBounded(renderShareBar({
-      parts: [{ id: 'pool-a', label: 'pool-a', value: 3, total: 10, share: 0.3 }, { id: 'pool-b', label: 'pool-b', value: 7, total: 10, share: 0.7 }],
-      width, tab: 'spending', metric: 'spend', period: '7d', unit: 'usd', colors: false,
-    }), width);
     assertBounded(renderPanel({
       title: 'Pool spend', width, rows: [
         { id: 'pool-a', label: 'pool-a', value: 3, total: 10, share: 0.3 },
@@ -77,22 +72,6 @@ test('every shared component stays inside 55, 120 and 200 columns', () => {
     assertBounded(renderLegend({ items: [{ id: 'pool-a', label: 'a very long pool name' }, { id: 'pool-b', label: 'another pool' }], width, colors: false }), width);
     assertBounded(renderSummaryCard({ title: 'Summary', width, items: [{ id: 'workflows', label: 'workflows', value: 59 }, { id: 'spend', label: 'spend', value: 7.03, unit: 'usd' }] }), width);
   }
-});
-
-test('share regions tile a bar with no gaps or overlap', () => {
-  const drawn = renderShareBar({
-    parts: [
-      { id: 'a', label: 'A', value: 1, total: 7, share: 1 / 7 },
-      { id: 'b', label: 'B', value: 2, total: 7, share: 2 / 7 },
-      { id: 'c', label: 'C', value: 4, total: 7, share: 4 / 7 },
-    ], width: 55, tab: 'pool', metric: 'minutes', period: '7d', unit: 'minutes', colors: false,
-  });
-  const cells = new Map();
-  for (const region of drawn.regions) {
-    for (let x = region.columns.start; x <= region.columns.end; x += 1) cells.set(x, (cells.get(x) ?? 0) + 1);
-  }
-  assert.equal(cells.size, 55);
-  assert.ok([...cells.values()].every((count) => count === 1));
 });
 
 test('stacked slice regions tile each painted column without overlap', () => {

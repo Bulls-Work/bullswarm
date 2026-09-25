@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createV2DurableState, createV2GoalDocument } from '../src/workflow/v2-state.js';
-import { parseV2PlannerResponse, readPlannerCandidate, v2PlannerContractRules, validateV2PlannerResponse } from '../src/workflow/v2-planner.js';
+import { readPlannerCandidate, v2PlannerContractRules, validateV2PlannerResponse } from '../src/workflow/v2-planner.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES } from '../src/workflow/step-vocabulary.js';
 import { EVIDENCE_ENV_KEYS } from '../src/workflow/evidence-runner.js';
@@ -389,14 +389,13 @@ test('the dispatched planner response and candidate get the same on-disk path ch
   const ignored = response(programOf(summary(['out/summary.json'], ['out/summary.json'])));
   const directory = response(programOf(summary(['reports'])));
 
-  assert.throws(() => parseV2PlannerResponse(JSON.stringify(ignored), isolated, { boundary: 'initial' }), (error) => error.issues.includes(IGNORED));
+  assert.throws(() => validateV2PlannerResponse(ignored, isolated, { boundary: 'initial' }), (error) => error.issues.includes(IGNORED));
   const candidate = f.write('candidate.json', ignored);
   assert.deepEqual(readPlannerCandidate(candidate, isolated, { boundary: 'initial' }), { ok: false, errors: [IGNORED] });
 
   // A shared run accepts the ignored path; a tracked exact file passes anywhere.
   const shared = stateFor('shared');
   assert.equal(validateV2PlannerResponse(ignored, shared, { boundary: 'initial' }).kind, 'program');
-  assert.throws(() => parseV2PlannerResponse(JSON.stringify(directory), shared, { boundary: 'initial' }), (error) => error.issues.includes(DIRECTORY));
   assert.throws(() => validateV2PlannerResponse(directory, shared, { boundary: 'initial' }), (error) => error.issues.includes(DIRECTORY));
   // A verified-mode run never takes a deliverable, so it is not checked here.
   assert.throws(() => validateV2PlannerResponse(directory, stateFor('shared', 'verified'), { boundary: 'initial' }), (error) => !error.issues.includes(DIRECTORY));

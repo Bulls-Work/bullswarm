@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createV2GoalDocument, createV2State, serializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
 import {
   V2PlannerValidationError, V2_PROGRAM_EXAMPLE, V2_PROGRAM_ACTION_FIELDS, V2_ROLE_PROGRAM_EXAMPLE, applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt,
-  buildPlannerPreflight, createV2PlannerContext, parseV2PlannerResponse, readPlannerCandidate, plannerCorrectionRequest,
+  buildPlannerPreflight, createV2PlannerContext, readPlannerCandidate, plannerCorrectionRequest,
   v2PlannerContractRules, validateV2PlannerResponse,
 } from '../src/workflow/v2-planner.js';
 import { KIND_DEFAULTS } from '../src/workflow/action-validator.js';
@@ -174,11 +174,10 @@ test('initial planning cannot absorb or omit an exact scout work unit', () => {
   );
 });
 
-test('parser accepts only a trailing schema-valid object and corrections are bounded', () => {
-  const parsed = parseV2PlannerResponse(`planning note\n${JSON.stringify(response())}`, state());
-  assert.equal(parsed.kind, 'program');
+test('a planner response must be a schema-valid object and corrections are bounded', () => {
+  assert.equal(validateV2PlannerResponse(response(), state()).kind, 'program');
   let error;
-  try { parseV2PlannerResponse('not json', state()); } catch (caught) { error = caught; }
+  try { validateV2PlannerResponse('not json', state()); } catch (caught) { error = caught; }
   assert.ok(error instanceof V2PlannerValidationError);
   assert.equal(plannerCorrectionRequest(error, { attempt: 1, maxCorrections: 1 }).allowed, true);
   assert.equal(plannerCorrectionRequest(error, { attempt: 2, maxCorrections: 1 }).allowed, false);

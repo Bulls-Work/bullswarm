@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OwnershipValidationError, captureWorkspaceManifest, changedManifestPaths, checkOwnership, compareManifests, normalizeManifest, normalizeOwnedFiles } from '../src/workflow/ownership.js';
+import { OwnershipValidationError, captureWorkspaceManifest, checkOwnership, compareManifests, normalizeManifest, normalizeOwnedFiles } from '../src/workflow/ownership.js';
 
 test('compares manifests and lists created, modified, and deleted exact paths', () => {
   const result = compareManifests({ 'a.js': '1', 'deleted.js': 'x', 'same.js': 'z' }, { 'a.js': '2', 'created.js': '3', 'same.js': 'z' });
@@ -50,7 +50,7 @@ test('captures a deterministic bounded non-git workspace manifest', () => {
   writeFileSync(join(root, 'a.txt'), 'changed');
   const after = captureWorkspaceManifest(root);
   assert.deepEqual(Object.keys(before), ['a.txt', 'nested/b.txt']);
-  assert.deepEqual(changedManifestPaths(before, after), ['a.txt']);
+  assert.deepEqual(compareManifests(before, after).changed, ['a.txt']);
   assert.throws(() => captureWorkspaceManifest(root, { maxFiles: 1 }), /exceeds 1 files/);
 });
 

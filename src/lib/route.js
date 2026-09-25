@@ -12,13 +12,15 @@
 //       over an incumbent only if the challenger is CHEAPER.
 //   R5. The caller wins its lane only when no eligible delegate remains —
 //       it has to WIN, not be protected.
-//   R6. A pool whose 5h reading is exhausted at 100%, or whose recorded quota
-//       retryAfter is still in the future, is exhausted; quarantined pools are
-//       ineligible until their quarantine expires (the re-probe path).
+//   R6. A pool with a metered window at its limit — its 5-hour, weekly or
+//       monthly reading at 100%, until that window resets — is exhausted;
+//       quarantined pools are ineligible until their quarantine expires (the
+//       re-probe path).
 //   R7. A pool at/above FIVE_HOUR_NEAR_LIMIT_PCT of its 5h window is a
 //       last-mile candidate, not a hard skip. When another eligible pool is
 //       behind pace, its near-limit status is a soft ordering penalty. A pick
-//       in this band names the handoff that covers the wall.
+//       in this band says so, and that a limit the attempt hits there goes
+//       back to the caller.
 //   R8. Route on the FORECAST, not on the reading. A reading is already old at
 //       the moment it is read: work dispatched seconds ago has spent quota the
 //       meter has not seen, and the assignment being routed will spend more.
@@ -45,13 +47,13 @@
 //       forecast under its clock is spending at its own pace and keeps its
 //       ordinary ordering. (Observed
 //       2026-09-10T22:19Z: claude-code:acme, 81% used with 23 minutes left —
-//       92.3% of its window elapsed — was the last-mile handoff case at 88.1%,
-//       so a high-tier integrator could still use the account while its retry
-//       handoff covered the wall. Spend that lands after the reset
-//       belongs to the NEXT window: the candidate's minutes and each in-flight
-//       record's remaining minutes are clipped at resets_at before they are
-//       charged to the 5h forecast — the weekly/monthly pacing penalty is
-//       never clipped, that spend does count against its window. No
+//       92.3% of its window elapsed — was the last-mile case at 88.1%, so a
+//       high-tier integrator could still use the account.) Spend that lands
+//       after the reset belongs to the NEXT window: the candidate's minutes
+//       and each in-flight record's remaining minutes are clipped at
+//       resets_at before they are charged to the 5h forecast — the
+//       weekly/monthly pacing penalty is never clipped, that spend does count
+//       against its window. No
 //       resets_at, an unparsable one, or a reset already in the past means no
 //       clock: the fixed line applies without a soft clock exemption, because
 //       a pool is never treated differently for a number nobody produced (R8).
@@ -121,7 +123,7 @@
 //       a check keeps "no free-first" and gets independence only through its
 //       own `route` (a hard filter applied before this router sees the pools).
 
-import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS } from '../meters/framework.js';
+import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS, windowSpent } from '../meters/framework.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
@@ -335,7 +337,7 @@ function inflightOverflowMinutes(pool, minutesToReset) {
  * `underClock` records R10's clock-relative exemption from the soft penalty —
  * near the limit, but no further into the window's quota than into the
  * window's time. A forecast over 100% is still dispatchable and is reported as
- * `overLimit` for the last-place ordering and handoff explanation.
+ * `overLimit` for the last-place ordering and its explanation.
  *
  * @param {object} pool
  * @param {number|null} [candidateMinutes] expected minutes of this assignment
@@ -678,47 +680,12 @@ export function expiringSoonView(pool, opts = {}) {
   };
 }
 
+/**
+ * R6: a pool with a metered window at its limit (framework.js windowSpent:
+ * the 5-hour, weekly or monthly window at 100% until its reset).
+ */
 export function isExhausted(pool, now = Date.now()) {
-  // Flat shape (buildPools) first, legacy meter shape second. A stale
-  // meterSource reading must not permanently exclude a pool: if the reading
-  // is stale-labeled and older than the window could explain, trust the pool
-  // may have reset — the next live poll will decide.
-  const fiveHourUsed = num(pool?.fiveHourUsedPct)
-    ?? (pool?.meter?.type === '5h' ? num(pool.meter.usedPct) : null)
-    // Legacy meter snapshots without a dedicated 5h field were only emitted
-    // by the old cache path (no pacing window); keep that compatibility shape
-    // without treating a weekly/monthly `usedPct` as 5h exhaustion.
-    ?? (pool?.meterSource === 'cache' && pool?.pacingWindow == null
-      ? num(pool?.usedPct)
-      : null);
-  if (fiveHourUsed != null && fiveHourUsed >= 100) {
-    if (pool.meterSource !== 'stale') return true;
-  }
-
-  // A quota failure is a recorded wall even when its meter reading is still
-  // below 100%. Accept the durable quarantine shape and the retryAfter shapes
-  // used by workflow/action state; auth and generic holds do not count.
-  const records = [
-    pool?.quarantine,
-    pool?.quotaFailure,
-    pool?.lastFailure,
-    pool?.failure,
-  ];
-  for (const record of records) {
-    if (!record || (record.kind ?? record.failureKind) !== 'quota') continue;
-    const retryAfter = record.retryAfter ?? record.retry_after ?? record.until;
-    const retryAt = typeof retryAfter === 'number'
-      ? retryAfter
-      : Date.parse(String(retryAfter ?? ''));
-    if (Number.isFinite(retryAt) && retryAt > now) return true;
-    const retryAfterMs = num(record.retryAfterMs ?? record.retry_after_ms);
-    if (retryAfterMs != null && retryAfterMs > 0) {
-      const failedAt = Date.parse(String(record.failedAt ?? record.failed_at ?? ''));
-      const until = Number.isFinite(failedAt) ? failedAt + retryAfterMs : now + retryAfterMs;
-      if (until > now) return true;
-    }
-  }
-  return false;
+  return windowSpent(pool, now) != null;
 }
 
 /**
@@ -851,7 +818,7 @@ export function pickPool(lane, pools, opts = {}) {
   // A near-limit pool gives way only when another eligible pool is also behind
   // pace. This is deliberately a score key, not an eligibility filter: a
   // configured assignment, incumbent, urgency tier, or the only remaining
-  // pool can still select it, and the reason then records the last-mile handoff.
+  // pool can still select it, and the reason then records the last mile.
   for (const entry of scored) {
     entry.nearPenalty = entry.forecast.nearLimit
       && !entry.forecast.underClock
@@ -961,8 +928,8 @@ export function pickPool(lane, pools, opts = {}) {
   // Forecasts past the wall remain eligible but are the last ordering rung: use
   // every within-wall candidate while one exists, and fall back to the
   // over-limit set only when the whole eligible set is beyond the wall. This
-  // is a ranking boundary, not an exhaustion filter, so the handoff can still
-  // retry a run that reaches the provider's wall.
+  // is a ranking boundary, not an exhaustion filter: a run that reaches the
+  // provider's wall ends there as a usage limit and goes back to the caller.
   const withinWall = scored.filter((e) => !e.overLimit);
   const open = withinWall.length ? withinWall : scored;
   const overLimitEntries = scored.filter((e) => e.overLimit);
@@ -1244,7 +1211,7 @@ function routingReason(
     base = urgencyClause(winnerEntry, [note, inflight].filter(Boolean).join(', '));
   } else {
     // The note carries the reading/projection; the last-mile clause below
-    // explains why a near-limit winner is still safe to hand off.
+    // says what happens when a near-limit winner hits its wall.
     const standing =
       !note ? ''
       : winnerEntry.forecast.nearLimit ? ' near its 5h limit'
@@ -1270,7 +1237,7 @@ function routingReason(
       : winnerEntry.forecast.raw;
     if (pct != null) {
       clauses.push(
-        `last mile: ${winnerEntry.pool.name} ${tenth(pct)}% of 5h, handoff covers the wall`,
+        `last mile: ${winnerEntry.pool.name} ${tenth(pct)}% of 5h, a limit mid-attempt goes back to the caller`,
       );
     }
   }

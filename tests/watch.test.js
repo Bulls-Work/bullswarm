@@ -1549,7 +1549,7 @@ test('the same line pauses when the pool\'s own meter reads 96%, until that wind
   }
 });
 
-test('with automatic pausing off even a spent window with a reset is retried, not paused', async () => {
+test('with automatic pausing off, outside the limits-to-caller rule, even a spent window with a reset is a throttle, not a pause', async () => {
   const ctx = makeCtx();
   const home = limitHome({ usedPct: 100, pausing: 'off' });
   try {
@@ -1560,6 +1560,89 @@ test('with automatic pausing off even a spent window with a reset is retried, no
     assert.equal(v.quarantineHint, undefined);
     assert.equal(v.quotaPause.rule, 'off');
     assert.match(v.why, /pool not paused: automatic pausing is off/);
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// A caller under the limits-to-caller rule (a marked step, the
+// planner and scout of a marked run, `bullswarm run`) reads a spent usage
+// window as quota whatever the switch: a notice worded as a spent window, or
+// one whose reset is known. The meter is re-read for it every time, and the
+// 100% refusal marker written when that read fails, so the next pick sees the
+// spent pool. A pause still needs the Q6 proof and the switch on.
+test('under the limits-to-caller rule a spent window is quota whatever the switch, and the refusal marker is written', async () => {
+  const ctx = makeCtx();
+  const failedRead = async () => { throw new Error('meter endpoint unavailable'); };
+  const cases = [
+    // [pausing, the notice, weekly meter %, the Q6 rule]
+    ['off', "You've hit your session limit · resets in 2 hours", 48, 'off'],
+    [null, "You've hit your session limit", 48, 'transient'],
+    ['off', REAL_TRANSIENT, 96, 'off'],
+  ];
+  try {
+    for (const [pausing, line, usedPct, rule] of cases) {
+      const home = limitHome({ usedPct, pausing });
+      const saved = limitHome({ usedPct, pausing });
+      try {
+        const v = await watchOnce(limitChild(line), 'Do the work.', ctx.dir, ctx.paths, {
+          bullswarmDir: home, poolName: 'fixture-limit', usageLimitsToCaller: true, meterReader: failedRead,
+        });
+        assert.equal(v.failureKind, 'quota', `${line}: ${v.why}`);
+        assert.equal(v.quotaPause.rule, rule);
+        assert.equal(v.quarantineHint, undefined, 'no proof or no switch: nothing is paused');
+        assert.equal(v.quarantineUntil, undefined);
+        assert.equal(v.meterRefresh?.source, 'quota-refusal', `${line}: the forced read failed, so the marker is written`);
+        const marker = JSON.parse(readFileSync(join(home, 'meters', 'fixture-limit.json'), 'utf8'));
+        assert.equal(marker.source, 'quota-refusal');
+        if (v.quotaPause.holdUntil != null) {
+          assert.equal(marker.quota_refusal.resets_at, new Date(v.quotaPause.holdUntil).toISOString(), 'the marker lasts until the known reset');
+        }
+        // Any other caller (a saved run) keeps the old reading: a throttle,
+        // no forced read, no marker.
+        const old = await watchOnce(limitChild(line), 'Do the work.', ctx.dir, ctx.paths, {
+          bullswarmDir: saved, poolName: 'fixture-limit', meterReader: failedRead,
+        });
+        assert.equal(old.failureKind, 'throttle', `${line}: ${old.why}`);
+        assert.equal(old.meterRefresh, undefined);
+        assert.equal(JSON.parse(readFileSync(join(saved, 'meters', 'fixture-limit.json'), 'utf8')).source, undefined);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(saved, { recursive: true, force: true });
+      }
+    }
+    // A throttle-worded notice with no known reset stays a transient rate
+    // limit under the rule too: backed off, never quota.
+    const home = limitHome({ usedPct: 78 });
+    try {
+      const transient = await watchOnce(limitChild(REAL_TRANSIENT), 'Do the work.', ctx.dir, ctx.paths, {
+        bullswarmDir: home, poolName: 'fixture-limit', usageLimitsToCaller: true, meterReader: failedRead,
+      });
+      assert.equal(transient.failureKind, 'throttle');
+      assert.equal(transient.meterRefresh, undefined);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('under the limits-to-caller rule a proven pause with the switch on is quota with its quarantine, as before', async () => {
+  const ctx = makeCtx();
+  const home = limitHome({ usedPct: 48 });
+  try {
+    const v = await watchOnce(limitChild("You've hit your session limit · resets in 2 hours"), 'Do the work.', ctx.dir, ctx.paths, {
+      bullswarmDir: home, poolName: 'fixture-limit', usageLimitsToCaller: true,
+      meterReader: async () => { throw new Error('meter endpoint unavailable'); },
+    });
+    assert.equal(v.failureKind, 'quota');
+    assert.equal(v.quotaPause.rule, 'message');
+    assert.equal(v.quarantineHint, true);
+    assert.equal(v.quarantineUntil, v.quotaPause.until);
+    assert.equal(v.quarantineSource, 'message');
+    assert.equal(v.meterRefresh.source, 'quota-refusal');
   } finally {
     ctx.cleanup();
     rmSync(home, { recursive: true, force: true });
@@ -1637,7 +1720,11 @@ test('the same sentence on the provider\'s error event is classified, not ignore
   }
 });
 
-test('with automatic pausing off a dead credential is a provider failure, not a bench', async () => {
+// The switch decides whether a pool is paused, never what a
+// sign-in failure is. It stays `auth` with its quarantine hint, so a retry
+// skips the pools that share the credential (the 2026-09-11 sibling walk);
+// state.js refuses the pause itself while the switch is off.
+test('with automatic pausing off a dead credential is still auth with its hint; only the why says the pool was not paused', async () => {
   const ctx = makeCtx();
   const authChild = () => ({
     name: 'fixture-auth',
@@ -1651,15 +1738,22 @@ test('with automatic pausing off a dead credential is a provider failure, not a 
     const benched = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
       bullswarmDir: on, poolName: 'fixture-limit',
     });
+    assert.equal(benched.failureKind, 'auth');
     assert.equal(benched.quarantineHint, true, 'on: the dead credential asks for a bench');
     assert.doesNotMatch(benched.why, /automatic pausing is off/);
 
-    const moving = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
+    const unpaused = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
       bullswarmDir: off, poolName: 'fixture-limit',
     });
-    assert.equal(moving.quarantineHint, undefined, 'off: no verdict asks for a pause');
-    assert.equal(moving.failureKind, 'provider', 'off: a mechanical failure that retries elsewhere');
-    assert.match(moving.why, /auth\/throttle signature: "unauthorized" · automatic pausing is off, pool not paused/);
+    assert.equal(unpaused.failureKind, 'auth', 'off: still a sign-in failure');
+    assert.equal(unpaused.quarantineHint, true, 'off: the hint stays; state.js refuses the pause');
+    assert.equal(unpaused.why, 'auth/throttle signature: "unauthorized" · automatic pausing is off, pool not paused');
+
+    // The upstream sign-in failure inside a provider stream error: the same.
+    const relayed = await watchOnce(streamingEvent(RELAY_401_EVENT), 'Do the thing.', ctx.dir, ctx.paths, { pausing: false });
+    assert.equal(relayed.failureKind, 'auth');
+    assert.equal(relayed.quarantineHint, true);
+    assert.equal(relayed.why, 'upstream auth failure: "auth_unavailable" (provider stream error) · automatic pausing is off, pool not paused');
   } finally {
     ctx.cleanup();
     rmSync(on, { recursive: true, force: true });

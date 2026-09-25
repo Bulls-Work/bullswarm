@@ -31,7 +31,6 @@ const DEPTH_MESSAGE = `schema nesting deeper than ${SCHEMA_MAX_DEPTH}`;
 
 const hasOwn = (object, key) => Object.hasOwn(object, key);
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const isSchema = (value) => typeof value === 'boolean' || isObject(value);
 
 function pointerPart(key) {
   return String(key).replaceAll('~', '~0').replaceAll('/', '~1');

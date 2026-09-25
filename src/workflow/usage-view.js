@@ -1,11 +1,10 @@
 // The Usage page of the terminal dashboard, ported from the Claude Mod
 // (mods/bullswarm/hooks/pool-rows.tsx, pools.ts, pane.tsx): the meter bars,
-// the per-pool windows and rung table, the compact pool rows the Home and
-// Run pages end with, the loader behind them and the SGR mouse parser the
-// dashboard clicks with. Every renderer is pure — strings in, strings out —
-// so the pages can be tested without a terminal; only loadUsage reads disk.
+// the per-pool windows and rung table, the loader behind them and the SGR
+// mouse parser the dashboard clicks with. Every renderer is pure — strings
+// in, strings out — so the pages can be tested without a terminal; only
+// loadUsage reads disk.
 
-import { pauseWord } from '../lib/quota.js';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { listAssignments } from '../lib/assignments.js';
 import { rungsFor } from '../lib/strategy.js';
@@ -14,38 +13,6 @@ import { getAllMeterReadings } from '../meters/registry.js';
 import { attachForecast } from '../lib/forecast.js';
 import { loadState } from '../lib/state.js';
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
-import { formatMoneyPair } from '../lib/usage-basis.js';
-
-/**
- * The Usage page mostly paints quota windows, but callers also use its pool
- * rows as the compact tail of Home and Run. Keep the v2-to-view projection in
- * one place so those callers cannot accidentally render an API amount without
- * its subscription/basis companion.
- */
-export function formatUsageMoney(usage = null) {
-  const value = usage && typeof usage === 'object' ? usage : {};
-  return formatMoneyPair({
-    api: value.api ?? {
-      usd: value.apiUsd ?? value.cost?.estimatedUsd ?? null,
-    },
-    subscription: value.subscription ?? (
-      Object.hasOwn(value, 'subscriptionUsd') || Object.hasOwn(value, 'subscriptionBasis')
-        ? {
-          usd: value.subscriptionUsd ?? null,
-          deltaPct: value.subscriptionDeltaPct ?? value.deltaPct ?? null,
-          window: value.subscriptionWindow ?? value.window ?? null,
-          basis: value.subscriptionBasis ?? 'unknown:no-meter',
-        }
-        : null
-    ),
-    tokenSource: value.tokenSource ?? null,
-    tokens: value.tokens ?? null,
-  });
-}
-
-// A descriptive alias for small view adapters that already call their value
-// a money pair. Both names intentionally share the same implementation.
-export const usageMoneyPair = formatUsageMoney;
 
 /**
  * The one palette the product draws from. The first four are the truecolour
@@ -84,13 +51,7 @@ export const METER_COLORS = Object.freeze({
 });
 
 const RESET = '\x1b[0m';
-const DIM = '\x1b[2m';
-const BOLD = '\x1b[1m';
-const CYAN = '\x1b[36m';
-const SGR = /\x1b\[[0-9;]*m/g;
 
-const chase = (text, code) => `${code}${text}${RESET}`;
-const strip = (text) => text.replace(SGR, '');
 const rgbOf = (hex) => {
   const n = Number.parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
@@ -239,91 +200,6 @@ export function untilText(iso, nowMs = Date.now()) {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${String(hours)}h${String(mins % 60).padStart(2, '0')}m`;
   return `${String(Math.floor(hours / 24))}d${String(hours % 24)}h`;
-}
-
-/** Cut a styled line to `width` visible cells, keeping the escapes it keeps. */
-function clipLine(text, width) {
-  const cols = Math.max(0, Math.trunc(width));
-  if (strip(text).length <= cols) return text;
-  let out = '';
-  let visible = 0;
-  for (let i = 0; i < text.length && visible < cols;) {
-    if (text[i] === '\x1b') {
-      const end = text.indexOf('m', i);
-      if (end > i) {
-        out += text.slice(i, end + 1);
-        i = end + 1;
-        continue;
-      }
-    }
-    out += text[i];
-    i += 1;
-    visible += 1;
-  }
-  return text.includes('\x1b') ? `${out}${RESET}` : out;
-}
-
-const NAME_WIDTH = 16;
-const BAR_WIDTH = 10;
-
-/** `+35.9` / `−4.5` from the pool's surplus; no meter, no number. */
-function paceText(pool) {
-  if (finiteOrNull(pool?.pace) == null) return 'no meter';
-  const pace = pool.pace;
-  return `${pace >= 0 ? '+' : '−'}${Math.abs(pace).toFixed(1)}`;
-}
-
-function quotaRefusalText(pool, nowMs = Date.now()) {
-  if (pool?.meterSource !== 'quota-refusal' && !pool?.quotaRefusal) return null;
-  const raw = pool?.quotaRefusedAt
-    ?? pool?.quotaRefusal?.refusedAt
-    ?? pool?.quotaRefusal?.refused_at
-    ?? null;
-  const at = Date.parse(raw ?? '');
-  if (!Number.isFinite(at)) return 'blocked · refused recently';
-  const minutes = Math.max(0, Math.floor((nowMs - at) / 60_000));
-  return minutes < 1 ? 'blocked · refused just now' : `blocked · refused ${minutes}m ago`;
-}
-
-/**
- * One compact row per enabled pool — the rows the Home and Run pages end
- * with: display name, a 10-cell bar, used/elapsed, the signed pace coloured
- * by severity, the action ids running there, and the lanes the pool is
- * incumbent for.
- */
-export function poolSummaryLines(pools, assignments = [], { width = 120, ansi = true } = {}) {
-  const tint = (text, code) => (ansi ? chase(text, code) : text);
-  const busy = assignments ?? [];
-  return (pools ?? [])
-    .filter((pool) => pool.enabled)
-    .map((pool) => {
-      const name = String(pool.name).padEnd(NAME_WIDTH).slice(0, NAME_WIDTH);
-      const used = pool.usedPct == null ? '  —' : `${String(Math.round(pool.usedPct)).padStart(3)}%`;
-      const elapsed = pool.elapsedPct == null ? '' : `/${String(Math.round(pool.elapsedPct)).padStart(2)}%`;
-      const refused = quotaRefusalText(pool);
-      const state = pool.quarantine
-        ? { word: pauseWord(pool.quarantine) ?? 'paused', color: METER_COLORS.red }
-        : refused
-          ? { word: refused, color: METER_COLORS.red }
-        : { word: paceText(pool), color: severityColor(pool.usedPct) };
-      const running = busy
-        .filter((entry) => entry?.pool === pool.name)
-        .map((entry) => entry.actionId ?? entry.lane)
-        .filter(Boolean);
-      const lanes = Array.isArray(pool.incumbentLane) && pool.incumbentLane.length
-        ? `← ${pool.incumbentLane.join('/')}`
-        : '';
-      const line = [
-        tint(name, BOLD),
-        meterBar(pool.usedPct, pool.elapsedPct, BAR_WIDTH, { ansi }),
-        ` ${tint(used, DIM)}`,
-        tint(elapsed, DIM),
-        `  ${tint(state.word, fg(state.color))}`,
-        running.length ? `  ${tint(running.join(', '), CYAN)}` : '',
-        lanes ? `  ${tint(lanes, DIM)}` : '',
-      ].join('');
-      return clipLine(line, width);
-    });
 }
 
 /** The oldest meter snapshot among the pools, ISO, or null when none read. */

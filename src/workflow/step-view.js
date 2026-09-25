@@ -1239,5 +1239,3 @@ export function renderStepPage(step, opts = {}, body) {
   anchor.attempts = anchor.result;
   return headerLine;
 }
-
-export const stepPage = renderStepPage;

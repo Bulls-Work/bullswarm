@@ -42,7 +42,7 @@ The rest of this page is those six steps in detail.
 
 ## Eligibility
 
-A pool has to be enabled, declare the lane, hold any capabilities the work requires, not be quarantined, not be soft-benched, not be exhausted (100% of its 5-hour window used, or a recorded quota retry still in the future), and have an allowed model for the effort tier. A disabled pool simply is not a candidate. Nothing in the later steps can rescue a pool that fails here.
+A pool has to be enabled, declare the lane, hold any capabilities the work requires, not be quarantined, not be soft-benched, not be exhausted (a metered window — 5-hour, weekly or monthly — at 100% until that window resets), and have an allowed model for the effort tier. A disabled pool simply is not a candidate. Nothing in the later steps can rescue a pool that fails here. A single `bullswarm run` names the pools it left out for a spent window at the end of its reason — `(burst-gated: pool-a, pool-b at its weekly limit)`, where a bare name is at its 5-hour limit.
 
 ## Pace and surplus
 
@@ -50,9 +50,9 @@ Pace compares a pool with itself: **surplus = elapsed% − used%** of its own su
 
 ## The 5-hour window
 
-The rolling 5-hour window never paces — it only protects the last mile. A recorded reading at 100% (`BURST_BLOCK_PCT`) is exhausted, as is a pool with a quota failure whose retry time has not passed. The 75% (`FIVE_HOUR_NEAR_LIMIT_PCT`) line is no longer a cutoff: when another eligible pool is behind pace, a near-limit pool is ordered after it; when no such alternative exists, the near-limit pool remains selectable. A forecast above 100% is also selectable, ordered last, and the handoff retry covers the possibility that the provider rejects the run at the wall.
+The rolling 5-hour window never paces — it only protects the last mile. A recorded reading at 100% (`BURST_BLOCK_PCT`) means the pool is at its limit until the window resets, and the same holds for a weekly or monthly reading at 100%: such a pool is never picked. The 75% (`FIVE_HOUR_NEAR_LIMIT_PCT`) line is no longer a cutoff: when another eligible pool is behind pace, a near-limit pool is ordered after it; when no such alternative exists, the near-limit pool remains selectable. A forecast above 100% is also selectable, ordered last. If the provider refuses the run at the wall, that attempt ends as a usage limit: in a workflow started by this version nothing retries it and the step comes back to you, and a single `bullswarm run` exits 1. Only a workflow started by an earlier version still moves that attempt to another pool.
 
-The change follows the 2026-09-10 observation that `claude-code:acme` was at 81% with 23 minutes left (92.3% of its 5-hour window elapsed). The old guard sent a high-tier task to another account, while 34% of acme's weekly quota expired in the remaining 13% of that week. The last-mile handoff lets the task use that quota and still has a deterministic retry if the wall is reached.
+The change follows the 2026-09-10 observation that `claude-code:acme` was at 81% with 23 minutes left (92.3% of its 5-hour window elapsed). The old guard sent a high-tier task to another account, while 34% of acme's weekly quota expired in the remaining 13% of that week. The last-mile rule lets the task use that quota; the risk it takes is one attempt that may stop at the wall and come back to the caller.
 
 ## Free models first
 
@@ -89,8 +89,7 @@ A free endpoint does not fail the way a metered one does. It has no usage meter,
 These failures count as a **strike** against a pool:
 
 - **stall** — the worker wrote no output for longer than its silence threshold and was stopped;
-- **provider** — the provider returned a server error;
-- **empty output** — a free pool returned literally nothing. (An answer that has substance but the verifier judged thin stays a semantic failure and is not retried elsewhere; that is a verdict about the answer, not about the pool.)
+- **provider** — the provider returned a server error, or a free pool returned literally nothing (an empty free answer is recorded as a provider failure; an answer that has substance but the verifier judged thin stays a semantic failure and is not retried elsewhere, because that is a verdict about the answer, not about the pool);
 - **probe** — the pre-dispatch free-model check returned `404`, a provider error, or a timeout.
 
 Strikes are **consecutive**. The first one is recorded without taking the pool out of service. The second benches it for a 10-minute cooldown — the same re-probe window a quarantine uses — after which it returns automatically. The count survives that cooldown and is cleared only by a success, so a pool that stalls again straight after coming back is benched again immediately.
@@ -108,11 +107,14 @@ When an attempt stalls, the run does not stop and the work is not lost:
 - the same action is re-dispatched on the next eligible pool **in the same run**, and its reason line is prefixed with where it came from;
 - the second consecutive stall benches the pool, so later actions in that run do not each wait out the threshold.
 
-`--retry-attempts` (default 1) caps mechanical retries for metered failures. A
-stall on a free pool (and its literally-empty-output provider reclassification)
-does not spend that allowance: the dispatcher advances through eligible pools,
-trying each pool at most once for the action, so the tried-set remains the
-termination bound. A stall on a metered pool keeps the mechanical accounting.
+In a workflow started by this version a stall is a process failure like any
+other: it gets the step's one automatic retry (`--retry-attempts`, default 1)
+on another eligible pool (the same pool when it is the only one), then comes
+back to you. In a workflow started by an
+earlier version `--retry-attempts` caps mechanical retries for metered
+failures, and a stall on a free pool (or its empty answer) does not spend that
+allowance: the dispatcher advances through eligible pools, trying each pool at
+most once for the action.
 
 ```text
 fallback from opencode after stall 300s · most-behind capable pool (surplus 40)
@@ -196,12 +198,19 @@ once, with `back at` at the end of that wait. When the pool is no longer free
 for the backoff (another run paused it, it reached its 5-hour limit, or it is
 nearly spent or benched), the step comes back to you instead of moving.
 
+After a usage limit (here and in a single `bullswarm run`) the pool's meter is
+read again at once, whatever the switch; when it cannot be read, the pool is
+recorded as full until the reset. Later steps route on that reading: a window
+it shows at 100% keeps the pool out until that window resets, while a lower
+reading leaves the pool eligible unless it was paused.
+
 When no pool that can run the step is free at its pick (each one is nearly
-spent, at its 5-hour limit, paused, or benched), the step comes back to you as
-well: as `quota` when every reason is a usage limit, else as `unavailable`.
-Its `why` names each pool and its reason, for example `no pool with quota to
-spare: pool-a paused for quota until <time>; pool-b at its 5-hour limit`, and
-`back at` is the earliest known return among them. A retry the step was
+spent, at a 5-hour, weekly or monthly limit, paused, or benched), the step
+comes back to you as well: as `quota` when every reason is a usage limit, else
+as `unavailable`. Its `why` names each pool and its reason, for example `no
+pool with quota to spare: pool-a paused for quota until <time>; pool-b at its
+5-hour limit until <time>; pool-c at its weekly limit until <time>`, and `back
+at` is the earliest known return among them. A retry the step was
 promised (after a crash, a sign-in failure or a failed gate) that finds no
 free pool keeps its own failure and ends its `why` with `· no retry: <pool>
 <reason>; …`. When another pool that can run the step is free, routing picks it
@@ -225,13 +234,13 @@ another pool, and a throttle retries the same pool and then moves, as below.
 
 ## Throttles and exhausted windows
 
-A limit notice pauses a pool for quota (failure kind `quota`, never `process` or `auth`) only on proof: the pool's own meter reads 95% or more on a window that is still running, or the provider's line says a usage window is spent *and* names its reset. The attempt is killed immediately even if the CLI would otherwise hang, and the pool is paused until that window's reset. In a workflow started by this version the step then comes back to you; otherwise the action moves elsewhere. The pause record keeps the rule, the provider line and the meter reading, so `bullswarm pools` can say why; `bullswarm pools resume <pool>` lifts it and `bullswarm strategy set-pausing off` turns every automatic pool pause off (quota, auth and the sibling bench) while routing's own meter gating stays.
+A limit notice pauses a pool for quota (failure kind `quota`, never `process` or `auth`) only on proof: the pool's own meter reads 95% or more on a window that is still running, or the provider's line says a usage window is spent *and* names its reset. The attempt is killed immediately even if the CLI would otherwise hang, and the pool is paused until that window's reset. In a workflow started by this version the step then comes back to you; in one started by an earlier version the action moves elsewhere. The pause record keeps the rule, the provider line and the meter reading, so `bullswarm pools` can say why; `bullswarm pools resume <pool>` lifts it and `bullswarm strategy set-pausing off` turns every automatic pool pause off (quota, auth and the sibling bench). Routing's own meter gating stays either way: in a workflow started by this version and in a single `bullswarm run`, a usage limit makes the pool's meter be read again at once (or the pool is recorded as full until the reset), on or off.
 
 Every other limit notice — `Rate limit exceeded. Please wait a moment and try again.`, `429 Too Many Requests`, an overload, a window phrase with no reset — is failure kind `throttle` and never pauses the pool. In a workflow started by an earlier version the dispatcher retries the same pool up to twice, after 20 s and then 60 s (or after the wait the provider named), without a pause or a mechanical-retry charge; after that the attempt moves to another pool and the pool stays in service. A throttle that names a wait longer than 15 minutes skips the same-pool retry and moves at once. In a workflow started by this version a window phrase with no reset is a usage limit instead (`quota`), and a throttle never moves: it backs off at most twice, for at most 2 minutes each time, and then comes back to you (see above). A single `bullswarm run` records the throttle without a pause but does not retry it. Detection is shape-gated to provider notices, so an agent writing *about* rate limits does not trigger either path.
 
 ## Quarantine on an upstream auth failure
 
-A relayed credential fails upstream, not in the CLI. When a provider's event stream reports `auth_unavailable`, `authentication_error`, `invalidated oauth token`, `no available channel for model`, or a phrase the connector declares in `authSignatures`, the verdict is `auth` with a quarantine hint, and the pool is benched for the flat 10-minute re-probe window. Pools that share a credential group are benched together on the same deadline, with the reason reading `sibling of <pool>: <why>`; a quota quarantine never spreads, because one seat's window says nothing about the next.
+A relayed credential fails upstream, not in the CLI. When a provider's event stream reports `auth_unavailable`, `authentication_error`, `invalidated oauth token`, `no available channel for model`, or a phrase the connector declares in `authSignatures`, the verdict is `auth` with a quarantine hint, and the pool is benched for the flat 10-minute re-probe window. Pools that share a credential group are benched together on the same deadline, with the reason reading `sibling of <pool>: <why>`; a quota quarantine never spreads, because one seat's window says nothing about the next. With `bullswarm strategy set-pausing off` nothing is benched for later steps, but the verdict is still `auth`, and the step's retry still skips every pool in that credential group, so it never walks from one name to the next on the same dead credential.
 
 ## How the decision shows its work
 
@@ -293,7 +302,7 @@ forecast: inflight=0 5h ?%->?% expected=5.67m rate=unmeasured basis=bootstrap
 
 Grok won because it was the only pool left: this `analyze` task resolves to the medium effort tier, whose allow-list names a model only on grok and codex, and codex is disabled — eligibility runs before any pace comparison, so the +35.6 on `claude-code:acme` never entered the race.
 
-When a pool is near its line and still gets the work, the reason says so in the same line — `last mile: claude-code:acme 88.1% of 5h, handoff covers the wall`. A forecast beyond the wall is explicit too — `forecast over 100% (still eligible; ranked last): …`. Other explanations remain in the same line, such as `expiring but draining (forecast >= 95% and past its clock): grok 99.5% (98.8% elapsed)` or `preferred over busier: … (2 in flight)`.
+When a pool is near its line and still gets the work, the reason says so in the same line — `last mile: claude-code:acme 88.1% of 5h, a limit mid-attempt goes back to the caller`. A forecast beyond the wall is explicit too — `forecast over 100% (still eligible; ranked last): …`. Other explanations remain in the same line, such as `expiring but draining (forecast >= 95% and past its clock): grok 99.5% (98.8% elapsed)` or `preferred over busier: … (2 in flight)`.
 
 ## Next steps
 

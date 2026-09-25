@@ -4,7 +4,7 @@ import {
   pickPool, paceScore, isQuarantined, isBenched, isExhausted, fiveHourForecast,
   pacingForecast, DEFAULT_INFLIGHT_PENALTY_PCT, modelFamilyOf,
 } from '../src/lib/route.js';
-import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../src/meters/framework.js';
+import { FIVE_HOUR_NEAR_LIMIT_PCT, windowSpent } from '../src/meters/framework.js';
 
 const HOUR = 3600_000;
 const NOW = 1_000_000_000_000;
@@ -64,25 +64,45 @@ test('incumbent displaced when cheaper challenger clears margin', () => {
 });
 
 test('caller wins the lane when every delegate pool is exhausted', () => {
-  const pools = [pool('grok', { meter: { type: '5h', windowStart: NOW - 4 * HOUR, usedPct: 100 } })];
-  assert.equal(isExhausted(pools[0]), true);
+  const pools = [pool('grok', { fiveHourUsedPct: 100, fiveHourResetsAt: new Date(NOW + HOUR).toISOString() })];
+  assert.equal(isExhausted(pools[0], NOW), true);
   const r = pickPool('analyze', pools, { callerEligible: true, callerName: 'claude', now: NOW });
   assert.equal(r.keepOnClaude, true);
   assert.equal(r.pick, null);
 });
 
-test('only a 5h wall or a future quota retry exhausts a pool', () => {
-  assert.equal(isExhausted({ fiveHourUsedPct: 100 }, NOW), true);
-  assert.equal(isExhausted({ fiveHourUsedPct: 99 }, NOW), false);
-  assert.equal(isExhausted({ usedPct: 100, pacingWindow: 'weekly' }, NOW), false);
-  assert.equal(isExhausted({
-    fiveHourUsedPct: 50,
-    lastFailure: { kind: 'quota', retryAfter: new Date(NOW + HOUR).toISOString() },
-  }, NOW), true);
-  assert.equal(isExhausted({
-    fiveHourUsedPct: 50,
-    lastFailure: { kind: 'quota', retryAfter: new Date(NOW - HOUR).toISOString() },
-  }, NOW), false);
+// Any metered window at 100% — 5-hour, weekly or monthly —
+// is at its limit until that window resets, so the pool is never picked.
+test('any metered window at 100% exhausts a pool until its reset', () => {
+  const at = (hours) => new Date(NOW + hours * HOUR).toISOString();
+  assert.equal(isExhausted({ fiveHourUsedPct: 100 }, NOW), true, 'a reading with no reset counts');
+  assert.equal(isExhausted({ fiveHourUsedPct: 100, fiveHourResetsAt: at(-1) }, NOW), false, 'a window already over');
+  assert.equal(isExhausted({ fiveHourUsedPct: 99, fiveHourResetsAt: at(1) }, NOW), false);
+  assert.equal(isExhausted({ burstGate: true, fiveHourResetsAt: at(1) }, NOW), true);
+  assert.equal(isExhausted({ usedPct: 100, pacingWindow: 'weekly', paceResetsAt: at(72) }, NOW), true);
+  assert.equal(isExhausted({ usedPct: 100, pacingWindow: 'monthly', paceResetsAt: at(-2) }, NOW), false);
+  assert.equal(isExhausted({ usedPct: 100, pacingWindow: 'weekly', meterSource: 'declared' }, NOW), false, 'a declared figure is not a reading');
+  assert.equal(isExhausted({ meterSnapshot: { monthly: { utilization: 100, resets_at: at(200) } } }, NOW), true);
+  assert.deepEqual(windowSpent({
+    fiveHourUsedPct: 100, fiveHourResetsAt: at(1),
+    meterSnapshot: { seven_day: { utilization: 100, resets_at: at(72) } },
+  }, NOW), { window: 'weekly', resetsAt: at(72) }, 'the window that resets last is named');
+  assert.deepEqual(windowSpent({
+    fiveHourUsedPct: 100, fiveHourResetsAt: at(1),
+    meterSnapshot: { monthly: { utilization: 100, resets_at: null } },
+  }, NOW), { window: 'monthly', resetsAt: null }, 'a window whose reset is unknown outlasts a known one');
+  assert.deepEqual(windowSpent({ burstGate: true }, NOW), { window: '5-hour', resetsAt: null });
+  assert.equal(windowSpent({ fiveHourUsedPct: 40, usedPct: 60, pacingWindow: 'weekly', paceResetsAt: at(72) }, NOW), null);
+});
+
+test('a pool whose weekly window is spent with its reset days away is never picked', () => {
+  const spent = pool('grok', {
+    usedPct: 100, pacingWindow: 'weekly', paceResetsAt: new Date(NOW + 72 * HOUR).toISOString(), pace: -40,
+  });
+  const alone = pickPool('build', [spent], { callerEligible: false, now: NOW });
+  assert.equal(alone.pick, null, alone.why);
+  const other = pickPool('build', [spent, pool('codex', { pace: -60 })], { callerEligible: false, now: NOW });
+  assert.equal(other.pick.pool, 'codex');
 });
 
 test('caller does not win while a delegate has headroom', () => {
@@ -183,9 +203,10 @@ test('evidence routing treats a free non-writer like any other pool for ranking'
 test('an exhausted free pool never reaches the free tier', () => {
   const free = pool('opencode2', {
     free: true,
-    meter: { type: '5h', windowStart: NOW - 4 * HOUR, usedPct: 100 },
+    fiveHourUsedPct: 100,
+    fiveHourResetsAt: new Date(NOW + HOUR).toISOString(),
   });
-  assert.equal(isExhausted(free), true);
+  assert.equal(isExhausted(free, NOW), true);
   const r = pickPool('build', [free, pool('metered', { pace: -1 })], {
     callerEligible: false, callerSession: false, now: NOW,
   });
@@ -318,7 +339,7 @@ test('near-limit pool is still picked when no other pool is behind pace', () => 
   const r = pickPool('build', [near], { callerEligible: false, callerSession: false, now: NOW });
   assert.equal(r.pick.pool, 'claude-code:acme');
   assert.match(r.why, /near its 5h limit \(surplus -5, 5h used 82%\)/);
-  assert.match(r.why, /last mile: claude-code:acme 82% of 5h, handoff covers the wall/);
+  assert.match(r.why, /last mile: claude-code:acme 82% of 5h, a limit mid-attempt goes back to the caller$/);
   assert.doesNotMatch(r.why, /skipped near 5h limit/);
 });
 
@@ -329,7 +350,7 @@ test('a near-limit pool stays selectable when the alternative is not behind pace
     callerEligible: false, callerSession: false, now: NOW,
   });
   assert.equal(r.pick.pool, 'claude-code:acme');
-  assert.match(r.why, /last mile: claude-code:acme 91% of 5h, handoff covers the wall/);
+  assert.match(r.why, /last mile: claude-code:acme 91% of 5h, a limit mid-attempt goes back to the caller$/);
   assert.equal(r.candidates.find((c) => c.pool === 'claude-code:acme').nearFiveHourPenalty, false);
 });
 
@@ -342,7 +363,7 @@ test('explicit effort-tier assignment can still pick a near-limit pool', () => {
   });
   assert.equal(yielded.pick.pool, 'assigned');
   assert.match(yielded.why, /configured high assignment/);
-  assert.match(yielded.why, /last mile: assigned 88% of 5h, handoff covers the wall/);
+  assert.match(yielded.why, /last mile: assigned 88% of 5h, a limit mid-attempt goes back to the caller$/);
 
   // Once the assignment's pool has headroom again it wins as before, and the
   // reason carries its 5h reading.
@@ -365,7 +386,7 @@ test('an incumbent may keep a near-limit pool because the soft penalty is orderi
   });
   assert.equal(r.pick.pool, 'claude-code:acme');
   assert.equal(r.candidates[0].pool, 'codex');
-  assert.match(r.why, /last mile: claude-code:acme 79% of 5h, handoff covers the wall/);
+  assert.match(r.why, /last mile: claude-code:acme 79% of 5h, a limit mid-attempt goes back to the caller$/);
 });
 
 test('candidates expose the 5h fields in routing preference order', () => {
@@ -449,7 +470,7 @@ test('candidateMinutes null forecasts the projection alone', () => {
   assert.equal(c.fiveHourUsedPct, 50);
   assert.equal(c.nearFiveHourLimit, true);        // 78 ≥ 75 on the projection
   assert.match(r.why, /near its 5h limit \(surplus 5, 5h used 50% -> 78% projected\)/);
-  assert.match(r.why, /last mile: acme 78% of 5h, handoff covers the wall/);
+  assert.match(r.why, /last mile: acme 78% of 5h, a limit mid-attempt goes back to the caller$/);
 });
 
 test('a pool forecast past 100% remains eligible but is ranked last', () => {
@@ -740,7 +761,7 @@ function realDecisionPools(over = {}) {
   ];
 }
 
-test('a near-limit pool under its 5h clock keeps the lane and names the handoff (R10 replay)', () => {
+test('a near-limit pool under its 5h clock keeps the lane and names the last mile (R10 replay)', () => {
   const r = pickPool('build', realDecisionPools(), {
     now: NOW, candidateMinutes: 16, callerEligible: false,
   });
@@ -749,7 +770,7 @@ test('a near-limit pool under its 5h clock keeps the lane and names the handoff 
   // before this 16-minute task could hit the wall.
   assert.equal(r.pick.pool, 'claude-code:acme');
   assert.match(r.why, /most-behind capable pool near its 5h limit \(surplus 21\.4, 5h used 81% -> 88\.1% projected, under the clock \(92\.3% elapsed\)\)/);
-  assert.match(r.why, /last mile: claude-code:acme 88\.1% of 5h, handoff covers the wall/);
+  assert.match(r.why, /last mile: claude-code:acme 88\.1% of 5h, a limit mid-attempt goes back to the caller$/);
   assert.deepEqual(
     r.candidates.map((c) => [
       c.pool, c.pace, c.forecastFiveHourPct, c.fiveHourElapsedPct, c.nearFiveHourLimit,
@@ -826,7 +847,7 @@ test('a 90% forecast is still eligible regardless of the clock', () => {
   assert.deepEqual(r.forecast.gated, []);
   const c = r.candidates.find((x) => x.pool === 'acme');
   assert.deepEqual([c.forecastGated, c.nearFiveHourLimit, c.fiveHourElapsedPct], [false, true, 98.3]);
-  assert.match(r.why, /last mile: acme 90\.5% of 5h, handoff covers the wall/);
+  assert.match(r.why, /last mile: acme 90\.5% of 5h, a limit mid-attempt goes back to the caller$/);
 });
 
 test('5h spend is clipped at the reset; the pacing-window charge is not', () => {
@@ -1331,7 +1352,7 @@ test('urgency still steers a near-limit pool because 5h is no longer a hard tier
   assert.equal(r.pick.pool, 'grok');
   const g = r.candidates.find((c) => c.pool === 'grok');
   assert.deepEqual([g.nearFiveHourLimit, g.urgencyState], [true, 'urgent']);
-  assert.match(r.why, /last mile: grok 88% of 5h, handoff covers the wall/);
+  assert.match(r.why, /last mile: grok 88% of 5h, a limit mid-attempt goes back to the caller$/);
 
   // A 91% forecast is also still eligible; it is not a hard burst gate.
   const nearForecast = pacedPool('grok', 'weekly', 85, 122, {

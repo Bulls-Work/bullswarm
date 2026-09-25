@@ -1730,8 +1730,10 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
     const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
     const calls = {};
     // The fake provider: slow's first attempt hits a spent usage window with
-    // a named reset ten minutes out (pausing off, so no pool is paused);
-    // crash's first worker exits 1; gate always writes what its check refuses.
+    // a named reset ten minutes out (pausing off, so no pool is paused; the
+    // watcher files it as quota for a marked step, which asks for the
+    // limits-to-caller reading); crash's first worker exits 1; gate always
+    // writes what its check refuses.
     const slowBackAt = new Date(Date.now() + 10 * 60_000).toISOString();
     const worker = async (pool, task, targetDir, files, opts) => {
       const id = opts.attemptId.replace(/-\d+$/, '');
@@ -1740,8 +1742,8 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
       if (id === 'slow' && calls[id] === 1) {
         writeFileSync(files.outFile, 'usage limit reached');
         return {
-          ok: false, failureKind: 'throttle', why: 'usage limit reached until the window resets',
-          quotaPause: { rule: 'off', pause: false, until: null, holdUntil: slowBackAt },
+          ok: false, failureKind: opts.usageLimitsToCaller === true ? 'quota' : 'throttle', why: 'usage limit reached until the window resets',
+          quotaPause: { rule: 'off', pause: false, limit: 'window', until: null, holdUntil: slowBackAt },
           meta: { exitCode: 1, wallSec: 1 },
         };
       }

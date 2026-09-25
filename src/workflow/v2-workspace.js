@@ -6,8 +6,6 @@ import {
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { captureWorkspaceManifest, checkOwnership, compareManifests, normalizeOwnedFiles } from './ownership.js';
 
-const normalized = (value) => value.split(sep).join('/');
-
 function git(root, args, options = {}) {
   return execFileSync('git', ['-C', root, ...args], {
     encoding: options.encoding === 'buffer' ? null : (options.encoding ?? 'utf8'),

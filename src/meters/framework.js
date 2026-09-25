@@ -92,7 +92,8 @@ export function pacingWindowFor({ connector = null, subscription = null } = {}) 
  *   - pacing window = the pool's own subscription window when it declares one
  *     ('monthly' → monthly ?? weekly, 'weekly' → weekly ?? monthly), else the
  *     default order weekly ?? monthly ?? none. Never 5h.
- *   - burst gate = 5h utilization >= BURST_BLOCK_PCT blocks dispatch
+ *   - burst gate = the 5h window at its limit (atLimit) blocks dispatch;
+ *     windowSpent applies the same rule to the weekly and monthly windows
  *   - near limit  = 5h utilization >= FIVE_HOUR_NEAR_LIMIT_PCT: still
  *     dispatchable; routing applies a soft last-mile ordering penalty when
  *     another eligible pool is behind pace
@@ -105,10 +106,63 @@ export function pacingWindowFor({ connector = null, subscription = null } = {}) 
  * @param {number} [nowMs]
  * @param {{pacingWindow?: string|null}} [opts]
  */
-/** A recorded 5h reading is exhausted at the wall, not before it. */
+/** A metered window is at its limit at the wall, not before it. */
 export const BURST_BLOCK_PCT = 100;
 /** 5h utilization at/above which routing treats a pool as near its limit. */
 export const FIVE_HOUR_NEAR_LIMIT_PCT = 75;
+
+/**
+ * Is one metered window at its limit? At/above BURST_BLOCK_PCT until its
+ * reset: a reading whose reset has passed belongs to a window that is over,
+ * and one that names no reset counts until the next reading replaces it.
+ */
+function atLimit(usedPct, resetsAt, nowMs) {
+  const used = numberOrNull(usedPct);
+  if (used == null || used < BURST_BLOCK_PCT) return false;
+  const resetMs = resetMsOf(resetsAt);
+  return !Number.isFinite(resetMs) || resetMs > nowMs;
+}
+
+/** Epoch ms of a reset given as ms or as an ISO string; NaN when absent. */
+function resetMsOf(value) {
+  return typeof value === 'number' ? value : Date.parse(String(value ?? ''));
+}
+
+/**
+ * The metered window a pool is at its limit on, or null: any window — 5-hour,
+ * weekly or monthly — at its limit (atLimit) keeps the pool from being picked
+ * until that window resets. The one rule every routing gate reads. Reads a
+ * pool view as config.js builds it: `fiveHourUsedPct`/`fiveHourResetsAt` (a
+ * hand-built view may set only `burstGate`), the pacing window's
+ * `usedPct`/`paceResetsAt` under its `pacingWindow`, and `meterSnapshot` for
+ * the rest. A declared meter is the operator's figure, not a reading, and
+ * never counts. With several at their limit the one that resets last is
+ * named, since the pool is back only then; one whose reset is unknown
+ * outlasts any known reset.
+ *
+ * @returns {{window: '5-hour'|'weekly'|'monthly', resetsAt: string|null}|null}
+ */
+export function windowSpent(pool, nowMs = Date.now()) {
+  if (!pool || typeof pool !== 'object') return null;
+  const snapshot = pool.meterSnapshot && typeof pool.meterSnapshot === 'object' ? pool.meterSnapshot : {};
+  const fiveHourUsed = pool.fiveHourUsedPct ?? snapshot.five_hour?.utilization
+    ?? (pool.burstGate === true ? BURST_BLOCK_PCT : null);
+  const readings = [
+    ['5-hour', fiveHourUsed, pool.fiveHourResetsAt ?? snapshot.five_hour?.resets_at],
+    ['weekly', snapshot.seven_day?.utilization, snapshot.seven_day?.resets_at],
+    ['monthly', snapshot.monthly?.utilization, snapshot.monthly?.resets_at],
+  ];
+  const pacing = normalizePacingWindow(pool.pacingWindow);
+  if (pacing && pool.meterSource !== 'declared') readings.push([pacing, pool.usedPct, pool.paceResetsAt]);
+  let spent = null;
+  for (const [window, usedPct, resetsAt] of readings) {
+    if (!atLimit(usedPct, resetsAt, nowMs)) continue;
+    const resetMs = resetMsOf(resetsAt);
+    const at = Number.isFinite(resetMs) ? new Date(resetMs).toISOString() : null;
+    if (!spent || (spent.resetsAt && (!at || at > spent.resetsAt))) spent = { window, resetsAt: at };
+  }
+  return spent;
+}
 
 export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
   if (!snapshot) {
@@ -143,12 +197,12 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
   const chosen = pickPacingWindow(windows, opts.pacingWindow);
   const fiveHourUsed = snapshot.five_hour?.utilization;
   const fiveHourUsedPct = Number.isFinite(fiveHourUsed) ? fiveHourUsed : null;
-  const burstGate = fiveHourUsedPct != null && fiveHourUsedPct >= BURST_BLOCK_PCT;
   // resets_at is reported straight from the snapshot (M2): no reading, no
   // deadline — never a locally assumed one.
   const fiveHourResetsMs = snapshot.five_hour?.resets_at
     ? Date.parse(snapshot.five_hour.resets_at)
     : NaN;
+  const burstGate = atLimit(fiveHourUsedPct, fiveHourResetsMs, nowMs);
 
   return {
     pacing: chosen.pacing,

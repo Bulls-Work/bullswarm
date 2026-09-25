@@ -6,9 +6,8 @@ import { join } from 'node:path';
 import {
   V2_GOAL_SCHEMA_VERSION, V2_STATE_SCHEMA_VERSION,
   createV2GoalDocument, createV2DurableState, createV2State,
-  serializeV2GoalDocument, deserializeV2GoalDocument,
   serializeV2DurableState, deserializeV2DurableState,
-  assertV2Resume, validateV2DurableState, attemptOutputSeries,
+  assertV2Resume, validateV2DurableState, validateV2GoalDocument, attemptOutputSeries,
 } from '../src/workflow/v2-state.js';
 
 const input = () => ({ goal: 'Implement the result envelope', cwd: '/tmp/repo', requirements: [{ id: 'result-versioned', text: 'Result is versioned' }, { id: 'tests-pass', text: 'Tests pass', mandatory: false }], settings: { concurrency: 2 }, plannerRouting: { pool: 'planner' }, workerRouting: { preferredPool: 'worker' } });
@@ -44,9 +43,8 @@ test('round trips and defensively clones all boundaries', () => {
   const source = input(); const goal = createV2GoalDocument(source); source.requirements[0].text = 'changed';
   assert.equal(goal.intent.requirements[0].text, 'Result is versioned');
   const state = createV2State(goal, { runId: 'wf-1', shortId: 'abc234' });
-  const goalRoundTrip = deserializeV2GoalDocument(serializeV2GoalDocument(goal));
   const stateRoundTrip = deserializeV2DurableState(serializeV2DurableState(state));
-  goalRoundTrip.intent.requirements[0].text = 'changed'; stateRoundTrip.intent.goal = 'changed';
+  stateRoundTrip.intent.goal = 'changed';
   assert.equal(goal.intent.requirements[0].text, 'Result is versioned');
   assert.equal(state.intent.goal, 'Implement the result envelope');
 });
@@ -115,20 +113,20 @@ test('rejects malformed, legacy, mismatched, and old-run data before mutation', 
   assert.throws(() => createV2GoalDocument({ ...input(), settings: { workspaceMode: 'bogus' } }), /workspaceMode must be shared or isolated/);
   assert.throws(() => createV2GoalDocument({ ...input(), settings: { scout: 'yes' } }), /scout must be a boolean/);
   assert.throws(() => createV2GoalDocument({ ...input(), settings: { surprise: true } }), /surprise is not allowed/);
-  assert.throws(() => serializeV2GoalDocument({ ...goal, phases: [] }), /legacy autonomous field/);
+  assert.throws(() => validateV2GoalDocument({ ...goal, phases: [] }), /legacy autonomous field/);
   assert.throws(() => serializeV2DurableState({ ...state, repair: {} }), /legacy autonomous field/);
   assert.throws(() => deserializeV2DurableState(JSON.stringify({ ...state, ledger: { schemaVersion: 'bad' } })), /Invalid requirement ledger/);
   assert.throws(() => assertV2Resume({ ...goal, schemaVersion: undefined }, state, { runId: 'wf-1' }), /unsupported old autonomous run/);
   assert.throws(() => assertV2Resume(goal, state, { runId: 'wf-other' }), /runId does not match/);
   assert.throws(() => assertV2Resume({ ...goal, intentId: 'other' }, state), /intentId/);
-  assert.throws(() => serializeV2GoalDocument({ ...goal, intent: { ...goal.intent, goal: 'Mutated goal' } }), /intentId does not match/);
+  assert.throws(() => validateV2GoalDocument({ ...goal, intent: { ...goal.intent, goal: 'Mutated goal' } }), /intentId does not match/);
   assert.equal(JSON.stringify(state), before);
   assert.equal(validateV2DurableState(state), true);
 });
 
 test('rejects schema mismatch and graph-shaped state fields', () => {
   const goal = createV2GoalDocument(input()); const state = createV2DurableState(goal, { runId: 'wf-1', shortId: 'abc234' });
-  assert.throws(() => serializeV2GoalDocument({ ...goal, schemaVersion: 'bullswarm.workflow.v1' }), /schemaVersion/);
+  assert.throws(() => validateV2GoalDocument({ ...goal, schemaVersion: 'bullswarm.workflow.v1' }), /schemaVersion/);
   assert.throws(() => serializeV2DurableState({ ...state, schemaVersion: 'bullswarm.workflow.state.v1' }), /schemaVersion/);
   assert.throws(() => serializeV2DurableState({ ...state, program: { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [] } }), /empty state.program/);
   assert.throws(() => serializeV2DurableState({ ...state, actions: [{ id: 'unknown', status: 'running', attempts: 1 }] }), /unknown program action/);

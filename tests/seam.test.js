@@ -43,20 +43,23 @@ test('SEAM: exhausted pool (usedPct 100 via state) is excluded from picks', () =
   try {
     writeConnector(dir, 'grok');
     writeConnector(dir, 'codex');
-    // grok at 100% used via a stale-but-valid reading injected as a live one
+    // grok's weekly window at 100% used until its reset, through a cached reading
     writeState(dir, {
       grok: { enabled: true },
       codex: { enabled: true },
     });
+    const resetsAt = new Date(Date.now() + 3 * 86400_000).toISOString();
     const readings = {
       grok: {
         source: 'cache',
-        pacing: { usedPct: 100, elapsedPct: 50, surplus: -50, resetsAt: new Date().toISOString() },
+        pacingWindow: 'weekly',
+        pacing: { usedPct: 100, elapsedPct: 50, surplus: -50, resetsAt },
         burstGate: false,
       },
       codex: {
         source: 'cache',
-        pacing: { usedPct: 20, elapsedPct: 50, surplus: 30, resetsAt: new Date().toISOString() },
+        pacingWindow: 'weekly',
+        pacing: { usedPct: 20, elapsedPct: 50, surplus: 30, resetsAt },
         burstGate: false,
       },
     };

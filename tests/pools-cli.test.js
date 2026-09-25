@@ -114,7 +114,10 @@ test('strategy set-pausing off|on is stored in state.json; anything else is a us
   try {
     const off = run(home, ['strategy', 'set-pausing', 'off']);
     assert.equal(off.status, 0, off.stderr);
-    assert.match(off.stdout, /^automatic pausing is off: no pool is paused or benched by a command \(quota, auth or siblings\)/);
+    // The switch pauses nothing, and changes no failure kind.
+    assert.equal(off.stdout.trim(), 'automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); '
+      + 'a spent usage window still goes back to the caller, and a retry after a sign-in failure still skips the pools that share '
+      + 'that credential · bullswarm strategy set-pausing on restores it');
     assert.equal(readState(home).strategy.pausing, 'off');
     const on = run(home, ['strategy', 'set-pausing', 'on', '--json']);
     assert.equal(on.status, 0, on.stderr);
@@ -152,4 +155,76 @@ test('bullswarm pools says why a pool is paused, in plain words, with the lift c
   );
   assert.equal(poolStatusText({ name: 'codex', enabled: true, bench: { until: null, reason: 'stall', count: 1 } }, NOW), 'ready strikes=1(stall)');
   assert.equal(poolStatusText({ name: 'codex', enabled: false }, NOW), 'disabled');
+});
+
+// A home with only the echo test pool, for a single `bullswarm run`.
+function echoHome(strategy = null) {
+  const home = makeHome({
+    pools: { echo: { enabled: true } },
+    config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
+    ...(strategy ? { strategy } : {}),
+  });
+  mkdirSync(join(home, 'connectors'), { recursive: true });
+  writeFileSync(join(home, 'connectors', 'echo.json'), readFileSync(join(ROOT, 'src', 'providers', 'echo', 'connector.json')));
+  writeFileSync(join(home, 'connectors', 'echo-worker.mjs'), readFileSync(join(ROOT, 'src', 'providers', 'echo', 'echo-worker.mjs')));
+  return home;
+}
+
+function runEcho(home, argv) {
+  return spawnSync(process.execPath, [BIN, ...argv], {
+    cwd: ROOT,
+    env: { ...process.env, BULLSWARM_HOME: home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1', BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
+    encoding: 'utf8',
+    input: '',
+    timeout: 60_000,
+  });
+}
+
+// A single run is under the limits-to-caller rule. With pausing
+// off a spent window with its reset named is still `quota`, and the 100%
+// refusal marker is written (the echo pool has no meter reader), so the next
+// pick sees the spent pool; nothing is paused.
+test('run: with pausing off a spent usage window is quota, pauses nothing and writes the refusal marker', () => {
+  const home = echoHome({ pausing: 'off' });
+  try {
+    const result = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--json', '--prompt', 'FAIL:quota']);
+    assert.equal(result.status, 1, result.stderr);
+    const verdict = JSON.parse(result.stdout);
+    assert.equal(verdict.failureKind, 'quota', verdict.why);
+    assert.equal(verdict.quotaPause.rule, 'off');
+    assert.equal(verdict.quarantineHint, undefined);
+    assert.equal(verdict.meterRefresh.source, 'quota-refusal');
+    const marker = JSON.parse(readFileSync(join(home, 'meters', 'echo.json'), 'utf8'));
+    assert.equal(marker.source, 'quota-refusal');
+    assert.equal(marker.quota_refusal.resets_at, new Date(verdict.quotaPause.holdUntil).toISOString());
+    assert.equal(readState(home).pools.echo.quarantine, undefined, 'pausing off: not paused');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// A pool whose weekly window reads 100% until a reset days
+// away is never picked, even as the only pool.
+test('run: a pool with its weekly window spent until a later reset is not picked', () => {
+  const home = echoHome();
+  try {
+    const at = (hours) => new Date(Date.now() + hours * 3600_000).toISOString();
+    const reading = (weekly) => JSON.stringify({
+      pool: 'echo', captured_at: new Date().toISOString(),
+      five_hour: { utilization: 10, resets_at: at(2) },
+      seven_day: { utilization: weekly, resets_at: at(72) },
+    });
+    writeFileSync(join(home, 'meters', 'echo.json'), reading(100));
+    const spent = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    assert.equal(spent.status, 1, spent.stderr);
+    const refused = JSON.parse(spent.stdout);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.pick, undefined, refused.why);
+    writeFileSync(join(home, 'meters', 'echo.json'), reading(99));
+    const open = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    assert.equal(open.status, 0, open.stderr);
+    assert.equal(JSON.parse(open.stdout).pick.pool, 'echo');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

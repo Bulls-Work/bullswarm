@@ -34,8 +34,6 @@ import {
   runStatusMark,
   todayDateLabel,
   todayLicenceRows,
-  todayMinutesNumberText,
-  todayMinutesText,
   todayTopRuns,
   todayRows,
   verifyRoundLabel,
@@ -56,7 +54,6 @@ import {
   strong,
   tint,
   tokenSourceOf,
-  usageBasisText,
   visibleLength,
   workflowRunLabel,
   wrapLines,
@@ -94,84 +91,6 @@ function taskElapsedText(task, nowMs) {
   return ageText(task?.startedAt, nowMs) || 'time pending';
 }
 
-function todayGoalLine(record, width) {
-  const goal = String(record?.goal ?? '').split(/\r?\n/)[0].trim();
-  return dimText(`  ${goal || 'goal unavailable'}`, width);
-}
-
-function todayWorkflowLine(record, width) {
-  const glyph = record?.status === 'failed' ? glyphs().fail : glyphs().ok;
-  const id = String(record?.shortId ?? record?.runId ?? '------');
-  const project = cut(String(record?.project ?? 'unknown'), 10).padEnd(10);
-  const minutes = todayMinutesText(record?.minutes?.active) ?? blank();
-  const verdict = record?.verified === true ? 'verified' : record?.verified === false ? 'not verified' : blank();
-  const line = `${glyph} ${id.padEnd(6)}  ${project}  active ${minutes.padStart(6)}  ${verdict}`;
-  return todayPadded(line, width);
-}
-
-function todayTaskLine(task, width) {
-  const id = taskIdText(task);
-  const project = cut(String(task?.project ?? 'unknown'), 10).padEnd(10);
-  const minutes = todayMinutesText(measuredTaskMinutes(task)) ?? blank();
-  const result = task?.ok === false ? 'failed' : 'finished';
-  const line = `${glyphs().inflight} ${id.padEnd(6)}  ${project}  ${minutes.padStart(6)}  ${result}`;
-  return `${line}${' '.repeat(Math.max(0, width - visibleLength(line)))}`;
-}
-
-function todayPoolName(name, width) {
-  const full = String(name ?? '');
-  const suffix = full.includes(':') ? full.slice(full.lastIndexOf(':') + 1) : full;
-  if (full.length <= width) return full;
-  if (suffix.length <= width) return suffix;
-  return cut(full, width);
-}
-
-function compactUsageBasisText(value, tokenSource, width = 20) {
-  const text = value && typeof value === 'object'
-    ? moneyText(value)
-    : usageBasisText(value, tokenSource);
-  if (text === 'cost unknown' || visibleLength(text) <= width) return text;
-  return text
-    .replace(' estimated', ' est')
-    .replace(' summed', ' sum')
-    .replace('$ ', '$')
-    .slice(0, width);
-}
-
-function todayTableRow(row, width, { header = false } = {}) {
-  const desktop = width >= 60;
-  const nameWidth = desktop ? 14 : 13;
-  const specs = desktop
-    ? { wf: 6, wfPct: 4, run: 7, api: 17, gaps: [4, 3, 3, 0] }
-    : { wf: 6, wfPct: 4, run: 6, api: 12, gaps: [3, 3, 3, 0] };
-  const labels = ['worker-minutes', 'weekly share', 'API', 'subscription'];
-  const values = header ? labels : [
-    todayMinutesNumberText(row?.workflowMinutes) ?? blank(),
-    row?.workflowPct == null ? blank() : `${row.workflowPct.toFixed(1)}%`,
-    todayMinutesNumberText(row?.runMinutes) ?? blank(),
-    // The cell is fixed-width: the honest amount (`at least $X` when the
-    // pool's day holds unpriced attempts), billed against the subscription
-    // fact it has. The block's own footnote names the coverage counts.
-    row?.apiKnownSubtotalUsd == null && row?.apiUsd == null && row?.subscriptionUsd == null ? blank()
-      : [licenceApiText(row), licenceMoney(row?.subscriptionUsd)]
-        .filter((part) => part && part !== blank())
-        .join(' · ') || blank(),
-  ];
-  const widths = [specs.wf, specs.wfPct, specs.run, specs.api];
-  let line = header ? 'pool'.padEnd(nameWidth) : todayPoolName(row?.name, nameWidth).padEnd(nameWidth);
-  if (header) {
-    const headerWidths = desktop ? [6, 10, 7, 18] : [6, 10, 6, 13];
-    values.forEach((value, index) => {
-      line += String(value ?? '').padEnd(headerWidths[index]);
-      line += ' '.repeat(index === values.length - 1 ? 0 : 1);
-    });
-  } else values.forEach((value, index) => {
-    line += String(value ?? '').padStart(widths[index]);
-    line += ' '.repeat(specs.gaps[index]);
-  });
-  return todayPadded(line, width);
-}
-
 /**
  * `parts` joined with ` · ` in lines of at most `width` cells, a line breaking
  * only at a join: a part longer than a whole line wraps at its own spaces.
@@ -186,32 +105,9 @@ function joinedLines(parts, width) {
   return lines.length ? lines : [''];
 }
 
-function todayBareRule(width) {
-  return '─'.repeat(Math.max(0, width));
-}
-
 function todayPadded(value, width) {
   const text = String(value ?? '');
   return `${cut(text, width)}${' '.repeat(Math.max(0, width - visibleLength(cut(text, width))))}`;
-}
-
-function todayLicenceFootnotes(nowMs, width, desktop = false) {
-  const date = dayKey(nowMs) ?? 'today';
-  return (desktop
-    ? [
-      'weekly share is the calibration ledger drop when it recorded one, else a labelled pace estimate',
-      '— means the real snapshot supplied no measurement',
-      'at least marks an API total that leaves unpriced attempts out of the sum',
-      'API and subscription amounts keep their provider/estimate basis',
-      'live window used share is on Budget',
-    ]
-    : [
-      'weekly share is the ledger drop, else ≈ marks the pace estimate',
-      '— means the real snapshot supplied no measurement',
-      'at least marks an API total with unpriced attempts',
-      `money audit for ${date} uses recorded values only`,
-      'live window used share is on Budget',
-    ]).map((line) => todayPadded(line, width));
 }
 
 function cardStatusText(status) {
@@ -320,36 +216,6 @@ function cardRows(card, width) {
     ? { kind: 'task', taskId: card.id }
     : { kind: 'run', runId: card.record?.runId ?? card.id };
   return cardLines(card, width, { task: card.task }).map((text) => ({ text, action }));
-}
-
-function licenceMoney(value, tokenSource = null) {
-  // Either a plain amount or the shared money rule's verdict: a subtotal is
-  // always marked `≈`, whatever the pool's worst token source says about the
-  // attempts that recorded nothing.
-  const money = value && typeof value === 'object' ? value : { usd: value, partial: false };
-  if (money.usd == null) return blank();
-  const formatted = formatMoney(money.usd);
-  if (formatted === '-') return blank();
-  if (money.partial) return `≈${formatted}`;
-  return tokenSource === 'transcript-summed' ? `≈${formatted}`
-    : tokenSource === 'estimated:utf8-bytes/4' ? `~${formatted}` : formatted;
-}
-
-/**
- * The licence row's API cell through the Run spend block's helper: the whole
- * amount with its estimate glyph, or `at least $X · N unmeasured` when the
- * pool's day holds attempts nobody priced. A row with no recorded amount is
- * blank here, the way a dash reads in the column.
- */
-function licenceApiText(row) {
-  const facts = row?.apiFacts ?? null;
-  if (!facts) return blank();
-  const text = honestApiTotalText(facts, {
-    api: null,
-    whole: licenceMoney(apiMoney(row), row?.tokenSource),
-    counts: 'unmeasured',
-  });
-  return text === 'api unknown' || text === '—' ? blank() : text;
 }
 
 /**
@@ -538,101 +404,6 @@ function licenceTableLines(rows, width) {
   }
   lines.push({ text: dimText(legendText, width) });
   return lines;
-}
-
-/** The approved Home today band: finished work on the left, licence draw right. */
-function legacyHomeTodayBand(model, opts, body) {
-  const { width, narrow, nowMs } = opts;
-  const today = todayRows(model, nowMs);
-  const workflowCount = today.workflows.length;
-  const taskCount = today.tasks.length;
-  const verified = today.workflows.filter((record) => record.verified === true).length;
-  const workflowNoun = `${workflowCount} workflow${workflowCount === 1 ? '' : 's'}`;
-  const taskNoun = `${taskCount} task${taskCount === 1 ? '' : 's'}`;
-  const countText = `${workflowNoun} finished${taskCount ? ` · ${taskNoun} finished` : ''} · ${verified} verified`;
-  // The phone has one line for the whole band. Once tasks are present, drop
-  // the repeated word "finished" so the three required counts remain
-  // visible instead of truncating the verification count.
-  const narrowCountText = taskCount
-    ? `${workflowNoun} · ${taskNoun} · ${verified} verified`
-    : countText;
-  const desktopCountText = `${workflowNoun}${taskCount ? ` · ${taskNoun}` : ''} · ${verified} verified`;
-  const date = todayDateLabel(today.date, { year: !narrow });
-  const licenceRows = todayLicenceRows(model, today, nowMs);
-  const runIds = today.workflows.map((record) => record.runId ?? record.shortId).filter(Boolean);
-  const taskIds = today.tasks.map((task) => task.id ?? task.taskFile).filter(Boolean);
-
-  if (narrow) {
-    body.push(todayPadded(`today · ${date} · ${narrowCountText}`, width));
-    body.push(todayBareRule(width));
-    if (!today.workflows.length && !today.tasks.length) body.push(todayPadded('no finished workflows or tasks today', width));
-    for (const record of today.workflows) body.row(todayWorkflowLine(record, width), { kind: 'run', runId: record.runId ?? record.shortId });
-    for (const task of today.tasks) body.row(todayTaskLine(task, width), { kind: 'task', taskId: task.id ?? task.taskFile });
-    body.push(todayPadded('Enter on a run → its goal, steps and spend', width));
-    body.push(todayBareRule(width));
-    body.push(todayPadded('licence spent today · measured worker minutes', width));
-    body.push(todayTableRow(null, width, { header: true }));
-    if (!licenceRows.length) body.push(todayPadded('no measured pool work today', width));
-    for (const row of licenceRows) {
-      body.row(todayTableRow(row, width), { kind: 'page', page: 'budget', pool: row.name });
-    }
-    for (const line of todayLicenceFootnotes(nowMs, width, false)) body.push(line);
-  } else {
-    const leftWidth = 57;
-    const rightWidth = Math.max(1, width - leftWidth - 2);
-    body.push(todayPadded(`today · ${date}`, width));
-    const left = [
-      todayPadded(`finished today · ${desktopCountText}`, leftWidth),
-      `${'─'.repeat(Math.max(0, leftWidth - 1))} `,
-    ];
-    if (!today.workflows.length && !today.tasks.length) left.push(todayPadded('no finished workflows or tasks today', leftWidth));
-    for (const record of today.workflows) {
-      left.push(todayWorkflowLine(record, leftWidth));
-      left.push(todayGoalLine(record, leftWidth));
-    }
-    for (const task of today.tasks) left.push(todayTaskLine(task, leftWidth));
-    left.push(todayPadded('Enter on a run → its steps and spend', leftWidth));
-    const right = [
-      todayPadded('licence spent today · measured worker minutes', rightWidth),
-      todayBareRule(rightWidth),
-      todayTableRow(null, rightWidth, { header: true }),
-      ...licenceRows.map((row) => todayTableRow(row, rightWidth)),
-      ...todayLicenceFootnotes(nowMs, rightWidth, true),
-    ];
-    const rows = Math.max(left.length, right.length);
-    for (let index = 0; index < rows; index += 1) {
-      const l = todayPadded(left[index] ?? '', leftWidth);
-      const r = todayPadded(right[index] ?? '', rightWidth);
-      const action = index >= 2 && index < 2 + today.workflows.length * 2
-        && index % 2 === 0
-        ? { kind: 'run', runId: today.workflows[(index - 2) / 2]?.runId ?? today.workflows[(index - 2) / 2]?.shortId }
-        : index >= 2 + today.workflows.length * 2 && index < 2 + today.workflows.length * 2 + today.tasks.length
-          ? { kind: 'task', taskId: today.tasks[index - (2 + today.workflows.length * 2)]?.id ?? today.tasks[index - (2 + today.workflows.length * 2)]?.taskFile }
-          : null;
-      const rightStart = 2;
-      const poolIndex = index - rightStart;
-      const rightAction = poolIndex >= 1 && poolIndex <= licenceRows.length
-        ? { kind: 'page', page: 'budget', pool: licenceRows[poolIndex - 1]?.name }
-        : null;
-      body.parts([{ text: l, action }, { text: '│ ' }, { text: r, action: rightAction }]);
-    }
-  }
-  // Capture only this band's rows before the running/recent sections append
-  // their own click targets below it.
-  body.runRows = body.regions
-    .filter((region) => region.action?.kind === 'run')
-    .map((region) => ({ runId: region.action.runId, y: region.y }));
-  body.taskRows = body.regions
-    .filter((region) => region.action?.kind === 'task')
-    .map((region) => ({ taskId: region.action.taskId, y: region.y }));
-  const desiredTask = opts.selectedTaskId;
-  const desiredRun = opts.selectedRunId;
-  const selectedTask = desiredTask && taskIds.includes(desiredTask) ? desiredTask : null;
-  const selectedRun = desiredRun && runIds.includes(desiredRun) ? desiredRun : runIds[0] ?? null;
-  body.cursorAction = selectedTask
-    ? { kind: 'task', taskId: selectedTask }
-    : selectedRun ? { kind: 'run', runId: selectedRun } : null;
-  return { workflowCount, taskCount, verified };
 }
 
 /**
@@ -896,11 +667,6 @@ function spendSlots(spend, periodId, nowMs) {
 }
 
 /**
- * Three or four ticks from $0, a whole number of dollars apart: the step is
- * the nice number that reaches the tallest day in three intervals or fewer,
- * and at least two intervals are drawn so the axis always has three labels.
- */
-/**
  * The spent-per-day chart, `width` wide: one bar per slot from a $0 baseline,
  * a tick every few rows labelled in whole dollars (`~$400` when the bars are
  * approximate — an estimate, or a day with unpriced attempts left out — and
@@ -928,7 +694,6 @@ function spendChartLines(model, opts, width, { lines: fill = null } = {}) {
   const mark = approximate ? '~' : '';
   const ticks = spendTicks(Math.max(...drawn.map((slot) => slot.usd)));
   const top = ticks.at(-1);
-  const intervals = ticks.length - 1;
   const unpriced = slots.reduce((sum, slot) => sum + slot.unpriced, 0);
   const unknownDays = slots.filter((slot) => slot.unknown).length;
   const notes = [
@@ -1374,14 +1139,7 @@ export {
   homeDetails,
   medianRunText,
   recentDurationText,
-  todayGoalLine,
-  todayWorkflowLine,
-  todayTaskLine,
-  todayPoolName,
-  todayTableRow,
-  todayBareRule,
   todayPadded,
-  todayLicenceFootnotes,
   paceOnly,
   budgetWeekLines,
   breakdownCells,

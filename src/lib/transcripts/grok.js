@@ -3,7 +3,6 @@
 // ~/.grok/logs/unified.jsonl instead.
 
 import {
-  existsSync,
   readdirSync,
   readFileSync,
   statSync,

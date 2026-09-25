@@ -36,26 +36,33 @@ route. Runs started earlier keep their rules (`features.json`).
 1. Judge delegate output by what can be checked, never by the delegate's exit code or its own report: the content (`src/lib/verify.js`) and, when a step declares them, the command and schema evidence Bullswarm runs itself (`src/workflow/evidence-runner.js`).
 2. Pace by meter surplus = elapsed% (from provider resets_at) − used%.
    Weekly/monthly windows pace; 5h windows are burst gates only (M1–M5 in
-   `src/meters/framework.js`).
+   `src/meters/framework.js`). Any metered window at 100% (5h, weekly or
+   monthly) keeps its pool out of every pick until that window resets.
 3. Provider quirks live in the provider's directory (`src/providers/<name>/`,
    `providers/contrib/<name>/`, or `~/.bullswarm/providers/<name>/`), never in
    core logic (see `docs/reference/providers.md`).
 4. Quarantine always auto-releases; recursion depth is core-owned via env
    (`BULLSWARM_DEPTH`).
-5. Workflow dispatches honor the same guarantees as single runs:
-   `BULLSWARM_DEPTH` is propagated, burst-gated pools are excluded, and auth
-   verdicts quarantine the pool and append to the shared decision log
-   (R6/R7/R8 in `src/workflow/v2-dispatch.js`). A step's `route`, the run's
-   pin and the step's capability tier are hard filters applied before pace
-   ranks what is left. The failure rule is one automatic retry per step (a
+5. Workflow dispatches honor the same guarantees as single runs, in
+   `src/workflow/v2-dispatch.js`: `BULLSWARM_DEPTH` is checked and propagated
+   (`assertDepthAllowed` and `childDepthEnv` in `dispatchV2Action`), pools at
+   a spent window are excluded (`preparePools`), and a sign-in failure is
+   failure kind `auth` whatever the pausing switch: the step's retry skips the
+   pool's credential group, and with pausing on the pool and its siblings are
+   paused in the same locked update that appends to the shared decision log
+   (`appendDecision`). A step's `route`, the run's pin and the step's
+   capability tier are hard filters applied before pace ranks what is left. The failure rule is one automatic retry per step (a
    process failure on another eligible pool, a gate failure on the same pool
    with the failure attached), then the caller. An `act` step is never retried
    once its worker started. A usage limit (a spent 5-hour or weekly window, or
    no credit left) ends the step and sends it to the caller, whatever the
-   pausing switch: no wait, no automatic move, no retry. So does finding no
-   capable pool free at the pick. Nothing waits for a pool inside a run; only
-   a transient rate limit backs off on the same pool, at most twice (20 s, then
-   60 s, or a named wait of at most 2 minutes), then goes to the caller.
+   pausing switch: no wait, no automatic move, no retry. The pool's meter is
+   re-read after it (or recorded as full until the reset), whatever the
+   switch, so a window at 100% keeps that pool out of later steps. Finding no capable pool
+   free at the pick sends the step to the caller too. Nothing waits for a
+   pool inside a run; only a transient rate limit backs off on the same pool,
+   at most twice (20 s, then 60 s, or a named wait of at most 2 minutes), then
+   goes to the caller.
    Only a failed step's dependents wait. The dispatched planner and the
    preflight scout follow the same usage-limit rule (`usageLimitsToCaller` in
    `dispatchV2Action`): they stop and the run tells the caller, with no

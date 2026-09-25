@@ -8,8 +8,6 @@ import { spawnSync } from 'node:child_process';
 import {
   Prompter,
   suggestRoutingTable,
-  applyIntegrationBlock,
-  integrationBlockPresent,
   upgradeConnectorMetadata,
   migrateTestFixturePools,
   autoSetup,
@@ -17,6 +15,7 @@ import {
   configureTierRungs,
   openSetupTui,
 } from '../src/setup.js';
+import { applyAwarenessBlock, awarenessBlockPresent } from '../src/integrate.js';
 import { decideBareCommand } from '../src/cli.js';
 import { loadState, saveState } from '../src/lib/state.js';
 
@@ -260,10 +259,10 @@ test('integration block: approval required, idempotent markers', () => {
     const file = join(d, 'CLAUDE.md');
     writeFileSync(file, '# My config\n\nexisting content\n');
 
-    const denied = applyIntegrationBlock(file, { approved: false });
+    const denied = applyAwarenessBlock(file, { approved: false });
     assert.equal(denied.changed, false);
 
-    applyIntegrationBlock(file, { approved: true });
+    applyAwarenessBlock(file, { approved: true });
     let text = readFileSync(file, 'utf8');
     assert.match(text, /bullswarm:begin v3/);
     assert.match(text, /bullswarm run/);
@@ -273,12 +272,12 @@ test('integration block: approval required, idempotent markers', () => {
     // idempotent re-run: no duplicate blocks
     const before = (text.match(/bullswarm:begin/g) ?? []).length;
     void before;
-    applyIntegrationBlock(file, { approved: false }); // present -> skip
+    applyAwarenessBlock(file, { approved: false }); // present -> skip
     // force re-check through the public API:
-    assert.equal(integrationBlockPresent(file), true);
+    assert.equal(awarenessBlockPresent(file), true);
 
     // manual double-apply must not duplicate either
-    applyIntegrationBlock(file, { approved: true });
+    applyAwarenessBlock(file, { approved: true });
     text = readFileSync(file, 'utf8');
     const count = (text.match(/bullswarm:begin v3/g) ?? []).length;
     // second approved apply strips the old block first — exactly one remains
@@ -293,7 +292,7 @@ test('integration block creates parent dirs for new AGENTS.md', () => {
   const { d, cleanup } = tmp();
   try {
     const file = join(d, 'sub', 'AGENTS.md');
-    applyIntegrationBlock(file, { approved: true });
+    applyAwarenessBlock(file, { approved: true });
     assert.equal(existsSync(file), true);
     assert.match(readFileSync(file, 'utf8'), /bullswarm:begin v3/);
   } finally {

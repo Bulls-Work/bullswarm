@@ -30,8 +30,8 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `taskFile` | the prompt file the worker was given |
 | `contentUsableDespiteExit` | `true` when `ok` is false, the process exited non-zero, and the content judge still passed. Do not discard that `outFile` |
 | `failureKind` | present on failure: `quota`, `auth`, `provider`, `process`, `schema`, `stalled` |
-| `quarantineHint` | `true` on auth or quota; the pool is benched until `quarantinedUntil` |
-| `quarantineUntil` / `quarantineSource` | quota reset deadline and whether it came from the provider message or the cached 5-hour meter |
+| `quarantineHint` | `true` when the failure asks for a pause: a sign-in failure, whatever the pausing switch, or a usage limit with proof (the pool's own meter at 95% or more on a running window, or a reset the provider's line named) while automatic pausing is on. With automatic pausing on, the pool is paused until `quarantinedUntil`; with `strategy set-pausing off` nothing is paused, a usage limit carries no hint, and `quarantinedUntil` is absent |
+| `quarantineUntil` / `quarantineSource` | a usage limit's pause deadline and its proof: `message` (the reset the provider's line named) or `meter` (the reset of the window the pool's meter showed at 95% or more). Absent when the limit had no proof |
 | `quarantinedSiblings` | other pools in the same `credentialGroup` benched on an **auth** failure. Quota never spreads |
 | `cancelled` | `true` when a workflow cancellation stopped the worker |
 | `dryRun` | `true` on `--dry-run`. Nothing was spawned, logged, or registered in the assignment ledger |
@@ -83,7 +83,7 @@ The full document is `schemaVersion: "bullswarm.workflow.result.v2"`. Allowed to
 | `finishedAt` | ISO timestamp |
 | `handback` | present unless the run is completed, verified, and has no unread steering. See below |
 
-Requirement `status` values: `pending`, `passed`, `failed`, `blocked`. Action `status` values: `pending`, `ready`, `running`, `waiting`, `succeeded`, `failed`, `blocked`, `cancelled`, `interrupted`, `removed`.
+Requirement `status` values: `pending`, `passed`, `failed`, `blocked`. Action `status` values: `pending`, `ready`, `running`, `waiting` (only in a run saved by an earlier version; no current run writes it), `succeeded`, `failed`, `blocked`, `cancelled`, `interrupted`, `removed`.
 
 Each requirement `evidence[]` entry is `{ sourceAction, status, evidence, concerns, eventSequence, mechanicalFailure?, reviewer?, independent? }`. A reviewer records `{pool, model, provider}`; `independent` is `true` when no provider that did work on the judged steps is the reviewer's provider, `false` when one is, and `null` when no writer is known or the reviewer's or a writer's provider is unknown. An accepted requirement adds `accepted: {step, reason, at}`. Only evidence from the current `workRevision` is current. Negative evidence does not open another planner round.
 

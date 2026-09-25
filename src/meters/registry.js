@@ -735,9 +735,6 @@ export function meterHistoryIntervals(pool, opts = {}) {
   return intervals;
 }
 
-export const readMeterHistoryIntervals = meterHistoryIntervals;
-export const meterLedgerIntervals = meterHistoryIntervals;
-
 function historyDayKeyFor(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return historyDayKey(value);
   if (value instanceof Date && Number.isFinite(value.getTime())) return historyDayKey(value.getTime());
@@ -762,10 +759,6 @@ export function readMeterHistoryByDay(pool, day, opts = {}) {
   }
   return readMeterHistory(pool, { ...opts, day });
 }
-
-/** Alias used by callers that name the result rather than the operation. */
-export const meterHistoryForDay = readMeterHistoryByDay;
-export const readMeterHistoryForDay = readMeterHistoryByDay;
 
 /**
  * Group a pool's retained readings by local day. The returned object only has

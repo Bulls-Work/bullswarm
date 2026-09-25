@@ -27,7 +27,7 @@ import {
   createV2PlannerContext, createV2PlannerRequest, readPlannerCandidate, plannerCorrectionRequest,
   validateV2PlannerResponse, V2PlannerValidationError,
 } from './v2-planner.js';
-import { extractScoutUnitIds, recordGoalProject } from './goal.js';
+import { extractScoutUnitIds, recordGoalProject, scoutPrompt } from './goal.js';
 import { appendRollupIndex, bullswarmDirOfRun, readRollup, rollupPath, rollupRecord, writeRunRollup } from './rollup.js';
 import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
@@ -46,12 +46,11 @@ import { evidenceBriefLines, evidenceItemTimeoutSec, rewriteEvidenceCwd } from '
 import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
 import { STAGE3_RUN_FEATURES, readRunFeatures, runFeatureFlags, writeRunFeatures } from './run-features.js';
 import { createPoolRefresher } from './pool-refresh.js';
-import { scoutPrompt } from './goal.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
 } from './v2-workspace.js';
 import { deriveV2LiveStages, presentationStageStatus, stageForAction } from './v2-presentation.js';
-import { deliverSteering, peekSteering, readSteering } from './steering.js';
+import { deliverSteering, peekSteering } from './steering.js';
 import { enforcesOwnership, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { buildWorkspaceReport, captureWorkspaceStatus } from './workspace-report.js';
 import { acquireKernelLease, processIdentity, liveWorker, stopWorker } from './v2-process.js';

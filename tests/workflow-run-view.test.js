@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   actionNamedIn,
-  flatTimelineLines,
   markStepRows,
   planDagLines,
   renderWorkflowOverviewPanel,
@@ -16,7 +15,6 @@ import {
   workflowTimelineLines,
 } from '../src/workflow/run-view.js';
 import {
-  attemptRoutingText,
   durationClockText,
   phaseDurationFacts,
   runSpendFacts,
@@ -220,7 +218,6 @@ test('Run view preserves timeline segments and step hit regions through the extr
   const panel = workflowPanelModel(row);
   const timeline = workflowTimelineLines(panel, 100, 0, { goalPreview: false });
   assert.ok(timeline.lines.some((line) => line.header && line.segment));
-  assert.ok(flatTimelineLines(panel, { width: 55, rows: 8 }).length <= 8);
   assert.equal(actionNamedIn('  ✓ report completed', row.state.actions).id, 'report');
 
   const body = bodyBuilder();

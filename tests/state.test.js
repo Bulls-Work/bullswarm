@@ -677,3 +677,10 @@ test('resume lifts an auth pause and an active bench; an unpaused pool is untouc
   assert.equal(s.pools.codex.bench.count, 1);
   assert.equal(s.decisionLog.length, before, 'nothing lifted, nothing logged');
 });
+
+// The strike reasons list had no reader; a strike records the
+// reason its caller names.
+test('the unused bench-reason list stays deleted', async () => {
+  const state = await import('../src/lib/state.js');
+  assert.equal(Object.hasOwn(state, 'BENCH_REASONS'), false);
+});

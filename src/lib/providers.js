@@ -35,8 +35,6 @@ const require = createRequire(import.meta.url);
 /** The package root: `{bullswarmDir}` in spawn.cmd resolves here too. */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-export const PROVIDER_TIERS = ['first-class', 'contrib', 'local'];
-
 /** The shipped provider directories (overridable per call through opts.dirs). */
 export function providerDirs(bullswarmDir, opts = {}) {
   const root = opts.repoRoot ?? REPO_ROOT;
@@ -381,21 +379,3 @@ export function transcriptReaderFor(providers, pool) {
     home: args.home ?? owner.ctx?.home ?? null,
   });
 }
-
-/**
- * Convenience loader for callers that only have a Bullswarm home and pool.
- * `providers` may be supplied to avoid a second provider load in a hot path.
- */
-export function readTranscriptUsageFor(pool, {
-  bullswarmDir,
-  providers = null,
-  ...opts
-} = {}) {
-  const loaded = providers ?? loadProviders(bullswarmDir, opts).providers;
-  return transcriptReaderFor(loaded, pool);
-}
-
-// Descriptive aliases keep the helper discoverable to integrations that use
-// either the capability name or the provider-oriented name.
-export const providerTranscriptReader = transcriptReaderFor;
-export const transcriptUsageReaderFor = readTranscriptUsageFor;

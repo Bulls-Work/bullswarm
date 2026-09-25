@@ -18,6 +18,7 @@ import {
 import { describePoolPause, dropQuotaRefusalSnapshot } from './lib/quota.js';
 import { buildPools, buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
+import { windowSpent } from './meters/framework.js';
 import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { runUpdate } from './lib/update.js';
@@ -289,8 +290,10 @@ function cmdPoolsLabel(opts) {
  * `bullswarm strategy set-pausing <on|off>`: the automatic-pausing switch,
  * stored as `strategy.pausing` in state.json. Off means no pool is ever paused
  * or benched on a command's own judgement — quota, auth and the credential
- * group a dead credential would bench with it — while routing still reads
- * meters and a failed attempt still moves to another pool (quota.js Q7).
+ * group a dead credential would bench with it. A spent usage window still
+ * goes back to the caller (a run started by this version, or a single run),
+ * and a retry after a sign-in failure still skips the pools that share that
+ * credential (quota.js Q7).
  */
 function cmdStrategySetPausing(args) {
   const opts = parseArgs(args);
@@ -310,7 +313,7 @@ function cmdStrategySetPausing(args) {
   } else {
     console.log(on
       ? 'automatic pausing is on: a pool pauses only on proof (quota: its meter at 95% or the provider naming a spent window and its reset; auth: a dead credential) and its credential-group siblings bench with it'
-      : 'automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); limit notices are retried and a failed attempt moves to another pool · bullswarm strategy set-pausing on restores it');
+      : 'automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); a spent usage window still goes back to the caller, and a retry after a sign-in failure still skips the pools that share that credential · bullswarm strategy set-pausing on restores it');
   }
   return 0;
 }
@@ -568,10 +571,11 @@ async function cmdRun(opts) {
     { decisionLog: state.decisionLog ?? [] },
   );
 
-  // Burst gate (M3): a pool whose 5h window is >=90% used is excluded from
-  // dispatch entirely this run — it paces nothing, it's just out of burst room.
-  const gated = pools.filter((p) => p.burstGate);
-  const ungatedPools = gated.length ? pools.filter((p) => !p.burstGate) : pools;
+  // A pool with a metered window at its limit (framework.js windowSpent: its
+  // 5-hour, weekly or monthly window at 100% until that window resets) is
+  // excluded from dispatch entirely this run.
+  const gated = pools.filter((p) => windowSpent(p, now));
+  const ungatedPools = gated.length ? pools.filter((p) => !gated.includes(p)) : pools;
   const assignment = state.strategy?.assignments?.[effortTier] ?? null;
   const candidatePools = ungatedPools.map((pool) => ({
     ...pool,
@@ -630,7 +634,11 @@ async function cmdRun(opts) {
   }
   if (failedProbes.length) route.why = `${failedProbes.join(' · ')} · ${route.why}`;
   if (gated.length && route.pick) {
-    route.why += ` (burst-gated: ${gated.map((g) => g.name).join(', ')})`;
+    const gatedName = (pool) => {
+      const { window } = windowSpent(pool, now);
+      return window === '5-hour' ? pool.name : `${pool.name} at its ${window} limit`;
+    };
+    route.why += ` (burst-gated: ${gated.map(gatedName).join(', ')})`;
   }
 
   if (!route.pick && route.keepOnClaude) {
@@ -750,10 +758,13 @@ async function cmdRun(opts) {
       env: childDepthEnv(process.env),
       model: selectedModel,
       reasoning,
-      // Lets a usage-limit verdict fall back to this pool's cached 5h meter
-      // reset when the provider's message named no reset time of its own.
+      // The home whose meter, pausing switch and refusal marker the verdict
+      // reads and writes for this pool.
       bullswarmDir: getBullswarmDir(),
       poolName: connector.name,
+      // One attempt: a spent usage window is `quota` for the caller,
+      // whatever the pausing switch.
+      usageLimitsToCaller: true,
       // A task that finished without measured usage is priced by a detached
       // reconciler pass once its record and the provider's log are written.
       onUsageFinalized: ({ usage, transcriptReader }) => {

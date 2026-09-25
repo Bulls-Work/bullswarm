@@ -1,13 +1,13 @@
 // The render kit the 0.33.0 pages compose from: the thin rules, the page tab
-// row and the period toggle, the share, progress and stacked bars, the
-// sparkline and the heat row, the column band and the compact row, the axis
-// step and the visible-cell truncation.
+// row and the period toggle, the share and progress bars, the sparkline, the
+// column band and the compact row, the axis step and the visible-cell
+// truncation.
 // Every function is pure — strings in, strings out — so a page renders and is
 // asserted without a terminal, and none of them reads a TTY.
 //
 // A page never draws a dotted or blank track, meter or bar for missing data;
-// it writes the reason in words on that row with absentLine(). Measured zero
-// is data, not absence. Legacy bar defaults require callers to guard absence.
+// it writes the reason in words on that row. Measured zero is data, not
+// absence. Legacy bar defaults require callers to guard absence.
 //
 // Two rules hold for every function here:
 //
@@ -22,12 +22,11 @@
 //
 // Colours come from the one palette the product has, METER_COLORS in
 // usage-view.js, and this file invents none. That palette now carries the
-// prototype's purple, orange, cyan and dim roles, its "others" band and its
-// four heat shades, so the heat ramp is the palette's own and a caller names a
-// role rather than a hex. Where the prototype used colour for an affordance
-// this kit still substitutes attributes that need no colour: the active tab
-// and the active period are inverted, every key letter is underlined, and the
-// parts after the first in a share bar are dimmed.
+// prototype's purple, orange, cyan and dim roles and its "others" band, so a
+// caller names a role rather than a hex. Where the prototype used colour for
+// an affordance this kit still substitutes attributes that need no colour:
+// the active tab and the active period are inverted, every key letter is
+// underlined, and the parts after the first in a share bar are dimmed.
 //
 // A region is `{ x, width, action }` with `x` the 1-based column inside the
 // returned line — the same base as parseMouse()'s coordinates — so the shell
@@ -102,9 +101,6 @@ export function seriesColors(names) {
   }
   return assigned;
 }
-
-// A descriptive alias for callers that do not use the chart terminology.
-export const paletteColor = seriesColor;
 
 /** Row budget shared by the chart callers at each frame height. */
 export function chartRowCount(height, { min = 5, max = 16 } = {}) {
@@ -542,18 +538,6 @@ function reading(value) {
   return null;
 }
 
-export function absentLine(label, reason, { width = 55, labelWidth = 0 } = {}) {
-  const [name, why] = [label, reason].map((value) => String(value ?? '').replace(/[\r\n\t]+/g, ' ').trim());
-  // `labelWidth` lets a page that already lays its rows out in a label column
-  // (Budget's `used` / `by bullswarm` / `room`) keep an absent row in the same
-  // column instead of shifting it left by the default three-space join.
-  const pad = Math.trunc(Number(labelWidth)) || 0;
-  const joined = name && why && pad > 0 ? `${name.padEnd(pad)}${why}`
-    : [name, why].filter(Boolean).join('   ');
-  const text = cut(joined, colsOf(width, 55));
-  return text ? `${DIM}${text}${RESET}` : '';
-}
-
 const SHARE_GLYPHS = Object.freeze(['▓', '▒', '░', '█']);
 const SHARE_ASCII = Object.freeze(['#', '.', '|', '#']);
 
@@ -698,91 +682,12 @@ export function progressBar(fraction, width = 20, { partialGlyph = null } = {}) 
 }
 
 /**
- * One horizontal stacked bar per row — a left label gutter and the row's
- * segments across the rest, `[{ label, segments: [{ value, color }] }]`:
- *
- *   claude-code ████████
- *   codex       █████
- *
- * The gutter follows the longest label and gives the bar at least two thirds
- * of the width; labels too long for it are cut. Segment cells are handed out
- * by largest remainder so the bar adds up, a row whose segments are empty or
- * zero draws an empty track rather than a full one, and no line passes
- * `width`. A segment's `color` is one of the palette's hex values; without it
- * the segment keeps the terminal's colour. An ascii terminal gets `#`.
- */
-export function stackedBars(rows, { width = 120, colors = true } = {}) {
-  const cols = colsOf(width, 120);
-  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
-  if (cols <= 0 || !list.length) return [];
-  const labels = list.map((row) => String(row.label ?? ''));
-  const longest = labels.reduce((most, label) => Math.max(most, visibleLength(label)), 0);
-  const gutter = Math.min(longest + 1, Math.floor(cols / 3));
-  const barWidth = Math.max(0, cols - gutter);
-  const block = asciiGlyphsPreferred() ? '#' : '█';
-  return list.map((row, index) => {
-    const label = cut(labels[index], Math.max(0, gutter - 1));
-    const lead = `${label}${' '.repeat(Math.max(0, gutter - visibleLength(label)))}`;
-    const segments = (Array.isArray(row.segments) ? row.segments : [])
-      .filter((segment) => segment && Number(segment.value) > 0);
-    const counts = allocate(segments.map((segment) => Number(segment.value)), barWidth);
-    let bar = '';
-    let painted = 0;
-    segments.forEach((segment, at) => {
-      if (!counts[at]) return;
-      const run = block.repeat(counts[at]);
-      bar += colors && isHex(segment.color) ? `${fgOf(segment.color)}${run}${RESET}` : run;
-      painted += counts[at];
-    });
-    return `${lead}${bar}${' '.repeat(Math.max(0, barWidth - painted))}`;
-  });
-}
-
-/**
- * Geometry for stackedBars().  Segment widths are allocated by the exact
- * largest-remainder allocator used by the string painter; no second rounding
- * policy is introduced here.
- */
-export function stackedBarsMeta(rows, { width = 120, colors = true } = {}) {
-  const cols = colsOf(width, 120);
-  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
-  const labels = list.map((row) => String(row.label ?? ''));
-  const longest = labels.reduce((most, label) => Math.max(most, visibleLength(label)), 0);
-  const gutter = Math.min(longest + 1, Math.floor(cols / 3));
-  const barWidth = Math.max(0, cols - gutter);
-  const geometry = list.map((row, rowIndex) => {
-    const segments = (Array.isArray(row.segments) ? row.segments : [])
-      .filter((segment) => segment && Number(segment.value) > 0)
-      .map((segment, index) => ({ ...segment, value: Number(segment.value), index }));
-    const counts = allocate(segments.map((segment) => segment.value), barWidth);
-    const total = segments.reduce((sum, segment) => sum + segment.value, 0);
-    let x = gutter + 1;
-    const result = segments.map((segment, index) => {
-      const own = counts[index] || 0;
-      const item = {
-        id: segment.id ?? segment.label ?? index,
-        x,
-        width: own,
-        value: segment.value,
-        share: reading(segment.share) ?? (total > 0 ? segment.value / total : null),
-      };
-      x += own;
-      return item;
-    });
-    return { row: rowIndex + 1, segments: result };
-  });
-  return { lines: stackedBars(rows, { width: cols, colors }), rows: geometry };
-}
-
-/**
- * A vertical, value-scaled column chart.  This is intentionally separate from
- * `stackedBars`: Home and the other tables use the horizontal row renderer,
- * while Trends needs one shared axis so a small day and a large day retain
- * their relative magnitude.
+ * A vertical, value-scaled column chart: Trends needs one shared axis so a
+ * small day and a large day retain their relative magnitude.
  *
  * `series` is `[{ values: number[], color?: hex }]`; each label gets one
  * column, and the series are stacked inside that column.  The returned array
- * is still just lines (like `stackedBars`), with a non-enumerable `meta` field
+ * is still just lines, with a non-enumerable `meta` field
  * describing the chart rows and columns for a caller that needs hit regions.
  * `width` is optional; when supplied the columns are narrowed (and, only when
  * physically unavoidable, the oldest columns are dropped) to stay inside it.
@@ -1099,46 +1004,6 @@ export function columnBars(series, labels, {
     },
   });
   return lines;
-}
-
-const HEAT_SHADES = Object.freeze(['░', '▒', '▓', '█']);
-const HEAT_ASCII = Object.freeze(['.', ':', '=', '#']);
-
-/**
- * The four heat backgrounds: the palette's own ramp, darkest first, which is
- * the prototype's `.t1`-`.t4`. Built at call time, not at import: usage-view.js
- * imports this module in the views, so a top-level read of METER_COLORS would
- * be a temporal-dead-zone trap.
- */
-function heatRamp() {
-  return METER_COLORS.heat.map((hex) => bgOf(rgbOf(hex)));
-}
-
-/**
- * One row of heatmap cells for values 0..1, separated by a single space so a
- * cell and its gap are two columns: `▓ █ ▒`. With `ansi` each cell is a
- * background-coloured cell — the ramp is the palette's four heat shades,
- * darkest first — and without it the cells are the density glyphs
- * `░▒▓█`, `.:=#` on an ascii terminal. A cell that is null or not a number is
- * the empty marker `·`: no value was recorded, which is not the same as a
- * measured zero. Cells past `width` are dropped from the left, so a narrow
- * terminal keeps the newest.
- */
-export function heatRow(cells, { width = null, ansi = true } = {}) {
-  const list = Array.isArray(cells) ? cells : [];
-  const cols = width == null || !Number.isFinite(Number(width)) ? null : colsOf(width, 0);
-  const room = cols == null ? list.length : Math.max(0, Math.floor((cols + 1) / 2));
-  const window = room >= list.length ? list : (room === 0 ? [] : list.slice(-room));
-  if (!window.length) return '';
-  const shades = asciiGlyphsPreferred() ? HEAT_ASCII : HEAT_SHADES;
-  const ramp = ansi ? heatRamp() : null;
-  return window.map((value) => {
-    const number = reading(value);
-    if (number == null) return ansi ? `${DIM}·${RESET}` : '·';
-    const level = Math.max(1, Math.ceil(Math.max(0, Math.min(1, number)) * shades.length));
-    // Keep the density glyph visible in captures even when it is coloured.
-    return ramp ? `${ramp[level - 1]}${shades[level - 1]}${RESET}` : shades[level - 1];
-  }).join(' ');
 }
 
 /**

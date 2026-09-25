@@ -133,20 +133,6 @@ function blankRecord(confidence = 'none') {
   };
 }
 
-function resultRecord({ tokens, model = null, sessionId = null, file = null, at = null, confidence = 'exact' }) {
-  return {
-    tokens,
-    model: typeof model === 'string' && model ? model : null,
-    sessionId: typeof sessionId === 'string' && sessionId ? sessionId : null,
-    cwd: null,
-    file,
-    firstAt: at,
-    lastAt: at,
-    requests: [{ at, model: typeof model === 'string' && model ? model : null, tokens }],
-    confidence,
-  };
-}
-
 function safeRows(filePath) {
   let lines;
   try {
@@ -390,32 +376,6 @@ export function buildTranscriptIndex({ home = homedir(), previous = null } = {})
     };
   });
   return { provider: 'claude-code', home, entries, changedFiles, grownFrom };
-}
-
-/** Parse one captured Claude result event (useful when no durable transcript exists). */
-export function parseClaudeResultEvent(input, { file = null, confidence = 'exact' } = {}) {
-  let row = input;
-  if (typeof input === 'string') {
-    let text = input;
-    try {
-      if (existsSync(input) && statSync(input).isFile()) text = readFileSync(input, 'utf8');
-    } catch { /* treat input as JSON text */ }
-    try { row = JSON.parse(text); } catch { return blankRecord('none'); }
-  }
-  if (!row || typeof row !== 'object') return blankRecord('none');
-  const usage = row.usage ?? row.message?.usage ?? {};
-  const model = typeof row.model === 'string' && row.model
-    ? row.model
-    : Object.keys(row.modelUsage ?? {})[0] ?? null;
-  const at = timeText(row.timestamp ?? null);
-  return resultRecord({
-    tokens: claudeTokens(usage),
-    model,
-    sessionId: row.session_id ?? row.sessionId ?? null,
-    file,
-    at,
-    confidence,
-  });
 }
 
 function chosenRecord(filePath, { sessionId, startedAt, endedAt, confidence, wantedId = null }) {

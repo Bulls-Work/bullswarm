@@ -410,42 +410,6 @@ export function dateLabel(key, options = {}) {
   return dateLabels([key], options)[0] ?? '';
 }
 
-/**
- * Render one horizontal allocation and register the exact cells painted by
- * each part.  A positive part too small for a cell still gets a sliver and a
- * hit region of its own, while its payload keeps the real, tiny reading;
- * `partialGlyph` only chooses which sliver dash-kit draws.
- */
-export function renderShareBar({
-  parts, width, colors = true, partialGlyph = null,
-  tab, metric, period, bucketKey = null, bucketLabel = null,
-  unit, basis = null,
-} = {}) {
-  const cols = widthOf(width, 20);
-  const source = sourceParts(parts);
-  const rendered = shareBarMeta(source, { width: cols, colors, partialGlyph });
-  const total = source.reduce((sum, part) => {
-    const value = finite(part?.value);
-    return value == null ? sum : sum + Math.max(0, value);
-  }, 0);
-  const regions = [];
-  rendered.parts.forEach((geometry, index) => {
-    if (!(geometry.width > 0)) return;
-    const part = source[index] ?? {};
-    const totalValue = finite(part.total) ?? (total > 0 ? total : null);
-    const payload = payloadFor({ ...part, total: totalValue, share: finite(part.share) ?? (total > 0 ? geometry.value / total : null) }, {
-      tab, metric, period, bucketKey, bucketLabel, unit, basis, total: totalValue,
-    });
-    regions.push({ kind: 'share', row: 1, columns: { start: geometry.x, end: geometry.x + geometry.width - 1 }, payload });
-  });
-  const tooSmall = rendered.parts
-    .map((geometry, index) => ({ geometry, part: source[index] }))
-    .filter(({ geometry, part }) => geometry.width === 0 && finite(part?.value) > 0)
-    .map(({ part }) => part?.label ?? part?.id)
-    .filter(Boolean);
-  return { lines: [fit(rendered.text, cols)], regions, meta: { tooSmall } };
-}
-
 function rowParts(row) {
   if (Array.isArray(row?.parts) && row.parts.length) return sourceParts(row.parts);
   const value = finite(row?.value);
@@ -733,78 +697,6 @@ export function renderPanel({
 // exactly the panel's own columns — bars and their one-column gaps coming from
 // the room there is, with no second copy of the geometry here.
 const FILL_COLUMNS = Number.MAX_SAFE_INTEGER;
-
-/**
- * Make a filled chart's bar rows exactly the height its sibling panel owns.
- *
- * `columnBars` chooses a nice tick interval and therefore returns a multiple
- * of that interval, not necessarily the requested number of rows. That is a
- * useful rule for a standalone chart, but it leaves the axis floating above a
- * two-column panel grid. Filled charts are the one case where the requested
- * geometry is authoritative: resample the painted rows to the target, then
- * move the hit metadata with the same scale. The axis and value rows remain
- * the renderer's own text, only their position changes.
- */
-function resizeFilledChart(lines, targetRows) {
-  const meta = lines?.meta;
-  const target = Number.isFinite(Number(targetRows)) ? Math.max(1, Math.trunc(Number(targetRows))) : null;
-  const source = Number.isFinite(Number(meta?.chartRows)) ? Math.max(1, Math.trunc(Number(meta.chartRows))) : null;
-  if (!meta || target == null || source == null || target === source) return lines;
-
-  const bars = lines.slice(0, source);
-  const resizedBars = Array.from({ length: target }, (_, index) => {
-    const sourceIndex = Math.min(source - 1, Math.floor(index * source / target));
-    return bars[sourceIndex] ?? '';
-  });
-  const resized = [...resizedBars, ...lines.slice(source)];
-  const shiftRow = (row) => row == null
-    ? row
-    : Number.isFinite(Number(row)) ? Number(row) + (target - source) : row;
-  const scaleStart = (row) => Math.max(1, Math.min(target,
-    Math.floor(((Math.max(1, Number(row)) - 1) * target) / source) + 1));
-  const scaleEnd = (row) => Math.max(1, Math.min(target,
-    Math.ceil((Math.max(1, Number(row)) * target) / source)));
-  const columns = (Array.isArray(meta.columns) ? meta.columns : []).map((column) => {
-    const segments = (Array.isArray(column.segments) ? column.segments : []).map((segment) => {
-      const rowStart = scaleStart(segment.rowStart);
-      const rowEnd = Math.max(rowStart, scaleEnd(segment.rowEnd));
-      return {
-        ...segment,
-        rowStart,
-        rowEnd,
-        rowRange: [rowStart, rowEnd],
-        columnRange: segment.columnRange,
-        row: [rowStart, rowEnd],
-        rows: { start: rowStart, end: rowEnd },
-        y1: rowStart,
-        y2: rowEnd,
-      };
-    });
-    return {
-      ...column,
-      height: column.height > 0
-        ? Math.max(1, Math.min(target, Math.round(column.height * target / source)))
-        : 0,
-      eighths: column.eighths > 0
-        ? Math.max(1, Math.min(target * 8, Math.round(column.eighths * target / source)))
-        : 0,
-      segments,
-      slices: segments,
-    };
-  });
-  const resizedMeta = {
-    ...meta,
-    chartRows: target,
-    axisRow: shiftRow(meta.axisRow),
-    valueRow: shiftRow(meta.valueRow),
-    cumulativeRow: shiftRow(meta.cumulativeRow),
-    columns,
-    slices: columns.flatMap((column) => column.segments ?? []),
-    sliceGeometry: columns.flatMap((column) => column.segments ?? []),
-  };
-  Object.defineProperty(resized, 'meta', { enumerable: false, value: resizedMeta });
-  return resized;
-}
 
 function chartOptions(width, height, rowCount, unit, mark, totals, cumulative, colors, fill = false) {
   const cols = widthOf(width, 55);

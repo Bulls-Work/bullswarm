@@ -191,24 +191,6 @@ export function validateV2PlannerResponse(response, state, {
     : { schemaVersion: V2_PLANNER_RESPONSE_SCHEMA_VERSION, kind: 'exhausted', summary: response.summary.trim(), reason: response.reason.trim() };
 }
 
-export function parseV2PlannerResponse(text, state, options = {}) {
-  const source = String(text ?? '').trim();
-  const ends = source.endsWith('```') ? source.slice(0, -3).trimEnd() : source;
-  const starts = [];
-  for (let index = 0; index < ends.length; index += 1) if (ends[index] === '{') starts.push(index);
-  const errors = [];
-  for (const start of starts) {
-    try {
-      const candidate = JSON.parse(ends.slice(start));
-      return validateV2PlannerResponse(candidate, state, options);
-    } catch (error) {
-      if (Array.isArray(error?.issues)) errors.push(...error.issues);
-      else errors.push(error.message);
-    }
-  }
-  throw new V2PlannerValidationError(errors.length ? [...new Set(errors)] : ['response did not contain a trailing JSON object']);
-}
-
 export function readPlannerCandidate(candidatePath, state, options = {}) {
   if (typeof candidatePath !== 'string' || !candidatePath) {
     return { ok: false, errors: ['candidatePath must be a non-empty string'] };
@@ -727,5 +709,3 @@ export function buildPlannerPreflight(statePath, boundary = 'initial', candidate
     '5. End your response with only a short confirmation that the durable planner candidate validated.',
   ].join('\n');
 }
-
-export const validatePlannerResponse = validateV2PlannerResponse;

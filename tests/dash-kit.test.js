@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as kit from '../src/workflow/dash-kit.js';
 import {
-  absentLine, chartRowCount, columnBars, columns, compactRow, cut, dateLabels, formatDashboardValue, heatRow, niceStep, paletteColor, periodToggle, progressBar, rule,
+  chartRowCount, columnBars, columns, compactRow, cut, dateLabels, formatDashboardValue, niceStep, periodToggle, progressBar, rule,
   seriesColor,
   seriesColors,
-  shareBar, shareBarMeta, sparkline, stackedBars, stackedBarsMeta, tabsRow,
+  shareBar, shareBarMeta, sparkline, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 
@@ -95,16 +95,10 @@ const FIELDS = Object.freeze([
   { text: '16:41', width: 5, gap: 2 },
 ]);
 
-const ROWS = Object.freeze([
-  { label: 'claude-code', segments: [{ value: 6, color: METER_COLORS.green }, { value: 2, color: METER_COLORS.amber }] },
-  { label: 'codex', segments: [{ value: 3, color: METER_COLORS.red }] },
-  { label: 'grok', segments: [] },
-]);
-
 test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
-    'SERIES_PALETTE', 'absentLine', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'dateLabels', 'formatDashboardValue', 'heatRow', 'niceStep', 'paletteColor', 'periodToggle',
-    'progressBar', 'rule', 'seriesColor', 'seriesColors', 'shareBar', 'shareBarMeta', 'sparkline', 'stackedBars', 'stackedBarsMeta', 'tabsRow',
+    'SERIES_PALETTE', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'dateLabels', 'formatDashboardValue', 'niceStep', 'periodToggle',
+    'progressBar', 'rule', 'seriesColor', 'seriesColors', 'shareBar', 'shareBarMeta', 'sparkline', 'tabsRow',
   ]);
 });
 
@@ -319,55 +313,6 @@ test('progressBar fills, clamps and falls back to ascii', () => {
   }
 });
 
-test('stackedBars draws a label gutter and a bar per row inside the width', () => {
-  for (const width of WIDTHS) {
-    const lines = stackedBars(ROWS, { width });
-    assert.equal(lines.length, ROWS.length);
-    for (const line of lines) {
-      assert.ok(visibleLength(line) <= width, `at ${String(width)}`);
-      assert.equal(line.includes('NaN'), false);
-    }
-  }
-  const [first] = stackedBars(
-    [{ label: 'claude-code', segments: [{ value: 75, color: METER_COLORS.green }, { value: 25 }] }],
-    { width: 40 },
-  );
-  assert.equal(visible(first), 'claude-code '.padEnd(12) + '█'.repeat(28));
-  assert.ok(first.includes('\x1b[38;2;182;189;115m'), 'the segment colour is the palette hex');
-});
-
-test('stackedBars handles ascii, no colour, empty rows and zero values', () => {
-  withEnv(ASCII_ENV, () => {
-    const [line] = stackedBars([{ label: 'cmd', segments: [{ value: 1 }] }], { width: 20, colors: false });
-    assert.equal(visible(line), `cmd ${'#'.repeat(16)}`);
-    assert.equal(line.includes('\x1b'), false);
-    for (const glyph of visible(line).slice(4)) assert.equal(glyph, '#', 'the bar is ascii');
-  });
-  assert.deepEqual(stackedBars([], { width: 40 }), []);
-  assert.deepEqual(stackedBars(null, { width: 40 }), []);
-  const [empty] = stackedBars([{ label: 'grok', segments: [] }], { width: 30, colors: false });
-  assert.equal(empty, 'grok '.padEnd(5) + ' '.repeat(25), 'no segments draw an empty track');
-  const [zero] = stackedBars(
-    [{ label: 'grok', segments: [{ value: 0 }, { value: Number.NaN }] }],
-    { width: 30, colors: false },
-  );
-  assert.equal(zero.includes('NaN'), false);
-  assert.equal(visible(zero).trim(), 'grok');
-  const [long] = stackedBars([{ label: 'x'.repeat(80), segments: [{ value: 1 }] }], { width: 32, colors: false });
-  assert.ok(visibleLength(long) <= 32);
-  assert.ok(visible(long).includes('…'), 'a label too long for the gutter is cut');
-});
-
-test('stackedBarsMeta uses the same gutter and segment widths as stackedBars', () => {
-  const rows = [{ label: 'claude-code', segments: [{ id: 'a', value: 3 }, { id: 'b', value: 1 }] }];
-  const meta = stackedBarsMeta(rows, { width: 40, colors: false });
-  assert.equal(visibleLength(meta.lines[0]), 40);
-  assert.equal(meta.rows.length, 1);
-  assert.equal(meta.rows[0].segments.reduce((sum, segment) => sum + segment.width, 0), 28);
-  assert.equal(meta.rows[0].segments[0].x, 13);
-  assert.equal(meta.rows[0].segments[1].x, meta.rows[0].segments[0].x + meta.rows[0].segments[0].width);
-});
-
 test('dateLabels keeps calendar dates and never falls back to weekday initials', () => {
   const keys = ['2026-09-13', '2026-09-14'];
   assert.deepEqual(dateLabels(keys, { width: 55 }), ['Sep13', 'Sep14']);
@@ -531,23 +476,10 @@ test('columnBars keeps a 29-minute model slice visible on a 424-minute day', () 
 
 test('series colours are stable by name and reserve unknown/other greys', () => {
   assert.equal(seriesColor('grok'), seriesColor('grok'));
-  assert.equal(paletteColor('grok'), seriesColor('grok'));
   assert.notEqual(seriesColor('unknown'), seriesColor('grok'));
   assert.notEqual(seriesColor('other'), seriesColor('grok'));
   assert.equal(seriesColor('unknown'), METER_COLORS.dim);
   assert.equal(seriesColor('other (3 pools)'), METER_COLORS.others);
-});
-
-test('absentLine is a dim single row of words bounded by width', () => {
-  assert.equal(visible(absentLine('opencode', 'free model · no licence meter')), 'opencode   free model · no licence meter');
-  for (const width of [0, 1, 12, ...WIDTHS]) {
-    const line = absentLine('opencode', 'free model · no licence meter', { width });
-    assert.ok(visibleLength(line) <= width);
-    assert.doesNotMatch(visible(line), /[▁▂▃▄▅▆▇█▓▒░·]{2,}/);
-    if (width) assert.ok(line.startsWith('\x1b[2m'));
-  }
-  assert.doesNotMatch(absentLine('pool\nname', 'no\rmeter\tyet'), /[\r\n\t]/);
-  assert.equal(absentLine(null, null), '');
 });
 
 test('a reading too small for a cell draws a sliver, and only a true zero is empty', () => {
@@ -606,38 +538,6 @@ test('columnBars applies the dashboard money precision to fractions of a cent', 
   });
   const valueRow = visible(chart[chart.meta.valueRow - 1]);
   assert.match(valueRow, /≈\$0\.004/, 'money keeps sub-cent magnitude');
-});
-
-test('heatRow paints a cell per value, an empty marker for null', () => {
-  assert.equal(heatRow([0, 0.25, 0.5, 1], { ansi: false }), '░ ░ ▒ █');
-  assert.equal(heatRow([null, Number.NaN, undefined], { ansi: false }), '· · ·');
-  assert.equal(heatRow([], {}), '');
-  assert.equal(heatRow(null, {}), '');
-  withEnv(ASCII_ENV, () => assert.equal(heatRow([0, 1], { ansi: false }), '. #'));
-});
-
-test('heatRow paints the ramp in ansi and fits the width it is given', () => {
-  const row = heatRow([0.1, 0.6, 1], {});
-  assert.ok(row.includes('\x1b[48;2;'), 'cells are background-coloured');
-  assert.equal(visible(row), '░ ▓ █', 'three visible density cells and the two gaps between them');
-  assert.equal(visibleLength(heatRow([null, 1], {})), 3);
-  const ramps = heatRow([0.1, 0.4, 0.7, 1], {}).match(/\x1b\[48;2;(\d+);(\d+);(\d+)m/g);
-  assert.equal(ramps.length, 4);
-  const tints = ramps.map((code) => code.slice(7, -1).split(';').map(Number));
-  for (let channel = 0; channel < 3; channel += 1) {
-    const channelValues = tints.map((tint) => tint[channel]);
-    assert.deepEqual(
-      channelValues,
-      [...channelValues].sort((a, b) => a - b),
-      `channel ${String(channel)} brightens with the value`,
-    );
-  }
-  for (const width of WIDTHS) {
-    const line = heatRow(Array.from({ length: 40 }, (_, index) => index / 40), { width });
-    assert.ok(visibleLength(line) <= width, `at ${String(width)}`);
-  }
-  assert.equal(visibleLength(heatRow([0.1, 0.2, 0.3], { width: 5 })), 5, 'the newest cells are kept');
-  assert.equal(visibleLength(heatRow([1, 1, 1], { width: 0 })), 0);
 });
 
 test('columns lays one, two and four cells across the width', () => {
@@ -869,9 +769,7 @@ test('no function paints past its width from 32 to 200 columns', () => {
     (width) => shareBar([{ value: 4, glyph: '▓' }, { value: 3, glyph: '▒' }, { value: 3, glyph: '░' }], { width }),
     (width) => sparkline([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9], width),
     (width) => progressBar(0.42, width),
-    (width) => stackedBars(ROWS, { width }).join('\n'),
     (width) => columnBars([{ values: [1, 36] }], ['a', 'b'], { width, colors: false }).join('\n'),
-    (width) => heatRow([0.2, 0.4, 0.6, 0.8, 1], { width }),
     (width) => columns(CELLS, { width }).join('\n'),
     (width) => compactRow(FIELDS, { width }),
     (width) => cut('a long line that has to be cut back', width),
@@ -887,8 +785,8 @@ test('no function paints past its width from 32 to 200 columns', () => {
 });
 
 test('no primitive leaks a unicode-only glyph once ascii mode is on', () => {
-  // The bars, the spark and the heat shades; `─` and `…` are the two the
-  // glyph table documents as safe everywhere and stay.
+  // The bars and the spark; `─` and `…` are the two the glyph table
+  // documents as safe everywhere and stay.
   const unicodeOnly = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▓', '▒', '░'];
   withEnv(ASCII_ENV, () => {
     const rendered = [
@@ -898,9 +796,7 @@ test('no primitive leaks a unicode-only glyph once ascii mode is on', () => {
       shareBar([{ value: 4, glyph: '▓' }, { value: 3, glyph: '▒' }, { value: 3, glyph: '░' }], { width: 30 }),
       sparkline([3, 1, 4, 1, 5, 9, 2, 6], 8),
       progressBar(0.42, 12),
-      stackedBars(ROWS, { width: 55 }).join('\n'),
       columnBars([{ values: [1, 36] }], ['a', 'b'], { width: 55 }),
-      heatRow([0, 0.5, 1, null], { ansi: false }),
       columns(CELLS, { width: 55 }).join('\n'),
       compactRow(FIELDS, { width: 55 }),
       cut('a label that is far too long for this narrow line', 20),
@@ -924,9 +820,7 @@ test('every primitive survives null, empty and junk data without NaN', () => {
       shareBar([{ value }, { value: 1 }], { width: 10 }),
       sparkline([value, 1, value], 8),
       progressBar(value, 8),
-      stackedBars([{ label: 'pool', segments: [{ value }] }], { width: 40 }).join('\n'),
       columnBars([{ values: [value, 1] }], ['a', 'b'], { width: 40, colors: false }).join('\n'),
-      heatRow([value, 0.5, value], { width: 10 }),
       columns([{ rule: 'budget', rows: ['a row'], width: value }, { rows: value }], { width: 40, gap: value }).join('\n'),
       compactRow([{ text: 'id', width: value }, { text: 'middle', grow: true, min: value }, { text: 'end', gap: value }], { width: 40, gap: value }),
       JSON.stringify(niceStep(value)) + JSON.stringify(niceStep(1, value)),
@@ -944,16 +838,13 @@ test('every primitive survives null, empty and junk data without NaN', () => {
       shareBar(value, { width: value, colors: value });
       sparkline(value, value);
       progressBar(value, value);
-      stackedBars(value, { width: value, colors: value });
       columnBars(value, value, { width: value, colors: value });
-      heatRow(value, { width: value, ansi: value });
       columns(value, { width: value, gap: value });
       compactRow(value, { width: value, gap: value });
       niceStep(value, value);
       cut(value, value);
     }, `nothing throws for ${JSON.stringify(value)}`);
   }
-  assert.equal(heatRow([null, Number.NaN, undefined], { ansi: false }), '· · ·', 'no reading, no cell');
   assert.equal(sparkline([null, Number.NaN, undefined], 3), '', 'no reading, no sparkline');
 });
 

@@ -26,10 +26,7 @@ import {
 } from './lib/strategy.js';
 import { buildPools, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
-import {
-  awarenessBlock, applyAwarenessBlock, awarenessBlockPresent,
-  installIntegration, retireLegacyOffload,
-} from './integrate.js';
+import { installIntegration, retireLegacyOffload } from './integrate.js';
 import { packagedConnectorSources, syncConnectorCopies } from './lib/connector-copies.js';
 
 // --- prompting ------------------------------------------------------------
@@ -177,16 +174,6 @@ export function suggestRoutingTable(enabledPools) {
     suggestion[lane] = { order: names, fallback: 'caller' };
   }
   return suggestion;
-}
-
-// --- integration block ------------------------------------------------------------
-
-export function applyIntegrationBlock(filePath, { approved }) {
-  return applyAwarenessBlock(filePath, { approved });
-}
-
-export function integrationBlockPresent(filePath) {
-  return awarenessBlockPresent(filePath);
 }
 
 // --- repair ---------------------------------------------------------------

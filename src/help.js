@@ -362,7 +362,7 @@ const runText = rich({
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
     'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of the run and releases it when the attempt ends; --dry-run registers nothing',
-    'may quarantine a pool for a period after an authentication failure',
+    'may pause a pool after a sign-in failure, or after a usage limit with proof, while automatic pausing is on; one attempt only: a usage limit exits 1 with no retry',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },
@@ -709,9 +709,11 @@ const strategySetPausingText = rich({
     + 'provider line says a usage window is spent and names its reset; every other limit notice '
     + 'leaves the pool in service. A dead credential pauses its pool with the pools that share that '
     + 'credential. Off, nothing is paused or benched by a command, and routing still reads meters. The '
-    + 'switch decides only whether a pool is paused for other work: in a workflow started '
-    + 'by this version a spent usage window still ends the step and sends it back to the caller, '
-    + 'whatever the switch, and a transient rate limit backs off on the same pool at most twice before '
+    + 'switch decides only whether a pool stays paused for later work. Either way a sign-in failure is '
+    + 'failure kind auth, and the step\'s retry skips every pool that shares its credential. In a workflow '
+    + 'started by this version a spent usage window still ends the step and sends it back to the caller, '
+    + 'whatever the switch, and the pool\'s meter is read again at once, so a window it shows at 100% keeps '
+    + 'the pool out of later steps until that window resets; a transient rate limit backs off on the same pool at most twice before '
     + 'it goes back too. A workflow started by an earlier version retries a limit notice, then moves the '
     + 'attempt to another pool; a single bullswarm run makes one attempt and exits 1.',
   args: [{ name: '<on|off>', desc: 'new state, stored as strategy.pausing in state.json' }],
@@ -967,6 +969,7 @@ const workflowText = rich({
     { name: 'capabilities', desc: 'show pools, lanes, models, meters, and routing constraints' },
     { name: 'runs ...', desc: 'search ongoing and historical workflow instances' },
     { name: 'reindex', desc: 'backfill the run-rollup history index, including minimal legacy records' },
+    { name: 'reprice', desc: 'recompute past attempts\' tokens and money from provider totals or transcripts; a dry run unless --apply' },
     { name: 'tui [runId]', desc: 'open the dashboard (Home, Runs, Run, Step, Budget, Stats, Fleet, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
     { name: 'watch <runId>', desc: 'follow low-noise progress until terminal; --until outcome|trouble prints only what needs you' },
     { name: 'step restart <runId> <step>', desc: 'stop a running step and run it again with its handoff, optionally on another pool; nothing restarts on its own' },

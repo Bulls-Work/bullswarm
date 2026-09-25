@@ -319,9 +319,10 @@ opencode  cost=1 lanes=analyze/build/chore unmetered surplus=- inflight=0 free=l
 grok      cost=2 lanes=analyze/build/chore weekly used 5% elapsed 2.2% [live] surplus=-2.8 inflight=0 ready strikes=1(probe)
 ```
 
-A bench reason is one of `stall`, `provider`, `empty output` or `probe` — the
-last being the pre-dispatch free-model liveness check reporting `404`, a
-provider error or a timeout. The first strike prints as `ready strikes=1(<reason>)`:
+A bench reason is one of `stall`, `provider` or `probe`. `provider` covers a
+provider error and a free pool that answered with nothing; `probe` is the
+pre-dispatch free-model liveness check reporting `404`, a provider error or a
+timeout. The first strike prints as `ready strikes=1(<reason>)`:
 the pool is still taking work, and the count is shown so a pool one strike from
 the bench does not read as perfectly healthy. The second strike benches it for a
 10-minute cooldown, after which it returns automatically; a success clears the
@@ -348,15 +349,18 @@ A limit notice pauses a pool for quota only on one of two proofs:
 
 Anything else — `Error: Rate limit exceeded. Please wait a moment and try again.`,
 `429 Too Many Requests`, an overload, a 5xx, a timeout, or a window phrase with no
-reset — is transient: the attempt backs off and retries on the same pool, then
-moves to another pool for that attempt only. The pool is never paused for it.
-In a workflow started by this version a notice that says a usage window, a
-quota or a balance is spent ends the step and comes back to you at once, with
-or without a reset named and whatever the pausing switch; its reset, when
-known, is the `back at` time. Any other rate limit backs off on the same pool
-at most twice (20 s, then 60 s, or the wait it names when that is at most 2
-minutes) and then comes back to you instead of moving; one that names a longer
-wait comes back to you at once, with `back at` at the end of that wait.
+reset — never pauses the pool. What happens next depends on who ran it. In a
+workflow started by this version a notice that says a usage window, a quota or
+a balance is spent ends the step and comes back to you at once, with or without
+a reset named and whatever the pausing switch; its reset, when known, is the
+`back at` time, and the pool's meter is read again at once: a window it shows
+at 100% keeps the pool out of later steps until the reset. Any other rate limit backs off on the same pool at most
+twice (20 s, then 60 s, or the wait it names when that is at most 2 minutes)
+and then comes back to you; one that names a longer wait comes back to you at
+once, with `back at` at the end of that wait. Nothing moves to another pool. A
+single `bullswarm run` makes one attempt and exits 1 on either. In a workflow
+started by an earlier version the attempt backs off and retries on the same
+pool, then moves to another pool for that attempt only.
 
 Quota and auth signatures are matched against the provider's own error channel:
 its stderr, the events it flags as errors, and its terminal `result` record.
@@ -366,9 +370,12 @@ phrase is not evidence about the pool.
 `bullswarm strategy set-pausing off` turns every automatic pause off — quota,
 auth, and the credential-group siblings an auth pause benches with it, plus the
 soft bench a second strike writes; `pools` then opens with
-`automatic pausing: off`. Routing is untouched: meters are still read and a
-failed attempt still moves to another pool. In a workflow started by this
-version a usage limit comes back to you instead, as above.
+`automatic pausing: off`. Routing is untouched: meters are still read, and a
+crashed or signed-out attempt still gets the step's retry on another pool. A
+sign-in failure is still failure kind `auth`, so that retry skips every pool
+that shares the credential. In a workflow started by this version a usage
+limit still ends the step and comes back to you, as above, and the pool's
+meter is still read again after it.
 
 ```bash
 # Bypass the meter cache and re-read live usage for every pool.
@@ -621,14 +628,20 @@ running window, or the provider says a usage window is spent and names its
 reset (see [pools](#pools)), and a dead credential pauses its pool together
 with the pools that share that credential. Off, nothing is paused or benched by
 a command, and a crashed or signed-out attempt still moves on. The switch
-decides only whether a pool is paused for other work: in a workflow started by
-this version a spent usage window still ends the step and comes back to you,
-whatever the switch, and a transient rate limit still backs off on the same
-pool at most twice before it comes back to you. A workflow started by an
+decides only whether a pool stays paused for later work. A sign-in failure is
+failure kind `auth` either way, and the step's retry skips every pool that
+shares that credential. In a workflow started by this version a spent usage
+window still ends the step and comes back to you, whatever the switch, and the
+pool's meter is read again at once (or the pool is recorded as full until the
+reset), so a window it shows at 100% keeps the pool out of later steps; a
+transient rate limit still backs off
+on the same pool at most twice before it comes back to you. A workflow started by an
 earlier version retries a limit notice on the same pool, then moves the
 attempt to another pool; a single `bullswarm run` makes one attempt and exits 1
 on it. Routing still reads meters. A pause already in place stays until its
 reset; `bullswarm pools resume <pool>` lifts it.
+
+`set-pausing off` prints `automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); a spent usage window still goes back to the caller, and a retry after a sign-in failure still skips the pools that share that credential · bullswarm strategy set-pausing on restores it`.
 
 ### configure
 

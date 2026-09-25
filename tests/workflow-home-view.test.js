@@ -15,9 +15,6 @@ import {
   medianRunText,
   recentDurationText,
   stepBarText,
-  todayTableRow,
-  todayTaskLine,
-  todayWorkflowLine,
 } from '../src/workflow/home-view.js';
 import { todayLicenceRows, todayRows } from '../src/workflow/home-model.js';
 import { readRollupIndex, readRollups } from '../src/workflow/rollup.js';
@@ -84,19 +81,6 @@ function emptyModel() {
     tasks: { inflight: [], finished: [] }, budget: null, stats: null,
   };
 }
-
-test('Home view keeps today rows and table rows at their requested width', () => {
-  for (const width of [55, 120, 200]) {
-    const workflow = todayWorkflowLine({ shortId: 'today1', project: 'bullswarm', minutes: { wall: 3 }, verified: true }, width);
-    const task = todayTaskLine({ id: 'task-1', project: 'bullswarm', durationMs: 60_000 }, width);
-    const table = todayTableRow({ name: 'provider:codex', workflowMinutes: 2, workflowPct: 1.5, runMinutes: 1, apiUsd: 0.5, tokenSource: 'provider-reported' }, width);
-    assert.equal(visible(workflow).length, width);
-    assert.equal(visible(task).length, width);
-    // The raw table cell may carry the explicit usage basis; Home pads/cuts
-    // it through todayPadded when it is placed in the page band.
-    assert.ok(visible(table).length <= width + 10);
-  }
-});
 
 test('Home cards use the shared h/m/s clock and only name a differing span', () => {
   const withSpan = cardLines({

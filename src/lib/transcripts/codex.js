@@ -51,15 +51,6 @@ function timeText(value) {
   return ms === null ? null : new Date(ms).toISOString();
 }
 
-function inWindow(timestamp, startedAt, endedAt) {
-  const start = timeMs(startedAt);
-  const end = timeMs(endedAt);
-  if (start === null && end === null) return true;
-  const at = timeMs(timestamp);
-  if (at === null) return false;
-  return (start === null || at >= start) && (end === null || at <= end);
-}
-
 function blankTokens() {
   return {
     standardRead: null,
@@ -332,45 +323,6 @@ function overlaps(parsed, startedAt, endedAt) {
   if (first === null && last === null) return false;
   return (end === null || first === null || first <= end)
     && (start === null || last === null || last >= start);
-}
-
-/** Parse Codex's captured `codex exec --json` stdout usage stream. */
-export function parseCodexStdout(input, { file = null, confidence = 'exact' } = {}) {
-  let text = input;
-  if (typeof input !== 'string') return blankRecord('none');
-  try {
-    if (existsSync(input) && statSync(input).isFile()) text = readFileSync(input, 'utf8');
-  } catch { /* treat input as JSONL text */ }
-  let sessionId = null;
-  let usage = null;
-  let at = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let row;
-    try { row = JSON.parse(line); } catch { continue; }
-    if (row.type === 'thread.started' && typeof row.thread_id === 'string') sessionId = row.thread_id;
-    if (row.type !== 'turn.completed' || !row.usage) continue;
-    usage = row.usage;
-  }
-  if (!usage) return blankRecord('none');
-  const tokens = tokenRecord({
-    input: finite(usage.input_tokens),
-    cached: finite(usage.cached_input_tokens),
-    cacheWrite: finite(usage.cache_write_input_tokens),
-    output: finite(usage.output_tokens),
-    reasoning: finite(usage.reasoning_output_tokens),
-  });
-  return {
-    tokens,
-    model: null,
-    sessionId,
-    cwd: null,
-    file,
-    firstAt: at,
-    lastAt: at,
-    requests: [{ at, model: null, tokens }],
-    confidence,
-  };
 }
 
 function chosenRecord(filePath, { sessionId, startedAt, endedAt, confidence }) {

@@ -168,32 +168,11 @@ export function isUsable(creds, now = Date.now(), skewMs = EXPIRY_SKEW_MS) {
   return Boolean(creds) && creds.expiresAt - skewMs > now;
 }
 
-export function readOAuthCredentials() {
-  const fileCreds = readFromCredentialsFile();
-  if (platform() === 'darwin') {
-    const keychainCreds = readFromMacKeychain(DEFAULT_KEYCHAIN_SERVICE);
-    return keychainCreds
-      ? {
-        ...fileCreds,
-        ...keychainCreds,
-        subscriptionType: fileCreds?.subscriptionType ?? keychainCreds.subscriptionType ?? null,
-        rateLimitTier: fileCreds?.rateLimitTier ?? keychainCreds.rateLimitTier ?? null,
-      }
-      : fileCreds;
-  }
-  return fileCreds;
-}
-
 // `security find-generic-password` takes 100–300 ms and blocks the caller;
 // the dashboard used to pay it on every one-second tick. A login changes the
 // keychain entry rarely, so one read serves a minute of callers.
 const KEYCHAIN_CACHE_MS = 60_000;
 const keychainCache = new Map();
-
-/** Forget cached keychain reads (tests, or after a fresh `claude login`). */
-export function resetKeychainCache() {
-  keychainCache.clear();
-}
 
 export function readFromMacKeychain(service = DEFAULT_KEYCHAIN_SERVICE, { now = Date.now() } = {}) {
   const cached = keychainCache.get(service);
@@ -211,20 +190,6 @@ export function readFromMacKeychain(service = DEFAULT_KEYCHAIN_SERVICE, { now = 
   }
   keychainCache.set(service, { at: now, value });
   return value;
-}
-
-function readFromCredentialsFile() {
-  for (const p of [
-    join(homedir(), '.claude', '.credentials.json'),
-    join(homedir(), '.config', 'claude', 'credentials.json'),
-  ]) {
-    try {
-      return extractCredentials(readFileSync(p, 'utf8'));
-    } catch {
-      /* next candidate */
-    }
-  }
-  return null;
 }
 
 export function extractCredentials(blob) {
@@ -575,10 +540,6 @@ export async function fetchClaudeUsageWithCredentials(creds, pool = 'claude-code
     throw new ClaudeMeterError(`Failed to parse usage response: ${err.message}`, 'parse');
   }
   return parseClaudeUsage(body, pool, creds);
-}
-
-export async function fetchClaudeUsage() {
-  return fetchClaudeUsageWithCredentials(readOAuthCredentials(), 'claude-code');
 }
 
 /**

@@ -28,9 +28,9 @@
 //       OWN REPORT quoting a quota signature. A connector with no declared
 //       event stream has no provider events to separate, so its own transport
 //       is the channel and the shape gate (quota.js Q2) decides what counts.
-//       With `strategy.pausing: "off"` (quota.js Q7) no verdict asks for a
-//       pause at all; an auth failure is reported as the `provider` failure it
-//       also is, so the attempt still moves to another pool.
+//       With `strategy.pausing: "off"` (quota.js Q7) no pool is paused, and a
+//       sign-in failure is still `auth` with its quarantine hint (state.js
+//       refuses the pause itself).
 
 import { spawn, execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync, realpathSync, existsSync } from 'node:fs';
@@ -1445,12 +1445,13 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   //   a provider error event naming an upstream auth phrase -> fail + auth +
   //     quarantine hint (W6), unless the same event is really a usage limit:
   //     a throttle keeps its own kind and its real reset deadline (W5).
-  //   a quota-shaped usage-limit line -> fail + quarantine until the reset
-  //     (checked before auth: a throttle is not a broken credential).
+  //   a quota-shaped usage-limit line -> fail as `quota` or `throttle`, with
+  //     a quarantine until the reset only when Q6 proves a pause (checked
+  //     before auth: a throttle is not a broken credential).
   //   any other provider stream failure -> fail as `provider`, unless the
   //     worker exited 0 with a usable answer (recovered).
   //   an error-shaped auth signature on the provider's error channel ->
-  //     fail + quarantine hint (an agent's report ABOUT auth work is not
+  //     fail + auth + quarantine hint (an agent's report ABOUT auth work is not
   //     evidence of provider auth health — W7).
   //   else content judge decides; exit code only modulates flags.
   // W7: every signature below is matched against the PROVIDER'S ERROR CHANNEL
@@ -1488,16 +1489,16 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   const upstreamAuth = obs.providerFailureType
     ? findUpstreamAuthFailure(connector, errorChannel)
     : null;
-  // Q7: with automatic pausing off no pool is paused, so no verdict asks for
-  // one. The failure keeps an honest kind and the attempt still moves on —
-  // an auth failure is then reported as the generic provider failure it also
-  // is, a mechanical retry, rather than a bench.
+  // Q7: the switch decides whether a pool is paused, never what a sign-in
+  // failure is. It is `auth` with its quarantine hint either way: a
+  // retry skips the pools that share its credential, and state.js refuses the
+  // pause while the switch is off, which the why then says.
   const pausing = opts.pausing ?? (home ? readPausing(home) : true);
   // quota.js Q6 — the one pause rule: the pool's own meter at >= 95% on a
   // running window, or a provider line that says a usage window is spent AND
-  // names its reset. Every other limit notice is transient: retried, never a
-  // pause. The decision (line, meter reading, reset) travels on the verdict
-  // so the quarantine that records it can say why.
+  // names its reset. No other limit notice pauses a pool. The decision (line,
+  // meter reading, reset) travels on the verdict so the quarantine that
+  // records it can say why.
   const quotaPause = quotaFailure
     ? decideQuotaPause({
         connector,
@@ -1508,7 +1509,16 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         pausing,
       })
     : null;
-  const quotaDeadline = quotaPause?.pause ? { until: quotaPause.until, source: quotaPause.rule } : null;
+  // The reset a limit is known to last until: the pause's, else (pausing off)
+  // the one the Q6 proof would have paused until.
+  const knownReset = quotaPause?.until ?? quotaPause?.holdUntil ?? null;
+  // A caller under the limits-to-caller rule (`usageLimitsToCaller`: a marked
+  // workflow step, the planner and scout of a marked run, `bullswarm run`)
+  // reads a spent usage window as `quota` whatever the switch: a notice worded
+  // as a spent window, or one whose reset is known. For any other caller only
+  // a pause the Q6 proof allows is `quota`; the rest is a throttle.
+  const spentLimit = Boolean(quotaPause?.pause || (opts.usageLimitsToCaller === true && quotaPause
+    && (quotaPause.limit === 'window' || knownReset != null)));
 
   let verdict;
   let structured = null;
@@ -1553,16 +1563,15 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   } else if (upstreamAuth && !quotaFailure) {
     // The phrase is sliced so the whole sentence stays inside the 160-character
     // budget every `why` is held to, with the matched phrase named in full for
-    // anything short enough to be a real signature. With pausing off the pool
-    // is not benched, so the failure is reported as what it mechanically is.
+    // anything short enough to be a real signature.
     verdict = {
       ok: false,
-      failureKind: pausing ? 'auth' : 'provider',
-      ...(pausing ? { quarantineHint: true } : {}),
+      failureKind: 'auth',
+      quarantineHint: true,
       why: `upstream auth failure: "${String(upstreamAuth.signature).slice(0, 110)}" (provider stream error)`
         + (pausing ? '' : ' · automatic pausing is off, pool not paused'),
     };
-  } else if (quotaFailure && !quotaPause.pause) {
+  } else if (quotaFailure && !spentLimit) {
     verdict = {
       ok: false,
       failureKind: 'throttle',
@@ -1575,9 +1584,9 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     verdict = {
       ok: false,
       failureKind: 'quota',
-      quarantineHint: true,
-      quarantineUntil: quotaDeadline.until,
-      quarantineSource: quotaDeadline.source,
+      ...(quotaPause.pause
+        ? { quarantineHint: true, quarantineUntil: quotaPause.until, quarantineSource: quotaPause.rule }
+        : {}),
       quotaPause,
       why: quotaPause.why,
     };
@@ -1596,9 +1605,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   } else if (authHit) {
     verdict = {
       ok: false,
+      failureKind: 'auth',
+      quarantineHint: true,
       why: `auth/throttle signature: "${authHit}"`
         + (pausing ? '' : ' · automatic pausing is off, pool not paused'),
-      ...(pausing ? { quarantineHint: true } : { failureKind: 'provider' }),
     };
   } else if (typeof opts.outputValidator === 'function') {
     try {
@@ -1642,8 +1652,11 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // A quota verdict invalidates the cache even when it was technically fresh:
   // the provider just refused this attempt, so routing must not trust the
   // low percentage that happened to be captured before it. Force one meter
-  // read now; when that read is unavailable, registry.js persists a truthful
-  // 100% quota-refusal marker for the shortest window instead.
+  // read now, paused or not; when that read is unavailable, registry.js
+  // persists a 100% quota-refusal marker for the shortest window instead,
+  // until the known reset when there is one, else until that window's next
+  // reset as registry.js reckons it from the last reading (or one window
+  // length from now when there is none).
   let meterRefresh = null;
   if (verdict.failureKind === 'quota' && poolName && home) {
     const meterReader = opts.meterReader ?? opts.readMeter ?? opts.reader;
@@ -1654,7 +1667,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       connector,
       subscription: subscriptionConfig,
       nowMs: endedAt,
-      resetAtMs: quotaDeadline?.until ?? null,
+      resetAtMs: knownReset,
       reason: quotaFailure?.line ?? quotaFailure?.signature ?? verdict.why,
     });
   }

@@ -367,6 +367,16 @@ test('no command synopsis is hand-typed outside src/help.js', () => {
   );
 });
 
+test('workflow --help lists every workflow command that has its own help, reprice included', () => {
+  const workflow = helpText(['workflow']);
+  const commands = workflow.slice(workflow.indexOf('Commands:'), workflow.indexOf('\n\n', workflow.indexOf('Commands:')));
+  const listed = new Set(commands.split('\n').slice(1).map((line) => line.trim().split(/\s+/)[0]));
+  const verbs = HELP_PATHS.filter((path) => path[0] === 'workflow' && path.length === 2).map((path) => path[1]);
+  assert.ok(verbs.includes('reprice'));
+  for (const verb of verbs) assert.ok(listed.has(verb), `workflow --help lists ${verb}`);
+  assert.ok(commands.includes("reprice                      recompute past attempts' tokens and money from provider totals or transcripts; a dry run unless --apply"));
+});
+
 test('workflow step help lists restart, rerun and accept, each with its own entry', () => {
   const step = helpText(['workflow', 'step']);
   for (const verb of ['restart <runId> <step>', 'rerun <runId> <step>', 'accept <runId> <step>']) assert.ok(step.includes(verb), verb);

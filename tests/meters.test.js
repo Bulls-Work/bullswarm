@@ -172,8 +172,8 @@ test('pace snapshot: weekly paces, 5h only gates (M3)', () => {
   assert.equal(r.pacing.usedPct, 18);  // weekly drives pacing
   assert.equal(r.burstGate, false);    // 95% of the 5h window is still last-mile work
   assert.equal(r.nearFiveHourLimit, true);
-  // Only the wall itself blocks dispatch: a step may run a pool to 100%
-  // because attempt handoff briefs the retry on what it had already written.
+  // Only the wall itself blocks dispatch: a step may run a pool to 100%, and
+  // a limit it hits there goes back to the caller.
   assert.equal(paceSnapshot(snap(100), NOW).burstGate, true);
 });
 
@@ -204,7 +204,7 @@ test('pace snapshot: 5h near-limit threshold is 75, burst gate is the 100% wall'
   assert.equal(highButDispatchable.burstGate, false);
 
   // 90 used to be the gate. It is now only a near-limit ordering penalty: the
-  // step runs, and attempt handoff covers it if the wall arrives mid-attempt.
+  // step runs, and a limit it hits mid-attempt goes back to the caller.
   const formerGate = at(90);
   assert.equal(formerGate.fiveHourUsedPct, 90);
   assert.equal(formerGate.nearFiveHourLimit, true);

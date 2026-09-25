@@ -25,7 +25,6 @@ import { removedActionIds } from './execution-policy.js';
 import { inheritedRepairRoute, inheritedVerifyRoute } from './step-route.js';
 import { declaredDeliverable, declaredEvidence } from './step-vocabulary.js';
 
-export const VERIFY_ROUNDS_MAX = 4;
 // Saved runs read `verifyRounds` as total review rounds, at most three.
 const LEGACY_ROUNDS_MAX = 3;
 const FIX_ROUNDS_MAX = 3;
@@ -108,15 +107,6 @@ function liveActions(state) {
 /** The repair steps the kernel added, by id (never recognised by name). */
 export function kernelRepairActionIds(state) {
   return (loopOf(state)?.rounds ?? []).map((round) => round.repairActionId).filter(Boolean);
-}
-
-/** Every step the kernel added: repairs and the verify steps of rounds 2+. */
-export function kernelLoopActionIds(state) {
-  const rounds = loopOf(state)?.rounds ?? [];
-  return [
-    ...kernelRepairActionIds(state),
-    ...rounds.filter((round) => round.round > 1).flatMap((round) => round.verifyActionIds),
-  ];
 }
 
 /** The round an evidence step belongs to, latest first, or null. */
@@ -1214,5 +1204,3 @@ export function verifyLoopResult(state, { readText = null, token = null, failure
     callerDecision: callerDecision(state, { readText, token, failureRule }),
   };
 }
-
-export const __test = Object.freeze({ namesFile, PATH_TOKEN, phaseFacts, clone });

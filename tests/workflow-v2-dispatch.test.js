@@ -3370,10 +3370,20 @@ test('failure rule: before any attempt, a pool paused for quota sends the step t
   assert.equal(result.verdict.why, `no pool with quota to spare: luna-1 paused for quota until ${new Date(until).toISOString()}`);
 });
 
+// A limit notice that paused nothing, as watch.js reports it: a caller under
+// the limits-to-caller rule (the dispatch passes `usageLimitsToCaller`) gets
+// `quota` for a notice worded as a spent window or one whose reset is known;
+// any other caller a throttle. The fake worker answers by that option.
+const asWatched = (verdict) => ({ opts }) => {
+  const { throttleWaitMs, throttleRetrySamePool, ...rest } = verdict;
+  const spent = verdict.quotaPause?.limit === 'window' || verdict.quotaPause?.holdUntil != null;
+  return opts?.usageLimitsToCaller === true && spent ? { ...rest, failureKind: 'quota' } : verdict;
+};
+
 // A limit notice with automatic pausing off (quota.js decideQuotaPause
 // rule 'off'): `limit` is the notice's wording, `holdUntil` the reset a pause
 // would have used (named by the provider, or a full meter's), else null.
-const offLimit = ({ hold = null, limit = 'window', line = "You've hit your limit" } = {}) => ({
+const offLimit = ({ hold = null, limit = 'window', line = "You've hit your limit" } = {}) => asWatched({
   ok: false,
   failureKind: 'throttle',
   throttleWaitMs: null,
@@ -3448,10 +3458,10 @@ test('failure rule: with pausing off a transient "too many requests" backs off t
 
 test('failure rule: with pausing on a window-worded notice with no reset is quota: no backoff, no move, no time', async () => {
   const clock = fakeClock();
-  const windowed = transientVerdict({
+  const windowed = asWatched(transientVerdict({
     quotaPause: { pause: false, rule: 'transient', limit: 'window', line: "You've hit your session limit" },
     why: 'rate limited (transient): "You\'ve hit your session limit" · pool not paused',
-  });
+  }));
   const { result } = await markedDispatch([windowed, good], {
     preferredPool: 'luna-1', dependencies: { now: clock.now, sleep: clock.sleep },
   });
@@ -3625,7 +3635,7 @@ test('failure rule: with every capable pool held, the step comes back at the ear
 
   // After an attempt: a spent window with no reset known on luna-1, and
   // luna-2 paused, gives luna-2's return.
-  const windowed = transientVerdict({ quotaPause: { pause: false, rule: 'transient', limit: 'window', line: "You've hit your session limit" } });
+  const windowed = asWatched(transientVerdict({ quotaPause: { pause: false, rule: 'transient', limit: 'window', line: "You've hit your session limit" } }));
   const spent = await markedDispatch([windowed, good], {
     pools: [connector('luna-1'), connector('luna-2', quotaPauseRecord(until))],
   });
@@ -3693,6 +3703,31 @@ test('failure rule: a pool at its 5-hour limit sends the step to the caller befo
   assert.deepEqual(pickedPools(free.result), ['luna-2']);
   const unmarked = await markedDispatch([good], { pools: [connector('luna-1', { burstGate: true })], failureRule: false });
   assert.equal(unmarked.result.verdict.why, 'no eligible pool: no enabled pool has a model on the low tier for build work');
+});
+
+// A weekly or monthly window at 100% keeps its pool out until
+// that window resets, as the 5-hour one does, and the held list names it.
+test('failure rule: a pool at its weekly or monthly limit is never picked, and the held list names that window and its reset', async () => {
+  const clock = fakeClock();
+  const weeklyReset = new Date(clock.t + 3 * 24 * 3600_000).toISOString();
+  const monthlyReset = new Date(clock.t + 10 * 24 * 3600_000).toISOString();
+  const weekly = () => connector('luna-1', { usedPct: 100, pacingWindow: 'weekly', paceResetsAt: weeklyReset, meterSource: 'live' });
+  const monthly = () => connector('luna-2', { meterSnapshot: { monthly: { utilization: 100, resets_at: monthlyReset } } });
+  const held = await markedDispatch([good], {
+    pools: [weekly(), monthly()],
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(held.result.failureKind, 'quota');
+  assert.equal(held.result.attempts.length, 0);
+  assert.equal(held.result.retryAfter, weeklyReset);
+  assert.equal(held.result.verdict.why,
+    `no pool with quota to spare: luna-1 at its weekly limit until ${weeklyReset}; luna-2 at its monthly limit until ${monthlyReset}`);
+  // luna-1 holds the configured assignment, yet a free pool takes the step,
+  // in marked and saved runs alike.
+  for (const failureRule of [true, false]) {
+    const free = await markedDispatch([good], { pools: [weekly(), connector('luna-3')], failureRule });
+    assert.deepEqual(pickedPools(free.result), ['luna-3'], `failureRule ${failureRule}`);
+  }
 });
 
 // A pool the router calls "expiring but draining": its weekly window resets
@@ -3987,7 +4022,7 @@ test('failure rule: a step that ends at the caller on a process failure has spen
     process: () => processFail(),
     stalled: () => stall,
     quota: () => quotaVerdict(),
-    throttle: () => transientVerdict({ throttleRetrySamePool: false }),
+    throttle: () => transientVerdict({ throttleWaitMs: 2 * 3600_000, throttleRetrySamePool: false }),
   };
   const lost = [];
   for (const poolCount of [2, 3]) {
@@ -4381,9 +4416,13 @@ test('usage limits to the caller: a schema correction with no free pool that is 
   assert.equal(both.result.verdict.why, `invalid · no retry: luna-1 nearly spent (forecast 99.0%) until ${bothReset}; `
     + `luna-2 nearly spent (forecast 99.0%) until ${later}`);
 
-  // The router refuses the only other pool (off the planner's lane, or its
-  // live 5-hour meter used up): the same stop, not a schema failure.
-  for (const other of [connector('luna-2', { lanes: ['build'] }), connector('luna-2', { fiveHourUsedPct: 100 })]) {
+  // The only other pool cannot take it (off the planner's lane, which the
+  // router refuses, or at its 5-hour limit, which the held list names): the
+  // same stop, not a schema failure.
+  for (const [other, heldToo] of [
+    [connector('luna-2', { lanes: ['build'] }), ''],
+    [connector('luna-2', { fiveHourUsedPct: 100 }), '; luna-2 at its 5-hour limit'],
+  ]) {
     const refusedClock = fakeClock();
     const refusedDrained = drainingPool('luna-1', refusedClock);
     const refusedReset = refusedDrained.paceResetsAt;
@@ -4392,7 +4431,7 @@ test('usage limits to the caller: a schema correction with no free pool that is 
       pools: [connector('luna-1'), other], correctionTask: () => 'correct it', refreshPools: refusedDrain.refreshPools,
       dependencies: { now: refusedClock.now, sleep: refusedClock.sleep },
     });
-    const refusedWhy = `invalid · no retry: luna-1 nearly spent (forecast 99.0%) until ${refusedReset}`;
+    const refusedWhy = `invalid · no retry: luna-1 nearly spent (forecast 99.0%) until ${refusedReset}${heldToo}`;
     assert.equal(refused.result.failureKind, 'quota', JSON.stringify(other));
     assert.deepEqual(pickedPools(refused.result), ['luna-1']);
     assert.deepEqual(refused.tasks, ['plan it']);
@@ -4503,6 +4542,64 @@ test('usage limits to the caller: off (the default) keeps the unmarked rules, an
   const both = await markedDispatch([transientVerdict(), processFail(), good], { preferredPool: 'luna-1', usageLimitsToCaller: true, dependencies: { sleep: async () => {} } });
   assert.deepEqual(clean(both.result), clean(marked.result));
   assert.deepEqual(retryFacts(both.result).map((fact) => fact?.how ?? null), [null, 'wait', 'other-pool']);
+});
+
+// The worker's verdict files a spent usage window as quota for
+// a caller under the usage-limit rules; the dispatch asks for that reading
+// and re-maps nothing itself.
+test('the dispatch asks the worker for the limits-to-caller reading under the usage-limit rules only (L2)', async () => {
+  const seen = [];
+  const record = ({ opts }) => { seen.push(opts.usageLimitsToCaller); return good; };
+  await markedDispatch([record]);
+  await limitsDispatch([record]);
+  await markedDispatch([record], { failureRule: false });
+  await limitsDispatch([record], { usageLimitsToCaller: false });
+  assert.deepEqual(seen, [true, true, undefined, undefined], 'a marked step, the planner or scout; never a saved run');
+  // A throttle verdict stays a throttle: the dispatch no longer re-reads it.
+  const windowWorded = transientVerdict({ quotaPause: { pause: false, rule: 'off', limit: 'window', line: "You've hit your limit", holdUntil: null } });
+  const raw = await markedDispatch([windowWorded, good], { preferredPool: 'luna-1', dependencies: { sleep: async () => {} } });
+  assert.equal(raw.result.attempts[0].failureKind, 'throttle');
+});
+
+// The pausing switch decides whether a pool is paused, never
+// what a sign-in failure is. Through the real watcher, with pausing off, the
+// failure is still `auth`: the retry skips the sibling on the same dead
+// credential (2026-09-11) in saved and marked runs alike, and nothing is
+// paused.
+test('with pausing off a sign-in failure through the real watcher still skips its credential group and pauses nothing (L1)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-auth-group-'));
+  try {
+    const home = join(root, 'home');
+    saveState(home, { ...loadState(home), strategy: { pausing: 'off' } });
+    const worker = (name, script, extra = {}) => ({
+      name, lanes: ['build'], enabled: true, costRank: 2, spawn: { cmd: [process.execPath, '-e', script] },
+      authSignatures: ['unauthorized'], outputExtraction: { strategy: 'stdout' }, ...extra,
+    });
+    const signIn = "process.stderr.write('Error: unauthorized. Please login again.\\n'); process.exit(1)";
+    const answer = "console.log('## Completed\\n\\nMade the change and verified it: all checks passed with no failures.')";
+    for (const failureRule of [false, true]) {
+      const dir = join(root, `run-${failureRule}`);
+      mkdirSync(dir);
+      const result = await dispatchV2Action({
+        action, taskText: 'do it', targetDir: dir,
+        paths: { taskFile: join(dir, 'task.md'), outFile: join(dir, 'out.md') },
+        pools: [
+          worker('relay-a', signIn, { credentialGroup: 'relay', pace: 60 }),
+          worker('relay-b', signIn, { credentialGroup: 'relay', pace: 50 }),
+          worker('solo', answer, { pace: 0 }),
+        ],
+        bullswarmDir: home, preferredPool: 'relay-a', failureRule,
+      });
+      assert.equal(result.attempts[0].failureKind, 'auth', `failureRule ${failureRule}: ${result.attempts[0].why}`);
+      assert.deepEqual(pickedPools(result), ['relay-a', 'solo'], `failureRule ${failureRule}: never the sibling on the same credential`);
+      assert.equal(result.ok, true);
+      const core = loadState(home);
+      assert.equal(core.pools['relay-a']?.quarantine, undefined, 'pausing off: nothing is paused');
+      assert.equal(core.pools['relay-b']?.quarantine, undefined);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('usage limits to the caller, through the kernel: a marked run\'s planner stops on its first pool; a saved run\'s moves to the other', async () => {
