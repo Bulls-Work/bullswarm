@@ -31,7 +31,9 @@ import {
   quotaQuarantineUntil,
   throttleBackoffMs,
   GENERIC_QUOTA_SIGNATURES,
+  ERROR_SHAPED_LINE,
 } from '../src/lib/quota.js';
+import { providerErrorRecords } from '../src/lib/watch.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const connectorOf = (path) => JSON.parse(readFileSync(join(REPO, path), 'utf8'));
@@ -271,6 +273,36 @@ test("claude-code's real session-limit notice is a spent window that pauses the 
     // 19:00 Asia/Hong_Kong = 11:00Z, one hour after the fixed clock.
     waitMs: 60 * 60_000,
   });
+});
+
+// L8: the record grok 1.0.x printed when its Grok Build balance ran out
+// (2026-09-25). Before its phrase was listed the attempt read as a verified
+// reply, and the step failed later on a missing report, twice on grok itself.
+const GROK_SPENT_BALANCE = JSON.stringify({
+  type: 'error',
+  message: 'Internal error: {\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\n  "http_status": 402\n}',
+});
+
+test("grok's real spent-balance error event (HTTP 402) is a spent window with no reset named (L8)", () => {
+  const grok = connectorOf(PROVIDER_CONNECTORS.grok);
+  const channel = providerErrorRecords(GROK_SPENT_BALANCE, []);
+  assert.deepEqual(limitOf(grok, channel), {
+    signature: 'usage balance exhausted', limit: 'window', transient: true, waitMs: null,
+  });
+  // HTTP 402 is error-shaped like 401/403/429: the phrase sits past the head window.
+  assert.ok(ERROR_SHAPED_LINE.test('"message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",'));
+  assert.ok(ERROR_SHAPED_LINE.test('HTTP 402 Payment Required'));
+  // The phrase is grok's own wording; the other connectors do not claim it.
+  assert.equal(limitOf(connectorOf(PROVIDER_CONNECTORS['claude-code']), channel), null);
+  // A report line that mentions it is prose, not a notice.
+  assert.equal(limitOf(grok, '- noted that the grok usage balance exhausted last week, per the billing page'), null);
+  // A raw record too long to be a notice line does not hide its own sentence.
+  const long = JSON.stringify({
+    type: 'error', code: 'billing_limit', request_id: 'req-' + '0'.repeat(40),
+    message: 'Internal error: {\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\n  "http_status": 402,\n  "details": "Your team has used its included Grok Build credit for this billing cycle. Add credit or wait for the next cycle to continue."\n}',
+  });
+  assert.ok(long.length > 300);
+  assert.equal(limitOf(grok, providerErrorRecords(long, []))?.signature, 'usage balance exhausted');
 });
 
 test('every provider classifies both wordings: throttle retries, window pauses', () => {

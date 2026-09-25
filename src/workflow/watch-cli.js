@@ -337,6 +337,30 @@ function evidenceNotRun(state, payload, event) {
   return !Array.isArray(attempt?.evidenceResults);
 }
 
+/**
+ * The latest `action.waiting` event of every step still waiting, without its
+ * commit time so its wait is counted from the watcher's clock. Only steps the
+ * state holds as `waiting`, and never a step with any event after the attach
+ * `cursor`: the state can lag the event log by one save, and that newer
+ * event (a start, a finish, a fresh wait) is printed on its own. One read
+ * decides both, so an event written meanwhile cannot slip between them.
+ */
+export function currentWaitEvents(runDir, state, { cursor = Infinity } = {}) {
+  const waiting = new Set((state?.actions ?? []).filter((action) => action?.status === 'waiting').map((action) => action.id));
+  if (!waiting.size) return [];
+  const moved = new Set();
+  const latest = new Map();
+  for (const event of readEvents(runDir, { after: 0 })) {
+    const id = event.payload?.actionId;
+    if (!waiting.has(id)) continue;
+    if (event.sequence > cursor) moved.add(id);
+    else if (event.type === 'action.waiting') latest.set(id, event);
+  }
+  return [...latest.entries()]
+    .filter(([id]) => !moved.has(id))
+    .map(([, { committedAt: _committedAt, ...event }]) => event);
+}
+
 function secondsUntil(untilIso, fromMs) {
   const value = (Date.parse(untilIso ?? '') - fromMs) / 1000;
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
@@ -1128,6 +1152,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   let priorHumanFingerprint = null;
   let lastPrintedAt = 0;
   let priorSequence = null;
+  let attachSequence = null;
   let pendingEvents = [];
   let pendingEventCount = 0;
   let pendingActionCount = 0;
@@ -1147,6 +1172,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         // --after names the cursor the previous watcher stopped at, in which
         // case the events committed since then are replayed and printed.
         priorSequence = afterSequence ?? state.events?.sequence ?? state.eventSequence ?? 0;
+        attachSequence = priorSequence;
         // Semantic quiet counts durable marks only (events, action starts and
         // finishes). Raw child output is surfaced separately as transport
         // liveness so a thinking agent and a dead one look different.
@@ -1200,6 +1226,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       let troublePrinted = 0;
       const staleSteps = [];
       if (eventMode) {
+        const attachedBefore = attached;
         if (!attached) {
           attached = true;
           memory = initialWatchMemory(state, {
@@ -1216,8 +1243,16 @@ export async function runWorkflowWatch(bullswarmDir, token, {
             });
           }
         }
+        // A watcher attached with no cursor starts at the high-water mark, so a
+        // step that was already waiting would never be reported: its wait is
+        // current news, not history, and gets its line (and its wake, when the
+        // return is over 30 minutes away) on attach, counted from now. --next
+        // is a wake-up for what happens next, so it replays nothing.
+        const attachWaits = !attachedBefore && afterSequence == null && !next
+          ? currentWaitEvents(resolved.runDir, state, { cursor: attachSequence })
+          : [];
         const collected = notableWatchEvents({
-          events: newEvents, state, memory, verbose, nowMs, stallAfterMs, bullswarmDir,
+          events: attachWaits.length ? [...attachWaits, ...newEvents] : newEvents, state, memory, verbose, nowMs, stallAfterMs, bullswarmDir,
           stale: snapshot.interrupted ? null : staleProbe, runDir: resolved.runDir,
         });
         memory = collected.memory;

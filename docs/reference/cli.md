@@ -1289,7 +1289,7 @@ bullswarm workflow watch ab12cd --until trouble
 | `--stall-after <seconds>` | report a running agent as silent after this many seconds without activity; must be >= 1 | `300` |
 | `--next` | print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status | off (follows until terminal or pause) |
 | `--until <outcome\|trouble>` | print only trouble and outcome lines; `trouble` exits for a needs-you block, a review needing you, a quota wait over 30 minutes, a rejected revision, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
-| `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark |
+| `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark; without `--next`, a step already waiting at attach still gets its waiting line (and wakes `--until trouble` when its return is over 30 minutes away) |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall does not fire again | report every agent silent past `--stall-after` at attach |
 | `--jsonl` | emit one JSON object per line instead of human text; every object carries `sequence`; the `next:` relaunch line is not printed | off (human text) |
 | `--once` | print a single current snapshot and exit immediately instead of following | off |

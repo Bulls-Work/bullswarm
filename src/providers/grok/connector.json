@@ -16,8 +16,10 @@
     "unauthorized",
     "invalid api key"
   ],
-  "$comment-quotaSignatures": "empty on purpose: no grok-specific usage-limit wording has been observed yet, and the generic phrasings (rate limit exceeded, too many requests, quota exceeded) already come from DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js.",
-  "quotaSignatures": [],
+  "$comment-quotaSignatures": "observed 2026-09-25: a spent Grok Build balance ends the stream with {\"type\":\"error\",\"message\":\"Internal error: {\\n  \\\"message\\\": \\\"API error (status 402 Payment Required): Grok Build usage balance exhausted\\\", ...}\"}. Until this phrase was listed, that record read as a schema failure and the step was retried on grok itself. The generic phrasings (rate limit exceeded, too many requests, quota exceeded) come from DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js.",
+  "quotaSignatures": [
+    "usage balance exhausted"
+  ],
   "outputExtraction": {
     "strategy": "event-stream"
   },

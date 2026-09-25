@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  initialWatchMemory, notableWatchEvents, renderWatchEvent, runWorkflowWatch, watchTrouble,
+  currentWaitEvents, initialWatchMemory, notableWatchEvents, renderWatchEvent, runWorkflowWatch, watchTrouble,
 } from '../src/workflow/watch-cli.js';
 import { appendEvent } from '../src/workflow/events.js';
 import { createStaleProbe } from '../src/lib/stale.js';
@@ -498,6 +498,83 @@ test('--until trouble prints a short wait without waking, and wakes on a long on
   quiet.finish('completed');
   assert.equal(await follow.promise, 0);
   assert.equal(follow.lines.some((line) => line.startsWith('next: bullswarm workflow watch')), false, 'a short wait never woke it');
+});
+
+test('a watcher attached with no cursor reports a step that is already waiting, counted from its own clock', async (t) => {
+  const nowMs = minutesAfterLastEvent(1);
+  const run = stagedRun(t, { nowMs });
+  run.emit('action.waiting', { actionId: 'verify', until: new Date(nowMs + 120 * 60_000).toISOString(), pools: ['pool-a'], reason: 'hold' });
+  Object.assign(run.state.actions.find((action) => action.id === 'verify'), { status: 'waiting' });
+  run.save();
+  const cursor = run.state.events.sequence;
+  const watcher = watch(run, { until: 'trouble', now: () => nowMs, intervalMs: 20 });
+  // Bounded: a watcher that misses the wait would follow the run forever.
+  const woke = () => watcher.lines.some((line) => line.startsWith('next:'));
+  try { await eventually(woke, 'the wake on attach'); } finally { if (!woke()) run.finish('completed'); }
+  assert.equal(await watcher.promise, 0);
+  assert.match(watcher.lines[0], /^⧖ verify waiting for quota · pool-a back at .+ \(in 2h00m\)$/);
+  assert.match(watcher.lines.at(-1), new RegExp(`^next: bullswarm workflow watch ${SHORT} --until trouble --after ${cursor} --since `));
+  // Relaunched from that cursor, the same wait is not printed again.
+  const again = watch(run, { until: 'trouble', afterSequence: cursor, now: () => nowMs, intervalMs: 20 });
+  await sleep(120);
+  run.finish('completed');
+  assert.equal(await again.promise, 0);
+  assert.equal(again.lines.some((line) => line.startsWith('⧖')), false, again.lines.join('\n'));
+  // A step that started again has no current wait, even while state.json
+  // still says waiting (the event log is written before the state is saved).
+  const moved = stagedRun(t, { nowMs });
+  moved.emit('action.waiting', { actionId: 'verify', until: new Date(nowMs + 120 * 60_000).toISOString(), pools: ['pool-a'], reason: 'hold' });
+  Object.assign(moved.state.actions.find((action) => action.id === 'verify'), { status: 'waiting' });
+  moved.save();
+  appendEvent(moved.runDir, moved.state, 'action.started', { actionId: 'verify', purpose: 'Verify' });
+  const follow = watch(moved, { until: 'trouble', now: () => nowMs, intervalMs: 20 });
+  await sleep(120);
+  moved.finish('completed');
+  assert.equal(await follow.promise, 0);
+  assert.equal(follow.lines.some((line) => line.startsWith('⧖')), false, follow.lines.join('\n'));
+});
+
+test('the attach replay reads the log once: a step with any event past the cursor has no current wait', (t) => {
+  const nowMs = minutesAfterLastEvent(1);
+  const run = stagedRun(t, { nowMs });
+  run.emit('action.waiting', { actionId: 'verify', until: new Date(nowMs + 120 * 60_000).toISOString(), pools: ['pool-a'], reason: 'hold' });
+  Object.assign(run.state.actions.find((action) => action.id === 'verify'), { status: 'waiting' });
+  run.save();
+  const cursor = run.state.events.sequence;
+  const onDisk = () => JSON.parse(readFileSync(join(run.runDir, 'state.json'), 'utf8'));
+  assert.deepEqual(currentWaitEvents(run.runDir, onDisk(), { cursor }).map((event) => event.sequence), [cursor]);
+  assert.equal(currentWaitEvents(run.runDir, onDisk(), { cursor })[0].committedAt, undefined, 'counted from the watcher clock');
+  // Written after the cursor, before state.json caught up: the step moved on.
+  appendEvent(run.runDir, run.state, 'action.started', { actionId: 'verify', purpose: 'Verify' });
+  assert.deepEqual(currentWaitEvents(run.runDir, onDisk(), { cursor }), []);
+});
+
+test('a wait written just before the watcher attaches prints once, and --next replays no wait', async (t) => {
+  const nowMs = minutesAfterLastEvent(1);
+  const run = stagedRun(t, { nowMs });
+  run.emit('action.waiting', { actionId: 'verify', until: new Date(nowMs + 12 * 60_000).toISOString(), pools: ['pool-a'], reason: 'hold' });
+  Object.assign(run.state.actions.find((action) => action.id === 'verify'), { status: 'waiting' });
+  run.save();
+  // In the log, not yet in state.json: it arrives as a new event, not a replay.
+  appendEvent(run.runDir, run.state, 'action.waiting', { actionId: 'verify', until: new Date(nowMs + 12 * 60_000).toISOString(), pools: ['pool-b'], reason: 'hold' });
+  const plain = watch(run, { now: () => nowMs, intervalMs: 20 });
+  await eventually(() => plain.lines.some((line) => line.includes('pool-b')), 'the new wait');
+  await sleep(80);
+  run.finish('completed');
+  assert.equal(await plain.promise, 0);
+  const waits = plain.lines.filter((line) => line.startsWith('⧖ verify waiting'));
+  assert.equal(waits.length, 1, plain.lines.join('\n'));
+  assert.match(waits[0], /pool-b back at/);
+  // --next wakes on what happens next; an old wait is not news to it.
+  const quiet = stagedRun(t, { nowMs });
+  quiet.emit('action.waiting', { actionId: 'verify', until: new Date(nowMs + 120 * 60_000).toISOString(), pools: ['pool-a'], reason: 'hold' });
+  Object.assign(quiet.state.actions.find((action) => action.id === 'verify'), { status: 'waiting' });
+  quiet.save();
+  const next = watch(quiet, { next: true, now: () => nowMs, intervalMs: 20 });
+  await sleep(120);
+  quiet.finish('completed');
+  assert.equal(await next.promise, 0);
+  assert.equal(next.lines.some((line) => line.startsWith('⧖')), false, next.lines.join('\n'));
 });
 
 test('a run that ended in the same poll prints the block without your call or next, then the outcome', async (t) => {

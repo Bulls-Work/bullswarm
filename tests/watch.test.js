@@ -690,6 +690,62 @@ test('a reply that is only a limit notice from a zero-usage turn is read as quot
   }
 });
 
+// W7: a long reply is shortened in the live pane, but the provider's terminal
+// record repeats it in full. That copy is the agent's words, not a provider
+// report (2026-09-25: a review discussing the `unauthorized` sign-in phrase
+// was failed as a sign-in failure on a healthy pool).
+test('a long reply that discusses sign-in and limit wording, repeated in the result record, stays a reply (W7)', async () => {
+  const ctx = makeCtx();
+  try {
+    const report = '## Findings\n\n'
+      + 'Reviewed the auth gate. The connector lists "unauthorized" and "authentication failed" as sign-in phrases, '
+      + 'and the watcher matches them only on the provider error channel. A report that quotes them must not trip it.\n'
+      + '- HTTP 402 Payment Required and Rate limit exceeded are handled as limits, not sign-in failures.\n'
+      + '- Ran the focused suites: every check passed with no failures.\n\n## Verdict\n\nShip it.\n';
+    assert.ok(report.length > 300);
+    const rows = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: report }] } },
+      { type: 'result', subtype: 'success', is_error: false, result: report, session_id: 'session-w7', total_cost_usd: 0.01, usage: { input_tokens: 900, cache_read_input_tokens: 0, output_tokens: 300 } },
+    ];
+    const v = await watchOnce(relayedConnector(rows), 'Review it.', ctx.dir, ctx.paths, { pausing: true });
+    assert.equal(v.ok, true, v.why);
+    assert.notEqual(v.failureKind, 'auth');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+// L8: grok ends a spent-balance turn with this error event and exit code 0.
+const GROK_SPENT_BALANCE_ROWS = [
+  { type: 'available_commands', tools: ['read_file', 'run_terminal_command'] },
+  { type: 'error', message: 'Internal error: {\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\n  "http_status": 402\n}' },
+];
+const grokWith = (script) => {
+  const grok = JSON.parse(readFileSync(join(REPO_ROOT, 'src/providers/grok/connector.json'), 'utf8'));
+  return {
+    ...grok,
+    spawn: { cmd: [process.execPath, '-e', script], cwdMode: 'add-dir' },
+    conversation: undefined, modelSelection: undefined, reasoning: undefined,
+    eventStream: { ...grok.eventStream, args: [] },
+  };
+};
+
+test("grok's spent-balance error event ends the attempt as a limit, never a verified reply (L8)", async () => {
+  const ctx = makeCtx();
+  try {
+    for (const pausing of [true, false]) {
+      const v = await watchOnce(grokWith(rowsScript(GROK_SPENT_BALANCE_ROWS)), 'Check it.', ctx.dir, ctx.paths, { pausing });
+      assert.equal(v.ok, false, `pausing ${pausing}: ${v.why}`);
+      // No reset named and no meter read: a limit to wait out or move off, never a pause by the message.
+      assert.equal(v.failureKind, 'throttle', v.why);
+      assert.match(v.why, /usage balance exhausted/);
+      assert.equal(v.quotaPause.rule, pausing ? 'transient' : 'off');
+    }
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('a reply quoting the limit notice in a longer answer, or from a turn that produced tokens, stays a reply (L1)', async () => {
   const ctx = makeCtx();
   try {

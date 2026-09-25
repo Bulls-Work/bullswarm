@@ -151,10 +151,12 @@ const DAY_MS = 24 * 60 * 60_000;
 /**
  * A line that looks like a provider failure rather than source or report text.
  * Shared with `matchLikelyAuthFailure` in watch.js so both gates agree on what
- * "error-shaped" means.
+ * "error-shaped" means. HTTP 402 (Payment Required) is how a spent prepaid
+ * balance arrives (grok, 2026-09-25): the limit phrase sits past the head
+ * window of that line, so only its error shape admits it.
  */
 export const ERROR_SHAPED_LINE =
-  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|403|429)|status\s*(?:401|403|429)|login required|please login|access denied|quota exceeded)\b/i;
+  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|402|403|429)|status\s*(?:401|402|403|429)|payment required|login required|please login|access denied|quota exceeded)\b/i;
 
 function declaredList(connector, key) {
   return Array.isArray(connector?.[key]) ? connector[key] : [];
@@ -277,26 +279,30 @@ function findQuotaNotice(connector, text) {
   for (const signature of quotaSignaturesFor(connector)) {
     const needle = String(signature ?? '').toLowerCase();
     if (!needle) continue;
-    const index = lower.indexOf(needle);
-    if (index < 0) continue;
-    const start = lower.lastIndexOf('\n', index) + 1;
-    const newline = lower.indexOf('\n', index);
-    const end = newline < 0 ? raw.length : newline;
-    const line = raw.slice(start, end).trim();
-    if (!line || line.length > MAX_QUOTA_LINE_CHARS) continue;
-    const offset = line.toLowerCase().indexOf(needle);
-    if (offset < 0) continue;
-    const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
-    if (!leads && !ERROR_SHAPED_LINE.test(line)) continue;
-    // A generic phrase is only a limit notice when nothing but punctuation, a
-    // reset/retry clause or a detail follows it; "rate limited by GitHub" is
-    // narration about another service's quota, whichever branch admitted it.
-    if (GENERIC_SET.has(needle) && !bareNotice(line, offset, needle)) continue;
-    return {
-      signature,
-      line,
-      context: raw.slice(start, Math.min(raw.length, end + QUOTA_CONTEXT_CHARS)),
-    };
+    // Every line that carries the phrase is a candidate, not just the first:
+    // a provider error event puts its raw record first and its own sentence
+    // after it, and a raw record too long to be a notice must not hide that
+    // sentence.
+    for (let index = lower.indexOf(needle); index >= 0; index = lower.indexOf(needle, index + needle.length)) {
+      const start = lower.lastIndexOf('\n', index) + 1;
+      const newline = lower.indexOf('\n', index);
+      const end = newline < 0 ? raw.length : newline;
+      const line = raw.slice(start, end).trim();
+      if (!line || line.length > MAX_QUOTA_LINE_CHARS) continue;
+      const offset = line.toLowerCase().indexOf(needle);
+      if (offset < 0) continue;
+      const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
+      if (!leads && !ERROR_SHAPED_LINE.test(line)) continue;
+      // A generic phrase is only a limit notice when nothing but punctuation, a
+      // reset/retry clause or a detail follows it; "rate limited by GitHub" is
+      // narration about another service's quota, whichever branch admitted it.
+      if (GENERIC_SET.has(needle) && !bareNotice(line, offset, needle)) continue;
+      return {
+        signature,
+        line,
+        context: raw.slice(start, Math.min(raw.length, end + QUOTA_CONTEXT_CHARS)),
+      };
+    }
   }
   return null;
 }

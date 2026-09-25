@@ -634,6 +634,12 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     const eventStreamed = connector.outputExtraction?.strategy === 'event-stream';
     const declaredFailureTypes = new Set((connector.eventStream?.failureTypes ?? []).map(String));
     let providerRecords = '';
+    // The pane keeps a long reply shortened (`…`) and responseText skips
+    // those, so the openings of every full reply are kept for the mirror
+    // checks alone: a long report repeated in the terminal record is still
+    // the agent's words (2026-09-25: a review quoting `unauthorized` was
+    // failed as a sign-in failure on a healthy pool).
+    let replyOpenings = '';
     const noteProviderRecord = (text) => {
       const value = typeof text === 'string' ? text.trim() : '';
       if (!value) return;
@@ -644,7 +650,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     // record (Claude Code's `result`) is repeating the agent's own words: that
     // text is a reply, not a provider report, and the gate must not be fooled
     // by it. A genuine limit notice shares no such opening.
-    const mirrorsReply = (text) => mirrorsAgentReply(text, responseText);
+    const mirrorsReply = (text) => mirrorsAgentReply(text, `${responseText}\n${replyOpenings}`);
     const errorChannelText = (full = false) => {
       if (!eventStreamed) return `${stdoutCapture.tail(4000)}\n${stderrCapture.tail(4000)}`.trim();
       return [
@@ -652,7 +658,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerErrorRecords(
           full ? stdoutCapture.text() : stdoutCapture.tail(PROVIDER_ERROR_SCAN_CHARS),
           declaredFailureTypes,
-          { agentText: responseText },
+          { agentText: `${responseText}\n${replyOpenings}` },
         ),
         providerRecords,
       ].filter(Boolean).join('\n');
@@ -683,6 +689,9 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
           // agent for discussing rate limits in its first sentence.
           && !event.summary.endsWith('\u2026')) {
           responseText = `${responseText}${event.summary}\n`.slice(-8000);
+        }
+        if (event?.kind === 'response' && typeof fullSummary === 'string' && fullSummary.trim()) {
+          replyOpenings = `${replyOpenings}${replyOpening(fullSummary)}\n`.slice(-8000);
         }
         const recordText = typeof fullSummary === 'string' ? fullSummary : event?.summary;
         if (declaredFailureTypes.has(String(event?.providerType ?? ''))) {
@@ -969,6 +978,11 @@ function declaredFailureSet(declared) {
  * (Claude Code's `result`) is repeating the agent's own words, and the gate
  * must not be fooled by the copy. A genuine limit notice shares no opening.
  */
+/** The whitespace-collapsed opening of a reply, as long as the mirror check reads. */
+function replyOpening(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, MIRRORED_REPLY_CHARS);
+}
+
 export function mirrorsAgentReply(text, agentText) {
   const head = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, MIRRORED_REPLY_CHARS);
   return Boolean(head) && String(agentText ?? '').replace(/\s+/g, ' ').includes(head);

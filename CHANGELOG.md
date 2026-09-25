@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- providers: a spent Grok Build balance is read as a usage limit. grok ends
+  that turn with an error event (`API error (status 402 Payment Required):
+  Grok Build usage balance exhausted`) and exit code 0, which was accepted as a
+  finished reply; the step then failed on its missing report and was retried
+  on grok itself. The attempt now ends as a limit, so the step moves to another
+  pool or waits for grok to come back. HTTP 402 counts as an error-shaped line
+  for every provider.
+- workflow: `watch` started while a step is already waiting prints that
+  step's waiting line, and `--until trouble` wakes on it when the step's
+  return is more than 30 minutes away (`--next` still prints only what happens
+  next). Before, a watcher attached after the wait began stayed silent until
+  the step started again.
+- run, workflow: a long reply that quotes sign-in or limit wording (for
+  example a review of the auth checks that mentions `unauthorized`) is no
+  longer failed as a sign-in failure or a usage limit. Claude Code repeats the
+  whole reply in its final record, and a reply long enough to be shortened in
+  the live view was read as the provider's own error.
 - workflow: every step gets one automatic retry, then comes back to you. A
   crashed, silent or signed-out worker is retried once on another pool that can
   run the step (the same pool when it is the only one, except after a sign-in
