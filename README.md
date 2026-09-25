@@ -36,7 +36,7 @@ flowchart LR
 
 - **Spends quota by pace.** Each task goes to the plan with the most spare quota for how far its window has run, so a plan that is behind, or about to reset with quota left, gets used first.
 - **Picks models for you.** Tasks come in three lanes (`analyze`, `build`, `chore`). Setup asks each CLI which models it offers and suggests the newest one for each effort level, so you don't have to update settings every time a vendor ships a model.
-- **Runs one task or a whole workflow.** `bullswarm run` sends one task to one agent and returns a verdict. For bigger goals your main agent writes a plan; Bullswarm runs the independent steps in parallel across agents, then integration and a final check by a different agent.
+- **Runs one task or a whole workflow.** `bullswarm run` sends one task to one agent and returns a verdict. For bigger goals your main agent writes a plan; Bullswarm runs the independent steps in parallel across agents, then integration, and a review by a different agent when the plan asks for one.
 - **Checks the work, not the exit code.** A delegate saying "done" isn't enough. Bullswarm reads what it actually produced, and a workflow finishing is kept separate from its requirements being verified.
 - **Shows everything live.** A terminal dashboard covers quota, history, running workflows and each agent's individual turns.
 - **Works with the agent you already use.** The `/bullswarm` skill teaches Claude Code, Codex and Grok when to delegate. There's also an early-access Claude Code Mod that shows runs and usage inside Claude Code.
@@ -62,7 +62,7 @@ More screens, including phone-sized ones, are in the [gallery](https://bulls-wor
 | **One agent's built-in subagents or workflows** | Everything draws on that one plan's quota, the same vendor grades its own work, and your process is tied to that vendor's feature. |
 | **An API gateway that re-exposes your subscriptions** | Turning a consumer subscription into a generic API endpoint can conflict with provider terms, and you lose each agent's own tools and harness. |
 | **Switching tools by hand** | You become the scheduler, and the quota you did not get to still expires. |
-| **Bullswarm** | Drives each vendor's own headless CLI—`claude -p`, `codex exec`, `grok -p`—the way those CLIs are meant to be scripted, with the accounts you already signed in. Work lands where quota is spare, and a different agent checks it. |
+| **Bullswarm** | Drives each vendor's own headless CLI—`claude -p`, `codex exec`, `grok -p`—the way those CLIs are meant to be scripted, with the accounts you already signed in. Work lands where quota is spare, and a different agent can check it. |
 
 Bullswarm never proxies a subscription as an API and never collects or shares your vendor credentials.
 

@@ -28,12 +28,12 @@ const TOOLS = [
   {
     name: 'bullswarm_health',
     description:
-      'Re-judge saved offload outputs against their verdicts; report verify-gate failures and quarantine clusters. Run after every offload round.',
+      'Re-judge saved offload outputs against their verdicts; report verify-gate failures. Run after every offload round.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'bullswarm_pools',
-    description: 'Show each pool meter state, pace position, and quarantine status.',
+    description: 'Show the meter state and pace position of each pool.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];
