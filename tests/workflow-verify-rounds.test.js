@@ -643,3 +643,207 @@ test('callerDecision next names fix, rerun the review elsewhere and accept, with
   const act = synthetic({ extraActions: [actStep(['alpha'])], loop: { max: 1, stoppedBy: 'rounds', rounds: [round({ closedAt: 'x', failed: ['alpha'] })] } });
   assert.equal(callerDecision(act, { token: 'syn123' }).requirements[0].next, ACT_NEXT);
 });
+
+// --- Stage-3 fix round: the narrowed loop, remembered failures, the caller's options, report repairs ---
+
+/**
+ * partialShape() plus a third writer and check: build-c → check-c passed
+ * gamma with evidence that names no file (workspace-wide, D3).
+ */
+function partialWithGamma({ max = 2 } = {}) {
+  const state = partialShape();
+  state.intent.requirements.push({ id: 'gamma', text: 'gamma returns 4' });
+  state.ledger.requirements.gamma = { id: 'gamma', mandatory: true, status: 'passed', workRevision: 'w1' };
+  state.ledger.evidence.push(evidenceRecord('gamma', 'passed', ['judged gamma passed'], { source: 'check-c', sequence: 2 }));
+  state.program.actions.push(
+    { id: 'build-c', kind: 'implement', lane: 'build', effort: 'medium', dependsOn: [], affects: ['gamma'], ownedFiles: ['src/c.js'], evidenceFor: [] },
+    { id: 'check-c', kind: 'adversarial-acceptance', lane: 'analyze', effort: 'high', dependsOn: ['build-c'], affects: [], ownedFiles: [], evidenceFor: ['gamma'] },
+  );
+  state.actions.push({ id: 'build-c', status: 'succeeded' }, { id: 'check-c', status: 'succeeded' });
+  state.verifyLoop = { max, stoppedBy: null, rounds: [round({ verifyActionIds: ['check-a', 'check-b', 'check-c'], toJudge: ['alpha', 'beta', 'gamma'] })] };
+  return state;
+}
+
+// Apply a planned kernel step the way the runtime does, as a succeeded step.
+function addSucceeded(state, action, status = 'succeeded') {
+  state.program.actions.push(action);
+  state.actions.push({ id: action.id, status });
+}
+
+// The program as the validator sees it after a kernel revision.
+function validateLooped(state) {
+  const actions = state.program.actions.map((action) => ({ purpose: action.id, prompt: action.id, inputs: [], produces: [], ...action }));
+  return validateActionProgram({ schemaVersion: 'bullswarm.workflow.program.v2', actions }, {
+    requirements: state.intent.requirements.map((item) => ({ id: item.id, mandatory: true })),
+    relaxedGraph: true, kernelRepairActionIds: state.verifyLoop.rounds.map((entry) => entry.repairActionId).filter(Boolean),
+  });
+}
+
+// Marked runs print the change as two whole commands (F26).
+const FIX_TEXT = 'fix it with a step (bullswarm workflow plan export syn123 --out plan.json, edit it, then bullswarm workflow plan revise syn123 --program plan.json)';
+
+test('F5/F10: a repair narrowed at partial is re-checked on exactly its requirements, depends only on the repair, and the left-out requirement goes to the caller', () => {
+  const state = partialWithGamma();
+  const closed = closeRound(state, { at: '2026-09-25T01:00:00.000Z', partial: true });
+  assert.deepEqual([closed.failed, closed.next], [['alpha', 'beta'], 'repair']);
+  const plan = planRepairStep(state, { repairableOnly: true });
+  assert.deepEqual([plan.action.affects, plan.action.dependsOn], [['beta'], ['check-b']], 'never born blocked: only the check that judged beta');
+  const first = state.verifyLoop.rounds[0];
+  Object.assign(first, plan.record, { repairStartedAt: 'x' });
+  addSucceeded(state, plan.action);
+  state.ledger.requirements.beta.status = 'pending';
+  state.ledger.requirements.beta.workRevision = 'w2';
+  assert.deepEqual(nextLoopStep(state, { repairableOnly: true }), { step: 'finish-repair', round: 1 });
+
+  // gamma's evidence names no file, so an ordinary repair would re-open it;
+  // this one does not reach build-c, so gamma carries forward.
+  const recheck = recheckSet(state, first, ['src/b.js']);
+  assert.deepEqual([recheck.toJudge, recheck.touched, recheck.carried], [['beta'], [], ['gamma']]);
+  assert.deepEqual(recheckSet(state, first, null).toJudge, ['beta'], 'unknown changed files re-open nothing a narrowed repair cannot reach');
+  const verify = planVerifyStep(state, { round: 2, repairActionId: plan.action.id, toJudge: recheck.toJudge });
+  assert.deepEqual([verify.dependsOn, verify.evidenceFor], [['repair-1'], ['beta']]);
+  addSucceeded(state, verify);
+  assert.doesNotThrow(() => validateLooped(state), 'the kernel\'s own re-review revision passes the evidence-ancestor rule');
+  Object.assign(first, { repairFinishedAt: 'y', changedFiles: ['src/b.js'] });
+
+  // Round 2 passes beta while build-a is still failed: it closes at partial,
+  // and alpha, which the narrowed repair left out, is still failing.
+  const second = { ...round({ round: 2, verifyActionIds: [verify.id], toJudge: recheck.toJudge, carried: recheck.carried }) };
+  state.verifyLoop.rounds.push(second);
+  state.ledger.requirements.beta.status = 'passed';
+  state.ledger.evidence.push(evidenceRecord('beta', 'passed', ['src/b.js: beta() printed 3'], { source: verify.id, sequence: 3, revision: 'w2' }));
+  const closedSecond = closeRound(state, { at: 'z', partial: true });
+  assert.deepEqual([closedSecond.passed, closedSecond.failed, closedSecond.next], [['beta'], ['alpha'], 'caller']);
+  assert.deepEqual(nextLoopStep(state, { repairableOnly: true }), { step: 'finish', stoppedBy: 'rounds' });
+
+  const decision = callerDecision(state, { token: 'syn123', failureRule: true });
+  assert.deepEqual(decision.requirements.map((entry) => [entry.id, entry.status]), [['alpha', 'pending']]);
+  assert.equal(decision.requirements[0].evidence, 'not judged: check-a is blocked by build-a (failed)');
+  assert.equal(decision.requirements[0].next,
+    `check-a is blocked by build-a (failed), so alpha was never judged: rerun build-a (bullswarm workflow step rerun syn123 build-a), accept it (bullswarm workflow step accept syn123 build-a --reason "…"), or ${FIX_TEXT}`);
+});
+
+test('F5: after a narrowed repair, a later repair re-opens only passed requirements whose writers are upstream of it', () => {
+  const state = partialWithGamma({ max: 3 });
+  closeRound(state, { at: 'a', partial: true });
+  const plan = planRepairStep(state, { repairableOnly: true });
+  const first = state.verifyLoop.rounds[0];
+  Object.assign(first, plan.record, { repairStartedAt: 'x', repairFinishedAt: 'y', changedFiles: ['src/b.js'] });
+  addSucceeded(state, plan.action);
+  const verify = planVerifyStep(state, { round: 2, repairActionId: plan.action.id, toJudge: ['beta'] });
+  addSucceeded(state, verify);
+  state.verifyLoop.rounds.push(round({ round: 2, verifyActionIds: [verify.id], toJudge: ['beta'], carried: ['gamma'], closedAt: 'b', failed: ['beta'] }));
+  state.ledger.evidence.push(evidenceRecord('beta', 'failed', ['src/b.js: beta() still printed 1'], { source: verify.id, sequence: 3 }));
+  // Round 2 failed beta again; repair-2 depends on every live check of its round.
+  const second = planRepairStep(state, { repairableOnly: true });
+  assert.deepEqual(second.action.dependsOn, ['verify-round-2']);
+  Object.assign(state.verifyLoop.rounds[1], second.record, { repairStartedAt: 'c' });
+  addSucceeded(state, second.action);
+  const recheck = recheckSet(state, state.verifyLoop.rounds[1], null);
+  assert.deepEqual([recheck.toJudge, recheck.carried], [['beta'], ['gamma']], 'build-c is not upstream of repair-2');
+});
+
+test('F11: a round closed at partial is never forgotten: its blocked check\'s requirement stays failing and reaches the caller', () => {
+  // Two closed rounds; round 2 did not list alpha (a build before the fix).
+  // The caller then accepted build-a and check-a failed alpha.
+  const state = partialWithGamma();
+  state.verifyLoop.rounds = [
+    round({ verifyActionIds: ['check-a', 'check-b', 'check-c'], toJudge: ['alpha', 'beta', 'gamma'], closedAt: 'a', failed: ['alpha', 'beta'], passed: ['gamma'], repairActionId: 'repair-1', repairRequirements: ['beta'], repairStartedAt: 'b', repairFinishedAt: 'c', changedFiles: ['src/b.js'] }),
+    round({ round: 2, verifyActionIds: ['verify-round-2'], toJudge: ['beta'], carried: ['gamma'], closedAt: 'd', passed: ['beta'], failed: [] }),
+  ];
+  addSucceeded(state, { id: 'repair-1', kind: 'implement', lane: 'build', effort: 'high', dependsOn: ['check-b'], affects: ['beta'], ownedFiles: ['src/b.js'], evidenceFor: [] });
+  addSucceeded(state, { id: 'verify-round-2', kind: 'adversarial-acceptance', lane: 'analyze', effort: 'high', dependsOn: ['repair-1'], affects: [], ownedFiles: [], evidenceFor: ['beta'] });
+  state.ledger.requirements.beta.status = 'passed';
+  // Still pending (check-a blocked): the loop remembers it at partial.
+  assert.deepEqual(nextLoopStep(state, { repairableOnly: true }), { step: 'finish', stoppedBy: 'rounds' });
+  assert.deepEqual(callerDecision(state, { token: 'syn123', failureRule: true }).requirements.map((entry) => entry.id), ['alpha']);
+  // Now judged failed by check-a.
+  state.actions.find((action) => action.id === 'build-a').status = 'succeeded';
+  state.actions.find((action) => action.id === 'check-a').status = 'succeeded';
+  state.ledger.requirements.alpha.status = 'failed';
+  state.ledger.evidence.push(evidenceRecord('alpha', 'failed', ['src/a.js: alpha() printed 1'], { source: 'check-a', sequence: 9 }));
+  const decision = callerDecision(state, { token: 'syn123', failureRule: true });
+  assert.deepEqual(decision.requirements.map((entry) => [entry.id, entry.status]), [['alpha', 'failed']]);
+  assert.match(decision.requirements[0].next, /step accept syn123 check-a --requirement alpha --reason "…"\)$/);
+  assert.equal(loopVerdictText({ ...state, lifecycle: { ...state.lifecycle, status: 'completed' } }), 'not verified · verify rounds 2/2');
+});
+
+test('F12/L4: marked runs use the spec text, name the check that judged the requirement, and suggest accept only when step accept would take it', () => {
+  const state = synthetic({ loop: { max: 2, stoppedBy: 'rounds', rounds: [round({ closedAt: 'x', failed: ['alpha'] })] } });
+  state.attempts = [{ id: 'verify-1', actionId: 'verify', ordinal: 1, status: 'succeeded', pool: 'pool-b' }];
+  assert.equal(callerDecision(state, { token: 'syn123', failureRule: true }).requirements[0].next,
+    `${FIX_TEXT}, rerun the review elsewhere (bullswarm workflow step rerun syn123 verify --avoid pool-b), or accept it (bullswarm workflow step accept syn123 verify --requirement alpha --reason "…")`);
+  // The repair report's own suggestion follows; it never replaces the options.
+  const repaired = synthetic({
+    extraActions: [{ id: 'repair-1', kind: 'implement', lane: 'build', effort: 'high', dependsOn: ['verify'], affects: ['alpha'], ownedFiles: ['src/a.js'], evidenceFor: [] }],
+    loop: { max: 2, stoppedBy: 'rounds', rounds: [round({ closedAt: 'x', failed: ['alpha'], repairActionId: 'repair-1', repairRequirements: ['alpha'], repairStartedAt: 'x' })] },
+  });
+  repaired.attempts = [
+    { id: 'verify-1', actionId: 'verify', ordinal: 1, status: 'succeeded', pool: 'pool-b' },
+    { id: 'repair-1-1', actionId: 'repair-1', ordinal: 1, status: 'succeeded', pool: 'pool-a', outputFile: '/runs/out-repair-1.md' },
+  ];
+  const readText = () => '## Done\n- tried\n\n## Suggested next step\n- rewrite alpha() against docs/alpha.md';
+  assert.match(callerDecision(repaired, { token: 'syn123', readText, failureRule: true }).requirements[0].next,
+    /^fix it with a step .*, or accept it \(bullswarm workflow step accept syn123 verify --requirement alpha --reason "…"\); suggested: rewrite alpha\(\) against docs\/alpha\.md$/);
+  assert.equal(callerDecision(repaired, { token: 'syn123', readText }).requirements[0].next, 'rewrite alpha() against docs/alpha.md', 'unmarked runs keep the report\'s suggestion');
+
+  // A repair that failed left alpha pending: accept on verify would be
+  // refused, so the text points at the repair instead.
+  repaired.actions.find((action) => action.id === 'repair-1').status = 'failed';
+  repaired.ledger.requirements.alpha.status = 'pending';
+  repaired.ledger.requirements.alpha.workRevision = 'w2';
+  const pending = callerDecision(repaired, { token: 'syn123', failureRule: true }).requirements[0];
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.next, `repair-1 failed, so no review judged alpha after it: rerun repair-1 (bullswarm workflow step rerun syn123 repair-1), accept it (bullswarm workflow step accept syn123 repair-1 --reason "…"), or ${FIX_TEXT}`);
+  assert.doesNotMatch(pending.next, /accept syn123 verify/);
+  // The check itself failed: rerun it; accepting the check would not judge alpha.
+  const failedCheck = synthetic({ statuses: { alpha: 'pending', beta: 'passed' }, evidence: [], loop: { max: 2, stoppedBy: 'step-failed', rounds: [round({ closedAt: 'x', failed: ['alpha'] })] } });
+  failedCheck.actions.find((action) => action.id === 'verify').status = 'failed';
+  assert.equal(callerDecision(failedCheck, { token: 'syn123', failureRule: true }).requirements[0].next,
+    `verify failed, so no review judged alpha after it: rerun verify (bullswarm workflow step rerun syn123 verify), or ${FIX_TEXT}`);
+});
+
+test('L6: after a report repair the next round judges the repair\'s output as the current report; a files repair adds no such line', () => {
+  const state = synthetic({ statuses: { alpha: 'failed', beta: 'passed' } });
+  for (const action of state.program.actions) if (action.id !== 'verify') action.affects = [];
+  state.program.actions.push({
+    id: 'study', role: 'investigate', lane: 'analyze', effort: 'medium', dependsOn: [], affects: ['alpha'], ownedFiles: [], evidenceFor: [], deliverable: { type: 'report' },
+  });
+  state.actions.push({ id: 'study', status: 'succeeded', outputFile: '/runs/r1/out-study-attempt-1.md' });
+  state.verifyLoop = { max: 2, stoppedBy: null, rounds: [round({ closedAt: 'x', failed: ['alpha'] })] };
+  const plan = planRepairStep(state);
+  assert.equal(plan.action.deliverable, 'report');
+  Object.assign(state.verifyLoop.rounds[0], plan.record, { repairStartedAt: 'x', repairFinishedAt: 'y', changedFiles: [] });
+  state.ledger.requirements.alpha.status = 'pending';
+  state.program.actions.push(plan.action);
+  state.actions.push({ id: plan.action.id, status: 'succeeded', outputFile: '/runs/r1/out-repair-1-attempt-1.md' });
+  const verify = planVerifyStep(state, { round: 2, repairActionId: plan.action.id, toJudge: ['alpha'] });
+  assert.deepEqual(verify.dependsOn, ['repair-1'], 'the repair\'s output is among its dependency artifacts');
+  state.program.actions.push(verify);
+  state.actions.push({ id: verify.id, status: 'pending' });
+  state.verifyLoop.rounds.push(round({ round: 2, verifyActionIds: [verify.id], toJudge: ['alpha'] }));
+  const brief = roundBrief(state, verify.id).split('\n');
+  assert.equal(brief[1], 'The current version of study\'s report is /runs/r1/out-repair-1-attempt-1.md; judge that, not the earlier output.');
+
+  // A files repair changes the workspace: no report line.
+  const files = synthetic({ extraActions: [{ id: 'repair-1', kind: 'implement', lane: 'build', effort: 'high', dependsOn: ['verify'], affects: ['alpha'], ownedFiles: ['src/a.js'], evidenceFor: [] }] });
+  files.actions.find((action) => action.id === 'repair-1').outputFile = '/runs/r1/out-repair-1-attempt-1.md';
+  files.program.actions.push({ id: 'verify-round-2', kind: 'adversarial-acceptance', dependsOn: ['repair-1'], affects: [], ownedFiles: [], evidenceFor: ['alpha'] });
+  files.verifyLoop = { max: 2, stoppedBy: null, rounds: [
+    round({ closedAt: 'x', failed: ['alpha'], repairActionId: 'repair-1', repairRequirements: ['alpha'], repairStartedAt: 'x', repairFinishedAt: 'y', changedFiles: ['src/a.js'] }),
+    round({ round: 2, verifyActionIds: ['verify-round-2'], toJudge: ['alpha'] }),
+  ] };
+  assert.doesNotMatch(roundBrief(files, 'verify-round-2'), /current version/);
+});
+
+test('F21: a requirement entry an earlier accept made keeps that accept\'s reason and time', () => {
+  const state = synthetic({ statuses: { alpha: 'failed', beta: 'failed' }, loop: { max: 1, stoppedBy: 'rounds', rounds: [round({ closedAt: 'x', failed: ['alpha', 'beta'] })] } });
+  state.actions.find((action) => action.id === 'verify').acceptance = accept([
+    { id: 'beta', workRevision: 'w1', reason: 'beta is out of scope', at: '2026-09-25T00:30:00.000Z' },
+    { id: 'alpha', workRevision: 'w1' },
+  ]);
+  assert.deepEqual([...requirementAcceptances(state)], [
+    ['beta', { step: 'verify', reason: 'beta is out of scope', at: '2026-09-25T00:30:00.000Z' }],
+    ['alpha', { step: 'verify', reason: 'good enough for now', at: '2026-09-25T01:00:00.000Z' }],
+  ]);
+});

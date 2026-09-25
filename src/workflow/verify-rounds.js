@@ -181,6 +181,25 @@ export function failingRequirements(state, round = null) {
 }
 
 /**
+ * F11: requirements a closed round listed as failing that are still
+ * `pending` (a round closed at `partial` left its blocked check's
+ * requirements unjudged). A later round never forgets them: they stay failing
+ * until a check judges them or the caller accepts them.
+ */
+function rememberedPending(state) {
+  const requirements = state?.ledger?.requirements ?? {};
+  const accepted = requirementAcceptances(state);
+  const ids = new Set((loopOf(state)?.rounds ?? []).filter((round) => round.closedAt != null).flatMap((round) => round.failed));
+  return [...ids].filter((id) => requirements[id]?.mandatory && requirements[id].status === 'pending' && !accepted.has(id));
+}
+
+// What fails in the loop at `partial` (D12): the round's own failures plus
+// what an earlier closed round left pending.
+function loopFailingRequirements(state, round) {
+  return intentOrder(state, [...failingRequirements(state, round), ...rememberedPending(state)]);
+}
+
+/**
  * The requirements a caller accepted by choice on a check step (D22) whose
  * acceptance is still current: its `workRevision` equals the requirement's
  * (a later fix or rerun moves it, and the acceptance lapses, D23). Map of id
@@ -198,7 +217,8 @@ export function requirementAcceptances(state) {
     for (const entry of acceptance.requirements) {
       const requirement = requirements[entry?.id];
       if (!requirement || String(requirement.workRevision) !== String(entry.workRevision)) continue;
-      found.set(entry.id, { step: runtime.id, reason: acceptance.reason, at: acceptance.at });
+      // An entry an earlier accept made keeps that accept's reason and time (F21).
+      found.set(entry.id, { step: runtime.id, reason: entry.reason ?? acceptance.reason, at: entry.at ?? acceptance.at });
     }
   }
   return found;
@@ -275,8 +295,8 @@ export function nextLoopStep(state, { repairableOnly = false } = {}) {
   }
   if (loop.stoppedBy === 'rounds' || loop.stoppedBy === 'revision') return { step: 'finish', stoppedBy: loop.stoppedBy };
   // A round closed at `partial` leaves a blocked check's requirements pending
-  // in `toJudge`: they are failing (the caller's), not passed.
-  const failing = failingRequirements(state, repairableOnly ? current : null);
+  // in `toJudge`; a later round remembers them (F11).
+  const failing = repairableOnly ? loopFailingRequirements(state, current) : failingRequirements(state);
   if (!failing.length) return { step: 'finish', stoppedBy: 'passed' };
   if (current.round >= loop.max) return { step: 'finish', stoppedBy: 'rounds' };
   if (repairableOnly && !narrowedFailingRequirements(state, failing).length) return { step: 'finish', stoppedBy: 'step-failed' };
@@ -342,7 +362,7 @@ export function closeRound(state, { at, partial = false }) {
   const removed = round.verifyActionIds.length > 0 && round.verifyActionIds.every((id) => !live.has(id));
   round.closedAt = at;
   round.passed = round.toJudge.filter((id) => state.ledger.requirements[id]?.status === 'passed');
-  round.failed = failingRequirements(state, round);
+  round.failed = partial ? loopFailingRequirements(state, round) : failingRequirements(state, round);
   round.discovery = roundKind(loop, round.round) === 'middle' && !removed ? discoveryItems(state, round) : [];
   if (removed) loop.stoppedBy = 'revision';
   const notJudged = notJudgedRequirements(state);
@@ -544,22 +564,49 @@ function namesFile(text, file) {
 }
 
 /**
+ * A repair narrowed at `partial` (D12): it depends on only some of its
+ * round's live verify steps, so the writers of the other requirements are not
+ * upstream of it. Derived from the repair's definition, so no field records it.
+ */
+export function repairNarrowed(state, round) {
+  const repair = definitionOf(state, round?.repairActionId);
+  if (!repair) return false;
+  const live = new Set(liveActions(state).map((action) => action.id));
+  const dependsOn = new Set(repair.dependsOn ?? []);
+  return round.verifyActionIds.some((id) => live.has(id) && !dependsOn.has(id));
+}
+
+/**
  * The re-check set after repair r: (1) the failing requirements the repair
  * worked on, plus (2) every passed requirement whose current passing evidence
  * (evidence and concern lines) names a file the repair changed. Evidence that
  * names no file at all is workspace-wide, so any change re-opens it (D3);
  * unknown changed files re-open every passed requirement. Every other passed
  * requirement carries forward.
+ *
+ * After a narrowed repair (D12, F5/F10) the next round re-checks exactly the
+ * repaired requirements: `verify-round-(r+1)` depends only on the repair,
+ * which does not reach the other writers, so every passed requirement carries
+ * forward (the round brief still asks a middle round for regressions). Once a
+ * loop narrowed, a later repair re-opens only a passed requirement whose
+ * writers are all upstream of it, the validator's evidence rule.
  */
 export function recheckSet(state, round, changedFiles) {
   const failing = intentOrder(state, round.repairRequirements ?? []);
   const failingSet = new Set(failing);
   const touched = [];
   const carried = [];
+  const narrowed = repairNarrowed(state, round);
+  const upstream = narrowed || !(loopOf(state)?.rounds ?? []).some((entry) => entry.round < round.round && repairNarrowed(state, entry))
+    ? null : new Set([round.repairActionId, ...ancestorsOf(state, round.repairActionId)]);
+  const kernelRepairs = new Set(kernelRepairActionIds(state));
+  const reachable = (requirementId) => !upstream || affectingSteps(state, [requirementId])
+    .every((action) => kernelRepairs.has(action.id) || upstream.has(action.id));
   for (const requirementId of intentOrder(state, Object.keys(state?.ledger?.requirements ?? {}))) {
     if (failingSet.has(requirementId)) continue;
     const requirement = state.ledger.requirements[requirementId];
     if (requirement.status !== 'passed') continue;
+    if (narrowed || !reachable(requirementId)) { carried.push(requirementId); continue; }
     const lines = currentEvidenceRecords(state, requirementId)
       .filter((record) => record.status === 'passed')
       .flatMap((record) => [...(record.evidence ?? []), ...(record.concerns ?? [])])
@@ -803,16 +850,33 @@ export function roundBrief(state, actionId) {
     for (const line of (judged?.evidence ?? []).slice(0, 3)) quoted.push(`  > ${clip(line, EVIDENCE_CHARS)}`);
   }
   const carried = round.carried.length ? round.carried.join(', ') : 'none';
+  const reports = repairedReports(state, previous);
   if (roundKind(loop, round.round) === 'middle') {
     return [
       `Verify round ${round.round} of ${loop.max}: re-check and discovery. ${repair} changed: ${changed}. Re-check each requirement below as the workspace is now; the previous round's failing evidence is quoted under each. Then look for (a) regressions the repair caused in the files it changed and (b) the same defect as each re-checked failure elsewhere. Report each finding as a concern starting \`Discovery:\` that names the file, on the requirement it threatens; a finding that breaks a requirement you judge makes it failed. Carried forward, not yours to judge: ${carried}.`,
+      ...reports,
       ...quoted,
     ].join('\n');
   }
   return [
     `Verify round ${round.round} of ${loop.max}: final closure. Re-check only whether each requirement below now passes (previous evidence quoted). Do not look for new problems or add \`Discovery:\` concerns: nothing runs after this.`,
+    ...reports,
     ...quoted,
   ].join('\n');
+}
+
+// L6: a report repair (stage-1 D20b) changes no workspace file; it writes the
+// corrected report as its own output. The next round judges that file, which
+// its dependency artifacts already carry, not the repaired step's first report.
+function repairedReports(state, previous) {
+  const repair = definitionOf(state, previous?.repairActionId);
+  if (!repair || declaredDeliverable(repair)?.type !== 'report') return [];
+  const output = runtimeOf(state, repair.id)?.outputFile ?? lastSucceededAttempt(state, repair.id)?.outputFile;
+  if (!output) return [];
+  const kernel = new Set(kernelRepairActionIds(state));
+  return affectingSteps(state, previous.repairRequirements ?? [])
+    .filter((action) => !kernel.has(action.id) && declaredDeliverable(action)?.type === 'report')
+    .map((action) => `The current version of ${action.id}'s report is ${output}; judge that, not the earlier output.`);
 }
 
 // --- Display ----------------------------------------------------------------
@@ -967,16 +1031,93 @@ export function roundPhases(state) {
   return phases;
 }
 
-// Mandatory requirements still open once the last closed round left failures.
+// Mandatory requirements still open once a closed round left failures: the
+// last closed round's, or an earlier one's that is still not passed (F11: a
+// round closed at `partial` is never forgotten by a later round).
 function callerDecisionRequirements(state) {
   const loop = loopOf(state);
   const closed = (loop?.rounds ?? []).filter((round) => round.closedAt != null);
-  if (!closed.length || !closed.at(-1).failed.length) return [];
+  if (!closed.length) return [];
   const requirements = state?.ledger?.requirements ?? {};
   const accepted = requirementAcceptances(state);
+  const open = (id) => requirements[id]?.mandatory && requirements[id].status !== 'passed' && !accepted.has(id);
+  if (!closed.at(-1).failed.length && !closed.some((round) => round.failed.some(open))) return [];
   return intentOrder(state, Object.values(requirements)
-    .filter((requirement) => requirement.mandatory && requirement.status !== 'passed' && !accepted.has(requirement.id))
+    .filter((requirement) => open(requirement.id))
     .map((requirement) => requirement.id));
+}
+
+const UNFINISHED = new Set(['failed', 'cancelled', 'interrupted']);
+
+// The live check that judged `id` last, else the latest live check naming it.
+function reviewerOf(state, id) {
+  const checks = liveActions(state).filter((action) => (action.evidenceFor ?? []).includes(id)).map((action) => action.id);
+  const covering = new Set(checks);
+  const judged = (state?.ledger?.evidence ?? [])
+    .filter((record) => record.requirementId === id && covering.has(record.sourceAction))
+    .sort((a, b) => a.eventSequence - b.eventSequence).at(-1);
+  if (judged) return judged.sourceAction;
+  for (const round of [...(loopOf(state)?.rounds ?? [])].reverse()) {
+    const found = round.verifyActionIds.findLast((actionId) => covering.has(actionId));
+    if (found) return found;
+  }
+  return checks.at(-1) ?? null;
+}
+
+// The unfinished step that kept `id` from being judged again: the last repair
+// of it that did not succeed, the check itself, or a failed step upstream of a
+// blocked check. Null when nothing is in the way.
+function stopperOf(state, id, reviewer) {
+  const repair = (loopOf(state)?.rounds ?? []).findLast((round) => round.repairActionId && round.repairRequirements.includes(id));
+  if (repair && UNFINISHED.has(runtimeOf(state, repair.repairActionId)?.status)) return { step: repair.repairActionId, via: null };
+  const status = runtimeOf(state, reviewer)?.status;
+  if (!reviewer || !status || status === 'succeeded') return null;
+  if (UNFINISHED.has(status)) return { step: reviewer, via: null };
+  const ancestors = ancestorsOf(state, reviewer);
+  const failed = liveActions(state).find((action) => ancestors.has(action.id) && UNFINISHED.has(runtimeOf(state, action.id)?.status));
+  return failed ? { step: failed.id, via: reviewer, status } : null;
+}
+
+// Whether `step accept` would take this failed step (v2-revision's
+// planAcceptances): a writer of an isolated run was never merged back.
+function acceptableStep(state, stepId) {
+  const definition = definitionOf(state, stepId);
+  if (runtimeOf(state, stepId)?.status !== 'failed' || !definition) return false;
+  const isolated = state?.config?.settings?.workspaceMode === 'isolated';
+  return !(isolated && !(definition.evidenceFor ?? []).length && (definition.ownedFiles ?? []).length);
+}
+
+// Marked runs (F12, L4): the spec's three options for a failing requirement,
+// naming the check that judged it, and `accept` only when `step accept` would
+// take it. A requirement left pending names the step that kept it from being
+// judged instead (the D12 blocked check, a repair that failed).
+function markedNext(state, id, { runToken, status }) {
+  const fix = `fix it with a step (bullswarm workflow plan export ${runToken} --out plan.json, edit it, then bullswarm workflow plan revise ${runToken} --program plan.json)`;
+  const reviewer = reviewerOf(state, id);
+  if (status === 'failed' || status === 'blocked') {
+    if (!reviewer) return { next: fix };
+    const pool = lastSucceededAttempt(state, reviewer)?.pool ?? '<pool>';
+    const rerun = `rerun the review elsewhere (bullswarm workflow step rerun ${runToken} ${reviewer} --avoid ${pool})`;
+    const acceptable = ['succeeded', 'failed'].includes(runtimeOf(state, reviewer)?.status);
+    return {
+      next: acceptable
+        ? `${fix}, ${rerun}, or accept it (bullswarm workflow step accept ${runToken} ${reviewer} --requirement ${id} --reason "…")`
+        : `${fix} or ${rerun}`,
+    };
+  }
+  const stopper = stopperOf(state, id, reviewer);
+  if (!stopper) {
+    return { next: reviewer ? `${fix} or rerun the review (bullswarm workflow step rerun ${runToken} ${reviewer})` : fix };
+  }
+  const why = stopper.via
+    ? `${stopper.via} is ${stopper.status} by ${stopper.step} (${runtimeOf(state, stopper.step)?.status}), so ${id} was never judged`
+    : `${stopper.step} ${runtimeOf(state, stopper.step)?.status === 'failed' ? 'failed' : 'did not finish'}, so no review judged ${id} after it`;
+  const accept = acceptableStep(state, stopper.step) && stopper.step !== reviewer
+    ? `, accept it (bullswarm workflow step accept ${runToken} ${stopper.step} --reason "…")` : '';
+  return {
+    notJudged: stopper.via ? `not judged: ${stopper.via} is ${stopper.status} by ${stopper.step} (${runtimeOf(state, stopper.step)?.status})` : null,
+    next: `${why}: rerun ${stopper.step} (bullswarm workflow step rerun ${runToken} ${stopper.step})${accept}, or ${fix}`,
+  };
 }
 
 const HEADING = /^ {0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
@@ -1005,9 +1146,11 @@ export function firstSuggestedStep(text) {
  * own `## Suggested next step` when the last repair covering it wrote one,
  * else a concrete step — and every declared requirement no evidence step
  * covers (`not judged`, mandatory or not; it never counts as passed). Null
- * when nothing is left for the caller.
+ * when nothing is left for the caller. With `failureRule` (marked runs) the
+ * step is always the spec's fix / rerun elsewhere / accept text, and the
+ * repair report's suggestion follows as `suggested: …`.
  */
-export function callerDecision(state, { readText = null, token = null } = {}) {
+export function callerDecision(state, { readText = null, token = null, failureRule = false } = {}) {
   const loop = loopOf(state);
   const notJudged = new Set(notJudgedRequirements(state));
   const ids = intentOrder(state, [...callerDecisionRequirements(state), ...notJudged]);
@@ -1025,11 +1168,17 @@ export function callerDecision(state, { readText = null, token = null } = {}) {
     const status = state.ledger.requirements[id].status;
     const round = loop.rounds.findLast((entry) => entry.toJudge.includes(id) || entry.failed.includes(id))?.round ?? loop.rounds.length;
     const judged = currentEvidenceRecords(state, id).at(-1) ?? latestJudgment(state, id);
-    const evidence = clip(String(judged?.evidence?.[0] ?? judged?.mechanicalFailure?.message ?? 'no evidence recorded').split(/\r?\n/, 1)[0], 200);
+    let evidence = clip(String(judged?.evidence?.[0] ?? judged?.mechanicalFailure?.message ?? 'no evidence recorded').split(/\r?\n/, 1)[0], 200);
     const repair = loop.rounds.findLast((entry) => entry.repairActionId && entry.repairRequirements.includes(id));
     let next = null;
     if (actAffectedRequirements(state, [id]).includes(id)) {
       next = `an act step affects ${id}; Bullswarm never repeats an outward action on its own. Check what was done, then add an act step if it must be redone: bullswarm workflow plan export ${runToken} --out plan.json, edit it, then plan revise`;
+    } else if (failureRule) {
+      const marked = markedNext(state, id, { runToken, status });
+      if (!judged && marked.notJudged) evidence = marked.notJudged;
+      const report = repair && typeof readText === 'function' ? lastSucceededAttempt(state, repair.repairActionId)?.outputFile : null;
+      const suggested = report ? firstSuggestedStep(readText(report)) : null;
+      next = suggested ? `${marked.next}; suggested: ${suggested}` : marked.next;
     } else {
       if (repair && typeof readText === 'function') {
         const report = lastSucceededAttempt(state, repair.repairActionId)?.outputFile;
@@ -1046,8 +1195,12 @@ export function callerDecision(state, { readText = null, token = null } = {}) {
   return { verifyRounds: `${loop.rounds.length}/${loop.max}`, requirements };
 }
 
-/** The two result keys: `verifyRounds` always, `callerDecision` when something is left for the caller. */
-export function verifyLoopResult(state, { readText = null, token = null } = {}) {
+/**
+ * The two result keys: `verifyRounds` always, `callerDecision` when something
+ * is left for the caller. `failureRule` (the run's stage-3 marker) selects the
+ * marked runs' `next` text.
+ */
+export function verifyLoopResult(state, { readText = null, token = null, failureRule = false } = {}) {
   const loop = loopOf(state);
   if (!loop) return null;
   return {
@@ -1058,7 +1211,7 @@ export function verifyLoopResult(state, { readText = null, token = null } = {}) 
       phases: roundPhases(state),
     },
     // A verified run has only the requirements no evidence step covers left.
-    callerDecision: callerDecision(state, { readText, token }),
+    callerDecision: callerDecision(state, { readText, token, failureRule }),
   };
 }
 

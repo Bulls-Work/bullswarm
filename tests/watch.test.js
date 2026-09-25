@@ -646,6 +646,85 @@ test('a stream-json usage limit kills a hanging CLI and quarantines until the pa
   }
 });
 
+// L1: Claude Code answers a turn it refused with the limit notice as its
+// reply, mirrored into the result record, with usage all zero.
+const RELAYED_LIMIT = "You've hit your session limit · resets 7:10am (Asia/Hong_Kong)";
+const relayedRows = (reply, usage) => [
+  { type: 'assistant', message: { content: [{ type: 'text', text: reply }] } },
+  { type: 'result', subtype: 'success', is_error: false, result: reply, session_id: 'session-limit-1', total_cost_usd: 0, usage },
+];
+const ZERO_USAGE = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+const relayedConnector = (rows) => streamJsonConnector(rowsScript(rows), {
+  eventStream: {
+    ...streamJsonConnector('').eventStream,
+    usage: [{
+      match: { path: 'type', equals: 'result' },
+      mode: 'last',
+      fields: { sessionId: 'session_id', costUsd: 'total_cost_usd', standardRead: 'usage.input_tokens', cacheRead: 'usage.cache_read_input_tokens', output: 'usage.output_tokens' },
+    }],
+  },
+});
+
+test('a reply that is only a limit notice from a zero-usage turn is read as quota with its named reset (L1)', async () => {
+  const ctx = makeCtx();
+  try {
+    const before = Date.now();
+    const v = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    assert.equal(v.ok, false);
+    assert.equal(v.failureKind, 'quota', v.why);
+    assert.equal(v.quarantineHint, true);
+    assert.equal(v.quotaPause.rule, 'message');
+    assert.equal(v.quotaPause.line, RELAYED_LIMIT);
+    const acceptable = new Set([
+      parseQuotaResetAt(RELAYED_LIMIT, { now: before }),
+      parseQuotaResetAt(RELAYED_LIMIT, { now: Date.now() }),
+    ]);
+    assert.ok(acceptable.has(v.quarantineUntil), `unexpected deadline ${v.quarantineUntil}`);
+    // With pausing off it is the same notice as a hold on the named reset.
+    const off = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: false });
+    assert.equal(off.failureKind, 'throttle', off.why);
+    assert.equal(off.quotaPause.rule, 'off');
+    assert.ok(acceptable.has(off.quotaPause.holdUntil), `unexpected hold ${off.quotaPause.holdUntil}`);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a reply quoting the limit notice in a longer answer, or from a turn that produced tokens, stays a reply (L1)', async () => {
+  const ctx = makeCtx();
+  try {
+    const report = '## Completed\n\nTaught the watcher the relayed notice and verified it end to end.\n\n'
+      + `- Claude Code printed: ${RELAYED_LIMIT}\n`
+      + '- Ran the focused watcher suite: every check passed with no failures.\n';
+    const quoted = await watchOnce(relayedConnector(relayedRows(report, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    assert.equal(quoted.ok, true, quoted.why);
+    assert.equal(quoted.failureKind, undefined);
+    assert.equal(quoted.quarantineHint, undefined);
+    const spent = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, { ...ZERO_USAGE, output_tokens: 18 })), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    assert.notEqual(spent.failureKind, 'quota');
+    assert.notEqual(spent.failureKind, 'throttle');
+    assert.equal(spent.quarantineHint, undefined);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a CLI that could not be started carries workerNotStarted on the verdict, and a started one does not', async () => {
+  const ctx = makeCtx();
+  try {
+    const missing = { ...streamJsonConnector(''), spawn: { cmd: [join(ctx.dir, 'no-such-cli')] } };
+    const v = await watchOnce(missing, 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    assert.equal(v.ok, false);
+    assert.match(v.why, /^spawn failed: /);
+    assert.equal(v.meta.workerNotStarted, true);
+    assert.equal(v.failureKind, undefined, 'the verdict itself is unchanged');
+    const started = await watchOnce(relayedConnector(relayedRows('## Completed\n\nDone and verified.', ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    assert.equal(Object.hasOwn(started.meta, 'workerNotStarted'), false);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('tool output quoting a usage limit neither kills nor quarantines', async () => {
   const ctx = makeCtx();
   try {

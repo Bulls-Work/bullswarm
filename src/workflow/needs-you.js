@@ -17,8 +17,9 @@ const LIST_CAP = 5;
 const EVIDENCE_ITEMS = 2;
 const REVIEW_REQUIREMENTS = 3;
 const OPTION_WIDTH = 17;
-// A step in one of these states is done with, so it waits on nothing.
-const FINISHED = new Set(['succeeded', 'failed', 'cancelled', 'interrupted', 'skipped']);
+// A step in one of these states is done with, so it waits on nothing. A step
+// a plan revision removed is gone from the run (F29).
+const FINISHED = new Set(['succeeded', 'failed', 'cancelled', 'interrupted', 'skipped', 'removed']);
 const CHECK_FAULT_LABEL = 'check could not run';
 
 const definitionOf = (state, id) => (state?.program?.actions ?? []).find((action) => action.id === id) ?? null;
@@ -53,8 +54,10 @@ function filesOf(attempt) {
 }
 
 // The step's current-definition attempts: the ones the kernel named on the
-// event, else the ones after the step's superseded count that had started by
+// event, else the ones after the step's superseded count that had finished by
 // the time the event was committed (a replay reads a state that moved on).
+// When none of the current definition's had, the step was rerun since: the
+// attempts finished by then are the definition that was current then (F28).
 function currentAttempts(state, stepId, attemptIds, committedAt) {
   const all = (state?.attempts ?? []).filter((attempt) => attempt?.actionId === stepId);
   if (Array.isArray(attemptIds) && attemptIds.length) {
@@ -66,8 +69,11 @@ function currentAttempts(state, stepId, attemptIds, committedAt) {
   const current = all.filter((attempt) => !(attempt.ordinal <= superseded));
   const at = Date.parse(committedAt ?? '');
   if (!Number.isFinite(at)) return current;
-  const before = current.filter((attempt) => !(Date.parse(attempt.finishedAt ?? attempt.startedAt ?? '') > at));
-  return before.length ? before : current;
+  const byThen = (list) => list.filter((attempt) => !(Date.parse(attempt.finishedAt ?? attempt.startedAt ?? '') > at));
+  const before = byThen(current);
+  if (before.length) return before;
+  const earlier = byThen(all);
+  return earlier.length ? earlier : current;
 }
 
 // Stage 2's F23 fact: the step declares evidence and its last attempt failed
@@ -111,13 +117,26 @@ function candidatePools(attempt) {
   return list.map((candidate) => (typeof candidate === 'string' ? candidate : candidate?.pool)).filter(Boolean);
 }
 
-function optionsFor({ token, stepId, pool, attempt, output }) {
-  const elsewhere = pool && candidatePools(attempt).some((name) => name !== pool);
+/** The two commands that change a step, each runnable as printed (F26). */
+export function changeStepCommands(token) {
+  return [`bullswarm workflow plan export ${token} --out plan.json`, `bullswarm workflow plan revise ${token} --program plan.json`];
+}
+
+// "Elsewhere" is decided over every current-definition attempt: a gate retry
+// is pinned to its pool and a process retry leaves out the pool it tried, so
+// the last attempt's list alone hides the pools the step could run on (F19).
+function rerunOption(token, stepId, pool, attempts) {
+  const elsewhere = pool && attempts.some((attempt) => candidatePools(attempt).some((name) => name !== pool));
+  return elsewhere
+    ? { rerunElsewhere: `bullswarm workflow step rerun ${token} ${stepId} --avoid ${pool}` }
+    : { retryHere: `bullswarm workflow step rerun ${token} ${stepId}` };
+}
+
+function optionsFor({ token, stepId, pool, attempts, output }) {
+  const [exportPlan, revisePlan] = changeStepCommands(token);
   return {
-    ...(elsewhere
-      ? { rerunElsewhere: `bullswarm workflow step rerun ${token} ${stepId} --avoid ${pool}` }
-      : { retryHere: `bullswarm workflow step rerun ${token} ${stepId}` }),
-    changeStep: `bullswarm workflow plan export ${token} --out plan.json → plan revise ${token} --program plan.json`,
+    ...rerunOption(token, stepId, pool, attempts),
+    changeStep: `${exportPlan}, edit it, then ${revisePlan}`,
     takeOver: output,
     acceptAnyway: `bullswarm workflow step accept ${token} ${stepId} --reason "…"`,
   };
@@ -188,10 +207,11 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
     evidence: failing.slice(0, EVIDENCE_ITEMS).map(evidenceItem),
     why: failing.length ? null : clip(payload.why ?? runtime?.lastFailure?.message ?? last?.why ?? 'no reason recorded'),
     evidenceNotRun: evidenceNotRun(definitionOf(state, stepId), failureKind, last),
-    attempts: attempts.map((attempt, index) => {
+    // The machine form keeps every handoff; the try line leaves out the
+    // one a same-pool retry implies (F30).
+    attempts: attempts.map((attempt) => {
       const how = attempt.retryOf?.how ?? null;
-      const previous = attempts[index - 1] ?? null;
-      const handoff = Boolean(attempt.handoff) && how !== 'same-pool' && (!previous || previous.pool !== attempt.pool);
+      const handoff = Boolean(attempt.handoff);
       return {
         id: attempt.id ?? `${stepId}-${attempt.ordinal}`, pool: attempt.pool ?? null, model: attempt.model ?? null,
         durationSec: durationSecOf(attempt), files: filesOf(attempt),
@@ -199,12 +219,18 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
       };
     }),
     ...neighbours(state, stepId),
-    options: optionsFor({ token: id, stepId, pool, attempt: last, output: takeOverText(last, runtime?.outputFile) }),
+    options: optionsFor({ token: id, stepId, pool, attempts, output: takeOverText(last, runtime?.outputFile) }),
   };
 }
 
 function lastAttemptOf(state, stepId) {
   return (state?.attempts ?? []).filter((attempt) => attempt?.actionId === stepId).at(-1) ?? null;
+}
+
+// A check step's current-definition attempts (the ones after its superseded count).
+function definitionAttempts(state, stepId) {
+  const superseded = runtimeOf(state, stepId)?.supersededAttempts ?? 0;
+  return (state?.attempts ?? []).filter((attempt) => attempt?.actionId === stepId && !(attempt.ordinal <= superseded));
 }
 
 function firstEvidenceLine(record) {
@@ -221,8 +247,8 @@ function reviewFacts(state, payload, id, flags) {
   const rounds = Array.isArray(loop?.rounds) ? loop.rounds : [];
   const round = rounds.find((entry) => entry.round === payload.round) ?? rounds.at(-1) ?? null;
   const verifyIds = round?.verifyActionIds ?? [];
-  const stepId = verifyIds.at(-1) ?? null;
-  if (!stepId) return null;
+  const lastVerify = verifyIds.at(-1) ?? null;
+  if (!lastVerify) return null;
   const repairs = rounds.filter((entry) => entry.round < (round?.round ?? Infinity) && entry.repairActionId);
   const lastRepair = repairs.at(-1)?.repairActionId ?? null;
   const failed = Array.isArray(payload.failed) ? payload.failed : round?.failed ?? [];
@@ -231,7 +257,7 @@ function reviewFacts(state, payload, id, flags) {
     const records = (state?.ledger?.requirements?.[requirementId]?.evidence ?? state?.ledger?.evidence ?? [])
       .filter((record) => record?.requirementId === requirementId && !record.stale);
     const record = records.filter((entry) => verifySet.has(entry.sourceAction)).at(-1) ?? records.at(-1) ?? null;
-    const judge = record?.sourceAction ?? stepId;
+    const judge = record?.sourceAction ?? lastVerify;
     const attempt = lastAttemptOf(state, judge);
     return {
       requirement: requirementId, step: judge,
@@ -239,8 +265,16 @@ function reviewFacts(state, payload, id, flags) {
       evidence: firstEvidenceLine(record),
     };
   });
+  // The block is about the step that judged the first failing requirement,
+  // not the round's last check: that one may have passed its own (F20).
+  // Other judges get their own rerun and accept lines.
+  const stepId = review[0]?.step ?? lastVerify;
   const verifyAttempt = lastAttemptOf(state, stepId);
   const reviewerPool = review[0]?.pool ?? verifyAttempt?.pool ?? null;
+  const judges = [];
+  for (const item of review) {
+    if (item.step !== stepId && !judges.some((entry) => entry.step === item.step)) judges.push(item);
+  }
   const repairAttempt = lastRepair ? lastAttemptOf(state, lastRepair) : null;
   const fixes = repairs.length;
   return {
@@ -261,10 +295,19 @@ function reviewFacts(state, payload, id, flags) {
       durationSec: durationSecOf(repairAttempt), files: filesOf(repairAttempt),
     } : null,
     ...neighbours(state, stepId),
-    options: optionsFor({
-      token: id, stepId, pool: reviewerPool, attempt: verifyAttempt,
-      output: `output: ${verifyAttempt?.outputFile ?? runtimeOf(state, stepId)?.outputFile ?? 'none recorded'}`,
-    }),
+    options: {
+      ...optionsFor({
+        token: id, stepId, pool: reviewerPool, attempts: definitionAttempts(state, stepId),
+        output: `output: ${verifyAttempt?.outputFile ?? runtimeOf(state, stepId)?.outputFile ?? 'none recorded'}`,
+      }),
+      ...(judges.length ? {
+        otherChecks: judges.map((item) => ({
+          step: item.step,
+          ...rerunOption(id, item.step, item.pool, definitionAttempts(state, item.step)),
+          acceptAnyway: `bullswarm workflow step accept ${id} ${item.step} --reason "…"`,
+        })),
+      } : {}),
+    },
   };
 }
 
@@ -287,12 +330,15 @@ function evidenceLines(item) {
   return [`  evidence  ${clip(text)}`, ...(item.tail ? [`            ${item.tail}`] : [])];
 }
 
-function tryLine(attempt, index) {
+function tryLine(attempt, index, attempts) {
   const tail = `${formatDuration(attempt.durationSec)} · ${plural(attempt.files, 'file')}`;
   if (attempt.retryOf === 'same-pool') return `  try ${index + 1}  same pool, failure attached · ${tail}`;
+  // A handoff to the pool that just failed is the same-pool retry's own.
+  const previous = attempts[index - 1] ?? null;
+  const handoff = attempt.handoff && (!previous || previous.pool !== attempt.pool);
   return `  try ${index + 1}  ${attempt.pool ?? '?'} · ${attempt.model ?? '?'} · ${tail}`
     + (attempt.retryOf === 'wait' ? ' · moved after a usage limit' : '')
-    + (attempt.handoff ? ' · handoff attached' : '');
+    + (handoff ? ' · handoff attached' : '');
 }
 
 function option(name, text) {
@@ -319,7 +365,7 @@ export function renderNeedsYou(facts, { terminal = false, next = null } = {}) {
   } else {
     if (facts.evidence?.length) for (const item of facts.evidence) lines.push(...evidenceLines(item));
     else lines.push(`  why       ${facts.why ?? 'no reason recorded'}${facts.evidenceNotRun ? ' · evidence not run' : ''}`);
-    facts.attempts.forEach((attempt, index) => lines.push(tryLine(attempt, index)));
+    facts.attempts.forEach((attempt, index, all) => lines.push(tryLine(attempt, index, all)));
   }
   const around = [
     facts.stillRunning?.length ? `still running: ${capped(facts.stillRunning)}` : null,
@@ -328,12 +374,20 @@ export function renderNeedsYou(facts, { terminal = false, next = null } = {}) {
   if (around.length) lines.push(`  ${around.join(' · ')}`);
   if (terminal) return lines;
   const options = facts.options ?? {};
+  const rerunLine = (entry) => (entry.rerunElsewhere ? option('rerun elsewhere', entry.rerunElsewhere)
+    : entry.retryHere ? option('retry here', entry.retryHere) : null);
+  const [exportPlan, revisePlan] = changeStepCommands(facts.token ?? '?');
   lines.push('  your call:');
-  if (options.rerunElsewhere) lines.push(option('rerun elsewhere', options.rerunElsewhere));
-  else if (options.retryHere) lines.push(option('retry here', options.retryHere));
-  lines.push(option('change the step', options.changeStep));
+  if (rerunLine(options)) lines.push(rerunLine(options));
+  lines.push(option('change the step', exportPlan));
+  lines.push(option('  then edit it', revisePlan));
   lines.push(option('take over', options.takeOver));
   lines.push(option('accept anyway', options.acceptAnyway));
+  for (const other of options.otherChecks ?? []) {
+    lines.push(`    also judged by ${other.step}:`);
+    if (rerunLine(other)) lines.push(rerunLine(other));
+    lines.push(option('accept anyway', other.acceptAnyway));
+  }
   if (next) lines.push(`  next: ${next}`);
   return lines;
 }
@@ -348,7 +402,8 @@ export function needsYouJson(facts) {
     return {
       ...common, variant: 'review', round: facts.round, fixes: facts.fixes, requirements: [...facts.requirements],
       review: facts.review.map((item) => ({ ...item })), fix: facts.fix ? { ...facts.fix } : null,
-      stillRunning: [...facts.stillRunning], waitingOnThis: [...facts.waitingOnThis], options: { ...facts.options },
+      stillRunning: [...facts.stillRunning], waitingOnThis: [...facts.waitingOnThis],
+      options: { ...facts.options, ...(facts.options.otherChecks ? { otherChecks: facts.options.otherChecks.map((entry) => ({ ...entry })) } : {}) },
     };
   }
   return {

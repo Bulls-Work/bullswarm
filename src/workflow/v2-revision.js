@@ -26,13 +26,14 @@
 
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
 import { ACTION_PROGRAM_SCHEMA_VERSION, validateActionProgram } from './action-validator.js';
 import { isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { discardEvidence } from './ledger.js';
 import { deliverSteering } from './steering.js';
 import { deriveV2LiveStages } from './v2-presentation.js';
+import * as v2State from './v2-state.js';
 import { v2LiveProgramRuntime, validateV2DurableState } from './v2-state.js';
 import { revisedVerifyRounds } from './verify-rounds.js';
 
@@ -189,6 +190,29 @@ function acceptedOn(runtime, requirement) {
     && String(entry.workRevision) === String(requirement.workRevision));
 }
 
+// F25: the retained private workspace of an isolated run's writer, from the
+// run directory its attempts live in (v2-runtime names it
+// `workspaces/<step>-attempt-<n>-<suffix>`); the latest attempt's wins.
+function retainedWorkspace(state, step) {
+  const file = (state.attempts ?? []).map((attempt) => attempt.taskFile ?? attempt.outputFile).find((path) => typeof path === 'string' && path.includes('/'));
+  if (!file) return null;
+  const root = join(dirname(file), 'workspaces');
+  let names;
+  try { names = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name); } catch { return null; }
+  const prefix = `${step}-attempt-`;
+  const ordinal = (name) => Number(name.slice(prefix.length).match(/^(\d+)-/)?.[1] ?? NaN);
+  const found = names.filter((name) => name.startsWith(prefix) && Number.isInteger(ordinal(name)))
+    .sort((left, right) => ordinal(left) - ordinal(right) || left.localeCompare(right));
+  return found.length ? join(root, found.at(-1)) : null;
+}
+
+// F21: a requirement entry keeps the reason and time of the accept that made
+// it. The keys written into state are the ones the state validator knows;
+// until it knows `reason` and `at`, entries keep today's `{id, workRevision}`.
+const ACCEPTANCE_ENTRY_KEYS = v2State.ACCEPTANCE_REQUIREMENT_FIELDS ?? new Set(['id', 'workRevision']);
+const storedAcceptanceEntry = (item) => Object.fromEntries(Object.entries(item)
+  .filter(([key, value]) => ACCEPTANCE_ENTRY_KEYS.has(key) && value !== undefined));
+
 /**
  * The `accept` entries of a `step accept` revision (stage-3 §2.8), checked
  * against the live state. Pure: returns the acceptances to apply, and pushes
@@ -249,7 +273,7 @@ function planAcceptances(state, request, desired, issues) {
     const requirementEntries = (ids) => ids.map((id) => ({ id, workRevision: requirements[id].workRevision }));
     if (status === 'failed') {
       if (isolated && !checks.size && (definition.ownedFiles ?? []).length) {
-        const where = attempts.at(-1)?.cwd ?? 'its private workspace';
+        const where = retainedWorkspace(state, step) ?? attempts.at(-1)?.cwd ?? 'its private workspace';
         issues.push(`run ${token} is isolated: ${step}'s work is in a retained workspace that was never merged back (${where}); merge it yourself, then accept`);
         continue;
       }
@@ -267,12 +291,16 @@ function planAcceptances(state, request, desired, issues) {
     // succeeded: only a check whose requirements are failing has anything to accept.
     const ids = named ?? failingIds;
     if (!ids.length) { issues.push(`step ${step} succeeded and no requirement it checks is failing; nothing to accept`); continue; }
-    const earlier = (runtime.acceptance?.requirements ?? []).filter((item) => requirements[item.id] && acceptedOn(runtime, requirements[item.id]) && !ids.includes(item.id));
+    // Earlier acceptances on this check stay, each with its own reason and time.
+    const earlier = (runtime.acceptance?.requirements ?? [])
+      .filter((item) => requirements[item.id] && acceptedOn(runtime, requirements[item.id]) && !ids.includes(item.id))
+      .map((item) => ({ ...clone(item), reason: item.reason ?? runtime.acceptance.reason, at: item.at ?? runtime.acceptance.at }));
     planned.push({
       step, reason, kind: 'requirements',
       attemptId: attempts.findLast((attempt) => attempt.status === 'succeeded')?.id ?? null,
       failureKind: null,
-      requirements: [...clone(earlier), ...requirementEntries(ids)],
+      requirements: [...earlier, ...requirementEntries(ids)],
+      accepted: [...ids],
     });
   }
   return planned;
@@ -408,7 +436,7 @@ export function applyV2Revision(state, planned, { request, at }) {
     const runtime = runtimeById.get(entry.step);
     const acceptance = {
       evidence: 'choice', reason: entry.reason, attemptId: entry.attemptId, failureKind: entry.failureKind, at, revision,
-      ...(entry.requirements ? { requirements: clone(entry.requirements) } : {}),
+      ...(entry.requirements ? { requirements: entry.requirements.map(storedAcceptanceEntry) } : {}),
     };
     if (entry.kind === 'step') {
       Object.assign(runtime, {

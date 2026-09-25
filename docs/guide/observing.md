@@ -551,6 +551,10 @@ bullswarm workflow watch ab12cd --verbose
 
 A usage-limit failure prints whether or not `--verbose` is given: a `⚠ <actionId> usage limit on <pool>` line with the pause deadline, then a `↺ <actionId> now on <pool> · <model>` line once the retry lands on another pool.
 
+In runs started by this version the usage-limit line ends with what follows, which never spends the step's retry: `moving to another pool (no retry spent)` when another pool can take the step now, `waiting for a pool` when it waits for a known return time (a `⧖ <step> waiting for quota` line follows), `no retry spent` when the event does not record which, and `back to you` when nothing retries it (an `act` step, or no known return time).
+
+When a step comes back to you the watch prints a needs-you block. With `--jsonl` the same block is one object whose `options` hold the commands: `rerunElsewhere` (`step rerun <id> <step> --avoid <pool>`) when another pool could run the step, else `retryHere` (`step rerun <id> <step>`); `changeStep` (`plan export …`, edit it, then `plan revise …`); `takeOver`; and `acceptAnyway`. A review block adds `otherChecks` when a second check also failed a requirement, one entry per check with its own rerun and accept commands. A step rerun or accept that reopens a cancelled run prints `run reopened from cancelled by a plan revision`, followed by `· not run again (act step, may have acted): <steps>` when an `act` step stays cancelled.
+
 ## Watch until trouble
 
 An agent that starts a run should start one background watch for that run and

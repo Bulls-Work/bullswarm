@@ -161,8 +161,14 @@ test('restart refuses a --pool the step\'s route does not allow, and writes noth
   for (const pool of ['codex', 'grok']) {
     const refused = await restartV2Step({ bullswarmDir: run.home, token: SHORT, stepId: 'verify', pool, poolNames, pools, waitMs: 0 });
     assert.deepEqual([refused.code, refused.status], [2, 'error'], pool);
-    assert.equal(refused.why, `step verify's route does not allow pool ${pool} (avoid codex · providers claude-code, codex); change the route or use bullswarm workflow step rerun ${SHORT} verify --avoid <pool>`);
+    // F27: it points at commands that work on a running step, never at step rerun (which refuses one).
+    assert.equal(refused.why, `step verify's route does not allow pool ${pool} (avoid codex · providers claude-code, codex); restart it on a pool the route allows: bullswarm workflow step restart ${SHORT} verify --pool claude-code (allowed: claude-code, claude-code:acme), or without --pool; or change the route: bullswarm workflow plan export ${SHORT} --out plan.json, edit it, then bullswarm workflow plan revise ${SHORT} --program plan.json`);
+    assert.doesNotMatch(refused.why, /step rerun/);
   }
+  // No configured pool passes the route: only the route change is suggested.
+  const onlyBlocked = [{ name: 'codex' }, { name: 'grok' }];
+  const stuck = await restartV2Step({ bullswarmDir: run.home, token: SHORT, stepId: 'verify', pool: 'grok', poolNames: onlyBlocked.map((pool) => pool.name), pools: onlyBlocked, waitMs: 0 });
+  assert.equal(stuck.why, `step verify's route does not allow pool grok (avoid codex · providers claude-code, codex); change the route: bullswarm workflow plan export ${SHORT} --out plan.json, edit it, then bullswarm workflow plan revise ${SHORT} --program plan.json`);
   assert.deepEqual(readStepRestarts(run.runDir), [], 'a refused restart writes no intent');
   const allowed = await restartV2Step({ bullswarmDir: run.home, token: SHORT, stepId: 'verify', pool: 'claude-code:acme', poolNames, pools, waitMs: 0 });
   assert.deepEqual([allowed.code, allowed.status, allowed.pool], [0, 'requested', 'claude-code:acme']);

@@ -99,7 +99,9 @@ author the graph.
   `workflow action show <id> <step>`. Passing checks read `proven by command`
   or `proven by schema`; a step without checks reads `proven by review` once
   a review passes every requirement it affects, `review pending` while one
-  still covers them, and `finished · unproven` otherwise. When you report the
+  still covers them, and `finished · unproven` otherwise. A step you accepted
+  reads `accepted by choice`, and the proof line counts it apart (`N accepted
+  by choice: <steps>`): a choice never counts as proven. When you report the
   outcome, quote the run's proof line as printed (`proof: …` at the end of
   watch, `# proof` in `runs result`) instead of paraphrasing it. Add a `check`
   step with its own evidence to prove finished work without rerunning it. An
@@ -217,9 +219,9 @@ A trouble line is a decision point:
 
 | Line | What it means | What to do |
 |---|---|---|
-| `✗ <step> needs you · …` | the step failed after its one automatic retry | choose one command in its `your call` block; act on that line and start the printed `next:` watch again |
-| `✗ <step> needs you · review failed …` | the fix and re-review still leave requirements failing | choose one command in its `your call` block; act on that line and start the printed `next:` watch again |
-| `⧖ <step> waiting for quota …` | no eligible pool can run it yet | do nothing for a short wait; for a long wait, change the step or lift the pool pause, as the following lines say |
+| `✗ <step> needs you · …` | the step failed after its one automatic retry | choose one option in its `your call` block (see "When a step needs you"), run it, and start the printed `next:` watch again |
+| `✗ <step> needs you · review failed …` | the fix and re-review still leave requirements failing | the same: choose one option for the check it names |
+| `⧖ <step> waiting for quota …` | no eligible pool can run it until a known time; it starts again by itself | do nothing for a short wait; for a long one choose a printed option (see "A waiting step") |
 | `× plan revision rejected …` | your revision was not applied | fix the issues it lists and revise again |
 | `⚠ <step> stalled on <pool> …` | the kernel stopped a silent worker | nothing: the retry runs; if it fails too, a needs-you block follows |
 | `⧖ pause requested …` | someone paused the run | `bullswarm workflow resume <shortId>` when it should go on |
@@ -234,6 +236,47 @@ only. Runs started before this version keep up to 3 review rounds. A full watch
 `✗ verify round 1 of 3 · 2 failed · repair next`, `↻ repair round 1 · 2
 requirements · repair-1`, and `◐ <step> returned early · N not done` for a step
 that succeeded with unfinished items.
+
+### When a step needs you
+
+A needs-you block is what the watch prints when a step comes back to you: it
+failed after its one automatic retry (or the header says `not retried`: an
+`act` step, a check that could not run, or no retry allowed), or a review still
+fails after its fix. It names what
+failed, each try, what is still running and what waits on it, then gives four
+options under `your call:` and the `next:` watch to start again. Choose one:
+
+| Printed option | When to choose it | What it runs |
+|---|---|---|
+| `rerun elsewhere` | another eligible pool may succeed | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>`; the pool stays in the step's route until a plan revise removes it |
+| `retry here` | printed instead when no other pool could run the step | `bullswarm workflow step rerun <shortId> <step>` |
+| `change the step` / `then edit it` | its prompt, evidence, dependencies or route needs changing | `bullswarm workflow plan export <shortId> --out plan.json`, edit plan.json, then `bullswarm workflow plan revise <shortId> --program plan.json` |
+| `take over` | the rest is small or needs something only you have | the line is `output: <path>` (and `diff: <path>` when there is one): read it and do the work yourself |
+| `accept anyway` | you choose to keep the failed result as it is | `bullswarm workflow step accept <shortId> <step> --reason "…"`: recorded as your choice; the run is not verified by it; rerunning the step undoes it |
+
+In a review block the step is the check that judged the failing requirement.
+When another check also failed one, it follows as `also judged by <check>:`
+with its own rerun and `accept anyway` lines. Run one option, then start the
+printed `next:` line again.
+
+### A waiting step
+
+`⧖ <step> waiting for quota · <pool> back at <time> (in <duration>)` (or
+`waiting for a pool`, or `first back: <pool> at …` when several pools could
+run it) means no pool can run the step until that time. It is not a failure
+and spends no retry: the step starts again by itself when the pool is back,
+and a full watch prints the line for every wait. `--until trouble` wakes on it
+only when the wait is longer than 30 minutes, and then these lines follow:
+
+| Printed option | When it is printed | What it runs |
+|---|---|---|
+| `or change the step:` / `then edit it:` | always | the two plan commands above |
+| `or lift the pause:` | a paused pool causes the wait | `bullswarm pools resume <pool>` |
+| `or run it elsewhere:` | a hold or 5-hour limit, when the step's route allows another pool | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
+
+Do nothing for a short wait. For a long one choose one printed option, or
+leave it waiting, and start the `next:` watch again. Do not use `resume` to
+wake a waiting step.
 
 ### A step that looks stale
 
@@ -272,14 +315,23 @@ succeeded. `verified` means every mandatory requirement passed its check,
 which can still miss bugs. Anything short of verified is followed by what is
 left: `step <id>: <status> (<kind>) — <why>` for each unfinished step,
 `requirement <id>: <status> — <why>` for each open requirement, and `steering
-not acted on:` for guidance that arrived too late.
+not acted on:` for guidance that arrived too late. Then `your call:` gives one
+command per option:
 
-| Option | When | What to do |
+| Printed option | When | What to do |
 |---|---|---|
-| rerun elsewhere | another eligible pool may succeed | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
-| change the step | its prompt, evidence, dependencies, or route needs changing | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` |
-| take over | the remaining work is small or needs something only you have | use the `output:` path printed in the block and do the work yourself |
-| accept anyway | you choose to keep a failed result or a failing requirement | `bullswarm workflow step accept <shortId> <step> --reason "…"`. It records evidence `choice`, never proof; rerunning the step undoes acceptance |
+| `continue` | the plan needs a fix, a new step, or a step redone | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` |
+| `retry` | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool | `bullswarm workflow resume <shortId>` |
+| `rerun` | a step failed (runs started by this version) | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]`, with its last attempt's handoff |
+| `accept` | you keep a failed step as it is (runs started by this version) | `bullswarm workflow step accept <shortId> <step> --reason "…"` |
+| `take over` | the rest is small, or needs something only you have (a logged-in browser, a credential, a decision for the user) | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |
+| `restart` | the goal or the approach was wrong | start a new run: `bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>` (`step restart` reruns one running step) |
+
+`retry` appears only when a step is retryable. `resume` on a finished run
+reruns exactly those steps and the steps blocked behind them. When nothing is
+retryable it prints `nothing to retry`, starts nothing, and exits 1. A step
+whose pools were all paused shows `its pool is back at <time>`; resuming
+before then fails it again at once.
 
 `resume` keeps the run's saved rules. It is not the way to rerun a failed gate
 in a new run: use `step rerun`, `step accept`, or plan revise. A quota wait with
@@ -304,13 +356,29 @@ bullswarm workflow runs result <shortId> --json --summary
 ```
 
 `callerDecision` lists each requirement still failing, the round that last
-judged it, the first line of its latest evidence, and one suggested `next`
-step. Choose one: take the work over, or add a step that fixes what `next`
-names through a plan revision (section 4) and let the changed check run again.
+judged it, the first line of its latest evidence, and a `next` line with your
+options. The text handback's `your call:` adds two for the check that judged
+it (runs started by this version):
+
+| Printed option | When | What to do |
+|---|---|---|
+| `rerun` | the reviewer may be wrong; judge it again on another pool | `bullswarm workflow step rerun <shortId> <check> --avoid <pool>` |
+| `accept` | you choose to keep the requirement as it is | `bullswarm workflow step accept <shortId> <check> --requirement <id> --reason "…"` |
+
+Or fix it: add a step that fixes what `next` names through a plan revision
+(section 4) and let the changed check run again, or take the work over.
 `verifyRounds` in the same output gives each verify round and each repair its
 wall minutes, pool and cost, so you can see what the loop spent. Every step's
 `returnedEarly` items are in `action show`; a step that returned early left
 its unfinished work in `## Not done`, which is where a manual fix starts.
+
+**An accept is a choice, never proof.** `step accept` records evidence
+`choice`: the step's dependents run, but it never counts as proven, and an
+accepted requirement stays failed, so the run stays not verified. It reads
+`accepted by choice` on the step's line, `requirement <id>: failed · accepted
+by choice "<reason>"` in the handback, and `N accepted by choice` in the proof
+line. Report it as your decision, never as verification. Rerunning the step
+undoes it.
 
 Then read the real outputs and artifacts and probe the important edge cases
 yourself. Shared files remain after failure or cancellation. Exit 0 can mean

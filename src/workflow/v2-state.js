@@ -30,6 +30,9 @@ const ACTION_STATE_FIELDS = new Set([
 ]);
 const ACCEPTANCE_FIELDS = new Set(['evidence', 'reason', 'attemptId', 'failureKind', 'at', 'revision', 'requirements']);
 const ACCEPTANCE_REASON_MAX = 500;
+// One accepted requirement on a check (F21): the reason and time of the accept
+// that added it, when a later accept on the same check carried it forward.
+export const ACCEPTANCE_REQUIREMENT_FIELDS = new Set(['id', 'workRevision', 'reason', 'at']);
 const PAUSE_FIELDS = new Set(['requestedAt', 'mode', 'source', 'pausedAt']);
 const REVISION_RECORD_FIELDS = new Set([
   'id', 'status', 'source', 'queuedAt', 'processedAt', 'summary', 'baseRevision',
@@ -820,11 +823,18 @@ function validateAcceptance(value, at) {
     for (const [index, entry] of value.requirements.entries()) {
       const entryAt = `${at}.requirements[${index}]`;
       object(entry, entryAt);
-      noUnknown(entry, new Set(['id', 'workRevision']), entryAt);
+      noUnknown(entry, ACCEPTANCE_REQUIREMENT_FIELDS, entryAt);
       requiredString(entry.id, `${entryAt}.id`);
       if (seen.has(entry.id)) fail(`${at}.requirements must not repeat ${entry.id}`);
       seen.add(entry.id);
       if ((typeof entry.workRevision !== 'string' && typeof entry.workRevision !== 'number') || entry.workRevision === '') fail(`${entryAt}.workRevision must be a string or number`);
+      if (entry.reason !== undefined && (typeof entry.reason !== 'string' || !entry.reason.trim() || entry.reason.length > ACCEPTANCE_REASON_MAX || /[\r\n]/.test(entry.reason))) {
+        fail(`${entryAt}.reason must be one line of 1 to ${ACCEPTANCE_REASON_MAX} characters`);
+      }
+      if (entry.at !== undefined) {
+        timestamp(entry.at, `${entryAt}.at`);
+        if (entry.at === null) fail(`${entryAt}.at must be a timestamp`);
+      }
     }
   }
 }

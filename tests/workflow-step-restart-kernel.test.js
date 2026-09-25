@@ -16,7 +16,8 @@ import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { reviseV2Program, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action, readStepRestarts, requestStepRestart, stepRestartPath } from '../src/workflow/v2-dispatch.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput, queueRevisionRequest } from '../src/workflow/v2-revision.js';
-import { restartV2Step } from '../src/workflow/cli.js';
+import { acceptV2Step, rerunV2Step, restartV2Step, stepReopenedLines } from '../src/workflow/cli.js';
+import { notableWatchEvents, renderWatchEvent } from '../src/workflow/watch-cli.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
 const work = (id, options = {}) => ({
@@ -368,4 +369,143 @@ test('step accept through the live kernel and through an offline apply: step.acc
   assert.equal(offlineEvents.at(-1).type, 'step.accepted');
   assert.deepEqual(offlineEvents.at(-1).payload, { actionId: 'a', reason: 'shipped by hand', requirements: null });
   assert.equal(offlineEvents.at(-2).type, 'program.revised');
+});
+
+// F22 (D32, P3): reopening a cancelled run with a single-step verb.
+const actStep = (id) => work(id, { role: 'act', lane: 'analyze', deliverable: 'outward', ownedFiles: [] });
+const cancelRun = (runDir) => writeFileSync(join(runDir, 'cancellation.json'), JSON.stringify({ requested: true, requestedAt: new Date().toISOString(), reason: 'caller cancelled' }));
+const statuses = (runDir) => Object.fromEntries(readState(runDir).actions.map((action) => [action.id, action.status]));
+
+test('step rerun on a cancelled run never runs again an act step the cancellation stopped after its worker started: it stays cancelled and is listed (F22)', async (t) => {
+  const f = fixture(t);
+  const ctl = controller();
+  for (const id of ['sendit', 'other2', 'other3']) ctl.hold(id);
+  const runId = 'wf-f22rr-abcdef';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  const kernel = start(f, runId, [actStep('sendit'), work('other2'), work('other3')], ctl);
+  const cancelled = await guarded(runDir, kernel, async () => {
+    await until(() => ['sendit', 'other2', 'other3'].every((id) => ctl.count(id) === 1), 'all three workers started');
+    cancelRun(runDir);
+    return kernel;
+  });
+  assert.equal(cancelled.result.status, 'cancelled');
+  assert.deepEqual(statuses(runDir), { sendit: 'cancelled', other2: 'cancelled', other3: 'cancelled' });
+
+  const rerun = await rerunV2Step({ bullswarmDir: f.bullswarmDir, token: runId, stepId: 'other2', waitMs: 0 });
+  assert.deepEqual([rerun.code, rerun.status, rerun.appliedBy], [0, 'applied', 'offline']);
+  const reopened = readEvents(runDir).find((event) => event.type === 'workflow.reopened').payload;
+  assert.deepEqual([reopened.previousStatus, reopened.requeued, reopened.keptCancelled], ['cancelled', ['other3'], ['sendit']]);
+  // Listed to the caller: the verb returns it and prints it.
+  assert.deepEqual(rerun.reopened, { previousStatus: 'cancelled', archivedResult: reopened.archivedResult, requeued: ['other3'], keptCancelled: ['sendit'] });
+  assert.deepEqual(stepReopenedLines(rerun.reopened), [
+    'reopened the cancelled run; its earlier result is archived; running again: other3',
+    'not run again (act step, may have acted): sendit',
+  ]);
+  // The watch's reopened line lists it too.
+  const { notable } = notableWatchEvents({ events: readEvents(runDir).filter((event) => event.type === 'workflow.reopened'), state: readState(runDir) });
+  assert.deepEqual(notable.map((event) => [event.type, event.keptCancelled]), [['run.reopened', ['sendit']]]);
+  assert.match(renderWatchEvent(notable[0]), /run reopened from cancelled by a plan revision · not run again \(act step, may have acted\): sendit$/);
+  assert.deepEqual(statuses(runDir), { sendit: 'cancelled', other2: 'pending', other3: 'pending' });
+
+  const resumed = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [],
+    dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
+  });
+  assert.equal(ctl.count('sendit'), 1, 'the act step\'s worker ran once');
+  assert.deepEqual([ctl.count('other2'), ctl.count('other3')], [2, 2]);
+  assert.deepEqual(statuses(runDir), { sendit: 'cancelled', other2: 'succeeded', other3: 'succeeded' });
+  assert.equal(resumed.result.status, 'partial');
+});
+
+test('step accept on a cancelled run keeps a started act step cancelled too; an act step cancelled before any worker of it started is requeued (F22)', async (t) => {
+  const f = fixture(t);
+  const ctl = controller();
+  const failing = new Set(['broken']);
+  const dispatch = async (options) => {
+    if (!failing.delete(options.action.id)) return ctl.dispatch(options);
+    const files = options.paths(1);
+    const record = { ordinal: 1, pool: 'fixture', model: 'fixture-model', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
+    options.onAttempt?.('started', record);
+    writeFileSync(files.outFile, 'nearly');
+    Object.assign(record, { status: 'failed', finishedAt: new Date().toISOString(), failureKind: 'semantic', why: 'the report says it is incomplete' });
+    options.onAttempt?.('finished', record);
+    return { ok: false, status: 'failed', failureKind: 'semantic', attempts: [record], verdict: { ok: false, why: record.why } };
+  };
+  ctl.hold('sendit');
+  const runId = 'wf-f22ac-abcdef';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  // `later` is an act step that only starts after sendit: the cancellation
+  // stops it before any worker of it ran.
+  const kernel = runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
+    initialPlannerResponse: initial([work('broken'), actStep('sendit'), { ...actStep('later'), dependsOn: ['sendit'] }]),
+    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+  });
+  const cancelled = await guarded(runDir, kernel, async () => {
+    await until(() => ctl.count('sendit') === 1 && statuses(runDir).broken === 'failed', 'sendit running, broken failed');
+    cancelRun(runDir);
+    return kernel;
+  });
+  assert.equal(cancelled.result.status, 'cancelled');
+  assert.deepEqual(statuses(runDir), { broken: 'failed', sendit: 'cancelled', later: 'cancelled' });
+
+  const accepted = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token: runId, stepId: 'broken', reason: 'fine for now', waitMs: 0 });
+  assert.deepEqual([accepted.code, accepted.status, accepted.appliedBy], [0, 'applied', 'offline']);
+  const reopened = readEvents(runDir).find((event) => event.type === 'workflow.reopened').payload;
+  assert.deepEqual([reopened.requeued, reopened.keptCancelled], [['later'], ['sendit']]);
+  assert.deepEqual([accepted.reopened.requeued, accepted.reopened.keptCancelled], [['later'], ['sendit']]);
+  assert.deepEqual(stepReopenedLines({ previousStatus: 'completed', requeued: ['a'] }), ['reopened the completed run; its earlier result is archived; running again: a']);
+
+  const resumed = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [],
+    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+  });
+  assert.equal(ctl.count('sendit'), 1, 'the act step\'s worker ran once');
+  assert.equal(ctl.count('later'), 0, 'blocked behind the cancelled act step');
+  assert.deepEqual(statuses(runDir), { broken: 'succeeded', sendit: 'cancelled', later: 'blocked' });
+  assert.equal(resumed.result.status, 'partial');
+});
+
+test('a second requirement accept on the same check: its step.accepted names only the requirement it added (F21)', async (t) => {
+  const f = fixture(t);
+  const goalDocument = createV2GoalDocument({
+    goal: 'Deliver alpha and beta', cwd: f.workspace,
+    requirements: [{ id: 'alpha', text: 'alpha.txt is right' }, { id: 'beta', text: 'beta.txt is right' }],
+    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
+  });
+  const ctl = controller();
+  const dispatch = async (options) => {
+    if (!options.action.evidenceFor.length) return ctl.dispatch(options);
+    const files = options.paths(1);
+    const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
+    writeFileSync(candidatePath, JSON.stringify({ schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: Object.fromEntries(options.action.evidenceFor.map((id) => [id, { status: 'failed', evidence: [`${id}.txt is wrong`], concerns: [] }])) }));
+    const record = { ordinal: 1, pool: 'fixture', model: 'fixture-model', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
+    options.onAttempt?.('started', record);
+    writeFileSync(files.outFile, 'judged');
+    Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString() });
+    const verdict = { ok: true, structured: options.outputValidator('prose'), outFile: files.outFile };
+    options.onAttempt?.('finished', record, verdict);
+    return { ok: true, status: 'succeeded', attempts: [record], verdict };
+  };
+  const runId = 'wf-f21acc-abcdef';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  const planned = initial([
+    work('build', { affects: ['alpha', 'beta'] }),
+    work('check', { dependsOn: ['build'], affects: [], ownedFiles: [], lane: 'analyze', evidenceFor: ['alpha', 'beta'] }),
+  ]);
+  planned.program.defaults = { verifyRounds: 0 };
+  const run = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument, pools: [], runId, initialPlannerResponse: planned,
+    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+  });
+  assert.deepEqual(Object.values(run.state.ledger.requirements).map((entry) => entry.status), ['failed', 'failed']);
+  for (const id of ['alpha', 'beta']) {
+    const accepted = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token: runId, stepId: 'check', reason: `${id} is fine for now`, requirements: [id], waitMs: 0 });
+    assert.deepEqual([accepted.code, accepted.status, accepted.requirements], [0, 'applied', [id]], id);
+  }
+  const events = readEvents(runDir).filter((event) => event.type === 'step.accepted').map((event) => event.payload);
+  assert.deepEqual(events, [
+    { actionId: 'check', reason: 'alpha is fine for now', requirements: ['alpha'] },
+    { actionId: 'check', reason: 'beta is fine for now', requirements: ['beta'] },
+  ]);
 });

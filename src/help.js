@@ -1293,6 +1293,7 @@ const workflowPlanReviseText = rich({
   ],
   safety: [
     'checked against the run before anything is written: an invalid program, an unknown rerun id, a stale base revision, or a revision that changes nothing exits 2 and leaves the run untouched',
+    'the route of every step the revision starts again (added, changed, restored, rerun, or downstream of those) is checked against the configured pools; a pool or provider that is not configured, or a route no pool can run, exits 2',
     'a running agent whose step is amended, removed, rerun, or downstream of such a step is stopped; files it already changed stay in the workspace, so plan a step that repairs or reverts them when that matters',
     'with no live kernel (paused, left waiting by an older version, interrupted, or finished) the revision is applied here and the kernel is relaunched detached, except for a paused run',
   ],
@@ -1614,7 +1615,7 @@ const workflowStepRestartText = rich({
     { name: '<step>', desc: 'the running step (action id)' },
   ],
   options: [
-    { flag: '--pool <pool>', desc: 'run the next attempt on this configured pool only; it fails with no eligible pool rather than move elsewhere', default: 'normal routing' },
+    { flag: '--pool <pool>', desc: 'run the next attempt on this configured pool only; it fails with no eligible pool rather than move elsewhere. A pool the step\'s route does not allow exits 2 and names the pools it allows', default: 'normal routing' },
     { flag: '--wait <seconds>', desc: 'how long to wait for the kernel to stop the attempt and requeue the step', default: '60' },
     { flag: '--json', desc: 'machine-readable result', default: 'human text' },
   ],
@@ -1653,6 +1654,7 @@ const workflowStepRerunText = rich({
     'writes a plan revision into the run and one restart intent (restart-<step>.json) carrying the handoff; a rejected revision leaves the run unchanged and removes the intent',
     'refused on a running step (use step restart), on a blocked step (act on the failed dependency first), and on a step that has not run yet unless --avoid is given',
     'exit 2 when a pool is unknown, when avoiding it leaves the step\'s route.pools.use empty, or when no configured pool could run the step after avoiding it',
+    'the step\'s route is checked against the configured pools on every rerun, with or without --avoid: a pool or provider that is not configured, or a route no pool can run, is rejected with exit 2 and nothing is written',
     'dispatches the step again (and anything that depends on it) on the run\'s kernel',
   ],
   examples: [

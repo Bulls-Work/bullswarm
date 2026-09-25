@@ -20,13 +20,15 @@ import { isDeliveredWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { createStaleProbe } from '../lib/stale.js';
 import { declaredEvidence } from './step-vocabulary.js';
-import { needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
+import { changeStepCommands, needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
 
 // The needs-you facts ride on the notable under a symbol: the JSONL object
 // carries only needsYouJson's fields, and the human block renders from these.
 const NEEDS_YOU_FACTS = Symbol('needsYouFacts');
 // The run id a line's commands name; kept out of the JSONL object likewise.
 const RUN_TOKEN = Symbol('runToken');
+// The waiting step's route allows only the pool it waits on (not JSONL).
+const ROUTE_ONLY = Symbol('routeOnly');
 // A wait whose return is further away than this is the caller's decision (D24).
 const LONG_WAIT_MS = 30 * 60_000;
 
@@ -558,8 +560,10 @@ export function notableWatchEvents({
         until: quotaDeadlineIso(bullswarmDir, pool, why),
         proof: coreQuotaPauseProof(bullswarmDir, pool),
         willRetry: payload.willRetry === true,
-        // A marked (stage-3) run moves without spending the retry, or waits.
+        // A marked (stage-3) run moves without spending the retry, or waits;
+        // what the dispatcher decided is on the event when it recorded it (F23).
         ...(payload.failureRule === true ? { failureRule: true } : {}),
+        ...(['move', 'wait'].includes(payload.quotaNext ?? record?.quotaNext) ? { quotaNext: payload.quotaNext ?? record.quotaNext } : {}),
       });
       rememberHandoff();
       moving.set(actionId, true);
@@ -713,7 +717,11 @@ export function notableWatchEvents({
         notable.push({ type: 'pause.lifted', requeued: payload.requeued ?? [] });
         break;
       case 'workflow.reopened':
-        notable.push({ type: 'run.reopened', previousStatus: payload.previousStatus ?? null });
+        notable.push({
+          type: 'run.reopened', previousStatus: payload.previousStatus ?? null,
+          // F22: an act step the cancellation stopped after its worker started stays cancelled.
+          ...(Array.isArray(payload.keptCancelled) && payload.keptCancelled.length ? { keptCancelled: [...payload.keptCancelled] } : {}),
+        });
         break;
       case 'step.restarted':
         staleReported.delete(payload.attemptId);
@@ -749,6 +757,9 @@ export function notableWatchEvents({
           pools: pools.map((entry) => (typeof entry === 'string' ? entry : entry?.pool)).filter(Boolean),
           reason: payload.reason ?? null,
           waitSec: secondsUntil(until, Date.parse(event.committedAt ?? '') || nowMs),
+          // Whether `step rerun --avoid <pool>` would be refused because the
+          // step's route allows only the pools it waits on (F24).
+          ...(routeAllowsOnly(state, payload.actionId, pools.map((entry) => (typeof entry === 'string' ? entry : entry?.pool))[0]) ? { [ROUTE_ONLY]: true } : {}),
           [RUN_TOKEN]: token,
         });
         break;
@@ -888,6 +899,24 @@ export function watchTrouble(event, { program = false } = {}) {
   }
 }
 
+// A marked run's quota line says what follows (F23): the dispatcher's
+// recorded decision when the event has it; without it, a retry promised is
+// only known to spend nothing, and no retry sends the step to the caller.
+function markedQuotaTail(event) {
+  if (!event.willRetry) return 'back to you';
+  if (event.quotaNext === 'move') return 'moving to another pool (no retry spent)';
+  if (event.quotaNext === 'wait') return 'waiting for a pool';
+  return 'no retry spent';
+}
+
+// True when the step's route.pools.use names only `pool`: avoiding it leaves
+// nothing, and step rerun refuses it.
+function routeAllowsOnly(state, stepId, pool) {
+  const definition = (state?.program?.actions ?? []).find((action) => action.id === stepId);
+  const use = definition?.route?.pools?.use;
+  return Boolean(pool) && Array.isArray(use) && use.length > 0 && use.every((name) => name === pool);
+}
+
 /** One notable event as one human line. `now` anchors the attempt.quota
  * deadline's local-vs-ISO formatting; it defaults to wall-clock time but the
  * watch loop threads its injectable clock through so it stays deterministic. */
@@ -902,10 +931,13 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
       const lines = [`${glyphs().waiting} ${event.actionId} waiting for ${event.reason === 'bench' ? 'a pool' : 'quota'} · `
         + `${(event.pools ?? []).length > 1 ? `first back: ${pool} at ${back}` : `${pool} back at ${back}`}`];
       if (untilMode || (Number.isFinite(event.waitSec) && event.waitSec * 1000 > LONG_WAIT_MS)) {
-        lines.push(`  or change the step: bullswarm workflow plan export ${token} --out plan.json → plan revise ${token} --program plan.json`);
-        lines.push(event.reason === 'quota' || event.reason === 'bench'
-          ? `  or lift the pause:  bullswarm pools resume ${pool}`
-          : `  or run it elsewhere: bullswarm workflow step rerun ${token} ${event.actionId} --avoid ${pool}`);
+        // Every printed command runs as printed (F26).
+        const [exportPlan, revisePlan] = changeStepCommands(token);
+        lines.push(`  or change the step: ${exportPlan}`);
+        lines.push(`    then edit it:     ${revisePlan}`);
+        if (event.reason === 'quota' || event.reason === 'bench') lines.push(`  or lift the pause:  bullswarm pools resume ${pool}`);
+        // A step whose route allows only this pool cannot avoid it (F24).
+        else if (!event[ROUTE_ONLY]) lines.push(`  or run it elsewhere: bullswarm workflow step rerun ${token} ${event.actionId} --avoid ${pool}`);
       }
       return lines.join('\n');
     }
@@ -974,8 +1006,7 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
       return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · ` +
         `paused until ${formatDeadline(event.until, now)} · `
         + (event.proof ? `${event.proof} · ` : '')
-        + (event.failureRule
-          ? (event.willRetry ? 'moving to another pool (no retry spent)' : 'waiting for a pool')
+        + (event.failureRule ? markedQuotaTail(event)
           : (event.willRetry ? 'retrying on another pool' : 'no retry left'));
     case 'attempt.moved':
       return `${glyphs().reroute} ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
@@ -1009,7 +1040,7 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
     case 'pause.lifted':
       return `${glyphs().started} pause lifted · work continues`;
     case 'run.reopened':
-      return `${glyphs().started} run reopened from ${event.previousStatus ?? 'a finished state'} by a plan revision`;
+      return `${glyphs().started} run reopened from ${event.previousStatus ?? 'a finished state'} by a plan revision${event.keptCancelled?.length ? ` · not run again (act step, may have acted): ${event.keptCancelled.join(', ')}` : ''}`;
     case 'verify.round': {
       const head = `verify round ${event.round} of ${event.of}`;
       if (event.stage === 'started') return `${glyphs().evidence} ${head} · ${event.toJudge} to ${event.round === 1 ? 'judge' : 're-check'}`;

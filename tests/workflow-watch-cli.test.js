@@ -399,18 +399,41 @@ test('a waiting step prints one line; more than 30 minutes away it adds the opti
   const hold = render(waiting(120, 'hold'));
   assert.equal(watchTrouble(hold.notable), 'waiting');
   assert.deepEqual(hold.text.split('\n').slice(1), [
-    `  or change the step: bullswarm workflow plan export ${SHORT} --out plan.json → plan revise ${SHORT} --program plan.json`,
+    `  or change the step: bullswarm workflow plan export ${SHORT} --out plan.json`,
+    `    then edit it:     bullswarm workflow plan revise ${SHORT} --program plan.json`,
     `  or run it elsewhere: bullswarm workflow step rerun ${SHORT} verify --avoid pool-a`,
   ]);
   const paused = render(waiting(120, 'quota', ['pool-a', 'pool-b']));
   assert.match(paused.text.split('\n')[0], new RegExp(`^⧖ verify waiting for quota · first back: pool-a at ${back(120)} \\(in 2h00m\\)$`));
-  assert.equal(paused.text.split('\n')[2], '  or lift the pause:  bullswarm pools resume pool-a');
+  assert.equal(paused.text.split('\n')[3], '  or lift the pause:  bullswarm pools resume pool-a');
   assert.match(render(waiting(10, 'bench')).text, /^⧖ verify waiting for a pool · /);
   // In --until modes the option lines follow even a short wait.
   const [shortNotable] = notableWatchEvents({ events: [waiting(10, 'hold')], state }).notable;
-  assert.equal(renderWatchEvent(shortNotable, { now: Date.parse(committedAt), untilMode: true }).split('\n').length, 3);
+  assert.equal(renderWatchEvent(shortNotable, { now: Date.parse(committedAt), untilMode: true }).split('\n').length, 4);
   // The JSONL object carries no run token of its own.
   assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(hold.notable))), ['type', 'actionId', 'until', 'pools', 'reason', 'waitSec']);
+});
+
+// F24: a hold on the only pool the step's route allows offers no --avoid
+// command, because step rerun refuses it (exit 2).
+test('a waiting step whose route allows only that pool is not offered `run it elsewhere`', () => {
+  const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
+  const committedAt = '2026-09-24T01:00:00.000Z';
+  const event = (pools) => ({
+    type: 'action.waiting', committedAt,
+    payload: { actionId: 'verify', until: new Date(Date.parse(committedAt) + 120 * 60_000).toISOString(), pools, reason: '5h-limit' },
+  });
+  const text = (pools) => renderWatchEvent(notableWatchEvents({ events: [event(pools)], state }).notable[0], { now: Date.parse(committedAt) });
+  state.program.actions.find((action) => action.id === 'verify').route = { pools: { use: ['pool-a'] } };
+  const only = text(['pool-a']).split('\n');
+  assert.equal(only.some((line) => line.includes('--avoid')), false);
+  assert.equal(only[1], `  or change the step: bullswarm workflow plan export ${SHORT} --out plan.json`);
+  // A route that allows another pool keeps the option.
+  state.program.actions.find((action) => action.id === 'verify').route = { pools: { use: ['pool-a', 'pool-b'] } };
+  assert.equal(text(['pool-a']).split('\n').at(-1), `  or run it elsewhere: bullswarm workflow step rerun ${SHORT} verify --avoid pool-a`);
+  // The JSONL object does not grow.
+  state.program.actions.find((action) => action.id === 'verify').route = { pools: { use: ['pool-a'] } };
+  assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(notableWatchEvents({ events: [event(['pool-a'])], state }).notable[0]))), ['type', 'actionId', 'until', 'pools', 'reason', 'waitSec']);
 });
 
 test('an accepted step, accepted requirements, and the plan revised `accepted` part', () => {

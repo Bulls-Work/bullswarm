@@ -273,23 +273,41 @@ test('F16: near the byte budget, the proof object never costs a handback line', 
 });
 
 // Stage 3 (§2.9): a marked run's handback carries each failed step's retries
-// and the rerun/accept verbs at every fit level, and the proof still never
-// costs a handback line.
-test('stage 3: retries and the caller verbs survive every fit level; the proof never costs a handback line', () => {
+// and the rerun/accept verbs wherever the summary has room for them, and the
+// proof never costs a handback line where stage 2's summary fits. F32: the
+// stage-3 fields never push the summary over the budget where the same run's
+// stage-2 summary fits, and never past it where that one runs over; they are
+// shed before a handback line is.
+test('stage 3: retries and the caller verbs are kept where there is room, shed before a handback line, never over the stage-2 size', () => {
   const STAGE3 = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
-  for (const loop of [false, true]) for (let padding = 0; padding <= 3000; padding += 50) {
+  const size = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+  let kept = 0;
+  let shed = 0;
+  for (const loop of [false, true]) for (let padding = 0; padding <= 3000; padding += 10) {
     const { envelope, state } = nearBudgetRun(padding, { loop });
+    const stage2 = summarizeV2Result(envelope, state, { runDir: '/runs/acme', features: { deliverableGate: 1, proofLabels: 1 } });
     envelope.handback.unfinished[0].retries = 1;
     const unlabelled = summarizeV2Result(envelope, state, { runDir: '/runs/acme', features: { failureRule: 1, reviewPlacement: 'caller' } });
     const fresh = summarizeV2Result(envelope, state, { runDir: '/runs/acme', features: STAGE3 });
-    // The smallest levels list fewer steps; a listed failed step keeps its count.
-    const listed = fresh.handback.unfinished.find((entry) => entry.id === 'integrate');
-    if (listed) assert.equal(listed.retries, 1, `padding ${padding}`);
-    assert.match(fresh.handback.options.rerun, /^bullswarm workflow step rerun near01 integrate \[--avoid <pool>\]/);
-    assert.match(fresh.handback.options.accept, /^bullswarm workflow step accept near01 integrate --reason "…"/);
+    if (size(stage2) < 4096) assert.ok(size(fresh) < 4096, `padding ${padding}: ${size(fresh)} bytes must fit where stage 2's ${size(stage2)} does`);
+    else assert.ok(size(fresh) <= size(stage2), `padding ${padding}: ${size(fresh)} bytes, stage 2 ${size(stage2)}`);
+    // The stage-3 fields go before a handback line: the same steps as stage 2 lists.
+    assert.deepEqual(fresh.handback.unfinished.map((entry) => entry.id), stage2.handback.unfinished.map((entry) => entry.id), `padding ${padding}`);
     const lines = formatV2HandbackLines(fresh);
-    assert.deepEqual(lines, formatV2HandbackLines(unlabelled), `padding ${padding}: the same handback lines with and without proof labels`);
-    const step = lines.find((line) => line.startsWith('  step integrate:'));
-    if (step) assert.match(step, /^ {2}step integrate: failed \(quota\) after 1 retry/);
+    // Stage 2's lines: the stage-3 verbs and retry counts are what gives way.
+    const steps = (list) => list.filter((line) => !/^ {2}(rerun|accept) /.test(line)).map((line) => line.replace(/ after \d+ retr(?:y|ies)/, ''));
+    if (size(stage2) < 4096) assert.deepEqual(steps(lines), steps(formatV2HandbackLines(unlabelled)), `padding ${padding}: the same handback lines with and without proof labels`);
+    // With room for them, the verbs and the count stay whole.
+    if (size(stage2) + 250 < 4096) {
+      kept += 1;
+      assert.equal(fresh.handback.unfinished.find((entry) => entry.id === 'integrate').retries, 1, `padding ${padding}`);
+      assert.equal(fresh.handback.options.rerun, "bullswarm workflow step rerun near01 integrate [--avoid <pool>] (runs it again with its last attempt's handoff)");
+      assert.equal(fresh.handback.options.accept, 'bullswarm workflow step accept near01 integrate --reason "…" (recorded as your choice, never proof)');
+      assert.match(lines.find((line) => line.startsWith('  step integrate:')), /^ {2}step integrate: failed \(quota\) after 1 retry/);
+    }
+    if (!fresh.handback.options.rerun) shed += 1;
+    // A failed step is never hidden in the text (L2).
+    assert.ok(lines.some((line) => line.startsWith('  step integrate: failed')), `padding ${padding}`);
   }
+  assert.ok(kept > 0 && shed > 0, `both cases are exercised (${kept} kept, ${shed} shed)`);
 });

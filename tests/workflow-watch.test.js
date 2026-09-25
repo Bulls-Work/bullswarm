@@ -89,18 +89,28 @@ test("watch renders retry wording from the dispatcher's willRetry fact", () => {
 });
 
 test('stage 3: a marked run\'s attempt.quota tail moves without spending the retry, or waits; a saved run reads as before', () => {
-  const quota = (willRetry, failureRule) => renderWatchEvent({
+  const quota = (willRetry, failureRule, quotaNext) => renderWatchEvent({
     type: 'attempt.quota', actionId: 'write-report', pool: 'codex', until: '2026-09-17T03:00:00.000Z', willRetry,
-    ...(failureRule ? { failureRule: true } : {}),
+    ...(failureRule ? { failureRule: true } : {}), ...(quotaNext ? { quotaNext } : {}),
   }, { now: Date.parse('2026-09-17T02:00:00.000Z') });
-  assert.match(quota(true, true), /· moving to another pool \(no retry spent\)$/);
-  assert.match(quota(false, true), /· waiting for a pool$/);
+  // F23: the tail follows the dispatcher's decision, not willRetry alone.
+  assert.match(quota(true, true, 'move'), /· moving to another pool \(no retry spent\)$/);
+  assert.match(quota(true, true, 'wait'), /· waiting for a pool$/);
+  assert.doesNotMatch(quota(true, true, 'wait'), /moving to another pool/);
+  assert.match(quota(true, true), /· no retry spent$/, 'no recorded decision: only what is known');
+  assert.match(quota(false, true), /· back to you$/, 'no retry: the step goes to the caller, it does not wait');
   assert.match(quota(true, false), /retrying on another pool$/);
   // The notable carries the flag only when the kernel's payload does.
   const state = { config: { settings: { executionMode: 'program' } }, program: { actions: [] }, actions: [], attempts: [] };
   const finished = (extra) => ({ type: 'attempt.finished', payload: { actionId: 'a', attemptId: 'a-1', status: 'failed', failureKind: 'quota', willRetry: true, pool: 'codex', ...extra } });
   assert.equal(notableWatchEvents({ events: [finished({ failureRule: true })], state }).notable[0].failureRule, true);
   assert.equal(Object.hasOwn(notableWatchEvents({ events: [finished({})], state }).notable[0], 'failureRule'), false);
+  // The dispatcher's recorded decision reaches the line, from the event or the attempt record.
+  const waited = notableWatchEvents({ events: [finished({ failureRule: true, quotaNext: 'wait' })], state }).notable[0];
+  assert.equal(waited.quotaNext, 'wait');
+  assert.match(renderWatchEvent(waited, { now: Date.parse('2026-09-17T02:00:00.000Z') }), /· waiting for a pool$/);
+  const recorded = { ...state, attempts: [{ id: 'a-1', actionId: 'a', pool: 'codex', quotaNext: 'move' }] };
+  assert.equal(notableWatchEvents({ events: [finished({ failureRule: true })], state: recorded }).notable[0].quotaNext, 'move');
 });
 
 test('watch snapshot is concise and stable between heartbeats', () => {

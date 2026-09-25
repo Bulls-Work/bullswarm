@@ -414,3 +414,75 @@ test('plan validate refuses a directory or glob as an owned file and names requi
   assert.deepEqual(advisories.map((advisory) => advisory.code), ['requirement-unchecked']);
   assert.match(advisories[0].message, /^no step gives evidence for requirement-2; /);
 });
+
+// L2: a failed step the summary's handback left out for size is still named
+// in the text, before any requirement line; requirement lines give way for
+// it, and the steps still left out are counted with the blocked ones.
+test('the text handback never hides a failed step behind requirement lines', () => {
+  const summary = {
+    actions: [
+      { id: 'build', status: 'succeeded' }, { id: 'kernel', status: 'failed' },
+      { id: 'integrate', status: 'blocked' }, { id: 'docs', status: 'blocked' },
+    ],
+    requirements: Array.from({ length: 9 }, (_, index) => ({ id: `requirement-${index + 1}`, status: 'failed', why: 'not met' })),
+    handback: { unfinished: [], unfinishedOmitted: 3, unreadSteering: [], options: {} },
+  };
+  const lines = formatV2HandbackLines(summary);
+  assert.equal(lines[0], '  step kernel: failed');
+  assert.equal(lines[1], '  … and 2 more unfinished step(s) (2 blocked by a failed step)');
+  assert.equal(lines.filter((line) => line.startsWith('  requirement ')).length, 5, 'one requirement line gives way for the failed step');
+  assert.equal(lines[7], '  … and 4 more open requirement(s)');
+  // Nothing hidden: the text reads as before.
+  const whole = { ...summary, handback: { unfinished: [{ id: 'kernel', status: 'failed', failureKind: 'process', why: 'exit 1', retryable: false }], unreadSteering: [], options: {} } };
+  const plain = formatV2HandbackLines(whole);
+  assert.equal(plain[0], '  step kernel: failed (process) — exit 1');
+  assert.equal(plain.filter((line) => line.startsWith('  requirement ')).length, 6);
+});
+
+// L4 and L5: a marked run whose loop left a requirement failing hands back
+// the review verbs; an accepted requirement reads as accepted by choice.
+function reviewEnvelope({ accepted = false } = {}) {
+  return {
+    runId: 'wf-test-review', shortId: 'rev001', status: 'partial', verified: false, executionMode: 'program',
+    reason: 'not verified', finishedAt: '2026-09-24T01:10:00Z', goal: 'Ship the acme report',
+    requirements: [{
+      id: 'requirement-3', text: 'totals are right', mandatory: true, status: 'failed', workRevision: 2,
+      evidence: [{ sourceAction: 'verify-round-2', status: 'failed', evidence: ['the empty week still totals 1'], reviewer: { pool: 'pool-b', model: 'model-b', provider: null } }],
+      ...(accepted ? { accepted: { step: 'verify-round-2', reason: 'the empty week is out of scope', at: '2026-09-24T01:20:00Z' } } : {}),
+    }],
+    actions: [
+      { id: 'report', status: 'succeeded', outputFile: '/runs/acme/out-report-attempt-1.md' },
+      { id: 'verify-round-2', status: 'succeeded', outputFile: '/runs/acme/out-verify-round-2-attempt-1.md' },
+    ],
+    usage: { total: 2, byPool: { 'pool-a': 1, 'pool-b': 1 } },
+    verifyRounds: { max: 2, used: 2, stoppedBy: 'rounds', phases: [] },
+    ...(accepted ? {} : {
+      callerDecision: { verifyRounds: '2/2', requirements: [{ id: 'requirement-3', status: 'failed', round: 2, evidence: 'the empty week still totals 1', next: 'fix it with a step' }] },
+    }),
+    handback: { unfinished: [], unresolvedRequirements: [{ id: 'requirement-3', status: 'failed', why: 'the empty week still totals 1' }], unreadSteering: [] },
+  };
+}
+
+test('a marked run with a requirement its loop left failing hands back rerun and accept for the check', () => {
+  const MARKED = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
+  const summary = summarizeV2Result(reviewEnvelope(), null, { runDir: '/runs/acme', features: MARKED });
+  assert.equal(summary.handback.options.rerunReview, 'bullswarm workflow step rerun rev001 verify-round-2 --avoid pool-b (judges it again on another pool)');
+  assert.equal(summary.handback.options.acceptRequirement, 'bullswarm workflow step accept rev001 verify-round-2 --requirement requirement-3 --reason "…" (recorded as your choice, never proof)');
+  const lines = formatV2HandbackLines(summary);
+  assert.ok(lines.includes('  rerun     bullswarm workflow step rerun rev001 verify-round-2 --avoid pool-b (judges it again on another pool)'));
+  assert.ok(lines.includes('  accept    bullswarm workflow step accept rev001 verify-round-2 --requirement requirement-3 --reason "…" (recorded as your choice, never proof)'));
+  // A saved (stage-2) run's options are unchanged.
+  const saved = summarizeV2Result(reviewEnvelope(), null, { runDir: '/runs/acme', features: { deliverableGate: 1, proofLabels: 1 } });
+  assert.deepEqual(Object.keys(saved.handback.options), ['continue', 'takeOver', 'restart']);
+});
+
+test('an accepted requirement reads `failed · accepted by choice` and its summary row carries accepted', () => {
+  const MARKED = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
+  const summary = summarizeV2Result(reviewEnvelope({ accepted: true }), null, { runDir: '/runs/acme', features: MARKED });
+  assert.equal(summary.verified, false);
+  assert.equal(summary.requirements[0].accepted, 'the empty week is out of scope');
+  assert.equal(summary.requirements[0].status, 'failed');
+  const lines = formatV2HandbackLines(summary);
+  assert.ok(lines.includes('  requirement requirement-3: failed · accepted by choice "the empty week is out of scope"'), lines.join('\n'));
+  assert.equal(Object.hasOwn(summary.handback.options, 'acceptRequirement'), false, 'nothing left to accept');
+});

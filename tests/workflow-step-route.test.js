@@ -182,10 +182,13 @@ test('resolveRouteFilter: a crashed attempt that changed files and the succeeded
     attempts: [attempt('build-a', 1, 'codex'), attempt('build-a', 2, 'grok', { status: 'succeeded' })],
   });
   assert.deepEqual(resolveRouteFilter(idle, check, pools).independentProviders, ['grok']);
-  // No changedFileCount at all (the kernel stopped before its snapshot): a writer.
+  // No changedFileCount because the kernel stopped it before its snapshot: a writer.
   const unknown = stateWith({
     ...base,
-    attempts: [attempt('build-a', 1, 'codex', { changedFileCount: undefined }), attempt('build-a', 2, 'grok', { status: 'succeeded' })],
+    attempts: [
+      attempt('build-a', 1, 'codex', { status: 'interrupted', failureKind: 'interrupted', changedFileCount: undefined }),
+      attempt('build-a', 2, 'grok', { status: 'succeeded' }),
+    ],
   });
   assert.deepEqual(resolveRouteFilter(unknown, check, pools).independentProviders, ['codex', 'grok']);
   // A written deliverable, or partial output a later attempt was handed: writers.
@@ -286,10 +289,10 @@ test('inheritedRepairRoute: avoid unions, use intersections, never independentOf
   assert.equal(inheritedRepairRoute([]), undefined);
   // A single step's lists come across whole.
   assert.deepEqual(inheritedRepairRoute([b]), b.route);
-  // A disjoint use: the union stands in rather than "anywhere"; an avoided name is dropped from use.
-  const c = { route: { pools: { use: ['pool-d'], avoid: ['pool-b'] } } };
+  // An avoided name is dropped from the intersection.
+  const c = { route: { pools: { use: ['pool-b', 'pool-c'], avoid: ['pool-b'] } } };
   assert.deepEqual(inheritedRepairRoute([b, c]), {
-    pools: { use: ['pool-c', 'pool-d'], avoid: ['pool-b', 'pool-y'] },
+    pools: { use: ['pool-c'], avoid: ['pool-b', 'pool-y'] },
     providers: { avoid: ['claude-code'] },
   });
   // The inherited route is a normalisation fixed point.
@@ -355,4 +358,103 @@ test('routeIssuesForPools: the CLI checks against the configured pools', () => {
   assert.deepEqual(check({ providers: { use: ['grok'] } }, { runPin: 'grok' }), []);
   // Steps without a route are not checked.
   assert.deepEqual(routeIssuesForPools(program([{ id: 'plain', lane: 'build', effort: 'high' }]), [], {}), []);
+});
+
+test('F18: a missing changedFileCount is work only when the kernel stopped the attempt before its snapshot', () => {
+  // Outside git no attempt records changedFileCount. An auth failure that did
+  // nothing, then a succeeded retry on another provider: only the retry wrote.
+  const check = checker({ route: { independentOf: ['build-a'] } });
+  const base = { actions: [writer(), check], runtime: { 'build-a': { attempts: 2 } } };
+  const noSnapshot = { changedFileCount: undefined };
+  const ungit = stateWith({
+    ...base,
+    attempts: [
+      attempt('build-a', 1, 'codex', { ...noSnapshot, status: 'interrupted', failureKind: 'auth', willRetry: true }),
+      attempt('build-a', 2, 'grok', { ...noSnapshot, status: 'succeeded' }),
+    ],
+  });
+  assert.deepEqual(workAttempts(ungit, 'build-a').map((item) => item.id), ['build-a-2']);
+  const filter = resolveRouteFilter(ungit, check, pools);
+  assert.deepEqual(filter.independentProviders, ['grok']);
+  assert.equal(poolPassesRoute({ name: 'codex' }, filter), true, 'the provider that did nothing may review');
+  // Other failures that ended on their own, without a snapshot: not work either.
+  for (const failureKind of ['spawnError', 'quota', 'unavailable', 'process', 'timeout', null]) {
+    const state = stateWith({ ...base, attempts: [attempt('build-a', 1, 'codex', { ...noSnapshot, failureKind })] });
+    assert.deepEqual(workAttempts(state, 'build-a'), [], String(failureKind));
+  }
+  // The kernel stopped it (signal, dead kernel, pause, restart, cancel, a
+  // running attempt the kernel has not snapshotted yet): unknown work counts.
+  const stops = [
+    { status: 'interrupted', failureKind: 'interrupted' },
+    { status: 'cancelled', failureKind: 'cancelled' },
+    { status: 'cancelled', failureKind: 'paused' },
+    { status: 'cancelled', failureKind: 'restarted' },
+    { status: 'running', failureKind: null },
+  ];
+  for (const stop of stops) {
+    const state = stateWith({ ...base, attempts: [attempt('build-a', 1, 'codex', { ...noSnapshot, ...stop })] });
+    assert.deepEqual(workAttempts(state, 'build-a').map((item) => item.pool), ['codex'], JSON.stringify(stop));
+  }
+  // A kernel-stopped attempt whose snapshot was taken is judged by its count.
+  const snapped = stateWith({ ...base, attempts: [attempt('build-a', 1, 'codex', { status: 'cancelled', failureKind: 'paused', changedFileCount: 0 })] });
+  assert.deepEqual(workAttempts(snapped, 'build-a'), []);
+});
+
+test('F9: an empty use intersection is refused through validation, never widened', () => {
+  // Each source avoids the other's pool: nothing is left in common.
+  const a = { id: 'build-a', route: { pools: { use: ['grok'], avoid: ['codex'] } } };
+  const b = { id: 'build-b', route: { pools: { use: ['codex'], avoid: ['grok'] } } };
+  const conflict = 'pools.use of build-a (grok), build-b (codex) have no name in common once the avoided pools (codex, grok) are removed; change one of those routes (plan revise) or accept the requirement';
+  assert.deepEqual(inheritedRepairRoute([a, b]), { pools: { avoid: ['codex', 'grok'] }, inheritConflict: conflict });
+  // Disjoint use lists with nothing avoided: no union stands in either.
+  const c = { id: 'check-a', route: { providers: { use: ['grok'] }, independentOf: ['build-a'] } };
+  const d = { id: 'check-b', route: { providers: { use: ['codex'] } } };
+  assert.deepEqual(inheritedVerifyRoute([c, d], ['repair-1']), {
+    inheritConflict: 'providers.use of check-a (grok), check-b (codex) have no name in common; change one of those routes (plan revise) or accept the requirement',
+    independentOf: ['build-a', 'repair-1'],
+  });
+  // The validator refuses the inherited route, so the kernel's revision is
+  // rejected and the loop stops with the caller.
+  const repair = writer({ id: 'repair-1', dependsOn: ['build-a'], ownedFiles: ['src/r.js'], route: inheritedRepairRoute([a, b]) });
+  const check = checker({ dependsOn: ['build-a', 'repair-1'] });
+  assert.deepEqual(issuesOf([writer(), repair, check]), [`actions[1].route cannot be inherited: ${conflict}`]);
+  assert.deepEqual(issuesOf([writer(), { ...repair, route: undefined }, check]), []);
+  // A shared name survives: no conflict key.
+  assert.equal(Object.hasOwn(inheritedRepairRoute([a, { id: 'build-c', route: { pools: { use: ['grok', 'codex'] } } }]), 'inheritConflict'), false);
+});
+
+test('F6: under a --worker-pool pin, independentOf is refused up front when the pin did or will do the work', () => {
+  const configured = [{ name: 'grok', enabled: true }, { name: 'codex', enabled: true }];
+  const build = writer({ lane: 'build', effort: 'high' });
+  const named = checker({ lane: 'analyze', effort: 'medium', route: { independentOf: ['build-a'] } });
+  const writers = checker({ id: 'check-b', lane: 'analyze', effort: 'medium', route: { independentOf: 'writers' } });
+  const issues = routeIssuesForPools(program([build, named, writers]), configured, { runPin: 'grok' });
+  assert.deepEqual(issues, [
+    "step check-a: its route is independent of build-a, which runs on the run's pinned pool grok (--worker-pool, provider grok), so no pool is left for it; drop independentOf or run without --worker-pool",
+    "step check-b: its route is independent of writers (build-a), which runs on the run's pinned pool grok (--worker-pool, provider grok), so no pool is left for it; drop independentOf or run without --worker-pool",
+  ]);
+  // Without the pin the same program passes: another pool is left.
+  assert.deepEqual(routeIssuesForPools(program([build, named, writers]), configured, {}), []);
+  // "writers" with no writer step names nobody.
+  const lone = checker({ id: 'check-c', dependsOn: [], evidenceFor: ['other'], route: { independentOf: 'writers' } });
+  assert.deepEqual(routeIssuesForPools(program([build, lone]), configured, { runPin: 'grok' }), []);
+  // A running run: build-a finished without doing work (an auth failure,
+  // accepted nowhere), so the pinned provider did not do it and the check may
+  // run there; the same state's runtime filter agrees.
+  const idle = stateWith({
+    actions: [build, named],
+    attempts: [attempt('build-a', 1, 'grok', { changedFileCount: undefined, failureKind: 'auth' })],
+    runtime: { 'build-a': { status: 'failed', attempts: 1 } },
+  });
+  assert.deepEqual(routeIssuesForPools(program([named]), configured, { runPin: 'grok', state: idle }), []);
+  assert.equal(poolPassesRoute({ name: 'grok' }, resolveRouteFilter(idle, named, configured)), true);
+  // Once it did the work on the pin, the running-run check says so.
+  const worked = stateWith({
+    actions: [build, named],
+    attempts: [attempt('build-a', 1, 'grok', { status: 'succeeded' })],
+  });
+  assert.equal(routeIssuesForPools(program([named]), configured, { runPin: 'grok', state: worked }).length, 1);
+  assert.equal(poolPassesRoute({ name: 'grok' }, resolveRouteFilter(worked, named, configured)), false);
+  // "writers" reads the writer steps from the run's program when the revision names only the check.
+  assert.equal(routeIssuesForPools(program([writers]), configured, { runPin: 'grok', state: { ...worked, program: { actions: [build, writers] } } }).length, 1);
 });

@@ -11,9 +11,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { acceptV2Step, rerunV2Step } from '../src/workflow/cli.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { planV2Revision } from '../src/workflow/v2-revision.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { callerDecision } from '../src/workflow/verify-rounds.js';
-import { formatV2ProofLine, stepProof, summarizeV2Result } from '../src/workflow/v2-outcome.js';
+import { createV2ResultEnvelope, formatV2ProofLine, stepProof, summarizeV2Result } from '../src/workflow/v2-outcome.js';
 import { readEvents } from '../src/workflow/events.js';
 import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 
@@ -323,4 +324,89 @@ test('the CLI prints the accept, and --json carries its shape', async (t) => {
   const json = spawnSync(process.execPath, [BIN, 'workflow', 'step', 'accept', token, 'build', '--reason', REASON, '--json'], { env, encoding: 'utf8' });
   assert.equal(json.status, 1, 'build is now succeeded with nothing failing');
   assert.equal(JSON.parse(json.stdout).why, 'step build succeeded and no requirement it checks is failing; nothing to accept');
+});
+
+// --- Stage-3 fix round ---
+
+test('F25: the isolated-writer refusal names the retained workspace path', async (t) => {
+  const { f, runId, token } = await failedRun(t);
+  const runDir = runDirOf(f, runId);
+  const retained = join(runDir, 'workspaces', 'build-attempt-1-mug000');
+  for (const name of ['build-attempt-1-mug000', 'builder-attempt-3-zzz', 'side-attempt-1-abc']) mkdirSync(join(runDir, 'workspaces', name), { recursive: true });
+  const path = join(runDir, 'state.json');
+  const isolated = readState(f, runId);
+  isolated.config.settings.workspaceMode = 'isolated';
+  writeFileSync(path, JSON.stringify(isolated));
+  const refused = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', reason: REASON, waitMs: 0 });
+  assert.deepEqual([refused.code, refused.why], [1,
+    `run ${token} is isolated: build's work is in a retained workspace that was never merged back (${retained}); merge it yourself, then accept`]);
+});
+
+test('F21: a second requirement accept on the same check keeps the earlier acceptance\'s reason and time', async (t) => {
+  const f = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }, { id: 'extra', text: 'The extra file exists.' }]);
+  const ctl = scripted({}, () => 'failed');
+  const runId = 'wf-accept2-dddddd';
+  await start(f, runId, initial([work('build', { affects: ['deliver', 'extra'] }), check('check-build', ['build'], ['deliver', 'extra'])], { verifyRounds: 0 }), ctl);
+  const token = readState(f, runId).shortId;
+  const first = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'check-build', requirements: ['extra'], reason: 'extra is out of scope', waitMs: 0, relaunch: async () => null });
+  assert.equal(first.code, 0, JSON.stringify(first));
+  const state = readState(f, runId);
+  const firstAt = runtimeOf(state, 'check-build').acceptance.at;
+  const planned = planV2Revision(state, {
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: state.program.actions.map((action) => ({ ...action })) },
+    rerun: [], steeringIds: [], accept: [{ step: 'check-build', reason: 'the rest', requirements: null }],
+  });
+  assert.equal(planned.ok, true, JSON.stringify(planned.issues));
+  const [entry] = planned.acceptances;
+  assert.deepEqual(entry.accepted, ['deliver'], 'this accept accepts only deliver');
+  assert.deepEqual(entry.requirements.map((item) => [item.id, item.reason ?? null, item.at ?? null]), [
+    ['extra', 'extra is out of scope', firstAt],
+    ['deliver', null, null],
+  ]);
+  const second = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'check-build', reason: 'the rest', waitMs: 0, relaunch: async () => null });
+  assert.deepEqual([second.code, second.requirements], [0, ['deliver']], JSON.stringify(second));
+  const after = readState(f, runId);
+  const acceptance = runtimeOf(after, 'check-build').acceptance;
+  assert.deepEqual(acceptance.requirements.map((item) => item.id), ['extra', 'deliver']);
+  // Stored in state: the carried-forward entry keeps its own reason and time.
+  assert.deepEqual(acceptance.requirements.map((item) => [item.reason ?? null, item.at ?? null]), [['extra is out of scope', firstAt], [null, null]]);
+  assert.equal(acceptance.reason, 'the rest');
+  // The result reads each requirement's own accept.
+  const envelope = createV2ResultEnvelope(after, { features: {} });
+  const acceptedOf = (id) => envelope.requirements.find((item) => item.id === id).accepted;
+  assert.deepEqual([acceptedOf('extra').reason, acceptedOf('extra').at], ['extra is out of scope', firstAt]);
+  assert.deepEqual([acceptedOf('deliver').reason, acceptedOf('deliver').at], ['the rest', acceptance.at]);
+});
+
+test('F12: the accept a marked callerDecision suggests is one step accept takes', async (t) => {
+  // A check that failed its requirement: accept it on that check.
+  const f = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }]);
+  const ctl = scripted({}, () => 'failed');
+  const runId = 'wf-accepts-eeeeee';
+  await start(f, runId, initial([work('build'), check('check-build', ['build'])], { verifyRounds: 0 }), ctl);
+  const state = readState(f, runId);
+  const token = state.shortId;
+  const [entry] = callerDecision(state, { token, failureRule: true }).requirements;
+  const suggested = entry.next.match(/accept it \(bullswarm workflow step accept (\S+) (\S+) --requirement (\S+) --reason/);
+  assert.ok(suggested, entry.next);
+  assert.deepEqual(suggested.slice(1), [token, 'check-build', 'deliver']);
+  const taken = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: suggested[2], requirements: [suggested[3]], reason: REASON, waitMs: 0, relaunch: async () => null });
+  assert.equal(taken.code, 0, JSON.stringify(taken));
+
+  // The writer failed and its check never ran (D12): the text names the writer.
+  const g = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }, { id: 'side-ok', text: 'The side file exists.' }]);
+  const failing = scripted({ build: ['fail', 'fail'] }, (_id, requirement) => (requirement === 'side-ok' ? 'failed' : 'passed'));
+  const blockedId = 'wf-acceptb-ffffff';
+  await start(g, blockedId, initial([
+    work('build'), check('check-build', ['build']), work('side', { affects: ['side-ok'] }), check('check-side', ['side'], ['side-ok']),
+  ], { verifyRounds: 0 }), failing);
+  const blocked = readState(g, blockedId);
+  assert.deepEqual(['build', 'check-build'].map((id) => statusOf(blocked, id)), ['failed', 'blocked']);
+  const [pending] = callerDecision(blocked, { token: blocked.shortId, failureRule: true }).requirements;
+  assert.deepEqual([pending.id, pending.status, pending.evidence], ['deliver', 'pending', 'not judged: check-build is blocked by build (failed)']);
+  const writer = pending.next.match(/accept it \(bullswarm workflow step accept (\S+) (\S+) --reason/);
+  assert.ok(writer, pending.next);
+  assert.deepEqual(writer.slice(1), [blocked.shortId, 'build']);
+  const accepted = await acceptV2Step({ bullswarmDir: g.bullswarmDir, token: blocked.shortId, stepId: writer[2], reason: REASON, waitMs: 0, relaunch: async () => null });
+  assert.equal(accepted.code, 0, JSON.stringify(accepted));
 });

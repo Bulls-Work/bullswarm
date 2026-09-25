@@ -11,6 +11,8 @@ import {
   recordGoalProject, scoutPrompt,
 } from '../src/workflow/goal.js';
 import { extractV2GoalConstraints, shouldAutoWatchGoal } from '../src/workflow/cli.js';
+import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -651,6 +653,116 @@ test('route checks need the configured pools: validate and launch refuse unknown
     const text = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', good]);
     assert.equal(text.status, 0, text.stderr);
     assert.match(text.stdout, /goal-work .* route: avoid beta-agent/);
+  } finally { f.cleanup(); }
+});
+
+// F8: the revise precheck checks the routes of every step the revision
+// (re)starts, the dependents an amendment invalidates included.
+test('plan revise refuses an amendment whose invalidated dependent has a route the pools cannot serve', async () => {
+  const f = fixture();
+  try {
+    const work = (id, options = {}) => ({
+      id, purpose: `Deliver ${id}`, dependsOn: [], affects: ['requirement-1'], ownedFiles: [`${id}.txt`],
+      prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], ...options,
+    });
+    const goalDocument = createV2GoalDocument({
+      goal: GOAL_TEXT, cwd: f.target, requirements: [{ id: 'requirement-1', text: 'Deliver the files.' }],
+      settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 2 },
+    });
+    // The kernel runs no CLI route check, so b's unknown pool gets in.
+    const dispatch = async (options) => {
+      const files = options.paths(1);
+      const record = { ordinal: 1, pool: 'goal-agent', model: 'worker-luna', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
+      writeFileSync(files.taskFile, options.taskText);
+      options.onAttempt?.('started', record);
+      writeFileSync(join(options.targetDir, `${options.action.id}.txt`), 'x');
+      writeFileSync(files.outFile, 'done');
+      Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString(), changedFileCount: 1 });
+      options.onAttempt?.('finished', record);
+      return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
+    };
+    const runId = 'wf-revrte-abcdef';
+    await runV2AutonomousWorkflow({
+      bullswarmDir: f.home, goalDocument, pools: [], runId,
+      initialPlannerResponse: {
+        schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Two steps.',
+        program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [work('a'), work('b', { dependsOn: ['a'], route: { pools: { use: ['nope'] } } })] },
+      },
+      dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+    });
+    const statePath = join(f.home, 'workflows', runId, 'state.json');
+    const before = readFileSync(statePath, 'utf8');
+    assert.equal(JSON.parse(before).lifecycle.status, 'completed');
+    const plan = join(f.root, 'plan.json');
+    const exported = cli(f, ['workflow', 'plan', 'export', runId, '--out', plan]);
+    assert.equal(exported.status, 0, exported.stderr);
+    const document = JSON.parse(readFileSync(plan, 'utf8'));
+    document.program.actions.find((action) => action.id === 'a').prompt = 'Write a.txt again.';
+    writeFileSync(plan, JSON.stringify(document));
+    const revised = cli(f, ['workflow', 'plan', 'revise', runId, '--program', plan, '--json', '--wait', '0']);
+    assert.equal(revised.status, 2, revised.stderr || revised.stdout);
+    const refusal = JSON.parse(revised.stdout);
+    assert.equal(refusal.status, 'rejected');
+    assert.deepEqual(refusal.issues, ['step b route.pools.use names "nope", which is not a configured pool (configured: goal-agent)']);
+    assert.equal(readFileSync(statePath, 'utf8'), before, 'the run is unchanged');
+  } finally { f.cleanup(); }
+});
+
+test('plan revise under a --worker-pool pin checks an added check\'s "writers" against the work the run already did', async () => {
+  const f = fixture();
+  try {
+    const goalDocument = createV2GoalDocument({
+      goal: GOAL_TEXT, cwd: f.target, requirements: [{ id: 'requirement-1', text: 'Deliver the files.' }],
+      settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
+    });
+    const dispatch = async (options) => {
+      const files = options.paths(1);
+      const record = { ordinal: 1, pool: 'goal-agent', model: 'worker-luna', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
+      writeFileSync(files.taskFile, options.taskText);
+      options.onAttempt?.('started', record);
+      writeFileSync(join(options.targetDir, `${options.action.id}.txt`), 'x');
+      writeFileSync(files.outFile, 'done');
+      Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString(), changedFileCount: 1 });
+      options.onAttempt?.('finished', record);
+      return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
+    };
+    const runId = 'wf-revpin-abcdef';
+    await runV2AutonomousWorkflow({
+      bullswarmDir: f.home, goalDocument, pools: [], runId,
+      initialPlannerResponse: {
+        schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'One writer.',
+        program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [{
+          id: 'a', purpose: 'Deliver a', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['a.txt'],
+          prompt: 'Write a.txt.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+        }] },
+      },
+      dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+    });
+    const runDir = join(f.home, 'workflows', runId);
+    const statePath = join(runDir, 'state.json');
+    // The run is pinned to the pool its writer did its work on.
+    const goalPath = join(runDir, 'goal.json');
+    const doc = JSON.parse(readFileSync(goalPath, 'utf8'));
+    doc.config = { ...(doc.config ?? {}), workerRouting: { ...(doc.config?.workerRouting ?? {}), strictPool: 'goal-agent' } };
+    writeFileSync(goalPath, JSON.stringify(doc));
+    const before = readFileSync(statePath, 'utf8');
+    const plan = join(f.root, 'plan.json');
+    const exported = cli(f, ['workflow', 'plan', 'export', runId, '--out', plan]);
+    assert.equal(exported.status, 0, exported.stderr);
+    const document = JSON.parse(readFileSync(plan, 'utf8'));
+    // A check the revision adds: its writer `a` is finished and not in the revision.
+    document.program.actions.push({
+      id: 'check', purpose: 'Check a', dependsOn: ['a'], affects: [], ownedFiles: [], prompt: 'Read a.txt and judge it.',
+      lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: [], produces: [], route: { independentOf: 'writers' },
+    });
+    writeFileSync(plan, JSON.stringify(document));
+    const revised = cli(f, ['workflow', 'plan', 'revise', runId, '--program', plan, '--json', '--wait', '0']);
+    assert.equal(revised.status, 2, revised.stderr || revised.stdout);
+    const refusal = JSON.parse(revised.stdout);
+    assert.equal(refusal.status, 'rejected');
+    assert.equal(refusal.issues.length, 1, JSON.stringify(refusal.issues));
+    assert.match(refusal.issues[0], /^step check: its route is independent of writers \(a\), which runs on the run's pinned pool goal-agent \(--worker-pool, provider [^)]+\), so no pool is left for it; drop independentOf or run without --worker-pool$/);
+    assert.equal(readFileSync(statePath, 'utf8'), before, 'the run is unchanged');
   } finally { f.cleanup(); }
 });
 

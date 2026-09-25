@@ -8,7 +8,7 @@ import {
   appliedStepRestart, classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, durableAttemptHandoff,
   prepareV2DispatchPools, requestStepRestart, snapshotPossible, statDeliverablePaths, trackedDiffStatForTests,
 } from '../src/workflow/v2-dispatch.js';
-import { countRetries } from '../src/workflow/step-vocabulary.js';
+import { countRetries, failureClassOf } from '../src/workflow/step-vocabulary.js';
 import { resolveRouteFilter } from '../src/workflow/step-route.js';
 import { handoffBlock, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { runStepEvidence } from '../src/workflow/evidence-runner.js';
@@ -3439,6 +3439,29 @@ test('failure rule: a throttle waits twice on the same pool, then moves, and eve
   assert.equal(core.pools['luna-1']?.quarantine, undefined);
 });
 
+test('failure rule: a wait-class failure records whether the step moves to another pool or waits (F23)', async () => {
+  const moved = await markedDispatch([quotaVerdict(), good], {
+    pools: [connector('luna-1'), connector('luna-2')], preferredPool: 'luna-1',
+  });
+  assert.equal(moved.result.ok, true);
+  assert.deepEqual(moved.result.attempts.map((attempt) => attempt.quotaNext ?? null), ['move', null]);
+
+  const clock = fakeClock();
+  const waited = await markedDispatch([quotaVerdict(), good], {
+    pools: [connector('luna-1')], dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(waited.result.ok, true);
+  assert.deepEqual(waited.result.attempts.map((attempt) => attempt.quotaNext ?? null), ['wait', null]);
+
+  // A same-pool throttle backoff is a wait even while other pools are free.
+  const backoff = await markedDispatch([transientVerdict(), good], { dependencies: { sleep: async () => {} } });
+  assert.deepEqual(backoff.result.attempts.map((attempt) => attempt.quotaNext ?? null), ['wait', null]);
+
+  // A process failure records no quota decision.
+  const crashed = await markedDispatch([processFail(), good], { pools: [connector('luna-1'), connector('luna-2')] });
+  assert.deepEqual(crashed.result.attempts.map((attempt) => attempt.quotaNext ?? null), [null, null]);
+});
+
 test('failure rule: the budget is the step\'s; retriesAlready and --retry-attempts 0 leave no retry', async () => {
   const resumed = await markedDispatch([processFail(), good], { retriesAlready: 1 });
   assert.equal(resumed.result.failureKind, 'process');
@@ -3601,4 +3624,210 @@ test('failure rule: a check that could not run goes to the caller with no retry'
     assert.equal(result.attempts[0].willRetry, false);
     assert.match(result.attempts[0].why, /^check could not run: /);
   });
+});
+
+// --- stage 3 fix round: dispatch findings F0-F4, F14 ------------------------
+
+test('failure rule: a worker whose CLI never started is a process failure through the real watcher, retried on another pool even for an act step (F0)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-fr-spawn-'));
+  const home = join(root, 'home');
+  const work = join(root, 'work');
+  mkdirSync(home);
+  mkdirSync(work);
+  try {
+    saveState(home, { version: 1, pools: {}, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } });
+    const missing = (name) => connector(name, {
+      spawn: { cmd: [join(root, `no-such-${name}`), '{taskFile}'] },
+      outputExtraction: { strategy: 'stdout' }, meter: { type: 'none' },
+    });
+    const dispatch = (step, extra = {}) => dispatchV2Action({
+      action: step, taskText: 'do it', targetDir: work,
+      paths: (ordinal) => ({ taskFile: join(home, `task-${step.id}-${ordinal}.md`), outFile: join(home, `out-${step.id}-${ordinal}.md`) }),
+      pools: [missing('pool-a'), missing('pool-b')],
+      preferredPool: 'pool-a', bullswarmDir: home, parentEnv: { ...process.env, BULLSWARM_HOME: home },
+      failureRule: true,
+      ...extra,
+    });
+    const act = await dispatch({ id: 'announce', role: 'act', lane: 'build', effort: 'low', deliverable: { type: 'outward' } });
+    const plain = await dispatch({ id: 'do-work', lane: 'build', effort: 'low' });
+    for (const result of [act, plain]) {
+      assert.equal(result.failureKind, 'process');
+      assert.deepEqual(pickedPools(result), ['pool-a', 'pool-b'], 'another pool, not the same broken one');
+      assert.deepEqual(result.attempts.map((attempt) => attempt.failureKind), ['process', 'process']);
+      assert.equal(result.attempts[1].retryOf.how, 'other-pool');
+      assert.equal(result.attempts[1].willRetry, false);
+      assert.match(result.attempts[0].why, /^spawn failed: /);
+      assert.equal(result.verdict.meta.workerNotStarted, true);
+    }
+    // A saved run reads the same spawn failure as before: semantic, no retry.
+    const saved = await dispatch({ id: 'saved-work', lane: 'build', effort: 'low' }, { failureRule: false, maxMechanicalRetries: 1 });
+    assert.equal(saved.failureKind, 'semantic');
+    assert.equal(saved.attempts.length, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('failure rule: a step that ends at the caller on a process or gate failure has spent its one retry, whatever waits came first (F1, p11)', async () => {
+  const V = {
+    process: () => processFail(),
+    stalled: () => stall,
+    quota: () => quotaVerdict(),
+    throttle: () => transientVerdict({ throttleRetrySamePool: false }),
+  };
+  const lost = [];
+  for (const poolCount of [2, 3]) {
+    for (const a of ['quota', 'throttle']) {
+      for (const b of ['quota', 'throttle', 'process', 'stalled']) {
+        for (const c of ['quota', 'throttle', 'process', 'stalled']) {
+          const clock = fakeClock();
+          const pools = Array.from({ length: poolCount }, (_, index) => connector(`p${index + 1}`));
+          const { result } = await markedDispatch([V[a](), V[b](), V[c](), processFail(), processFail(), good], {
+            pools, preferredPool: 'p1', dependencies: { now: clock.now, sleep: clock.sleep },
+          });
+          const counted = result.attempts.filter((attempt) => ['other-pool', 'same-pool'].includes(attempt.retryOf?.how)).length;
+          assert.ok(counted <= 1, `${poolCount} pools ${a}/${b}/${c}: at most one counted retry`);
+          if (!result.ok && failureClassOf(result.failureKind) !== 'wait' && counted === 0) {
+            lost.push(`${poolCount} pools: ${result.attempts.map((attempt) => `${attempt.pool}:${attempt.failureKind}:${attempt.retryOf?.how ?? '-'}`).join(' → ')}`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(lost, [], 'no step went to the caller with its retry unspent');
+  // P1b: a named 10-minute wait on luna-1, then luna-2 fails after 30 minutes;
+  // luna-1 is back by then and takes the one retry.
+  const clock = fakeClock();
+  const { result } = await markedDispatch([
+    transientVerdict({ throttleRetrySamePool: false, throttleWaitMs: 10 * 60_000 }),
+    () => { clock.t += 30 * 60_000; return processFail(); },
+    good,
+  ], { preferredPool: 'luna-1', dependencies: { now: clock.now, sleep: clock.sleep } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(pickedPools(result), ['luna-1', 'luna-2', 'luna-1']);
+  assert.deepEqual(retryFacts(result).map((fact) => fact?.how ?? null), [null, 'wait', 'other-pool']);
+});
+
+test('failure rule: a pool whose hold passed is picked at once, with no long wait announced and no throttle failure while it is free (F2)', async () => {
+  // luna-1 throttles naming a 20-minute wait; luna-2 works 30 minutes, then
+  // hits a quota paused for 3 hours. luna-1 is back: no wait at all.
+  const clock = fakeClock();
+  const quotaIn3h = () => { clock.t += 30 * 60_000; return { ...quotaVerdict(), quarantineUntil: clock.t + 3 * 3600_000 }; };
+  const moved = await markedDispatch([
+    transientVerdict({ throttleRetrySamePool: false, throttleWaitMs: 20 * 60_000 }), quotaIn3h, good,
+  ], { preferredPool: 'luna-1', dependencies: { now: clock.now, sleep: clock.sleep } });
+  assert.equal(moved.result.ok, true);
+  assert.deepEqual(pickedPools(moved.result), ['luna-1', 'luna-2', 'luna-1']);
+  assert.deepEqual(moved.waits, [], 'no action.waiting while a pool is free');
+  assert.deepEqual(clock.slept, []);
+  assert.deepEqual(retryFacts(moved.result).map((fact) => fact?.how ?? null), [null, 'wait', 'wait']);
+
+  // Pausing off: a limit notice holds luna-1 for 20 minutes; luna-2 works 40
+  // minutes, then throttles with no same-pool wait and no return time. luna-1
+  // is free again, so the step runs there instead of failing `throttle`.
+  const offClock = fakeClock();
+  const offLimit = {
+    ok: false, failureKind: 'throttle', throttleWaitMs: null, throttleRetrySamePool: false,
+    quotaPause: { pause: false, rule: 'off', line: "You've hit your limit", until: null, holdUntil: offClock.t + 20 * 60_000 },
+    why: 'limit notice · pool not paused: automatic pausing is off', meta: { exitCode: 1, wallSec: 0.2 },
+  };
+  const off = await markedDispatch([
+    offLimit, () => { offClock.t += 40 * 60_000; return transientVerdict({ throttleRetrySamePool: false }); }, good,
+  ], { preferredPool: 'luna-1', dependencies: { now: offClock.now, sleep: offClock.sleep } });
+  assert.equal(off.result.ok, true, off.result.verdict?.why);
+  assert.deepEqual(pickedPools(off.result), ['luna-1', 'luna-2', 'luna-1']);
+  assert.deepEqual(retryFacts(off.result).map((fact) => fact?.how ?? null), [null, 'wait', 'wait']);
+  assert.deepEqual(offClock.slept, []);
+  assert.deepEqual(off.waits, []);
+});
+
+test('failure rule: a gate retry keeps its same-pool pin across a wait, and says it moved only when it lands elsewhere (F3)', async () => {
+  // Both pools are paused right after a semantic failure on luna-1; when they
+  // are back luna-2 ranks higher, but luna-1 can take work: it stays pinned.
+  const clock = fakeClock();
+  const until = clock.t + 20 * 60_000;
+  let refreshes = 0;
+  const plainPool = (name, extra = {}) => connector(name, { strategyAssignments: {}, model: 'gpt-5.6-luna', ...extra });
+  const pinned = await markedDispatch([textFailure, good], {
+    pools: [plainPool('luna-1', { pace: 50 }), plainPool('luna-2', { pace: -50 })],
+    refreshPools: async () => {
+      refreshes += 1;
+      if (refreshes === 1) return [plainPool('luna-1', { pace: 50 }), plainPool('luna-2', { pace: -50 })];
+      if (clock.t < until) return ['luna-1', 'luna-2'].map((name) => plainPool(name, { quarantine: { until, kind: 'quota' } }));
+      return [plainPool('luna-1', { pace: -80 }), plainPool('luna-2', { pace: 80 })];
+    },
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(pinned.result.ok, true);
+  assert.equal(pinned.waits.length, 1);
+  assert.deepEqual(pickedPools(pinned.result), ['luna-1', 'luna-1']);
+  assert.deepEqual(pinned.result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'same-pool' });
+  assert.match(pinned.result.attempts[1].routeWhy, /^pinned to luna-1 \(the same pool \(gate retry\)\)/);
+
+  // The only pool, paused at retry time: the same pool after the wait, and
+  // its reason does not claim a move.
+  const oneClock = fakeClock();
+  const oneUntil = oneClock.t + 20 * 60_000;
+  let oneRefreshes = 0;
+  const alone = await markedDispatch([textFailure, good], {
+    pools: [connector('luna-1')],
+    refreshPools: async () => (++oneRefreshes === 1 || oneClock.t >= oneUntil
+      ? [connector('luna-1')]
+      : [connector('luna-1', { quarantine: { until: oneUntil, kind: 'quota' } })]),
+    dependencies: { now: oneClock.now, sleep: oneClock.sleep },
+  });
+  assert.equal(alone.result.ok, true);
+  assert.deepEqual(alone.result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'same-pool' });
+  assert.doesNotMatch(alone.result.attempts[1].routeWhy, /gate retry moved/);
+  assert.match(alone.result.attempts[1].routeWhy, /^pinned to luna-1 \(the same pool \(gate retry\)\)/);
+
+  // The router refuses the pinned pool (its live 5h meter is used up): the
+  // retry falls back to another pool and says so.
+  let gateRefreshes = 0;
+  const refused = await markedDispatch([textFailure, good], {
+    preferredPool: 'luna-1',
+    refreshPools: async () => (++gateRefreshes === 1
+      ? [connector('luna-1'), connector('luna-2')]
+      : [connector('luna-1', { fiveHourUsedPct: 100, meterSource: 'live' }), connector('luna-2')]),
+  });
+  assert.equal(refused.result.ok, true);
+  assert.deepEqual(pickedPools(refused.result), ['luna-1', 'luna-2']);
+  assert.deepEqual(refused.result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'other-pool' });
+  assert.match(refused.result.attempts[1].routeWhy, /^gate retry moved: luna-1 cannot take work now · /);
+});
+
+test('failure rule: a step refused a slot after its wait looks at the pools again, and waits again, announced, for a pool paused meanwhile (F4)', async () => {
+  const clock = fakeClock();
+  const back = clock.t + 20 * 60_000;
+  const pausedAgain = clock.t + 5 * 3600_000;
+  let claims = 0;
+  const live = () => {
+    if (clock.t < back) return { 'luna-1': { quarantine: { until: back, kind: 'quota' } } };
+    if (claims >= 2) return { 'luna-1': { quarantine: { until: pausedAgain, kind: 'quota' } } };
+    return {};
+  };
+  const { result, waits } = await markedDispatch([good], {
+    pools: [connector('luna-1')],
+    claimWake: async () => { claims += 1; return claims > 3; },
+    dependencies: { now: clock.now, sleep: clock.sleep, liveQuarantines: live },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts.length, 1, 'no worker spawned on the paused pool');
+  assert.ok(Date.parse(result.attempts[0].startedAt) >= pausedAgain, result.attempts[0].startedAt);
+  assert.deepEqual(waits.map((wait) => wait.until), [new Date(back).toISOString(), new Date(pausedAgain).toISOString()]);
+});
+
+test('failure rule: between refused claims the step listens for a settled task, not a blind sleep (F14)', async () => {
+  const clock = fakeClock();
+  const answers = [false, false, true];
+  let claims = 0;
+  const listened = [];
+  const { result } = await markedDispatch([quotaVerdict(), good], {
+    pools: [connector('luna-1')],
+    claimWake: async () => answers[claims++],
+    nextSettleOr: async (ms) => { listened.push(ms); },
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(claims, 3);
+  assert.deepEqual(listened, [5_000, 5_000]);
+  assert.ok(!clock.slept.includes(5_000), clock.slept.join(','));
 });

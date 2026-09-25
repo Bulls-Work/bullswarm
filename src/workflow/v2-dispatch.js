@@ -109,6 +109,20 @@ function classifyFailure(verdict, pool = null) {
   return 'semantic';
 }
 
+// Stage 3, marked runs only: a worker whose CLI never started did nothing,
+// so its failure is a process failure (another pool, D4) and the one retry an
+// act step may get (D32). classifyFailure keeps reading it as saved runs do.
+function workerNeverStarted(verdict) {
+  return verdict?.meta?.workerNotStarted === true || Boolean(verdict?.meta?.spawnError);
+}
+
+function markedFailureKind(verdict, pool = null) {
+  const kind = classifyFailure(verdict, pool);
+  return kind && kind !== 'cancelled' && workerNeverStarted(verdict) && failureClassOf(kind) !== 'process'
+    ? 'process'
+    : kind;
+}
+
 function toMs(value) {
   if (value == null || value === '') return null;
   const ms = typeof value === 'string' ? Date.parse(value) : Number(value);
@@ -938,6 +952,9 @@ export async function dispatchV2Action({
   // `() => boolean | Promise<boolean>`: may the waking step take a slot now?
   // Null wakes without a claim.
   claimWake = null,
+  // `(ms) => Promise`, resolved at the next settled task or after `ms`: the
+  // wait between two refused claims (D9). Null sleeps `ms`.
+  nextSettleOr = null,
   waitRecheckMs = WAIT_RECHECK_MS,
   // Who pinned `strictPool` (D30): null reads `--worker-pool`.
   pinSource = null,
@@ -982,6 +999,7 @@ export async function dispatchV2Action({
     : workerSilenceTimeoutSec(parentEnv);
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
   const failedProbes = new Set();
+  const failureKindOf = failureRule ? markedFailureKind : classifyFailure;
   const liveQuarantines = dependencies.liveQuarantines ?? (() => {
     try { return loadCoreState(bullswarmDir).pools ?? {}; }
     catch { return {}; }
@@ -1079,7 +1097,10 @@ export async function dispatchV2Action({
   // `retryOf`, and the failed attempt never does. `holds` are this step's own
   // return times per pool (never written to shared state). `leftNonWait` are
   // pools the step left for a failure that is not a wait, so it never waits
-  // for them. `gatePin` forces a gate retry's pool until an attempt starts.
+  // for them. `gatePin` is a gate retry's pool until an attempt starts: the
+  // pick is forced onto it whenever it can take work (D5, decided at the pick
+  // that starts the retry); `gateBlocked` is set when the router refused it,
+  // and cleared by a wait.
   const retryBudget = Math.max(0, (Number(maxMechanicalRetries) || 0) - (Number(retriesAlready) || 0));
   let retriesStarted = 0;
   let pendingRetry = null;
@@ -1087,19 +1108,38 @@ export async function dispatchV2Action({
   const holds = new Map();
   const leftNonWait = new Set();
   let gatePin = null;
+  let gateBlocked = false;
   let waiting = false;
   const heldAt = (name, at) => (holds.get(name) ?? -Infinity) > at;
+  const holdPassed = (name, at) => holds.has(name) && holds.get(name) <= at;
+  // A pool this step may pick now (§2.1), given that prepare() admits it: not
+  // held, not left for a failure that is not a wait, and either untried or
+  // tried only for a wait whose hold has passed.
+  const openAt = (name, at) => !heldAt(name, at) && !leftNonWait.has(name)
+    && (!tried.has(name) || holdPassed(name, at));
+  // A pool left for quota or throttle comes back once its hold passed.
+  const readmitPassedHolds = (at) => {
+    for (const name of [...tried]) {
+      if (!leftNonWait.has(name) && holdPassed(name, at)) {
+        tried.delete(name);
+        holds.delete(name);
+      }
+    }
+  };
   // The earliest return time among the pools this step could run on (route,
   // tier and run pin; pauses, holds and 5h gates ignored), minus the pools it
   // left for a non-wait failure. A pool's return time is the latest of its
-  // quarantine, bench, this step's hold and, when 5h-gated, its reset; a pool
-  // with none of them gives nothing to wait for. Null: nothing to wait for.
+  // quarantine, bench, this step's hold and, when 5h-gated, its reset. A
+  // capable pool with none of them that is pickable now means no wait at all
+  // (`pickable: true`); one that is not pickable gives nothing to wait for.
+  // Null: nothing to wait for.
   const waitPlanAt = (at) => {
     const live = liveQuarantines();
     const waitable = preparePools(allPools, action, effort, {
       preferredModel, strictPool, now: at, routeFilter,
       ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true,
     }).filter((pool) => !failedProbes.has(pool.name) && !leftNonWait.has(pool.name));
+    const open = new Set(prepare(allPools).filter((pool) => openAt(pool.name, at)).map((pool) => pool.name));
     let plan = null;
     for (const pool of waitable) {
       const parts = [
@@ -1108,7 +1148,10 @@ export async function dispatchV2Action({
         ['hold', holds.get(pool.name)],
         ['5h-limit', pool.burstGate === true ? pool.fiveHourResetsAt : null],
       ].map(([reason, value]) => [reason, toMs(value)]).filter(([, ms]) => ms != null && ms > at);
-      if (!parts.length) continue;
+      if (!parts.length) {
+        if (open.has(pool.name)) return { until: at, reason: null, pools: [pool.name], pickable: true };
+        continue;
+      }
       const [reason, back] = parts.reduce((latest, part) => (part[1] > latest[1] ? part : latest));
       if (!plan || back < plan.until) plan = { until: back, reason, pools: [pool.name] };
       else if (back === plan.until) plan.pools.push(pool.name);
@@ -1159,24 +1202,25 @@ export async function dispatchV2Action({
     }
     // Stage 3: the pick's pool list, rebuilt from the live picture every time
     // (prepare() re-reads the shared pauses; this step's holds keep a pool out
-    // until they pass). A gate retry is forced onto its pool while that pool
-    // can take work, and otherwise falls back to the untried eligible pools.
+    // until they pass, and a pool left for quota or throttle is back as soon
+    // as its hold passed). A gate retry is forced onto its pool whenever that
+    // pool can take work at this pick, and otherwise this pick falls back to
+    // the untried eligible pools; the pin stays until an attempt starts.
     let gatePick = null;
     let markedPools = null;
     if (failureRule) {
       const at = now();
       candidates = prepare(allPools);
+      readmitPassedHolds(at);
       remaining.length = 0;
       const replayed = replay ? candidates.find((candidate) => candidate.name === replay.name && !heldAt(candidate.name, at)) : null;
       if (replayed) remaining.push(replayed);
       for (const candidate of candidates) {
-        if (!tried.has(candidate.name) && candidate.name !== replayed?.name && !heldAt(candidate.name, at)) remaining.push(candidate);
+        if (candidate.name !== replayed?.name && openAt(candidate.name, at)) remaining.push(candidate);
       }
-      const pinned = gatePin ? candidates.find((candidate) => candidate.name === gatePin && !heldAt(candidate.name, at)) : null;
-      if (gatePin && !pinned) {
-        fallbackWhy = `gate retry moved: ${gatePin} cannot take work now`;
-        gatePin = null;
-      }
+      const pinned = gatePin && !gateBlocked
+        ? candidates.find((candidate) => candidate.name === gatePin && !heldAt(candidate.name, at))
+        : null;
       gatePick = pinned ? pinned.name : null;
       markedPools = pinned ? [pinned] : remaining;
       if (!markedPools.length) {
@@ -1184,6 +1228,11 @@ export async function dispatchV2Action({
         // return, or fail when nothing capable will come back.
         const plan = waitPlanAt(at);
         if (!plan) break;
+        // A pool the live picture admitted between two reads: pick again.
+        if (plan.pickable) {
+          replayPool = replay;
+          continue;
+        }
         if (!waiting) {
           waiting = true;
           onWaiting?.({ until: new Date(plan.until).toISOString(), pools: [...plan.pools].sort(), reason: plan.reason });
@@ -1191,22 +1240,35 @@ export async function dispatchV2Action({
         await backoff(Math.max(1, Math.min(plan.until, at + waitRecheckMs) - at));
         if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
         // A pool left only for quota or throttle comes back once its hold
-        // passed; one left for any other failure stays out.
+        // passed; one left for any other failure stays out. A gate retry's
+        // pool is looked at again.
         for (const name of [...tried]) if (!leftNonWait.has(name)) tried.delete(name);
+        gateBlocked = false;
         forceRefresh = true;
         continue;
       }
       if (waiting) {
         // The scheduler decides whether the waking step may run now against
-        // the steps that are running; until it says so, the step keeps waiting.
+        // the steps that are running; until it says so, the step keeps
+        // waiting, and re-asks after every settled task and every 5 s (D9).
+        let refused = false;
         if (typeof claimWake === 'function') {
           while (!(await claimWake())) {
+            refused = true;
             if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
-            await backoff(WAKE_CLAIM_RECHECK_MS);
+            await (typeof nextSettleOr === 'function' ? nextSettleOr(WAKE_CLAIM_RECHECK_MS) : backoff(WAKE_CLAIM_RECHECK_MS));
             if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
           }
         }
         waiting = false;
+        if (refused) {
+          // The pools may have moved while the step waited for its slot
+          // (another run paused one): look again before picking. Nothing
+          // pickable any more is a new wait, announced as one.
+          replayPool = replay;
+          forceRefresh = true;
+          continue;
+        }
       }
     }
     // An evidence retry is pinned to its pool for this one pick: the router
@@ -1264,10 +1326,10 @@ export async function dispatchV2Action({
     // that does not happen, so it is corrected, and no other pool is tried.
     if (!route.pick && pin) return correctPinnedRetry(pin);
     // Stage 3: the router refused the gate retry's pool (off its lane, or its
-    // live 5h meter is used up): the retry falls back to another pool.
+    // live 5h meter is used up): the retry falls back to another pool, and
+    // looks at its own again after a wait.
     if (!route.pick && gatePick) {
-      fallbackWhy = `gate retry moved: ${gatePick} cannot take work now`;
-      gatePin = null;
+      gateBlocked = true;
       continue;
     }
     if (!route.pick) break;
@@ -1301,8 +1363,8 @@ export async function dispatchV2Action({
         });
         // A pinned evidence retry never moves to another pool.
         if (pin) return correctPinnedRetry(pin);
-        // A gate retry's pool that fails its probe cannot take work: move.
-        if (gatePick) gatePin = null;
+        // A gate retry's pool that fails its probe cannot take work: this
+        // step never picks it again, so the retry moves.
         fallbackWhy = fallbackWhy
           ? `${fallbackWhy} · ${reason} on ${pool.name}`
           : `${reason} on ${pool.name}`;
@@ -1352,7 +1414,12 @@ export async function dispatchV2Action({
         ?? (isReasoningLevel(action.reasoning) ? action.reasoning : null),
     });
     const startedAt = new Date(now()).toISOString();
-    const routeWhy = fallbackWhy ? `${fallbackWhy} · ${route.why}` : route.why;
+    // A gate retry that starts on another pool says so (D5): the move is a
+    // fact of the pick that starts it, not of an earlier look.
+    const gateMoved = failureRule && gatePin && pool.name !== gatePin
+      ? `gate retry moved: ${gatePin} cannot take work now`
+      : null;
+    const routeWhy = [gateMoved, fallbackWhy, route.why].filter(Boolean).join(' · ');
     fallbackWhy = null;
     // The box paragraph closes this attempt's task, after any handoff or
     // correction block, and never enters `nextTask`: the next attempt gets a
@@ -1466,7 +1533,7 @@ export async function dispatchV2Action({
     const pathsAfter = statDeliverablePaths(targetDir, baselinePaths);
     // E30: on a step that declares evidence, a verdict whose only failure is
     // the text heuristic does not skip the checks; the facts decide.
-    const textVerdictWhy = evidenceItems.length && classifyFailure(verdict, pool) === 'semantic'
+    const textVerdictWhy = evidenceItems.length && failureKindOf(verdict, pool) === 'semantic'
       ? String(verdict?.why ?? 'no reason recorded')
       : null;
     const gateVerdict = textVerdictWhy != null ? { ...verdict, ok: true } : verdict;
@@ -1584,7 +1651,7 @@ export async function dispatchV2Action({
       ?? (files.stdoutFile && existsSync(files.stdoutFile) ? files.stdoutFile : null);
     const lastEvents = lastResponseEvents(streamFile);
     const finishedAt = workerFinishedAt;
-    const kind = classifyFailure(verdict, pool);
+    const kind = failureKindOf(verdict, pool);
     // The one evidence retry (E14), decided before the record is built so the
     // stored attempt never promises a retry that does not happen. (e) first:
     // an act step or a check that could not run goes to the caller at once.
@@ -1640,6 +1707,9 @@ export async function dispatchV2Action({
     // the record is built so the stored attempt never promises a retry that
     // does not happen. Null sends the step to the caller (D10).
     let next = null;
+    // F23: a wait-class retry either moves to another pool now or waits
+    // (a backoff, or a hold on the only pool); the watch's quota line reads it.
+    let quotaNext = null;
     if (failureRule && !verdict.ok && kind !== 'cancelled') {
       const at = now();
       const failureClass = failureClassOf(kind);
@@ -1652,10 +1722,18 @@ export async function dispatchV2Action({
           }
         }
       }
-      const others = remaining.filter((candidate) => candidate.name !== pool.name && !heldAt(candidate.name, at));
-      const eligibleNow = candidates.filter((candidate) => !heldAt(candidate.name, at));
-      const soleCandidate = eligibleNow.length === 1 && eligibleNow[0].name === pool.name;
-      if (roleOf(action) === 'act' && !verdict?.meta?.spawnError) {
+      // The pools the next pick could take now (§2.1): the live candidates,
+      // not held, not left for a failure that is not a wait, untried or
+      // tried only for a wait whose hold has passed, plus the pool that just
+      // failed unless held or left. `others` and the sole-candidate rule
+      // read the same set, so the step's retry is never lost to a pool it
+      // left only to wait (D2, D4).
+      const pickableNow = prepare(allPools).filter((candidate) => (candidate.name === pool.name
+        ? !heldAt(candidate.name, at) && !leftNonWait.has(candidate.name)
+        : openAt(candidate.name, at)));
+      const others = pickableNow.filter((candidate) => candidate.name !== pool.name);
+      const soleCandidate = pickableNow.length === 1 && pickableNow[0].name === pool.name;
+      if (roleOf(action) === 'act' && !workerNeverStarted(verdict)) {
         // D32: once its worker started, an act step may have acted.
         next = null;
       } else if (kind === 'failed-evidence' && evidenceRun?.checkFault) {
@@ -1684,6 +1762,7 @@ export async function dispatchV2Action({
         if (!sameBackoff && hold != null && hold > at) holds.set(pool.name, hold);
         if (sameBackoff) next = { how: 'wait', sameBackoff: true };
         else if (others.length || waitPlanAt(at)) next = { how: 'wait' };
+        if (next) quotaNext = !sameBackoff && others.length ? 'move' : 'wait';
       }
     }
     const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
@@ -1724,6 +1803,7 @@ export async function dispatchV2Action({
       usage: clone(verdict.meta?.usage ?? null),
       wallSec: verdict.meta?.wallSec ?? null,
       willRetry: willRecover,
+      ...(quotaNext ? { quotaNext } : {}),
       outputFile: files.outFile,
       ...(outputBytes != null ? { outputBytes } : {}),
       ...(deliverableFact ? { deliverable: deliverableFact } : {}),
@@ -1989,7 +2069,7 @@ export async function dispatchV2Action({
     comesBack = comesBack == null ? back : Math.min(comesBack, back);
   }
   const retryAfter = comesBack == null ? null : new Date(comesBack).toISOString();
-  const failureKind = last ? classifyFailure(last, lastPool) : 'unavailable';
+  const failureKind = last ? failureKindOf(last, lastPool) : 'unavailable';
   let why = !capable.length
     ? strictPool
       ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)`

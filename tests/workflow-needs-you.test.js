@@ -83,7 +83,8 @@ test('the design block renders exactly: failed-evidence after one same-pool retr
     '  still running: copy · waiting on this: pick, ship',
     '  your call:',
     '    rerun elsewhere  bullswarm workflow step rerun acme01 variants --avoid pool-a',
-    '    change the step  bullswarm workflow plan export acme01 --out plan.json → plan revise acme01 --program plan.json',
+    '    change the step  bullswarm workflow plan export acme01 --out plan.json',
+    '      then edit it   bullswarm workflow plan revise acme01 --program plan.json',
     '    take over        output: /runs/acme/out-variants-attempt-2.md · diff: /runs/acme/diff-variants-attempt-2.patch',
     '    accept anyway    bullswarm workflow step accept acme01 variants --reason "…"',
     `  next: bullswarm workflow watch acme01 --until trouble --after 212 --since ${at(20)}`,
@@ -205,12 +206,12 @@ test('the JSONL object has the documented shape and carries the cursor sequence'
     evidence: [{ type: 'command', cmd: 'npm test', exit: 1, why: 'exit 1', tail: 'not ok 3 - variants render' }],
     attempts: [
       { id: 'variants-1', pool: 'pool-a', model: 'model-a', durationSec: 660, files: 3 },
-      { id: 'variants-2', pool: 'pool-a', model: 'model-a', durationSec: 420, files: 3, retryOf: 'same-pool' },
+      { id: 'variants-2', pool: 'pool-a', model: 'model-a', durationSec: 420, files: 3, retryOf: 'same-pool', handoff: true },
     ],
     stillRunning: ['copy'], waitingOnThis: ['pick', 'ship'],
     options: {
       rerunElsewhere: 'bullswarm workflow step rerun acme01 variants --avoid pool-a',
-      changeStep: 'bullswarm workflow plan export acme01 --out plan.json → plan revise acme01 --program plan.json',
+      changeStep: 'bullswarm workflow plan export acme01 --out plan.json, edit it, then bullswarm workflow plan revise acme01 --program plan.json',
       takeOver: 'output: /runs/acme/out-variants-attempt-2.md · diff: /runs/acme/diff-variants-attempt-2.patch',
       acceptAnyway: 'bullswarm workflow step accept acme01 variants --reason "…"',
     },
@@ -317,7 +318,8 @@ test('the review variant names the failing requirement, its reviewer, and the fi
     '  waiting on this: publish',
     '  your call:',
     '    rerun elsewhere  bullswarm workflow step rerun acme01 verify-round-2 --avoid pool-b',
-    '    change the step  bullswarm workflow plan export acme01 --out plan.json → plan revise acme01 --program plan.json',
+    '    change the step  bullswarm workflow plan export acme01 --out plan.json',
+    '      then edit it   bullswarm workflow plan revise acme01 --program plan.json',
     '    take over        output: /runs/acme/out-verify-round-2-attempt-1.md',
     '    accept anyway    bullswarm workflow step accept acme01 verify-round-2 --reason "…"',
   ]);
@@ -346,4 +348,108 @@ test('a verified (non-program) run keeps the plain failed line', () => {
   state.config.settings.executionMode = 'verified';
   const { notable } = notableWatchEvents({ events: [failedEvent('variants', { failureKind: 'process', why: 'exit 1' })], state });
   assert.equal(notable[0].type, 'action.finished');
+});
+
+// F19 / L3: a gate retry is pinned to its pool, so its own candidate list
+// names only that pool; the first attempt's list still names the others.
+test('rerun elsewhere is decided over every current attempt: a pinned gate retry still offers the other pool', () => {
+  const state = designState();
+  state.attempts[1].routeCandidates = [{ pool: 'pool-a' }];
+  const lines = renderNeedsYou(needsYouFacts(state, failedEvent('variants', { failureKind: 'failed-evidence', retries: 1 }), { features: MARKED }));
+  assert.equal(lines.find((line) => line.startsWith('    rerun elsewhere')), '    rerun elsewhere  bullswarm workflow step rerun acme01 variants --avoid pool-a');
+  assert.equal(lines.some((line) => line.includes('retry here')), false);
+  // A process retry on the other pool: its list leaves out the pool it tried.
+  const moved = designState();
+  moved.attempts[0].routeCandidates = [{ pool: 'pool-b' }, { pool: 'pool-a' }];
+  moved.attempts[0].pool = 'pool-b';
+  Object.assign(moved.attempts[1], { routeCandidates: [{ pool: 'pool-a' }], retryOf: { attempt: 'variants-1', how: 'other-pool' } });
+  assert.equal(needsYouFacts(moved, failedEvent('variants', { failureKind: 'process', why: 'x', retries: 1 }), { features: MARKED }).options.rerunElsewhere,
+    'bullswarm workflow step rerun acme01 variants --avoid pool-a');
+  // Superseded attempts (an earlier definition) do not count.
+  const rerun = designState();
+  rerun.attempts[1].routeCandidates = [{ pool: 'pool-a' }];
+  rerun.actions[0].supersededAttempts = 1;
+  assert.equal(needsYouFacts(rerun, failedEvent('variants', { failureKind: 'failed-evidence' }), { features: MARKED }).options.retryHere,
+    'bullswarm workflow step rerun acme01 variants');
+});
+
+// F26: every printed command runs as printed; no `→` joins two commands.
+test('the change-the-step option prints two whole commands', () => {
+  const lines = renderNeedsYou(needsYouFacts(designState(), failedEvent('variants', { failureKind: 'failed-evidence', retries: 1 }), { features: MARKED }));
+  const commands = lines.filter((line) => line.includes('bullswarm ')).map((line) => line.slice(line.indexOf('bullswarm ')));
+  assert.equal(commands.some((command) => command.includes('→')), false);
+  assert.ok(commands.includes('bullswarm workflow plan export acme01 --out plan.json'));
+  assert.ok(commands.includes('bullswarm workflow plan revise acme01 --program plan.json'));
+});
+
+// F20: the round's last check may have passed its own requirement; the block
+// names the check that judged the failing one.
+test('the review variant names the check that judged the failing requirement, not the round\'s last check', () => {
+  const state = reviewState({ max: 1, repaired: false });
+  state.program.actions.splice(2, 0, step('check-b', { dependsOn: ['build'], evidenceFor: ['requirement-2'], lane: 'analyze' }));
+  state.actions.push({ id: 'check-b', status: 'succeeded' });
+  state.attempts.push(attempt('check-b', 1, { start: 0, minutes: 3, status: 'succeeded', pool: 'pool-a', model: 'model-a', changedFileCount: 0 }));
+  state.verifyLoop.rounds[0].verifyActionIds = ['check', 'check-b'];
+  const event = { type: 'workflow.verify-round', committedAt: at(6), payload: { round: 1, of: 1, stage: 'finished', passed: ['requirement-2'], failed: ['requirement-1'], next: 'caller' } };
+  const facts = needsYouFacts(state, event, { features: MARKED });
+  const lines = renderNeedsYou(facts);
+  assert.equal(lines[0], '✗ check needs you · review failed · no automatic fix (verifyRounds 0)');
+  assert.equal(facts.options.rerunElsewhere, 'bullswarm workflow step rerun acme01 check --avoid pool-b');
+  assert.equal(facts.options.acceptAnyway, 'bullswarm workflow step accept acme01 check --reason "…"');
+  assert.equal(facts.options.takeOver, 'output: /runs/acme/out-check-attempt-1.md');
+  assert.equal(lines.some((line) => line.includes('check-b')), false);
+  // Two checks each failing one: the second gets its own rerun and accept lines.
+  state.ledger.requirements['requirement-2'] = {
+    status: 'failed',
+    evidence: [{ sourceAction: 'check-b', requirementId: 'requirement-2', status: 'failed', stale: false, evidence: ['no empty-week test'], concerns: [] }],
+  };
+  const both = needsYouFacts(state, { ...event, payload: { ...event.payload, passed: [], failed: ['requirement-1', 'requirement-2'] } }, { features: MARKED });
+  const bothLines = renderNeedsYou(both);
+  assert.equal(bothLines[0], '✗ check needs you · review failed · no automatic fix (verifyRounds 0)');
+  const at2 = bothLines.indexOf('    also judged by check-b:');
+  assert.ok(at2 > 0);
+  assert.deepEqual(bothLines.slice(at2 + 1, at2 + 3), [
+    '    rerun elsewhere  bullswarm workflow step rerun acme01 check-b --avoid pool-a',
+    '    accept anyway    bullswarm workflow step accept acme01 check-b --reason "…"',
+  ]);
+  assert.deepEqual(needsYouJson(both).options.otherChecks, [{
+    step: 'check-b', rerunElsewhere: 'bullswarm workflow step rerun acme01 check-b --avoid pool-a',
+    acceptAnyway: 'bullswarm workflow step accept acme01 check-b --reason "…"',
+  }]);
+});
+
+// F28: a failed action.finished from a kernel that named no attempts, replayed
+// after the step was rerun, shows the tries of the definition that failed.
+test('replaying an old failed finish after a rerun shows the tries that failed then', () => {
+  const state = designState();
+  state.attempts[1].pool = 'pool-b';
+  delete state.attempts[1].retryOf;
+  state.actions[0].supersededAttempts = 2;
+  state.attempts.push(
+    attempt('variants', 3, { start: 30, minutes: 2, failureKind: 'process' }),
+    attempt('variants', 4, { start: 33, minutes: 2, failureKind: 'process' }),
+  );
+  const facts = needsYouFacts(state, failedEvent('variants', { failureKind: 'failed-evidence' }), { features: {} });
+  assert.deepEqual(facts.attempts.map((entry) => [entry.id, entry.pool]), [['variants-1', 'pool-a'], ['variants-2', 'pool-b']]);
+});
+
+// F29: a dependent a plan revision removed waits on nothing.
+test('a removed dependent is not listed in waiting on this', () => {
+  const state = designState();
+  state.actions.find((entry) => entry.id === 'ship').status = 'removed';
+  const facts = needsYouFacts(state, failedEvent('variants', { failureKind: 'failed-evidence', retries: 1 }), { features: MARKED });
+  assert.deepEqual(facts.waitingOnThis, ['pick']);
+});
+
+// F30: the JSONL attempt keeps the handoff a same-pool retry carries; the try
+// line still leaves it out.
+test('a same-pool retry keeps handoff: true in JSONL but not on its try line', () => {
+  const facts = needsYouFacts(designState(), failedEvent('variants', { failureKind: 'failed-evidence', retries: 1 }), { features: MARKED });
+  assert.equal(needsYouJson(facts).attempts[1].handoff, true);
+  assert.equal(renderNeedsYou(facts).find((line) => line.startsWith('  try 2')), '  try 2  same pool, failure attached · 7m00s · 3 files');
+  // A handoff to the same pool without a retryOf fact is not printed either.
+  const state = designState();
+  delete state.attempts[1].retryOf;
+  const lines = renderNeedsYou(needsYouFacts(state, failedEvent('variants', { failureKind: 'failed-evidence', retries: 1 }), { features: MARKED }));
+  assert.equal(lines.find((line) => line.startsWith('  try 2')), '  try 2  pool-a · model-a · 7m00s · 3 files');
 });

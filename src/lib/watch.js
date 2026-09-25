@@ -816,6 +816,8 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       } catch { /* the capture is best effort; the verdict still resolves */ }
     };
     child.on('error', (err) => {
+      // No pid: the CLI never started, so the worker did nothing at all.
+      const workerNotStarted = child.pid == null;
       const finishedStream = finishStream();
       reportExit(null, null, finishedStream, { spawnError: true });
       const streamStats = finishedStream.streamStats;
@@ -843,6 +845,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerFailureText,
         errorChannel: errorChannelText(true),
         spawnError: true,
+        ...(workerNotStarted ? { workerNotStarted: true } : {}),
         ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
     });
@@ -871,6 +874,26 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       });
     });
   });
+}
+
+// True when the provider reported the turn's usage and it produced nothing:
+// output tokens 0 when counted, otherwise every reported counter 0.
+function reportedNoWork(reportedUsage) {
+  if (!reportedUsage || typeof reportedUsage !== 'object') return false;
+  if (typeof reportedUsage.output === 'number') return reportedUsage.output === 0;
+  const counters = Object.entries(reportedUsage)
+    .filter(([key, value]) => key !== 'sessionId' && typeof value === 'number');
+  return counters.length > 0 && counters.every(([, value]) => value === 0);
+}
+
+// The reply as the provider's own limit notice (W7's one exception): the
+// whole trimmed reply is a single line the quota gate accepts as a notice,
+// from a turn the provider reports as having produced nothing.
+function relayedQuotaNotice(connector, reply, reportedUsage) {
+  const text = typeof reply === 'string' ? reply.trim() : '';
+  if (!text || /[\r\n]/.test(text) || !reportedNoWork(reportedUsage)) return null;
+  const hit = findQuotaFailure(connector, text);
+  return hit && hit.line === text ? text : null;
 }
 
 function extractOutput(connector, obs) {
@@ -1409,6 +1432,16 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // the assistant's reply, a tool result or the extracted answer.
   const errorChannel = obs.errorChannel ?? '';
   const fatalKind = obs.fatalSignature?.kind ?? null;
+  // A provider that answers a refused turn with its own limit notice as the
+  // reply (Claude Code: `You've hit your session limit · resets …`, usage all
+  // zero) mirrors it into its terminal record, which W7 reads as the agent's
+  // words. That reply is the provider's notice only when its whole trimmed
+  // text is the one quota-shaped line and the provider reported a turn that
+  // produced nothing; a reply quoting the line inside an answer stays a reply.
+  const relayedNotice = fatalKind === null
+    ? relayedQuotaNotice(connector, initialOutput, obs.reportedUsage)
+    : null;
+  const quotaChannel = relayedNotice ? `${errorChannel}\n${relayedNotice}` : errorChannel;
   const quotaFailure = fatalKind === 'quota'
     ? {
         signature: obs.fatalSignature.signature,
@@ -1417,7 +1450,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         transient: obs.fatalSignature.transient === true,
         waitMs: obs.fatalSignature.waitMs ?? null,
       }
-    : fatalKind === null ? findQuotaFailure(connector, errorChannel, { now: endedAt }) : null;
+    : fatalKind === null ? findQuotaFailure(connector, quotaChannel, { now: endedAt }) : null;
   const authHit = fatalKind === 'auth'
     ? obs.fatalSignature.signature
     : quotaFailure ? null : matchLikelyAuthFailure(connector, errorChannel);
@@ -1646,6 +1679,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       timedOut: obs.timedOut,
       stalled: obs.stalled ?? false,
       cancelled: obs.cancelled,
+      // Stage 3: read only by the failure rule of marked runs (a process
+      // failure, and the one retry an act step may get). classifyFailure
+      // never reads it, so saved runs classify a spawn failure as before.
+      ...(obs.workerNotStarted ? { workerNotStarted: true } : {}),
       providerFailureType: obs.providerFailureType,
       providerFailureAt: obs.providerFailureAt,
       providerFailureText: obs.providerFailureText,

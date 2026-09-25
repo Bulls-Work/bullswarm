@@ -4,12 +4,13 @@
 
 - workflow: every step gets one automatic retry, then comes back to you. A
   crashed, silent or signed-out worker is retried once on another pool that can
-  run the step (the same pool when it is the only one). A failed gate (declared
-  evidence, a deliverable not produced, a report in the wrong format, or output
-  judged failed) is retried once on the same pool with the failure attached. A
-  pool out of quota is not a failure: the step moves to another pool without
-  spending its retry, or waits until a pool is back and says so. Steps that do
-  not depend on a failed step keep running. `--retry-attempts` (0-3, default 1)
+  run the step (the same pool when it is the only one, except after a sign-in
+  failure). A failed gate (declared evidence, a deliverable not produced, a
+  report in the wrong format, or output judged failed) is retried once on the
+  same pool with the failure attached. A pool out of quota never fails the step
+  while a return time is known: the step moves to another pool without spending
+  its retry, or waits until a pool is back and says so. Steps that do not
+  depend on a failed step keep running. `--retry-attempts` (0-3, default 1)
   sets the retries per step. Runs started before this version keep their old
   retry rules when resumed.
 - workflow: when a step needs you, `watch` prints one block: what failed, each
@@ -20,7 +21,10 @@
   step's route. `bullswarm workflow step accept <run> <step> --reason "…"`
   accepts a failed step, or a check's failing requirements, as your choice: its
   dependents run, the record says "choice" and never counts as proof, and
-  rerunning the step undoes it.
+  rerunning the step undoes it. A run that ends with a failed step, or with a
+  requirement its review loop left failing, lists `rerun` and `accept` under
+  `your call:`; for a requirement they name the check that judged it
+  (`--avoid <pool>`, `--requirement <id>`).
 - workflow: a step can say where it runs with `route`: `pools` and `providers`
   to use or avoid, and `independentOf` (earlier steps, or "writers" on a check)
   whose providers it must not use. It is applied before quota pacing, and the
@@ -74,8 +78,8 @@
   and makes no commit fails as `not-produced`; 0.35.6 recorded it as
   succeeded. Chore and analyze steps with no declared deliverable are not
   judged. Runs started before this version keep their original rules when
-  resumed. The failure is not retried automatically, and `workflow resume`
-  leaves it to you. The skill and planner rules make the gate a `check` and
+  resumed. The failure gets one retry on the same pool with the failure
+  attached, then comes back to you; `workflow resume` never reruns it. The skill and planner rules make the gate a `check` and
   keep commit and PR steps `mechanical`.
 - workflow: when every step affecting a failed requirement declares a
   `report`, the verify loop's repair step is a read-only `analyze` step whose

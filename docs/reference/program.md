@@ -60,7 +60,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 |---|---|---|
 | `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`) | You decide |
 | `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached | You decide |
-| `wait` | `quota`, `throttle`: move to another eligible pool without spending the retry, or wait for a known return time | Quota never fails only because it is exhausted |
+| `wait` | `quota`, `throttle`: move to another eligible pool without spending the retry, or wait for a known return time | A step never fails for quota while a return time is known; with no known return time and no other pool it fails as `throttle` or `quota` |
 | `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
 | `stop` | `cancelled`, `paused`, `restarted`, `superseded`: no failure retry | The caller controls what runs next |
 
@@ -91,6 +91,16 @@ For example, a check can use `route: { "independentOf": ["write-docs"] }`.
 ids, not display labels. Pool/provider names cannot appear in both `use` and
 `avoid`; `writers` is accepted only on a step with `evidenceFor`. A route that
 names an unknown or later step is rejected. An empty route is dropped.
+
+A repair step the kernel adds takes the routes of the steps it repairs: the
+avoid lists together, and a `use` list only when every one of those steps has
+one, as the names they share. When they share no name, the kernel refuses its
+own repair (`program.revision_rejected`, `route cannot be inherited: …`) and
+the loop stops at `revision` rather than widen the route; change one of those
+routes or accept the requirement. Under a `--worker-pool` pin every step runs
+on the pinned pool, so a route with `independentOf` is refused at validate,
+launch and revise when a step it names did or will do its work on that pool's
+provider.
 
 ::: warning
 Never set `defaults.effort` to `high`. High belongs to a `combine` step that merges written code, a design step (`kind: architecture`), and an independent check (`kind: adversarial-acceptance`). A study that reads code and writes markdown is a `produce` step.
@@ -176,7 +186,7 @@ So a kind and its role alone do not always route or gate the same way:
 
 A step may give both a kind and a role only when the role is the kind's own; then only the kind is stored. The kind gate for `implement` applies to runs started by this version.
 
-When a step ends, Bullswarm checks its deliverable. A step that did not produce it fails as `not-produced`. That failure is not retried automatically, and `workflow resume` leaves it to you.
+When a step ends, Bullswarm checks its deliverable. A step that did not produce it fails as `not-produced`. In runs started by this version that failure gets one retry on the same pool in a fresh session with the failure attached, then comes back to you; runs started earlier do not retry it. `workflow resume` never reruns it: use `step rerun`, `step accept` or plan revise.
 
 | Deliverable | Produced when |
 |---|---|

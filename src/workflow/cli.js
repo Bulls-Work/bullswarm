@@ -760,7 +760,8 @@ function programRoutes(actions) {
   return (actions ?? []).some((action) => action?.route && typeof action.route === 'object');
 }
 
-function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR())) {
+// `state` (a running run) lets the pin check see which steps already did work.
+function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR()), state = null) {
   if (!programRoutes(actions) || !Array.isArray(pools)) return [];
   const routing = doc?.config?.workerRouting ?? {};
   const preferredModel = routing.model ?? routing.preferredModel ?? null;
@@ -768,6 +769,7 @@ function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_
     runPin: routing.strictPool ?? routing.pool ?? null,
     preparePools: (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options }),
     labels,
+    state,
   });
 }
 
@@ -1402,10 +1404,13 @@ async function planRevise(opts) {
   }
   if (precheck.ok) {
     // Only the steps this revision (re)starts are checked against today's
-    // pools: a finished step's route is history.
-    const starting = new Set([...precheck.changes.added, ...precheck.changes.amended, ...precheck.changes.restored, ...precheck.changes.rerun]);
+    // pools, invalidated dependents included: a finished step's route is
+    // history. In the state the pin check reads, those steps run again.
+    const starting = new Set([...precheck.changes.added, ...precheck.changes.amended, ...precheck.changes.restored,
+      ...precheck.changes.rerun, ...precheck.changes.invalidated]);
     const routed = precheck.desired.filter((action) => starting.has(action.id));
-    const routeIssues = programRoutes(routed) ? routePoolIssues(routed, configuredPools(), doc) : [];
+    const restarting = { ...current, actions: current.actions.map((action) => (starting.has(action.id) ? { ...action, status: 'pending' } : action)) };
+    const routeIssues = programRoutes(routed) ? routePoolIssues(routed, configuredPools(), doc, undefined, restarting) : [];
     if (routeIssues.length) Object.assign(precheck, { ok: false, issues: routeIssues });
   }
   const verifyRoundsNote = features.failureRule && setsVerifyRounds(body.program);
@@ -1961,7 +1966,14 @@ export async function restartV2Step({
     const filter = resolveRouteFilter(state, definition, pools ?? []);
     const target = (pools ?? []).find((entry) => entry?.name === pool) ?? pool;
     if (filter && !poolPassesRoute(target, filter)) {
-      return fail(2, `step ${stepId}'s route does not allow pool ${pool} (${filter.summary}); change the route or use bullswarm workflow step rerun ${id} ${stepId} --avoid <pool>`, base);
+      // Point at what works on a running step: restart on an allowed pool, or
+      // change the route (an amendment restarts the step). Not step rerun,
+      // which refuses a running step.
+      const allowed = (pools ?? []).filter((entry) => entry?.name && entry.name !== pool && entry.enabled !== false && poolPassesRoute(entry, filter)).map((entry) => entry.name);
+      const restart = allowed.length
+        ? `restart it on a pool the route allows: bullswarm workflow step restart ${id} ${stepId} --pool ${allowed[0]} (allowed: ${allowed.join(', ')}), or without --pool; or `
+        : '';
+      return fail(2, `step ${stepId}'s route does not allow pool ${pool} (${filter.summary}); ${restart}change the route: bullswarm workflow plan export ${id} --out plan.json, edit it, then bullswarm workflow plan revise ${id} --program plan.json`, base);
     }
   }
   const request = requestStepRestart(resolved.runDir, { actionId: stepId, attemptId: running.id, pool, now });
@@ -2087,23 +2099,29 @@ export async function rerunV2Step({
     const route = definition.route ? JSON.parse(JSON.stringify(definition.route)) : {};
     const use = route.pools?.use ?? null;
     if (use && use.every((name) => avoided.includes(name))) {
-      return stepError(2, `step ${stepId} may only use ${use.join(', ')} (route.pools.use); avoiding ${use.length === 1 ? 'it' : 'them'} leaves nothing. Change its route: bullswarm workflow plan export ${id} --out plan.json → plan revise ${id} --program plan.json`, base);
+      return stepError(2, `step ${stepId} may only use ${use.join(', ')} (route.pools.use); avoiding ${use.length === 1 ? 'it' : 'them'} leaves nothing. Change its route: bullswarm workflow plan export ${id} --out plan.json, edit it, then bullswarm workflow plan revise ${id} --program plan.json`, base);
     }
     route.pools = { ...(route.pools ?? {}) };
     route.pools.avoid = [...new Set([...(route.pools.avoid ?? []), ...avoided])].sort();
     if (use) route.pools.use = use.filter((name) => !avoided.includes(name));
     definition.route = route;
+  }
+  // §2.4: the route CLI checks run at every step rerun, not only with --avoid,
+  // so a route today's pools cannot serve is refused before anything is written.
+  if (definition.route) {
     const doc = (() => { try { return JSON.parse(readFileSync(join(resolved.runDir, 'goal.json'), 'utf8')); } catch { return state; } })();
-    const routing = doc?.config?.workerRouting ?? {};
-    const filter = resolveRouteFilter(state, definition, pools ?? []);
-    const capable = prepareV2DispatchPools(pools ?? [], definition, definition.effort ?? 'medium', {
-      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
-      routeFilter: filter, ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true,
-    }).filter((pool) => poolPassesRoute(pool, filter));
-    if (!capable.length) {
-      return stepError(2, `no pool could run ${stepId} after avoiding ${avoided.join(', ')} (${definition.lane}/${definition.effort} work); rerun without --avoid, or change the step's effort or route`, base);
+    if (avoided.length) {
+      const routing = doc?.config?.workerRouting ?? {};
+      const filter = resolveRouteFilter(state, definition, pools ?? []);
+      const capable = prepareV2DispatchPools(pools ?? [], definition, definition.effort ?? 'medium', {
+        preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
+        routeFilter: filter, ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true,
+      }).filter((pool) => poolPassesRoute(pool, filter));
+      if (!capable.length) {
+        return stepError(2, `no pool could run ${stepId} after avoiding ${avoided.join(', ')} (${definition.lane}/${definition.effort} work); rerun without --avoid, or change the step's effort or route`, base);
+      }
     }
-    const routeIssues = routePoolIssues([definition], pools, doc, labels);
+    const routeIssues = routePoolIssues([definition], pools, doc, labels, state);
     if (routeIssues.length) return { code: 2, status: 'rejected', issues: routeIssues, ...base };
   }
 
@@ -2152,7 +2170,7 @@ export async function rerunV2Step({
   }
   return {
     code: 0, status: 'applied', programRevision: outcome.record.programRevision, changes: outcome.record.changes,
-    appliedBy: outcome.appliedBy, paused, relaunch: relaunched, ...result,
+    appliedBy: outcome.appliedBy, reopened: outcome.reopened ?? null, paused, relaunch: relaunched, ...result,
   };
 }
 
@@ -2219,8 +2237,21 @@ export async function acceptV2Step({
   }
   return {
     code: 0, status: 'applied', programRevision: outcome.record.programRevision, changes: outcome.record.changes,
-    dependents: outcome.record.changes?.invalidated ?? [], appliedBy: outcome.appliedBy, paused, relaunch: relaunched, ...result,
+    dependents: outcome.record.changes?.invalidated ?? [], appliedBy: outcome.appliedBy, reopened: outcome.reopened ?? null, paused, relaunch: relaunched, ...result,
   };
+}
+
+/**
+ * F22: what reopening a finished run by `step rerun` / `step accept` does:
+ * the steps queued again, and each act step kept cancelled because its
+ * worker had started (it may have acted).
+ */
+export function stepReopenedLines(reopened) {
+  if (!reopened) return [];
+  const requeued = reopened.requeued ?? [];
+  const lines = [`reopened the ${reopened.previousStatus} run; its earlier result is archived${requeued.length ? `; running again: ${requeued.join(', ')}` : ''}`];
+  if (reopened.keptCancelled?.length) lines.push(`not run again (act step, may have acted): ${reopened.keptCancelled.join(', ')}`);
+  return lines;
 }
 
 function printStepRerun(result, token) {
@@ -2242,8 +2273,9 @@ function printStepRerun(result, token) {
   if (result.pending) console.log(`✓ ${result.step} of ${id} will avoid ${result.avoid.join(', ')} when it runs · revision ${result.programRevision}`);
   else console.log(`✓ ${result.step} of ${id} runs again${avoiding} · revision ${result.programRevision} (${by})`);
   for (const note of result.notes ?? []) console.log(`  ${note}`);
+  for (const line of stepReopenedLines(result.reopened)) console.log(`  ${line}`);
   if (result.handoff) console.log(`  handoff  ${result.handoff.attemptId} (${result.handoff.failureKind}${result.handoff.pool ? ` on ${result.handoff.pool}` : ''}) goes to the next attempt`);
-  if (result.avoid.length) console.log(`  route    ${routeSummary(result.route)} · kept for later reruns; remove it with plan export → plan revise`);
+  if (result.avoid.length) console.log(`  route    ${routeSummary(result.route)} · kept for later reruns; to remove it, export the plan, edit the route, then plan revise`);
   if (result.paused) console.log(`  resume   bullswarm workflow resume ${id}`);
   else console.log(`  watch    ${result.next.watch}`);
 }
@@ -2269,6 +2301,7 @@ function printStepAccept(result, token) {
     console.log('  evidence   choice (not proof; the run is verified only by its checks)');
     if (result.dependents.length) console.log(`  dependents ${result.dependents.join(', ')} run now`);
   }
+  for (const line of stepReopenedLines(result.reopened)) console.log(`  ${line}`);
   if (result.paused) console.log(`  resume     bullswarm workflow resume ${id}`);
   console.log(`  undo       ${result.next.undo}`);
 }

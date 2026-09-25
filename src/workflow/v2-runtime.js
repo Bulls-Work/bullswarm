@@ -1,6 +1,8 @@
 import { withV2Cancellation } from './v2-cancellation.js';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent, readEvents } from './events.js';
 import {
@@ -9,12 +11,12 @@ import {
 } from './v2-revision.js';
 import { ACTION_PROGRAM_SCHEMA_VERSION } from './action-validator.js';
 import {
-  applyRevisionVerifyRounds, closeRound, createVerifyLoop, kernelRepairActionIds, nextLoopStep, openFirstRound, openNextRound,
+  applyRevisionVerifyRounds, closeRound, createVerifyLoop, failingRequirements, kernelRepairActionIds, nextLoopStep, openFirstRound, openNextRound,
   planRepairStep, planVerifyStep, recheckSet, repairBrief, repairChangedFiles, repairInheritedPaths, roundBrief,
 } from './verify-rounds.js';
 import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
-import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
+import { captureWorkspaceManifest, checkOwnership, compareManifests } from './ownership.js';
 import { canStartV2Action, scheduleV2Actions } from './v2-scheduler.js';
 import {
   assertV2Resume, createV2DurableState, deserializeV2DurableState,
@@ -151,7 +153,9 @@ function acceptedEventPayloads(planned) {
   return (planned?.acceptances ?? []).map((entry) => ({
     actionId: entry.step,
     reason: entry.reason,
-    requirements: Array.isArray(entry.requirements) ? entry.requirements.map((item) => item.id) : null,
+    // Only what this accept added: earlier acceptances on the check keep theirs (F21).
+    requirements: Array.isArray(entry.accepted) ? [...entry.accepted]
+      : (Array.isArray(entry.requirements) ? entry.requirements.map((item) => item.id) : null),
   }));
 }
 
@@ -319,6 +323,14 @@ function readRunStateLoose(runDir) {
   try { return JSON.parse(readFileSync(statePath(runDir), 'utf8')); } catch { return null; }
 }
 
+// An act step whose current attempt a cancellation stopped: its worker had
+// started, so it may have acted (D32).
+function actStoppedAfterStart(state, runtime) {
+  if (roleOf(definition(state, runtime.id)) !== 'act') return false;
+  const last = state.attempts.findLast((attempt) => attempt.actionId === runtime.id && attempt.ordinal > (runtime.supersededAttempts ?? 0));
+  return last?.status === 'cancelled';
+}
+
 // Apply one revision request to a run no kernel owns. The caller holds the
 // lease. A finished run is reopened: its result is archived, cancellation
 // cleared, and the new plan runs when the kernel is relaunched.
@@ -360,9 +372,19 @@ function commitRevisionUnderLease(runDir, request, { now }) {
     // what lifts that cancellation, so they run again. Their earlier attempts
     // stay on record but never count as this step's completion. Failed steps
     // are left as they are: rerunning them is the caller's decision.
+    // F22 (D32, P3): a step rerun or step accept names one step. An act step
+    // the cancellation stopped after its worker started may already have
+    // acted, so that verb never runs it again: it stays cancelled and is
+    // listed to the caller (`keptCancelled`).
+    const singleStep = request.source === 'step-rerun' || request.source === 'step-accept';
     const requeued = [];
+    const keptCancelled = [];
     for (const action of state.actions) {
       if (action.status !== 'cancelled') continue;
+      if (singleStep && actStoppedAfterStart(state, action)) {
+        keptCancelled.push(action.id);
+        continue;
+      }
       Object.assign(action, {
         status: 'pending', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [],
         lastFailure: null, supersededAttempts: action.attempts,
@@ -370,8 +392,9 @@ function commitRevisionUnderLease(runDir, request, { now }) {
       requeued.push(action.id);
     }
     if (requeued.length) state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
-    reopened = { previousStatus, archivedResult: hadResult ? archived : null, requeued };
-    appendEvent(runDir, state, 'workflow.reopened', { previousStatus, requestId: request.id, archivedResult: reopened.archivedResult, requeued });
+    const kept = keptCancelled.length ? { keptCancelled } : {};
+    reopened = { previousStatus, archivedResult: hadResult ? archived : null, requeued, ...kept };
+    appendEvent(runDir, state, 'workflow.reopened', { previousStatus, requestId: request.id, archivedResult: reopened.archivedResult, requeued, ...kept });
   }
   // A revision answers a caller-planner pause as fully as a submission does.
   if (state.planner.awaiting) {
@@ -525,6 +548,14 @@ export function unpauseV2Run({ bullswarmDir, runId, source = 'cli' } = {}) {
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
 function settings(state) { return { ...DEFAULTS, ...(state.config.settings ?? {}) }; }
+
+// One file from the main workspace into a private copy, as it is (F17).
+function copyWorkspaceFile(source, destination) {
+  mkdirSync(dirname(destination), { recursive: true });
+  rmSync(destination, { force: true });
+  if (lstatSync(source).isSymbolicLink()) symlinkSync(readlinkSync(source), destination);
+  else copyFileSync(source, destination);
+}
 function statePath(runDir) { return join(runDir, 'state.json'); }
 function goalPath(runDir) { return join(runDir, 'goal.json'); }
 
@@ -2132,11 +2163,9 @@ async function runV2Kernel({
     if (contract) writeJsonAtomic(contractPath, contract);
     if (candidatePath && !receipt) rmSync(candidatePath, { force: true });
     let isolated = receipt?.isolated ?? null;
+    const isolatedName = `${action.id}-attempt-${baseAttemptOrdinal + 1}-${Date.now().toString(36)}`;
     if (!receipt && !review && action.ownedFiles.length && schedulerWorkspaceMode === 'isolated') {
-      isolated = createWorkspace({
-        sourceDir: state.intent.cwd, runDir, actionId: `${action.id}-attempt-${baseAttemptOrdinal + 1}-${Date.now().toString(36)}`,
-        maxFiles: config.maxManifestFiles,
-      });
+      isolated = createWorkspace({ sourceDir: state.intent.cwd, runDir, actionId: isolatedName, maxFiles: config.maxManifestFiles });
       emit('action.workspace_created', { actionId: action.id, mode: 'isolated', workspaceRoot: isolated.workspaceRoot });
     }
     const targetDir = isolated?.targetDir ?? state.intent.cwd;
@@ -2150,6 +2179,45 @@ async function runV2Kernel({
     let before = receipt?.before ?? null;
     if (!receipt && enforcesOwnership(state) && action.ownedFiles.length) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
     let currentAttemptId = null;
+    // F17 (D9): a waiting step gives up its owned-file claim, so another writer
+    // may integrate the same files meanwhile. When it claims its slot again, its
+    // private copy is brought up to date before the attempt starts: a copy no
+    // attempt worked in is made again; one an earlier attempt worked in takes
+    // every file main changed and it did not (a file both changed stays a
+    // conflict for integration to report).
+    const refreshIsolatedCopy = () => {
+      if (!isolated?.mainBefore || !isolated.isolatedBefore || receipt) return;
+      const mainNow = captureManifest(isolated.sourceDir, { maxFiles: config.maxManifestFiles });
+      const changed = compareManifests(isolated.mainBefore, mainNow).changed;
+      if (!changed.length) return;
+      if (!currentAttemptId) {
+        disposeWorkspace(isolated);
+        isolated = null;
+        const fresh = createWorkspace({ sourceDir: state.intent.cwd, runDir, actionId: isolatedName, maxFiles: config.maxManifestFiles });
+        if (fresh.targetDir !== targetDir) {
+          disposeWorkspace(fresh);
+          throw new Error(`the private copy for ${action.id} moved from ${targetDir} to ${fresh.targetDir} when it was made again`);
+        }
+        isolated = fresh;
+        if (before) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
+        emit('action.workspace_refreshed', { actionId: action.id, workspaceRoot: isolated.workspaceRoot, remade: true, files: [] });
+        return;
+      }
+      const copyNow = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
+      const taken = [];
+      for (const file of changed) {
+        if (copyNow[file] !== isolated.isolatedBefore[file]) continue;
+        const destination = join(targetDir, file);
+        if (Object.hasOwn(mainNow, file)) copyWorkspaceFile(join(isolated.sourceDir, file), destination);
+        else rmSync(destination, { force: true });
+        for (const manifest of [isolated.mainBefore, isolated.isolatedBefore, before].filter(Boolean)) {
+          if (Object.hasOwn(mainNow, file)) manifest[file] = mainNow[file];
+          else delete manifest[file];
+        }
+        taken.push(file);
+      }
+      if (taken.length) emit('action.workspace_refreshed', { actionId: action.id, workspaceRoot: isolated.workspaceRoot, remade: false, files: taken });
+    };
     // Set when this act step's checks were stopped (F14): it goes to the caller.
     let actStoppedWhy = null;
     let lastProgressPersist = 0;
@@ -2268,6 +2336,9 @@ async function runV2Kernel({
           if (!canStartV2Action(state.program.actions, state.actions, action.id, schedulingOptions)) return false;
           runtime.status = 'running';
           runtime.lastFailure = null;
+          // The slot is held from here, so no writer of these files can start
+          // before the attempt does: the copy made now stays current (F17).
+          refreshIsolatedCopy();
           persist();
           return true;
         };
@@ -2275,6 +2346,9 @@ async function runV2Kernel({
         await nextSettleOr(wakeClaimRecheckMs);
         return claim();
       },
+      // Between refused claims the dispatcher waits for the next settled task
+      // (or a few seconds), not a blind sleep (F14).
+      nextSettleOr,
       // The checks run in the isolated copy before integration (E5), with the
       // private-copy side-effect scope.
       privateWorkspace: Boolean(isolated),
@@ -2402,6 +2476,9 @@ async function runV2Kernel({
             model: record.model ?? attempt?.model ?? null,
             why: record.why ?? null,
             willRetry: record.willRetry === true,
+            // A quota or throttle result: the dispatcher's move-or-wait decision
+            // (F23), which the watch's quota line reads.
+            ...(['move', 'wait'].includes(record.quotaNext) ? { quotaNext: record.quotaNext } : {}),
             outputFile: attempt?.outputFile ?? record.outputFile ?? record.outFile ?? null,
             ...(attempt?.outputBytes != null ? { outputBytes: attempt.outputBytes } : (record.outputBytes != null ? { outputBytes: record.outputBytes } : {})),
             ...(attempt?.streamFile ?? record.streamFile ? { streamFile: attempt?.streamFile ?? record.streamFile } : {}),
@@ -2843,7 +2920,26 @@ async function runV2Kernel({
   // that a succeeded check judged are repaired. The kernel's steps inherit
   // the route of the steps they stand for (D19); in a marked run a files
   // repair also runs their evidence (D33).
-  const advanceVerifyLoop = ({ repairableOnly = false } = {}) => {
+  const advanceVerifyLoop = (options = {}) => {
+    const added = advanceVerifyLoopStep(options);
+    if (!added && features.failureRule) wakeLateFailures();
+    return added;
+  };
+
+  // F11, marked runs: the loop finishes with a failing requirement its last
+  // closed round never listed (a check that ran after the loop stopped found
+  // it). The caller is told with one finished round event naming it, so the
+  // needs-you block wakes; the run finishes right after, so it is sent once.
+  const wakeLateFailures = () => {
+    const last = state.verifyLoop?.rounds.at(-1);
+    if (!last || last.closedAt == null) return;
+    const listed = new Set(last.failed);
+    const late = failingRequirements(state).filter((id) => !listed.has(id));
+    if (!late.length) return;
+    emit('workflow.verify-round', { round: last.round, of: state.verifyLoop.max, stage: 'finished', passed: [], failed: late, discovery: 0, next: 'caller' });
+  };
+
+  const advanceVerifyLoopStep = ({ repairableOnly = false } = {}) => {
     const loop = programExecution ? state.verifyLoop : null;
     if (!loop) return false;
     // The step that stopped the loop has succeeded since (resume, revision).
@@ -2919,10 +3015,31 @@ async function runV2Kernel({
     if (!loop) return false;
     const open = loop.rounds.at(-1);
     if (open && open.closedAt == null) {
+      // F16: a round with a check that did not succeed closes here only when
+      // one of its checks judged a requirement failing. When every failure
+      // waits on a check that never judged it, the round stays open: the
+      // failed step's own needs-you covers it, and once the caller reruns that
+      // step the round finishes as usual.
+      const checksDone = open.verifyActionIds.filter((id) => actionState(state, id)?.status !== 'removed')
+        .every((id) => actionState(state, id)?.status === 'succeeded');
+      const toJudge = new Set(open.toJudge);
+      const judgedFailure = failingRequirements(state, open)
+        .some((id) => toJudge.has(id) && ['failed', 'blocked'].includes(state.ledger.requirements[id]?.status));
+      if (!checksDone && !judgedFailure) return false;
       const closed = closeRound(state, { at: now(), partial: true });
       if (closed) emit('workflow.verify-round', closed);
     }
     return advanceVerifyLoop({ repairableOnly: true });
+  };
+
+  // F13: D12's close-and-repair belongs to a `partial` that failed steps
+  // caused: every live step reached its end and one of them failed. A partial
+  // a limit or the planner caused while steps are still pending settles as in
+  // saved runs.
+  const partialFromFailedSteps = () => {
+    if (limitsExhausted || plannerExhausted) return false;
+    const live = state.program.actions.map((action) => actionState(state, action.id)?.status ?? 'pending').filter((status) => status !== 'removed');
+    return live.every((status) => ['succeeded', 'failed', 'blocked'].includes(status)) && live.includes('failed');
   };
 
   // A run that finishes because a step failed: a round whose verify steps all
@@ -3152,7 +3269,7 @@ async function runV2Kernel({
       // The repair loop decides at the boundary before the run may finish.
       if (progress.status === 'ready-to-finalize' && !interrupted && advanceVerifyLoop()) continue;
       if (progress.status === 'partial' && !interrupted) {
-        if (features.failureRule && advanceVerifyLoopAtPartial()) continue;
+        if (features.failureRule && partialFromFailedSteps() && advanceVerifyLoopAtPartial()) continue;
         settleVerifyLoopAtPartial();
       }
       if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();

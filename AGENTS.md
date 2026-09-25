@@ -49,8 +49,10 @@ rules (`features.json`).
    ranks what is left. The failure rule is one automatic retry per step (a
    process failure on another eligible pool, a gate failure on the same pool
    with the failure attached), then the caller. An `act` step is never retried
-   once its worker started. Exhausted quota makes a step wait and say so, never
-   fail, whatever the pausing switch. Only a failed step's dependents wait.
+   once its worker started. Exhausted quota makes a step move without spending
+   its retry, or wait and say so, whatever the pausing switch; it never fails
+   for quota while a return time is known. Only a failed step's dependents
+   wait.
 6. Review is a caller option, recorded as a fact. A step naming requirements
    in `evidenceFor` is dispatched under the evidence contract and judges them
    from the durable artifact. Where it runs is the caller's choice through

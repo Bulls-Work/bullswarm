@@ -348,8 +348,11 @@ CLI applies the revision itself under the kernel lease and relaunches the
 kernel detached, unless the run is paused. A finished run is reopened: its
 `result.json` moves to `result-before-revision-<n>.json`, a
 `workflow.reopened` event is written, and the new plan runs to a new result.
-Steps a cancellation stopped return to pending (`reopened.requeued`); failed
-steps stay failed unless the revision names them in `rerun`. A revision also
+Steps a cancellation stopped return to pending (`reopened.requeued`), except
+an `act` step whose worker had started: it may have acted, so it stays
+cancelled (`reopened.keptCancelled`, printed by `step rerun`, `step accept`
+and the watch's reopened line). Failed steps stay failed unless the revision
+names them in `rerun`. A revision also
 answers a run an older version left waiting for its caller.
 
 Stopping a process does not undo its edits in the shared tree. When a stopped
@@ -428,7 +431,8 @@ finished run from a fresh export to deliver it; that reopens the run.
 ## Retries, waiting and the needs-you block
 
 In new runs, each step gets one automatic retry in total. A process failure
-(crash, silence, sign-in failure) retries on another eligible pool. A gate
+(crash, silence, sign-in failure) retries on another eligible pool (the same
+pool when it is the only one, except after a sign-in failure). A gate
 failure (`failed-evidence`, `not-produced`, `schema`, or `semantic`) retries on
 the same pool with the failure attached. A gate retry spends the same one-step
 budget. A started `act` step is never retried automatically; a check that could
@@ -446,21 +450,31 @@ lines, run that command as printed, and relaunch the exact `next:` watch line:
 | Take over | Open the absolute `output:` path from the block and finish the work yourself |
 | Accept anyway | Run `bullswarm workflow step accept <id> <step> --reason "…"`; this records `choice`, never proof, and rerunning undoes it |
 
-A waiting line is not a failure. For a short wait, take no action and let the
+When no other pool could run the step, the first line reads `retry here` with a
+plain `step rerun`. A review block names the check that judged the failing
+requirement; another check that failed one follows as `also judged by
+<check>:` with its own rerun and accept lines.
+
+A waiting line is not a failure and spends no retry; the step starts again by
+itself when the pool is back. `--until trouble` wakes on it only when the wait
+is longer than 30 minutes. For a short wait, take no action and let the
 watch continue. For a long wait, follow its printed options: revise the plan,
 lift a pool pause with `bullswarm pools resume <pool>`, or, for a step hold or
 5-hour limit, rerun elsewhere with `step rerun --avoid`.
 
 ## When a run finishes: the handback
 
-A run never waits: not for its caller, not for a paused pool, not for a silent
-worker. It finishes as soon as nothing more can happen on its own. The result
+A run never waits for its caller, and never for a silent worker. A step may
+wait inside the run for a pool whose return time is known (quota, a hold, a
+5-hour limit, a paused pool); it starts again by itself then. The run finishes
+as soon as nothing more can happen on its own. The result
 carries a `handback` whenever it is not verified or has steering nobody acted
 on:
 
 - `handback.unfinished[]`: `{id, status, failureKind, why, retryAfter?,
-  retryable}` for every step that did not succeed. `retryable` says whether
-  `workflow resume` would run it again. `retryAfter` is set when every pool
+  retryable, retries?}` for every step that did not succeed. `retryable` says
+  whether `workflow resume` would run it again. `retries` (runs started by this
+  version) counts the automatic retries the current definition spent. `retryAfter` is set when every pool
   able to run the step was paused: the earliest time one is back.
 - `handback.unresolvedRequirements[]`: `{id, status, why}` with the latest
   evidence line, or `no evidence recorded for the current work`.
@@ -468,7 +482,7 @@ on:
 
 A `failed-evidence` result means a declared command or schema check failed.
 Bullswarm retries once on the same pool with the check output attached; after
-the retry the step waits for you. Failed checks on `act` steps and checks that
+the retry the step comes back to you in a needs-you block. Failed checks on `act` steps and checks that
 cannot run go to you without a retry. Signal deaths of checks are failures;
 a kernel stop, pause or revision is not a failed check. Full output is saved
 in `evidence-<step>-attempt-<n>-<k>.log`. `workflow resume` does not rerun
@@ -480,17 +494,24 @@ failed first ran no check: its handback line and watch's failed line read
 `actions[].evidenceResults`, and in `workflow action show <id> <step>`. New
 runs label finished steps `proven by command`, `proven by schema` or `proven
 by review`; a step without evidence reads `review pending` while a review step
-still covers its requirements, and `finished · unproven` otherwise. Watch and
-result summaries include a `proof:` count line.
+still covers its requirements, and `finished · unproven` otherwise. A step
+accepted with `step accept` reads `accepted by choice`, never proven. Watch
+and result summaries include a `proof:` count line, which counts accepted
+steps apart (`N accepted by choice: <steps>`).
 
-`runs result --summary` adds `handback.options`, one command per choice
-(`continue`, `retry` when a step is retryable, `takeOver`, `restart`). An open
+`runs result --summary` adds `handback.options`, one command per choice:
+`continue`, `retry` when a step is retryable, `rerun` and `accept` when a run
+started by this version has a failed step, `rerunReview` and
+`acceptRequirement` (printed as `rerun` and `accept`, naming the check and
+`--requirement <id>`) when its review loop left a requirement failing, then
+`takeOver` and `restart`. An accepted requirement prints as `requirement <id>:
+failed · accepted by choice "<reason>"`. An open
 requirement keeps its `why` for as long as the 4 KB budget allows; concerns and
 per-step detail shrink first. The `workflow.finished` event carries
 `unfinished` and `unreadSteering` counts. The reason line says what happened:
 `all 4 steps succeeded, but no step checked the requirements, so the result is
 not verified`, `2 of 5 steps did not succeed: build-api failed (stalled), …`, or
-`… but not verified after verify rounds 3/3: …`, which comes with the
+`… but not verified after verify rounds 2/2: …`, which comes with the
 `callerDecision` block.
 
 Where a run used to wait, it now finishes:
@@ -553,7 +574,10 @@ Choose strict per-worker worktrees explicitly with `--isolation`, using it for
 both `plan contract`/`plan validate` and `workflow goal`. In this mode writers
 must list exact files in `ownedFiles`; undeclared files can fail the action and
 are not integrated. An unrestricted writer with `ownedFiles: []` is invalid.
-Existing runs preserve their saved mode on resume.
+A step that waited for a pool gets its private copy brought up to date with
+the main tree when it takes its slot (`action.workspace_refreshed`), so it
+never starts from files older than its wait. Existing runs preserve their
+saved mode on resume.
 
 ## Adversarial verification
 

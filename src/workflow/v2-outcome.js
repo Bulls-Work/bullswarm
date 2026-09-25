@@ -501,7 +501,8 @@ function requirementAcceptance(state, requirement) {
   for (const runtime of state.actions ?? []) {
     const entry = (runtime?.acceptance?.requirements ?? []).find((item) => item.id === requirement.id);
     if (entry && entry.workRevision === requirement.workRevision) {
-      return { step: runtime.id, reason: runtime.acceptance.reason, at: runtime.acceptance.at };
+      // F21: an entry carried forward by a later accept keeps its own reason and time.
+      return { step: runtime.id, reason: entry.reason ?? runtime.acceptance.reason, at: entry.at ?? runtime.acceptance.at };
     }
   }
   return null;
@@ -619,8 +620,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
   const program = isProgramWorkflow(state);
   const verified = status === 'completed' && (!program || hasPassingRequirementEvidence(state));
   // The repair loop's rounds, measured, and what is left for the caller.
-  const loop = program ? verifyLoopResult(state, { readText, token: state.shortId ?? state.runId }) : null;
   const flags = envelopeFlags(state, features);
+  const loop = program ? verifyLoopResult(state, { readText, token: state.shortId ?? state.runId, failureRule: flags.failureRule === true }) : null;
   const acceptedSteps = state.actions.filter(stepAccepted).length;
   const result = {
     schemaVersion: V2_RESULT_SCHEMA_VERSION,
@@ -798,6 +799,90 @@ function fitCallerDecision(value, level) {
   return { ...value, requirements: value.requirements.map((entry) => ({ ...entry, evidence: firstLine(entry.evidence, level.evidence) ?? '' })) };
 }
 
+// Stage 3's summary fields (§2.9, L4, L5): the handback's step verbs, the
+// retry counts, and acceptances by choice. Saved runs carry none of them.
+const STAGE3_OPTIONS = ['rerun', 'accept', 'rerunReview', 'acceptRequirement'];
+
+function hasStage3Additions(summary) {
+  const options = summary.handback?.options ?? {};
+  return STAGE3_OPTIONS.some((key) => Object.hasOwn(options, key))
+    || (summary.handback?.unfinished ?? []).some((entry) => Object.hasOwn(entry, 'retries'))
+    || summary.actions.some((action) => Object.hasOwn(action, 'accepted'))
+    || summary.requirements.some((requirement) => Object.hasOwn(requirement, 'accepted'));
+}
+
+// A built summary with its stage-3 fields shed, least useful first:
+// 1 cuts the options' explanations, 2 drops those options, 3 the retry
+// counts, 4 the acceptance reasons (the full result keeps them all).
+const STAGE3_SHEDS = [0, 1, 2, 3, 4];
+
+function shedStage3(candidate, variant) {
+  if (!variant) return candidate;
+  let next = candidate;
+  if (next.handback) {
+    const options = { ...next.handback.options };
+    for (const key of STAGE3_OPTIONS) {
+      if (!Object.hasOwn(options, key)) continue;
+      if (variant >= 2) delete options[key];
+      else options[key] = options[key].replace(/ \([^()]*\)$/, '');
+    }
+    next = {
+      ...next,
+      handback: {
+        ...next.handback,
+        ...(variant >= 3 ? { unfinished: next.handback.unfinished.map(({ retries: _retries, ...entry }) => entry) } : {}),
+        options,
+      },
+    };
+  }
+  if (variant >= 4) {
+    next = {
+      ...next,
+      actions: next.actions.map(({ accepted: _accepted, ...action }) => action),
+      requirements: next.requirements.map(({ accepted: _accepted, ...requirement }) => requirement),
+    };
+  }
+  return next;
+}
+
+// A stage-3 summary (F32): the handback detail is picked as if the run had
+// neither proof labels nor stage-3 fields, so neither costs a handback line;
+// the stage-3 fields are shed before that floor would be, and a summary that
+// runs over does so without them, never by more than stage 2's would.
+function fitWithAdditions(summary, { plan, build, fitIndex, smallestAt }) {
+  const { proof, ...unlabelled } = summary;
+  const floorAt = fitIndex(unlabelled, (candidate) => shedStage3(candidate, STAGE3_SHEDS.at(-1)));
+  const [floor, floorLevel] = plan[floorAt];
+  const floored = ([step, level]) => [{
+    ...step,
+    why: Math.max(step.why, floor.why),
+    handbackWhy: Math.max(step.handbackWhy, floor.handbackWhy),
+    handbackCount: Math.max(step.handbackCount, floor.handbackCount),
+  }, {
+    phases: level.phases === 'none' && floorLevel.phases !== 'none' ? 'compact' : level.phases,
+    evidence: Math.max(level.evidence, floorLevel.evidence),
+  }];
+  const withProof = (candidate, value) => (value ? { ...candidate, proof: value } : candidate);
+  const shedUsage = (candidate) => (candidate.usage?.steps
+    ? { ...candidate, usage: { ...candidate.usage, steps: Object.fromEntries(Object.entries(candidate.usage.steps).map(([id, step]) => [id, dropNullFields(step)])) } }
+    : candidate);
+  const proofs = proof ? [proof, { ...proof, unprovenSteps: [] }] : [null];
+  // The least shedding with which the summary fits at some level, its proof
+  // included (step detail, concerns and the unproven names give way first;
+  // a row's acceptance also goes with the `bare` level, §2.9). When nothing
+  // fits, the summary runs over as a stage-2 one would, without them.
+  const built = plan.map((entry) => build(summary, ...floored(entry)));
+  const smallest = [...new Set([smallestAt, plan.length - 1])].map((index) => built[index]);
+  for (const variant of STAGE3_SHEDS) {
+    const candidates = [];
+    for (const candidate of built) for (const value of proofs) candidates.push(shedStage3(withProof(candidate, value), variant));
+    for (const candidate of smallest) for (const value of proofs) candidates.push(shedUsage(shedStage3(withProof(candidate, value), variant)));
+    const found = candidates.find((candidate) => summarySize(candidate) < RESULT_SUMMARY_BYTE_BUDGET);
+    if (found) return found;
+  }
+  return shedUsage(shedStage3(withProof(build(summary, ...floored(plan[Math.max(floorAt, smallestAt)])), proof), STAGE3_SHEDS.at(-1)));
+}
+
 function fitResultSummary(summary) {
   const actionsAt = (level) => summary.actions.map((action) => {
     // Output paths are always basenames under `next.runDir`: one directory
@@ -810,11 +895,13 @@ function fitResultSummary(summary) {
     if (level === 'status') return dropNullFields({ id: named.id, status: named.status, outFile: named.outFile ?? null, accepted: named.accepted ?? null });
     return { id: named.id, status: named.status };
   });
-  const requirementsAt = (limit) => summary.requirements.map((requirement) => ({
+  const requirementsAt = (limit, actionsLevel) => summary.requirements.map(({ accepted, ...requirement }) => ({
     ...requirement,
     // The open-requirement reason is the caller's definition of unfinished
     // work, so retain a useful sentence even in the smallest handback.
     why: firstLine(requirement.why, requirement.status === 'passed' ? limit : Math.max(limit, 120)),
+    // An acceptance by choice is kept through the `status` level, like a step row's (L5).
+    ...(accepted && actionsLevel !== 'bare' ? { accepted } : {}),
   }));
   const concernsAt = (limit, count) => ({
     count: summary.concerns.count,
@@ -845,7 +932,7 @@ function fitResultSummary(summary) {
     return {
       ...source,
       actions,
-      requirements: requirementsAt(step.why),
+      requirements: requirementsAt(step.why, step.actions),
       concerns: concernsAt(step.concern, step.concerns),
       ...(summary.handback ? { handback: handbackAt(step.handbackWhy, step.handbackCount) } : {}),
       ...(loopKeys ? { verifyRounds: fitVerifyRounds(summary.verifyRounds, level) } : {}),
@@ -864,10 +951,11 @@ function fitResultSummary(summary) {
   // Nothing fits (a run with many steps: `usage.steps` is never cut). The
   // round rows are dropped only when that alone reaches the budget.
   const smallestAt = plan.length - (loopKeys ? 2 : 1);
-  const fitIndex = (source) => {
-    const index = plan.findIndex(([step, level]) => summarySize(build(source, step, level)) < RESULT_SUMMARY_BYTE_BUDGET);
+  const fitIndex = (source, post = (candidate) => candidate) => {
+    const index = plan.findIndex(([step, level]) => summarySize(post(build(source, step, level))) < RESULT_SUMMARY_BYTE_BUDGET);
     return index === -1 ? smallestAt : index;
   };
+  if (hasStage3Additions(summary)) return fitWithAdditions(summary, { plan, build, fitIndex, smallestAt });
   if (!summary.proof) {
     const [step, level] = plan[fitIndex(summary)];
     return build(summary, step, level);
@@ -928,7 +1016,32 @@ function legacyHandback(envelope) {
   };
 }
 
-function summaryHandback(envelope, handback, token, { failureRule = false } = {}) {
+// L4: a requirement the loop left failing, in a marked run, comes back with
+// the review verbs: rerun its check away from the reviewer's pool, or accept
+// it by choice. Named for the check that judged the first failing one.
+function reviewVerbs(envelope, token, actions) {
+  const open = (entry) => entry.status !== NOT_JUDGED_STATUS;
+  for (const entry of envelope.callerDecision?.requirements ?? []) {
+    if (!open(entry)) continue;
+    const requirement = envelope.requirements.find((item) => item.id === entry.id);
+    if (!requirement || requirement.accepted) continue;
+    const record = requirement.evidence.findLast((item) => item.status === 'failed' && item.sourceAction);
+    if (!record) continue;
+    const judge = record.sourceAction;
+    const pool = record.reviewer?.pool ?? actions.find((action) => action.id === judge)?.pool ?? null;
+    const judged = envelope.callerDecision.requirements.filter((item) => open(item)
+      && envelope.requirements.find((candidate) => candidate.id === item.id && !candidate.accepted)
+        ?.evidence.findLast((evidence) => evidence.status === 'failed' && evidence.sourceAction)?.sourceAction === judge)
+      .map((item) => item.id);
+    return {
+      rerunReview: `bullswarm workflow step rerun ${token} ${judge}${pool ? ` --avoid ${pool}` : ''} (judges it again${pool ? ' on another pool' : ''})`,
+      acceptRequirement: `bullswarm workflow step accept ${token} ${judge} ${judged.map((id) => `--requirement ${id}`).join(' ')} --reason "…" (recorded as your choice, never proof)`,
+    };
+  }
+  return {};
+}
+
+function summaryHandback(envelope, handback, token, { failureRule = false, actions = [] } = {}) {
   const retryable = handback.unfinished.filter((entry) => entry.retryable);
   const waits = retryable.map((entry) => Date.parse(entry.retryAfter ?? '')).filter(Number.isFinite);
   // Named only when every step to retry is waiting on a paused pool: resume
@@ -967,6 +1080,7 @@ function summaryHandback(envelope, handback, token, { failureRule = false } = {}
         rerun: `bullswarm workflow step rerun ${token} ${failedStep} [--avoid <pool>] (runs it again with its last attempt's handoff)`,
         accept: `bullswarm workflow step accept ${token} ${failedStep} --reason "…" (recorded as your choice, never proof)`,
       } : {}),
+      ...(failureRule ? reviewVerbs(envelope, token, actions) : {}),
       takeOver: `do the unfinished work yourself; bullswarm workflow runs result ${token} --json names every step's output`,
       restart: 'start a new run: bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>',
     },
@@ -1015,16 +1129,31 @@ export function formatV2HandbackLines(summary) {
     const retries = entry.retries > 0 ? ` after ${entry.retries} retr${entry.retries === 1 ? 'y' : 'ies'}` : '';
     lines.push(`  step ${entry.id}: ${entry.status}${kind}${retries}${entry.why ? ` — ${entry.why}` : ''}${entry.evidenceNotRun ? ' · evidence not run' : ''}${entry.retryAfter ? ` · its pool is back at ${entry.retryAfter}` : ''}`);
   }
-  if (handback.unfinishedOmitted) lines.push(`  … and ${handback.unfinishedOmitted} more unfinished step(s)`);
+  // L2: a failed step is never hidden. The summary's step rows are never cut,
+  // so a failed step the handback left out for size is named from them; the
+  // requirement lines give way for it, and blocked steps are counted.
+  const listed = new Set(handback.unfinished.map((entry) => entry.id));
+  const hidden = handback.unfinishedOmitted ? (summary.actions ?? []).filter((action) => !listed.has(action.id)) : [];
+  const hiddenFailed = hidden.filter((action) => action.status === 'failed');
+  for (const action of hiddenFailed) lines.push(`  step ${action.id}: failed`);
+  const more = (handback.unfinishedOmitted ?? 0) - hiddenFailed.length;
+  const blocked = hidden.filter((action) => action.status === 'blocked').length;
+  // Saved runs' text changes only where a failed step was hidden.
+  const counted = blocked && (hiddenFailed.length || Object.hasOwn(handback.options ?? {}, 'rerun'));
+  if (more > 0) lines.push(`  … and ${more} more unfinished step(s)${counted ? ` (${blocked} blocked by a failed step)` : ''}`);
   // A requirement the decision block already names is not listed twice.
   const decided = new Set((summary.callerDecision?.requirements ?? []).map((entry) => entry.id));
   const open = (summary.requirements ?? []).filter((requirement) => requirement.status !== 'passed' && !decided.has(requirement.id));
-  for (const requirement of open.slice(0, 6)) {
-    lines.push(`  requirement ${requirement.id}: ${requirement.status}${requirement.why ? ` — ${requirement.why}` : ''}`);
+  const shown = Math.max(0, 6 - hiddenFailed.length);
+  for (const requirement of open.slice(0, shown)) {
+    // L5: an acceptance by choice reads as such; the requirement stays failed.
+    lines.push(requirement.accepted
+      ? `  requirement ${requirement.id}: ${requirement.status} · accepted by choice "${requirement.accepted}"`
+      : `  requirement ${requirement.id}: ${requirement.status}${requirement.why ? ` — ${requirement.why}` : ''}`);
   }
-  if (open.length > 6) lines.push(`  … and ${open.length - 6} more open requirement(s)`);
+  if (open.length > shown) lines.push(`  … and ${open.length - shown} more open requirement(s)`);
   for (const entry of handback.unreadSteering) lines.push(`  steering not acted on: ${entry.message}`);
-  const labels = { continue: 'continue', retry: 'retry', rerun: 'rerun', accept: 'accept', takeOver: 'take over', restart: 'restart' };
+  const labels = { continue: 'continue', retry: 'retry', rerun: 'rerun', accept: 'accept', rerunReview: 'rerun', acceptRequirement: 'accept', takeOver: 'take over', restart: 'restart' };
   const options = Object.entries(handback.options ?? {});
   if (options.length) {
     lines.push('your call:');
@@ -1197,6 +1326,8 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
         ? null
         : firstLine(requirement.evidence.at(-1)?.evidence?.[0], 200)
           ?? firstLine(handback?.unresolvedRequirements?.find((entry) => entry.id === requirement.id)?.why, 200),
+      // Accepted by choice (L5): the reason, as on a step row; verified stays false.
+      ...(requirement.accepted ? { accepted: firstLine(requirement.accepted.reason, 80) } : {}),
     })),
     actions,
     ...(proof ? { proof } : {}),
@@ -1205,7 +1336,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
     },
     usage: clone(envelope.usage),
-    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule }) } : {}),
+    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule, actions }) } : {}),
     // The loop's rounds once one ran, and the caller's block when there is one.
     ...(envelope.verifyRounds?.used > 0 ? { verifyRounds: clone(envelope.verifyRounds) } : {}),
     ...(envelope.callerDecision ? { callerDecision: clone(envelope.callerDecision) } : {}),

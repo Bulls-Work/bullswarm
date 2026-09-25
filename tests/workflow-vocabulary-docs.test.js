@@ -8,7 +8,10 @@ import { ACTION_KINDS, KIND_DEFAULTS, validateActionProgram } from '../src/workf
 import { EVIDENCE_ENV_KEYS, EVIDENCE_MAX_TIMEOUT_SEC, runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from '../src/workflow/schema-check.js';
 import { FAILURE_CLASSES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, evidenceResultsIssues, roleRouting } from '../src/workflow/step-vocabulary.js';
-import { formatV2ProofLabel, stepProof } from '../src/workflow/v2-outcome.js';
+import { formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, stepProof, summarizeV2Result } from '../src/workflow/v2-outcome.js';
+import { needsYouFacts, renderNeedsYou } from '../src/workflow/needs-you.js';
+import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
+import { STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { deliverableVerdict, snapshotPossible } from '../src/workflow/v2-dispatch.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
 import { helpText } from '../src/help.js';
@@ -592,4 +595,238 @@ test('the docs carry the fix round: no-record JSONL, $ref targets, on-disk schem
   assert.ok(flat('docs/reference/result.md').includes('adds `evidenceNotRun: true`'));
   assert.ok(flat('docs/guide/concepts.md').includes('`review pending` while a review step still covers them'), 'concepts: labels as stepProof computes them (F27)');
   assert.ok(flat('skill/SKILL.md').includes("quote the run's proof line as printed"), 'Run E: the caller quotes the proof line');
+});
+
+// Stage-3 fix round (F31, F33-F38): every option the skill tells a caller to
+// choose is printed by the code with those words, in the order a caller meets
+// them: the needs-you block, the waiting line, the end-of-run handback, and
+// the accept that is a choice, never proof.
+
+// A skill section: from its heading to the next heading of the same depth.
+function section(path, heading) {
+  const text = read(path);
+  const start = text.indexOf(`\n${heading}\n`);
+  assert.ok(start >= 0, `${path}: ${heading}`);
+  const depth = heading.match(/^#+/)[0];
+  const after = text.slice(start + heading.length + 2);
+  const end = after.search(new RegExp(`\\n${depth} `));
+  return (end < 0 ? after : after.slice(0, end)).replace(/\s+/g, ' ');
+}
+
+// The `your call:` lines of a needs-you block as [label, command] pairs.
+function blockOptions(lines) {
+  const from = lines.indexOf('  your call:');
+  return lines.slice(from + 1).filter((line) => /^ {4}\S/.test(line) || /^ {6}then/.test(line))
+    .map((line) => [line.slice(4, 21).trim(), line.slice(21)]);
+}
+
+function needsYouState(candidates) {
+  return {
+    runId: 'wf-docs', shortId: '<shortId>',
+    program: { actions: [{ id: '<step>', kind: 'implement', dependsOn: [] }] },
+    actions: [{ id: '<step>', status: 'failed' }],
+    attempts: [{
+      id: 'a1', actionId: '<step>', ordinal: 1, pool: '<pool>', model: 'model-a', routeCandidates: candidates,
+      startedAt: '2026-09-24T01:00:00.000Z', finishedAt: '2026-09-24T01:05:00.000Z', outputFile: '<path>',
+    }],
+  };
+}
+
+test('the skill names the needs-you options renderNeedsYou prints, with the commands it prints', () => {
+  const skill = section('skill/SKILL.md', '### When a step needs you');
+  const event = { type: 'action.finished', committedAt: '2026-09-24T01:06:00.000Z', payload: { actionId: '<step>', status: 'failed', failureKind: 'process', why: 'exit 1' } };
+  const render = (candidates) => {
+    const facts = needsYouFacts(needsYouState(candidates), event, { features: STAGE3_RUN_FEATURES });
+    return blockOptions(renderNeedsYou(facts, { next: 'bullswarm workflow watch <shortId> --until trouble' }));
+  };
+  const elsewhere = render(['<pool>', 'pool-b']);
+  const here = render(['<pool>']);
+  assert.deepEqual(elsewhere.map(([label]) => label), ['rerun elsewhere', 'change the step', 'then edit it', 'take over', 'accept anyway']);
+  assert.equal(here[0][0], 'retry here');
+  for (const [label, command] of [...elsewhere, here[0]]) {
+    assert.ok(skill.includes(`\`${label}\``), `the skill names the printed option \`${label}\``);
+    assert.ok(skill.includes(`\`${command}\``), `the skill gives the printed command for ${label}: ${command}`);
+  }
+  // The review variant's extra check is named as printed.
+  assert.ok(skill.includes('`also judged by <check>:`'));
+  assert.match(read('src/workflow/needs-you.js'), /`    also judged by \$\{other\.step\}:`/);
+  assert.ok(skill.includes('four options'));
+});
+
+test('the workflows guide shows the needs-you block exactly as renderNeedsYou prints it', () => {
+  const guide = read('docs/guide/workflows.md');
+  const example = guide.slice(guide.indexOf('## The failure rule and needs-you block')).match(/```text\n([\s\S]*?)\n```/)[1];
+  const facts = {
+    variant: 'step', token: '<id>', actionId: 'variants', label: 'command evidence failed', retries: 1, notRetried: null,
+    evidence: [{ type: 'command', cmd: 'node check-assets.mjs out/', exit: 1, why: 'exit 1', tail: 'banner-b.png has the wrong dimensions' }],
+    attempts: [
+      { pool: 'pool-a', model: 'image model', durationSec: 660, files: 3 },
+      { pool: 'pool-a', model: 'image model', durationSec: 420, files: 3, retryOf: 'same-pool' },
+    ],
+    stillRunning: ['copy'], waitingOnThis: ['pick'],
+    options: {
+      rerunElsewhere: 'bullswarm workflow step rerun <id> variants --avoid pool-a',
+      takeOver: 'output: <absolute output path>',
+      acceptAnyway: 'bullswarm workflow step accept <id> variants --reason "…"',
+    },
+  };
+  assert.equal(example, renderNeedsYou(facts, { next: 'bullswarm workflow watch <id> --until trouble --after <sequence> --since <iso>' }).join('\n'));
+});
+
+test('the skill says what a waiting line means, when it wakes, and gives the options the watch prints', () => {
+  const skill = section('skill/SKILL.md', '### A waiting step');
+  const whole = flat('skill/SKILL.md');
+  const committedAt = '2026-09-24T01:00:00.000Z';
+  const state = { runId: 'wf-docs', shortId: '<shortId>', program: { actions: [{ id: '<step>', kind: 'implement' }] }, actions: [{ id: '<step>', status: 'waiting' }], attempts: [] };
+  const notable = (minutes, reason, pools = ['<pool>']) => notableWatchEvents({
+    events: [{ type: 'action.waiting', committedAt, payload: { actionId: '<step>', until: new Date(Date.parse(committedAt) + minutes * 60_000).toISOString(), pools, reason } }],
+    state,
+  }).notable[0];
+  const render = (event) => renderWatchEvent(event, { now: Date.parse(committedAt) }).split('\n');
+  // The header, up to the time.
+  const [head] = render(notable(10, 'hold'));
+  const printed = head.slice(0, head.indexOf(' back at ') + ' back at'.length);
+  assert.ok(skill.includes(`\`${printed} <time> (in <duration>)\``), `${printed}`);
+  assert.match(render(notable(10, 'bench'))[0], /^⧖ <step> waiting for a pool · /);
+  assert.ok(skill.includes('`waiting for a pool`'));
+  assert.match(render(notable(120, 'quota', ['<pool>', 'pool-b']))[0], / · first back: <pool> at /);
+  assert.ok(skill.includes('`first back: <pool> at …`'));
+  // It wakes --until trouble only past 30 minutes.
+  assert.equal(watchTrouble(notable(29, 'hold')), null);
+  assert.equal(watchTrouble(notable(31, 'hold')), 'waiting');
+  assert.ok(skill.includes('`--until trouble` wakes on it only when the wait is longer than 30 minutes'));
+  assert.ok(skill.includes('the step starts again by itself when the pool is back'));
+  // Each printed option line: its label is in the skill's table and its command in the skill.
+  const options = [...render(notable(120, 'hold')).slice(1), render(notable(120, 'quota'))[3]];
+  const pairs = options.map((line) => line.trim().match(/^(or [a-z ]+:|then edit it:)\s+(.*)$/).slice(1));
+  assert.deepEqual(pairs.map(([label]) => label), ['or change the step:', 'then edit it:', 'or run it elsewhere:', 'or lift the pause:']);
+  for (const [label, command] of pairs) {
+    assert.ok(skill.includes(`\`${label}\``), `the skill names \`${label}\``);
+    assert.ok(whole.includes(`\`${command}\``), `the skill gives \`${command}\``);
+  }
+});
+
+// A marked program run with one failed retryable step, one failed gate step,
+// and a requirement the review loop left failing, all with placeholder names.
+function handbackEnvelope({ accepted = false } = {}) {
+  return {
+    runId: 'wf-docs', shortId: '<shortId>', status: 'partial', verified: false, executionMode: 'program',
+    reason: 'not verified', finishedAt: '2026-09-24T01:10:00Z', goal: 'Ship the acme report',
+    requirements: [{
+      id: '<id>', text: 'totals are right', mandatory: true, status: 'failed', workRevision: 2,
+      evidence: [{ sourceAction: '<check>', status: 'failed', evidence: ['the empty week still totals 1'], reviewer: { pool: '<pool>', model: 'model-b', provider: null } }],
+      ...(accepted ? { accepted: { step: '<check>', reason: '<reason>', at: '2026-09-24T01:20:00Z' } } : {}),
+    }],
+    actions: [
+      { id: '<step>', status: 'failed', outputFile: '/runs/acme/out-step-attempt-2.md' },
+      { id: '<check>', status: 'succeeded', outputFile: '/runs/acme/out-check-attempt-1.md' },
+    ],
+    usage: { total: 2, byPool: { 'pool-a': 1, 'pool-b': 1 } },
+    verifyRounds: { max: 2, used: 2, stoppedBy: 'rounds', phases: [] },
+    ...(accepted ? {} : {
+      callerDecision: { verifyRounds: '2/2', requirements: [{ id: '<id>', status: 'failed', round: 2, evidence: 'the empty week still totals 1', next: 'fix it with a step' }] },
+    }),
+    handback: {
+      unfinished: [{ id: '<step>', status: 'failed', failureKind: 'process', why: 'exit 1', retryable: true, retries: 1 }],
+      unresolvedRequirements: [{ id: '<id>', status: 'failed', why: 'the empty week still totals 1' }], unreadSteering: [],
+    },
+  };
+}
+
+// The runnable command inside one handback option text.
+function optionCommands(key, text) {
+  const bare = text.replace(/ \([^()]*\)$/, '');
+  if (key === 'continue') return bare.split(', edit it, then ');
+  if (key === 'retry') return [bare.replace(/ after \S+$/, '')];
+  if (key === 'takeOver') return [bare.match(/(bullswarm workflow runs result \S+ --json)/)[1]];
+  if (key === 'restart') return [bare.replace(/^start a new run: /, '')];
+  return [bare];
+}
+
+test('the skill and the result reference list the handback options formatV2HandbackLines prints', () => {
+  const summary = summarizeV2Result(handbackEnvelope(), null, { runDir: '/runs/acme', features: STAGE3_RUN_FEATURES });
+  const options = summary.handback.options;
+  assert.deepEqual(Object.keys(options), ['continue', 'retry', 'rerun', 'accept', 'rerunReview', 'acceptRequirement', 'takeOver', 'restart']);
+  const lines = formatV2HandbackLines(summary);
+  const printed = lines.slice(lines.indexOf('your call:') + 1).map((line) => line.slice(2, 11).trim());
+  assert.deepEqual(printed, ['continue', 'retry', 'rerun', 'accept', 'rerun', 'accept', 'take over', 'restart']);
+  const finish = section('skill/SKILL.md', '### When it finishes');
+  const result = flat('docs/reference/result.md');
+  const operations = flat('skill/references/operations.md');
+  Object.entries(options).forEach(([key, text], index) => {
+    assert.ok(finish.includes(`| \`${printed[index]}\` |`), `the skill's your-call tables have a \`${printed[index]}\` row`);
+    for (const command of optionCommands(key, text)) assert.ok(finish.includes(`\`${command}\``), `the skill gives ${key}: ${command}`);
+    assert.ok(result.includes(`| \`${key}\` | ${printed[index]} |`), `result.md lists ${key}, printed as ${printed[index]}`);
+    if (key !== 'retry') assert.ok(result.includes(`\`${text}\``), `result.md gives ${key} as printed: ${text}`);
+    assert.ok(operations.includes(`\`${key}\``), `operations.md lists ${key}`);
+  });
+  assert.ok(!result.includes('`changeStep`'), 'no handback option is called changeStep');
+  // The retry guidance stays with the retry row.
+  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'docs/reference/result.md']) {
+    assert.ok(flat(path).includes('`nothing to retry`'), path);
+  }
+  assert.match(read('src/workflow/v2-outcome.js'), /its pool is back at \$\{entry\.retryAfter\}/);
+  assert.ok(flat('skill/SKILL.md').includes('`its pool is back at <time>`'));
+  // The needs-you options are not the end-of-run options (F33).
+  assert.ok(!finish.includes('`rerun elsewhere`') && !finish.includes('`accept anyway`'));
+  // Order: the needs-you block, the waiting line, the end of the run, the accept.
+  const skill = read('skill/SKILL.md');
+  const at = ['### When a step needs you', '### A waiting step', '### When it finishes', '**An accept is a choice, never proof.**'].map((text) => skill.indexOf(text));
+  assert.ok(at.every((index, i) => index > 0 && (i === 0 || index > at[i - 1])), `skill order: ${at}`);
+});
+
+test('an accept reads as the code prints it and the skill says it is a choice, never proof', () => {
+  const summary = summarizeV2Result(handbackEnvelope({ accepted: true }), null, { runDir: '/runs/acme', features: STAGE3_RUN_FEATURES });
+  const line = formatV2HandbackLines(summary).find((text) => text.includes('accepted by choice'));
+  assert.equal(line, '  requirement <id>: failed · accepted by choice "<reason>"');
+  const proof = formatV2ProofLine({ proof: { proven: 0, byType: {}, unproven: 0, unprovenSteps: [], accepted: 1, acceptedSteps: ['<steps>'] } });
+  assert.equal(proof, 'proof: 1 accepted by choice: <steps>');
+  assert.equal(formatV2ProofLabel({ by: ['choice'] }), 'accepted by choice');
+  const skill = flat('skill/SKILL.md');
+  assert.ok(skill.includes('**An accept is a choice, never proof.**'));
+  assert.ok(skill.includes(`\`${line.trim()}\``));
+  assert.ok(skill.includes('`N accepted by choice: <steps>`'));
+  assert.ok(skill.includes('reads `accepted by choice`'));
+  for (const path of ['docs/guide/workflows.md', 'skill/references/operations.md']) assert.ok(flat(path).includes(`\`${line.trim()}\``), path);
+});
+
+test('the result reference reads independent and requirements[].next as the code computes them (F34, F35)', () => {
+  const result = flat('docs/reference/result.md');
+  assert.ok(result.includes("`independent` is `true` when no provider that did work on the judged steps is the reviewer's provider, `false` when one is, and `null` when no writer is known or the reviewer's or a writer's provider is unknown."));
+  assert.ok(!result.includes('says whether its provider also did work'));
+  const outcome = read('src/workflow/v2-outcome.js');
+  assert.match(outcome, /if \(reviewer\?\.provider && writers\.some\(\(writer\) => writer\?\.provider === reviewer\.provider\)\) return false;/);
+  assert.match(outcome, /if \(!reviewer\?\.provider \|\| writers\.some\(\(writer\) => !writer\?\.provider\)\) return null;/);
+  // The marked `next` text, from the template in verify-rounds.js.
+  const source = read('src/workflow/verify-rounds.js');
+  const fill = (text) => text.replace(/\$\{runToken\}/g, '<shortId>').replace(/\$\{reviewer\}/g, '<check>').replace(/\$\{pool\}/g, '<pool>').replace(/\$\{id\}/g, '<id>');
+  const fix = fill(source.match(/const fix = `(fix it with a step \([^`]*\))`;/)[1]);
+  const rerun = fill(source.match(/const rerun = `(rerun the review elsewhere \([^`]*\))`;/)[1]);
+  const accept = fill(source.match(/\? `\$\{fix\}, \$\{rerun\}, (or accept it \([^`]*\))`/)[1]);
+  assert.ok(result.includes(`\`${fix}, ${rerun}, ${accept}\``), `${fix}, ${rerun}, ${accept}`);
+  assert.ok(!result.includes('add a step that fixes'));
+  assert.ok(!source.includes('add a step that fixes'));
+});
+
+test('docs do not overstate the failure rule: not-produced gets its gate retry, quota fails when no return time is known (F31, F36, F38)', () => {
+  for (const path of PROGRAM_REFERENCES) {
+    const text = flat(path);
+    assert.ok(!/not-produced`\. That failure is not retried automatically/.test(text), path);
+    assert.ok(text.includes('that failure gets one retry on the same pool in a fresh session with the failure attached, then comes back to you'), path);
+    assert.ok(!text.includes('Quota never fails only because it is exhausted'), path);
+    assert.ok(text.includes('A step never fails for quota while a return time is known'), path);
+  }
+  const operations = flat('skill/references/operations.md');
+  assert.ok(!operations.includes('A run never waits: not for its caller, not for a paused pool'));
+  assert.ok(operations.includes('A step may wait inside the run for a pool whose return time is known'));
+  assert.ok(operations.includes('retryable, retries?}'));
+  // The same-pool process retry is never used after a sign-in failure.
+  assert.match(read('src/workflow/v2-dispatch.js'), /soleCandidate && kind !== 'auth'\) next = \{ how: 'same-pool'/);
+  const changelog = flat('CHANGELOG.md');
+  assert.ok(changelog.includes('(the same pool when it is the only one, except after a sign-in failure)'));
+  assert.ok(!changelog.includes('A pool out of quota is not a failure'));
+  assert.ok(changelog.includes('never fails the step while a return time is known'));
+  const agents = flat('AGENTS.md');
+  assert.ok(!agents.includes('never fail, whatever the pausing switch'));
+  assert.ok(agents.includes('it never fails for quota while a return time is known'));
 });

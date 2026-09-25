@@ -89,7 +89,10 @@ export function normalizeRoute(raw, at, issues, {
   }
   for (const key of Object.keys(raw)) {
     if (ROUTE_KEYS.includes(key)) continue;
-    if (key === 'lane') issues.push(`${at}.route.lane is not a route key; set the lane with the step's own "lane" field`);
+    // Only the D19 inheritance writes it: a kernel step whose sources' routes
+    // leave no pool in common is refused, never widened.
+    if (key === 'inheritConflict' && typeof raw[key] === 'string') issues.push(`${at}.route cannot be inherited: ${raw[key]}`);
+    else if (key === 'lane') issues.push(`${at}.route.lane is not a route key; set the lane with the step's own "lane" field`);
     else if (CAPABILITY_KEYS.has(key)) issues.push(`${at}.route.${key} is not allowed; a step's capability is its effort (and reasoning), not its route`);
     else issues.push(`${at}.route.${key} is not allowed; route takes pools, providers and independentOf`);
   }
@@ -171,10 +174,23 @@ function currentAttempts(state, stepId) {
   };
 }
 
+// How an attempt the kernel stopped records it (a signal, a dead kernel, a
+// pause, a restart, a cancel, a revision). Such an attempt may have edited
+// files before its snapshot was taken.
+const KERNEL_STOP_KINDS = new Set(['interrupted', 'cancelled', 'paused', 'restarted', 'superseded']);
+
+// No snapshot because the kernel stopped the attempt first, so its work is
+// unknown and counts. Outside git no attempt has a snapshot; one that ended on
+// its own (an auth failure, a finished run) is judged by its other facts.
+function stoppedBeforeSnapshot(attempt) {
+  if (Number.isInteger(attempt.changedFileCount)) return false;
+  return ['running', 'cancelled'].includes(attempt.status) || KERNEL_STOP_KINDS.has(attempt.failureKind);
+}
+
 /**
  * D17: every current-definition attempt of `stepId` that did work: it
- * succeeded, changed files, wrote its deliverable, has no snapshot (the
- * kernel stopped before it), or left partial output a later attempt was
+ * succeeded, changed files, wrote its deliverable, has no snapshot because
+ * the kernel stopped it first, or left partial output a later attempt was
  * handed. An accepted step's accepted attempt always counts.
  */
 export function workAttempts(state, stepId) {
@@ -182,7 +198,7 @@ export function workAttempts(state, stepId) {
   const acceptedId = runtime?.acceptance?.attemptId ?? null;
   return attempts.filter((attempt) => attempt.status === 'succeeded'
     || attempt.id === acceptedId
-    || attempt.changedFileCount === undefined || attempt.changedFileCount === null
+    || stoppedBeforeSnapshot(attempt)
     || attempt.changedFileCount > 0
     || (Array.isArray(attempt.deliverable?.written) && attempt.deliverable.written.length > 0)
     || (Boolean(attempt.partialOutput) && attempt.outputBytes > 0));
@@ -265,30 +281,40 @@ export function routeUnavailableWhy(filter, { lane, effort, sharedProvider = fal
   return `${head}: every pool that could run it shares a provider with ${joined(steps)} (${joined(filter?.independentProviders ?? [])})`;
 }
 
-// Union of every list; the intersection of `use` lists only when every
-// source has one. A use entry that another source avoids is dropped; when the
-// intersection is empty the union of the use lists stands in (see below).
+// Union of every avoid list; the intersection of `use` lists only when every
+// source has one, less the avoided names. `conflict` is set when that leaves
+// no name: normalisation would drop an empty use and read it as "anywhere".
 function inheritUseAvoid(sources) {
   const avoid = sortedUnique(sources.flatMap((source) => source?.avoid ?? []));
   const result = {};
   if (avoid.length) result.avoid = avoid;
+  let conflict = false;
   if (sources.length && sources.every((source) => Array.isArray(source?.use) && source.use.length)) {
-    let use = sources.map((source) => source.use).reduce((left, right) => left.filter((name) => right.includes(name)));
-    // An empty intersection would be dropped by normalisation and read as
-    // "anywhere"; the union keeps the step on pools its sources named.
-    if (!use.length) use = sources.flatMap((source) => source.use);
-    use = sortedUnique(use).filter((name) => !avoid.includes(name));
+    const use = sortedUnique(sources.map((source) => source.use).reduce((left, right) => left.filter((name) => right.includes(name))))
+      .filter((name) => !avoid.includes(name));
     if (use.length) result.use = use;
+    else conflict = true;
   }
-  return Object.keys(result).length ? result : undefined;
+  return { lists: Object.keys(result).length ? result : undefined, conflict };
 }
 
+// D19 with the empty-intersection rule: when the sources' use lists leave no
+// name, the route carries `inheritConflict` instead of a use list, which the
+// validator refuses, so the kernel's revision is rejected and the loop stops
+// with the caller rather than running the step on a pool no source allowed.
 function inheritLists(actions) {
   const route = {};
+  const conflicts = [];
   for (const key of ['pools', 'providers']) {
-    const inherited = inheritUseAvoid(actions.map((action) => (isObject(action?.route) ? action.route[key] : undefined)));
-    if (inherited) route[key] = inherited;
+    const { lists, conflict } = inheritUseAvoid(actions.map((action) => (isObject(action?.route) ? action.route[key] : undefined)));
+    if (lists) route[key] = lists;
+    if (conflict) {
+      const uses = actions.map((action) => `${action?.id ?? '?'} (${joined(action.route[key].use)})`);
+      const avoided = route[key]?.avoid?.length ? ` once the avoided ${key} (${joined(route[key].avoid)}) are removed` : '';
+      conflicts.push(`${key}.use of ${joined(uses)} have no name in common${avoided}`);
+    }
   }
+  if (conflicts.length) route.inheritConflict = `${conflicts.join('; ')}; change one of those routes (plan revise) or accept the requirement`;
   return route;
 }
 
@@ -328,13 +354,39 @@ function staticFilter(route) {
   };
 }
 
+const FINISHED_STEP = new Set(['succeeded', 'failed', 'cancelled', 'blocked', 'removed']);
+
+// Under a run pin every step runs on the pinned pool, so a step the route is
+// independent of does its work on the pin's provider and nothing is left for
+// this one. The exception is a step `state` shows finished without doing
+// work there (D17). "writers" with no writer step names nobody.
+function stepsWorkingOnPin(program, action, state, pinProvider, pools) {
+  const route = action.route;
+  let steps = Array.isArray(route.independentOf) ? route.independentOf : [];
+  if (route.independentOf === ROUTE_WRITERS) {
+    const byId = new Map();
+    for (const item of [...(state?.program?.actions ?? []), ...(Array.isArray(program?.actions) ? program.actions : [])]) {
+      if (isObject(item) && typeof item.id === 'string') byId.set(item.id, item);
+    }
+    steps = writerSteps({ program: { actions: [...byId.values()] }, actions: state?.actions ?? [] }, action);
+  }
+  return steps.filter((stepId) => {
+    const runtime = (state?.actions ?? []).find((item) => item?.id === stepId);
+    if (!FINISHED_STEP.has(runtime?.status)) return true;
+    return workAttempts(state, stepId).some((attempt) => attempt.pool && providerOf(attempt.pool, pools) === pinProvider);
+  });
+}
+
 /**
  * The CLI checks that need the configured pool list (§2.4), as exit-2
  * messages. `labels` maps pool ids to display labels; `preparePools(pools,
  * action, effort, opts)` is the dispatcher's capability filter (called with
- * the pauses, holds and 5h gates ignored); `runPin` is --worker-pool.
+ * the pauses, holds and 5h gates ignored); `runPin` is --worker-pool. With
+ * `state` (a running run) the pin check reads which steps already did work.
  */
-export function routeIssuesForPools(program, pools = [], { runPin = null, preparePools = null, labels = {} } = {}) {
+export function routeIssuesForPools(program, pools = [], {
+  runPin = null, preparePools = null, labels = {}, state = null,
+} = {}) {
   const issues = [];
   const configured = (pools ?? []).map((pool) => pool?.name).filter((name) => typeof name === 'string');
   const providers = sortedUnique((pools ?? []).map((pool) => modelFamilyOf(pool)).filter(Boolean));
@@ -359,7 +411,15 @@ export function routeIssuesForPools(program, pools = [], { runPin = null, prepar
     const filter = staticFilter(route);
     if (runPin) {
       const pinned = (pools ?? []).find((pool) => pool?.name === runPin) ?? runPin;
-      if (!poolPassesRoute(pinned, filter)) issues.push(`step ${step}: its route leaves nothing of the run's pinned pool ${runPin} (--worker-pool)`);
+      if (!poolPassesRoute(pinned, filter)) {
+        issues.push(`step ${step}: its route leaves nothing of the run's pinned pool ${runPin} (--worker-pool)`);
+        continue;
+      }
+      const pinnedWork = stepsWorkingOnPin(program, action, state, modelFamilyOf(pinned), pools);
+      if (pinnedWork.length) {
+        const named = route.independentOf === ROUTE_WRITERS ? `writers (${joined(pinnedWork)})` : joined(pinnedWork);
+        issues.push(`step ${step}: its route is independent of ${named}, which ${pinnedWork.length === 1 ? 'runs' : 'run'} on the run's pinned pool ${runPin} (--worker-pool, provider ${modelFamilyOf(pinned)}), so no pool is left for it; drop independentOf or run without --worker-pool`);
+      }
       continue;
     }
     const capable = typeof preparePools === 'function'

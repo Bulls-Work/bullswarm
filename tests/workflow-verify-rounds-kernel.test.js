@@ -68,7 +68,7 @@ const fail = (evidence, concerns = []) => ({ status: 'failed', evidence: [eviden
  * loop: verifyRounds counts review rounds, default 3), STAGE3_RUN_FEATURES for
  * the marked loop (D12, D13, D19, D33).
  */
-async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-abcdef', onEvent = null, requirements = REQUIREMENTS, prepare = null, features = STAGE2_RUN_FEATURES } = {}) {
+async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-abcdef', onEvent = null, requirements = REQUIREMENTS, prepare = null, features = STAGE2_RUN_FEATURES, poolNames = ['codex'] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-loop-kernel-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -134,7 +134,7 @@ async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-a
       now: () => new Date(clock).toISOString(),
       dispatchV2Action: (options) => dispatchV2Action({
         ...options,
-        pools: [connector('codex')],
+        pools: poolNames.map(connector),
         dependencies: {
           watchOnce: worker,
           loadState: () => structuredClone(core),
@@ -680,6 +680,24 @@ test('marked default: one fix and one re-review, then the caller (max 2, stopped
   assert.match(block, /^✗ verify-round-2 needs you · review failed after 1 fix$/m);
 });
 
+test('marked: a repair whose writers\' use lists share no pool is refused, never widened, and the loop stops at the revision (F9)', async (t) => {
+  const programDoc = program({ buildA: { route: { pools: { use: ['pool-a'], avoid: ['pool-b'] } } } });
+  programDoc.actions[1].route = { pools: { use: ['pool-b'], avoid: ['pool-a'] } };
+  const { run, loop, ids, events } = await runLoop(t, {
+    work: { 'build-a': buggyBuild['build-a'], 'build-b': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'b.js'), 'export const beta = () => 1; // wrong\n'); return '## Done\n- src/b.js'; } },
+    judge: workspaceJudge,
+  }, { features: STAGE3_RUN_FEATURES, programDoc, poolNames: ['pool-a', 'pool-b'] });
+  const pools = Object.fromEntries(run.state.attempts.map((attempt) => [attempt.actionId, attempt.pool]));
+  assert.deepEqual([pools['build-a'], pools['build-b']], ['pool-a', 'pool-b']);
+  const rejected = events.filter((event) => event.type === 'program.revision_rejected').map((event) => event.payload);
+  assert.equal(rejected.length, 1, JSON.stringify(rejected));
+  assert.equal(rejected[0].source, 'kernel');
+  assert.ok(rejected[0].issues.some((issue) => /route cannot be inherited: pools\.use of build-a \(pool-a\), build-b \(pool-b\) have no name in common/.test(issue)), JSON.stringify(rejected[0].issues));
+  assert.equal(loop.stoppedBy, 'revision');
+  assert.equal(ids.includes('repair-1'), false, 'no repair on a widened route');
+  assert.equal(run.result.verified, false);
+});
+
 test('marked verifyRounds 0: review only, no automatic fix', async (t) => {
   const programDoc = { ...program(), defaults: { verifyRounds: 0 } };
   const { run, loop, ids, events } = await runLoop(t, { work: buggyBuild, judge: workspaceJudge }, { features: STAGE3_RUN_FEATURES, programDoc });
@@ -758,6 +776,148 @@ test('marked, the common shape: a failed writer\'s check is blocked, the other c
   assert.equal(run.result.status, 'partial');
   const round1 = events.find((event) => event.type === 'workflow.verify-round' && event.payload.round === 1 && event.payload.stage === 'finished');
   assert.deepEqual([round1.payload.failed, round1.payload.next], [['alpha', 'beta'], 'repair']);
+});
+
+test('marked, D12 with a third passed requirement: the narrowed repair\'s re-review judges only what it repaired, gamma carries forward, and no kernel revision is refused (F15)', async (t) => {
+  const check = (id, dependsOn, evidenceFor) => verify({ id, dependsOn, evidenceFor, prompt: `Inspect ${evidenceFor.join(', ')}.` });
+  const programDoc = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      work('build-a', { affects: ['alpha'], ownedFiles: ['src/a.js'] }),
+      check('check-a', ['build-a'], ['alpha']),
+      work('build-b', { affects: ['beta'], ownedFiles: ['src/b.js'] }),
+      check('check-b', ['build-b'], ['beta']),
+      work('build-c', { affects: ['gamma'], ownedFiles: ['src/c.js'] }),
+      check('check-c', ['build-c'], ['gamma']),
+    ],
+  };
+  // gamma's passing evidence names no file, so any repair could have touched it.
+  const judge = (_id, ids, { targetDir }) => Object.fromEntries(ids.map((id) => {
+    if (id === 'gamma') return [id, pass('gamma returns 4 as required')];
+    if (id === 'beta') return [id, read(targetDir, 'src/b.js').includes('=> 3') ? pass('src/b.js: beta() printed 3') : fail('src/b.js: beta() printed 0')];
+    return [id, fail('src/a.js: alpha() printed 0')];
+  }));
+  const { run, ids, loop, events } = await runLoop(t, {
+    work: {
+      'build-a': () => ({ fail: 'build-a crashed' }),
+      'build-b': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'b.js'), 'export const beta = () => 0; // wrong\n'); return '## Done\n- src/b.js'; },
+      'build-c': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'c.js'), 'export const gamma = () => 4;\n'); return '## Done\n- src/c.js'; },
+      'repair-1': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'b.js'), 'export const beta = () => 3;\n'); return '## Done\n- beta fixed'; },
+    },
+    judge,
+  }, { features: STAGE3_RUN_FEATURES, programDoc, requirements: [...REQUIREMENTS, GAMMA], runId: 'wf-d12tch-abcdef' });
+  assert.deepEqual(events.filter((event) => event.type === 'program.revision_rejected').map((event) => event.payload), []);
+  assert.deepEqual(ids, ['build-a', 'check-a', 'build-b', 'check-b', 'build-c', 'check-c', 'repair-1', 'verify-round-2']);
+  const byId = Object.fromEntries(run.state.program.actions.map((action) => [action.id, action]));
+  assert.deepEqual(byId['repair-1'].dependsOn, ['check-b']);
+  assert.deepEqual([byId['verify-round-2'].dependsOn, byId['verify-round-2'].evidenceFor], [['repair-1'], ['beta']]);
+  assert.equal(run.state.actions.find((action) => action.id === 'verify-round-2').status, 'succeeded');
+  const ledger = Object.fromEntries(Object.entries(run.state.ledger.requirements).map(([id, entry]) => [id, entry.status]));
+  assert.deepEqual(ledger, { alpha: 'pending', beta: 'passed', gamma: 'passed' }, 'the repair was re-reviewed and gamma kept its pass');
+  const started = events.filter((event) => event.type === 'workflow.verify-round' && event.payload.stage === 'started').map((event) => event.payload);
+  assert.deepEqual(started.map((payload) => [payload.round, payload.toJudge, payload.carried]), [[1, ['alpha', 'beta', 'gamma'], []], [2, ['beta'], ['gamma']]]);
+  assert.equal(loop.stoppedBy, 'rounds');
+  assert.deepEqual(loop.rounds.map((round) => round.failed), [['alpha', 'beta'], ['alpha']]);
+  assert.equal(run.result.status, 'partial');
+  assert.deepEqual(run.result.callerDecision.requirements.map((entry) => entry.id), ['alpha']);
+  // The marked result names the step that kept alpha from being judged (F12/L4).
+  const [alpha] = run.result.callerDecision.requirements;
+  assert.equal(alpha.evidence, 'not judged: check-a is blocked by build-a (failed)');
+  assert.match(alpha.next, /^check-a is blocked by build-a \(failed\), so alpha was never judged: rerun build-a \(bullswarm workflow step rerun \S+ build-a\)/);
+});
+
+test('marked: a round whose only failure waits on a blocked check stays open at partial; the failed writer alone needs the caller (F16)', async (t) => {
+  const check = (id, dependsOn, evidenceFor) => verify({ id, dependsOn, evidenceFor, prompt: `Inspect ${evidenceFor.join(', ')}.` });
+  const programDoc = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      work('build-a', { affects: ['alpha'], ownedFiles: ['src/a.js'] }),
+      work('build-b', { affects: ['beta'], ownedFiles: ['src/b.js'] }),
+      check('check-a', ['build-a'], ['alpha']),
+      check('check-b', ['build-b'], ['beta']),
+    ],
+  };
+  const { run, ids, loop, events } = await runLoop(t, {
+    work: { 'build-a': () => ({ fail: 'build-a crashed' }), 'build-b': allPassing['build-b'] },
+    judge: workspaceJudge,
+  }, { features: STAGE3_RUN_FEATURES, programDoc, runId: 'wf-f16opn-abcdef' });
+  const status = Object.fromEntries(run.state.actions.map((action) => [action.id, action.status]));
+  assert.deepEqual(status, { 'build-a': 'failed', 'build-b': 'succeeded', 'check-a': 'blocked', 'check-b': 'succeeded' });
+  assert.deepEqual(ids, ['build-a', 'build-b', 'check-a', 'check-b'], 'nothing to repair');
+  assert.equal(run.result.status, 'partial');
+  assert.deepEqual(events.filter((event) => event.type === 'workflow.verify-round').map((event) => event.payload.stage), ['started'], 'no round finish names check-b as alpha\'s judge');
+  assert.equal(loop.rounds[0].closedAt, null);
+  assert.equal(loop.stoppedBy, null);
+  assert.equal(run.result.callerDecision ?? null, null);
+  const blocks = loopNeedsYou(run, events);
+  assert.equal(blocks.length, 1, blocks.join('\n---\n'));
+  assert.match(blocks[0], /^✗ build-a needs you · /);
+});
+
+test('marked: a partial a limit caused while checks are still pending leaves the round open and adds no repair, as a saved run does (F13)', async (t) => {
+  const step = (id, over) => ({ id, purpose: id, dependsOn: [], affects: [], ownedFiles: [], prompt: `Do ${id}.`, lane: 'analyze', effort: 'low', evidenceFor: [], inputs: [], produces: [], ...over });
+  const planned = { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Two writers, two checks.', program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+    step('w1', { affects: ['r1'], ownedFiles: ['a.txt'], lane: 'build' }),
+    step('c1', { dependsOn: ['w1'], evidenceFor: ['r1'] }),
+    step('w2', { affects: ['r2'], ownedFiles: ['b.txt'], lane: 'build' }),
+    step('c2', { dependsOn: ['w2'], evidenceFor: ['r2'] }),
+  ] } };
+  const outcome = {};
+  for (const [label, features, runId] of [['marked', STAGE3_RUN_FEATURES, 'wf-f13mrk-abcdef'], ['stage2', STAGE2_RUN_FEATURES, 'wf-f13st2-abcdef']]) {
+    const root = mkdtempSync(join(tmpdir(), 'bullswarm-loop-limits-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const bullswarmDir = join(root, 'home');
+    const workspace = join(root, 'repo');
+    mkdirSync(bullswarmDir); mkdirSync(workspace);
+    const goalDocument = createV2GoalDocument({
+      goal: 'Deliver r1 and r2', cwd: workspace, requirements: [{ id: 'r1', text: 'a.txt is right' }, { id: 'r2', text: 'b.txt is right' }],
+      settings: { scout: false, concurrency: 1, executionMode: 'program', workspaceMode: 'shared' },
+    });
+    const runDir = join(bullswarmDir, 'workflows', runId);
+    let plannerTurns = 0;
+    // The dispatched planner plans once; steering arrives while c1 runs, and
+    // the planner turn that should take it crashes: `partial` by limit.
+    const dispatch = async (options) => {
+      const files = options.paths(1);
+      const startedAt = new Date().toISOString();
+      options.onAttempt?.('started', { ordinal: 1, pool: 'relay', model: 'm', status: 'running', startedAt, taskFile: files.taskFile, outFile: files.outFile, routing: {} });
+      let value;
+      if (options.action.id === 'workflow-planner') {
+        plannerTurns += 1;
+        value = plannerTurns === 1
+          ? { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: planned }, outFile: files.outFile, meta: { exitCode: 0 } } }
+          : { ok: false, status: 'failed', failureKind: 'process', verdict: { ok: false, why: 'planner crashed', meta: { exitCode: 1 } } };
+      } else if (options.action.evidenceFor?.length) {
+        const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: Object.fromEntries(options.action.evidenceFor.map((id) => [id, { status: 'failed', evidence: [`${id} wrong`], concerns: [] }])) };
+        writeFileSync(files.outFile, JSON.stringify(evidence));
+        if (options.action.id === 'c1') writeFileSync(join(runDir, 'steering.jsonl'), `${JSON.stringify({ id: 'steer-1', message: 'also do x', queuedAt: startedAt, delivery: 'next-not-yet-started-planner-checkpoint' })}\n`);
+        value = { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+      } else {
+        writeFileSync(join(options.targetDir, `${options.action.id}.txt`), `${options.action.id} done`);
+        writeFileSync(files.outFile, 'done');
+        value = { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+      }
+      const record = { ordinal: 1, pool: 'relay', model: 'm', status: value.ok ? 'succeeded' : 'failed', startedAt, finishedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile, failureKind: value.failureKind ?? null, why: value.verdict?.why ?? null, routing: {} };
+      options.onAttempt?.('finished', record, value.verdict);
+      return { attempts: [record], ...value };
+    };
+    const run = await runV2AutonomousWorkflow({ bullswarmDir, goalDocument, pools: [], runId, dependencies: { dispatchV2Action: dispatch, runFeatures: features } });
+    const loop = run.state.verifyLoop;
+    outcome[label] = {
+      status: run.result.status,
+      actions: run.state.actions.map((action) => [action.id, action.status]),
+      rounds: loop.rounds.map((round) => [round.round, round.closedAt != null, round.repairActionId]),
+      stoppedBy: loop.stoppedBy,
+      finished: readEvents(run.runDir).filter((event) => event.type === 'workflow.verify-round' && event.payload.stage === 'finished').length,
+    };
+    assert.match(run.result.reason, /planner could not incorporate queued steering/, label);
+  }
+  assert.deepEqual(outcome.marked, {
+    status: 'partial',
+    actions: [['w1', 'succeeded'], ['c1', 'succeeded'], ['w2', 'pending'], ['c2', 'pending']],
+    rounds: [[1, false, null]], stoppedBy: null, finished: 0,
+  });
+  assert.deepEqual(outcome.marked, outcome.stage2);
 });
 
 const EVIDENCE_A = [

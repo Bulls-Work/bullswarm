@@ -85,7 +85,7 @@ The full document is `schemaVersion: "bullswarm.workflow.result.v2"`. Allowed to
 
 Requirement `status` values: `pending`, `passed`, `failed`, `blocked`. Action `status` values: `pending`, `ready`, `running`, `waiting`, `succeeded`, `failed`, `blocked`, `cancelled`, `interrupted`, `removed`.
 
-Each requirement `evidence[]` entry is `{ sourceAction, status, evidence, concerns, eventSequence, mechanicalFailure?, reviewer?, independent? }`. A reviewer records `{pool, model, provider}`; `independent` says whether its provider also did work affecting the requirement, or is `null` when no writer is known. An accepted requirement adds `accepted: {step, reason, at}`. Only evidence from the current `workRevision` is current. Negative evidence does not open another planner round.
+Each requirement `evidence[]` entry is `{ sourceAction, status, evidence, concerns, eventSequence, mechanicalFailure?, reviewer?, independent? }`. A reviewer records `{pool, model, provider}`; `independent` is `true` when no provider that did work on the judged steps is the reviewer's provider, `false` when one is, and `null` when no writer is known or the reviewer's or a writer's provider is unknown. An accepted requirement adds `accepted: {step, reason, at}`. Only evidence from the current `workRevision` is current. Negative evidence does not open another planner round.
 
 A step's `acceptance` is `{evidence:"choice", reason, at, attemptId, failureKind, requirements?}`. This records a caller decision, never proof. Accepted steps have the proof label `choice`, not `proven`; accepted requirements do not become verified. Rerunning the step clears acceptance.
 
@@ -149,7 +149,7 @@ After the last round, whatever is still failing is yours to decide. The block is
 | `requirements[].id`, `.status` | a mandatory requirement that has not passed: `failed`, `blocked`, or `pending` when the last round it was given recorded no evidence for it; or a requirement no evidence step covers, with the status `not judged · no evidence step covers it` (it never counts as passed and never starts a repair) |
 | `requirements[].round` | the round that last judged it (`1` for a requirement that was not judged) |
 | `requirements[].evidence` | the first line of its latest evidence, at most 200 characters (the requirement's own text when it was not judged) |
-| `requirements[].next` | for a requirement that was not judged, `add an evidence step whose evidenceFor names <id>, then judge it: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise`; for a requirement an act step affects, `an act step affects <id>; Bullswarm never repeats an outward action on its own. Check what was done, then add an act step if it must be redone: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise`; otherwise the first item of `## Suggested next step` in the last repair report that covered it; if there is none, `add a step that fixes <id> (owning <up to 3 files>) and rerun <last verify step>: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise` |
+| `requirements[].next` | for a requirement that was not judged, `add an evidence step whose evidenceFor names <id>, then judge it: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise`; for a requirement an act step affects, `an act step affects <id>; Bullswarm never repeats an outward action on its own. Check what was done, then add an act step if it must be redone: bullswarm workflow plan export <shortId> --out plan.json, edit it, then plan revise`; otherwise, in a run started by this version, for a failed or blocked requirement: `fix it with a step (bullswarm workflow plan export <shortId> --out plan.json, edit it, then bullswarm workflow plan revise <shortId> --program plan.json), rerun the review elsewhere (bullswarm workflow step rerun <shortId> <check> --avoid <pool>), or accept it (bullswarm workflow step accept <shortId> <check> --requirement <id> --reason "…")`, naming the check that judged it last and its pool (`<pool>` when unknown); the accept part is left out when that check neither succeeded nor failed. A requirement left `pending` names the step that kept it from being judged instead: `<step> failed, so no review judged <id> after it: rerun <step> (bullswarm workflow step rerun <shortId> <step>), …, or fix it with a step (…)`. The last repair report's first `## Suggested next step` item follows as `; suggested: <item>`. In runs started earlier: that first suggested item, or when there is none `fix it with a step (…), rerun the review elsewhere (bullswarm workflow step rerun <shortId> <check> --avoid <pool>), or accept it (bullswarm workflow step accept <shortId> <check> --reason "…")` |
 
 With a cap above 1 the run's `reason` then reads `… but not verified after verify rounds 2/2: …`. `bullswarm workflow runs result <shortId> --json --summary` copies `verifyRounds` once a round has run and `callerDecision` when it is not `null`. When the summary must shrink to fit its budget, the phases shrink to `{ kind, round, wallMinutes, pools, cost }` and then `evidence` to 120 characters; ids and `next` are never dropped. Only when that is not enough and dropping the phase rows alone brings the summary under budget does it keep `phases: []` (the full result keeps them). In text, `runs result` and `workflow watch` print the block when there is a decision or more than one round ran:
 
@@ -240,14 +240,20 @@ Anything short of a verified run with no unread guidance is handed back. The run
 | `unresolvedRequirements[]` | `{ id, status, why }` for every requirement that is not `passed` |
 | `unreadSteering[]` | `{ id, message, queuedAt }` guidance queued with `workflow steer` that nobody acted on |
 
-The compact summary adds `options`:
+The compact summary adds `options`, one command per key, in this order; the text handback prints them under `your call:` with the printed label:
 
-| Option | When | Command it names |
-|---|---|---|
-| `rerun` | repeat a failed or finished step, optionally away from pools | `workflow step rerun <id> <step> [--avoid <pool>]` |
-| `changeStep` | amend the prompt, evidence, dependencies, or route | `workflow plan export` then edit and `plan revise` |
-| `takeOver` | finish the work yourself | use the unfinished step's output path |
-| `accept` | record your choice for a failed step or failing check requirements | `workflow step accept <id> <step> --reason "…"` (choice, never proof) |
+| Key | Printed as | When it is present | Command it names |
+|---|---|---|---|
+| `continue` | continue | a program run | `bullswarm workflow plan export <shortId> --out plan.json, edit it, then bullswarm workflow plan revise <shortId> --program plan.json (--rerun <step ids> runs finished steps again)` |
+| `retry` | retry | a step is retryable | `bullswarm workflow resume <shortId> (reruns <step ids>)`, with `after <time>` when every step to retry waits on a paused pool |
+| `rerun` | rerun | a run started by this version has a failed step | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>] (runs it again with its last attempt's handoff)`; `<step>` is literal when several failed |
+| `accept` | accept | the same | `bullswarm workflow step accept <shortId> <step> --reason "…" (recorded as your choice, never proof)` |
+| `rerunReview` | rerun | a run started by this version whose review loop left a requirement failing | `bullswarm workflow step rerun <shortId> <check> --avoid <pool> (judges it again on another pool)`, for the check that judged it |
+| `acceptRequirement` | accept | the same, while the requirement is not accepted | `bullswarm workflow step accept <shortId> <check> --requirement <id> --reason "…" (recorded as your choice, never proof)`, with one `--requirement` for each failing requirement that check judged |
+| `takeOver` | take over | always | `do the unfinished work yourself; bullswarm workflow runs result <shortId> --json names every step's output` |
+| `restart` | restart | always | `start a new run: bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>` |
+
+Near the byte budget the stage-3 additions give way before any handback line: first the explanations in brackets at the end of the new options, then the new options, then `retries`, then acceptance reasons. A requirement row accepted by choice carries `accepted: "<reason>"` and prints as `requirement <id>: failed · accepted by choice "<reason>"`; it stays failed.
 
 `retry` is omitted when nothing is retryable. `workflow resume` on a finished run with nothing retryable prints `nothing to retry`, starts nothing, and exits 1.
 

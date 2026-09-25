@@ -168,7 +168,7 @@ test('rerun refuses what it cannot rerun, with the §2.7 texts and exit codes, a
   routed.program.actions.find((action) => action.id === 'build').route = { pools: { use: ['pool-a'] } };
   writeFileSync(path, JSON.stringify(routed));
   const onlyUse = await call({ stepId: 'build', avoid: ['pool-a'] });
-  assert.deepEqual([onlyUse.code, onlyUse.why], [2, `step build may only use pool-a (route.pools.use); avoiding it leaves nothing. Change its route: bullswarm workflow plan export ${token} --out plan.json → plan revise ${token} --program plan.json`]);
+  assert.deepEqual([onlyUse.code, onlyUse.why], [2, `step build may only use pool-a (route.pools.use); avoiding it leaves nothing. Change its route: bullswarm workflow plan export ${token} --out plan.json, edit it, then bullswarm workflow plan revise ${token} --program plan.json`]);
   writeFileSync(path, saved);
 
   // Not a program run.
@@ -181,6 +181,66 @@ test('rerun refuses what it cannot rerun, with the §2.7 texts and exit codes, a
 
   assert.deepEqual(readStepRestarts(runDirOf(f, runId)), [], 'a refusal writes no intent');
   assert.equal(readState(f, runId).revisions?.length ?? 0, 0, 'a refusal writes no revision');
+});
+
+// F7: the §2.4 route checks run at every step rerun, not only with --avoid.
+test('rerun without --avoid refuses a route today\'s pools cannot serve, and writes nothing', async (t) => {
+  const { f, runId, token } = await failedRun(t);
+  const path = join(runDirOf(f, runId), 'state.json');
+  const saved = readFileSync(path, 'utf8');
+  const routed = (route) => {
+    const state = JSON.parse(saved);
+    state.program.actions.find((action) => action.id === 'build').route = route;
+    writeFileSync(path, JSON.stringify(state));
+  };
+  const call = (pools = POOLS) => rerunV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', pools, waitMs: 0 });
+
+  routed({ pools: { use: ['gone-pool'] } });
+  const gone = await call();
+  assert.deepEqual([gone.code, gone.status, gone.issues], [2, 'rejected', ['step build route.pools.use names "gone-pool", which is not a configured pool (configured: pool-a, pool-b)']]);
+
+  routed({ pools: { use: ['pool-a'] } });
+  const disabled = POOLS.map((pool) => (pool.name === 'pool-a' ? { ...pool, enabled: false } : pool));
+  const none = await call(disabled);
+  assert.equal(none.code, 2);
+  assert.equal(none.status, 'rejected');
+  assert.match(none.issues.join('\n'), /^step build: no enabled pool can run it under its route \(build\/low work; route: use pool-a\)$/);
+
+  assert.deepEqual(readStepRestarts(runDirOf(f, runId)), [], 'a refusal writes no intent');
+  assert.equal(readState(f, runId).revisions?.length ?? 0, 0, 'a refusal writes no revision');
+
+  // A route the pools serve still reruns.
+  routed({ pools: { use: ['pool-b'] } });
+  const ok = await call();
+  assert.deepEqual([ok.code, ok.status], [0, 'applied'], JSON.stringify(ok));
+});
+
+// The pin check at rerun reads the run's state: a step named in independentOf
+// that already finished on another provider leaves the pin free for the check.
+test('rerun under a --worker-pool pin checks independentOf against the work the run already did', async (t) => {
+  const f = fixture(t);
+  const ctl = scripted({ check: ['fail'] });
+  const runId = 'wf-rerunp-aaaaaa';
+  await start(f, runId, [work('build'), work('check', { dependsOn: ['build'], route: { independentOf: ['build'] } })], ctl);
+  const state = readState(f, runId);
+  assert.deepEqual(['build', 'check'].map((id) => statusOf(state, id)), ['succeeded', 'failed']);
+  const goalPath = join(runDirOf(f, runId), 'goal.json');
+  const pin = (pool) => {
+    const doc = JSON.parse(readFileSync(goalPath, 'utf8'));
+    doc.config = { ...(doc.config ?? {}), workerRouting: { ...(doc.config?.workerRouting ?? {}), strictPool: pool } };
+    writeFileSync(goalPath, JSON.stringify(doc));
+  };
+  const call = () => rerunV2Step({ bullswarmDir: f.bullswarmDir, token: state.shortId, stepId: 'check', pools: POOLS, waitMs: 0 });
+  // build did its work on pool-a, the pin's provider: nothing is left for check.
+  pin('pool-a');
+  const refused = await call();
+  assert.deepEqual([refused.code, refused.status], [2, 'rejected']);
+  assert.deepEqual(refused.issues, ['step check: its route is independent of build, which runs on the run\'s pinned pool pool-a (--worker-pool, provider pool-a), so no pool is left for it; drop independentOf or run without --worker-pool']);
+  assert.equal(readState(f, runId).revisions?.length ?? 0, 0, 'a refusal writes no revision');
+  // Pinned to pool-b, build finished elsewhere: the rerun goes through.
+  pin('pool-b');
+  const ok = await call();
+  assert.deepEqual([ok.code, ok.status], [0, 'applied'], JSON.stringify(ok));
 });
 
 test('rerun --avoid amends the route, hands the failed attempt\'s handoff to the next attempt, and relaunches an offline run', async (t) => {

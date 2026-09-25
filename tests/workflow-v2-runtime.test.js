@@ -8,8 +8,9 @@ import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import {
   GATE_RETRY_HANDOFF_LINE, acceptCallerPlannerResponse, handoffBlock, normalizeAttempt, pauseV2Run, preferredUsage,
-  recordAttemptCapture, runV2AutonomousWorkflow, unpauseV2Run,
+  recordAttemptCapture, reviseV2Program, runV2AutonomousWorkflow, unpauseV2Run,
 } from '../src/workflow/v2-runtime.js';
+import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
 import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { readGoalProject } from '../src/workflow/goal.js';
 import { readRollup, readRollupIndex, readRollups, rollupIndexPath } from '../src/workflow/rollup.js';
@@ -1109,6 +1110,7 @@ test('stage 3: a new run is marked, reviews are caller-placed, independentOf fee
     assert.equal(seen[id].pinSource, null, id);
     assert.equal(typeof seen[id].onWaiting, 'function', id);
     assert.equal(typeof seen[id].claimWake, 'function', id);
+    assert.equal(typeof seen[id].nextSettleOr, 'function', id);
   }
   // D15: the check keeps "no free-first" and loses automatic writer avoidance.
   assert.deepEqual(seen.check.evidence, { writerPools: [] });
@@ -1360,4 +1362,126 @@ test('the failed action.finished names the current attempts and, in a marked run
     if (label === 'marked') assert.equal(finished.retries, 1);
     else assert.equal(Object.hasOwn(finished, 'retries'), false, 'a saved run counts attempts minus one in the watcher');
   }
+});
+
+// F17: two unordered writers of one file in an isolated run. `first` waits
+// (D9 frees its owned-file claim), `second` runs and integrates meanwhile.
+function isolatedWaitRun(t, runId, firstAttempts) {
+  const f = stage3Setup(t, { workspaceMode: 'isolated', concurrency: 2 });
+  mkdirSync(join(f.workspace, 'src'));
+  writeFileSync(join(f.workspace, 'src', 'a.js'), 'export const alpha = () => 0;\n');
+  let secondDone;
+  const secondFinished = new Promise((resolve) => { secondDone = resolve; });
+  const seen = {};
+  const dispatch = async (options) => {
+    const file = join(options.targetDir, 'src', 'a.js');
+    if (options.action.id === 'first') return firstAttempts(options, { file, secondFinished, seen });
+    seen.second = readFileSync(file, 'utf8');
+    writeFileSync(file, `${seen.second}// second\n`);
+    return succeed(options);
+  };
+  return launch3(f, {
+    runId, dispatch,
+    actions: [step3('first', { ownedFiles: ['src/a.js', 'src/first.js'] }), step3('second', { ownedFiles: ['src/a.js'] })],
+    onEvent: (event) => { if (event.type === 'action.finished' && event.payload.actionId === 'second') secondDone(); },
+  }).then((run) => ({ run, seen, workspace: f.workspace }));
+}
+
+test('isolated: a step that waited gets a private copy made when it claims its slot, so the edit integrated meanwhile is there (F17)', async (t) => {
+  const { run, seen, workspace } = await isolatedWaitRun(t, 'wf-s3isow-abcdef', async (options, { file, secondFinished }) => {
+    options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: '5h-limit' });
+    await secondFinished;
+    assert.equal(await options.claimWake(), true);
+    const text = readFileSync(file, 'utf8');
+    writeFileSync(file, `${text}// first\n`);
+    return succeed(options);
+  });
+  assert.equal(run.result.status, 'completed', run.result.reason);
+  assert.equal(readFileSync(join(workspace, 'src', 'a.js'), 'utf8'), 'export const alpha = () => 0;\n// second\n// first\n');
+  const finished = Object.fromEntries(eventsOfType(run.runDir, 'action.finished').map((event) => [event.payload.actionId, event.payload.status]));
+  assert.deepEqual(finished, { second: 'succeeded', first: 'succeeded' });
+  const refreshed = eventsOfType(run.runDir, 'action.workspace_refreshed').map((event) => event.payload);
+  assert.deepEqual(refreshed.map((payload) => [payload.actionId, payload.remade, payload.files]), [['first', true, []]]);
+  assert.match(refreshed[0].workspaceRoot, /workspaces\/first-attempt-1-/);
+  assert.equal(seen.second, 'export const alpha = () => 0;\n');
+});
+
+test('isolated: a copy an earlier attempt worked in takes the files main changed and it did not, and keeps its own work (F17)', async (t) => {
+  const { run, workspace } = await isolatedWaitRun(t, 'wf-s3isor-abcdef', async (options, { file, secondFinished }) => {
+    // Attempt 1 wrote its own file, then hit the provider's limit.
+    writeFileSync(join(options.targetDir, 'src', 'first.js'), 'attempt 1 notes\n');
+    const one = reportAttempt(options, 1, { ok: false, failureKind: 'quota', why: 'usage limit', willRetry: true });
+    options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'quota' });
+    await secondFinished;
+    assert.equal(await options.claimWake(), true);
+    assert.equal(readFileSync(join(options.targetDir, 'src', 'first.js'), 'utf8'), 'attempt 1 notes\n', 'attempt 1 work stays');
+    const text = readFileSync(file, 'utf8');
+    writeFileSync(file, `${text}// first\n`);
+    const two = reportAttempt(options, 2, { retryOf: { attempt: 'first-1', how: 'wait' } });
+    return { ok: true, status: 'succeeded', attempts: [one, two], verdict: { ok: true, why: 'ok', outFile: two.outFile } };
+  });
+  assert.equal(run.result.status, 'completed', run.result.reason);
+  assert.equal(readFileSync(join(workspace, 'src', 'a.js'), 'utf8'), 'export const alpha = () => 0;\n// second\n// first\n');
+  assert.equal(readFileSync(join(workspace, 'src', 'first.js'), 'utf8'), 'attempt 1 notes\n');
+  const refreshed = eventsOfType(run.runDir, 'action.workspace_refreshed').map((event) => event.payload);
+  assert.deepEqual(refreshed.map((payload) => [payload.actionId, payload.remade, payload.files]), [['first', false, ['src/a.js']]]);
+});
+
+test('marked: a failure a check finds after the loop stopped wakes the caller with one finished round naming it; a saved run adds nothing (F11)', async (t) => {
+  for (const [label, features, runId] of [['marked', STAGE3_RUN_FEATURES, 'wf-f11mrk-abcdef'], ['unmarked', STAGE2_RUN_FEATURES, 'wf-f11st2-abcdef']]) {
+    const f = stage3Setup(t);
+    const verdict = { status: 'passed' };
+    const dispatch = async (options) => (options.action.evidenceFor.length
+      ? succeedEvidence(options, { 'work-done': { status: verdict.status, evidence: [`work.md judged ${verdict.status}`], concerns: [] } })
+      : succeed(options));
+    const actions = [
+      step3('write', { affects: ['work-done', 'notes-done'], ownedFiles: ['work.md'] }),
+      step3('check', { dependsOn: ['write'], ownedFiles: [], affects: [], lane: 'analyze', evidenceFor: ['work-done'] }),
+    ];
+    const first = await runV2AutonomousWorkflow({
+      bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId, parentEnv: {},
+      initialPlannerResponse: { ...programOf(actions), program: { ...programOf(actions).program, defaults: { verifyRounds: label === 'marked' ? 0 : 1 } } },
+      dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, runFeatures: features },
+    });
+    assert.equal(first.result.status, 'completed', label);
+    assert.equal(first.state.verifyLoop.max, 1, label);
+    // The caller adds a second look at work-done after the loop stopped, and it fails.
+    const exported = exportV2Plan(first.state);
+    exported.program.actions.push(step3('recheck', { dependsOn: ['check'], ownedFiles: [], affects: [], lane: 'analyze', evidenceFor: ['work-done'] }));
+    const body = normalizeRevisionInput(exported, { rerun: [] });
+    const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request: createRevisionRequest({ ...body, baseRevision: first.state.program.revision }, { source: 'cli' }), waitMs: 0 });
+    assert.equal(revised.status, 'applied', label);
+    verdict.status = 'failed';
+    const second = await runV2AutonomousWorkflow({
+      bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+      dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch },
+    });
+    assert.equal(second.state.ledger.requirements['work-done'].status, 'blocked', `${label}: the two checks disagree`);
+    const finished = eventsOfType(second.runDir, 'workflow.verify-round').filter((event) => event.payload.stage === 'finished').map((event) => event.payload);
+    if (label === 'marked') {
+      assert.deepEqual(finished.map(({ wallMinutes, ...payload }) => payload), [
+        { round: 1, of: 1, stage: 'finished', passed: ['work-done'], failed: [], discovery: 0, next: 'finish', notJudged: ['notes-done'] },
+        { round: 1, of: 1, stage: 'finished', passed: [], failed: ['work-done'], discovery: 0, next: 'caller' },
+      ]);
+    } else {
+      assert.equal(finished.length, 1, 'a saved run keeps its one round event');
+    }
+  }
+});
+
+test('attempt.finished carries the dispatcher\'s quota decision when it recorded one (F23)', async (t) => {
+  const f = stage3Setup(t);
+  const dispatch = async (options) => {
+    const files = options.paths(1);
+    const started = { ordinal: 1, pool: 'relay', model: 'gpt-5.6-luna', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile, routing: {} };
+    options.onAttempt('started', { ...started });
+    writeFileSync(files.outFile, 'limit');
+    options.onAttempt('finished', { ...started, status: 'interrupted', finishedAt: new Date().toISOString(), failureKind: 'quota', why: 'usage limit', willRetry: true, quotaNext: 'move' }, { ok: false, why: 'usage limit' });
+    const second = reportAttempt(options, 2, { pool: 'codex' });
+    return { ok: true, status: 'succeeded', attempts: [second], verdict: { ok: true, outFile: second.outFile } };
+  };
+  const run = await launch3(f, { runId: 'wf-s3qnext-abcdef', dispatch, actions: [step3('write')] });
+  assert.equal(run.result.status, 'completed');
+  const finished = eventsOfType(run.runDir, 'attempt.finished').map((event) => [event.payload.attemptId, event.payload.quotaNext ?? null]);
+  assert.deepEqual(finished, [['write-1', 'move'], ['write-2', null]]);
 });

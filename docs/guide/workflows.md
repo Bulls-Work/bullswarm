@@ -241,12 +241,16 @@ A run never waits for its caller: when nothing more can happen on its own it fin
 
 | Option | When it fits | What to do |
 | --- | --- | --- |
-| change the step | its prompt, evidence, dependencies, or route needs changing | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then revise |
-| rerun elsewhere | another eligible pool may succeed | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
-| take over | the remaining work is small or needs something only you have | use the output path in the needs-you block |
-| accept anyway | you choose to keep a failed result | `bullswarm workflow step accept <shortId> <step> --reason "…"`; this is choice, never proof |
-| waiting for quota | the return time is short | wait; the step holds no scheduler slot |
-| long quota wait | the watcher prints options | revise the step, lift a named pause, or rerun elsewhere as printed |
+| continue | the plan needs a fix, a new step, or a step redone | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` (`--rerun <step ids>` runs finished steps again) |
+| retry | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool | `bullswarm workflow resume <shortId>`; it reruns exactly those steps and the steps blocked behind them |
+| rerun | a step failed in a run started by this version | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]` runs it again with its last attempt's handoff |
+| accept | you choose to keep a failed step as it is | `bullswarm workflow step accept <shortId> <step> --reason "…"`: recorded as your choice, never proof |
+| take over | the rest is small, or needs something only you have | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |
+| restart | the goal or the approach was wrong | start a new run: `bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>` |
+
+`retry` appears only when a step is retryable. When nothing is, `resume` prints `nothing to retry`, starts nothing and exits 1. A step whose pools were all paused shows `its pool is back at <time>`; resuming before then fails it again at once. `rerun` and `accept` appear only in runs started by this version that have a failed step.
+
+When the review loop left a requirement failing in a run started by this version, `your call:` also offers the check that judged it: `rerun` is `bullswarm workflow step rerun <shortId> <check> --avoid <pool>` (it judges again on another pool), and `accept` is `bullswarm workflow step accept <shortId> <check> --requirement <id> --reason "…"`. An accepted requirement then reads `requirement <id>: failed · accepted by choice "<reason>"`: it stays failed and the run stays not verified.
 
 ## The failure rule and needs-you block
 
@@ -264,24 +268,33 @@ steps still running, dependents waiting on it, and four commands. For example:
 ✗ variants needs you · command evidence failed after 1 retry
   evidence  node check-assets.mjs out/ → exit 1
             banner-b.png has the wrong dimensions
-  try 1  pool-a · image model · 11m · 3 files
-  try 2  same pool, failure attached · 7m · 3 files
+  try 1  pool-a · image model · 11m00s · 3 files
+  try 2  same pool, failure attached · 7m00s · 3 files
   still running: copy · waiting on this: pick
   your call:
     rerun elsewhere  bullswarm workflow step rerun <id> variants --avoid pool-a
-    change the step  bullswarm workflow plan export <id> --out plan.json → plan revise <id> --program plan.json
+    change the step  bullswarm workflow plan export <id> --out plan.json
+      then edit it   bullswarm workflow plan revise <id> --program plan.json
     take over        output: <absolute output path>
     accept anyway    bullswarm workflow step accept <id> variants --reason "…"
   next: bullswarm workflow watch <id> --until trouble --after <sequence> --since <iso>
 ```
 
-Choose one `your call` command, then relaunch the exact `next:` line. Rerunning
-with `--avoid` keeps that pool excluded in the step's route. Accepting records
-`choice`, never proof; rerunning the step undoes acceptance. A short quota wait
-needs no action. For a long wait, follow its printed options: revise the step,
-lift a named pause with `bullswarm pools resume <pool>`, or rerun elsewhere for
-a hold or 5-hour limit. `step accept` is also the deliberate way to accept a
-failing review requirement.
+Choose one `your call` command, then relaunch the exact `next:` line. When no
+other pool could run the step, the first option reads `retry here` with a plain
+`step rerun`. Rerunning with `--avoid` keeps that pool excluded in the step's
+route. Accepting records `choice`, never proof; rerunning the step undoes
+acceptance. When a review still fails after its fix, the block names the check
+that judged the failing requirement; another check that failed one gets its
+own `also judged by <check>:` lines with its rerun and accept.
+
+A step with no pool to run on until a known time prints one line, `⧖ <step>
+waiting for quota · <pool> back at <time> (in <duration>)`, and starts again by
+itself when the pool is back. `--until trouble` wakes on it only when the wait
+is longer than 30 minutes; then it adds the printed options: change the step
+(the two plan commands), lift the pause with `bullswarm pools resume <pool>`
+when a paused pool causes the wait, or run it elsewhere with `step rerun
+--avoid` for a hold or 5-hour limit when the step's route allows another pool.
 
 ```bash
 # the compact result: status, verified, reason, every action, usage, and next
