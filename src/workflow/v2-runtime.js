@@ -39,7 +39,7 @@ import {
   WAKE_CLAIM_RECHECK_MS, appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
   markStepRestartApplied, readStepRestarts, requeueRestartedStep, snapshotPossible,
 } from './v2-dispatch.js';
-import { countRetries, declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary.js';
+import { countRetries, declaredDeliverable, declaredEvidence, poolCausedPools, roleOf } from './step-vocabulary.js';
 import { resolveRouteFilter, workAttempts } from './step-route.js';
 import { modelFamilyOf } from '../lib/route.js';
 import { evidenceBriefLines, evidenceItemTimeoutSec, rewriteEvidenceCwd } from './evidence-runner.js';
@@ -2317,6 +2317,11 @@ async function runV2Kernel({
       // where it is present.
       routeFilter: resolveRouteFilter(state, action, pools),
       pinSource: restart?.pool ? 'step restart' : null,
+      // A step that failed on a pool because of the pool (a limit, a sign-in,
+      // a provider error, a worker that died before it answered) starts
+      // elsewhere when another pool can take it: a rerun, a resume or a
+      // revise --rerun (marked runs; a pool named by restart --pool wins).
+      leavePools: restart?.pool ? [] : poolCausedPools(state.attempts, action.id),
       // D9: a step no pool can take waits without holding a slot. The loop is
       // kicked so the freed slot is refilled at once.
       onWaiting: ({ until, pools: waitPools, reason }) => {

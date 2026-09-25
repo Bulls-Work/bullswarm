@@ -3,7 +3,9 @@ import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './v2-runtime.js';
-import { LANES, pickPool, isBenched, isExhausted, isFree, isQuarantined } from '../lib/route.js';
+import {
+  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isBenched, isExhausted, isFree, isQuarantined,
+} from '../lib/route.js';
 import {
   assertDepthAllowed, childDepthEnv, clearPoolStrikes, loadState, quarantinePool,
   quarantineUpstreamSiblings, recordPoolStrike, updateState, upstreamGroupOf,
@@ -804,7 +806,7 @@ export function appliedStepRestart(state, runDir, actionId, formatHandoff = hand
   const stopped = request.attemptId
     ? (state.attempts ?? []).find((attempt) => attempt.id === request.attemptId)
     : (state.attempts ?? []).findLast((attempt) => attempt.actionId === actionId);
-  return { request, pool: request.pool ?? null, handoff: stopped ? durableAttemptHandoff(stopped, runDir, formatHandoff) : null };
+  return { request, pool: request.pool ?? null, attempt: stopped ?? null, handoff: stopped ? durableAttemptHandoff(stopped, runDir, formatHandoff) : null };
 }
 
 /**
@@ -958,6 +960,11 @@ export async function dispatchV2Action({
   waitRecheckMs = WAIT_RECHECK_MS,
   // Who pinned `strictPool` (D30): null reads `--worker-pool`.
   pinSource = null,
+  // Stage 3: `[{pool, failureKind}]`, the pools the step's earlier attempts
+  // failed on because of the pool (step-vocabulary.js poolCausedPools). The
+  // first pick of this dispatch takes another pool when one can take the
+  // step now.
+  leavePools = null,
 } = {}) {
   if (!action || typeof action.id !== 'string') throw new TypeError('action is required');
   if (typeof taskText !== 'string' || !taskText) throw new TypeError('taskText is required');
@@ -1004,13 +1011,40 @@ export async function dispatchV2Action({
     try { return loadCoreState(bullswarmDir).pools ?? {}; }
     catch { return {}; }
   });
+  // Stage 3 (marked runs): a pool the router calls "expiring but draining"
+  // (its pacing window closes soon and this step would take it past the
+  // wall) is never given the step, even when nothing else can take it; the
+  // router alone would pick it as a last resort. The step goes to another
+  // pool, or waits for one, or for that window's reset, and the picture is
+  // read again at every recheck. A pool the caller named (the run's pin, or
+  // a route that allows only it) is exempt. Unmarked runs keep the router's
+  // last-resort pick. Map: pool name -> {until, forecast, elapsed}.
+  const namedPool = strictPool ?? (routeFilter?.usePools?.length === 1 ? routeFilter.usePools[0] : null);
+  const drainingAt = (poolList, at) => {
+    const found = new Map();
+    if (!failureRule || !poolList.length) return found;
+    const viewed = attachForecast(poolList.map((pool) => ({ ...pool })), bullswarmDir, { now: at, decisionLog: coreDecisionLog() });
+    for (const pool of viewed) {
+      if (pool.name === namedPool) continue;
+      const view = expiringSoonView(pool, { now: at, candidateMinutes: expected.expectedMinutes, inflightPenaltyPct });
+      if (view.state !== 'draining') continue;
+      const elapsed = Number(pool.elapsedPct);
+      found.set(pool.name, { until: toMs(pool.paceResetsAt), forecast: view.forecast, elapsed: Number.isFinite(elapsed) ? elapsed : null });
+    }
+    return found;
+  };
+  // The draining pools the last prepare() kept out, for the pick's reason.
+  let keptOffDraining = new Map();
   const prepare = (poolList) => {
     const live = liveQuarantines();
-    return preparePools(poolList, action, effort, {
-      preferredModel, strictPool, now: now(), routeFilter,
+    const at = now();
+    const prepared = preparePools(poolList, action, effort, {
+      preferredModel, strictPool, now: at, routeFilter,
       liveQuarantine: (name) => live[name]?.quarantine ?? null,
       liveBench: (name) => live[name]?.bench ?? null,
     }).filter((pool) => !failedProbes.has(pool.name));
+    keptOffDraining = drainingAt(prepared, at);
+    return keptOffDraining.size ? prepared.filter((pool) => !keptOffDraining.has(pool.name)) : prepared;
   };
   const safeCoreState = () => {
     try { return loadCoreState(bullswarmDir); } catch { return null; }
@@ -1110,6 +1144,9 @@ export async function dispatchV2Action({
   let gatePin = null;
   let gateBlocked = false;
   let waiting = false;
+  let leaveFirst = failureRule && Array.isArray(leavePools) && leavePools.length
+    ? new Map(leavePools.map((entry) => [entry.pool, entry.failureKind ?? null]))
+    : null;
   const heldAt = (name, at) => (holds.get(name) ?? -Infinity) > at;
   const holdPassed = (name, at) => holds.has(name) && holds.get(name) <= at;
   // A pool this step may pick now (§2.1), given that prepare() admits it: not
@@ -1140,6 +1177,7 @@ export async function dispatchV2Action({
       ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true,
     }).filter((pool) => !failedProbes.has(pool.name) && !leftNonWait.has(pool.name));
     const open = new Set(prepare(allPools).filter((pool) => openAt(pool.name, at)).map((pool) => pool.name));
+    const draining = drainingAt(waitable, at);
     let plan = null;
     for (const pool of waitable) {
       const parts = [
@@ -1147,6 +1185,7 @@ export async function dispatchV2Action({
         ['bench', pool.bench?.until], ['bench', live[pool.name]?.bench?.until],
         ['hold', holds.get(pool.name)],
         ['5h-limit', pool.burstGate === true ? pool.fiveHourResetsAt : null],
+        ['draining', draining.get(pool.name)?.until],
       ].map(([reason, value]) => [reason, toMs(value)]).filter(([, ms]) => ms != null && ms > at);
       if (!parts.length) {
         if (open.has(pool.name)) return { until: at, reason: null, pools: [pool.name], pickable: true };
@@ -1222,6 +1261,17 @@ export async function dispatchV2Action({
         ? candidates.find((candidate) => candidate.name === gatePin && !heldAt(candidate.name, at))
         : null;
       gatePick = pinned ? pinned.name : null;
+      // A rerun after a failure the pool caused starts elsewhere when it can;
+      // the same pool is used only when nothing else can take the step now.
+      const left = leaveFirst && !pinned && remaining.some((candidate) => !leaveFirst.has(candidate.name))
+        ? remaining.filter((candidate) => leaveFirst.has(candidate.name)).map((candidate) => candidate.name)
+        : [];
+      if (left.length) {
+        for (let i = remaining.length - 1; i >= 0; i -= 1) if (leaveFirst.has(remaining[i].name)) remaining.splice(i, 1);
+        const note = `moved off ${left.map((name) => `${name} (${leaveFirst.get(name) ?? 'pool'})`).join(', ')}: `
+          + `${left.length === 1 ? 'an earlier attempt' : 'earlier attempts'} failed there on the pool`;
+        if (!fallbackWhy?.includes(note)) fallbackWhy = fallbackWhy ? `${note} · ${fallbackWhy}` : note;
+      }
       markedPools = pinned ? [pinned] : remaining;
       if (!markedPools.length) {
         // Nothing can take the step now (D8, D9): wait for the earliest known
@@ -1321,6 +1371,12 @@ export async function dispatchV2Action({
       pinSource: gatePick ? GATE_RETRY_PIN_SOURCE : pinSource,
       routeNote: routeFilter?.summary || null,
     });
+    if (route.pick && keptOffDraining.size) {
+      // The router never saw the pools kept off above; say so in its words.
+      const kept = [...keptOffDraining].map(([name, view]) => `${name} ${Number(view.forecast).toFixed(1)}%${
+        view.elapsed != null ? ` (${view.elapsed.toFixed(1)}% elapsed)` : ''}`).join(', ');
+      route.why = `${route.why} · expiring but draining (forecast >= ${PACING_FORECAST_BLOCK_PCT}% and past its clock), kept off: ${kept}`;
+    }
     // The pool was eligible on the forced refresh, but the pinned pick still
     // found none (a race inside the pick): the stored attempt promised a retry
     // that does not happen, so it is corrected, and no other pool is tried.
@@ -1465,6 +1521,7 @@ export async function dispatchV2Action({
     pendingRetry = null;
     promisedRecord = null;
     gatePin = null;
+    leaveFirst = null;
     onAttempt?.('started', clone(record));
     const runtimeConnector = { ...connector, subscription: pool.subscription ?? connector.subscription ?? null };
     // In-flight the instant the pool is picked — before the spawn, so four

@@ -437,8 +437,14 @@ failure (`failed-evidence`, `not-produced`, `schema`, or `semantic`) retries on
 the same pool with the failure attached. A gate retry spends the same one-step
 budget. A started `act` step is never retried automatically; a check that could
 not run also comes straight back to you. Quota moves to another eligible pool
-without spending the retry, or waits for a known return time. Only dependents
-wait; unrelated steps keep running. Runs started earlier keep their saved rules.
+without spending the retry, or waits for a known return time. A pool about to
+run out before its window resets is never given a step it would push over;
+the step waits for another pool or that reset. A `step rerun` or `resume`
+after a failure the pool caused (quota, sign-in, provider error, a worker that
+died before answering) starts on another pool when one can take the step, and
+on the same pool only when none can; this changes nothing in the route. Only
+dependents wait; unrelated steps keep running. Runs started earlier keep their
+saved rules.
 
 When the watch prints a needs-you block, choose one of its four `your call`
 lines, run that command as printed, and relaunch the exact `next:` watch line:
@@ -459,8 +465,9 @@ A waiting line is not a failure and spends no retry; the step starts again by
 itself when the pool is back. `--until trouble` wakes on it only when the wait
 is longer than 30 minutes. For a short wait, take no action and let the
 watch continue. For a long wait, follow its printed options: revise the plan,
-lift a pool pause with `bullswarm pools resume <pool>`, or, for a step hold or
-5-hour limit, rerun elsewhere with `step rerun --avoid`.
+lift a pool pause with `bullswarm pools resume <pool>`, or, for a step hold,
+a 5-hour limit or a nearly spent pool, rerun elsewhere with `step rerun
+--avoid`.
 
 ## When a run finishes: the handback
 

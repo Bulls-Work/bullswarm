@@ -333,6 +333,59 @@ test('the rerun gets its one automatic retry again: a retry spent before it no l
   assert.equal(countRetries(state, 'build'), 0);
 });
 
+test('a rerun after a failure its pool caused tells the dispatcher to start elsewhere; a failure of the work does not', async (t) => {
+  const cases = [
+    { label: 'quota', fails: [['pool-a', 'quota', {}]], leaves: ['pool-a'] },
+    { label: 'died at start', fails: [['pool-a', 'process', {}]], leaves: ['pool-a'] },
+    { label: 'work exit', fails: [['pool-a', 'process', { lastResponse: 'I tried and the tests fail', changedFileCount: 2 }]], leaves: [] },
+    { label: 'evidence', fails: [['pool-a', 'failed-evidence', { changedFileCount: 1 }]], leaves: [] },
+    // The pool that died first is still left when the retry failed on its work.
+    { label: 'then work', fails: [['pool-a', 'provider', {}], ['pool-b', 'failed-evidence', { changedFileCount: 1 }]], leaves: ['pool-a'] },
+  ];
+  for (const [index, { label, fails, leaves }] of cases.entries()) {
+    const f = fixture(t);
+    const runId = `wf-rerunp-${'abcde'[index].repeat(6)}`;
+    const seen = [];
+    let failed = false;
+    const at = () => new Date().toISOString();
+    const dispatch = async (options) => {
+      const id = options.action.id;
+      if (id === 'build') seen.push(options.leavePools ?? null);
+      if (id === 'build' && !failed) {
+        failed = true;
+        const records = fails.map(([pool, failureKind, extra], i) => {
+          const files = options.paths(i + 1);
+          writeFileSync(files.taskFile, options.taskText);
+          const record = { ordinal: i + 1, pool, model: 'model-a', status: 'running', startedAt: at(), taskFile: files.taskFile, outFile: files.outFile };
+          options.onAttempt?.('started', record);
+          Object.assign(record, { status: 'failed', finishedAt: at(), failureKind, why: 'it failed', ...extra });
+          options.onAttempt?.('finished', record, { ok: false, why: 'it failed' });
+          return record;
+        });
+        return { ok: false, status: 'failed', failureKind: records.at(-1).failureKind, attempts: records, verdict: { ok: false, why: 'it failed' } };
+      }
+      const files = options.paths(1);
+      writeFileSync(files.taskFile, options.taskText);
+      const record = { ordinal: 1, pool: 'pool-b', model: 'model-a', status: 'running', startedAt: at(), taskFile: files.taskFile, outFile: files.outFile };
+      options.onAttempt?.('started', record);
+      writeFileSync(join(options.targetDir, `${id}.txt`), options.action.prompt);
+      writeFileSync(files.outFile, `delivered ${id}`);
+      Object.assign(record, { status: 'succeeded', finishedAt: at() });
+      options.onAttempt?.('finished', record);
+      return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
+    };
+    const ctl = { dispatch };
+    await start(f, runId, [work('build')], ctl);
+    const token = readState(f, runId).shortId;
+    const result = await rerunV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', pools: POOLS, waitMs: 0, relaunch: resumer(f, ctl) });
+    assert.equal(result.status, 'applied', JSON.stringify(result));
+    assert.deepEqual(result.leaves, leaves, label);
+    const kindOf = Object.fromEntries(fails.map(([pool, failureKind]) => [pool, failureKind]));
+    assert.deepEqual(seen, [[], leaves.map((pool) => ({ pool, failureKind: kindOf[pool] }))], label);
+    assert.equal(statusOf(readState(f, runId), 'build'), 'succeeded');
+  }
+});
+
 test('rerun without --avoid is a plain rerun; a succeeded step gets no handoff; a pending step only amends its route', async (t) => {
   const { f, ctl, runId, token } = await failedRun(t);
   const relaunch = resumer(f, ctl);

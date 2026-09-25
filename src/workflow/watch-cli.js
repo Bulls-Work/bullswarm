@@ -952,8 +952,12 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
       const token = event[RUN_TOKEN] ?? '?';
       const pool = event.pools?.[0] ?? '?';
       const back = `${formatDeadline(event.until, now)} (in ${formatDuration(event.waitSec)})`;
-      const lines = [`${glyphs().waiting} ${event.actionId} waiting for ${event.reason === 'bench' ? 'a pool' : 'quota'} · `
-        + `${(event.pools ?? []).length > 1 ? `first back: ${pool} at ${back}` : `${pool} back at ${back}`}`];
+      // A draining pool is not out yet: the step is kept off it until its
+      // window resets, because this step would take it past the wall.
+      const lines = [event.reason === 'draining'
+        ? `${glyphs().waiting} ${event.actionId} waiting for a pool · ${pool} is nearly spent, resets at ${back}`
+        : `${glyphs().waiting} ${event.actionId} waiting for ${event.reason === 'bench' ? 'a pool' : 'quota'} · `
+          + `${(event.pools ?? []).length > 1 ? `first back: ${pool} at ${back}` : `${pool} back at ${back}`}`];
       if (untilMode || (Number.isFinite(event.waitSec) && event.waitSec * 1000 > LONG_WAIT_MS)) {
         // Every printed command runs as printed (F26).
         const [exportPlan, revisePlan] = changeStepCommands(token);

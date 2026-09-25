@@ -407,6 +407,10 @@ test('a waiting step prints one line; more than 30 minutes away it adds the opti
   assert.match(paused.text.split('\n')[0], new RegExp(`^⧖ verify waiting for quota · first back: pool-a at ${back(120)} \\(in 2h00m\\)$`));
   assert.equal(paused.text.split('\n')[3], '  or lift the pause:  bullswarm pools resume pool-a');
   assert.match(render(waiting(10, 'bench')).text, /^⧖ verify waiting for a pool · /);
+  // A draining pool is not out: the line says it is nearly spent and when it resets.
+  const drained = render(waiting(600, 'draining'));
+  assert.match(drained.text.split('\n')[0], new RegExp(`^⧖ verify waiting for a pool · pool-a is nearly spent, resets at ${back(600)} \\(in 10h00m\\)$`));
+  assert.equal(drained.text.split('\n')[3], `  or run it elsewhere: bullswarm workflow step rerun ${SHORT} verify --avoid pool-a`);
   // In --until modes the option lines follow even a short wait.
   const [shortNotable] = notableWatchEvents({ events: [waiting(10, 'hold')], state }).notable;
   assert.equal(renderWatchEvent(shortNotable, { now: Date.parse(committedAt), untilMode: true }).split('\n').length, 4);

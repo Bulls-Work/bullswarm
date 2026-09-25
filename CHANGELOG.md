@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- workflow: a pool the router calls "expiring but draining" (its weekly or
+  monthly window closes soon and the step would push it past its limit) is no
+  longer given a step in runs started by this version, even when it is the only
+  pool left; the router used to pick it as a last resort. The step waits
+  (`⧖ <step> waiting for a pool · <pool> is nearly spent, resets at …`) and
+  takes the first pool that can run it. A pool the caller named is exempt.
+- workflow: `step rerun` and `resume` after a failure the pool caused (a usage
+  limit, a sign-in failure, a provider error, or a worker that died before it
+  answered or changed a file) start on another pool when one can take the step
+  now. Before, the rerun's first pick knew nothing of the failure and could go
+  straight back to the pool that just ran out of credit.
 - providers: running out of credit is a usage limit for every provider, not a
   failure. Claude Code's `Credit balance is too low` used to bench the pool as
   a broken sign-in; Codex (`You're out of credits`, `You hit your spend cap`),

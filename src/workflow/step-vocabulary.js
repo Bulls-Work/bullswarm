@@ -208,6 +208,35 @@ export function failureClassOf(kind) {
   return (typeof kind === 'string' && FAILURE_CLASS_BY_KIND.get(kind)) || 'caller';
 }
 
+// Failures the pool caused rather than the task: a limit, a sign-in, a
+// provider error (including a worker that could not be spawned), or a worker
+// that exited with an error before it answered or changed a file. A rerun or
+// resume after one starts on another pool when one can take the step.
+const POOL_CAUSED_KINDS = new Set(['quota', 'throttle', 'auth', 'provider']);
+
+/** Whether a stored attempt failed because of its pool (see above). */
+export function poolCausedFailure(attempt) {
+  if (!attempt?.pool || !['failed', 'interrupted'].includes(attempt.status)) return false;
+  if (POOL_CAUSED_KINDS.has(attempt.failureKind)) return true;
+  return attempt.failureKind === 'process' && !attempt.lastResponse && !(Number(attempt.changedFileCount) > 0);
+}
+
+/**
+ * The pools a step's attempts since its last success failed on because of
+ * the pool, newest failure per pool: `[{pool, failureKind}]`, oldest first.
+ */
+export function poolCausedPools(attempts, actionId) {
+  const mine = (attempts ?? []).filter((attempt) => attempt?.actionId === actionId);
+  const lastSuccess = mine.findLastIndex((attempt) => attempt.status === 'succeeded');
+  const byPool = new Map();
+  for (const attempt of mine.slice(lastSuccess + 1)) {
+    if (!poolCausedFailure(attempt)) continue;
+    byPool.delete(attempt.pool);
+    byPool.set(attempt.pool, attempt.failureKind ?? null);
+  }
+  return [...byPool].map(([pool, failureKind]) => ({ pool, failureKind }));
+}
+
 // The needs-you header label per failureKind (stage-3 §2.5). `failed-evidence`
 // has two: the caller picks by the type of the first failing item.
 export const NEEDS_YOU_LABELS = Object.freeze({

@@ -263,7 +263,9 @@ printed `next:` line again.
 
 `⧖ <step> waiting for quota · <pool> back at <time> (in <duration>)` (or
 `waiting for a pool`, or `first back: <pool> at …` when several pools could
-run it) means no pool can run the step until that time. It is not a failure
+run it, or `waiting for a pool · <pool> is nearly spent, resets at …` when the
+only pool left would run out before its window resets) means no pool can run
+the step until that time. It is not a failure
 and spends no retry: the step starts again by itself when the pool is back,
 and a full watch prints the line for every wait. `--until trouble` wakes on it
 only when the wait is longer than 30 minutes, and then these lines follow:
@@ -272,7 +274,7 @@ only when the wait is longer than 30 minutes, and then these lines follow:
 |---|---|---|
 | `or change the step:` / `then edit it:` | always | the two plan commands above |
 | `or lift the pause:` | a paused pool causes the wait | `bullswarm pools resume <pool>` |
-| `or run it elsewhere:` | a hold or 5-hour limit, when the step's route allows another pool | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
+| `or run it elsewhere:` | a hold, a 5-hour limit or a nearly spent pool, when the step's route allows another pool | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
 
 Do nothing for a short wait. For a long one choose one printed option, or
 leave it waiting, and start the `next:` watch again. Do not use `resume` to

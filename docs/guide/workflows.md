@@ -296,6 +296,22 @@ is longer than 30 minutes; then it adds the printed options: change the step
 when a paused pool causes the wait, or run it elsewhere with `step rerun
 --avoid` for a hold or 5-hour limit when the step's route allows another pool.
 
+A pool whose weekly or monthly window closes soon and that this step would
+push past its limit (the router's "expiring but draining") is never given the
+step, even when it is the only pool left. The step waits, `⧖ <step> waiting
+for a pool · <pool> is nearly spent, resets at <time> (in <duration>)`, and
+takes the first pool that can run it: another pool, the same pool once its
+forecast drops, or the same pool after its reset. A pool you named (the run's
+`--worker-pool`, or a route that allows only that pool) is exempt.
+
+A `step rerun` (or a `resume`) after a failure the pool caused starts on
+another pool when one can take the step now. Pool-caused failures are a usage
+limit, a sign-in failure, a provider error, or a worker that exited with an
+error before it answered or changed a file. The rerun prints `pool  starts on
+another pool than <pool> …`, and the attempt's route reason starts with
+`moved off <pool>`. The same pool runs it only when nothing else can. Unlike
+`--avoid`, this changes nothing in the step's route.
+
 ```bash
 # the compact result: status, verified, reason, every action, usage, and next
 bullswarm workflow runs result ab12cd --json --summary

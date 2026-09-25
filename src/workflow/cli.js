@@ -17,7 +17,7 @@ import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
-import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, declaredDeliverable } from './step-vocabulary.js';
+import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, declaredDeliverable, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS, SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
 import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
@@ -2152,6 +2152,11 @@ export async function rerunV2Step({
     ...base, requestId: request.id, avoid: avoided, notes,
     handoffFrom: handoffFrom?.id ?? null,
     handoff: handoffFrom ? { attemptId: handoffFrom.id, failureKind: handoffFrom.failureKind ?? handoffFrom.status, pool: handoffFrom.pool ?? null } : null,
+    // The pools the rerun starts off, because the step failed there on the
+    // pool (marked runs): another pool takes the step if one can now.
+    leaves: features.failureRule && status !== 'pending'
+      ? poolCausedPools(state.attempts, stepId).map((entry) => entry.pool).filter((pool) => !avoided.includes(pool))
+      : [],
     pending: status === 'pending',
     route: definition.route ?? null,
     next: { watch: `bullswarm workflow watch ${id} --until trouble` },
@@ -2275,6 +2280,10 @@ function printStepRerun(result, token) {
   for (const note of result.notes ?? []) console.log(`  ${note}`);
   for (const line of stepReopenedLines(result.reopened)) console.log(`  ${line}`);
   if (result.handoff) console.log(`  handoff  ${result.handoff.attemptId} (${result.handoff.failureKind}${result.handoff.pool ? ` on ${result.handoff.pool}` : ''}) goes to the next attempt`);
+  if (result.leaves?.length) {
+    const names = result.leaves.join(', ');
+    console.log(`  pool     starts on another pool than ${names} when one can take it (the step failed there on the pool); ${result.leaves.length === 1 ? 'that pool' : 'those'} only if none can`);
+  }
   if (result.avoid.length) console.log(`  route    ${routeSummary(result.route)} · kept for later reruns; to remove it, export the plan, edit the route, then plan revise`);
   if (result.paused) console.log(`  resume   bullswarm workflow resume ${id}`);
   else console.log(`  watch    ${result.next.watch}`);

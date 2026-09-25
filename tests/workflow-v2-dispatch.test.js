@@ -3420,6 +3420,85 @@ test('failure rule: a 5h-gated only pool waits for its reset, and without one fa
   assert.equal(unmarked.result.verdict.why, 'no eligible pool: no enabled pool has a model on the low tier for build work');
 });
 
+// A pool the router calls "expiring but draining": its weekly window resets
+// within a day and it is ahead of its clock at or over the 95% line.
+const drainingPool = (name, clock, extra = {}) => connector(name, {
+  pacingWindow: 'weekly', usedPct: 99, elapsedPct: 95,
+  paceResetsAt: new Date(clock.t + 10 * 60 * 60_000).toISOString(), ...extra,
+});
+
+test('failure rule: a draining pool is never given the step; it waits for another pool or the reset', async () => {
+  const clock = fakeClock();
+  const reset = new Date(clock.t + 10 * 60 * 60_000).toISOString();
+  const fresh = () => connector('luna-1', { pacingWindow: 'weekly', usedPct: 2, elapsedPct: 1 });
+  const waited = await markedDispatch([good], {
+    pools: [drainingPool('luna-1', clock)],
+    refreshPools: async () => [clock.t >= Date.parse(reset) ? fresh() : drainingPool('luna-1', { t: Date.parse(reset) - 10 * 60 * 60_000 })],
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(waited.result.ok, true);
+  assert.deepEqual(waited.waits, [{ until: reset, pools: ['luna-1'], reason: 'draining' }]);
+  assert.ok(Date.parse(waited.result.attempts[0].startedAt) >= Date.parse(reset), 'it ran only after the reset');
+  assert.ok(clock.slept.length > 1 && clock.slept.every((ms) => ms <= 5 * 60_000), 'the router is asked again at every recheck');
+
+  // Another pool takes it now, and the reason names the pool kept off.
+  const moved = await markedDispatch([good], {
+    pools: [drainingPool('luna-1', fakeClock()), connector('luna-2')],
+  });
+  assert.deepEqual(pickedPools(moved.result), ['luna-2']);
+  assert.match(moved.result.attempts[0].routeWhy, /expiring but draining \(forecast >= 95% and past its clock\), kept off: luna-1 99\.0% \(95\.0% elapsed\)/);
+
+  // Unmarked runs keep the router's last-resort pick.
+  const unmarked = await markedDispatch([good], { pools: [drainingPool('luna-1', fakeClock())], failureRule: false });
+  assert.deepEqual(pickedPools(unmarked.result), ['luna-1']);
+});
+
+test('failure rule: a rerun after a failure its pool caused starts on another pool, and on that pool only when nothing else can take it', async () => {
+  const pools = () => [connector('luna-1', { usedPct: 1 }), connector('luna-2', { usedPct: 40 })];
+  const plain = await markedDispatch([good], { pools: pools() });
+  assert.deepEqual(pickedPools(plain.result), ['luna-1'], 'the router prefers luna-1 on its own');
+
+  const moved = await markedDispatch([good], { pools: pools(), leavePools: [{ pool: 'luna-1', failureKind: 'quota' }] });
+  assert.deepEqual(pickedPools(moved.result), ['luna-2']);
+  assert.match(moved.result.attempts[0].routeWhy, /^moved off luna-1 \(quota\): an earlier attempt failed there on the pool · /);
+
+  // Every pool it failed on is left while another can take the step.
+  const three = [...pools(), connector('luna-3', { usedPct: 80 })];
+  const both = await markedDispatch([good], { pools: three, leavePools: [{ pool: 'luna-1', failureKind: 'quota' }, { pool: 'luna-2', failureKind: 'provider' }] });
+  assert.deepEqual(pickedPools(both.result), ['luna-3']);
+  assert.match(both.result.attempts[0].routeWhy, /^moved off luna-1 \(quota\), luna-2 \(provider\): earlier attempts failed there on the pool · /);
+
+  // Only the first pick: a failure on luna-2 may come back to luna-1.
+  const back = await markedDispatch([processFail(), good], { pools: pools(), leavePools: [{ pool: 'luna-1', failureKind: 'auth' }] });
+  assert.deepEqual(pickedPools(back.result), ['luna-2', 'luna-1']);
+
+  const alone = await markedDispatch([good], { pools: [connector('luna-1')], leavePools: [{ pool: 'luna-1', failureKind: 'provider' }] });
+  assert.deepEqual(pickedPools(alone.result), ['luna-1']);
+  assert.doesNotMatch(alone.result.attempts[0].routeWhy, /moved off/);
+
+  const unmarked = await markedDispatch([good], { pools: pools(), failureRule: false, leavePools: [{ pool: 'luna-1', failureKind: 'quota' }] });
+  assert.deepEqual(pickedPools(unmarked.result), ['luna-1'], 'unmarked runs keep today\'s pick');
+});
+
+test('failure rule: a draining pool the caller named still runs the step, and one that stops draining is picked at the recheck', async () => {
+  const pinned = await markedDispatch([good], { pools: [drainingPool('luna-1', fakeClock())], strictPool: 'luna-1' });
+  assert.deepEqual(pickedPools(pinned.result), ['luna-1']);
+  assert.deepEqual(pinned.waits, []);
+
+  const clock = fakeClock();
+  let reads = 0;
+  const eased = await markedDispatch([good], {
+    pools: [drainingPool('luna-1', clock)],
+    refreshPools: async () => [(reads += 1) > 2 ? drainingPool('luna-1', clock, { usedPct: 80 }) : drainingPool('luna-1', clock)],
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(eased.result.ok, true);
+  assert.equal(eased.waits.length, 1);
+  assert.equal(eased.waits[0].reason, 'draining');
+  assert.ok(Date.parse(eased.result.attempts[0].startedAt) < Date.parse(eased.waits[0].until), 'it ran before the reset');
+});
+
+
 test('failure rule: no capable pool fails unavailable at once, with no wait', async () => {
   const { result, waits } = await markedDispatch([good], { pools: [connector('luna-1', { enabled: false })] });
   assert.equal(result.failureKind, 'unavailable');
