@@ -194,6 +194,21 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
       : labels ?? failureKind ?? 'failed';
   const act = flags.failureRule && retries === 0 && roleOf(definitionOf(state, stepId)) === 'act';
   const pool = last?.pool ?? null;
+  // Marked runs only: the dispatcher names a retryAfter only when a return
+  // time is the real next step (a spent window's reset, the earliest return of
+  // the held pools, a rate limit's named wait), so any kind that carries one
+  // says when rerunning the step here can get through. Bullswarm never waits
+  // for it by itself. The step's saved failure stands in for the event's only
+  // when it is the same kind: a replayed older failure never shows the return
+  // of the one that followed it.
+  const saved = runtime?.lastFailure ?? null;
+  const returnAt = payload.retryAfter ?? (saved?.kind === failureKind ? saved.retryAfter : null) ?? null;
+  const backAt = flags.failureRule && !Number.isNaN(Date.parse(returnAt ?? '')) ? returnAt : null;
+  // The transient rate-limit backoffs among the tries, counted as tryLine
+  // names them: a wait that stayed on its pool (a saved stage-3 run's move
+  // after a usage limit is a wait that changed pools).
+  const backoffs = attempts.filter((attempt, index) => attempt.retryOf?.how === 'wait'
+    && !(index > 0 && attempts[index - 1].pool !== attempt.pool)).length;
   return {
     variant: 'step',
     runId: state?.runId ?? null,
@@ -204,6 +219,7 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
     failureKind,
     retries,
     notRetried: checkFault ? 'check' : act ? 'act' : retries === 0 ? 'none' : null,
+    ...(backoffs ? { backoffs } : {}),
     evidence: failing.slice(0, EVIDENCE_ITEMS).map(evidenceItem),
     why: failing.length ? null : clip(payload.why ?? runtime?.lastFailure?.message ?? last?.why ?? 'no reason recorded'),
     evidenceNotRun: evidenceNotRun(definitionOf(state, stepId), failureKind, last),
@@ -219,7 +235,11 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
       };
     }),
     ...neighbours(state, stepId),
-    options: optionsFor({ token: id, stepId, pool, attempts, output: takeOverText(last, runtime?.outputFile) }),
+    ...(backAt ? { backAt } : {}),
+    options: {
+      ...optionsFor({ token: id, stepId, pool, attempts, output: takeOverText(last, runtime?.outputFile) }),
+      ...(backAt ? { waitForIt: `after ${backAt}: bullswarm workflow step rerun ${id} ${stepId}` } : {}),
+    },
   };
 }
 
@@ -319,8 +339,17 @@ function header(facts) {
     return `${head} after ${plural(facts.fixes, 'fix', 'fixes')}`;
   }
   if (facts.notRetried === 'act') return `${head} · not retried: act step (it may have acted)`;
+  // A backoff is never counted as a retry (RETRY_FACTS): a step that only
+  // backed off says so instead of `not retried`, and one that also retried
+  // says both.
+  const backedOff = facts.backoffs ? ` · backed off ${times(facts.backoffs)}` : '';
+  if (facts.notRetried === 'none' && backedOff) return `${head}${backedOff}`;
   if (facts.notRetried) return `${head} · not retried`;
-  return `${head} after ${plural(facts.retries, 'retry', 'retries')}`;
+  return `${head} after ${plural(facts.retries, 'retry', 'retries')}${backedOff}`;
+}
+
+function times(count) {
+  return count === 1 ? 'once' : count === 2 ? 'twice' : `${count} times`;
 }
 
 function evidenceLines(item) {
@@ -336,8 +365,12 @@ function tryLine(attempt, index, attempts) {
   // A handoff to the pool that just failed is the same-pool retry's own.
   const previous = attempts[index - 1] ?? null;
   const handoff = attempt.handoff && (!previous || previous.pool !== attempt.pool);
+  // A wait on the pool that just failed is the rate-limit backoff; one that
+  // changed pools is a saved stage-3 run's move after a usage limit.
+  const waited = attempt.retryOf !== 'wait' ? ''
+    : previous && previous.pool !== attempt.pool ? ' · moved after a usage limit' : ' · after a rate-limit backoff';
   return `  try ${index + 1}  ${attempt.pool ?? '?'} · ${attempt.model ?? '?'} · ${tail}`
-    + (attempt.retryOf === 'wait' ? ' · moved after a usage limit' : '')
+    + waited
     + (handoff ? ' · handoff attached' : '');
 }
 
@@ -365,6 +398,7 @@ export function renderNeedsYou(facts, { terminal = false, next = null } = {}) {
   } else {
     if (facts.evidence?.length) for (const item of facts.evidence) lines.push(...evidenceLines(item));
     else lines.push(`  why       ${facts.why ?? 'no reason recorded'}${facts.evidenceNotRun ? ' · evidence not run' : ''}`);
+    if (facts.backAt) lines.push(`  back at   ${facts.backAt}`);
     facts.attempts.forEach((attempt, index, all) => lines.push(tryLine(attempt, index, all)));
   }
   const around = [
@@ -379,6 +413,7 @@ export function renderNeedsYou(facts, { terminal = false, next = null } = {}) {
   const [exportPlan, revisePlan] = changeStepCommands(facts.token ?? '?');
   lines.push('  your call:');
   if (rerunLine(options)) lines.push(rerunLine(options));
+  if (options.waitForIt) lines.push(option('wait for it', options.waitForIt));
   lines.push(option('change the step', exportPlan));
   lines.push(option('  then edit it', revisePlan));
   lines.push(option('take over', options.takeOver));
@@ -409,9 +444,11 @@ export function needsYouJson(facts) {
   return {
     ...common, retries: facts.retries,
     ...(facts.notRetried === 'act' || facts.notRetried === 'check' ? { notRetried: facts.notRetried } : {}),
+    ...(facts.backoffs ? { backoffs: facts.backoffs } : {}),
     evidence: facts.evidence.map((item) => ({ ...item })),
     ...(facts.why != null ? { why: facts.why } : {}),
     ...(facts.evidenceNotRun ? { evidenceNotRun: true } : {}),
+    ...(facts.backAt ? { backAt: facts.backAt } : {}),
     attempts: facts.attempts.map((attempt) => ({ ...attempt })),
     stillRunning: [...facts.stillRunning], waitingOnThis: [...facts.waitingOnThis], options: { ...facts.options },
   };

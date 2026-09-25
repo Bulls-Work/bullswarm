@@ -534,3 +534,40 @@ test('verifyLoop max goes to 4 with at most four rounds', () => {
     /state\.verifyLoop\.rounds must hold at most four rounds/,
   );
 });
+
+// Owner decision (2026-09-25): a marked run keeps the stop of its Workflow
+// Planner or preflight scout that ended the run, so `workflow resume` can run
+// it again. Optional: older saved runs and unmarked runs carry no field.
+test('planner and scout limitStop records load, older states without them still load, and a malformed one is refused', () => {
+  const goal = createV2GoalDocument(input());
+  const base = createV2DurableState(goal, { runId: 'wf-1', shortId: 'abc234' });
+  assert.equal(Object.hasOwn(base.planner, 'limitStop'), false);
+  assert.equal(Object.hasOwn(base.preflight.scout, 'limitStop'), false);
+  assert.doesNotThrow(() => validateV2DurableState(base));
+  const at = '2026-09-25T10:00:00.000Z';
+  const reset = '2026-09-25T12:00:00.000Z';
+  const withStops = (planner, scout) => {
+    const state = structuredClone(base);
+    if (planner !== undefined) state.planner.limitStop = planner;
+    if (scout !== undefined) state.preflight.scout.limitStop = scout;
+    return state;
+  };
+  const planner = { failureKind: 'quota', retryAfter: reset, boundary: 'steering', at, steeringIds: ['steer-1'] };
+  const scout = { failureKind: 'unavailable', retryAfter: null, at };
+  const loaded = deserializeV2DurableState(serializeV2DurableState(withStops(planner, scout)));
+  assert.deepEqual(loaded.planner.limitStop, planner);
+  assert.deepEqual(loaded.preflight.scout.limitStop, scout);
+  assert.doesNotThrow(() => validateV2DurableState(withStops({ ...planner, failureKind: 'throttle', retryAfter: null, boundary: 'initial', steeringIds: [] })));
+  for (const [bad, pattern] of [
+    [withStops({ ...planner, failureKind: 'process' }), /state\.planner\.limitStop\.failureKind must be quota, throttle or unavailable/],
+    [withStops({ ...planner, boundary: 'final' }), /state\.planner\.limitStop\.boundary must be initial\|gaps\|steering/],
+    [withStops({ ...planner, steeringIds: [''] }), /state\.planner\.limitStop\.steeringIds must be an array of ids/],
+    [withStops({ ...planner, retryAfter: 'soon' }), /state\.planner\.limitStop\.retryAfter must be an ISO-compatible timestamp/],
+    [withStops({ ...planner, at: null }), /state\.planner\.limitStop\.at is required/],
+    [withStops({ ...planner, pool: 'relay' }), /state\.planner\.limitStop\.pool is not allowed/],
+    [withStops(null), /state\.planner\.limitStop must be an object/],
+    [withStops(undefined, { ...scout, boundary: 'initial' }), /state\.preflight\.scout\.limitStop\.boundary is not allowed/],
+    [withStops(undefined, { ...scout, failureKind: 'auth' }), /state\.preflight\.scout\.limitStop\.failureKind must be quota, throttle or unavailable/],
+    [withStops(undefined, { failureKind: 'quota', at }), /state\.preflight\.scout\.limitStop\.retryAfter must be null or a non-empty string/],
+  ]) assert.throws(() => validateV2DurableState(bad), pattern);
+});

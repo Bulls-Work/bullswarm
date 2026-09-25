@@ -704,9 +704,12 @@ test('with pausing off the result names holdUntil: the deadline a pause would ha
   const transientOff = decide(claude, COMMAND_CODE_THROTTLE, { pausing: false });
   assert.equal(transientOff.holdUntil, null);
   assert.equal(decideQuotaPause({ text: null, meter: null, pausing: false, now: NOW }).holdUntil, null);
-  // The off result is otherwise the old shape, plus holdUntil; the other rules gain nothing.
+  // The off result is every rule's shape plus holdUntil; the other rules gain nothing.
   assert.deepEqual(Object.keys(namedOff).sort(), [
-    'decidedAt', 'holdUntil', 'line', 'meter', 'meterWindow', 'pause', 'resetsAt', 'retrySamePool', 'rule', 'until', 'waitMs', 'why',
+    'decidedAt', 'holdUntil', 'limit', 'line', 'meter', 'meterWindow', 'pause', 'resetsAt', 'retrySamePool', 'rule', 'until', 'waitMs', 'why',
+  ]);
+  assert.deepEqual(Object.keys(named).sort(), [
+    'decidedAt', 'limit', 'line', 'meter', 'meterWindow', 'pause', 'resetsAt', 'retrySamePool', 'rule', 'until', 'waitMs', 'why',
   ]);
   for (const onResult of [named, metered, decide(claude, COMMAND_CODE_THROTTLE)]) assert.equal(Object.hasOwn(onResult, 'holdUntil'), false, onResult.rule);
   // A holdUntil can never become a pause.
@@ -722,4 +725,39 @@ test('with pausing off the result names holdUntil: the deadline a pause would ha
   const onState = { pools: {} };
   assert.equal(quarantinePool(onState, 'claude-code', namedOff.why, NOW, { kind: 'quota', evidence: namedOff }), null);
   assert.deepEqual(onState.pools, {});
+});
+
+test('every decision names the wording it read: limit window for a spent window or balance, throttle for request pacing', () => {
+  const claude = connectorOf(PROVIDER_CONNECTORS['claude-code']);
+  const fullMeter = { ...INCIDENT_METER, five_hour: { utilization: 100, resets_at: '2026-09-08T12:00:00Z' } };
+  const cases = [
+    ['Credit balance is too low', 'window'],
+    ["You've hit your session limit", 'window'],
+    [CLAUDE_SESSION_WINDOW, 'window'],
+    ['Too many requests', 'throttle'],
+    ['429 Too Many Requests', 'throttle'],
+  ];
+  for (const [text, limit] of cases) {
+    for (const pausing of [true, false]) {
+      for (const [meterName, meter] of [['below 95%', INCIDENT_METER], ['full', fullMeter], ['none', null]]) {
+        const decision = decide(claude, text, { pausing, meter });
+        const label = `${text} · pausing ${pausing} · meter ${meterName}`;
+        assert.equal(decision.line, text, label);
+        assert.equal(decision.limit, limit, label);
+        // The wording is read whatever the rule decided: a throttle can still
+        // pause on a full meter, and a spent window can still be transient.
+        if (!pausing) assert.equal(decision.rule, 'off', label);
+      }
+    }
+  }
+  // The rules each case lands on with pausing on, pinned so `limit` is seen
+  // to be independent of them.
+  assert.equal(decide(claude, 'Credit balance is too low').rule, 'transient');
+  assert.equal(decide(claude, "You've hit your session limit").rule, 'transient');
+  assert.equal(decide(claude, CLAUDE_SESSION_WINDOW).rule, 'message');
+  assert.equal(decide(claude, 'Too many requests').rule, 'transient');
+  assert.equal(decide(claude, 'Too many requests', { meter: fullMeter }).rule, 'meter');
+  // No notice at all reads as a throttle: nothing says a window is spent.
+  assert.equal(decideQuotaPause({ text: null, meter: null, pausing: true, now: NOW }).limit, 'throttle');
+  assert.equal(decideQuotaPause({ text: null, meter: null, pausing: false, now: NOW }).limit, 'throttle');
 });

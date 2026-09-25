@@ -242,24 +242,25 @@ A run never waits for its caller: when nothing more can happen on its own it fin
 | Option | When it fits | What to do |
 | --- | --- | --- |
 | continue | the plan needs a fix, a new step, or a step redone | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` (`--rerun <step ids>` runs finished steps again) |
-| retry | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool | `bullswarm workflow resume <shortId>`; it reruns exactly those steps and the steps blocked behind them |
+| retry | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool; or a usage limit or no free pool stopped the planner or scout and ended the run | `bullswarm workflow resume <shortId>`; it reruns exactly those steps and the steps blocked behind them, and that stopped planner or scout first |
 | rerun | a step failed in a run started by this version | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]` runs it again with its last attempt's handoff |
 | accept | you choose to keep a failed step as it is | `bullswarm workflow step accept <shortId> <step> --reason "…"`: recorded as your choice, never proof |
 | take over | the rest is small, or needs something only you have | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |
 | restart | the goal or the approach was wrong | start a new run: `bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>` |
 
-`retry` appears only when a step is retryable. When nothing is, `resume` prints `nothing to retry`, starts nothing and exits 1. A step whose pools were all paused shows `its pool is back at <time>`; resuming before then fails it again at once. `rerun` and `accept` appear only in runs started by this version that have a failed step.
+`retry` appears only when a step is retryable, or, in a run started by this version, when a usage limit or no free pool stopped the planner or scout and ended the run; then it reads `bullswarm workflow resume <shortId> after <time> (reruns the workflow planner)` (`the preflight scout` for the scout; no `after <time>` when no return time is known). When nothing is retryable, `resume` prints `nothing to retry`, starts nothing and exits 1. A step with a known return time shows `its pool is back at <time>`; resuming before then can fail it again (at once when no other pool is free). `rerun` and `accept` appear only in runs started by this version that have a failed step.
 
 When the review loop left a requirement failing in a run started by this version, `your call:` also offers the check that judged it: `rerun` is `bullswarm workflow step rerun <shortId> <check> --avoid <pool>` (it judges again on another pool), and `accept` is `bullswarm workflow step accept <shortId> <check> --requirement <id> --reason "…"`. An accepted requirement then reads `requirement <id>: failed · accepted by choice "<reason>"`: it stays failed and the run stays not verified.
 
 ## The failure rule and needs-you block
 
-Each step gets one automatic retry in total. A process failure retries on
-another eligible pool; a gate failure retries on the same pool with the failure
-attached. A started `act` step is never retried automatically. Quota moves to
-another eligible pool without spending the retry, or makes the step wait for a
-known return time. Only dependents wait; unrelated steps keep running. Saved
-runs keep their original rules.
+Each step gets one automatic retry in total. A process failure (a crash, a
+silent worker, a sign-in failure, a provider error, or a worker that died at
+start) retries on another eligible pool; a gate failure retries on the same
+pool with the failure attached. A started `act` step is never retried
+automatically. A usage limit is never retried, moved or waited out: the step
+comes back to you (see below). Only dependents wait; unrelated steps keep
+running. Saved runs keep their original rules.
 
 When a step needs you, the watch gives one block with the failure, each try,
 steps still running, dependents waiting on it, and four commands. For example:
@@ -288,29 +289,121 @@ acceptance. When a review still fails after its fix, the block names the check
 that judged the failing requirement; another check that failed one gets its
 own `also judged by <check>:` lines with its rerun and accept.
 
-A step with no pool to run on until a known time prints one line, `⧖ <step>
-waiting for quota · <pool> back at <time> (in <duration>)`, and starts again by
-itself when the pool is back. `--until trouble` wakes on it only when the wait
-is longer than 30 minutes; then it adds the printed options: change the step
-(the two plan commands), lift the pause with `bullswarm pools resume <pool>`
-when a paused pool causes the wait, or run it elsewhere with `step rerun
---avoid` for a hold or 5-hour limit when the step's route allows another pool.
+A usage limit ends the step: a spent 5-hour or weekly window, or no credit
+left. The step comes back to you at once, whatever the automatic pausing
+switch. Bullswarm does not wait for the pool, move the step to another pool,
+or retry it, and the rest of the run keeps going. A limit notice that names no
+reset ends the step too; its block then prints `back at` only when every pool
+that can run the step is out and one of them has a known return. When the
+reset is known, the block says when the pool is back and adds a `wait for it`
+option:
+
+```text
+✗ build needs you · out of quota · not retried
+  why       <the provider's limit notice>
+  back at   2026-09-25T14:00:00.000Z
+  try 1  pool-a · model-a · 4m00s · 0 files
+  your call:
+    rerun elsewhere  bullswarm workflow step rerun <id> build --avoid pool-a
+    wait for it      after 2026-09-25T14:00:00.000Z: bullswarm workflow step rerun <id> build
+    change the step  bullswarm workflow plan export <id> --out plan.json
+      then edit it   bullswarm workflow plan revise <id> --program plan.json
+    take over        output: <absolute output path>
+    accept anyway    bullswarm workflow step accept <id> build --reason "…"
+  next: bullswarm workflow watch <id> --until trouble --after <sequence> --since <iso>
+```
+
+The same happens when no pool that can run the step is free when it is picked:
+each one is nearly spent, at its 5-hour limit, paused (for quota, or after a
+sign-in failure), or benched after repeated failures. The `why` line then
+names every pool and its reason, for example `no pool with quota to spare:
+pool-a paused for quota until <time>; pool-b at its 5-hour limit until <time>`.
+When one of the reasons is not a usage limit it reads `no pool free: …`, and
+the header reads `no eligible pool`. `back at` is then the earliest known
+return among those pools; a pool whose return is unknown is skipped. When
+another pool that can run the step is free, routing picks it and nothing comes
+back to you. A retry the step was promised (after a crash, a sign-in failure or
+a failed gate) that finds no free pool keeps its own failure, and its `why`
+ends `· no retry: <pool> <reason>; …`.
+
+Your choices after a usage limit, or with no pool free:
+
+- rerun elsewhere: `bullswarm workflow step rerun <id> <step> --avoid <pool>`,
+  when another pool can run the step now;
+- wait for it: after the `back at` time, run the printed `bullswarm workflow
+  step rerun <id> <step>` yourself; nothing reruns it for you;
+- accept anyway, change the step, or take over, as for any other failure;
+- cancel the run: `bullswarm workflow cancel <id>`.
+
+A short "too many requests" rate limit is not a usage limit. It backs off on
+the same pool at most twice (20 s, then 60 s, or the wait it names when that
+is at most 2 minutes), then comes back to you, with automatic pausing on or
+off. Its header reads `rate limited · backed off twice` (`once` after one
+backoff; a backoff is never counted as the retry), and a try after a backoff
+reads `· after a rate-limit backoff`. One that names a longer wait comes back to you
+at once, with `back at` at the end of that wait. One whose pool is no longer
+free for the backoff (paused, at its 5-hour limit, nearly spent or benched in
+the meantime) comes back to you at once too: as `out of quota` when that pool
+is out on a usage limit, with `back at` its return when that is known. A
+sign-in failure, a provider error or a worker that died at start still gets
+the step's one automatic retry by itself, on another free pool when there is
+one.
 
 A pool whose weekly or monthly window closes soon and that this step would
 push past its limit (the router's "expiring but draining") is never given the
-step, even when it is the only pool left. The step waits, `⧖ <step> waiting
-for a pool · <pool> is nearly spent, resets at <time> (in <duration>)`, and
-takes the first pool that can run it: another pool, the same pool once its
-forecast drops, or the same pool after its reset. A pool you named (the run's
-`--worker-pool`, or a route that allows only that pool) is exempt.
+step, even when it is the only pool left. The step takes another pool that can
+run it, or comes back to you with `<pool> nearly spent (forecast <n>%) until
+<time>` in its `why`. A pool you named (the run's `--worker-pool`, or a route
+that allows only that pool) is exempt. The dispatched planner and the
+preflight scout are never given such a pool either; only a pool you pinned is
+exempt (`--orchestrator <pool> --orchestrator-strict` for the planner,
+`--worker-pool` for the scout). Their schema correction, and the one retry on
+the same pool they get when no other pool can run them, never go back to a
+pool that has become nearly spent either: the correction moves to another free
+pool, and with none free the planner or scout stops and tells you, with that
+pool's `nearly spent` reason.
 
 A `step rerun` (or a `resume`) after a failure the pool caused starts on
-another pool when one can take the step now. Pool-caused failures are a usage
-limit, a sign-in failure, a provider error, or a worker that exited with an
-error before it answered or changed a file. The rerun prints `pool  starts on
-another pool than <pool> …`, and the attempt's route reason starts with
-`moved off <pool>`. The same pool runs it only when nothing else can. Unlike
-`--avoid`, this changes nothing in the step's route.
+another pool when one can take the step now. Pool-caused failures are a
+sign-in failure, a provider error, or a worker that exited with an error before
+it answered or changed a file. The rerun prints `pool  starts on another pool
+than <pool> …`, and the attempt's route reason starts with `moved off <pool>`.
+The same pool runs it only when nothing else can. Unlike `--avoid`, this
+changes nothing in the step's route. A usage limit is not one of these: a rerun
+after one is routed as usual, so add `--avoid <pool>` to keep it off that pool.
+
+A dispatched planner (`--orchestrator`) and the preflight scout (`--scout`, or
+the scout before a dispatched planner) follow the same rule: a usage limit, a
+rate limit still there after its short backoff, or no free pool stops it and
+tells you; it never moves to another pool by itself. A sign-in failure, a
+provider error or a worker that died at start still moves it to another pool.
+When the planner stops, the watch prints `✗ planner stopped · out of quota on
+<pool> · back at <time>` (`rate limited` or `no eligible pool` in place of
+`out of quota`, `no pool` when none was picked), `--until trouble` wakes on
+it, and the run finishes `partial` with this reason:
+
+```text
+the workflow planner stopped on a usage limit: <why> · back at <time> · your call: resume after <time> with bullswarm workflow resume <id>, plan it yourself with bullswarm workflow plan revise <id> --program <file.json>, or start a new run
+```
+
+It reads `stopped: no pool free` when a pool was out for a reason that is not a
+usage limit, or when no pool can run it at all. It drops `back at` when no
+return time is known, and then reads `bullswarm workflow resume <id> once a
+pool is free` in place of `resume after <time> with …`. A scout with no program after it (`--scout` alone, or before a
+dispatched planner) ends the run the same way, as `the preflight scout stopped
+on a usage limit: …`. After the `back at` time, `bullswarm workflow resume
+<id>` runs the stopped planner or scout again: it prints `✓ reopened the
+partial run <id>; running again: the workflow planner` (or `the preflight
+scout`), and the run goes on from there. Before then it can stop the same way,
+and resume adds `note: the workflow planner stopped with its pool back at
+<time>; run before then, it can fail the same way again`. `plan revise` with
+your own program and a new run stay the other choices: `plan revise` reopens
+the run and runs your program instead. With your program (`--program --scout`) the run goes on
+without the report, and the watch prints `⚠ preflight scout stopped · out of
+quota on <pool> · back at <time> · the run continues without its report`;
+resume does not run that scout again. Runs
+started by an earlier version keep moving the planner and the scout to another
+pool.
 
 ```bash
 # the compact result: status, verified, reason, every action, usage, and next

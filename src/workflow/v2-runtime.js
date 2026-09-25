@@ -1,8 +1,8 @@
 import { withV2Cancellation } from './v2-cancellation.js';
 import {
-  copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent, readEvents } from './events.js';
 import {
@@ -16,8 +16,8 @@ import {
 } from './verify-rounds.js';
 import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
-import { captureWorkspaceManifest, checkOwnership, compareManifests } from './ownership.js';
-import { canStartV2Action, scheduleV2Actions } from './v2-scheduler.js';
+import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
+import { scheduleV2Actions } from './v2-scheduler.js';
 import {
   assertV2Resume, createV2DurableState, deserializeV2DurableState,
   serializeV2DurableState, validateV2GoalDocument, v2PlannerMode,
@@ -33,10 +33,10 @@ import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
 } from './evidence-output.js';
 import {
-  consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, stepProof, v2RetryPlan,
+  consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, stepProof, v2LimitStoppedDispatch, v2RetryPlan,
 } from './v2-outcome.js';
 import {
-  WAKE_CLAIM_RECHECK_MS, appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
+  appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
   markStepRestartApplied, readStepRestarts, requeueRestartedStep, snapshotPossible,
 } from './v2-dispatch.js';
 import { countRetries, declaredDeliverable, declaredEvidence, poolCausedPools, roleOf } from './step-vocabulary.js';
@@ -359,6 +359,10 @@ function commitRevisionUnderLease(runDir, request, { now }) {
   applyRevisionLoopBudget(state, request, hadActions, features);
   let reopened = null;
   if (TERMINAL.has(previousStatus)) {
+    // A caller's plan replaces what a planner or scout stopped on a limit
+    // would have given: `workflow resume` no longer runs either again.
+    delete state.planner.limitStop;
+    delete state.preflight.scout.limitStop;
     const resultFile = state.lifecycle.resultFile ?? join(runDir, 'result.json');
     const archived = join(runDir, `result-before-revision-${state.program.revision}.json`);
     const hadResult = existsSync(resultFile);
@@ -417,6 +421,10 @@ function commitRevisionUnderLease(runDir, request, { now }) {
  * again: steps that never ran or were stopped, steps whose failure a retry can
  * fix (no pool, a paused pool, a crashed or silent worker), and the steps
  * blocked behind them. Steps the caller has to change first stay as they are.
+ * In a marked run, a Workflow Planner or preflight scout whose stop on a
+ * usage limit, a rate limit that did not clear, or no free pool ended the run
+ * runs again too (v2LimitStoppedDispatch; resuming after the pool is back is
+ * the caller's "wait"): its id leads `requeued`, and `dispatch` names it.
  * Resolves {status: reopened | nothing-to-retry | not-finished | live, ...};
  * only `reopened` changes the run.
  */
@@ -428,7 +436,10 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
     const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
     if (!TERMINAL.has(state.lifecycle.status)) return { status: 'not-finished', state };
     const plan = v2RetryPlan(state);
-    if (!isProgramWorkflow(state) || !plan.rerun.length) return { status: 'nothing-to-retry', state, needsCaller: plan.needsCaller };
+    const steps = isProgramWorkflow(state) ? plan.rerun : [];
+    const stopped = state.lifecycle.status === 'partial' && runFeatureFlags(readRunFeatures(runDir)).failureRule
+      ? v2LimitStoppedDispatch(state) : null;
+    if (!steps.length && !stopped) return { status: 'nothing-to-retry', state, needsCaller: plan.needsCaller };
     const at = now();
     const previousStatus = state.lifecycle.status;
     const resultFile = state.lifecycle.resultFile ?? join(runDir, 'result.json');
@@ -441,8 +452,21 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
     if (state.cancellation.requested) state.cancellation = { requested: false, requestedAt: null, reason: null };
     rmSync(join(runDir, 'cancellation.json'), { force: true });
     if (['completed', 'cancelled', 'failed'].includes(state.planner.status)) state.planner.status = 'waiting';
-    const requeued = [...plan.rerun, ...plan.blocked];
-    const retrying = new Set(requeued);
+    // The stopped dispatch goes back to where the relaunched kernel runs it
+    // before anything else: the scout to pending, the planner to waiting with
+    // the steering its stopped turn took handed back to its next turn. Their
+    // earlier attempts stay on record; the next attempt's ordinal follows them.
+    if (stopped?.id === 'preflight-scout') {
+      Object.assign(state.preflight.scout, { status: 'pending', finishedAt: null, lastFailure: null });
+      delete state.preflight.scout.limitStop;
+    } else if (stopped?.id === 'workflow-planner') {
+      const handedBack = new Set(state.planner.limitStop.steeringIds);
+      if (handedBack.size) state.steering = (state.steering ?? []).filter((entry) => !handedBack.has(entry.id));
+      delete state.planner.limitStop;
+    }
+    const requeuedSteps = steps.length ? [...plan.rerun, ...plan.blocked] : [];
+    const requeued = [...(stopped ? [stopped.id] : []), ...requeuedSteps];
+    const retrying = new Set(requeuedSteps);
     for (const action of state.actions) {
       if (!retrying.has(action.id) || action.status === 'pending') continue;
       // Earlier attempts stay on record but never count as this step's
@@ -453,11 +477,14 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
       });
       rmSync(join(runDir, `completion-${action.id}.json`), { force: true });
     }
-    state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
+    if (requeuedSteps.length) state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
     const archivedResult = hadResult ? archived : null;
     appendEvent(runDir, state, 'workflow.reopened', { previousStatus, source: 'resume', archivedResult, requeued });
     writeRunState(runDir, state);
-    return { status: 'reopened', state, previousStatus, requeued, archivedResult, needsCaller: plan.needsCaller };
+    return {
+      status: 'reopened', state, previousStatus, requeued, archivedResult, needsCaller: plan.needsCaller,
+      ...(stopped ? { dispatch: { id: stopped.id, who: stopped.who, retryAfter: stopped.retryAfter } } : {}),
+    };
   } finally { lease.release(); }
 }
 
@@ -549,13 +576,34 @@ const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.strin
 
 function settings(state) { return { ...DEFAULTS, ...(state.config.settings ?? {}) }; }
 
-// One file from the main workspace into a private copy, as it is (F17).
-function copyWorkspaceFile(source, destination) {
-  mkdirSync(dirname(destination), { recursive: true });
-  rmSync(destination, { force: true });
-  if (lstatSync(source).isSymbolicLink()) symlinkSync(readlinkSync(source), destination);
-  else copyFileSync(source, destination);
+// Marked runs: a Workflow Planner or preflight scout dispatch that ends on one
+// of these goes to the caller; the dispatcher never moves it to another pool
+// (usageLimitsToCaller, owner decision 2026-09-25).
+const LIMIT_STOP_KINDS = new Set(['quota', 'throttle', 'unavailable']);
+
+// A dispatch's return time as the durable stop record keeps it: the string
+// the reason prints, or null when there is none to read.
+function returnTimeOrNull(value) {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : null;
 }
+
+// The run's terminal reason when its planner or scout stopped on a usage
+// limit, or found no pool free, in a marked run. `who` names the dispatch
+// ("the workflow planner", "the preflight scout"). Each command named works
+// on the finished run: `workflow resume` runs the stopped planner turn or
+// scout again (reopenV2RunForRetry reads the kernel's limitStop record), which
+// is the caller's "wait" when it runs after the pool is back; plan revise
+// takes the caller's program and runs it instead.
+function limitStopReason(who, { failureKind, retryAfter = null, why = null } = {}, token) {
+  const unavailable = failureKind === 'unavailable';
+  // The dispatcher's own "no pool free: …" lead is not said twice.
+  const detail = unavailable ? String(why ?? failureKind).replace(/^no pool free: /, '') : (why ?? failureKind);
+  return `${who} ${unavailable ? 'stopped: no pool free' : 'stopped on a usage limit'}: ${detail}`
+    + (retryAfter ? ` · back at ${retryAfter}` : '')
+    + ` · your call: ${retryAfter ? `resume after ${retryAfter} with bullswarm workflow resume ${token}` : `bullswarm workflow resume ${token} once a pool is free`}`
+    + `, plan it yourself with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run`;
+}
+
 function statePath(runDir) { return join(runDir, 'state.json'); }
 function goalPath(runDir) { return join(runDir, 'goal.json'); }
 
@@ -1649,10 +1697,19 @@ async function runV2Kernel({
   const runFeatures = readRunFeatures(runDir);
   const legacyGate = runFeatures.deliverableGate === 1;
   // Stage 3 (D28) branches on the keys, never on the file: `failureRule`
-  // (one retry then the caller, waiting, fix-cycle verifyRounds, inherited
-  // repair evidence) and `reviewPlacement` (reviews run where the caller
-  // routes them). Stage 2's proof labels keep reading `runFeatures`.
+  // (one retry then the caller, a usage limit or no free pool straight to the
+  // caller, fix-cycle verifyRounds, inherited repair evidence) and
+  // `reviewPlacement` (reviews run where the caller routes them). Stage 2's
+  // proof labels keep reading `runFeatures`.
   const features = runFeatureFlags(runFeatures);
+  // Marked runs: a planner or scout dispatch that ended on a usage limit, a
+  // rate limit that did not clear, or no free pool. The run stops there and
+  // goes to the caller (limitStopReason).
+  const stoppedOnLimit = (result) => Boolean(features.failureRule) && result?.ok === false
+    && LIMIT_STOP_KINDS.has(result.failureKind);
+  const plannerLimitReason = (result) => limitStopReason('the workflow planner', {
+    failureKind: result.failureKind, retryAfter: result.retryAfter ?? null, why: result.verdict?.why ?? null,
+  }, state.shortId ?? id);
 
   let scoutReport = typeof scout === 'string' && scout.trim() ? scout.trim() : null;
   if (!scoutReport && state.preflight.scout.status === 'succeeded' && state.preflight.scout.outputFile && existsSync(state.preflight.scout.outputFile)) {
@@ -1837,6 +1894,9 @@ async function runV2Kernel({
   const runScout = async () => {
     const durable = state.preflight.scout;
     if (durable.status === 'skipped') return { ok: true, skipped: true };
+    // A scout that runs (or is supplied) again is no longer the one a limit
+    // stopped (a marked run's record; unmarked runs never carry it).
+    delete durable.limitStop;
     if (scoutReport) {
       const outputFile = join(runDir, 'out-preflight-scout.md');
       writeFileSync(outputFile, scoutReport);
@@ -1846,6 +1906,9 @@ async function runV2Kernel({
       return { ok: true };
     }
     durable.status = 'running'; durable.startedAt ??= now(); durable.finishedAt = null; durable.lastFailure = null;
+    // Marked runs: a scout run again (after a resume) writes its task and
+    // output beside its earlier attempts' files, never over them.
+    const fileBase = features.failureRule ? durable.attempts.length : 0;
     state.lifecycle.status = 'planning'; persist();
     emit('preflight.scout_started', { purpose: 'Read-only repository and capability inspection' });
     let current = null; let lastProgressPersist = 0;
@@ -1868,13 +1931,16 @@ async function runV2Kernel({
       earlierWork: earlierWorkFor(state, 'preflight-scout'),
       extraSnapshotPaths: extraSnapshotPathsFor(state, 'preflight-scout'),
       taskText: scoutPrompt(state.intent.goal, state.intent.cwd), targetDir: state.intent.cwd,
-      paths: (ordinal) => ({ taskFile: join(runDir, `task-preflight-scout-attempt-${ordinal}.md`), outFile: join(runDir, `out-preflight-scout-attempt-${ordinal}.md`) }),
+      paths: (ordinal) => ({ taskFile: join(runDir, `task-preflight-scout-attempt-${fileBase + ordinal}.md`), outFile: join(runDir, `out-preflight-scout-attempt-${fileBase + ordinal}.md`) }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
       preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
       strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
       runReasoning: state.config.workerRouting?.reasoning ?? null,
       maxMechanicalRetries: config.maxMechanicalRetries, shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
+      // Marked runs: a usage limit, or no free pool, ends the scout and goes
+      // to the caller; it never moves to another pool by itself.
+      usageLimitsToCaller: Boolean(features.failureRule),
       outputValidator: reportValidator,
       correctionTask: (verdict, { originalTask }) => `${originalTask}\n\nYour prior scout report failed deterministic validation:\n${(verdict?.structured?.errors ?? []).map((error) => `- ${error}`).join('\n')}\nReturn a corrected report with every exact heading.`,
       onAttempt: (stage, record) => {
@@ -1888,6 +1954,11 @@ async function runV2Kernel({
           emit('preflight.scout_attempt_started', { ordinal: current.ordinal, pool: current.pool, model: current.model });
         } else if (stage === 'captured') {
           if (recordAttemptCapture(current, record)) persist();
+        } else if (stage === 'corrected') {
+          // A rate-limit backoff the attempt promised could not run: its status
+          // and why change; it adds no usage.
+          Object.assign(current, { status: record.status, why: record.why ?? current.why ?? null });
+          persist();
         } else {
           Object.assign(current, {
             status: record.status, finishedAt: record.finishedAt, outputFile: record.outFile,
@@ -1916,7 +1987,19 @@ async function runV2Kernel({
     durable.finishedAt = now();
     if (!result.ok) {
       durable.status = 'failed'; durable.lastFailure = { kind: result.failureKind, message: result.verdict?.why ?? 'preflight scout failed' };
-      persist(); emit('preflight.scout_finished', { status: 'failed', failureKind: result.failureKind, why: result.verdict?.why ?? null });
+      // Marked runs: a usage limit or no free pool says when to try again,
+      // and whether the run goes on without the report (`runContinues`, the
+      // kernel's decision just after this: a program run with the caller's
+      // program, or one already there, runs on; any other run finishes). The
+      // event carries it so a watch replay reads the decision, not a state a
+      // later plan revise moved on.
+      persist(); emit('preflight.scout_finished', {
+        status: 'failed', failureKind: result.failureKind, why: result.verdict?.why ?? null,
+        ...(stoppedOnLimit(result) ? {
+          retryAfter: result.retryAfter ?? null,
+          runContinues: programExecution && (Boolean(pendingInitialResponse) || state.program.actions.length > 0),
+        } : {}),
+      });
       return result;
     }
     durable.status = 'succeeded'; durable.outputFile = result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null; durable.lastFailure = null;
@@ -1997,6 +2080,12 @@ async function runV2Kernel({
     const candidatePath = join(runDir, `candidate-workflow-planner-turn-${turn}.json`);
     rmSync(candidatePath, { force: true });
     const prompt = `${buildV2PlannerPrompt(context)}\n\n${buildPlannerPreflight(statePath(runDir), boundary, candidatePath)}`;
+    // Marked runs: a turn run again (after a resume) writes its task and
+    // output beside its earlier attempts' files, never over them.
+    const fileBase = features.failureRule ? state.planner.attempts.filter((attempt) => attempt.turn === turn).length : 0;
+    // A turn that runs is no longer the one a limit stopped (a marked run's
+    // record; unmarked runs never carry it).
+    delete state.planner.limitStop;
     state.planner.status = 'running';
     state.lifecycle.status = 'planning';
     persist();
@@ -2017,8 +2106,8 @@ async function runV2Kernel({
       taskText: prompt,
       targetDir: state.intent.cwd,
       paths: (ordinal) => ({
-        taskFile: join(runDir, `task-workflow-planner-turn-${turn}-attempt-${ordinal}.md`),
-        outFile: join(runDir, `out-workflow-planner-turn-${turn}-attempt-${ordinal}.json`),
+        taskFile: join(runDir, `task-workflow-planner-turn-${turn}-attempt-${fileBase + ordinal}.md`),
+        outFile: join(runDir, `out-workflow-planner-turn-${turn}-attempt-${fileBase + ordinal}.json`),
       }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
       preferredPool: state.config.plannerRouting?.pool ?? state.config.plannerRouting?.preferredPool ?? null,
@@ -2028,6 +2117,9 @@ async function runV2Kernel({
       currentSession: state.planner.session,
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
+      // Marked runs: a usage limit, or no free pool, ends the planner turn
+      // and goes to the caller; it never moves to another pool by itself.
+      usageLimitsToCaller: Boolean(features.failureRule),
       outputValidator: () => readPlannerCandidate(candidatePath, state, {
         boundary,
         requiredScoutUnits: boundary === 'initial' ? context.scoutUnits : [],
@@ -2049,6 +2141,12 @@ async function runV2Kernel({
           emit('planner.attempt_started', { turn, ordinal: currentAttemptId, pool: record.pool, model: record.model, reasoning: clone(record.reasoning ?? null) });
         } else if (stage === 'captured') {
           if (recordAttemptCapture(state.planner.attempts.find((item) => item.ordinal === currentAttemptId), record)) persist();
+        } else if (stage === 'corrected') {
+          // A rate-limit backoff the attempt promised could not run: its status
+          // and why change; it adds no usage.
+          const attempt = state.planner.attempts.find((item) => item.ordinal === currentAttemptId);
+          if (attempt) Object.assign(attempt, { status: record.status, why: record.why ?? attempt.why ?? null });
+          persist();
         } else {
           const attempt = state.planner.attempts.find((item) => item.ordinal === currentAttemptId);
           if (attempt) Object.assign(attempt, {
@@ -2096,8 +2194,21 @@ async function runV2Kernel({
     state.planner.session = result.session ?? state.planner.session;
     if (!result.ok) {
       state.planner.status = result.status === 'cancelled' ? 'cancelled' : 'failed';
+      // Marked runs: the stop ends the run (the kernel loop's next boundary),
+      // and `workflow resume` reads this record to run the turn again, with
+      // the steering it took handed back to it.
+      if (stoppedOnLimit(result)) {
+        state.planner.limitStop = {
+          failureKind: result.failureKind, retryAfter: returnTimeOrNull(result.retryAfter), boundary, at: now(),
+          steeringIds: deliveredSteering.map((entry) => entry.id),
+        };
+      }
       persist();
-      emit('planner.finished', { turn, ok: false, failureKind: result.failureKind, why: result.verdict?.why ?? null });
+      // Marked runs: a usage limit or no free pool says when to try again.
+      emit('planner.finished', {
+        turn, ok: false, failureKind: result.failureKind, why: result.verdict?.why ?? null,
+        ...(stoppedOnLimit(result) ? { retryAfter: result.retryAfter ?? null } : {}),
+      });
       return result;
     }
     const accepted = result.verdict.structured.value;
@@ -2179,45 +2290,6 @@ async function runV2Kernel({
     let before = receipt?.before ?? null;
     if (!receipt && enforcesOwnership(state) && action.ownedFiles.length) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
     let currentAttemptId = null;
-    // F17 (D9): a waiting step gives up its owned-file claim, so another writer
-    // may integrate the same files meanwhile. When it claims its slot again, its
-    // private copy is brought up to date before the attempt starts: a copy no
-    // attempt worked in is made again; one an earlier attempt worked in takes
-    // every file main changed and it did not (a file both changed stays a
-    // conflict for integration to report).
-    const refreshIsolatedCopy = () => {
-      if (!isolated?.mainBefore || !isolated.isolatedBefore || receipt) return;
-      const mainNow = captureManifest(isolated.sourceDir, { maxFiles: config.maxManifestFiles });
-      const changed = compareManifests(isolated.mainBefore, mainNow).changed;
-      if (!changed.length) return;
-      if (!currentAttemptId) {
-        disposeWorkspace(isolated);
-        isolated = null;
-        const fresh = createWorkspace({ sourceDir: state.intent.cwd, runDir, actionId: isolatedName, maxFiles: config.maxManifestFiles });
-        if (fresh.targetDir !== targetDir) {
-          disposeWorkspace(fresh);
-          throw new Error(`the private copy for ${action.id} moved from ${targetDir} to ${fresh.targetDir} when it was made again`);
-        }
-        isolated = fresh;
-        if (before) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
-        emit('action.workspace_refreshed', { actionId: action.id, workspaceRoot: isolated.workspaceRoot, remade: true, files: [] });
-        return;
-      }
-      const copyNow = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
-      const taken = [];
-      for (const file of changed) {
-        if (copyNow[file] !== isolated.isolatedBefore[file]) continue;
-        const destination = join(targetDir, file);
-        if (Object.hasOwn(mainNow, file)) copyWorkspaceFile(join(isolated.sourceDir, file), destination);
-        else rmSync(destination, { force: true });
-        for (const manifest of [isolated.mainBefore, isolated.isolatedBefore, before].filter(Boolean)) {
-          if (Object.hasOwn(mainNow, file)) manifest[file] = mainNow[file];
-          else delete manifest[file];
-        }
-        taken.push(file);
-      }
-      if (taken.length) emit('action.workspace_refreshed', { actionId: action.id, workspaceRoot: isolated.workspaceRoot, remade: false, files: taken });
-    };
     // Set when this act step's checks were stopped (F14): it goes to the caller.
     let actStoppedWhy = null;
     let lastProgressPersist = 0;
@@ -2317,43 +2389,11 @@ async function runV2Kernel({
       // where it is present.
       routeFilter: resolveRouteFilter(state, action, pools),
       pinSource: restart?.pool ? 'step restart' : null,
-      // A step that failed on a pool because of the pool (a limit, a sign-in,
-      // a provider error, a worker that died before it answered) starts
+      // A step that failed on a pool because of the pool (a sign-in, a
+      // provider error, a worker that died before it answered) starts
       // elsewhere when another pool can take it: a rerun, a resume or a
       // revise --rerun (marked runs; a pool named by restart --pool wins).
       leavePools: restart?.pool ? [] : poolCausedPools(state.attempts, action.id),
-      // D9: a step no pool can take waits without holding a slot. The loop is
-      // kicked so the freed slot is refilled at once.
-      onWaiting: ({ until, pools: waitPools, reason }) => {
-        const names = Array.isArray(waitPools) ? [...waitPools] : [];
-        runtime.status = 'waiting';
-        runtime.lastFailure = { kind: 'waiting', message: `waiting for quota: ${names.join(', ') || 'a pool'} back at ${until}` };
-        emit('action.waiting', { actionId: action.id, until, pools: names, reason: reason ?? null });
-        kick();
-      },
-      // Before a waiting step runs again it claims a slot against the running
-      // steps, and takes it in the same tick, so two waking steps can never
-      // both take the last one. Otherwise it re-asks after the next settled
-      // task (or a few seconds) and the dispatcher keeps it waiting.
-      claimWake: async () => {
-        const claim = () => {
-          if (stopRequested.has(action.id) || state.pause || refreshCancellation()) return false;
-          if (!canStartV2Action(state.program.actions, state.actions, action.id, schedulingOptions)) return false;
-          runtime.status = 'running';
-          runtime.lastFailure = null;
-          // The slot is held from here, so no writer of these files can start
-          // before the attempt does: the copy made now stays current (F17).
-          refreshIsolatedCopy();
-          persist();
-          return true;
-        };
-        if (claim()) return true;
-        await nextSettleOr(wakeClaimRecheckMs);
-        return claim();
-      },
-      // Between refused claims the dispatcher waits for the next settled task
-      // (or a few seconds), not a blind sleep (F14).
-      nextSettleOr,
       // The checks run in the isolated copy before integration (E5), with the
       // private-copy side-effect scope.
       privateWorkspace: Boolean(isolated),
@@ -2375,7 +2415,7 @@ async function runV2Kernel({
           const ordinal = baseAttemptOrdinal + record.ordinal;
           currentAttemptId = `${action.id}-${ordinal}`;
           runtime.attempts = ordinal;
-          // A waiting step that got a pool is running again.
+          // The step reads as running while an attempt runs, with no failure.
           runtime.status = 'running';
           runtime.lastFailure = null;
           if (record.handoff) {
@@ -2481,8 +2521,8 @@ async function runV2Kernel({
             model: record.model ?? attempt?.model ?? null,
             why: record.why ?? null,
             willRetry: record.willRetry === true,
-            // A quota or throttle result: the dispatcher's move-or-wait decision
-            // (F23), which the watch's quota line reads.
+            // 'wait' when the dispatcher backs off a transient rate limit on the
+            // same pool (F23); 'move' only in a record a stage-3 dispatcher wrote.
             ...(['move', 'wait'].includes(record.quotaNext) ? { quotaNext: record.quotaNext } : {}),
             outputFile: attempt?.outputFile ?? record.outputFile ?? record.outFile ?? null,
             ...(attempt?.outputBytes != null ? { outputBytes: attempt.outputBytes } : (record.outputBytes != null ? { outputBytes: record.outputBytes } : {})),
@@ -2495,8 +2535,8 @@ async function runV2Kernel({
             ...(attempt?.notes ? { notes: clone(attempt.notes) } : (record.notes ? { notes: clone(record.notes) } : {})),
             ...(attempt?.outputSamples ? { outputSamples: clone(attempt.outputSamples) } : (record.outputSamples ? { outputSamples: clone(record.outputSamples) } : {})),
             ...evidenceOutcomePayload(record),
-            // Marked runs: the watch reads quota tails as "moving (no retry
-            // spent)" or "waiting for a pool".
+            // Marked runs: the watch's quota line reads "back to you", or "no
+            // retry spent" on an attempt that promised a retry.
             ...(features.failureRule ? { failureRule: true } : {}),
             ...(record.stalled ? {
               stalled: true,
@@ -2612,8 +2652,10 @@ async function runV2Kernel({
         : stop ? { kind: stop.kind, message: stop.message }
           : {
             kind: result.failureKind, message: result.verdict?.why ?? 'dispatch failed',
-            // When the only pools that can run it are paused: the earliest
-            // time a resume can get through. The run does not wait for it.
+            // The dispatcher's time to try again, when it names one: the
+            // earliest return among the held pools that can run it, or in
+            // marked runs the failed pool's own reset after a usage limit or
+            // a rate-limit wait the provider named. The run does not wait for it.
             ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}),
           };
       persist();
@@ -2775,26 +2817,6 @@ async function runV2Kernel({
     }
   };
   const activeTasks = new Map();
-  let wakeLoop = null;
-  let kickPending = false;
-  const kick = () => {
-    if (wakeLoop) wakeLoop();
-    else kickPending = true;
-  };
-  // A waiting step's slot claim is re-asked after every settled task (D9).
-  const settleWaiters = new Set();
-  const notifySettled = () => {
-    const waiters = [...settleWaiters];
-    settleWaiters.clear();
-    for (const resolve of waiters) resolve();
-  };
-  const nextSettleOr = (ms) => new Promise((resolve) => {
-    const done = () => { clearTimeout(timer); settleWaiters.delete(done); resolve(); };
-    const timer = setTimeout(done, ms);
-    timer.unref?.();
-    settleWaiters.add(done);
-  });
-  const wakeClaimRecheckMs = dependencies.wakeClaimRecheckMs ?? WAKE_CLAIM_RECHECK_MS;
 
   // Live control. Callers and operators write intents next to the run (a
   // queued plan revision, pause.json, cancellation.json, steering). The kernel
@@ -2826,22 +2848,16 @@ async function runV2Kernel({
     } catch { /* the next poll retries */ }
     return false;
   };
-  // Wait until an active action settles, a control intent arrives, or a step
-  // starts waiting for a pool (kick, D9): its slot is free, so the loop
-  // refills it at once. A kick while nothing waits is kept for the next wait.
+  // Wait until an active action settles or a control intent arrives.
   const waitForProgress = () => new Promise((resolve) => {
     let settled = false;
-    let timer = null;
+    const timer = setInterval(() => { if (controlPending()) done(); }, controlPollMs);
     const done = () => {
       if (settled) return;
       settled = true;
-      if (timer) clearInterval(timer);
-      if (wakeLoop === done) wakeLoop = null;
+      clearInterval(timer);
       resolve();
     };
-    if (kickPending) { kickPending = false; done(); return; }
-    timer = setInterval(() => { if (controlPending()) done(); }, controlPollMs);
-    wakeLoop = done;
     if (activeTasks.size) Promise.race(activeTasks.values()).then(done, done);
   });
 
@@ -3134,12 +3150,6 @@ async function runV2Kernel({
         stopRequested.set(actionId, { kind: 'paused', message: 'stopped by workflow pause; it runs again after resume' });
       }
     }
-    // A waiting step has no worker to drain and may wait until a weekly
-    // reset (D9): any pause stops it, and it runs again after resume.
-    for (const actionId of activeTasks.keys()) {
-      if (stopRequested.has(actionId) || actionState(state, actionId)?.status !== 'waiting') continue;
-      stopRequested.set(actionId, { kind: 'paused', message: 'stopped by workflow pause; it runs again after resume' });
-    }
     if (activeTasks.size) { await waitForProgress(); return null; }
     clearPauseStops();
     const requeued = requeuePausedActions();
@@ -3224,6 +3234,20 @@ async function runV2Kernel({
       if (state.preflight.scout.status === 'pending') {
         const scouted = await runScout();
         if (interrupted) return pauseInterrupted();
+        // Marked runs: a scout stopped on a usage limit, or with no pool free,
+        // goes to the caller when no program is there to run (--scout alone,
+        // or before a dispatched planner). A caller's program runs without
+        // the report.
+        if (stoppedOnLimit(scouted) && !pendingInitialResponse && !state.program.actions.length) {
+          limitsExhausted = true;
+          terminalReason = limitStopReason('the preflight scout', {
+            failureKind: scouted.failureKind, retryAfter: scouted.retryAfter ?? null, why: scouted.verdict?.why ?? null,
+          }, state.shortId ?? id);
+          // The stop ended the run: `workflow resume` reads this record to
+          // run the scout again. A scout the run went on without has none.
+          state.preflight.scout.limitStop = { failureKind: scouted.failureKind, retryAfter: returnTimeOrNull(scouted.retryAfter), at: now() };
+          return finalize();
+        }
         if (!scouted.ok && !programExecution) {
           limitsExhausted = true;
           terminalReason = `repository preflight could not produce a valid report: ${scouted.verdict?.why ?? scouted.failureKind}`;
@@ -3257,7 +3281,9 @@ async function runV2Kernel({
         if (!planned.ok) {
           if (planned.status === 'cancelled') continue;
           limitsExhausted = true;
-          terminalReason = `the workflow planner could not incorporate queued steering: ${planned.verdict?.why ?? planned.failureKind}`;
+          terminalReason = stoppedOnLimit(planned)
+            ? plannerLimitReason(planned)
+            : `the workflow planner could not incorporate queued steering: ${planned.verdict?.why ?? planned.failureKind}`;
         }
         continue;
       }
@@ -3265,8 +3291,9 @@ async function runV2Kernel({
       // finished without usage delays nothing, and what it priced is durable now.
       if (!activeTasks.size && priceFinishedAttempts()) persist();
       const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
-      // A waiting step (D9) holds no scheduler slot, but its dispatch is still
-      // in flight: the run never finishes, repairs or re-plans under it.
+      // A step whose dispatch is still in flight (its task has not settled)
+      // may already read as finished: the run never finishes, repairs or
+      // re-plans under it.
       if (activeTasks.size && ['ready-to-finalize', 'partial', 'needs-planner'].includes(progress.status)) {
         await waitForProgress();
         continue;
@@ -3288,7 +3315,9 @@ async function runV2Kernel({
           }
           if (planned.status === 'cancelled') continue;
           limitsExhausted = true;
-          terminalReason = `the workflow planner could not produce a mechanically valid program: ${planned.verdict?.why ?? planned.failureKind}`;
+          terminalReason = stoppedOnLimit(planned)
+            ? plannerLimitReason(planned)
+            : `the workflow planner could not produce a mechanically valid program: ${planned.verdict?.why ?? planned.failureKind}`;
         } else if (planned.accepted.kind === 'exhausted') {
           plannerExhausted = true;
           terminalReason = planned.accepted.reason;
@@ -3310,7 +3339,6 @@ async function runV2Kernel({
         for (const actionId of selected) {
           const task = runActionSafely(definition(state, actionId)).finally(() => {
             activeTasks.delete(actionId);
-            notifySettled();
           });
           activeTasks.set(actionId, task);
         }

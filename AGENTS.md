@@ -25,10 +25,11 @@ program steps may declare command and schema `evidence` that the kernel runs
 after the worker, a failure is `failed-evidence` with one same-pool retry, and
 finished steps in new runs are labelled `proven by …` or `finished · unproven`.
 Stage 3 (failure rule and routing constraints) has landed: one automatic retry
-per step, then the caller; quota waits; the needs-you block with `step rerun
---avoid` and `step accept`; the per-step `route`; `verifyRounds` counts fixes
-(default 1); reviews are placed only by route. Runs started earlier keep their
-rules (`features.json`).
+per step, then the caller; a usage limit goes straight to the caller, from a
+step, the dispatched planner or the preflight scout alike; the
+needs-you block with `step rerun --avoid` and `step accept`; the per-step
+`route`; `verifyRounds` counts fixes (default 1); reviews are placed only by
+route. Runs started earlier keep their rules (`features.json`).
 
 ## Non-negotiable doctrine
 
@@ -49,10 +50,16 @@ rules (`features.json`).
    ranks what is left. The failure rule is one automatic retry per step (a
    process failure on another eligible pool, a gate failure on the same pool
    with the failure attached), then the caller. An `act` step is never retried
-   once its worker started. Exhausted quota makes a step move without spending
-   its retry, or wait and say so, whatever the pausing switch; it never fails
-   for quota while a return time is known. Only a failed step's dependents
-   wait.
+   once its worker started. A usage limit (a spent 5-hour or weekly window, or
+   no credit left) ends the step and sends it to the caller, whatever the
+   pausing switch: no wait, no automatic move, no retry. So does finding no
+   capable pool free at the pick. Nothing waits for a pool inside a run; only
+   a transient rate limit backs off on the same pool, at most twice (20 s, then
+   60 s, or a named wait of at most 2 minutes), then goes to the caller.
+   Only a failed step's dependents wait. The dispatched planner and the
+   preflight scout follow the same usage-limit rule (`usageLimitsToCaller` in
+   `dispatchV2Action`): they stop and the run tells the caller, with no
+   automatic move to another pool.
 6. Review is a caller option, recorded as a fact. A step naming requirements
    in `evidenceFor` is dispatched under the evidence contract and judges them
    from the durable artifact. Where it runs is the caller's choice through

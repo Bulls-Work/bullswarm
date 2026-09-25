@@ -71,11 +71,11 @@ The full document is `schemaVersion: "bullswarm.workflow.result.v2"`. Allowed to
 | `goal` | the goal text as launched |
 | `status` | `completed`, `partial`, or `cancelled` |
 | `verified` | `true` only when `status` is `completed` **and** every mandatory requirement has passing evidence. A completed program can be unverified |
-| `reason` | one-line outcome. Completed-but-unverified names which requirement is open |
+| `reason` | one-line outcome. Completed-but-unverified names which requirement is open. In a run started by this version, a dispatched planner or a scout that a usage limit, a rate limit or no free pool stopped reads `the workflow planner stopped on a usage limit: <why> · back at <time> · your call: …` (or `the preflight scout stopped on a usage limit: …` for a scout with no program after it; `stopped: no pool free` when a pool was out for another reason or no pool can run it at all) |
 | `executionMode` | `"program"` on caller-authored (and dispatched-planner) programs |
 | `workspace` | Git status inventory on program runs: `cwd`, `changedFiles`, `baselineChangedFiles`, `warnings`. Not per-worker attribution; files stay in the target directory |
 | `requirements[]` | ledger: `id`, `text`, `mandatory`, `status` (`pending`/`passed`/`failed`/`blocked`), `workRevision`, `evidence[]`, `accepted` when a caller accepted a failing requirement |
-| `actions[]` | `id`, `purpose`, `status` (including `waiting`), `outputFile`, `artifactIds`, `reasoning`, `kind`, `role` when the step stated one, `evidenceResults` when the step declared evidence, `acceptance` when accepted, `bytes`, and on program runs `failure` |
+| `actions[]` | `id`, `purpose`, `status`, `outputFile`, `artifactIds`, `reasoning`, `kind`, `role` when the step stated one, `evidenceResults` when the step declared evidence, `acceptance` when accepted, `bytes`, and on program runs `failure` |
 | `verifyRounds` | program runs from 0.35.2 on: the repair loop's record, `{ max, used, stoppedBy, phases[] }`, one phase per verify round and per repair (`used: 0` when no evidence step ran). See [Verify rounds](#verify-rounds) |
 | `callerDecision` | program runs from 0.35.2 on: `null`, or what is still open and one suggested next step each: the mandatory requirements the last closed round left failing, and every declared requirement no evidence step covers (`not judged · no evidence step covers it`, on a verified run too). See [The caller-decision block](#the-caller-decision-block) |
 | `gaps` | `null` on a verified completed run; otherwise `bullswarm.workflow.gaps.v2` with open requirements and failed/blocked/cancelled/interrupted actions |
@@ -101,7 +101,7 @@ The compact summary adds `proof` to each eligible action row and a top-level pro
 
 Each action `bytes` is `{ taskFile, authorPrompt, kernel, dependencyInputs, output }` — the task file the kernel wrote, the action's own prompt, the remainder after subtracting that prompt, the sum of dependency output files (0 when there are none), and the durable out file. Missing values are `null`, never guessed.
 
-`failure` is `{ kind, message? }`. A new run gives each step one automatic retry: process failures go to another eligible pool, gate failures go to the same pool with the failure attached, and quota waits without spending the retry. An `act` step is not retried after its worker starts. Runs started by an earlier version keep their saved retry rules. Kinds a plain `workflow resume` can retry: `provider`, `quota`, `auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`, `stalled`. A failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun by `workflow resume`: that is `failed-evidence`, `not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit), a check that failed the work, and `semantic`. Use `step rerun`, `step accept`, or `plan revise` for those failures.
+`failure` is `{ kind, message? }`. A new run gives each step one automatic retry: process failures go to another eligible pool, gate failures go to the same pool with the failure attached, and a usage limit (`quota`), or no free pool, comes back to you at once with no retry. A transient rate limit (`throttle`) first backs off on the same pool at most twice without spending the retry. Nothing waits for a pool. An `act` step is not retried after its worker starts. Runs started by an earlier version keep their saved retry rules. Kinds a plain `workflow resume` can retry: `provider`, `quota`, `throttle`, `auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`, `stalled`. A failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun by `workflow resume`: that is `failed-evidence`, `not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit), a check that failed the work, and `semantic`. Use `step rerun`, `step accept`, or `plan revise` for those failures.
 
 ## Verify rounds
 
@@ -238,7 +238,7 @@ Anything short of a verified run with no unread guidance is handed back. The run
 
 | Field | Meaning |
 |---|---|
-| `unfinished[]` | `{ id, status, failureKind, why, retryAfter?, retryable, retries? }` for every action that is not `succeeded` or `removed`; `retries` counts automatic retries spent by the current definition. In the compact summary, a failed step that declares evidence and whose worker failed before any check ran adds `evidenceNotRun: true` |
+| `unfinished[]` | `{ id, status, failureKind, why, retryAfter?, retryable, retries? }` for every action that is not `succeeded` or `removed`; `retries` counts automatic retries spent by the current definition. `retryAfter` is when the step's pool is back: in a run started by this version, the failed pool's reset after a usage limit, the end of a rate limit's named wait, the return of the pool a rate-limit backoff could no longer use, or, when no pool that can run the step was free, the earliest known return among them; in earlier runs, the earliest return when every pool that can run the step was paused or benched. In the compact summary, a failed step that declares evidence and whose worker failed before any check ran adds `evidenceNotRun: true` |
 | `unresolvedRequirements[]` | `{ id, status, why }` for every requirement that is not `passed` |
 | `unreadSteering[]` | `{ id, message, queuedAt }` guidance queued with `workflow steer` that nobody acted on |
 
@@ -247,7 +247,7 @@ The compact summary adds `options`, one command per key, in this order; the text
 | Key | Printed as | When it is present | Command it names |
 |---|---|---|---|
 | `continue` | continue | a program run | `bullswarm workflow plan export <shortId> --out plan.json, edit it, then bullswarm workflow plan revise <shortId> --program plan.json (--rerun <step ids> runs finished steps again)` |
-| `retry` | retry | a step is retryable | `bullswarm workflow resume <shortId> (reruns <step ids>)`, with `after <time>` when every step to retry waits on a paused pool |
+| `retry` | retry | a step is retryable, or, in a run started by this version, a usage limit or no free pool stopped the planner or scout and ended the run | `bullswarm workflow resume <shortId> (reruns <step ids>)`, with `after <time>`, the earliest of their `retryAfter` times, when every step to retry has one. A stopped planner or scout comes first in the list (`reruns the workflow planner`, or `the preflight scout`), and `after <time>` is then its own return time, left out when that is not known |
 | `rerun` | rerun | a run started by this version has a failed step | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>] (runs it again with its last attempt's handoff)`; `<step>` is literal when several failed |
 | `accept` | accept | the same | `bullswarm workflow step accept <shortId> <step> --reason "…" (recorded as your choice, never proof)` |
 | `rerunReview` | rerun | a run started by this version whose review loop left a requirement failing | `bullswarm workflow step rerun <shortId> <check> --avoid <pool> (judges it again on another pool)`, for the check that judged it |
@@ -257,7 +257,7 @@ The compact summary adds `options`, one command per key, in this order; the text
 
 Near the byte budget the stage-3 additions give way before any handback line: first the explanations in brackets at the end of the new options, then the new options, then `retries`, then acceptance reasons. A requirement row accepted by choice carries `accepted: "<reason>"` and prints as `requirement <id>: failed · accepted by choice "<reason>"`; it stays failed.
 
-`retry` is omitted when nothing is retryable. `workflow resume` on a finished run with nothing retryable prints `nothing to retry`, starts nothing, and exits 1.
+`retry` is omitted when nothing is retryable and no planner or scout stop ended the run. `workflow resume` on a finished run with nothing retryable prints `nothing to retry`, starts nothing, and exits 1.
 
 ## Launch versus result
 

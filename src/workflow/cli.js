@@ -774,7 +774,7 @@ function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_
 }
 
 // The configured pools without a live meter refresh: enough for the route
-// checks, which ignore pauses, holds and 5-hour gates.
+// checks, which ignore pauses, benches and 5-hour gates.
 function configuredPools() {
   try { return buildPools(BULLSWARM_DIR(), Date.now()).pools; } catch { return null; }
 }
@@ -1595,14 +1595,22 @@ function reopenFinishedRun(resolvedRun, opts) {
     }
     return 1;
   }
-  // A step that failed because its pool was paused fails again at once while
-  // that pool is still paused. Say so; the caller chose to retry now.
+  // A step that failed with a return time still ahead (its pool out of quota,
+  // paused or benched; every pool that can run it out) can fail the same way
+  // when it runs before then. Say so; the caller chose to retry now.
   const retryNow = Date.now();
-  const stillPaused = (current.actions ?? []).filter((action) => outcome.requeued.includes(action.id)
+  const stillOut = (current.actions ?? []).filter((action) => outcome.requeued.includes(action.id)
     && Date.parse(action.lastFailure?.retryAfter ?? '') > retryNow);
   if (!opts.json) {
-    console.log(`✓ reopened the ${outcome.previousStatus} run ${id}; running again: ${outcome.requeued.join(', ')}`);
-    for (const action of stillPaused) console.log(`  note: ${action.id} waited on a pool paused until ${action.lastFailure.retryAfter}; while it is still paused the step fails again straight away`);
+    // A marked run's Workflow Planner or preflight scout that stopped on a
+    // limit runs again first; it is named as what it is, not by its id.
+    const dispatch = outcome.dispatch ?? null;
+    const running = outcome.requeued.map((entry, index) => (dispatch && index === 0 && entry === dispatch.id ? dispatch.who : entry));
+    console.log(`✓ reopened the ${outcome.previousStatus} run ${id}; running again: ${running.join(', ')}`);
+    if (dispatch && Date.parse(dispatch.retryAfter ?? '') > retryNow) {
+      console.log(`  note: ${dispatch.who} stopped with its pool back at ${dispatch.retryAfter}; run before then, it can fail the same way again`);
+    }
+    for (const action of stillOut) console.log(`  note: ${action.id} stopped with its pool back at ${action.lastFailure.retryAfter}; run before then, it can fail the same way again (at once when no other pool is free)`);
   }
   return outcome;
 }
@@ -1729,7 +1737,7 @@ async function wfCapabilities(opts) {
         },
         plannerModes: {
           caller: 'default: the calling agent authors the program (workflow plan contract|validate, workflow goal --program, workflow plan export|revise); the kernel never dispatches a planner and never waits for the caller: a run that needs a decision finishes, and its result hands the decision back',
-          dispatched: 'explicit --orchestrator auto|<pool>: the kernel routes a Workflow Planner agent process at each planning boundary',
+          dispatched: 'explicit --orchestrator auto|<pool>: the kernel routes a Workflow Planner agent process at each planning boundary; in runs started by this version a usage limit or no free pool stops the planner (or the scout before it) with no move to another pool, a nearly spent pool is never given to either, and the run finishes with the caller\'s options (routing.failureRule.plannerAndScout)',
         },
         defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2, plannerMode: 'caller', executionMode: 'program', workspaceMode: 'shared' },
         compatibility: { resumesAutonomousV1: false, migratesAutonomousV1: false, preservesSavedV2Semantics: true },
@@ -1747,7 +1755,17 @@ async function wfCapabilities(opts) {
     routing: {
       automatic: true,
       selection: 'Constraints first: the step\'s route, a run-wide pin, the model policy and the effort tier. Then 5-hour burst gates, free-first (never for checks), quota urgency, the tier assignment and pace surplus. In runs started by this version a review runs only where its route puts it; earlier runs keep automatic writer avoidance.',
-      failureRule: { retriesPerStep: 1, processFailure: 'retry once on another eligible pool; the same pool when it is the only candidate (except auth)', gateFailure: 'retry once on the same pool with the failure attached', quota: 'move without spending the retry, or wait for a known return time', then: 'caller; only dependents wait', savedRuns: 'keep their original retry and review rules' },
+      failureRule: {
+        retriesPerStep: 1,
+        processFailure: 'retry once on another eligible pool; the same pool when it is the only candidate (except auth)',
+        gateFailure: 'retry once on the same pool with the failure attached',
+        quota: 'a usage limit (a spent 5-hour or weekly window, or no credit left: a notice that says so, with or without a reset, or a full meter) ends the step and goes to the caller at once, whatever the pausing switch; never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free',
+        throttle: 'a transient rate limit (too many requests, no usage window spent) backs off on the same pool at most twice without spending the retry (20 s, then 60 s, or a named wait of at most 2 minutes), then goes to the caller; a longer named wait goes to the caller at once, with retryAfter at its end; a backoff whose pool is no longer free goes to the caller at once, as quota when that pool is out on a usage limit, with retryAfter its known return',
+        noFreePool: 'no capable pool free at the first pick (nearly spent, at its 5-hour limit, paused or benched): the step goes to the caller, as quota when every reason is a usage limit, else unavailable; why names each pool and its reason; retryAfter is the earliest known return; a promised retry that finds no free pool keeps the last failure\'s kind and its why ends "· no retry: <pool> <reason>; …"',
+        plannerAndScout: 'the dispatched planner and the preflight scout follow the quota, throttle and noFreePool rules: a usage limit, a rate limit still there after its short same-pool backoff, or no free pool stops them with no move to another pool; a nearly spent pool (its window closes soon and the dispatch would push it past its limit) is never given to them either, unless the caller named it; the run finishes partial with "the workflow planner stopped on a usage limit: <why>" (or "the preflight scout stopped on a usage limit: <why>" for a scout with no program after it; "stopped: no pool free" when a pool was out for another reason or no pool can run it at all), back at retryAfter when known, and the caller\'s options (bullswarm workflow resume after retryAfter runs the stopped planner turn or scout again; plan it yourself with plan revise; or start a new run); a scout before a caller program lets the run go on without its report, and resume does not run that scout again; a sign-in failure, a provider error or a worker that died at start still moves them to another pool',
+        then: 'caller; only dependents wait',
+        savedRuns: 'keep their original retry and review rules',
+      },
       modelSelection: 'connector-declared discovery and model flag; approved assignments may select a model; excluded models are never dispatched and force an allowed tier fallback when supported',
       strategyPolicy: coreState.strategy?.policy ?? null,
       assignments: coreState.strategy?.assignments ?? {},

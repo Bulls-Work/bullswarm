@@ -612,12 +612,20 @@ test('program rules state the failure rule and the route field once; verified ru
     assert.ok(failure[0].includes('a crashed, silent or signed-out worker is retried on another eligible pool'));
     assert.ok(failure[0].includes('is retried on the same pool with the failure attached'));
     assert.ok(failure[0].includes('An act step is never retried once its worker started'));
-    assert.ok(failure[0].includes('A pool out of quota makes the step wait, never fail'));
+    // A usage limit, or no free pool, goes to the caller at once; nothing waits.
+    assert.ok(failure[0].includes('A usage limit (a spent 5-hour or weekly window, or no credit left), or no free pool that can run the step, sends it back to you at once, with the time its pool is back when that is known'));
+    assert.ok(failure[0].includes('no step waits for a pool, and a usage limit never moves a step to another pool by itself'));
+    // The move after a crash or a sign-in failure stays: only a usage limit never moves.
+    assert.ok(!failure[0].includes('moves the step by itself'));
+    assert.ok(failure[0].includes('A transient rate limit (too many requests) backs off on the same pool at most twice, then comes back to you.'));
+    assert.ok(!failure[0].includes('makes the step wait'));
     assert.ok(failure[0].includes('(step rerun --avoid, plan revise, take over, step accept)'));
     const route = rules.filter((rule) => rule.startsWith('The optional `route` keeps a step on or off pools'));
     assert.equal(route.length, 1, plannerMode);
     assert.ok(route[0].includes('`independentOf` names earlier steps (or "writers" on a step with evidenceFor)'));
     assert.ok(route[0].includes('It is a hard filter applied before quota pacing'));
+    assert.ok(route[0].includes('a step it leaves without a free pool comes back to you at once (no eligible pool, or each pool\'s reason) and never waits for one.'));
+    assert.ok(!route[0].includes('waits for one to come back'));
     assert.ok(route[0].includes('A review runs where you route it; Bullswarm records who reviewed.'));
     // None of the new rules is mistaken for the kind rule.
     for (const rule of [...failure, ...route]) assert.ok(!rule.includes('`kind` field'));

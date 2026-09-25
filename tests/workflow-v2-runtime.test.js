@@ -7,9 +7,13 @@ import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import {
-  GATE_RETRY_HANDOFF_LINE, acceptCallerPlannerResponse, handoffBlock, normalizeAttempt, pauseV2Run, preferredUsage,
-  recordAttemptCapture, reviseV2Program, runV2AutonomousWorkflow, unpauseV2Run,
+  GATE_RETRY_HANDOFF_LINE, acceptCallerPlannerResponse, handoffBlock, normalizeAttempt, preferredUsage,
+  recordAttemptCapture, reopenV2RunForRetry, reviseV2Program, runV2AutonomousWorkflow,
 } from '../src/workflow/v2-runtime.js';
+import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { needsYouFacts } from '../src/workflow/needs-you.js';
+import { summarizeV2Result, v2LimitStoppedDispatch } from '../src/workflow/v2-outcome.js';
+import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
 import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { readGoalProject } from '../src/workflow/goal.js';
@@ -981,8 +985,8 @@ test('the state schema accepts a capture only in its documented shape', async ()
 
 
 // --- Stage 3: the failure rule's kernel side (marker, placement, route,
-// waiting, retry facts, who reviewed). Fake dispatches drive the options the
-// kernel hands the dispatcher, exactly as the real one calls them.
+// no free pool, retry facts, who reviewed). Fake dispatches drive the options
+// the kernel hands the dispatcher, exactly as the real one calls them.
 
 const WORK_REQ = { id: 'work-done', text: 'work.md exists and says done' };
 const NOTES_REQ = { id: 'notes-done', text: 'notes.md exists' };
@@ -1108,9 +1112,8 @@ test('stage 3: a new run is marked, reviews are caller-placed, independentOf fee
     assert.equal(seen[id].failureRule, true, id);
     assert.equal(seen[id].retriesAlready, 0, id);
     assert.equal(seen[id].pinSource, null, id);
-    assert.equal(typeof seen[id].onWaiting, 'function', id);
-    assert.equal(typeof seen[id].claimWake, 'function', id);
-    assert.equal(typeof seen[id].nextSettleOr, 'function', id);
+    // A step never waits for a pool (owner decision, 2026-09-25): no wait hooks.
+    for (const hook of ['onWaiting', 'claimWake', 'nextSettleOr']) assert.equal(Object.hasOwn(seen[id], hook), false, `${id} ${hook}`);
   }
   // D15: the check keeps "no free-first" and loses automatic writer avoidance.
   assert.deepEqual(seen.check.evidence, { writerPools: [] });
@@ -1207,83 +1210,6 @@ test('retriesAlready is counted from stored retry facts: a kernel resume keeps i
   }
 });
 
-test('waiting: the step says so, frees its slot at once (kick), and is running again when its attempt starts', async (t) => {
-  const f = stage3Setup(t, { concurrency: 1 });
-  let release;
-  const released = new Promise((resolve) => { release = resolve; });
-  const safety = setTimeout(() => release('timeout'), 5000);
-  t.after(() => clearTimeout(safety));
-  const order = [];
-  let whileWaiting = null;
-  let atStart = null;
-  let runDir = null;
-  const dispatch = async (options) => {
-    if (options.action.id === 'slow') {
-      options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'hold' });
-      order.push('slow waiting');
-      const why = await released;
-      order.push(`slow woke (${why})`);
-      assert.equal(await options.claimWake(), true);
-      const record = reportAttempt(options, 1);
-      return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: record.outFile } };
-    }
-    whileWaiting = readState(runDir).actions.find((action) => action.id === 'slow');
-    order.push('quick ran');
-    release('quick finished');
-    return succeed(options);
-  };
-  const run = await launch3(f, {
-    runId: 'wf-s3wait-abcdef', dispatch, actions: [step3('slow'), step3('quick')],
-    onEvent: (event) => {
-      runDir ??= join(f.bullswarmDir, 'workflows', 'wf-s3wait-abcdef');
-      if (event.type === 'attempt.started' && event.payload.actionId === 'slow') atStart = readState(runDir).actions.find((action) => action.id === 'slow');
-    },
-  });
-  assert.equal(run.result.status, 'completed');
-  assert.deepEqual(order, ['slow waiting', 'quick ran', 'slow woke (quick finished)'], 'with concurrency 1 the independent step ran while the first waited');
-  assert.equal(whileWaiting.status, 'waiting');
-  assert.deepEqual(whileWaiting.lastFailure, { kind: 'waiting', message: 'waiting for quota: relay back at 2026-09-25T09:00:00.000Z' });
-  assert.equal(atStart.status, 'running');
-  assert.equal(atStart.lastFailure, null);
-  const waiting = eventsOfType(run.runDir, 'action.waiting');
-  assert.deepEqual(waiting.map((event) => event.payload), [{ actionId: 'slow', until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'hold' }]);
-});
-
-test('a waiting step whose claim finds a running unrestricted writer stays waiting until the writer finishes', async (t) => {
-  const f = stage3Setup(t, { concurrency: 2 });
-  let release;
-  const released = new Promise((resolve) => { release = resolve; });
-  const claims = [];
-  let writerDone = false;
-  const dispatch = async (options) => {
-    if (options.action.id === 'slow') {
-      options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'quota' });
-      await released;
-      for (let guard = 0; guard < 200; guard += 1) {
-        const claimed = await options.claimWake();
-        claims.push([claimed, writerDone]);
-        if (claimed) break;
-      }
-      return succeed(options);
-    }
-    // The unrestricted writer (build lane, no ownedFiles) runs alone.
-    release();
-    for (let guard = 0; guard < 200 && !claims.length; guard += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    writerDone = true;
-    return succeed(options);
-  };
-  const run = await launch3(f, {
-    runId: 'wf-s3claim-abcdef', dispatch,
-    actions: [step3('slow'), step3('integrate', { ownedFiles: [] })],
-    dependencies: { wakeClaimRecheckMs: 20 },
-  });
-  assert.equal(run.result.status, 'completed');
-  assert.deepEqual(claims[0], [false, false], 'refused while the unrestricted writer runs');
-  assert.deepEqual(claims.at(-1), [true, true], 'claimed once it finished');
-  const started = eventsOfType(run.runDir, 'attempt.started').map((event) => event.payload.actionId);
-  assert.deepEqual(started, ['integrate', 'slow']);
-});
-
 test('a kernel resume resets a waiting step to pending: no worker ran, nothing is spent', async (t) => {
   const f = stage3Setup(t);
   const runDir = savedRun(f, {
@@ -1306,45 +1232,45 @@ test('a kernel resume resets a waiting step to pending: no worker ran, nothing i
   assert.equal(eventsOfType(runDir, 'action.started').length, 1);
 });
 
-test('a drain pause stops a waiting step (stop kind paused); it runs again after resume', async (t) => {
+test('marked: a step no pool can take now goes to the caller with each pool\'s return, never waits, and the rest of the run goes on', async (t) => {
   const f = stage3Setup(t);
-  const runId = 'wf-s3drain-abcdef';
-  let dispatches = 0;
-  const dispatch = async (options) => {
-    dispatches += 1;
-    if (dispatches === 1) {
-      options.onWaiting({ until: '2026-09-26T09:00:00.000Z', pools: ['relay'], reason: 'hold' });
-      // The dispatcher's wait loop: it polls cancel while it sleeps.
-      for (let guard = 0; guard < 500; guard += 1) {
-        if (options.shouldCancel()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts: [], verdict: null };
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      throw new Error('the drain pause never stopped the waiting step');
-    }
-    return succeed(options);
-  };
-  let pauseRequested = null;
-  const paused = await launch3(f, {
-    runId, dispatch, actions: [step3('write')], dependencies: { controlPollMs: 20 },
-    onEvent: (event) => {
-      if (event.type === 'action.waiting') pauseRequested = pauseV2Run({ bullswarmDir: f.bullswarmDir, runId, mode: 'drain' });
-    },
+  // A pool's quarantine holds its return in ms, as the state file stores it.
+  const soonMs = Date.now() + 2 * 3600_000;
+  const laterMs = Date.now() + 5 * 3600_000;
+  const [soon, later] = [soonMs, laterMs].map((ms) => new Date(ms).toISOString());
+  const pausedPool = (name, until) => ({
+    name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
+    modelSelection: { flag: '--model' }, strategyAssignments: { low: { pool: name, model: 'gpt-5.6-luna' } },
+    quarantine: { until, kind: 'quota', reason: 'usage window spent' },
   });
-  assert.equal((await pauseRequested).status, 'pausing');
-  assert.equal(paused.result, null);
-  assert.equal(paused.state.lifecycle.status, 'paused');
-  const runDir = join(f.bullswarmDir, 'workflows', runId);
-  const stopped = eventsOfType(runDir, 'action.finished')[0].payload;
-  assert.deepEqual([stopped.actionId, stopped.status, stopped.failureKind], ['write', 'cancelled', 'paused']);
-  assert.deepEqual(eventsOfType(runDir, 'workflow.paused').at(-1).payload.requeued, ['write']);
-  assert.equal(paused.state.actions[0].status, 'pending');
-  unpauseV2Run({ bullswarmDir: f.bullswarmDir, runId });
-  const resumed = await runV2AutonomousWorkflow({
-    bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
-    dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, controlPollMs: 20 },
+  const slept = [];
+  // `write` goes through the real dispatcher, with seams that would show a
+  // worker start or a wait; `notes` is faked so the rest of the run can finish.
+  const dispatch = (options) => (options.action.id === 'write'
+    ? dispatchV2Action({ ...options, dependencies: {
+      watchOnce: async () => { throw new Error('no worker may start'); },
+      sleep: async (ms) => { slept.push(ms); throw new Error('the step waited for a pool'); },
+    } })
+    : succeed(options));
+  const run = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [pausedPool('luna-1', soonMs), pausedPool('luna-2', laterMs)],
+    runId: 'wf-s3nofree-abcdef', parentEnv: {}, initialPlannerResponse: programOf([step3('write', { affects: ['work-done'] }), step3('notes')]),
+    dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch },
   });
-  assert.equal(resumed.result.status, 'completed');
-  assert.equal(dispatches, 2);
+  const why = `no pool with quota to spare: luna-1 paused for quota until ${soon}; luna-2 paused for quota until ${later}`;
+  const write = run.state.actions.find((action) => action.id === 'write');
+  assert.equal(write.status, 'failed');
+  assert.deepEqual(write.lastFailure, { kind: 'quota', message: why, retryAfter: soon });
+  assert.equal(run.state.actions.find((action) => action.id === 'notes').status, 'succeeded');
+  assert.deepEqual(slept, [], 'no wait');
+  assert.deepEqual(eventsOfType(run.runDir, 'action.waiting'), []);
+  assert.deepEqual(eventsOfType(run.runDir, 'attempt.started').map((event) => event.payload.actionId), ['notes']);
+  const finished = eventsOfType(run.runDir, 'action.finished').find((event) => event.payload.actionId === 'write');
+  assert.deepEqual([finished.payload.status, finished.payload.failureKind, finished.payload.why, finished.payload.retryAfter], ['failed', 'quota', why, soon]);
+  // The caller's block says when a rerun can get through; nothing waits for it.
+  const facts = needsYouFacts(run.state, finished, { runDir: run.runDir });
+  assert.equal(facts.backAt, soon);
+  assert.equal(facts.options.waitForIt, `after ${soon}: bullswarm workflow step rerun ${run.shortId} write`);
 });
 
 test('the failed action.finished names the current attempts and, in a marked run, the counted retries', async (t) => {
@@ -1362,69 +1288,6 @@ test('the failed action.finished names the current attempts and, in a marked run
     if (label === 'marked') assert.equal(finished.retries, 1);
     else assert.equal(Object.hasOwn(finished, 'retries'), false, 'a saved run counts attempts minus one in the watcher');
   }
-});
-
-// F17: two unordered writers of one file in an isolated run. `first` waits
-// (D9 frees its owned-file claim), `second` runs and integrates meanwhile.
-function isolatedWaitRun(t, runId, firstAttempts) {
-  const f = stage3Setup(t, { workspaceMode: 'isolated', concurrency: 2 });
-  mkdirSync(join(f.workspace, 'src'));
-  writeFileSync(join(f.workspace, 'src', 'a.js'), 'export const alpha = () => 0;\n');
-  let secondDone;
-  const secondFinished = new Promise((resolve) => { secondDone = resolve; });
-  const seen = {};
-  const dispatch = async (options) => {
-    const file = join(options.targetDir, 'src', 'a.js');
-    if (options.action.id === 'first') return firstAttempts(options, { file, secondFinished, seen });
-    seen.second = readFileSync(file, 'utf8');
-    writeFileSync(file, `${seen.second}// second\n`);
-    return succeed(options);
-  };
-  return launch3(f, {
-    runId, dispatch,
-    actions: [step3('first', { ownedFiles: ['src/a.js', 'src/first.js'] }), step3('second', { ownedFiles: ['src/a.js'] })],
-    onEvent: (event) => { if (event.type === 'action.finished' && event.payload.actionId === 'second') secondDone(); },
-  }).then((run) => ({ run, seen, workspace: f.workspace }));
-}
-
-test('isolated: a step that waited gets a private copy made when it claims its slot, so the edit integrated meanwhile is there (F17)', async (t) => {
-  const { run, seen, workspace } = await isolatedWaitRun(t, 'wf-s3isow-abcdef', async (options, { file, secondFinished }) => {
-    options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: '5h-limit' });
-    await secondFinished;
-    assert.equal(await options.claimWake(), true);
-    const text = readFileSync(file, 'utf8');
-    writeFileSync(file, `${text}// first\n`);
-    return succeed(options);
-  });
-  assert.equal(run.result.status, 'completed', run.result.reason);
-  assert.equal(readFileSync(join(workspace, 'src', 'a.js'), 'utf8'), 'export const alpha = () => 0;\n// second\n// first\n');
-  const finished = Object.fromEntries(eventsOfType(run.runDir, 'action.finished').map((event) => [event.payload.actionId, event.payload.status]));
-  assert.deepEqual(finished, { second: 'succeeded', first: 'succeeded' });
-  const refreshed = eventsOfType(run.runDir, 'action.workspace_refreshed').map((event) => event.payload);
-  assert.deepEqual(refreshed.map((payload) => [payload.actionId, payload.remade, payload.files]), [['first', true, []]]);
-  assert.match(refreshed[0].workspaceRoot, /workspaces\/first-attempt-1-/);
-  assert.equal(seen.second, 'export const alpha = () => 0;\n');
-});
-
-test('isolated: a copy an earlier attempt worked in takes the files main changed and it did not, and keeps its own work (F17)', async (t) => {
-  const { run, workspace } = await isolatedWaitRun(t, 'wf-s3isor-abcdef', async (options, { file, secondFinished }) => {
-    // Attempt 1 wrote its own file, then hit the provider's limit.
-    writeFileSync(join(options.targetDir, 'src', 'first.js'), 'attempt 1 notes\n');
-    const one = reportAttempt(options, 1, { ok: false, failureKind: 'quota', why: 'usage limit', willRetry: true });
-    options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'quota' });
-    await secondFinished;
-    assert.equal(await options.claimWake(), true);
-    assert.equal(readFileSync(join(options.targetDir, 'src', 'first.js'), 'utf8'), 'attempt 1 notes\n', 'attempt 1 work stays');
-    const text = readFileSync(file, 'utf8');
-    writeFileSync(file, `${text}// first\n`);
-    const two = reportAttempt(options, 2, { retryOf: { attempt: 'first-1', how: 'wait' } });
-    return { ok: true, status: 'succeeded', attempts: [one, two], verdict: { ok: true, why: 'ok', outFile: two.outFile } };
-  });
-  assert.equal(run.result.status, 'completed', run.result.reason);
-  assert.equal(readFileSync(join(workspace, 'src', 'a.js'), 'utf8'), 'export const alpha = () => 0;\n// second\n// first\n');
-  assert.equal(readFileSync(join(workspace, 'src', 'first.js'), 'utf8'), 'attempt 1 notes\n');
-  const refreshed = eventsOfType(run.runDir, 'action.workspace_refreshed').map((event) => event.payload);
-  assert.deepEqual(refreshed.map((payload) => [payload.actionId, payload.remade, payload.files]), [['first', false, ['src/a.js']]]);
 });
 
 test('marked: a failure a check finds after the loop stopped wakes the caller with one finished round naming it; a saved run adds nothing (F11)', async (t) => {
@@ -1469,19 +1332,426 @@ test('marked: a failure a check finds after the loop stopped wakes the caller wi
   }
 });
 
-test('attempt.finished carries the dispatcher\'s quota decision when it recorded one (F23)', async (t) => {
+test('attempt.finished carries the dispatcher\'s backoff decision for a transient rate limit (F23)', async (t) => {
   const f = stage3Setup(t);
   const dispatch = async (options) => {
     const files = options.paths(1);
     const started = { ordinal: 1, pool: 'relay', model: 'gpt-5.6-luna', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile, routing: {} };
     options.onAttempt('started', { ...started });
-    writeFileSync(files.outFile, 'limit');
-    options.onAttempt('finished', { ...started, status: 'interrupted', finishedAt: new Date().toISOString(), failureKind: 'quota', why: 'usage limit', willRetry: true, quotaNext: 'move' }, { ok: false, why: 'usage limit' });
-    const second = reportAttempt(options, 2, { pool: 'codex' });
+    writeFileSync(files.outFile, 'too many requests');
+    // A throttle backs off on the same pool; a usage limit records no
+    // decision (it goes to the caller).
+    options.onAttempt('finished', { ...started, status: 'interrupted', finishedAt: new Date().toISOString(), failureKind: 'throttle', why: 'too many requests', willRetry: true, quotaNext: 'wait' }, { ok: false, why: 'too many requests' });
+    const second = reportAttempt(options, 2, { pool: 'relay', retryOf: { attempt: 'write-1', how: 'wait' } });
     return { ok: true, status: 'succeeded', attempts: [second], verdict: { ok: true, outFile: second.outFile } };
   };
   const run = await launch3(f, { runId: 'wf-s3qnext-abcdef', dispatch, actions: [step3('write')] });
   assert.equal(run.result.status, 'completed');
   const finished = eventsOfType(run.runDir, 'attempt.finished').map((event) => [event.payload.attemptId, event.payload.quotaNext ?? null]);
-  assert.deepEqual(finished, [['write-1', 'move'], ['write-2', null]]);
+  assert.deepEqual(finished, [['write-1', 'wait'], ['write-2', null]]);
+});
+
+// --- stage 3: the Workflow Planner and preflight scout of a marked run -------
+// A usage limit, a rate limit that did not clear, or no free pool stops them
+// and goes to the caller; the dispatcher never moves them to another pool
+// (usageLimitsToCaller, owner decision 2026-09-25).
+
+const LIMIT_RESET = '2026-08-31T02:20:00.000Z';
+const LIMIT_WHY = `usage limit: "You've hit your session limit" · pool paused until ${LIMIT_RESET}`;
+const BENCH_UNTIL = '2026-08-31T01:20:00.000Z';
+const THROTTLE_WHY = 'rate limited (transient): "Error: 429 Too Many Requests" · pool not paused';
+
+// A dispatch that stopped on a limit, as the dispatcher returns it: one
+// failed attempt reported through onAttempt, or none when no pool was free.
+function limitStopped(options, { failureKind = 'quota', retryAfter = LIMIT_RESET, why = LIMIT_WHY, attempt = true } = {}) {
+  const attempts = attempt ? [reportAttempt(options, 1, { ok: false, failureKind, why })] : [];
+  return {
+    ok: false, status: 'failed', failureKind, ...(retryAfter ? { retryAfter } : {}), attempts,
+    verdict: { ok: false, why, failureKind, meta: { exitCode: attempt ? 1 : null } },
+  };
+}
+// The caller's options (owner decision 2026-09-25): resume runs the stopped
+// planner or scout again, after its return when one is known.
+const yourCall = (token, retryAfter) => ` · your call: ${retryAfter ? `resume after ${retryAfter} with bullswarm workflow resume ${token}` : `bullswarm workflow resume ${token} once a pool is free`}`
+  + `, plan it yourself with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run`;
+// A dispatched planner turn that returns `actions` as its program.
+const planned = (options, actions) => {
+  const record = reportAttempt(options, 1);
+  return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, structured: { value: programOf(actions) }, outFile: record.outFile } };
+};
+const SCOUT_REPORT = [
+  'TREE:\n- work.md', 'MANIFEST:\n- Node.js', 'TEST STATUS:\n- no tests',
+  'UNITS OF WORK:\n- write', 'SHARED FILES:\n- none', 'RISKS:\n- none',
+  'Additional repository facts '.repeat(8), '["write"]',
+].join('\n');
+const scouted = (options) => {
+  const record = reportAttempt(options, 1);
+  writeFileSync(record.outFile, SCOUT_REPORT);
+  return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, structured: { value: SCOUT_REPORT }, outFile: record.outFile } };
+};
+const resumeRun = (f, runId, dispatch) => runV2AutonomousWorkflow({
+  bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+  dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch },
+});
+const recordingDispatch = (handler) => {
+  const seen = [];
+  const dispatch = async (options) => {
+    seen.push({ id: options.action.id, usageLimitsToCaller: options.usageLimitsToCaller });
+    return handler(options);
+  };
+  dispatch.seen = seen;
+  return dispatch;
+};
+const launchPlanned = (f, runId, dispatch, dependencies = {}) => runV2AutonomousWorkflow({
+  bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId, parentEnv: {},
+  dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
+});
+
+test('marked: a Workflow Planner stopped on a usage limit ends the run for the caller with its reset, and is not dispatched again', async (t) => {
+  const f = stage3Setup(t, { plannerMode: 'dispatched' });
+  const dispatch = recordingDispatch((options) => limitStopped(options));
+  const run = await launchPlanned(f, 'wf-plq001-abcdef', dispatch);
+  assert.deepEqual(dispatch.seen, [{ id: 'workflow-planner', usageLimitsToCaller: true }], 'one planner dispatch, under the usage-limit rules');
+  assert.equal(run.result.status, 'partial');
+  const token = run.state.shortId;
+  assert.equal(run.result.reason, `the workflow planner stopped on a usage limit: ${LIMIT_WHY} · back at ${LIMIT_RESET}${yourCall(token, LIMIT_RESET)}`);
+  assert.deepEqual(eventsOfType(run.runDir, 'planner.finished').map((event) => event.payload), [
+    { turn: 1, ok: false, failureKind: 'quota', why: LIMIT_WHY, retryAfter: LIMIT_RESET },
+  ]);
+  assert.equal(run.state.planner.status, 'failed');
+  assert.deepEqual(run.state.planner.attempts.map((attempt) => [attempt.status, attempt.failureKind]), [['failed', 'quota']]);
+  // The durable record `workflow resume` reads to run the turn again.
+  const { at, ...stop } = run.state.planner.limitStop;
+  assert.deepEqual(stop, { failureKind: 'quota', retryAfter: LIMIT_RESET, boundary: 'initial', steeringIds: [] });
+  assert.ok(!Number.isNaN(Date.parse(at)));
+  assert.deepEqual(v2LimitStoppedDispatch(run.state), { id: 'workflow-planner', who: 'the workflow planner', failureKind: 'quota', retryAfter: LIMIT_RESET });
+  // The result's options carry the resume that runs it again.
+  const summary = summarizeV2Result(run.result, run.state, { runDir: run.runDir });
+  assert.equal(summary.handback.options.retry, `bullswarm workflow resume ${token} after ${LIMIT_RESET} (reruns the workflow planner)`);
+  // The watch reads the kernel's event as the planner's stop, not a rejected
+  // plan: its pool, when to try again, and its own trouble kind.
+  const [line] = notableWatchEvents({ events: eventsOfType(run.runDir, 'planner.finished'), state: run.state, runDir: run.runDir }).notable;
+  assert.equal(renderWatchEvent(line).replace(/^\S+ /, '✗ '), `✗ planner stopped · out of quota on relay · back at ${LIMIT_RESET}`);
+  assert.equal(line.retryAfter, LIMIT_RESET);
+  assert.equal(watchTrouble(line, { program: true }), 'planner-limit');
+});
+
+test('marked: a planner with no pool free or rate limited with no time says so; any other planner failure keeps its reason', async (t) => {
+  const cases = [
+    {
+      runId: 'wf-plq002-abcdef', stop: { failureKind: 'unavailable', retryAfter: BENCH_UNTIL, why: `no pool free: luna-1 benched until ${BENCH_UNTIL}`, attempt: false },
+      reason: (token) => `the workflow planner stopped: no pool free: luna-1 benched until ${BENCH_UNTIL} · back at ${BENCH_UNTIL}${yourCall(token, BENCH_UNTIL)}`,
+      retryAfter: BENCH_UNTIL,
+    },
+    {
+      runId: 'wf-plq003-abcdef', stop: { failureKind: 'throttle', retryAfter: null, why: THROTTLE_WHY },
+      reason: (token) => `the workflow planner stopped on a usage limit: ${THROTTLE_WHY}${yourCall(token, null)}`,
+      retryAfter: null,
+    },
+    {
+      runId: 'wf-plq004-abcdef', stop: { failureKind: 'schema', retryAfter: null, why: 'the planner response failed validation' },
+      reason: () => 'the workflow planner could not produce a mechanically valid program: the planner response failed validation',
+      retryAfter: undefined,
+    },
+  ];
+  for (const entry of cases) {
+    const f = stage3Setup(t, { plannerMode: 'dispatched' });
+    const dispatch = recordingDispatch((options) => limitStopped(options, entry.stop));
+    const run = await launchPlanned(f, entry.runId, dispatch);
+    assert.equal(dispatch.seen.length, 1, entry.runId);
+    assert.equal(run.result.reason, entry.reason(run.state.shortId), entry.runId);
+    const [finished] = eventsOfType(run.runDir, 'planner.finished').map((event) => event.payload);
+    if (entry.retryAfter === undefined) assert.equal(Object.hasOwn(finished, 'retryAfter'), false, entry.runId);
+    else assert.equal(finished.retryAfter, entry.retryAfter, entry.runId);
+    // A limit stop is kept for resume, with its return when known; any other
+    // planner failure is not, and resume has nothing to retry after it.
+    const retry = summarizeV2Result(run.result, run.state, { runDir: run.runDir }).handback.options.retry;
+    if (entry.retryAfter === undefined) {
+      assert.equal(Object.hasOwn(run.state.planner, 'limitStop'), false, entry.runId);
+      assert.equal(retry, undefined, entry.runId);
+      assert.equal(reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId: entry.runId }).status, 'nothing-to-retry', entry.runId);
+    } else {
+      assert.deepEqual([run.state.planner.limitStop.failureKind, run.state.planner.limitStop.retryAfter], [entry.stop.failureKind, entry.retryAfter], entry.runId);
+      assert.equal(retry, `bullswarm workflow resume ${run.state.shortId}${entry.retryAfter ? ` after ${entry.retryAfter}` : ''} (reruns the workflow planner)`, entry.runId);
+    }
+  }
+});
+
+test('marked: a Workflow Planner that stops on a usage limit at a steering boundary ends the run with the same reason, and is not dispatched again', async (t) => {
+  const f = stage3Setup(t, { plannerMode: 'dispatched' });
+  const runId = 'wf-plq007-abcdef';
+  let plannerTurns = 0;
+  const dispatch = recordingDispatch((options) => {
+    if (options.action.id === 'workflow-planner') {
+      plannerTurns += 1;
+      if (plannerTurns > 1) return limitStopped(options);
+      const record = reportAttempt(options, 1);
+      return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, structured: { value: programOf([step3('write')]) }, outFile: record.outFile } };
+    }
+    // The step queues steering, so the next boundary is a steering turn.
+    writeFileSync(join(f.bullswarmDir, 'workflows', runId, 'steering.jsonl'), `${JSON.stringify({
+      id: 'steer-limit', message: 'Keep the notes short.', queuedAt: new Date().toISOString(),
+      delivery: 'next-not-yet-started-planner-checkpoint',
+    })}\n`);
+    return succeed(options);
+  });
+  const run = await launchPlanned(f, runId, dispatch);
+  assert.deepEqual(dispatch.seen, [
+    { id: 'workflow-planner', usageLimitsToCaller: true },
+    { id: 'write', usageLimitsToCaller: undefined },
+    { id: 'workflow-planner', usageLimitsToCaller: true },
+  ], 'one steering turn, and no planner dispatch after it stopped');
+  assert.equal(run.result.status, 'partial');
+  assert.equal(run.result.reason, `the workflow planner stopped on a usage limit: ${LIMIT_WHY} · back at ${LIMIT_RESET}${yourCall(run.state.shortId, LIMIT_RESET)}`);
+  assert.deepEqual(eventsOfType(run.runDir, 'planner.finished').map((event) => [event.payload.ok, event.payload.retryAfter ?? null]), [[true, null], [false, LIMIT_RESET]]);
+  assert.equal(run.state.actions.find((action) => action.id === 'write').status, 'succeeded');
+});
+
+test('marked: a preflight scout stopped on a usage limit with no program ends the run for the caller; the planner never runs', async (t) => {
+  for (const [plannerMode, runId] of [['dispatched', 'wf-scq001-abcdef'], ['caller', 'wf-scq002-abcdef']]) {
+    const f = stage3Setup(t, { plannerMode, scout: true });
+    const dispatch = recordingDispatch((options) => limitStopped(options));
+    const run = await launchPlanned(f, runId, dispatch);
+    assert.deepEqual(dispatch.seen, [{ id: 'preflight-scout', usageLimitsToCaller: true }], plannerMode);
+    assert.equal(run.result.status, 'partial', plannerMode);
+    const token = run.state.shortId;
+    assert.equal(run.result.reason, `the preflight scout stopped on a usage limit: ${LIMIT_WHY} · back at ${LIMIT_RESET}${yourCall(token, LIMIT_RESET)}`, plannerMode);
+    // The run finishes here: the event says so for a later replay.
+    assert.deepEqual(eventsOfType(run.runDir, 'preflight.scout_finished').map((event) => event.payload), [
+      { status: 'failed', failureKind: 'quota', why: LIMIT_WHY, retryAfter: LIMIT_RESET, runContinues: false },
+    ], plannerMode);
+    assert.equal(eventsOfType(run.runDir, 'planner.started').length, 0, plannerMode);
+    // The stop ended the run: the record `workflow resume` reads, and the
+    // result's option that runs the scout again.
+    const { at, ...stop } = run.state.preflight.scout.limitStop;
+    assert.deepEqual(stop, { failureKind: 'quota', retryAfter: LIMIT_RESET }, plannerMode);
+    assert.ok(!Number.isNaN(Date.parse(at)), plannerMode);
+    assert.equal(summarizeV2Result(run.result, run.state, { runDir: run.runDir }).handback.options.retry,
+      `bullswarm workflow resume ${token} after ${LIMIT_RESET} (reruns the preflight scout)`, plannerMode);
+  }
+});
+
+test('marked: a preflight scout stopped on a usage limit before a caller program: the run continues without the report and runs its steps', async (t) => {
+  const f = stage3Setup(t, { scout: true });
+  const dispatch = recordingDispatch((options) => (options.action.id === 'preflight-scout' ? limitStopped(options) : succeed(options)));
+  const run = await launch3(f, { runId: 'wf-scq003-abcdef', actions: [step3('write')], dispatch });
+  assert.deepEqual(dispatch.seen, [
+    { id: 'preflight-scout', usageLimitsToCaller: true },
+    { id: 'write', usageLimitsToCaller: undefined },
+  ]);
+  assert.equal(run.result.status, 'completed');
+  assert.equal(run.state.actions.find((action) => action.id === 'write').status, 'succeeded');
+  // The caller's program keeps the run going: the event says so.
+  assert.deepEqual(eventsOfType(run.runDir, 'preflight.scout_finished').map((event) => event.payload), [
+    { status: 'failed', failureKind: 'quota', why: LIMIT_WHY, retryAfter: LIMIT_RESET, runContinues: true },
+  ]);
+  // A scout the run went on without did not end it: no record, never run again.
+  assert.equal(Object.hasOwn(run.state.preflight.scout, 'limitStop'), false);
+  assert.equal(v2LimitStoppedDispatch(run.state), null);
+});
+
+test('unmarked: the planner and scout of a saved run are dispatched without the usage-limit rules and keep their old reasons', async (t) => {
+  const f = stage3Setup(t, { plannerMode: 'dispatched', scout: true });
+  const dispatch = recordingDispatch((options) => limitStopped(options));
+  const run = await launchPlanned(f, 'wf-plq005-abcdef', dispatch, { runFeatures: STAGE2_RUN_FEATURES });
+  // The scout's failure does not stop a saved run: its planner still runs.
+  assert.deepEqual(dispatch.seen, [
+    { id: 'preflight-scout', usageLimitsToCaller: false },
+    { id: 'workflow-planner', usageLimitsToCaller: false },
+  ]);
+  assert.equal(run.result.reason, `the workflow planner could not produce a mechanically valid program: ${LIMIT_WHY}`);
+  const [scouted] = eventsOfType(run.runDir, 'preflight.scout_finished').map((event) => event.payload);
+  const [planned] = eventsOfType(run.runDir, 'planner.finished').map((event) => event.payload);
+  assert.equal(Object.hasOwn(scouted, 'retryAfter'), false);
+  assert.equal(Object.hasOwn(scouted, 'runContinues'), false);
+  assert.equal(Object.hasOwn(planned, 'retryAfter'), false);
+  // The watch prints a saved run's planner failure as before.
+  const [line] = notableWatchEvents({ events: eventsOfType(run.runDir, 'planner.finished'), state: run.state, runDir: run.runDir }).notable;
+  assert.equal(renderWatchEvent(line), `× planning attempt rejected · ${LIMIT_WHY}`);
+  assert.equal(watchTrouble(line, { program: true }), 'rejected');
+  // No stop record, no resume option, and resume still has nothing to retry.
+  assert.equal(Object.hasOwn(run.state.planner, 'limitStop'), false);
+  assert.equal(Object.hasOwn(run.state.preflight.scout, 'limitStop'), false);
+  assert.equal(summarizeV2Result(run.result, run.state, { runDir: run.runDir }).handback.options.retry, undefined);
+  assert.equal(reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId: 'wf-plq005-abcdef' }).status, 'nothing-to-retry');
+});
+
+test('marked: after a planner or scout stop, plan revise runs the caller\'s program instead, and resume no longer runs the planner or scout', async (t) => {
+  for (const [settings, runId] of [[{ plannerMode: 'dispatched' }, 'wf-plq006-abcdef'], [{ plannerMode: 'dispatched', scout: true }, 'wf-scq004-abcdef']]) {
+    const f = stage3Setup(t, settings);
+    const stopped = await launchPlanned(f, runId, recordingDispatch((options) => limitStopped(options)));
+    assert.equal(stopped.result.status, 'partial', runId);
+    assert.ok(v2LimitStoppedDispatch(stopped.state), runId);
+    const body = normalizeRevisionInput(programOf([step3('write')]).program, { summary: 'plan it myself', rerun: [] });
+    const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request: createRevisionRequest({ ...body, baseRevision: stopped.state.program.revision }, { source: 'cli' }), waitMs: 0 });
+    assert.equal(revised.status, 'applied', runId);
+    assert.equal(revised.reopened?.previousStatus, 'partial', runId);
+    // The caller's plan replaces what the stopped dispatch would have given.
+    assert.equal(Object.hasOwn(revised.state.planner, 'limitStop'), false, runId);
+    assert.equal(Object.hasOwn(revised.state.preflight.scout, 'limitStop'), false, runId);
+    const after = recordingDispatch((options) => succeed(options));
+    const resumed = await runV2AutonomousWorkflow({
+      bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+      dependencies: { refreshPools: async () => null, dispatchV2Action: after },
+    });
+    assert.deepEqual(after.seen.map((entry) => entry.id), ['write'], `${runId}: only the caller's step runs; no planner or scout again`);
+    assert.equal(resumed.result.status, 'completed', runId);
+    assert.equal(reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId }).status, 'nothing-to-retry', runId);
+  }
+});
+
+// Owner decision (2026-09-25): resuming after the pool is back is the "wait"
+// option. `workflow resume` reopens the run through reopenV2RunForRetry, and
+// the relaunched kernel's normal loop runs the stopped dispatch again.
+test('marked: resume after a Workflow Planner stopped on a usage limit runs the planner again, and the run completes with the program it returns', async (t) => {
+  const f = stage3Setup(t, { plannerMode: 'dispatched' });
+  const runId = 'wf-plq008-abcdef';
+  const stopped = await launchPlanned(f, runId, recordingDispatch((options) => limitStopped(options)));
+  assert.equal(stopped.result.status, 'partial');
+  const reopened = reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId });
+  assert.equal(reopened.status, 'reopened');
+  assert.deepEqual(reopened.requeued, ['workflow-planner']);
+  assert.deepEqual(reopened.dispatch, { id: 'workflow-planner', who: 'the workflow planner', retryAfter: LIMIT_RESET });
+  assert.equal(reopened.archivedResult, join(stopped.runDir, 'result-before-resume-1.json'));
+  assert.ok(existsSync(reopened.archivedResult));
+  assert.equal(existsSync(join(stopped.runDir, 'result.json')), false);
+  assert.equal(reopened.state.lifecycle.status, 'running');
+  assert.equal(reopened.state.planner.status, 'waiting');
+  assert.equal(Object.hasOwn(reopened.state.planner, 'limitStop'), false);
+  assert.deepEqual(eventsOfType(stopped.runDir, 'workflow.reopened').map((event) => event.payload), [
+    { previousStatus: 'partial', source: 'resume', archivedResult: reopened.archivedResult, requeued: ['workflow-planner'] },
+  ]);
+
+  const after = recordingDispatch((options) => (options.action.id === 'workflow-planner' ? planned(options, [step3('write')]) : succeed(options)));
+  const resumed = await resumeRun(f, runId, after);
+  assert.deepEqual(after.seen, [{ id: 'workflow-planner', usageLimitsToCaller: true }, { id: 'write', usageLimitsToCaller: undefined }]);
+  assert.equal(resumed.result.status, 'completed');
+  assert.equal(resumed.state.actions.find((action) => action.id === 'write').status, 'succeeded');
+  assert.deepEqual(eventsOfType(stopped.runDir, 'planner.finished').map((event) => [event.payload.turn, event.payload.ok]), [[1, false], [1, true]]);
+  // The stopped attempt stays on record; the rerun is the turn's next
+  // attempt, with its own files.
+  const attempts = resumed.state.planner.attempts;
+  assert.deepEqual(attempts.map((attempt) => [attempt.ordinal, attempt.turn, attempt.status, attempt.failureKind ?? null]), [[1, 1, 'failed', 'quota'], [2, 1, 'succeeded', null]]);
+  assert.equal(basename(attempts[0].taskFile), 'task-workflow-planner-turn-1-attempt-1.md');
+  assert.equal(basename(attempts[1].taskFile), 'task-workflow-planner-turn-1-attempt-2.md');
+  assert.equal(readFileSync(attempts[0].outputFile, 'utf8'), 'it failed', 'the stopped attempt\'s output is not overwritten');
+  assert.equal(Object.hasOwn(resumed.state.planner, 'limitStop'), false);
+  assert.equal(reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId }).status, 'nothing-to-retry');
+});
+
+test('marked: resume after a preflight scout stopped on a usage limit runs the scout again, then the dispatched planner, and the run completes', async (t) => {
+  const f = stage3Setup(t, { plannerMode: 'dispatched', scout: true });
+  const runId = 'wf-scq006-abcdef';
+  const stopped = await launchPlanned(f, runId, recordingDispatch((options) => limitStopped(options)));
+  assert.equal(stopped.result.status, 'partial');
+  const reopened = reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId });
+  assert.equal(reopened.status, 'reopened');
+  assert.deepEqual(reopened.requeued, ['preflight-scout']);
+  assert.deepEqual(reopened.dispatch, { id: 'preflight-scout', who: 'the preflight scout', retryAfter: LIMIT_RESET });
+  const scout = reopened.state.preflight.scout;
+  assert.deepEqual([scout.status, scout.finishedAt, scout.lastFailure, Object.hasOwn(scout, 'limitStop')], ['pending', null, null, false]);
+  assert.deepEqual(scout.attempts.map((attempt) => [attempt.ordinal, attempt.status, attempt.failureKind]), [[1, 'failed', 'quota']]);
+  assert.deepEqual(eventsOfType(stopped.runDir, 'workflow.reopened').map((event) => event.payload.requeued), [['preflight-scout']]);
+
+  const after = recordingDispatch((options) => {
+    if (options.action.id === 'preflight-scout') return scouted(options);
+    if (options.action.id === 'workflow-planner') return planned(options, [step3('write')]);
+    return succeed(options);
+  });
+  const resumed = await resumeRun(f, runId, after);
+  assert.deepEqual(after.seen.map((entry) => entry.id), ['preflight-scout', 'workflow-planner', 'write']);
+  assert.equal(resumed.result.status, 'completed');
+  const attempts = resumed.state.preflight.scout.attempts;
+  assert.deepEqual(attempts.map((attempt) => [attempt.ordinal, attempt.status]), [[1, 'failed'], [2, 'succeeded']]);
+  assert.equal(basename(attempts[1].taskFile), 'task-preflight-scout-attempt-2.md');
+  assert.equal(readFileSync(attempts[0].outputFile, 'utf8'), 'it failed', 'the stopped attempt\'s output is not overwritten');
+  assert.equal(resumed.state.preflight.scout.status, 'succeeded');
+  assert.equal(readFileSync(resumed.state.preflight.scout.outputFile, 'utf8'), SCOUT_REPORT);
+  assert.deepEqual(eventsOfType(stopped.runDir, 'preflight.scout_finished').map((event) => event.payload.status), ['failed', 'succeeded']);
+});
+
+test('marked: in a caller-planner run, resume after the scout stopped on a usage limit runs the scout again and hands back its report for the caller\'s program', async (t) => {
+  const f = stage3Setup(t, { scout: true });
+  const runId = 'wf-scq007-abcdef';
+  const stopped = await launchPlanned(f, runId, recordingDispatch((options) => limitStopped(options)));
+  assert.equal(stopped.result.status, 'partial');
+  assert.deepEqual(reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId }).requeued, ['preflight-scout']);
+  const after = recordingDispatch((options) => scouted(options));
+  const resumed = await resumeRun(f, runId, after);
+  assert.deepEqual(after.seen.map((entry) => entry.id), ['preflight-scout'], 'no planner is dispatched in a caller-planner run');
+  assert.equal(resumed.result.status, 'partial');
+  assert.equal(resumed.result.reason, `no program to run (the scout report is at ${resumed.state.preflight.scout.outputFile}). `
+    + `Add steps with bullswarm workflow plan revise ${resumed.state.shortId} --program <file.json>, or start a new run with --program`);
+  // The scout got through: resume has nothing left to run again.
+  assert.equal(summarizeV2Result(resumed.result, resumed.state, { runDir: resumed.runDir }).handback.options.retry, undefined);
+  assert.equal(reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId }).status, 'nothing-to-retry');
+});
+
+test('marked: resume after a planner stopped at a steering boundary hands the steering back to the rerun turn, then runs the steps left and the new ones', async (t) => {
+  const f = stage3Setup(t, { plannerMode: 'dispatched' });
+  const runId = 'wf-plq009-abcdef';
+  const message = 'Keep the notes short.';
+  let plannerTurns = 0;
+  const first = recordingDispatch((options) => {
+    if (options.action.id === 'workflow-planner') {
+      plannerTurns += 1;
+      return plannerTurns > 1 ? limitStopped(options) : planned(options, [step3('write'), step3('later', { dependsOn: ['write'] })]);
+    }
+    writeFileSync(join(f.bullswarmDir, 'workflows', runId, 'steering.jsonl'), `${JSON.stringify({
+      id: 'steer-limit', message, queuedAt: new Date().toISOString(), delivery: 'next-not-yet-started-planner-checkpoint',
+    })}\n`);
+    return succeed(options);
+  });
+  const stopped = await launchPlanned(f, runId, first);
+  assert.equal(stopped.result.status, 'partial');
+  const { at: _at, ...stop } = stopped.state.planner.limitStop;
+  assert.deepEqual(stop, { failureKind: 'quota', retryAfter: LIMIT_RESET, boundary: 'steering', steeringIds: ['steer-limit'] });
+  assert.deepEqual(stopped.state.steering.map((entry) => entry.id), ['steer-limit']);
+  // The steering turn runs before the step it left pending; nothing gets
+  // through before the planner's pool is back, so that is the time.
+  assert.deepEqual(stopped.state.actions.map((action) => [action.id, action.status]), [['write', 'succeeded'], ['later', 'pending']]);
+  assert.equal(summarizeV2Result(stopped.result, stopped.state, { runDir: stopped.runDir }).handback.options.retry,
+    `bullswarm workflow resume ${stopped.state.shortId} after ${LIMIT_RESET} (reruns the workflow planner, later)`);
+
+  const reopened = reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId });
+  assert.deepEqual([reopened.status, reopened.requeued], ['reopened', ['workflow-planner', 'later']]);
+  assert.deepEqual(reopened.state.steering, [], 'the steering goes back to the next planner turn');
+  let rerunTask = '';
+  const after = recordingDispatch((options) => {
+    if (options.action.id === 'workflow-planner') {
+      rerunTask = options.taskText;
+      return planned(options, [step3('notes')]);
+    }
+    return succeed(options);
+  });
+  const resumed = await resumeRun(f, runId, after);
+  assert.equal(after.seen[0].id, 'workflow-planner', 'the planner turn runs before any step');
+  assert.deepEqual(after.seen.slice(1).map((entry) => entry.id).sort(), ['later', 'notes']);
+  assert.ok(rerunTask.includes(message), 'the rerun turn is given the steering');
+  assert.deepEqual(eventsOfType(stopped.runDir, 'planner.started').map((event) => event.payload.boundary), ['initial', 'steering', 'steering']);
+  assert.deepEqual(eventsOfType(stopped.runDir, 'steering.delivered').map((event) => event.payload.steeringId), ['steer-limit', 'steer-limit']);
+  assert.equal(resumed.result.status, 'completed');
+  assert.deepEqual(resumed.state.actions.map((action) => [action.id, action.status]), [['write', 'succeeded'], ['later', 'succeeded'], ['notes', 'succeeded']]);
+  assert.deepEqual(resumed.state.steering.map((entry) => [entry.id, entry.decisionSequence]), [['steer-limit', 2]]);
+});
+
+test('marked: a scout stop\'s finish event says whether the run went on, so a replay of the run revised later still reads that it finished there', async (t) => {
+  const f = stage3Setup(t, { plannerMode: 'dispatched', scout: true });
+  const runId = 'wf-scq005-abcdef';
+  const stopped = await launchPlanned(f, runId, recordingDispatch((options) => limitStopped(options)));
+  assert.equal(stopped.result.status, 'partial');
+  const body = normalizeRevisionInput(programOf([step3('write')]).program, { summary: 'plan it myself', rerun: [] });
+  const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request: createRevisionRequest({ ...body, baseRevision: stopped.state.program.revision }, { source: 'cli' }), waitMs: 0 });
+  assert.equal(revised.status, 'applied');
+  assert.deepEqual(revised.state.program.actions.map((action) => action.id), ['write'], 'the revised run has a program the scout\'s run never had');
+  // A replay from the start (watch --after 0) against the revised state.
+  const scoutEvent = readEvents(stopped.runDir, { after: 0 }).find((event) => event.type === 'preflight.scout_finished');
+  assert.equal(scoutEvent.payload.runContinues, false);
+  const [line] = notableWatchEvents({ events: [scoutEvent], state: revised.state, runDir: stopped.runDir }).notable;
+  assert.equal(line.runContinues, false);
+  assert.equal(renderWatchEvent(line).replace(/^\S+ /, '⚠ '), `⚠ preflight scout stopped · out of quota on relay · back at ${LIMIT_RESET}`);
+  // An event written before the field falls back to the state, which moved on.
+  const { runContinues: _written, ...older } = scoutEvent.payload;
+  const [fallback] = notableWatchEvents({ events: [{ ...scoutEvent, payload: older }], state: revised.state, runDir: stopped.runDir }).notable;
+  assert.equal(fallback.runContinues, true);
 });

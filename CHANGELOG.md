@@ -2,26 +2,109 @@
 
 ## Unreleased
 
+- workflow: a usage limit, or no pool free, sends the step back to you; a step
+  never waits for a pool. A spent 5-hour or weekly window, or no credit left,
+  ends the step at once: no wait, no move to another pool, no retry. That
+  holds whatever the automatic pausing switch, and for a limit notice that
+  names no reset. When every pool that can run the step is nearly spent, at
+  its 5-hour limit, paused (for quota, or after a sign-in failure) or benched,
+  the step stops as well (`no pool with quota to spare: <pool> paused for
+  quota until …`, or `no pool free: …`); when another pool is free, it takes
+  the step as usual. A retry the step was promised that finds no free pool
+  keeps its own failure and says why (`· no retry: <pool> <reason>; …`). The
+  rest of the run keeps going. When a return time is known, the needs-you block
+  shows `back at <time>` (the failed pool's reset, the end of a rate limit's
+  named wait, or the earliest known return of the pools that can run the step)
+  and a `wait for it` command (`after <time>: bullswarm workflow step rerun
+  <run> <step>`); with `--jsonl` they are `backAt` and `options.waitForIt`. The
+  watch's usage-limit line ends `back to you`. A short "too many requests" rate
+  limit still backs off on the same pool, at most twice (20 s, then 60 s, or
+  the wait it names when that is at most 2 minutes), with pausing on or off,
+  before the step comes back to you; a try after one reads
+  `· after a rate-limit backoff`, and the block's header says `backed off
+  twice` (never `not retried`: a backoff is not the step's retry). One that names a longer wait comes back to
+  you at once, and so does one whose pool is paused or runs out during the
+  backoff. Runs started before this version keep their old rules.
+- workflow: the dispatched Workflow Planner (`--orchestrator`) and the
+  preflight scout (`--scout`, or the scout before a dispatched planner) follow
+  the same rule. A usage limit, a rate limit still there after its short
+  backoff, or no free pool stops it and tells you; it no longer moves to
+  another pool by itself. The run finishes `partial` with `the workflow
+  planner stopped on a usage limit: <why> · back at <time> · your call: resume
+  after <time> with bullswarm workflow resume <run>, plan it yourself with
+  bullswarm workflow plan revise <run> --program <file.json>, or start a new
+  run` (`stopped: no pool free` when a pool was
+  out for another reason or no pool can run it at all), and `planner.finished`
+  and `preflight.scout_finished` carry `retryAfter` (the scout's also
+  `runContinues`: whether the run goes on without its report). The watch prints the
+  planner's stop as `✗ planner stopped · out of quota on <pool> · back at
+  <time>` (it used to read `× planning attempt rejected · …`), and `--until
+  trouble` wakes on it. A nearly
+  spent pool is never given to the planner or the scout either (see the next
+  entry). A scout with no program after it ends the run the same way (`the preflight
+  scout stopped on a usage limit: …`). A scout before your
+  own program lets the run go on without its report, and the watch prints `⚠
+  preflight scout stopped · out of quota on <pool> · back at <time> · the run
+  continues without its report`; `--until trouble` wakes on it. A sign-in
+  failure, a provider error or a worker that died at start still moves the
+  planner or the scout to another pool. `bullswarm run` still stops after its
+  one attempt on a usage limit. Runs started before this version keep their
+  old rules.
 - workflow: a pool the router calls "expiring but draining" (its weekly or
   monthly window closes soon and the step would push it past its limit) is no
   longer given a step in runs started by this version, even when it is the only
-  pool left; the router used to pick it as a last resort. The step waits
-  (`⧖ <step> waiting for a pool · <pool> is nearly spent, resets at …`) and
-  takes the first pool that can run it. A pool the caller named is exempt.
-- workflow: `step rerun` and `resume` after a failure the pool caused (a usage
-  limit, a sign-in failure, a provider error, or a worker that died before it
-  answered or changed a file) start on another pool when one can take the step
-  now. Before, the rerun's first pick knew nothing of the failure and could go
-  straight back to the pool that just ran out of credit.
+  pool left; the router used to pick it as a last resort. The step takes
+  another pool that can run it, or comes back to you when none is free (`no
+  pool with quota to spare: <pool> nearly spent (forecast …%) until …`). The
+  dispatched planner and the preflight scout follow the same rule: when no
+  other pool is free they stop and tell you, with the pool's `nearly spent`
+  reason in the stop. A pool the caller pinned is exempt: the run's
+  `--worker-pool` (for a step or the scout), a route that allows only that
+  pool (for a step), and `--orchestrator <pool> --orchestrator-strict` (for
+  the planner).
+- workflow: the planner's or scout's schema correction, and the one retry on
+  the same pool it gets when no other pool can run it, never go back to a pool
+  that has become nearly spent. The correction moves to another free pool;
+  with none free the planner or scout stops and tells you, with that pool's
+  `nearly spent` reason.
+- workflow: when a usage limit or no free pool stopped the planner or scout
+  and ended the run, `workflow resume <run>` runs it again, and the run goes
+  on from there. Run it after the `back at` time in the stop reason; it
+  prints `✓ reopened the partial run <run>; running again: the workflow
+  planner` (or `the preflight scout`). Before that time it can stop the same
+  way, and it adds `note: the workflow planner stopped with its pool back at
+  <time>; run before then, it can fail the same way again`. When no return
+  time is known, the reason says `bullswarm workflow resume <run> once a pool
+  is free`. The result's `retry` option names it too (`bullswarm workflow
+  resume <run> after <time> (reruns the workflow planner)`). `plan revise`
+  with your own program and a new run stay the other choices. A scout the run
+  went on without (one before your own program) is not run again.
+- watch: a run that `workflow resume` reopened now reads `run reopened from
+  <status> by workflow resume`. It used to say `by a plan revision` whichever
+  command reopened the run.
+- dashboard: in a run started by this version, the Run page's timeline has a
+  row for a planner or scout that a usage limit or no free pool stopped:
+  `[Workflow Planner] planner stopped · <label> on <pool> · back at <time>` or
+  `Scout stopped · <label> on <pool> · back at <time>`, the scout's ending `·
+  the run continues without its report` when the run goes on without it.
+  `<label>` is `out of quota`, `rate limited` or `no eligible pool`, as in the
+  watch.
+- workflow: `step rerun` and `resume` after a failure the pool caused (a
+  sign-in failure, a provider error, or a worker that died before it answered
+  or changed a file) start on another pool when one can take the step now.
+  Before, the rerun's first pick knew nothing of the failure and could go
+  straight back to the pool whose sign-in had just failed. A usage limit is
+  not one of these: a rerun after one is routed as usual (`--avoid <pool>`
+  keeps it off that pool).
 - providers: running out of credit is a usage limit for every provider, not a
   failure. Claude Code's `Credit balance is too low` used to bench the pool as
   a broken sign-in; Codex (`You're out of credits`, `You hit your spend cap`),
   Command Code (`You have insufficient credits`, `Premium credits exhausted`,
   `You've reached today's limit on …`) and OpenCode (`Quota exceeded. Check
   your plan and billing details.`) messages were not recognised at all. Each is
-  now read as a limit: the step waits for the pool's reset or moves to another
-  pool. The phrases come from each CLI's own strings (claude 2.1.282, codex
-  0.155.1, command-code 1.65.0, opencode 1.18.31).
+  now read as a usage limit; in a workflow started by this version the step
+  comes back to you. The phrases come from each CLI's own strings (claude
+  2.1.282, codex 0.155.1, command-code 1.65.0, opencode 1.18.31).
 - workers bill the account of the pool they run on. When the caller itself ran
   under a Claude home (`CLAUDE_CONFIG_DIR` set), every `claude-code` pool
   spawned with the caller's home instead of its own, so every Claude pool
@@ -32,30 +115,27 @@
   that turn with an error event (`API error (status 402 Payment Required):
   Grok Build usage balance exhausted`) and exit code 0, which was accepted as a
   finished reply; the step then failed on its missing report and was retried
-  on grok itself. The attempt now ends as a limit, so the step moves to another
-  pool or waits for grok to come back. HTTP 402 counts as an error-shaped line
-  for every provider.
-- workflow: `watch` started while a step is already waiting prints that
-  step's waiting line, and `--until trouble` wakes on it when the step's
-  return is more than 30 minutes away (`--next` still prints only what happens
-  next). Before, a watcher attached after the wait began stayed silent until
-  the step started again.
+  on grok itself. The attempt now ends as a usage limit; in a workflow started
+  by this version the step comes back to you. HTTP 402 counts as an
+  error-shaped line for every provider.
 - run, workflow: a long reply that quotes sign-in or limit wording (for
   example a review of the auth checks that mentions `unauthorized`) is no
   longer failed as a sign-in failure or a usage limit. Claude Code repeats the
   whole reply in its final record, and a reply long enough to be shortened in
   the live view was read as the provider's own error.
+- run, workflow: a usage-limit or rate-limit notice inside the provider's
+  stream error event keeps its limit kind. It used to be read as a provider
+  error, so the pool was never paused for it.
 - workflow: every step gets one automatic retry, then comes back to you. A
   crashed, silent or signed-out worker is retried once on another pool that can
   run the step (the same pool when it is the only one, except after a sign-in
   failure). A failed gate (declared evidence, a deliverable not produced, a
   report in the wrong format, or output judged failed) is retried once on the
-  same pool with the failure attached. A pool out of quota never fails the step
-  while a return time is known: the step moves to another pool without spending
-  its retry, or waits until a pool is back and says so. Steps that do not
-  depend on a failed step keep running. `--retry-attempts` (0-3, default 1)
-  sets the retries per step. Runs started before this version keep their old
-  retry rules when resumed.
+  same pool with the failure attached. A usage limit is never retried, moved or
+  waited out: the step comes back to you. Steps that do not depend on a failed
+  step keep running. `--retry-attempts` (0-3, default 1) sets the retries per
+  step. Runs started before this version keep their old retry rules when
+  resumed.
 - workflow: when a step needs you, `watch` prints one block: what failed, each
   try, what is still running and what waits on it, and four commands (rerun
   elsewhere, change the step, take over, accept anyway). Two commands are new.
@@ -86,9 +166,11 @@
   keep their budget of up to 3 review rounds.
 - workflow: an `act` step (one that changes the outside world) is never retried
   automatically once its worker has started; it comes back to you.
-- workflow: exhausted quota makes a step wait even with automatic pausing off:
-  it waits for the reset the limit notice or meter names, without pausing the
-  pool for anything else. A pool at its 5-hour limit no longer reads as "no
+- workflow: exhausted quota is a usage limit even with automatic pausing off:
+  the step comes back to you, with the reset the limit notice or meter names as
+  its return time when there is one, without pausing the pool. A transient
+  rate limit still backs off on the same pool first. A pool at its 5-hour
+  limit reads as `<pool> at its 5-hour limit until …`, no longer as "no
   enabled pool has a model on the tier".
 - workflow: a step you accept reads `accepted by choice`, and the end-of-run
   proof line counts it separately from proven steps.

@@ -310,10 +310,11 @@ test('with no pool able to run a step, dispatch fails at once and says why and w
   assert.equal(none.verdict.why, 'no eligible pool: no enabled pool has a model on the low tier for build work');
 });
 
-// Stage 3 (D8, D9): the marked twin of the test above. A step whose pools are
-// all paused with a known return time waits for the first one back instead of
-// failing; only a step no capable pool will ever come back for still fails.
-test('marked run: with every capable pool paused, the step waits for the first one back instead of failing', async () => {
+// Stage 3: the marked twin of the test above (owner decision, 2026-09-25). A
+// step no capable pool can take now never waits: it goes to the caller at once,
+// with each capable pool's reason and the first known return, and is filed as
+// quota when every pool is out for a usage limit.
+test('marked run: with every capable pool paused, the step goes to the caller at once with the first return, never a wait', async () => {
   const NOW = Date.parse('2026-09-14T10:00:00Z');
   const pool = (name, extra = {}) => ({
     name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
@@ -334,29 +335,47 @@ test('marked run: with every capable pool paused, the step waits for the first o
     action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', targetDir: '/tmp',
     paths: { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' }, bullswarmDir: '/tmp/bs', dependencies, failureRule: true,
   };
-  const waits = [];
-  let polls = 0;
-  const waited = await dispatchV2Action({
+  const quotaUntil = (minutes) => ({ quarantine: { until: NOW + minutes * 60_000, reason: 'usage limit', kind: 'quota' } });
+
+  // Every capable pool paused for quota: a usage limit, back to the caller.
+  const spent = await dispatchV2Action({ ...base, pools: [pool('luna-1', quotaUntil(30)), pool('luna-2', quotaUntil(90))] });
+  assert.equal(spent.ok, false);
+  assert.equal(spent.status, 'failed', 'it goes to the caller, it does not wait');
+  assert.equal(spent.failureKind, 'quota');
+  assert.equal(spent.retryAfter, '2026-09-14T10:30:00.000Z', 'the first pool back');
+  assert.equal(spent.verdict.why, 'no pool with quota to spare: luna-1 paused for quota until 2026-09-14T10:30:00.000Z; luna-2 paused for quota until 2026-09-14T11:30:00.000Z');
+  assert.deepEqual(spent.attempts, []);
+  assert.deepEqual(slept, [], 'no wait of any kind');
+  assert.equal(clock, NOW);
+
+  // A 5-hour wall is a usage limit too, and its reset counts as a return.
+  const walled = await dispatchV2Action({
     ...base,
-    pools: [
-      pool('luna-1', { quarantine: { until: NOW + 30 * 60_000, reason: 'usage limit', kind: 'quota' } }),
-      pool('luna-2', { quarantine: { until: NOW + 90 * 60_000, reason: 'usage limit', kind: 'quota' } }),
-    ],
-    onWaiting: (wait) => waits.push(wait),
-    // The caller stops the wait after its first sleep (a cancel or a pause).
-    shouldCancel: () => { polls += 1; return slept.length > 0; },
+    pools: [pool('luna-1', { burstGate: true, fiveHourResetsAt: new Date(NOW + 20 * 60_000).toISOString() }), pool('luna-2', quotaUntil(90))],
   });
-  assert.deepEqual(waits, [{ until: '2026-09-14T10:30:00.000Z', pools: ['luna-1'], reason: 'quota' }], 'one wait, for the first pool back');
-  assert.equal(waited.status, 'cancelled', 'it waited, it did not fail');
-  assert.notEqual(waited.failureKind, 'unavailable');
-  assert.deepEqual(waited.attempts, []);
-  assert.ok(slept[0] > 0 && slept[0] <= 30 * 60_000, `sleeps at most until the return: ${slept[0]}`);
-  assert.ok(polls > 0);
-  // Nothing capable at all: it still fails at once, as in a saved run.
-  const none = await dispatchV2Action({ ...base, pools: [], onWaiting: (wait) => waits.push(wait) });
+  assert.equal(walled.failureKind, 'quota');
+  assert.equal(walled.retryAfter, '2026-09-14T10:20:00.000Z');
+  assert.equal(walled.verdict.why, 'no pool with quota to spare: luna-1 at its 5-hour limit until 2026-09-14T10:20:00.000Z; luna-2 paused for quota until 2026-09-14T11:30:00.000Z');
+
+  // One pool benched after a sign-in failure: not every reason is a limit, so
+  // no pool is free; the first return is still named.
+  const benched = await dispatchV2Action({
+    ...base,
+    pools: [pool('luna-1', quotaUntil(30)), pool('luna-2', { bench: { until: NOW + 15 * 60_000, reason: 'auth', count: 1 } })],
+  });
+  assert.equal(benched.status, 'failed');
+  assert.equal(benched.failureKind, 'unavailable');
+  assert.equal(benched.retryAfter, '2026-09-14T10:15:00.000Z');
+  assert.equal(benched.verdict.why, 'no pool free: luna-1 paused for quota until 2026-09-14T10:30:00.000Z; luna-2 benched until 2026-09-14T10:15:00.000Z');
+  assert.deepEqual(benched.attempts, []);
+
+  // Nothing capable at all: it fails at once, as in a saved run.
+  const none = await dispatchV2Action({ ...base, pools: [] });
   assert.equal(none.ok, false);
   assert.equal(none.failureKind, 'unavailable');
-  assert.equal(waits.length, 1, 'no wait without a return time');
+  assert.equal(none.retryAfter, undefined);
+  assert.equal(none.verdict.why, 'no eligible pool: no enabled pool has a model on the low tier for build work');
+  assert.deepEqual(slept, [], 'still no wait');
 });
 
 test('a failing requirement keeps its reason in the summary even when a large run has to shrink it', () => {

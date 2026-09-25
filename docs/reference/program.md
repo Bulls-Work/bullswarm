@@ -60,9 +60,22 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 |---|---|---|
 | `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`) | You decide |
 | `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached | You decide |
-| `wait` | `quota`, `throttle`: move to another eligible pool without spending the retry, or wait for a known return time | A step never fails for quota while a return time is known; with no known return time and no other pool it fails as `throttle` or `quota` |
+| `wait` | `quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry | You decide; the block shows `back at <time>` when the pool's return time is known |
 | `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
 | `stop` | `cancelled`, `paused`, `restarted`, `superseded`: no failure retry | The caller controls what runs next |
+
+Nothing waits for a pool. A limit notice is `quota` when it says a usage
+window, a quota or a balance is spent, with or without a reset named and
+whatever the pausing switch, or when the pool's meter shows the window full; a
+`too many requests` notice is `throttle`. A throttle that names a wait longer
+than 2 minutes, or whose pool is no longer free for its backoff, comes back to
+you at once. When no pool that can run the step is free at its pick (nearly
+spent, at its 5-hour limit, paused or benched), the step comes back to you as
+`quota` when every reason is a usage limit, else as `unavailable`, and its
+`why` names each pool and its reason.
+The dispatched planner and the preflight scout follow the same rule: a
+usage limit, a rate limit still there after its backoff, or no free pool
+stops it and the run tells you, with no move to another pool.
 
 An `act` step is never retried after its worker starts. A check that cannot run
 also comes to you without a retry. A failed check in a new run gets one fix
@@ -81,8 +94,9 @@ providers must not run this step, or uses `"writers"` on a step with
 `evidenceFor` to exclude the providers of the work it reviews. A provider is
 the model family; relay pools from one provider count as one. These are hard
 filters before pacing. `route.lane` is not allowed: set the step's own `lane`.
-If a route leaves no eligible pool, the step waits for a known return time or
-fails as no eligible pool.
+If a route leaves no free pool, the step comes back to you at once: as no
+eligible pool when no pool passes the route, else with each pool's reason. It
+never waits for one.
 
 For example, a check can use `route: { "independentOf": ["write-docs"] }`.
 

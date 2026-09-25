@@ -685,7 +685,14 @@ function quoted(line, max = 160) {
  * a meter snapshot (default: `<home>/meters/<pool>.json`); `pausing` the
  * switch (default: `<home>/state.json`, on when absent).
  *
+ * Every result carries `limit`, the notice's wording (classifyQuotaLimit):
+ * 'window' when it says a usage window, a quota or a balance is spent, else
+ * 'throttle' — whatever the rule and the switch decided. A marked workflow
+ * step reads a 'window' notice as a usage limit, even a 'transient' one, and
+ * hands it to its caller with no backoff.
+ *
  * @returns {{pause: boolean, rule: 'message'|'meter'|'transient'|'off',
+ *   limit: 'window'|'throttle',
  *   line: string|null, until: number|null, resetsAt: string|null,
  *   meter: object|null, meterWindow: object|null, waitMs: number|null,
  *   retrySamePool: boolean, decidedAt: string, why: string,
@@ -708,6 +715,7 @@ export function decideQuotaPause({
   const clockOpts = { now: nowMs, timeZone };
   const base = {
     line,
+    limit: classified.limit,
     meter: reading,
     waitMs: classified.waitMs,
     retrySamePool: classified.waitMs == null || classified.waitMs <= THROTTLE_MAX_WAIT_MS,
@@ -715,9 +723,10 @@ export function decideQuotaPause({
   };
   const none = { until: null, resetsAt: null, meterWindow: null };
   if (!on) {
-    // The deadline the two proofs below would have paused until. It pauses
-    // nothing: a workflow step may hold that pool for itself until then
-    // (stage-3 D8a); quotaPauseProven() refuses any 'off' result.
+    // The deadline the two proofs below would have paused until. The 'off'
+    // result pauses nothing (quotaPauseProven() refuses it); when the
+    // deadline is known, a marked workflow step hands the limit to its
+    // caller, naming it as the time the pool is back.
     const offWindow = classified.explicit ? null : fullMeterWindow(reading);
     const holdUntil = classified.explicit ? classified.resetAt
       : offWindow ? Date.parse(offWindow.resetsAt) : null;

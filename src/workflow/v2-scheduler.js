@@ -15,10 +15,8 @@ const STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded',
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const SUCCESS = 'succeeded';
 const UNSUCCESSFUL = new Set(['failed', 'blocked', 'cancelled', 'interrupted']);
-// Only a running step holds a slot. A `waiting` step (no pool can take it
-// until a return time) counts for nothing: not the concurrency cap, the
-// runs-alone rule, the one-mutator rule or owned-file overlap. It claims a
-// slot again through canStartV2Action before it runs.
+// Only a running step holds a slot. `waiting` is kept for saved stage-3 runs,
+// whose steps could wait for a pool; it holds no slot.
 const ACTIVE = new Set(['running']);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const object = (value, name) => {
@@ -180,15 +178,3 @@ export function scheduleV2Actions(input, states, options = {}) {
   return clone({ workspaceMode, concurrency, active: active.map((action) => action.id), ready: ready.map((action) => action.id), selected: selected.map((action) => action.id), waiting, blocked, deferred });
 }
 
-// D9 claimWake: may `actionId` (a waiting step) start now? It is treated as
-// the only candidate and checked against the running steps alone: the
-// concurrency cap, the runs-alone rule, the one-mutator rule and owned-file
-// overlap. Other waiting and ready steps are ignored. The whole graph is
-// validated exactly as scheduleV2Actions does.
-export function canStartV2Action(input, states, actionId, options = {}) {
-  const { byId, status, deferReason } = prepare(input, states, options);
-  const action = byId.get(actionId);
-  if (!action) throw new SchedulerValidationError(`unknown action "${actionId}"`);
-  if (status.get(actionId) === 'running') return false;
-  return deferReason(action, []) === null;
-}

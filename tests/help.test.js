@@ -382,6 +382,8 @@ test('workflow step help lists restart, rerun and accept, each with its own entr
   assert.match(rerun, /route\.pools\.avoid/);
   assert.match(rerun, /bullswarm workflow step rerun ab12cd write-report --avoid pool-a/);
   assert.match(helpForArgs(['workflow', 'step', 'rerun', '--help']), /^Usage: bullswarm workflow step rerun /);
+  // No step waits for a pool in a new run: only a saved run can hold a waiting step.
+  assert.ok(rerun.replace(/\s+/g, ' ').includes('Run a failed, cancelled, interrupted, or finished step of a program run again (also a waiting step, which only a run saved by an earlier version can have).'));
 
   const accept = helpText(['workflow', 'step', 'accept']);
   assert.equal(accept.split('\n')[0], 'Usage: bullswarm workflow step accept <runId> <step> --reason "<why>" [--requirement <id>]... [--wait <seconds>] [--json]');
@@ -400,8 +402,35 @@ test('--retry-attempts reads as automatic retries per step in all three places',
   }
 });
 
-test('watch --until lists needs you and long waits as trouble, and blocked dependents inside the block', () => {
+test('workflow goal help says a usage limit stops the dispatched planner or the scout and hands back the call', () => {
+  const goal = helpText(['workflow', 'goal']).replace(/\s+/g, ' ');
+  assert.ok(goal.includes('In a run started by this version a usage limit, a rate limit still there after its short backoff, or no free pool stops the dispatched planner or the scout, with no move to another pool: the run finishes with the reason (`the workflow planner stopped on a usage limit: …`) and your call: after its back at time, workflow resume runs the stopped planner or scout again (before then it can stop the same way); or plan it yourself with plan revise; or start a new run. A scout before your own program lets the run go on without its report, and resume does not run that scout again.'), goal);
+  // Resume runs a stopped planner or scout again (it used to find nothing to retry).
+  assert.match(goal, /stopped on a usage limit[^.]*workflow resume runs the stopped planner or scout again/);
+  const resume = helpText(['workflow', 'resume']).replace(/\s+/g, ' ');
+  assert.ok(resume.includes('In a run started by this version where a usage limit or no free pool stopped the dispatched planner or preflight scout and ended the run, it runs that planner or scout again first and prints `running again: the workflow planner` (or `the preflight scout`); run it after the back at time, or it can stop the same way. A scout the run went on without (one before your own program) is not run again.'), resume);
+  // A preferred planner pool falls back only when it is out at the pick; a
+  // usage limit it hits while it plans stops the run.
+  const flag = 'a pool name prefers that pool and falls back when it is already quota-gated or unavailable at the pick; in a run started by this version a usage limit it hits while it plans stops the run instead';
+  assert.ok(goal.includes(flag));
+  assert.ok(!goal.includes('falls back when it is quota-gated or unavailable'));
+  const cliReference = readFileSync(new URL('../docs/reference/cli.md', import.meta.url), 'utf8');
+  assert.ok(cliReference.includes(`| \`--orchestrator <auto\\|pool>\` | dispatch a Workflow Planner agent at every planning boundary: \`auto\` lets the kernel route it, ${flag} |`));
+});
+
+test('watch --until lists needs you as trouble (a usage limit is one), and blocked dependents inside the block', () => {
   const watch = helpText(['workflow', 'watch']);
-  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale, steering or waiting \(more than 30 min\) line/);
+  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), or at a planner or preflight scout stopped on a usage limit;/);
   assert.match(watch, /blocked dependents are listed inside the needs-you block/);
+  // A marked run's scout stopped by a usage limit has its own line, and the
+  // usage-limit line of a pool that was not paused says so.
+  const flatWatch = watch.replace(/\s+/g, ' ');
+  assert.ok(flatWatch.includes('`⚠ preflight scout stopped · <label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run has your program'));
+  assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped, paused, stalled, stale, steering)'));
+  assert.ok(flatWatch.includes('A dispatched planner stopped the same way prints `✗ planner stopped · <label> on <pool> · back at <time>` and the run finishes; any other planner failure still prints `× planning attempt rejected · <why>`.'));
+  assert.ok(flatWatch.includes('a pool that was not paused for it reads `not paused` in place of the pause, and the needs-you block after it carries the `back at <time>` line'));
+  assert.ok(!flatWatch.includes('reads `back at <time>` or `not paused`'));
+  // No step waits for a pool, so there is no waiting line to wake on or replay at attach.
+  assert.doesNotMatch(watch, /waiting \(more than 30 min\)/);
+  assert.doesNotMatch(watch, /already waiting/);
 });

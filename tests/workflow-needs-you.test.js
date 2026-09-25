@@ -1,6 +1,6 @@
 // The needs-you block (stage-3 §2.5, D25, D26): what the watcher prints when a
 // program step comes back to the caller. The states here are small hand-built
-// program runs with made-up pools (pool-a, pool-b) and paths.
+// program runs with made-up pools (pool-a, pool-b, luna-1, luna-2) and paths.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -452,4 +452,291 @@ test('a same-pool retry keeps handoff: true in JSONL but not on its try line', (
   delete state.attempts[1].retryOf;
   const lines = renderNeedsYou(needsYouFacts(state, failedEvent('variants', { failureKind: 'failed-evidence', retries: 1 }), { features: MARKED }));
   assert.equal(lines.find((line) => line.startsWith('  try 2')), '  try 2  pool-a · model-a · 7m00s · 3 files');
+});
+
+// The owner's rule (2026-09-25): a usage limit, or no free pool when the step
+// is picked, ends the step and hands it to the caller. In a marked run, when
+// the return is known the block says when and offers a rerun after it;
+// Bullswarm itself never waits for it. Unmarked runs print no return time.
+const BACK = '2026-09-24T06:00:00.000Z';
+const LATER = '2026-09-24T07:30:00.000Z';
+
+function limitState(kind, lastFailure = {}) {
+  const state = designState();
+  state.program.actions[0] = step('variants');
+  state.actions[0].lastFailure = { kind, message: 'x', ...lastFailure };
+  state.attempts = [attempt('variants', 1, { start: 0, minutes: 2, failureKind: kind, changedFileCount: 0 })];
+  return state;
+}
+
+// A run directory holding only the marker, for the watcher to read.
+function markedRunDir(t) {
+  const runDir = mkdtempSync(join(tmpdir(), 'bs-needs-you-'));
+  t.after(() => rmSync(runDir, { recursive: true, force: true }));
+  writeFileSync(join(runDir, 'features.json'), JSON.stringify(MARKED));
+  return runDir;
+}
+
+function assertNoBackAt(facts, label) {
+  assert.equal(facts.backAt, undefined, label);
+  assert.equal(facts.options.waitForIt, undefined, label);
+  assert.equal(Object.hasOwn(needsYouJson(facts), 'backAt'), false, label);
+  assert.equal(Object.hasOwn(needsYouJson(facts).options, 'waitForIt'), false, label);
+  const lines = renderNeedsYou(facts);
+  assert.equal(lines.some((line) => line.startsWith('  back at')), false, label);
+  assert.equal(lines.some((line) => line.includes('wait for it')), false, label);
+}
+
+test('a usage limit with a known reset prints `back at` and a wait-for-it option; the JSONL carries backAt', (t) => {
+  const state = limitState('quota');
+  const event = failedEvent('variants', { failureKind: 'quota', why: 'usage limit reached on pool-a', retryAfter: BACK, retries: 0 });
+  const facts = needsYouFacts(state, event, { features: MARKED });
+  assert.equal(facts.backAt, BACK);
+  assert.equal(facts.options.waitForIt, `after ${BACK}: bullswarm workflow step rerun acme01 variants`);
+  assert.deepEqual(renderNeedsYou(facts), [
+    '✗ variants needs you · out of quota · not retried',
+    '  why       usage limit reached on pool-a',
+    `  back at   ${BACK}`,
+    '  try 1  pool-a · model-a · 2m00s · 0 files',
+    '  still running: copy · waiting on this: pick, ship',
+    '  your call:',
+    '    rerun elsewhere  bullswarm workflow step rerun acme01 variants --avoid pool-a',
+    `    wait for it      after ${BACK}: bullswarm workflow step rerun acme01 variants`,
+    '    change the step  bullswarm workflow plan export acme01 --out plan.json',
+    '      then edit it   bullswarm workflow plan revise acme01 --program plan.json',
+    '    take over        output: /runs/acme/out-variants-attempt-1.md',
+    '    accept anyway    bullswarm workflow step accept acme01 variants --reason "…"',
+  ]);
+  assert.deepEqual(needsYouJson(facts), {
+    actionId: 'variants', label: 'out of quota', failureKind: 'quota', retries: 0,
+    evidence: [], why: 'usage limit reached on pool-a', backAt: BACK,
+    attempts: [{ id: 'variants-1', pool: 'pool-a', model: 'model-a', durationSec: 120, files: 0 }],
+    stillRunning: ['copy'], waitingOnThis: ['pick', 'ship'],
+    options: {
+      rerunElsewhere: 'bullswarm workflow step rerun acme01 variants --avoid pool-a',
+      changeStep: 'bullswarm workflow plan export acme01 --out plan.json, edit it, then bullswarm workflow plan revise acme01 --program plan.json',
+      takeOver: 'output: /runs/acme/out-variants-attempt-1.md',
+      acceptAnyway: 'bullswarm workflow step accept acme01 variants --reason "…"',
+      waitForIt: `after ${BACK}: bullswarm workflow step rerun acme01 variants`,
+    },
+  });
+  // Terminal mode keeps the fact and leaves out the option with the rest of your call.
+  const terminal = renderNeedsYou(facts, { terminal: true });
+  assert.ok(terminal.includes(`  back at   ${BACK}`));
+  assert.equal(terminal.some((line) => line.includes('wait for it')), false);
+  // Through the watcher, with the marker read from the run directory: backAt
+  // sits after why in the JSONL record.
+  const { notable } = notableWatchEvents({ events: [event], state, runDir: markedRunDir(t) });
+  assert.equal(notable.length, 1);
+  assert.equal(watchTrouble(notable[0]), 'failed');
+  const record = JSON.parse(JSON.stringify({ type: notable[0].type, sequence: 212, ...notable[0] }));
+  assert.deepEqual(Object.keys(record), ['type', 'sequence', 'actionId', 'label', 'failureKind', 'retries', 'evidence', 'why', 'backAt', 'attempts', 'stillRunning', 'waitingOnThis', 'options']);
+  assert.equal(record.backAt, BACK);
+  assert.ok(renderWatchEvent(notable[0]).split('\n').includes(`  back at   ${BACK}`));
+  // The watcher of a run without the marker: no backAt key, line or option.
+  const [plain] = notableWatchEvents({ events: [event], state }).notable;
+  assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(plain))), ['type', 'actionId', 'label', 'failureKind', 'retries', 'evidence', 'why', 'attempts', 'stillRunning', 'waitingOnThis', 'options']);
+  assert.equal(renderWatchEvent(plain).split('\n').some((line) => /back at|wait for it/.test(line)), false);
+});
+
+test('no free pool when the step was picked prints `back at` the earliest return and a wait-for-it option', () => {
+  const state = limitState('unavailable');
+  state.attempts = [];
+  const why = `no pool free: pool-a nearly spent (forecast 97.0%) until ${BACK}; pool-b benched until ${LATER}`;
+  const facts = needsYouFacts(state, failedEvent('variants', { failureKind: 'unavailable', why, retryAfter: BACK, retries: 0 }), { features: MARKED });
+  assert.equal(facts.backAt, BACK);
+  assert.deepEqual(renderNeedsYou(facts), [
+    '✗ variants needs you · no eligible pool · not retried',
+    `  why       ${why}`,
+    `  back at   ${BACK}`,
+    '  still running: copy · waiting on this: pick, ship',
+    '  your call:',
+    '    retry here       bullswarm workflow step rerun acme01 variants',
+    `    wait for it      after ${BACK}: bullswarm workflow step rerun acme01 variants`,
+    '    change the step  bullswarm workflow plan export acme01 --out plan.json',
+    '      then edit it   bullswarm workflow plan revise acme01 --program plan.json',
+    '    take over        output: none recorded',
+    '    accept anyway    bullswarm workflow step accept acme01 variants --reason "…"',
+  ]);
+  const json = needsYouJson(facts);
+  assert.equal(json.backAt, BACK);
+  assert.equal(json.options.waitForIt, `after ${BACK}: bullswarm workflow step rerun acme01 variants`);
+  assert.deepEqual(json.attempts, []);
+});
+
+test('backAt falls back to the step\'s last failure when the event names no retryAfter', () => {
+  const state = limitState('quota', { retryAfter: BACK });
+  const facts = needsYouFacts(state, failedEvent('variants', { failureKind: 'quota', why: 'x', retries: 0 }), { features: MARKED });
+  assert.equal(facts.backAt, BACK);
+  assert.equal(needsYouJson(facts).backAt, BACK);
+  assert.ok(renderNeedsYou(facts).includes(`  back at   ${BACK}`));
+  assert.equal(facts.options.waitForIt, `after ${BACK}: bullswarm workflow step rerun acme01 variants`);
+  // The kind comes from the last failure too when the event has none.
+  assert.equal(needsYouFacts(state, failedEvent('variants', { why: 'x', retries: 0 }), { features: MARKED }).backAt, BACK);
+  // A saved no-free-pool failure falls back the same way.
+  const unavailable = limitState('unavailable', { retryAfter: LATER });
+  assert.equal(needsYouFacts(unavailable, failedEvent('variants', { failureKind: 'unavailable', why: 'x', retries: 0 }), { features: MARKED }).backAt, LATER);
+  // The event's own retryAfter wins over the saved one.
+  assert.equal(needsYouFacts(state, failedEvent('variants', { failureKind: 'quota', why: 'x', retryAfter: LATER, retries: 0 }), { features: MARKED }).backAt, LATER);
+});
+
+// A replay reads the state as it is now: after a rerun, the step's saved
+// failure is the later one, and its return is not the older block's.
+test('replaying an older failure after a rerun that hit a usage limit prints no back at', () => {
+  const state = limitState('quota', { retryAfter: BACK });
+  state.actions[0].supersededAttempts = 1;
+  state.attempts = [
+    attempt('variants', 1, { start: 0, minutes: 2, failureKind: 'process', changedFileCount: 0 }),
+    attempt('variants', 2, { start: 10, minutes: 2, failureKind: 'quota', changedFileCount: 0 }),
+  ];
+  const crash = { ...failedEvent('variants', { failureKind: 'process', why: 'worker exited', attemptIds: ['variants-1'], retries: 0 }), committedAt: at(2) };
+  const older = needsYouFacts(state, crash, { features: MARKED });
+  assert.deepEqual(older.attempts.map((entry) => entry.id), ['variants-1']);
+  assertNoBackAt(older, 'the older crash');
+  // The later failure's own event still falls back to the saved return.
+  const limit = { ...failedEvent('variants', { failureKind: 'quota', why: 'usage limit', attemptIds: ['variants-2'], retries: 0 }), committedAt: at(12) };
+  assert.equal(needsYouFacts(state, limit, { features: MARKED }).backAt, BACK);
+});
+
+// In a marked run the dispatcher names a retryAfter only when a return time
+// is the real next step, so any kind that carries one prints it.
+test('in a marked run any kind with a parseable retryAfter prints `back at` and a wait-for-it option', () => {
+  const hasBack = (facts, returnAt, label) => {
+    assert.equal(facts.backAt, returnAt, label);
+    assert.equal(facts.options.waitForIt, `after ${returnAt}: bullswarm workflow step rerun acme01 variants`, label);
+    assert.equal(needsYouJson(facts).backAt, returnAt, label);
+    assert.equal(needsYouJson(facts).options.waitForIt, facts.options.waitForIt, label);
+    const lines = renderNeedsYou(facts);
+    assert.ok(lines.includes(`  back at   ${returnAt}`), label);
+    assert.ok(lines.includes(`    wait for it      ${facts.options.waitForIt}`), label);
+  };
+  for (const kind of ['process', 'auth', 'throttle', 'provider']) {
+    const state = limitState(kind, { retryAfter: BACK });
+    hasBack(needsYouFacts(state, failedEvent('variants', { failureKind: kind, why: 'x', retryAfter: BACK, retries: 0 }), { features: MARKED }), BACK, kind);
+    // From the step's last failure when the event names none.
+    hasBack(needsYouFacts(state, failedEvent('variants', { failureKind: kind, why: 'x', retries: 0 }), { features: MARKED }), BACK, `${kind}, saved`);
+  }
+  // A rate limit whose provider named a wait too long to sleep through.
+  const throttled = limitState('throttle');
+  const why = 'rate limit: "Rate limit exceeded, retry after 30 minutes"';
+  const facts = needsYouFacts(throttled, failedEvent('variants', { failureKind: 'throttle', why, retryAfter: LATER, retries: 0 }), { features: MARKED });
+  assert.deepEqual(renderNeedsYou(facts).slice(0, 4), [
+    '✗ variants needs you · rate limited · not retried',
+    `  why       ${why}`,
+    `  back at   ${LATER}`,
+    '  try 1  pool-a · model-a · 2m00s · 0 files',
+  ]);
+  hasBack(facts, LATER, 'throttle, named wait');
+  // Failed evidence, with a retryAfter on the event and on the saved failure.
+  const evidence = designState();
+  evidence.actions[0].lastFailure.retryAfter = BACK;
+  hasBack(needsYouFacts(evidence, failedEvent('variants', { failureKind: 'failed-evidence', retryAfter: BACK, retries: 1 }), { features: MARKED }), BACK, 'failed-evidence');
+});
+
+test('a marked run prints no back at and no wait-for-it for an unknown return or an unparseable one', () => {
+  for (const kind of ['quota', 'unavailable', 'throttle', 'process']) {
+    assertNoBackAt(needsYouFacts(limitState(kind), failedEvent('variants', { failureKind: kind, why: 'x', retries: 0 }), { features: MARKED }), `${kind}, no return`);
+  }
+  assertNoBackAt(needsYouFacts(limitState('unavailable'), failedEvent('variants', { failureKind: 'unavailable', why: 'x', retryAfter: null, retries: 0 }), { features: MARKED }), 'unavailable, null');
+  assertNoBackAt(needsYouFacts(limitState('quota'), failedEvent('variants', { failureKind: 'quota', why: 'x', retryAfter: 'soon', retries: 0 }), { features: MARKED }), 'quota, soon');
+  assertNoBackAt(needsYouFacts(limitState('unavailable', { retryAfter: 'not a time' }), failedEvent('variants', { failureKind: 'unavailable', why: 'x', retries: 0 }), { features: MARKED }), 'unavailable, saved');
+  assertNoBackAt(needsYouFacts(limitState('throttle', { retryAfter: 'later' }), failedEvent('variants', { failureKind: 'throttle', why: 'x', retries: 0 }), { features: MARKED }), 'throttle, saved');
+});
+
+// Unmarked (released) runs print the block as before: no return time, whatever
+// the event or the saved failure carries.
+test('an unmarked run never prints back at, a wait-for-it option or a backAt key, for any kind', () => {
+  const unmarked = [{}, { deliverableGate: 1, proofLabels: 1 }, { ...MARKED, failureRule: 0 }];
+  for (const features of unmarked) {
+    for (const kind of ['quota', 'unavailable', 'process', 'auth', 'throttle', 'provider']) {
+      const label = `${kind} ${JSON.stringify(features)}`;
+      const state = limitState(kind, { retryAfter: BACK });
+      assertNoBackAt(needsYouFacts(state, failedEvent('variants', { failureKind: kind, why: 'x', retryAfter: BACK, retries: 0 }), { features }), label);
+      assertNoBackAt(needsYouFacts(state, failedEvent('variants', { failureKind: kind, why: 'x', retries: 0 }), { features }), `${label}, saved`);
+    }
+    const evidence = designState();
+    evidence.actions[0].lastFailure.retryAfter = BACK;
+    assertNoBackAt(needsYouFacts(evidence, failedEvent('variants', { failureKind: 'failed-evidence', retryAfter: BACK, retries: 1 }), { features }), `failed-evidence ${JSON.stringify(features)}`);
+  }
+  // The JSONL keys are the ones before the marker existed.
+  const quota = needsYouFacts(limitState('quota'), failedEvent('variants', { failureKind: 'quota', why: 'x', retryAfter: BACK, retries: 0 }), { features: {} });
+  assert.deepEqual(Object.keys(needsYouJson(quota)), ['actionId', 'label', 'failureKind', 'retries', 'evidence', 'why', 'attempts', 'stillRunning', 'waitingOnThis', 'options']);
+  assert.deepEqual(Object.keys(needsYouJson(quota).options), ['rerunElsewhere', 'changeStep', 'takeOver', 'acceptAnyway']);
+});
+
+// A transient rate limit's backoff replays the step on the pool that just
+// failed (retryOf 'wait'); a saved stage-3 run's wait could move it to
+// another pool after a usage limit.
+test('a same-pool wait reads `after a rate-limit backoff`; a wait that changed pools reads `moved after a usage limit`', () => {
+  const state = limitState('throttle');
+  const candidates = [{ pool: 'luna-1' }, { pool: 'luna-2' }];
+  const tryOn = (ordinal, pool, extra = {}) => attempt('variants', ordinal, {
+    start: (ordinal - 1) * 2, minutes: 1, failureKind: 'throttle', pool, changedFileCount: 0, routeCandidates: candidates, ...extra,
+  });
+  const wait = (ordinal) => ({ retryOf: { attempt: `variants-${ordinal - 1}`, how: 'wait' } });
+  state.attempts = [tryOn(1, 'luna-1'), tryOn(2, 'luna-1', wait(2)), tryOn(3, 'luna-1', wait(3))];
+  const event = failedEvent('variants', { failureKind: 'throttle', why: 'rate limit: too many requests', attemptIds: ['variants-1', 'variants-2', 'variants-3'], retries: 0 });
+  const facts = needsYouFacts(state, event, { features: MARKED });
+  const tries = (lines) => lines.filter((line) => line.startsWith('  try '));
+  assert.deepEqual(tries(renderNeedsYou(facts)), [
+    '  try 1  luna-1 · model-a · 1m00s · 0 files',
+    '  try 2  luna-1 · model-a · 1m00s · 0 files · after a rate-limit backoff',
+    '  try 3  luna-1 · model-a · 1m00s · 0 files · after a rate-limit backoff',
+  ]);
+  assert.deepEqual(needsYouJson(facts).attempts.map((entry) => entry.retryOf ?? null), [null, 'wait', 'wait']);
+  assert.equal(facts.retries, 0, 'a backoff is not a retry');
+  // Saved stage-3 run: the wait moved the step to another pool.
+  const saved = limitState('quota');
+  saved.attempts = [tryOn(1, 'luna-1', { failureKind: 'quota' }), tryOn(2, 'luna-2', { failureKind: 'quota', ...wait(2) })];
+  assert.deepEqual(tries(renderNeedsYou(needsYouFacts(saved, failedEvent('variants', { failureKind: 'quota', why: 'x', attemptIds: ['variants-1', 'variants-2'] }), { features: MARKED }))), [
+    '  try 1  luna-1 · model-a · 1m00s · 0 files',
+    '  try 2  luna-2 · model-a · 1m00s · 0 files · moved after a usage limit',
+  ]);
+  // Both in one step: a backoff on luna-1, then a move to luna-2.
+  state.attempts = [tryOn(1, 'luna-1'), tryOn(2, 'luna-1', wait(2)), tryOn(3, 'luna-2', wait(3))];
+  assert.deepEqual(tries(renderNeedsYou(needsYouFacts(state, event, { features: MARKED }))).map((line) => line.slice(line.indexOf('0 files'))), [
+    '0 files', '0 files · after a rate-limit backoff', '0 files · moved after a usage limit',
+  ]);
+});
+
+// A backoff is not a retry, but the step did run again: the header counts the
+// backoffs its try lines show instead of reading `not retried`.
+test('a step that backed off reads `backed off once` or `backed off twice`, never `not retried`; the JSONL carries backoffs', () => {
+  const state = limitState('throttle');
+  const candidates = [{ pool: 'luna-1' }, { pool: 'luna-2' }];
+  const tryOn = (ordinal, pool, extra = {}) => attempt('variants', ordinal, {
+    start: (ordinal - 1) * 2, minutes: 1, failureKind: 'throttle', pool, changedFileCount: 0, routeCandidates: candidates, ...extra,
+  });
+  const after = (ordinal, how) => ({ retryOf: { attempt: `variants-${ordinal - 1}`, how } });
+  const event = (count, extra = {}) => failedEvent('variants', {
+    failureKind: 'throttle', why: 'rate limit: too many requests',
+    attemptIds: Array.from({ length: count }, (_, index) => `variants-${index + 1}`), ...extra,
+  });
+  const head = (facts) => renderNeedsYou(facts)[0];
+  state.attempts = [tryOn(1, 'luna-1'), tryOn(2, 'luna-1', after(2, 'wait')), tryOn(3, 'luna-1', after(3, 'wait'))];
+  const twice = needsYouFacts(state, event(3, { retries: 0 }), { features: MARKED });
+  assert.equal(head(twice), '✗ variants needs you · rate limited · backed off twice');
+  assert.equal(needsYouJson(twice).backoffs, 2);
+  assert.equal(Object.hasOwn(needsYouJson(twice), 'notRetried'), false);
+  // Without the kernel's retries count the facts give the same header.
+  assert.equal(head(needsYouFacts(state, event(3), { features: MARKED })), '✗ variants needs you · rate limited · backed off twice');
+  state.attempts = [tryOn(1, 'luna-1'), tryOn(2, 'luna-1', after(2, 'wait'))];
+  assert.equal(head(needsYouFacts(state, event(2, { retries: 0 }), { features: MARKED })), '✗ variants needs you · rate limited · backed off once');
+  // A step that also retried says both.
+  state.attempts = [
+    tryOn(1, 'luna-2', { failureKind: 'process' }), tryOn(2, 'luna-1', after(2, 'other-pool')), tryOn(3, 'luna-1', after(3, 'wait')),
+  ];
+  const both = needsYouFacts(state, event(3), { features: MARKED });
+  assert.equal(head(both), '✗ variants needs you · rate limited after 1 retry · backed off once');
+  assert.equal(needsYouJson(both).backoffs, 1);
+  // A saved stage-3 run's move after a usage limit is not a backoff.
+  state.attempts = [tryOn(1, 'luna-1', { failureKind: 'quota' }), tryOn(2, 'luna-2', { failureKind: 'quota', ...after(2, 'wait') })];
+  const moved = needsYouFacts(state, failedEvent('variants', { failureKind: 'quota', why: 'x', attemptIds: ['variants-1', 'variants-2'], retries: 0 }), { features: MARKED });
+  assert.equal(head(moved), '✗ variants needs you · out of quota · not retried');
+  assert.equal(Object.hasOwn(needsYouJson(moved), 'backoffs'), false);
+  // No backoff: the header and the JSONL keys are unchanged.
+  state.attempts = [tryOn(1, 'luna-1')];
+  const once = needsYouFacts(state, event(1, { retries: 0 }), { features: MARKED });
+  assert.equal(head(once), '✗ variants needs you · rate limited · not retried');
+  assert.equal(Object.hasOwn(needsYouJson(once), 'backoffs'), false);
 });

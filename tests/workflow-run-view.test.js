@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -703,4 +704,165 @@ test('a Run timeline row says `returned early · N not done` after its duration,
   assert.ok(phone.every((line) => visible(line.text).length <= 55));
   // The report attempt did not return early: its rows carry no such text.
   assert.equal(wide.concat(phone).some((line) => line.actionId === 'report' && /returned early/.test(visible(line.text))), false);
+});
+
+// A finished run whose Workflow Planner or preflight scout ended on
+// `failureKind`, with the events the kernel committed. `runDir` holds its
+// features.json marker when the test writes one.
+function stopRowFixture({ scout = false, events = [], plannerAttempts = [], scoutAttempts = [], runDir = undefined, program = false, stepId = 'audit' } = {}) {
+  const goal = createV2GoalDocument({
+    goal: 'Audit and report the repository', cwd: '/tmp/repository',
+    requirements: [{ id: 'report', text: 'A report exists.', mandatory: true }],
+    settings: { scout, executionMode: 'program' },
+  });
+  let state = createV2State(goal, { runId: 'wf-stop', shortId: 'stop01' });
+  if (program) {
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Audit.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: stepId, purpose: 'Audit files', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Audit files.', lane: 'analyze', effort: 'low', evidenceFor: ['report'], inputs: [], produces: [] },
+      ] },
+    });
+    state.actions[0].status = 'succeeded';
+    state.attempts.push({ id: `${stepId}-1`, actionId: stepId, ordinal: 1, status: 'succeeded', pool: 'codex', model: 'gpt-test', startedAt: '2026-09-20T11:55:30.000Z', finishedAt: '2026-09-20T11:56:30.000Z' });
+  }
+  state.lifecycle = { status: 'partial', startedAt: '2026-09-20T11:55:00.000Z', finishedAt: '2026-09-20T11:59:00.000Z', resultFile: null };
+  state.planner.attempts.push(...plannerAttempts);
+  state.preflight.scout.attempts.push(...scoutAttempts);
+  return {
+    runId: state.runId, shortId: state.shortId, status: 'partial', state, events, assignments: [], pools: [],
+    liveness: { alive: false, reason: 'durable record' }, ...(runDir ? { runDir } : {}),
+  };
+}
+
+const stopTimeline = (row, width = 200) => workflowTimelineLines(workflowPanelModel(row, { nowMs: NOW }), width, 0, { goalPreview: false, nowMs: NOW }).lines;
+
+test('Run timeline: a marked run\'s Workflow Planner stopped on a limit reads as the watch line, with its pool and when it is back', () => {
+  const plannerAttempt = (ordinal, pool, finishedAt) => ({ turn: 1, ordinal, status: 'failed', pool, model: 'gpt-test', startedAt: '2026-09-20T11:55:10.000Z', finishedAt, failureKind: 'quota' });
+  // The event carries retryAfter only when the kernel stopped the planner on
+  // a limit; the pool is the last attempt's by the time the event committed.
+  const row = stopRowFixture({
+    plannerAttempts: [plannerAttempt(1, 'claude-code', '2026-09-20T11:55:40.000Z'), plannerAttempt(2, 'codex', '2026-09-20T11:56:00.000Z'), plannerAttempt(3, 'grok', '2026-09-20T11:58:00.000Z')],
+    events: [{ sequence: 1, type: 'planner.finished', committedAt: '2026-09-20T11:56:00.000Z', payload: { turn: 1, ok: false, failureKind: 'quota', why: 'usage limit reached', retryAfter: '2026-09-20T15:00:00.000Z' } }],
+  });
+  const lines = stopTimeline(row);
+  const stop = lines.filter((line) => /planner stopped/.test(visible(line.text)));
+  assert.equal(stop.length, 1, lines.map((line) => visible(line.text)).join('\n'));
+  assert.equal(stop[0].segment, 'Preflight', 'a first-turn stop sits under Preflight');
+  assert.equal(stop[0].milestone, true);
+  assert.equal(normalizeRow(stop[0].text), 'HH:MM ✗ [Workflow Planner] planner stopped · out of quota on codex · back at 2026-09-20T15:00:00.000Z');
+  assert.ok(stop[0].text.includes(`${rgb(METER_COLORS.red)}✗\x1b[0m`), 'the stop glyph is red');
+  assert.ok(lines.every((line) => !/planning attempt rejected|could not complete/.test(visible(line.text))));
+
+  // The Run page draws it in its own timeline.
+  const body = bodyBuilder();
+  runPage({ row, assignments: [], pools: [] }, { width: 120, bodyHeight: 60, narrow: false, nowMs: NOW, spinnerFrame: 0, focus: 0 }, body);
+  assert.ok(body.lines.map(visible).some((line) => line.endsWith('[Workflow Planner] planner stopped · out of quota on codex · back at 2026-09-20T15:00:00.000Z')), body.lines.map(visible).join('\n'));
+
+  // Marked by the run's features.json, with no time known, and no pool free:
+  // no attempt ran, so no pool is named, and `· back at` is left out.
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-run-view-stop-'));
+  try {
+    writeFileSync(join(dir, 'features.json'), JSON.stringify({ deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' }));
+    const unavailable = stopRowFixture({
+      runDir: dir,
+      plannerAttempts: [plannerAttempt(1, 'codex', '2026-09-20T11:55:40.000Z')],
+      events: [{ sequence: 1, type: 'planner.finished', committedAt: '2026-09-20T11:56:00.000Z', payload: { turn: 1, ok: false, failureKind: 'unavailable', why: 'no pool free: every pool is draining' } }],
+    });
+    const row2 = stopTimeline(unavailable).find((line) => /planner stopped/.test(visible(line.text)));
+    assert.equal(normalizeRow(row2?.text), 'HH:MM ✗ [Workflow Planner] planner stopped · no eligible pool on no pool');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // A later turn's stop follows the phases under a Planner rule of its own.
+  const later = stopRowFixture({
+    program: true,
+    plannerAttempts: [{ ...plannerAttempt(1, 'codex', '2026-09-20T11:55:20.000Z'), status: 'succeeded' }, { ...plannerAttempt(2, 'claude-code', '2026-09-20T11:58:00.000Z'), turn: 2, failureKind: 'throttle' }],
+    events: [{ sequence: 1, type: 'planner.finished', committedAt: '2026-09-20T11:58:00.000Z', payload: { turn: 2, ok: false, failureKind: 'throttle', why: 'rate limited', retryAfter: null } }],
+  });
+  const laterLines = stopTimeline(later);
+  const header = laterLines.findIndex((line) => line.header && line.segment === 'Planner');
+  assert.ok(header > laterLines.findIndex((line) => line.phase), laterLines.map((line) => visible(line.text)).join('\n'));
+  assert.equal(header, laterLines.length - 2, 'the Planner rule is the last but one row');
+  assert.match(visible(laterLines[header].text), /^── Planner ─+$/);
+  assert.equal(normalizeRow(laterLines.at(-1).text), 'HH:MM ✗ [Workflow Planner] planner stopped · rate limited on claude-code');
+  assert.equal(laterLines.at(-1).segment, 'Planner');
+  assert.ok(laterLines.every((line) => visible(line.text).length <= 200));
+});
+
+test('Run timeline: a marked run\'s scout stopped on a limit reads as the watch line', () => {
+  const scoutAttempt = { ordinal: 1, status: 'failed', pool: 'claude-code', model: 'claude-test', startedAt: '2026-09-20T11:55:10.000Z', finishedAt: '2026-09-20T11:56:00.000Z', failureKind: 'throttle' };
+  const row = stopRowFixture({
+    scout: true, scoutAttempts: [scoutAttempt],
+    events: [
+      { sequence: 1, type: 'preflight.scout_started', committedAt: '2026-09-20T11:55:10.000Z', payload: { purpose: 'map the repository' } },
+      { sequence: 2, type: 'preflight.scout_finished', committedAt: '2026-09-20T11:56:00.000Z', payload: { status: 'failed', failureKind: 'throttle', why: 'rate limited', retryAfter: '2026-09-20T12:02:00.000Z', runContinues: false } },
+    ],
+  });
+  const lines = stopTimeline(row);
+  const stop = lines.filter((line) => /Scout stopped/.test(visible(line.text)));
+  assert.equal(stop.length, 1, lines.map((line) => visible(line.text)).join('\n'));
+  assert.equal(stop[0].segment, 'Preflight');
+  assert.equal(normalizeRow(stop[0].text), 'HH:MM ⚠ Scout stopped · rate limited on claude-code · back at 2026-09-20T12:02:00.000Z');
+  assert.ok(stop[0].text.includes(`${rgb(METER_COLORS.amber)}⚠\x1b[0m`), 'the stop glyph is amber');
+  assert.ok(lines.every((line) => !/could not complete|planning attempt rejected/.test(visible(line.text))));
+
+  // A caller's program runs on without the report, as the watch says; with
+  // no time known `· back at` is left out.
+  const continues = stopRowFixture({
+    scout: true, program: true, scoutAttempts: [{ ...scoutAttempt, pool: 'codex', failureKind: 'quota' }],
+    events: [{ sequence: 1, type: 'preflight.scout_finished', committedAt: '2026-09-20T11:56:00.000Z', payload: { status: 'failed', failureKind: 'quota', why: 'usage limit', retryAfter: null, runContinues: true } }],
+  });
+  const row2 = stopTimeline(continues).find((line) => /Scout stopped/.test(visible(line.text)));
+  assert.equal(normalizeRow(row2?.text), 'HH:MM ⚠ Scout stopped · out of quota on codex · the run continues without its report');
+  // Phone width cuts the row to its columns.
+  assert.ok(stopTimeline(continues, 55).every((line) => visible(line.text).length <= 55));
+
+  // The row names no step: on the Run page a step called `report` is not
+  // opened from `… without its report`, while its own attempt row still is.
+  const named = stopRowFixture({
+    scout: true, program: true, stepId: 'report', scoutAttempts: [{ ...scoutAttempt, pool: 'codex', failureKind: 'quota' }],
+    events: continues.events,
+  });
+  const body = bodyBuilder();
+  runPage({ row: named, assignments: [], pools: [] }, { width: 120, bodyHeight: 60, narrow: false, nowMs: NOW, spinnerFrame: 0, focus: 0 }, body);
+  const shown = body.lines.map(visible);
+  const scoutY = shown.findIndex((line) => line.endsWith('Scout stopped · out of quota on codex · the run continues without its report')) + 1;
+  const stepY = shown.findIndex((line) => /✓ report · codex/.test(line)) + 1;
+  assert.ok(scoutY > 0 && stepY > 0, shown.join('\n'));
+  assert.deepEqual(body.regions.filter((region) => region.y === scoutY), []);
+  assert.equal(body.regions.find((region) => region.y === stepY)?.action?.actionId, 'report');
+});
+
+test('Run timeline: an unmarked run\'s rejected planner, and a marked run\'s other failures, draw no stop row', () => {
+  const plannerAttempts = [{ turn: 1, ordinal: 1, status: 'failed', pool: 'codex', model: 'gpt-test', startedAt: '2026-09-20T11:55:10.000Z', finishedAt: '2026-09-20T11:56:00.000Z', failureKind: 'quota' }];
+  const scoutAttempts = [{ ordinal: 1, status: 'failed', pool: 'codex', model: 'gpt-test', startedAt: '2026-09-20T11:55:10.000Z', finishedAt: '2026-09-20T11:55:40.000Z', failureKind: 'quota' }];
+  const without = stopTimeline(stopRowFixture({ scout: true, plannerAttempts, scoutAttempts })).map((line) => visible(line.text));
+  // An unmarked (older saved) run: no features.json, and its events carry no
+  // retryAfter, so a quota failure is not a stop and its timeline is the one
+  // it drew before.
+  const unmarkedEvents = [
+    { sequence: 1, type: 'preflight.scout_finished', committedAt: '2026-09-20T11:55:40.000Z', payload: { status: 'failed', failureKind: 'quota', why: 'usage limit' } },
+    { sequence: 2, type: 'planner.finished', committedAt: '2026-09-20T11:56:00.000Z', payload: { turn: 1, ok: false, failureKind: 'quota', why: 'usage limit' } },
+  ];
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-run-view-unmarked-'));
+  try {
+    const unmarked = stopTimeline(stopRowFixture({ scout: true, plannerAttempts, scoutAttempts, runDir: dir, events: unmarkedEvents })).map((line) => visible(line.text));
+    assert.deepEqual(unmarked, without);
+    assert.equal(unmarked.join('\n'), `── Preflight ${'─'.repeat(200 - 13)}\n${without[1]}`);
+    assert.match(unmarked[1], /^ \d{2}:\d{2} {2}● goal accepted · goal\.json$/);
+    // A stage-2 marker has no failure rule: still unmarked.
+    writeFileSync(join(dir, 'features.json'), JSON.stringify({ deliverableGate: 1, proofLabels: 1 }));
+    assert.deepEqual(stopTimeline(stopRowFixture({ scout: true, plannerAttempts, scoutAttempts, runDir: dir, events: unmarkedEvents })).map((line) => visible(line.text)), without);
+    // A marked run whose planner or scout failed for any other reason.
+    writeFileSync(join(dir, 'features.json'), JSON.stringify({ deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' }));
+    const other = [
+      { sequence: 1, type: 'preflight.scout_finished', committedAt: '2026-09-20T11:55:40.000Z', payload: { status: 'failed', failureKind: 'schema', why: 'report format failed' } },
+      { sequence: 2, type: 'planner.finished', committedAt: '2026-09-20T11:56:00.000Z', payload: { turn: 1, ok: false, failureKind: 'semantic', why: 'empty program' } },
+    ];
+    assert.deepEqual(stopTimeline(stopRowFixture({ scout: true, plannerAttempts, scoutAttempts, runDir: dir, events: other })).map((line) => visible(line.text)), without);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

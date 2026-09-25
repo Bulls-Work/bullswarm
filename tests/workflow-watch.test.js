@@ -88,29 +88,80 @@ test("watch renders retry wording from the dispatcher's willRetry fact", () => {
   assert.match(quota(false), /no retry left$/);
 });
 
-test('stage 3: a marked run\'s attempt.quota tail moves without spending the retry, or waits; a saved run reads as before', () => {
+test('stage 3: a marked run\'s attempt.quota tail reads `back to you`, or `no retry spent` on a saved attempt that promised a retry; an unmarked run reads as before', () => {
   const quota = (willRetry, failureRule, quotaNext) => renderWatchEvent({
     type: 'attempt.quota', actionId: 'write-report', pool: 'codex', until: '2026-09-17T03:00:00.000Z', willRetry,
     ...(failureRule ? { failureRule: true } : {}), ...(quotaNext ? { quotaNext } : {}),
   }, { now: Date.parse('2026-09-17T02:00:00.000Z') });
-  // F23: the tail follows the dispatcher's decision, not willRetry alone.
-  assert.match(quota(true, true, 'move'), /· moving to another pool \(no retry spent\)$/);
-  assert.match(quota(true, true, 'wait'), /· waiting for a pool$/);
-  assert.doesNotMatch(quota(true, true, 'wait'), /moving to another pool/);
-  assert.match(quota(true, true), /· no retry spent$/, 'no recorded decision: only what is known');
-  assert.match(quota(false, true), /· back to you$/, 'no retry: the step goes to the caller, it does not wait');
-  assert.match(quota(true, false), /retrying on another pool$/);
+  // A usage limit sends the step to the caller: no wait, no move.
+  assert.match(quota(false, true), /^⚠ write-report usage limit on codex · paused until \S+ · back to you$/);
+  // A saved stage-3 attempt that promised a retry spent none; its recorded
+  // move or wait decision no longer changes the line.
+  assert.match(quota(true, true), /· no retry spent$/);
+  for (const quotaNext of ['move', 'wait']) {
+    assert.match(quota(true, true, quotaNext), /· no retry spent$/, quotaNext);
+    assert.doesNotMatch(quota(true, true, quotaNext), /moving to another pool|waiting for a pool/, quotaNext);
+  }
+  assert.match(quota(false, true, 'wait'), /· back to you$/);
+  // Unmarked runs read exactly as before, whatever the event carries.
+  assert.match(quota(true, false), /^⚠ write-report usage limit on codex · paused until \S+ · retrying on another pool$/);
+  assert.match(quota(false, false), /^⚠ write-report usage limit on codex · paused until \S+ · no retry left$/);
+  assert.equal(quota(true, false, 'move'), quota(true, false));
   // The notable carries the flag only when the kernel's payload does.
   const state = { config: { settings: { executionMode: 'program' } }, program: { actions: [] }, actions: [], attempts: [] };
   const finished = (extra) => ({ type: 'attempt.finished', payload: { actionId: 'a', attemptId: 'a-1', status: 'failed', failureKind: 'quota', willRetry: true, pool: 'codex', ...extra } });
   assert.equal(notableWatchEvents({ events: [finished({ failureRule: true })], state }).notable[0].failureRule, true);
   assert.equal(Object.hasOwn(notableWatchEvents({ events: [finished({})], state }).notable[0], 'failureRule'), false);
-  // The dispatcher's recorded decision reaches the line, from the event or the attempt record.
+  // A saved stage-3 event's decision stays on the JSONL object; the line reads the same.
   const waited = notableWatchEvents({ events: [finished({ failureRule: true, quotaNext: 'wait' })], state }).notable[0];
   assert.equal(waited.quotaNext, 'wait');
-  assert.match(renderWatchEvent(waited, { now: Date.parse('2026-09-17T02:00:00.000Z') }), /· waiting for a pool$/);
+  assert.match(renderWatchEvent(waited, { now: Date.parse('2026-09-17T02:00:00.000Z') }), /· no retry spent$/);
+  // Only the event is read: a stored attempt holds no quotaNext (v2-state ATTEMPT_FIELDS).
   const recorded = { ...state, attempts: [{ id: 'a-1', actionId: 'a', pool: 'codex', quotaNext: 'move' }] };
-  assert.equal(notableWatchEvents({ events: [finished({ failureRule: true })], state: recorded }).notable[0].quotaNext, 'move');
+  assert.equal(Object.hasOwn(notableWatchEvents({ events: [finished({ failureRule: true })], state: recorded }).notable[0], 'quotaNext'), false);
+});
+
+// Marked runs file a spent window as quota whether or not the pool was paused
+// (a limit notice with no reset, or pausing off): the line never reads
+// `paused until unknown` there.
+test('a marked run\'s usage-limit line reads `not paused` when no pause is found, or `back at` the time the event carries; an unmarked run reads as before', () => {
+  const now = Date.parse('2026-09-17T02:00:00.000Z');
+  const state = { config: { settings: { executionMode: 'program' } }, program: { actions: [] }, actions: [], attempts: [] };
+  const why = 'rate limited (transient): "You\'ve hit your session limit" · pool not paused (meter not read, below 95%; no spent window with a reset named)';
+  const finished = (extra) => ({ type: 'attempt.finished', payload: { actionId: 'a', attemptId: 'a-1', status: 'failed', failureKind: 'quota', willRetry: false, pool: 'luna-1', why, ...extra } });
+  const line = (extra, options = {}) => {
+    const [notable] = notableWatchEvents({ events: [finished(extra)], state, ...options }).notable;
+    return [notable, renderWatchEvent(notable, { now })];
+  };
+  const [notPaused, notPausedLine] = line({ failureRule: true });
+  assert.equal(notPausedLine, '⚠ a usage limit on luna-1 · not paused · back to you');
+  assert.equal(notPaused.paused, false);
+  assert.equal(Object.hasOwn(notPaused, 'backAt'), false);
+  // A return time on the event (an ISO string or epoch ms) is printed as ISO.
+  const back = '2026-09-17T04:30:00.000Z';
+  assert.equal(line({ failureRule: true, retryAfter: back })[1], `⚠ a usage limit on luna-1 · back at ${back} · back to you`);
+  assert.equal(line({ failureRule: true, holdUntil: Date.parse(back) })[1], `⚠ a usage limit on luna-1 · back at ${back} · back to you`);
+  assert.equal(line({ failureRule: true, retryAfter: back })[0].backAt, back);
+  // A pause the dispatcher recorded still reads `paused until`.
+  const paused = `usage window spent · pool paused until 2026-09-17T03:00:00.000Z`;
+  assert.match(line({ failureRule: true, why: paused, retryAfter: back })[1], /^⚠ a usage limit on luna-1 · paused until \S+ · back to you$/);
+  assert.equal(Object.hasOwn(line({ failureRule: true, why: paused })[0], 'paused'), false);
+  // A marked event rendered on its own (no notable fields) reads the same.
+  assert.equal(renderWatchEvent({ type: 'attempt.quota', actionId: 'a', pool: 'luna-1', until: null, willRetry: false, failureRule: true }, { now }),
+    '⚠ a usage limit on luna-1 · not paused · back to you');
+  // A planner or scout attempt carries no failureRule: the run's marker
+  // decides, and its pool is read from the state by ordinal.
+  const scouting = { ...state, preflight: { scout: { attempts: [{ ordinal: 1, pool: 'luna-2', status: 'failed', failureKind: 'quota' }] } } };
+  const scoutEvent = { type: 'preflight.scout_attempt_finished', payload: { ordinal: 1, status: 'failed', failureKind: 'quota' } };
+  const marked = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
+  const [scoutLine] = notableWatchEvents({ events: [scoutEvent], state: scouting, features: marked }).notable;
+  assert.equal(renderWatchEvent(scoutLine, { now }), '⚠ preflight-scout usage limit on luna-2 · not paused · no retry left');
+  // Unmarked runs are byte-identical, whatever the event carries.
+  assert.equal(line({ retryAfter: back })[1], '⚠ a usage limit on luna-1 · paused until unknown · no retry left');
+  assert.equal(Object.hasOwn(line({ retryAfter: back })[0], 'paused'), false);
+  assert.equal(line({ willRetry: true })[1], '⚠ a usage limit on luna-1 · paused until unknown · retrying on another pool');
+  const [plainScout] = notableWatchEvents({ events: [scoutEvent], state: scouting, features: {} }).notable;
+  assert.equal(renderWatchEvent(plainScout, { now }), '⚠ preflight-scout usage limit on ? · paused until unknown · no retry left');
 });
 
 test('watch snapshot is concise and stable between heartbeats', () => {
@@ -624,6 +675,33 @@ test('V2 watch prints plan created, updated and rejected lines', async () => {
       assert.match(watch.output, /◇ plan created \(turn 1\) · Implement, test, verify\./);
       assert.match(watch.output, /◇ plan updated #2 · Fill remaining gaps\./);
       assert.match(watch.output, /× planning attempt rejected · empty program/);
+    } finally { await settleWatch(f, watch); }
+  } finally { f.cleanup(); }
+});
+
+test('V2 watch prints a marked run\'s planner stopped by a usage limit as its own line; its other planner failures stay rejected', async () => {
+  const f = v2Fixture({ shortId: 'pls234' });
+  try {
+    writeFileSync(join(f.runDir, 'features.json'), JSON.stringify({ deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' }));
+    const back = new Date(f.nowMs + 90 * 60_000).toISOString();
+    f.state.planner.attempts = [{
+      ordinal: 1, turn: 2, status: 'failed', failureKind: 'quota', pool: 'luna-1',
+      startedAt: new Date(f.nowMs - 60_000).toISOString(), finishedAt: new Date(f.nowMs - 1_000).toISOString(),
+    }];
+    f.save();
+    const watch = startWatch(f);
+    try {
+      await waitUntil(() => watch.output.includes('● watching pls234'), `attach missing: ${watch.output}`);
+      f.emit('planner.finished', { ok: false, turn: 2, failureKind: 'quota', why: 'usage window spent', retryAfter: back });
+      f.emit('planner.finished', { ok: false, turn: 3, failureKind: 'unavailable', why: 'no pool free: luna-1 benched', retryAfter: null });
+      f.emit('planner.finished', { ok: false, turn: 4, failureKind: 'invalid', why: 'empty program' });
+      await waitUntil(() => watch.output.includes('planning attempt rejected'), `planner lines missing: ${watch.output}`);
+      const lines = watch.lines().filter((line) => /planner stopped|planning attempt/.test(line));
+      assert.deepEqual(lines, [
+        `✗ planner stopped · out of quota on luna-1 · back at ${back}`,
+        '✗ planner stopped · no eligible pool on no pool',
+        '× planning attempt rejected · empty program',
+      ]);
     } finally { await settleWatch(f, watch); }
   } finally { f.cleanup(); }
 });

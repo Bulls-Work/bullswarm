@@ -706,10 +706,14 @@ const strategySetPausingText = rich({
   usage: 'bullswarm strategy set-pausing <on|off> [--json]',
   purpose: 'Turn every automatic pool pause on or off. On (the default), a limit notice pauses a '
     + 'pool only when the pool\'s own meter reads 95% or more on a window still running, or the '
-    + 'provider line says a usage window is spent and names its reset; every other rate limit is '
-    + 'transient and is retried. A dead credential pauses its pool with the pools that share that '
-    + 'credential. Off, nothing is paused or benched by a command: a limit notice is retried, a '
-    + 'failure moves the attempt to another pool, and routing still reads meters.',
+    + 'provider line says a usage window is spent and names its reset; every other limit notice '
+    + 'leaves the pool in service. A dead credential pauses its pool with the pools that share that '
+    + 'credential. Off, nothing is paused or benched by a command, and routing still reads meters. The '
+    + 'switch decides only whether a pool is paused for other work: in a workflow started '
+    + 'by this version a spent usage window still ends the step and sends it back to the caller, '
+    + 'whatever the switch, and a transient rate limit backs off on the same pool at most twice before '
+    + 'it goes back too. A workflow started by an earlier version retries a limit notice, then moves the '
+    + 'attempt to another pool; a single bullswarm run makes one attempt and exits 1.',
   args: [{ name: '<on|off>', desc: 'new state, stored as strategy.pausing in state.json' }],
   options: [
     { flag: '--json', desc: 'print { pausing: "on"|"off" }', default: 'one human-readable line' },
@@ -1008,6 +1012,12 @@ const workflowGoalText = rich({
     + 'agent instead of planning yourself. A run never waits for its caller: when nothing more can run on its '
     + 'own it finishes, and its result hands back every unfinished step, open requirement, and unread '
     + 'steering with the commands to continue, retry, take over, or restart. '
+    + 'In a run started by this version a usage limit, a rate limit still there after its short backoff, or '
+    + 'no free pool stops the dispatched planner or the scout, with no move to another pool: the run '
+    + 'finishes with the reason (`the workflow planner stopped on a usage limit: …`) and your call: after '
+    + 'its back at time, workflow resume runs the stopped planner or scout again (before then it can stop '
+    + 'the same way); or plan it yourself with plan revise; or start a new run. A scout before your own '
+    + 'program lets the run go on without its report, and resume does not run that scout again. '
     + 'Launches independently by default so the caller is not blocked. Launching the same goal text in the '
     + 'same cwd while that run is still going is refused (exit 2, nothing launched) with the running run\'s '
     + 'shortId and its watch command; --again starts the copy anyway.',
@@ -1023,7 +1033,7 @@ const workflowGoalText = rich({
     { flag: '--program <file.json>', desc: 'your program: a bullswarm.workflow.planner-response.v2 envelope or a bare bullswarm.workflow.program.v2 document; validated against the exact requirement ledger before anything launches (exit 2 with the issues and nothing launched when invalid), then executed with zero planner or scout dispatches', default: 'required unless --scout or --orchestrator is given' },
     { flag: '--summary <text>', desc: 'one-line summary recorded for a bare --program document', default: 'derived from the action purposes' },
     { flag: '--scout', desc: 'with --program: run the kernel scout first and hand its units to you as advisory context; alone: survey the repository, then finish partial with the scout report and the plan revise command that adds your program', default: 'off' },
-    { flag: '--orchestrator <auto|pool>', desc: 'dispatch a Workflow Planner agent at every planning boundary instead of planning yourself: auto lets the kernel route it, a pool name prefers that pool and falls back when it is quota-gated or unavailable', default: 'off (you are the planner)' },
+    { flag: '--orchestrator <auto|pool>', desc: 'dispatch a Workflow Planner agent at every planning boundary instead of planning yourself: auto lets the kernel route it, a pool name prefers that pool and falls back when it is already quota-gated or unavailable at the pick; in a run started by this version a usage limit it hits while it plans stops the run instead', default: 'off (you are the planner)' },
     { flag: '--orchestrator-model <model|auto>', desc: 'with --orchestrator: pin the exact model used by the dispatched planner; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
     { flag: '--orchestrator-strict', desc: 'with --orchestrator <pool>: require exactly that pool for controlled provider QA; fails if it is unavailable rather than silently substituting', default: 'off' },
     { flag: '--strict-orchestrator <pool>', desc: 'deprecated alias for --orchestrator <pool> --orchestrator-strict', default: 'off' },
@@ -1156,9 +1166,13 @@ const workflowResumeText = rich({
     + 'continues (a pause still draining is withdrawn and its live kernel carries on), an interrupted kernel '
     + 'continues where its state says, and a run with a pending cancellation records the cancelled result. '
     + 'On a finished run (completed, partial, or cancelled) resume is a retry: it reopens the run for its '
-    + 'pending and cancelled steps, failed steps whose failure kind a retry fixes (provider, quota, auth, '
-    + 'process, unavailable, interrupted, runtime, schema, stalled), and the steps blocked behind them; the '
-    + 'previous result moves to result-before-resume-<n>.json. With nothing retryable it prints nothing to '
+    + 'pending and cancelled steps, failed steps whose failure kind a retry fixes (provider, quota, throttle, '
+    + 'auth, process, unavailable, interrupted, runtime, schema, stalled), and the steps blocked behind them; the '
+    + 'previous result moves to result-before-resume-<n>.json. In a run started by this version where a '
+    + 'usage limit or no free pool stopped the dispatched planner or preflight scout and ended the run, it '
+    + 'runs that planner or scout again first and prints `running again: the workflow planner` (or `the '
+    + 'preflight scout`); run it after the back at time, or it can stop the same way. A scout the run went '
+    + 'on without (one before your own program) is not run again. With nothing retryable it prints nothing to '
     + 'retry, starts nothing, and exits 1. A run an older version left waiting for its caller finishes and '
     + 'hands back what is left instead of waiting again. '
     + 'Detaches by default like workflow goal; this is the verb form of workflow goal --resume.',
@@ -1446,8 +1460,19 @@ const workflowWatchText = rich({
     + 'cancellation) and staying silent while work is merely in progress. Plain `workflow watch <runId>` '
     + 'follows until the outcome (a terminal status, a caller-planner wait, or an operator pause). '
     + 'A usage-limit failure always '
-    + 'prints, verbose or not: an `⚠ ... usage limit on <pool> · paused until <deadline> · retrying on '
-    + 'another pool` line, then an `↺ ... now on <pool> · <model>` line once the mechanical retry lands. '
+    + 'prints, verbose or not: an `⚠ ... usage limit on <pool> · paused until <deadline>` line. In a run '
+    + 'started by this version it ends `back to you` and a needs-you block follows, with `back at <time>` '
+    + 'and a `wait for it` rerun when the reset is known: nothing waits for the pool or moves the step; a '
+    + 'pool that was not paused for it reads `not paused` in place of the pause, and the needs-you block '
+    + 'after it carries the `back at <time>` line. In '
+    + 'a run from an earlier version it ends `retrying on another pool`, then an `↺ ... now on <pool> · '
+    + '<model>` line prints once the mechanical retry lands. In a run started by this version a preflight '
+    + 'scout stopped by a usage limit, a rate limit or no free pool prints `⚠ preflight scout stopped · '
+    + '<label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run '
+    + 'has your program; nothing moves it to another pool. A dispatched planner stopped the same way prints '
+    + '`✗ planner stopped · <label> on <pool> · back at <time>` and the run finishes; any other planner '
+    + 'failure still prints `× planning attempt rejected · <why>`. The scout\'s or the planner\'s own usage-limit '
+    + 'line ends `no retry left`, and no needs-you block follows it. '
     + '`--classic` forces the older heartbeat-based watcher instead (transition-on-change snapshots plus '
     + 'a periodic heartbeat); it applies only to V2 runs. A legacy authored-graph run cannot be watched at '
     + 'all: the watcher prints the legacy line and exits 2 before polling. `--next` prints no '
@@ -1461,7 +1486,7 @@ const workflowWatchText = rich({
     + 'file change while commands continue, the same command repeated, wall time over 3x the expected '
     + 'minutes) prints one `⚠ <step> looks stale: <reasons>` line; nothing is stopped, the caller decides '
     + '(`workflow step restart`). `--until outcome` prints only trouble lines (needs you, failed, rejected, '
-    + 'paused, stalled, stale, steering, waiting (more than 30 min)) and the outcome, and exits at the outcome; '
+    + 'scout stopped, planner stopped, paused, stalled, stale, steering) and the outcome, and exits at the outcome; '
     + '`--until trouble` also exits at the first trouble line with a `next:` relaunch line. In a program '
     + 'run a failed step prints one needs-you block (what failed, each try, and your options: step rerun, '
     + 'plan revise, take over, step accept); blocked dependents are listed inside the needs-you block as '
@@ -1469,13 +1494,13 @@ const workflowWatchText = rich({
     + 'machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
-    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale, steering or waiting (more than 30 min) line; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
+    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale or steering line (a usage limit or no free pool is a needs-you block), or at a planner or preflight scout stopped on a usage limit; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
     { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; V2 runs only; cannot combine with --next', default: 'off (event mode)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
     { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off in event mode, 60 with --classic' },
     { flag: '--stall-after <seconds>', desc: 'report a running agent as silent after this many seconds without activity; must be >= 1', default: '300' },
     { flag: '--next', desc: 'print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status', default: 'off (follows until terminal or pause)' },
-    { flag: '--after <sequence>', desc: 'start from this durable event sequence instead of the current high-water mark, so events committed since the previous watcher exited are printed; use the value from the previous `next:` line (in --jsonl, the `sequence` field of the last object)', default: 'attach at the current high-water mark; without --next, a step already waiting at attach still gets its waiting line' },
+    { flag: '--after <sequence>', desc: 'start from this durable event sequence instead of the current high-water mark, so events committed since the previous watcher exited are printed; use the value from the previous `next:` line (in --jsonl, the `sequence` field of the last object)', default: 'attach at the current high-water mark' },
     { flag: '--since <iso-timestamp>', desc: 'the previous watcher\'s exit time; a running agent already silent at attach is reported only if its silence crossed --stall-after at or after this time, so no duplicate stall line prints (its recovery still does); use the value from the previous `next:` line', default: 'report every agent silent past --stall-after at attach' },
     { flag: '--jsonl', desc: 'emit one JSON object per line instead of human text; every object carries the `sequence` it was emitted at, and the `next:` relaunch line is not printed', default: 'off (human text)' },
     { flag: '--once', desc: 'print a single current snapshot and exit immediately instead of following', default: 'off (follows until terminal)' },
@@ -1634,7 +1659,8 @@ const workflowStepRestartText = rich({
 
 const workflowStepRerunText = rich({
   usage: 'bullswarm workflow step rerun <runId> <step> [--avoid <pool>]... [--wait <seconds>] [--json]',
-  purpose: 'Run a failed, cancelled, interrupted, finished, or waiting step of a program run again. Its next '
+  purpose: 'Run a failed, cancelled, interrupted, or finished step of a program run again (also a waiting step, '
+    + 'which only a run saved by an earlier version can have). Its next '
     + 'attempt carries the last failed attempt\'s handoff block (what it did, its failure, its evidence), and '
     + 'its automatic retry is available again. --avoid adds pools to the step\'s route (route.pools.avoid), '
     + 'so this attempt, its automatic retry, and later reruns stay off them; the route shows in plan export and '

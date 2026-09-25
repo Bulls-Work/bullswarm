@@ -350,6 +350,13 @@ Anything else — `Error: Rate limit exceeded. Please wait a moment and try agai
 `429 Too Many Requests`, an overload, a 5xx, a timeout, or a window phrase with no
 reset — is transient: the attempt backs off and retries on the same pool, then
 moves to another pool for that attempt only. The pool is never paused for it.
+In a workflow started by this version a notice that says a usage window, a
+quota or a balance is spent ends the step and comes back to you at once, with
+or without a reset named and whatever the pausing switch; its reset, when
+known, is the `back at` time. Any other rate limit backs off on the same pool
+at most twice (20 s, then 60 s, or the wait it names when that is at most 2
+minutes) and then comes back to you instead of moving; one that names a longer
+wait comes back to you at once, with `back at` at the end of that wait.
 
 Quota and auth signatures are matched against the provider's own error channel:
 its stderr, the events it flags as errors, and its terminal `result` record.
@@ -360,7 +367,8 @@ phrase is not evidence about the pool.
 auth, and the credential-group siblings an auth pause benches with it, plus the
 soft bench a second strike writes; `pools` then opens with
 `automatic pausing: off`. Routing is untouched: meters are still read and a
-failed attempt still moves to another pool.
+failed attempt still moves to another pool. In a workflow started by this
+version a usage limit comes back to you instead, as above.
 
 ```bash
 # Bypass the meter cache and re-read live usage for every pool.
@@ -598,7 +606,7 @@ Turn every automatic pool pause on (the default) or off. The switch is stored as
 `strategy.pausing` in `state.json` (`"off"`; absent means on).
 
 ```bash
-# Never pause or bench a pool automatically; limit notices are retried, then fall over.
+# Never pause or bench a pool automatically; a usage limit still stops the workflow step.
 bullswarm strategy set-pausing off
 # Back to the strict default rule.
 bullswarm strategy set-pausing on
@@ -612,10 +620,15 @@ On, a pool pauses for quota only when its own meter reads 95% or more on a
 running window, or the provider says a usage window is spent and names its
 reset (see [pools](#pools)), and a dead credential pauses its pool together
 with the pools that share that credential. Off, nothing is paused or benched by
-a command: a limit notice is retried on the same pool, then the attempt moves
-to another pool, and a failed attempt still moves on. Routing still reads
-meters. A pause already in place stays until its reset; `bullswarm pools
-resume <pool>` lifts it.
+a command, and a crashed or signed-out attempt still moves on. The switch
+decides only whether a pool is paused for other work: in a workflow started by
+this version a spent usage window still ends the step and comes back to you,
+whatever the switch, and a transient rate limit still backs off on the same
+pool at most twice before it comes back to you. A workflow started by an
+earlier version retries a limit notice on the same pool, then moves the
+attempt to another pool; a single `bullswarm run` makes one attempt and exits 1
+on it. Routing still reads meters. A pause already in place stays until its
+reset; `bullswarm pools resume <pool>` lifts it.
 
 ### configure
 
@@ -897,6 +910,8 @@ Run an autonomous V2 goal end to end. Pass the program you authored (`--program`
 
 Without a program the command refuses (exit 2, nothing launched) unless `--scout` or `--orchestrator` is given. `--scout` alone surveys the repository and finishes partial with the scout report. `--orchestrator` dispatches a Workflow Planner agent instead of planning yourself. A run never waits for its caller: when nothing more can run on its own it finishes and hands back what is left.
 
+In a run started by this version the dispatched planner and the scout follow the steps' usage-limit rule: a usage limit, a rate limit still there after its short backoff, or no free pool stops it and tells you, with no move to another pool, and a nearly spent pool is never given to it. The watch prints `✗ planner stopped · <label> on <pool> · back at <time>` for the planner, and the run finishes `partial` with `the workflow planner stopped on a usage limit: <why> · back at <time> · your call: resume after <time> with bullswarm workflow resume <shortId>, plan it yourself with bullswarm workflow plan revise <shortId> --program <file.json>, or start a new run` (`the preflight scout stopped on a usage limit: …` for a scout with no program after it; `bullswarm workflow resume <shortId> once a pool is free` when no return time is known). After the `back at` time, `resume` runs the stopped planner or scout again and prints `✓ reopened the partial run <shortId>; running again: the workflow planner` (or `the preflight scout`); before then it can stop the same way, and resume adds a `note:` saying so. `plan revise` with your own program and a new run stay the other choices. A scout before your own program lets the run go on without its report, `watch` prints `⚠ preflight scout stopped · …`, and `resume` does not run that scout again. Any other planner failure still prints `× planning attempt rejected · <why>`. A sign-in failure, a provider error or a worker that died at start still moves the planner or the scout to another pool.
+
 Launches independently by default. `--resume <shortId|runId>` resumes a V2 run and is mutually exclusive with new goal text.
 
 A duplicate launch is refused before anything is validated or started: when an ongoing run in the same `--cwd` already has this goal text, the command exits 2 with that run's `shortId`, its age, and the command to watch it. `--json` prints `{"error":"duplicate-goal","shortId":…,"runId":…,"startedAt":…,"next":{"watch":…,"again":…}}`. Pass `--again` to start the second copy anyway.
@@ -916,7 +931,7 @@ bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --progra
 | `--program <file.json>` | planner-response envelope or bare `bullswarm.workflow.program.v2` document; validated before anything launches (exit 2 with the issues when invalid) | required unless `--scout` or `--orchestrator` is given |
 | `--summary <text>` | one-line summary recorded for a bare `--program` document | derived from the action purposes |
 | `--scout` | with `--program`: run the kernel scout first and hand its units as advisory context; alone: survey, then finish partial with the scout report | off |
-| `--orchestrator <auto\|pool>` | dispatch a Workflow Planner agent at every planning boundary: `auto` lets the kernel route it, a pool name prefers that pool and falls back when it is quota-gated or unavailable | off (you are the planner) |
+| `--orchestrator <auto\|pool>` | dispatch a Workflow Planner agent at every planning boundary: `auto` lets the kernel route it, a pool name prefers that pool and falls back when it is already quota-gated or unavailable at the pick; in a run started by this version a usage limit it hits while it plans stops the run instead | off (you are the planner) |
 | `--orchestrator-model <model\|auto>` | with `--orchestrator`: pin the exact model used by the dispatched planner; only pools that can guarantee it remain eligible | `auto` (effort-tier strategy or connector default) |
 | `--orchestrator-strict` | with `--orchestrator <pool>`: require exactly that pool; fails if it is unavailable rather than silently substituting | off |
 | `--strict-orchestrator <pool>` | deprecated alias for `--orchestrator <pool> --orchestrator-strict` | off |
@@ -1106,7 +1121,7 @@ Idempotent: an already-terminal run reports `alreadyFinished` and exits 0.
 
 ### resume
 
-Resume a V2 run with its durable planner mode and routing. On a finished run (`completed`, `partial`, or `cancelled`) resume is a retry: it reopens pending and cancelled steps, failed steps whose failure kind a retry fixes, and the steps blocked behind them. With nothing retryable it prints `nothing to retry`, starts nothing, and exits 1.
+Resume a V2 run with its durable planner mode and routing. On a finished run (`completed`, `partial`, or `cancelled`) resume is a retry: it reopens pending and cancelled steps, failed steps whose failure kind a retry fixes, and the steps blocked behind them. In a run started by this version where a usage limit or no free pool stopped the dispatched planner or the scout and ended the run, it runs that planner or scout again first (`running again: the workflow planner`); run it after the `back at` time, or it can stop the same way. A scout the run went on without (one before your own program) is not run again. With nothing retryable it prints `nothing to retry`, starts nothing, and exits 1.
 
 ```bash
 # Retry a partial run once the handback's retryAfter time has passed.
@@ -1288,8 +1303,8 @@ bullswarm workflow watch ab12cd --until trouble
 | `--heartbeat <seconds>` | print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1 | off in event mode, `60` with `--classic` |
 | `--stall-after <seconds>` | report a running agent as silent after this many seconds without activity; must be >= 1 | `300` |
 | `--next` | print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status | off (follows until terminal or pause) |
-| `--until <outcome\|trouble>` | print only trouble and outcome lines; `trouble` exits for a needs-you block, a review needing you, a quota wait over 30 minutes, a rejected revision, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
-| `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark; without `--next`, a step already waiting at attach still gets its waiting line (and wakes `--until trouble` when its return is over 30 minutes away) |
+| `--until <outcome\|trouble>` | print only trouble and outcome lines; `trouble` exits for a needs-you block (a usage limit or no free pool is one), a review needing you, a rejected revision, a planner or scout stopped on a usage limit, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
+| `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall does not fire again | report every agent silent past `--stall-after` at attach |
 | `--jsonl` | emit one JSON object per line instead of human text; every object carries `sequence`; the `next:` relaunch line is not printed | off (human text) |
 | `--once` | print a single current snapshot and exit immediately instead of following | off |

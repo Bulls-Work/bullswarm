@@ -133,8 +133,8 @@ quota pacing. Use `independentOf` to avoid providers that worked on named
 upstream steps, or use `"writers"` on a check with `evidenceFor`. Use
 `providers.use` / `providers.avoid` to select provider families, or
 `pools.use` / `pools.avoid` for exact pool ids. Accounts served by one provider
-count as one family. A route that leaves no eligible pool waits for a known
-return time or fails as no eligible pool.
+count as one family. A route that leaves no free pool sends the step back to
+you at once, as no eligible pool or with each pool's reason; it never waits.
 
 ```json
 {
@@ -163,7 +163,7 @@ Before this, a pinned evidence step read `evidence step: only the writer pool co
 
 ## Expiring-soon urgency
 
-A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) is ranked on urgency — its surplus divided by the fraction of the window still to run — instead of on the surplus alone. While any urgent pool can still spend its quota, it is the only one selectable, which is how a pool with two hours left beats a pool with three days left. A pool forecast at or above 95% of its pacing window *and* ahead of the window's own clock (forecast above the elapsed share) is `draining` and goes last; a pool at 96% with 98% of its month gone is spending at its own pace, not draining, and keeps its quota in play until the reset.
+A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) is ranked on urgency — its surplus divided by the fraction of the window still to run — instead of on the surplus alone. While any urgent pool can still spend its quota, it is the only one selectable, which is how a pool with two hours left beats a pool with three days left. A pool forecast at or above 95% of its pacing window *and* ahead of the window's own clock (forecast above the elapsed share) is `draining` and goes last; a pool at 96% with 98% of its month gone is spending at its own pace, not draining, and keeps its quota in play until the reset. In a workflow started by this version a `draining` pool does not go last: it is never given a step, the dispatched planner or the preflight scout, even as the only pool left, unless you pinned it. The work goes to another pool that can run it, or comes back to you with `<pool> nearly spent (forecast <n>%) until <time>` in its `why`.
 
 ## In-flight load
 
@@ -179,19 +179,55 @@ The agent CLI that invoked Bullswarm competes as a pool like any other, and `kee
 
 ## When a pool runs out
 
-In a new workflow, quota and throttle results do not spend the step's one
-automatic retry. Bullswarm moves to another eligible pool; when no pool is
-available but a return time is known, the step becomes `waiting`, takes no
-scheduler slot, and the watcher prints when it will try again. This applies
-even when automatic pausing is off. A wait with no known return time, or no
-capable pool, is reported as a failure instead of waiting forever. Single
-`bullswarm run` keeps its own behavior, and saved workflows keep their rules.
+In a workflow started by this version, nothing waits for a pool. A usage limit
+ends the step and sends it back to you at once: a limit notice that says a
+usage window, a quota or a balance is spent (with or without a reset named), or
+the pool's meter showing its window full, whatever the automatic pausing
+switch. There is no wait, no move to another pool and no retry, and the rest of
+the run keeps going. The needs-you block shows `back at <time>` when the
+pool's reset is known.
+
+A transient rate limit (`Too many requests`, `Rate limit exceeded`, with no
+usage window spent) backs off on the same pool at most twice, after 20 s and
+then 60 s, or after the wait the provider named when that is at most 2
+minutes. It does so with automatic pausing off too, and spends no retry. Then
+the step comes back to you. One that names a longer wait comes back to you at
+once, with `back at` at the end of that wait. When the pool is no longer free
+for the backoff (another run paused it, it reached its 5-hour limit, or it is
+nearly spent or benched), the step comes back to you instead of moving.
+
+When no pool that can run the step is free at its pick (each one is nearly
+spent, at its 5-hour limit, paused, or benched), the step comes back to you as
+well: as `quota` when every reason is a usage limit, else as `unavailable`.
+Its `why` names each pool and its reason, for example `no pool with quota to
+spare: pool-a paused for quota until <time>; pool-b at its 5-hour limit`, and
+`back at` is the earliest known return among them. A retry the step was
+promised (after a crash, a sign-in failure or a failed gate) that finds no
+free pool keeps its own failure and ends its `why` with `· no retry: <pool>
+<reason>; …`. When another pool that can run the step is free, routing picks it
+as usual.
+
+The dispatched Workflow Planner (`--orchestrator`) and the preflight scout
+(`--scout`, or the scout before a dispatched planner) follow the same rule: a
+usage limit, a rate limit still there after its short backoff, or no free pool
+at the pick stops it and tells you, with no move to another pool. The run
+finishes with `the workflow planner stopped on a usage limit: …` (or `the
+preflight scout stopped on a usage limit: …`) and your call: after its `back
+at` time, `workflow resume` runs it again. A scout that ran before your own
+program lets the run go on without its report. A sign-in
+failure, a provider error or a worker that died at start still moves the
+planner or the scout to another pool.
+
+A single `bullswarm run` makes one attempt: a usage limit ends it with exit 1,
+with no retry and no move. Workflows started by an earlier version keep their
+rules: a usage limit pauses the pool (with pausing on) and moves the attempt to
+another pool, and a throttle retries the same pool and then moves, as below.
 
 ## Throttles and exhausted windows
 
-A limit notice pauses a pool for quota (failure kind `quota`, never `process` or `auth`) only on proof: the pool's own meter reads 95% or more on a window that is still running, or the provider's line says a usage window is spent *and* names its reset. The attempt is killed immediately even if the CLI would otherwise hang, the pool is paused until that window's reset, and the action moves elsewhere. The pause record keeps the rule, the provider line and the meter reading, so `bullswarm pools` can say why; `bullswarm pools resume <pool>` lifts it and `bullswarm strategy set-pausing off` turns every automatic pool pause off (quota, auth and the sibling bench) while routing's own meter gating stays.
+A limit notice pauses a pool for quota (failure kind `quota`, never `process` or `auth`) only on proof: the pool's own meter reads 95% or more on a window that is still running, or the provider's line says a usage window is spent *and* names its reset. The attempt is killed immediately even if the CLI would otherwise hang, and the pool is paused until that window's reset. In a workflow started by this version the step then comes back to you; otherwise the action moves elsewhere. The pause record keeps the rule, the provider line and the meter reading, so `bullswarm pools` can say why; `bullswarm pools resume <pool>` lifts it and `bullswarm strategy set-pausing off` turns every automatic pool pause off (quota, auth and the sibling bench) while routing's own meter gating stays.
 
-Every other limit notice — `Rate limit exceeded. Please wait a moment and try again.`, `429 Too Many Requests`, an overload, a window phrase with no reset — is failure kind `throttle`: the dispatcher retries the same pool up to twice, after 20 s and then 60 s (or after the wait the provider named), without a pause or a mechanical-retry charge; after that the attempt moves to another pool and the pool stays in service. A throttle that names a wait longer than 15 minutes skips the same-pool retry and moves at once. A single `bullswarm run` records the throttle without a pause but does not retry it. Detection is shape-gated to provider notices, so an agent writing *about* rate limits does not trigger either path.
+Every other limit notice — `Rate limit exceeded. Please wait a moment and try again.`, `429 Too Many Requests`, an overload, a window phrase with no reset — is failure kind `throttle` and never pauses the pool. In a workflow started by an earlier version the dispatcher retries the same pool up to twice, after 20 s and then 60 s (or after the wait the provider named), without a pause or a mechanical-retry charge; after that the attempt moves to another pool and the pool stays in service. A throttle that names a wait longer than 15 minutes skips the same-pool retry and moves at once. In a workflow started by this version a window phrase with no reset is a usage limit instead (`quota`), and a throttle never moves: it backs off at most twice, for at most 2 minutes each time, and then comes back to you (see above). A single `bullswarm run` records the throttle without a pause but does not retry it. Detection is shape-gated to provider notices, so an agent writing *about* rate limits does not trigger either path.
 
 ## Quarantine on an upstream auth failure
 

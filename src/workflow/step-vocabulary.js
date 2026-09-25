@@ -208,11 +208,12 @@ export function failureClassOf(kind) {
   return (typeof kind === 'string' && FAILURE_CLASS_BY_KIND.get(kind)) || 'caller';
 }
 
-// Failures the pool caused rather than the task: a limit, a sign-in, a
-// provider error (including a worker that could not be spawned), or a worker
-// that exited with an error before it answered or changed a file. A rerun or
-// resume after one starts on another pool when one can take the step.
-const POOL_CAUSED_KINDS = new Set(['quota', 'throttle', 'auth', 'provider']);
+// Failures the pool caused rather than the task: a sign-in, a provider error
+// (including a worker that could not be spawned), or a worker that exited with
+// an error before it answered or changed a file. A rerun or resume after one
+// starts on another pool when one can take the step. A usage limit is not
+// one: the caller decides where it goes (owner decision, 2026-09-25).
+const POOL_CAUSED_KINDS = new Set(['auth', 'provider']);
 
 /** Whether a stored attempt failed because of its pool (see above). */
 export function poolCausedFailure(attempt) {

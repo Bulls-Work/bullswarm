@@ -13,7 +13,8 @@
 //       discarding completed work.
 //   W5. A usage limit is reported as its own failure kind `quota` with the
 //       reset deadline it announced. It is never `process` merely because the
-//       CLI exited non-zero, and never `auth` merely because it throttled.
+//       CLI exited non-zero, never `auth` merely because it throttled, and
+//       never `provider` merely because it arrived in a provider error event.
 //   W6. A provider error event that names an upstream auth failure is `auth`
 //       with a quarantine hint, not the generic `provider` kind. A dead
 //       credential fails every following attempt on that pool in seconds; a
@@ -1446,6 +1447,8 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   //     a throttle keeps its own kind and its real reset deadline (W5).
   //   a quota-shaped usage-limit line -> fail + quarantine until the reset
   //     (checked before auth: a throttle is not a broken credential).
+  //   any other provider stream failure -> fail as `provider`, unless the
+  //     worker exited 0 with a usable answer (recovered).
   //   an error-shaped auth signature on the provider's error channel ->
   //     fail + quarantine hint (an agent's report ABOUT auth work is not
   //     evidence of provider auth health — W7).
@@ -1559,15 +1562,6 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       why: `upstream auth failure: "${String(upstreamAuth.signature).slice(0, 110)}" (provider stream error)`
         + (pausing ? '' : ' · automatic pausing is off, pool not paused'),
     };
-  } else if (obs.providerFailureType) {
-    if (recoveredOutputUsable) {
-      structured = recoveredStructured;
-      verdict = typeof opts.outputValidator === 'function'
-        ? { ok: true, why: 'structured output validated' }
-        : { ok: true, why: 'verified' };
-    } else {
-      verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
-    }
   } else if (quotaFailure && !quotaPause.pause) {
     verdict = {
       ok: false,
@@ -1587,6 +1581,18 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       quotaPause,
       why: quotaPause.why,
     };
+  } else if (obs.providerFailureType) {
+    // After the limit gates: a usage limit inside the provider's error event
+    // keeps its throttle or quota kind. A recovered output is only inspected
+    // when no limit was found (canInspectRecoveredOutput).
+    if (recoveredOutputUsable) {
+      structured = recoveredStructured;
+      verdict = typeof opts.outputValidator === 'function'
+        ? { ok: true, why: 'structured output validated' }
+        : { ok: true, why: 'verified' };
+    } else {
+      verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
+    }
   } else if (authHit) {
     verdict = {
       ok: false,

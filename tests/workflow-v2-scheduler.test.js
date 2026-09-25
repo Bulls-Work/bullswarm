@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SchedulerValidationError, canStartV2Action, scheduleV2Actions } from '../src/workflow/v2-scheduler.js';
+import { SchedulerValidationError, scheduleV2Actions } from '../src/workflow/v2-scheduler.js';
 
 const action = (id, over = {}) => ({ id, dependsOn: [], ownedFiles: [], ...over });
 
@@ -70,7 +70,9 @@ test('accounts for active work in concurrency and ownership decisions', () => {
   ]);
 });
 
-test('a waiting step holds no slot, and a running one still rejects impossible active state', () => {
+// `waiting` stays valid input for saved stage-3 runs, whose steps could wait
+// for a pool; such a step holds no slot.
+test('a saved run\'s waiting step is valid input and holds no slot, and a running one still rejects impossible active state', () => {
   const actions = [action('root'), action('child', { dependsOn: ['root'] })];
   assert.throws(() => scheduleV2Actions(actions, { root: 'running', child: 'running' }, { concurrency: 2 }), /unfinished dependency/);
   const result = scheduleV2Actions([action('waiting'), action('next')], { waiting: 'waiting' }, { concurrency: 1 });
@@ -104,31 +106,6 @@ test('a waiting step with owned files does not block an overlapping writer', () 
   assert.deepEqual(isolated.selected, ['overlap']);
   const shared = scheduleV2Actions(actions, { holder: 'waiting' }, { concurrency: 2, workspaceMode: 'shared' });
   assert.deepEqual(shared.selected, ['overlap']);
-});
-
-test('canStartV2Action checks one waiting step against the running steps only', () => {
-  const program = { concurrency: 2, workspaceMode: 'shared', allowParallelShared: true };
-  // A running unrestricted writer runs alone.
-  assert.equal(canStartV2Action([action('integrate', { lane: 'build' }), action('wake', { lane: 'analyze' })],
-    { integrate: 'running', wake: 'waiting' }, 'wake', program), false);
-  // A waiting unrestricted writer cannot start next to a running reader.
-  assert.equal(canStartV2Action([action('read', { lane: 'analyze' }), action('wake', { lane: 'build' })],
-    { read: 'running', wake: 'waiting' }, 'wake', program), false);
-  // A running owned-file overlap.
-  const owned = [action('holder', { ownedFiles: ['same.js'] }), action('wake', { ownedFiles: ['same.js'] })];
-  assert.equal(canStartV2Action(owned, { holder: 'running', wake: 'waiting' }, 'wake', { concurrency: 2, workspaceMode: 'isolated' }), false);
-  // The one-mutator rule in a plain shared workspace.
-  const mutators = [action('holder', { ownedFiles: ['a.js'] }), action('wake', { ownedFiles: ['b.js'] })];
-  assert.equal(canStartV2Action(mutators, { holder: 'running', wake: 'waiting' }, 'wake', { concurrency: 2 }), false);
-  assert.equal(canStartV2Action(mutators, { holder: 'running', wake: 'waiting' }, 'wake', { concurrency: 2, workspaceMode: 'isolated' }), true);
-  // A full cap.
-  const cap = [action('a'), action('b'), action('wake')];
-  assert.equal(canStartV2Action(cap, { a: 'running', b: 'running', wake: 'waiting' }, 'wake', { concurrency: 2 }), false);
-  assert.equal(canStartV2Action(cap, { a: 'running', b: 'waiting', wake: 'waiting' }, 'wake', { concurrency: 2 }), true);
-  // Other waiting and ready steps are ignored; the owned-file overlap is only with running steps.
-  assert.equal(canStartV2Action([...owned, action('ready')], { holder: 'waiting', wake: 'waiting' }, 'wake', { concurrency: 1, workspaceMode: 'isolated' }), true);
-  assert.equal(canStartV2Action(cap, { wake: 'running' }, 'wake', { concurrency: 3 }), false);
-  assert.throws(() => canStartV2Action(cap, {}, 'missing'), /unknown action "missing"/);
 });
 
 test('rejects cycles even when every action is already terminal', () => {

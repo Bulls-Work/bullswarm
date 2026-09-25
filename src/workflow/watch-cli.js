@@ -19,18 +19,17 @@ import { presentationStageStatus, projectV2DependencyStages } from './v2-present
 import { isDeliveredWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { createStaleProbe } from '../lib/stale.js';
-import { declaredEvidence } from './step-vocabulary.js';
-import { changeStepCommands, needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
+import { declaredEvidence, NEEDS_YOU_LABELS } from './step-vocabulary.js';
+import { needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
+import { readRunFeatures, runFeatureFlags } from './run-features.js';
 
 // The needs-you facts ride on the notable under a symbol: the JSONL object
 // carries only needsYouJson's fields, and the human block renders from these.
 const NEEDS_YOU_FACTS = Symbol('needsYouFacts');
-// The run id a line's commands name; kept out of the JSONL object likewise.
-const RUN_TOKEN = Symbol('runToken');
-// The waiting step's route allows only the pool it waits on (not JSONL).
-const ROUTE_ONLY = Symbol('routeOnly');
-// A wait whose return is further away than this is the caller's decision (D24).
-const LONG_WAIT_MS = 30 * 60_000;
+// A marked run's Workflow Planner or preflight scout that stopped on one of
+// these goes to the caller (owner decision, 2026-09-25): the watch says so and
+// wakes.
+const LIMIT_STOP_KINDS = new Set(['quota', 'throttle', 'unavailable']);
 
 function needsYouNotable(facts) {
   return facts ? { type: 'needs-you', ...needsYouJson(facts), [NEEDS_YOU_FACTS]: facts } : null;
@@ -337,35 +336,6 @@ function evidenceNotRun(state, payload, event) {
   return !Array.isArray(attempt?.evidenceResults);
 }
 
-/**
- * The latest `action.waiting` event of every step still waiting, without its
- * commit time so its wait is counted from the watcher's clock. Only steps the
- * state holds as `waiting`, and never a step with any event after the attach
- * `cursor`: the state can lag the event log by one save, and that newer
- * event (a start, a finish, a fresh wait) is printed on its own. One read
- * decides both, so an event written meanwhile cannot slip between them.
- */
-export function currentWaitEvents(runDir, state, { cursor = Infinity } = {}) {
-  const waiting = new Set((state?.actions ?? []).filter((action) => action?.status === 'waiting').map((action) => action.id));
-  if (!waiting.size) return [];
-  const moved = new Set();
-  const latest = new Map();
-  for (const event of readEvents(runDir, { after: 0 })) {
-    const id = event.payload?.actionId;
-    if (!waiting.has(id)) continue;
-    if (event.sequence > cursor) moved.add(id);
-    else if (event.type === 'action.waiting') latest.set(id, event);
-  }
-  return [...latest.entries()]
-    .filter(([id]) => !moved.has(id))
-    .map(([, { committedAt: _committedAt, ...event }]) => event);
-}
-
-function secondsUntil(untilIso, fromMs) {
-  const value = (Date.parse(untilIso ?? '') - fromMs) / 1000;
-  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
-}
-
 function attemptOrdinal(state, attemptId) {
   const known = (state.attempts ?? []).find((attempt) => attempt.id === attemptId)?.ordinal;
   if (Number.isFinite(known)) return known;
@@ -473,6 +443,49 @@ function formatDeadline(untilIso, now) {
   return `${String(until.getHours()).padStart(2, '0')}:${String(until.getMinutes()).padStart(2, '0')}`;
 }
 
+// An ISO string for a time given as epoch ms or as a parseable string; null
+// for anything else.
+function isoOrNull(value) {
+  const ms = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+// The planner's or scout's attempt an attempt event names by its ordinal
+// (their attempts live under state.planner and state.preflight.scout).
+function orchestrationAttempt(state, actionId, ordinal) {
+  const attempts = actionId === 'preflight-scout' ? state?.preflight?.scout?.attempts
+    : actionId === 'workflow-planner' ? state?.planner?.attempts : null;
+  return Number.isInteger(ordinal) ? (attempts ?? []).find((attempt) => attempt?.ordinal === ordinal) ?? null : null;
+}
+
+// Whether a run goes on after its scout stopped: it has a program, or the
+// caller's --program is kept in the run directory (v2-runtime.js) until the
+// kernel applies it just after the scout, so a state read in between shows no
+// program yet.
+function runHasProgram(state, runDir) {
+  return (state?.program?.actions ?? []).length > 0
+    || (runDir != null && existsSync(join(runDir, 'initial-planner-response.json')));
+}
+
+// The attempt a preflight.scout_finished or planner.finished event closed: the
+// last one finished by the time it was committed (a replay reads a state that
+// moved on).
+function attemptClosedAt(attempts, committedAt) {
+  const at = Date.parse(committedAt ?? '');
+  if (!Number.isFinite(at)) return attempts.at(-1) ?? null;
+  return attempts.filter((attempt) => !(Date.parse(attempt?.finishedAt ?? attempt?.startedAt ?? '') > at)).at(-1) ?? null;
+}
+
+function scoutAttemptAt(state, committedAt) {
+  return attemptClosedAt(state?.preflight?.scout?.attempts ?? [], committedAt);
+}
+
+// A planner turn's attempts carry their turn; an event without one reads all.
+function plannerAttemptAt(state, turn, committedAt) {
+  const attempts = (state?.planner?.attempts ?? []).filter((attempt) => !Number.isInteger(turn) || attempt?.turn === turn);
+  return attemptClosedAt(attempts, committedAt);
+}
+
 /**
  * Turn the durable events committed since the last poll, plus the current
  * state, into the notable events a watcher should print. Pure: the carried
@@ -490,8 +503,13 @@ export function notableWatchEvents({
   stale = null,
   // The run directory, for the marker the needs-you block reads.
   runDir = null,
+  // The run's features.json marker; read from `runDir` when not given.
+  features = undefined,
 } = {}) {
   const program = isProgramWorkflow(state);
+  // Read once, and only when an event needs it.
+  let markedRun;
+  const marked = () => (markedRun ??= runFeatureFlags(features !== undefined ? features : runDir ? readRunFeatures(runDir) : {}).failureRule);
   const token = state?.shortId ?? state?.runId ?? '?';
   const carried = memory ?? initialWatchMemory(state);
   const stages = new Set(carried.stages);
@@ -546,7 +564,9 @@ export function notableWatchEvents({
     // A failed check is retried once on the same pool with its output
     // attached (E14); without that retry the step's own finish line says why.
     if (failureKind === 'failed-evidence' && payload.willRetry !== true) { retry.delete(actionId); return; }
-    const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId);
+    // Marked runs: a planner or scout attempt is found by its ordinal.
+    const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId)
+      ?? (payload.attemptId == null && marked() ? orchestrationAttempt(state, actionId, payload.ordinal) : null);
     const rememberHandoff = () => {
       if (payload.willRetry !== true || failureKind === 'schema') return;
       handoffs.set(actionId, {
@@ -575,19 +595,27 @@ export function notableWatchEvents({
     if (failureKind === 'quota') {
       const pool = record?.pool ?? payload.pool ?? null;
       const why = payload.why ?? record?.why ?? null;
+      const until = quotaDeadlineIso(bullswarmDir, pool, why);
+      // Marked runs file a spent window as quota whether or not the pool was
+      // paused: with no pause found the line says so, or names the return
+      // time the event carries. Unmarked runs keep `paused until`.
+      const backAt = isoOrNull(payload.retryAfter ?? payload.holdUntil ?? null);
       notable.push({
         type: 'attempt.quota',
         actionId,
         attemptId: payload.attemptId ?? record?.id ?? null,
         pool,
         why,
-        until: quotaDeadlineIso(bullswarmDir, pool, why),
+        until,
+        ...((payload.failureRule === true || marked()) && until == null ? { paused: false, ...(backAt ? { backAt } : {}) } : {}),
         proof: coreQuotaPauseProof(bullswarmDir, pool),
         willRetry: payload.willRetry === true,
-        // A marked (stage-3) run moves without spending the retry, or waits;
-        // what the dispatcher decided is on the event when it recorded it (F23).
+        // A marked (stage-3) run's line reads "back to you", or "no retry
+        // spent" on an attempt that promised one (markedQuotaTail). A move or
+        // wait decision rides on the JSONL object only when a saved stage-3
+        // event carries it (F23); stored attempts never hold one.
         ...(payload.failureRule === true ? { failureRule: true } : {}),
-        ...(['move', 'wait'].includes(payload.quotaNext ?? record?.quotaNext) ? { quotaNext: payload.quotaNext ?? record.quotaNext } : {}),
+        ...(['move', 'wait'].includes(payload.quotaNext) ? { quotaNext: payload.quotaNext } : {}),
       });
       rememberHandoff();
       moving.set(actionId, true);
@@ -667,6 +695,28 @@ export function notableWatchEvents({
         break;
       }
       case 'planner.finished': {
+        // The dispatch is over: a later turn's first attempt is not a retry
+        // or a move of this one (as action.finished does for a step).
+        retry.delete('workflow-planner');
+        moving.delete('workflow-planner');
+        // A marked run's planner that stopped on a usage limit, a rate limit
+        // that did not clear, or no free pool goes to the caller (the run
+        // finishes): one line with its pool and when to try again, as the
+        // scout's. Any other planner failure, and every unmarked run, keeps
+        // the rejected line.
+        if (payload.ok === false && LIMIT_STOP_KINDS.has(payload.failureKind) && marked()) {
+          // `unavailable`: no planner attempt ran, so no pool is named.
+          const pool = payload.pool ?? (payload.failureKind === 'unavailable'
+            ? null : plannerAttemptAt(state, payload.turn, event.committedAt)?.pool ?? null);
+          notable.push({
+            type: 'planner.finished', ok: false, turn: payload.turn ?? null,
+            failureKind: payload.failureKind, stopped: true,
+            label: NEEDS_YOU_LABELS[payload.failureKind], pool,
+            retryAfter: isoOrNull(payload.retryAfter ?? null),
+            why: payload.why ?? payload.failureKind,
+          });
+          break;
+        }
         notable.push(payload.ok === false
           ? {
             type: 'planner.finished', ok: false, turn: payload.turn ?? null,
@@ -715,6 +765,27 @@ export function notableWatchEvents({
       case 'preflight.scout_attempt_finished':
         onAttemptFinished('preflight-scout', payload);
         break;
+      // A marked run's scout that stopped on a usage limit, or found no pool
+      // free, goes to the caller: a run with no program finishes, and one
+      // with the caller's program runs on without the report.
+      case 'preflight.scout_finished': {
+        retry.delete('preflight-scout');
+        moving.delete('preflight-scout');
+        if (payload.status !== 'failed' || !LIMIT_STOP_KINDS.has(payload.failureKind) || !marked()) break;
+        // `unavailable`: no scout attempt ran, so no pool is named.
+        const pool = payload.pool ?? (payload.failureKind === 'unavailable' ? null : scoutAttemptAt(state, event.committedAt)?.pool ?? null);
+        notable.push({
+          type: 'preflight.scout_finished', status: 'failed', failureKind: payload.failureKind,
+          label: NEEDS_YOU_LABELS[payload.failureKind], pool,
+          retryAfter: isoOrNull(payload.retryAfter ?? null),
+          why: payload.why ?? null,
+          // The kernel's own decision when the event carries it: a replay of a
+          // run revised later has a program the scout's run never had. Events
+          // written before the field read the state.
+          runContinues: typeof payload.runContinues === 'boolean' ? payload.runContinues : runHasProgram(state, runDir),
+        });
+        break;
+      }
       case 'steering.delivered':
         if (verbose) notable.push({ type: 'steering.delivered', steeringId: payload.steeringId ?? null });
         break;
@@ -745,6 +816,9 @@ export function notableWatchEvents({
           type: 'run.reopened', previousStatus: payload.previousStatus ?? null,
           // F22: an act step the cancellation stopped after its worker started stays cancelled.
           ...(Array.isArray(payload.keptCancelled) && payload.keptCancelled.length ? { keptCancelled: [...payload.keptCancelled] } : {}),
+          // `workflow resume` reopens a finished run too (reopenV2RunForRetry),
+          // not only a plan revision: the line names which one did.
+          ...(payload.source === 'resume' ? { source: 'resume' } : {}),
         });
         break;
       case 'step.restarted':
@@ -773,21 +847,6 @@ export function notableWatchEvents({
           failed: (payload.failed ?? []).length, next: payload.next ?? null,
         });
         break;
-      case 'action.waiting': {
-        const until = Number.isFinite(payload.until) ? new Date(payload.until).toISOString() : payload.until ?? null;
-        const pools = Array.isArray(payload.pools) ? payload.pools : [];
-        notable.push({
-          type: 'action.waiting', actionId: payload.actionId ?? null, until,
-          pools: pools.map((entry) => (typeof entry === 'string' ? entry : entry?.pool)).filter(Boolean),
-          reason: payload.reason ?? null,
-          waitSec: secondsUntil(until, Date.parse(event.committedAt ?? '') || nowMs),
-          // Whether `step rerun --avoid <pool>` would be refused because the
-          // step's route allows only the pools it waits on (F24).
-          ...(routeAllowsOnly(state, payload.actionId, pools.map((entry) => (typeof entry === 'string' ? entry : entry?.pool))[0]) ? { [ROUTE_ONLY]: true } : {}),
-          [RUN_TOKEN]: token,
-        });
-        break;
-      }
       case 'step.accepted':
         notable.push({
           type: 'step.accepted', actionId: payload.actionId ?? null, reason: payload.reason ?? null,
@@ -903,14 +962,16 @@ export function watchTrouble(event, { program = false } = {}) {
       return event.stage === 'finished' && event.next === 'caller' ? 'rejected' : null;
     case 'plan.rejected':
       return 'rejected';
+    // A marked run's planner stopped by a limit or no free pool has its own kind.
     case 'planner.finished':
-      return event.ok === false ? 'rejected' : null;
+      if (event.ok !== false) return null;
+      return event.stopped === true ? 'planner-limit' : 'rejected';
+    // Only a marked run's scout stopped by a limit or no free pool is one.
+    case 'preflight.scout_finished':
+      return 'scout-limit';
     // In program runs a stall with no retry left becomes a needs-you block.
     case 'attempt.stalled':
       return program ? null : 'stalled';
-    // A short wait is not a decision; a long one might be (D24).
-    case 'action.waiting':
-      return Number.isFinite(event.waitSec) && event.waitSec * 1000 > LONG_WAIT_MS ? 'waiting' : null;
     case 'attempt.stale':
       return 'stale';
     case 'pause.requested':
@@ -923,52 +984,19 @@ export function watchTrouble(event, { program = false } = {}) {
   }
 }
 
-// A marked run's quota line says what follows (F23): the dispatcher's
-// recorded decision when the event has it; without it, a retry promised is
-// only known to spend nothing, and no retry sends the step to the caller.
+// A marked run's quota line: a usage limit sends the step to the caller
+// (owner decision, 2026-09-25). A saved stage-3 run may still show a retry.
 function markedQuotaTail(event) {
-  if (!event.willRetry) return 'back to you';
-  if (event.quotaNext === 'move') return 'moving to another pool (no retry spent)';
-  if (event.quotaNext === 'wait') return 'waiting for a pool';
-  return 'no retry spent';
-}
-
-// True when the step's route.pools.use names only `pool`: avoiding it leaves
-// nothing, and step rerun refuses it.
-function routeAllowsOnly(state, stepId, pool) {
-  const definition = (state?.program?.actions ?? []).find((action) => action.id === stepId);
-  const use = definition?.route?.pools?.use;
-  return Boolean(pool) && Array.isArray(use) && use.length > 0 && use.every((name) => name === pool);
+  return event.willRetry ? 'no retry spent' : 'back to you';
 }
 
 /** One notable event as one human line. `now` anchors the attempt.quota
  * deadline's local-vs-ISO formatting; it defaults to wall-clock time but the
  * watch loop threads its injectable clock through so it stays deterministic. */
-export function renderWatchEvent(event, { now = Date.now(), terminal = false, untilMode = false } = {}) {
+export function renderWatchEvent(event, { now = Date.now(), terminal = false } = {}) {
   switch (event.type) {
     case 'needs-you':
       return event[NEEDS_YOU_FACTS] ? renderNeedsYou(event[NEEDS_YOU_FACTS], { terminal }).join('\n') : null;
-    case 'action.waiting': {
-      const token = event[RUN_TOKEN] ?? '?';
-      const pool = event.pools?.[0] ?? '?';
-      const back = `${formatDeadline(event.until, now)} (in ${formatDuration(event.waitSec)})`;
-      // A draining pool is not out yet: the step is kept off it until its
-      // window resets, because this step would take it past the wall.
-      const lines = [event.reason === 'draining'
-        ? `${glyphs().waiting} ${event.actionId} waiting for a pool · ${pool} is nearly spent, resets at ${back}`
-        : `${glyphs().waiting} ${event.actionId} waiting for ${event.reason === 'bench' ? 'a pool' : 'quota'} · `
-          + `${(event.pools ?? []).length > 1 ? `first back: ${pool} at ${back}` : `${pool} back at ${back}`}`];
-      if (untilMode || (Number.isFinite(event.waitSec) && event.waitSec * 1000 > LONG_WAIT_MS)) {
-        // Every printed command runs as printed (F26).
-        const [exportPlan, revisePlan] = changeStepCommands(token);
-        lines.push(`  or change the step: ${exportPlan}`);
-        lines.push(`    then edit it:     ${revisePlan}`);
-        if (event.reason === 'quota' || event.reason === 'bench') lines.push(`  or lift the pause:  bullswarm pools resume ${pool}`);
-        // A step whose route allows only this pool cannot avoid it (F24).
-        else if (!event[ROUTE_ONLY]) lines.push(`  or run it elsewhere: bullswarm workflow step rerun ${token} ${event.actionId} --avoid ${pool}`);
-      }
-      return lines.join('\n');
-    }
     case 'step.accepted': {
       const reason = `"${event.reason ?? ''}"`;
       if (event.requirements?.length) {
@@ -1001,7 +1029,15 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
       return event.status === 'completed'
         ? `${glyphs().ok} ${event.label} completed · ${event.completed}/${event.total}`
         : `${glyphs().fail} ${event.label} ended · ${event.completed}/${event.total}`;
+    case 'preflight.scout_finished':
+      return `${glyphs().warn} preflight scout stopped · ${event.label ?? event.failureKind ?? 'failed'} on ${event.pool ?? 'no pool'}`
+        + (event.retryAfter ? ` · back at ${event.retryAfter}` : '')
+        + (event.runContinues ? ' · the run continues without its report' : '');
     case 'planner.finished':
+      if (!event.ok && event.stopped === true) {
+        return `${glyphs().fail} planner stopped · ${event.label ?? event.failureKind ?? 'failed'} on ${event.pool ?? 'no pool'}`
+          + (event.retryAfter ? ` · back at ${event.retryAfter}` : '');
+      }
       if (!event.ok) return `× planning attempt rejected · ${event.why}`;
       return event.turn === 1
         ? `${glyphs().plan} plan created (turn 1) · ${event.summary ?? event.kind ?? 'no summary'}`
@@ -1031,8 +1067,12 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
         + `silent for ${formatDuration(event.silentSec)} · `
         + (event.willRetry ? 'retrying on another pool' : 'no retry left');
     case 'attempt.quota':
-      return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · ` +
-        `paused until ${formatDeadline(event.until, now)} · `
+      return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · `
+        // A marked run's limit with no pause found: `not paused`, or the
+        // return time the event carried.
+        + (event.paused === false || (event.failureRule === true && event.until == null)
+          ? (event.backAt ? `back at ${event.backAt} · ` : 'not paused · ')
+          : `paused until ${formatDeadline(event.until, now)} · `)
         + (event.proof ? `${event.proof} · ` : '')
         + (event.failureRule ? markedQuotaTail(event)
           : (event.willRetry ? 'retrying on another pool' : 'no retry left'));
@@ -1068,7 +1108,7 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
     case 'pause.lifted':
       return `${glyphs().started} pause lifted · work continues`;
     case 'run.reopened':
-      return `${glyphs().started} run reopened from ${event.previousStatus ?? 'a finished state'} by a plan revision${event.keptCancelled?.length ? ` · not run again (act step, may have acted): ${event.keptCancelled.join(', ')}` : ''}`;
+      return `${glyphs().started} run reopened from ${event.previousStatus ?? 'a finished state'} by ${event.source === 'resume' ? 'workflow resume' : 'a plan revision'}${event.keptCancelled?.length ? ` · not run again (act step, may have acted): ${event.keptCancelled.join(', ')}` : ''}`;
     case 'verify.round': {
       const head = `verify round ${event.round} of ${event.of}`;
       if (event.stage === 'started') return `${glyphs().evidence} ${head} · ${event.toJudge} to ${event.round === 1 ? 'judge' : 're-check'}`;
@@ -1083,8 +1123,8 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false, un
   }
 }
 
-function watchEventLine(event, { jsonl, at, runId, shortId, sequence = null, terminal = false, untilMode = false }) {
-  if (!jsonl) return renderWatchEvent(event, { now: at, terminal, untilMode });
+function watchEventLine(event, { jsonl, at, runId, shortId, sequence = null, terminal = false }) {
+  if (!jsonl) return renderWatchEvent(event, { now: at, terminal });
   const { type, ...fields } = event;
   // `sequence` is the durable cursor this object was emitted at: the machine
   // form of the human `next: ... --after <sequence>` relaunch line.
@@ -1124,7 +1164,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   sinceMs = null,
   waitForRunMs = 0,
   // 'outcome' follows until the run's outcome; 'trouble' also ends on the
-  // first trouble line (failed, rejected, paused, stalled, stale, steering).
+  // first trouble line (failed, rejected, scout stopped, planner stopped,
+  // paused, stalled, stale, steering).
   // Either prints only trouble lines and the outcome, with no attach line.
   until = null,
   // The stale-score probe (see src/lib/stale.js); false turns it off.
@@ -1156,7 +1197,6 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   let priorHumanFingerprint = null;
   let lastPrintedAt = 0;
   let priorSequence = null;
-  let attachSequence = null;
   let pendingEvents = [];
   let pendingEventCount = 0;
   let pendingActionCount = 0;
@@ -1176,7 +1216,6 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         // --after names the cursor the previous watcher stopped at, in which
         // case the events committed since then are replayed and printed.
         priorSequence = afterSequence ?? state.events?.sequence ?? state.eventSequence ?? 0;
-        attachSequence = priorSequence;
         // Semantic quiet counts durable marks only (events, action starts and
         // finishes). Raw child output is surfaced separately as transport
         // liveness so a thinking agent and a dead one look different.
@@ -1220,7 +1259,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           jsonl, at: snapshot.at, runId: snapshot.runId, shortId: snapshot.shortId,
           sequence: priorSequence,
           // The outcome and handback follow a run that ended in this poll (D26).
-          terminal: snapshot.terminal, untilMode,
+          terminal: snapshot.terminal,
         });
         if (line == null) return;
         output.write(`${line}\n`);
@@ -1230,7 +1269,6 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       let troublePrinted = 0;
       const staleSteps = [];
       if (eventMode) {
-        const attachedBefore = attached;
         if (!attached) {
           attached = true;
           memory = initialWatchMemory(state, {
@@ -1247,25 +1285,16 @@ export async function runWorkflowWatch(bullswarmDir, token, {
             });
           }
         }
-        // A watcher attached with no cursor starts at the high-water mark, so a
-        // step that was already waiting would never be reported: its wait is
-        // current news, not history, and gets its line (and its wake, when the
-        // return is over 30 minutes away) on attach, counted from now. --next
-        // is a wake-up for what happens next, so it replays nothing.
-        const attachWaits = !attachedBefore && afterSequence == null && !next
-          ? currentWaitEvents(resolved.runDir, state, { cursor: attachSequence })
-          : [];
         const collected = notableWatchEvents({
-          events: attachWaits.length ? [...attachWaits, ...newEvents] : newEvents, state, memory, verbose, nowMs, stallAfterMs, bullswarmDir,
+          events: newEvents, state, memory, verbose, nowMs, stallAfterMs, bullswarmDir,
           stale: snapshot.interrupted ? null : staleProbe, runDir: resolved.runDir,
         });
         memory = collected.memory;
         for (const event of collected.notable) {
           const trouble = watchTrouble(event, { program: isProgramWorkflow(state) });
           // --until prints only what needs the caller: trouble, then the
-          // outcome. A waiting step says so in every mode (D24), and wakes the
-          // caller only when its return is more than 30 minutes away.
-          if (untilMode && trouble == null && event.type !== 'action.waiting') continue;
+          // outcome.
+          if (untilMode && trouble == null) continue;
           emitLine(event);
           notablePrinted += 1;
           if (trouble != null) troublePrinted += 1;

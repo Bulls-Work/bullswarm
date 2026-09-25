@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,12 +8,19 @@ import { fileURLToPath } from 'node:url';
 import { ACTION_KINDS, KIND_DEFAULTS, validateActionProgram } from '../src/workflow/action-validator.js';
 import { EVIDENCE_ENV_KEYS, EVIDENCE_MAX_TIMEOUT_SEC, runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from '../src/workflow/schema-check.js';
-import { FAILURE_CLASSES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, evidenceResultsIssues, roleRouting } from '../src/workflow/step-vocabulary.js';
+import { FAILURE_CLASSES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, evidenceResultsIssues, poolCausedFailure, roleRouting } from '../src/workflow/step-vocabulary.js';
 import { formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, stepProof, summarizeV2Result } from '../src/workflow/v2-outcome.js';
-import { needsYouFacts, renderNeedsYou } from '../src/workflow/needs-you.js';
+import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
 import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
+import { readEvents } from '../src/workflow/events.js';
+import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { reopenV2RunForRetry, reviseV2Program, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { createRevisionRequest } from '../src/workflow/v2-revision.js';
+import { THROTTLE_BACKOFF_MS, THROTTLE_MAX_WAIT_MS } from '../src/lib/quota.js';
 import { STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { deliverableVerdict, snapshotPossible } from '../src/workflow/v2-dispatch.js';
+import * as dispatchModule from '../src/workflow/v2-dispatch.js';
+import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
 import { helpText } from '../src/help.js';
 import { extractGoalRequirements } from '../src/workflow/goal.js';
@@ -599,8 +607,8 @@ test('the docs carry the fix round: no-record JSONL, $ref targets, on-disk schem
 
 // Stage-3 fix round (F31, F33-F38): every option the skill tells a caller to
 // choose is printed by the code with those words, in the order a caller meets
-// them: the needs-you block, the waiting line, the end-of-run handback, and
-// the accept that is a choice, never proof.
+// them: the needs-you block, a usage limit's block, the end-of-run handback,
+// and the accept that is a choice, never proof.
 
 // A skill section: from its heading to the next heading of the same depth.
 function section(path, heading) {
@@ -673,37 +681,266 @@ test('the workflows guide shows the needs-you block exactly as renderNeedsYou pr
   assert.equal(example, renderNeedsYou(facts, { next: 'bullswarm workflow watch <id> --until trouble --after <sequence> --since <iso>' }).join('\n'));
 });
 
-test('the skill says what a waiting line means, when it wakes, and gives the options the watch prints', () => {
-  const skill = section('skill/SKILL.md', '### A waiting step');
+// A marked run's step that a usage limit (or no free pool) sent back to the
+// caller, with placeholder names: the facts needsYouFacts builds from the
+// step's finish event. `attempts: false` is a step no pool could take.
+const BACK_AT = '2026-09-25T14:00:00.000Z';
+function limitFacts({ stepId = '<step>', token = '<shortId>', failureKind = 'quota', why = '<the provider\'s limit notice>', attempts = true } = {}) {
+  const state = {
+    runId: 'wf-docs', shortId: token,
+    program: { actions: [{ id: stepId, kind: 'implement', dependsOn: [] }] },
+    actions: [{ id: stepId, status: 'failed' }],
+    attempts: attempts ? [{
+      id: 'a1', actionId: stepId, ordinal: 1, pool: 'pool-a', model: 'model-a', routeCandidates: ['pool-a', 'pool-b'],
+      status: 'failed', failureKind, changedFileCount: 0, outputFile: '<absolute output path>',
+      startedAt: '2026-09-25T09:00:00.000Z', finishedAt: '2026-09-25T09:04:00.000Z',
+    }] : [],
+  };
+  const event = {
+    type: 'action.finished', committedAt: '2026-09-25T09:05:00.000Z',
+    payload: { actionId: stepId, status: 'failed', failureKind, why, retryAfter: BACK_AT },
+  };
+  return needsYouFacts(state, event, { token, features: STAGE3_RUN_FEATURES });
+}
+
+// The same sentence in every page that explains the transient backoff.
+const THROTTLE_SENTENCE = 'backs off on the same pool at most twice (20 s, then 60 s, or the wait it names when that is at most 2 minutes), then comes back to you';
+
+test('the skill says a usage limit or no free pool comes back to you, with the back-at time and the options the block prints', () => {
+  const skill = section('skill/SKILL.md', '### A usage limit or no free pool');
   const whole = flat('skill/SKILL.md');
-  const committedAt = '2026-09-24T01:00:00.000Z';
-  const state = { runId: 'wf-docs', shortId: '<shortId>', program: { actions: [{ id: '<step>', kind: 'implement' }] }, actions: [{ id: '<step>', status: 'waiting' }], attempts: [] };
-  const notable = (minutes, reason, pools = ['<pool>']) => notableWatchEvents({
-    events: [{ type: 'action.waiting', committedAt, payload: { actionId: '<step>', until: new Date(Date.parse(committedAt) + minutes * 60_000).toISOString(), pools, reason } }],
-    state,
-  }).notable[0];
-  const render = (event) => renderWatchEvent(event, { now: Date.parse(committedAt) }).split('\n');
-  // The header, up to the time.
-  const [head] = render(notable(10, 'hold'));
-  const printed = head.slice(0, head.indexOf(' back at ') + ' back at'.length);
-  assert.ok(skill.includes(`\`${printed} <time> (in <duration>)\``), `${printed}`);
-  assert.match(render(notable(10, 'bench'))[0], /^⧖ <step> waiting for a pool · /);
-  assert.ok(skill.includes('`waiting for a pool`'));
-  assert.match(render(notable(120, 'quota', ['<pool>', 'pool-b']))[0], / · first back: <pool> at /);
-  assert.ok(skill.includes('`first back: <pool> at …`'));
-  // It wakes --until trouble only past 30 minutes.
-  assert.equal(watchTrouble(notable(29, 'hold')), null);
-  assert.equal(watchTrouble(notable(31, 'hold')), 'waiting');
-  assert.ok(skill.includes('`--until trouble` wakes on it only when the wait is longer than 30 minutes'));
-  assert.ok(skill.includes('the step starts again by itself when the pool is back'));
-  // Each printed option line: its label is in the skill's table and its command in the skill.
-  const options = [...render(notable(120, 'hold')).slice(1), render(notable(120, 'quota'))[3]];
-  const pairs = options.map((line) => line.trim().match(/^(or [a-z ]+:|then edit it:)\s+(.*)$/).slice(1));
-  assert.deepEqual(pairs.map(([label]) => label), ['or change the step:', 'then edit it:', 'or run it elsewhere:', 'or lift the pause:']);
-  for (const [label, command] of pairs) {
-    assert.ok(skill.includes(`\`${label}\``), `the skill names \`${label}\``);
-    assert.ok(whole.includes(`\`${command}\``), `the skill gives \`${command}\``);
+  // A usage limit: straight back to the caller, not retried, with its return time.
+  const lines = renderNeedsYou(limitFacts(), { next: 'bullswarm workflow watch <shortId> --until trouble' });
+  assert.match(lines[0], / <step> needs you · out of quota · not retried$/);
+  assert.ok(whole.includes('`✗ <step> needs you · out of quota …`'));
+  assert.ok(skill.includes('The step comes straight back to you'));
+  assert.ok(skill.includes('Nothing waits, moves to another pool or retries by itself, and the rest of the run keeps going.'));
+  assert.ok(lines.includes(`  back at   ${BACK_AT}`));
+  assert.ok(skill.includes('`back at <time>`'));
+  // Every option the block prints is named, and the new ones give the printed command.
+  const options = new Map(blockOptions(lines));
+  assert.deepEqual([...options.keys()], ['rerun elsewhere', 'wait for it', 'change the step', 'then edit it', 'take over', 'accept anyway']);
+  for (const label of ['rerun elsewhere', 'wait for it', 'accept anyway', 'change the step', 'take over']) {
+    assert.ok(skill.includes(`\`${label}\``), `the section names \`${label}\``);
   }
+  const placeholders = (command) => command.replace(BACK_AT, '<time>').replace('--avoid pool-a', '--avoid <pool>');
+  for (const label of ['rerun elsewhere', 'wait for it', 'accept anyway']) {
+    assert.ok(skill.includes(`\`${placeholders(options.get(label))}\``), `the section gives ${label}: ${options.get(label)}`);
+  }
+  for (const label of ['change the step', 'then edit it']) assert.ok(whole.includes(`\`${options.get(label)}\``), label);
+  assert.ok(skill.includes('`bullswarm workflow cancel <shortId>`'));
+  // The machine form carries the same time and command.
+  const json = needsYouJson(limitFacts());
+  assert.equal(json.backAt, BACK_AT);
+  assert.equal(json.options.waitForIt, `after ${BACK_AT}: bullswarm workflow step rerun <shortId> <step>`);
+  // No pool free: the why names each pool's reason, as the dispatcher words it.
+  const dispatch = read('src/workflow/v2-dispatch.js');
+  for (const words of ["'no pool with quota to spare'", "'no pool free'", "'paused for quota'", '· no retry: ']) {
+    assert.ok(dispatch.includes(words), `the dispatcher writes ${words}`);
+  }
+  assert.ok(skill.includes('`· no retry: <pool> <reason>; …`'));
+  assert.ok(skill.includes('`no pool with quota to spare: <pool> paused for quota until <time>; …`'));
+  assert.ok(skill.includes('`no pool free: …`'));
+  const noPool = renderNeedsYou(limitFacts({ attempts: false, why: `no pool with quota to spare: pool-a paused for quota until ${BACK_AT}` }));
+  assert.match(noPool[0], / <step> needs you · out of quota · not retried$/);
+  assert.ok(noPool.includes(`  back at   ${BACK_AT}`));
+  const notFree = renderNeedsYou(limitFacts({ attempts: false, failureKind: 'unavailable', why: 'no pool free: pool-a already failed on this step' }));
+  assert.match(notFree[0], / <step> needs you · no eligible pool · not retried$/);
+  assert.ok(skill.includes('the header then reads `no eligible pool`'));
+  // A transient rate limit is not a usage limit: two bounded backoffs, then the caller.
+  assert.deepEqual(THROTTLE_BACKOFF_MS, [20_000, 60_000]);
+  // A marked run sits out a named wait of at most 2 minutes; the 15-minute cap
+  // is the one runs started earlier keep.
+  assert.equal(dispatchModule.MARKED_THROTTLE_MAX_WAIT_MS, 2 * 60_000);
+  assert.equal(THROTTLE_MAX_WAIT_MS, 15 * 60_000);
+  assert.ok(skill.includes(`It ${THROTTLE_SENTENCE}`));
+  assert.ok(skill.includes('with automatic pausing on or off'));
+  assert.ok(skill.includes('even when the notice names no reset'));
+  assert.ok(skill.includes('One that names a longer wait comes back to you at once, with `back at` at the end of that wait.'));
+  // A backoff whose pool is out comes back at once, with that pool's own return.
+  const backoffLost = 'One whose pool is no longer free for the backoff (paused, at its 5-hour limit, nearly spent or benched in the meantime) comes back to you at once too: as `out of quota` when that pool is out on a usage limit, with `back at` its return when that is known.';
+  // A process failure retries by itself, on the same pool when it is the only
+  // one (except after a sign-in failure): the pages never say it always moves.
+  const processRetry = 'A sign-in failure, a provider error or a worker that died at start still gets the step\'s one automatic retry by itself, on another free pool when there is one.';
+  for (const [path, text] of [['skill/SKILL.md', skill], ['docs/guide/workflows.md', flat('docs/guide/workflows.md')]]) {
+    assert.ok(text.includes(backoffLost), path);
+    assert.ok(text.includes(processRetry), path);
+    assert.ok(!text.includes('still moves to another free pool by itself'), path);
+  }
+});
+
+test('the workflows guide shows a usage limit\'s block exactly as renderNeedsYou prints it, and names every choice', () => {
+  const guide = read('docs/guide/workflows.md');
+  const from = guide.indexOf('A usage limit ends the step');
+  assert.ok(from > guide.indexOf('## The failure rule and needs-you block'), 'the usage-limit paragraph is in the failure-rule section');
+  const example = guide.slice(from).match(/```text\n([\s\S]*?)\n```/)[1];
+  const facts = limitFacts({ stepId: 'build', token: '<id>' });
+  assert.equal(example, renderNeedsYou(facts, { next: 'bullswarm workflow watch <id> --until trouble --after <sequence> --since <iso>' }).join('\n'));
+  const text = flat('docs/guide/workflows.md');
+  assert.ok(text.includes('`bullswarm workflow step rerun <id> <step> --avoid <pool>`'));
+  assert.ok(text.includes('nothing reruns it for you'));
+  assert.ok(text.includes('`bullswarm workflow cancel <id>`'));
+  assert.ok(text.includes(`It ${THROTTLE_SENTENCE}`));
+  assert.ok(flat('skill/references/operations.md').includes(`it ${THROTTLE_SENTENCE}`));
+  // back at: the earliest known return; a pool with none is skipped.
+  assert.ok(text.includes('`back at` is then the earliest known return among those pools; a pool whose return is unknown is skipped.'));
+  assert.ok(text.includes('A limit notice that names no reset ends the step too; its block then prints `back at` only when every pool that can run the step is out and one of them has a known return.'));
+  // A rerun leaves a pool only after a sign-in, provider or died-at-start
+  // failure; a usage limit is routed as usual.
+  assert.ok(text.includes('Pool-caused failures are a sign-in failure, a provider error, or a worker that exited with an error before it answered or changed a file.'));
+  assert.ok(text.includes('A usage limit is not one of these: a rerun after one is routed as usual'));
+  const attempt = (failureKind) => ({ pool: 'pool-a', status: 'failed', failureKind });
+  assert.equal(poolCausedFailure(attempt('quota')), false);
+  assert.equal(poolCausedFailure(attempt('throttle')), false);
+  for (const kind of ['auth', 'provider', 'process']) assert.equal(poolCausedFailure(attempt(kind)), true, kind);
+});
+
+test('the watch pages give the usage-limit line and the needs-you JSONL fields the code prints', async () => {
+  const quotaLine = (fields) => renderWatchEvent({ type: 'attempt.quota', actionId: '<step>', pool: '<pool>', proof: null, willRetry: false, failureRule: true, ...fields });
+  assert.match(quotaLine({ until: BACK_AT }), / <step> usage limit on <pool> · paused until \S+ · back to you$/);
+  // A marked run's pool that was not paused for it: `not paused` (a notable
+  // that carried a return time would print it; the runtime's never does).
+  assert.match(quotaLine({ until: null, paused: false, backAt: BACK_AT }), new RegExp(` <step> usage limit on <pool> · back at ${BACK_AT} · back to you$`));
+  assert.match(quotaLine({ until: null }), / <step> usage limit on <pool> · not paused · back to you$/);
+  // A real marked run whose step hit a usage limit with its return time known
+  // and no pause: the attempt's event carries no return time, so the line
+  // reads `not paused`, and the needs-you block after it carries `back at`.
+  const run = await limitStopRun({ mode: 'program' });
+  const stepEvents = run.events.filter((event) => event.payload?.actionId === 'write-report');
+  const attemptFinished = stepEvents.find((event) => event.type === 'attempt.finished');
+  assert.equal(Object.hasOwn(attemptFinished.payload, 'retryAfter'), false, 'attempt events carry no retryAfter');
+  const [limitNotable] = notableWatchEvents({ events: [attemptFinished], state: run.state, features: STAGE3_RUN_FEATURES }).notable;
+  assert.equal(renderWatchEvent(limitNotable).replace(/^\S+ /, '⚠ '), '⚠ write-report usage limit on pool-a · not paused · back to you');
+  const stepFinished = stepEvents.find((event) => event.type === 'action.finished');
+  assert.equal(stepFinished.payload.retryAfter, BACK_AT);
+  assert.ok(renderNeedsYou(needsYouFacts(run.state, stepFinished, { token: '<id>', features: STAGE3_RUN_FEATURES })).includes(`  back at   ${BACK_AT}`));
+  assert.ok(flat('skill/references/operations.md').includes('(`not paused` in place of the pause when the pool was not paused for it: the line carries no return time), then the needs-you block, which carries the return time as `back at <time>` when it is known'));
+  assert.ok(flat('docs/guide/observing.md').includes('the line reads `not paused` in place of the pause deadline (`⚠ <actionId> usage limit on <pool> · not paused · back to you`): the attempt\'s event carries no return time. The needs-you block that follows carries it instead, as its `back at <time>` line, when the return time is known.'));
+  assert.ok(helpText(['workflow', 'watch']).replace(/\s+/g, ' ').includes('a pool that was not paused for it reads `not paused` in place of the pause, and the needs-you block after it carries the `back at <time>` line'));
+  // A saved stage-3 attempt that promised a retry.
+  assert.match(renderWatchEvent({ type: 'attempt.quota', actionId: '<step>', pool: '<pool>', until: null, willRetry: true, failureRule: true }), / · no retry spent$/);
+  const operations = flat('skill/references/operations.md');
+  assert.ok(operations.includes('`⚠ <step> usage limit on <pool> · paused until <time> · … · back to you`'));
+  assert.ok(operations.includes('`backAt` and `options.waitForIt`'));
+  const observing = flat('docs/guide/observing.md');
+  assert.ok(observing.includes('the line ends `back to you`'));
+  assert.ok(observing.includes('reads `no retry spent`'));
+  assert.ok(observing.includes('`waitForIt` (`after <time>: step rerun <id> <step>`)'));
+  assert.ok(observing.includes('carries `backAt`'));
+});
+
+test('the pages give the try line a rate-limit backoff prints, and back at only in runs started by this version', () => {
+  const stepId = '<step>';
+  const tries = (secondPool) => ({
+    runId: 'wf-docs', shortId: '<shortId>',
+    program: { actions: [{ id: stepId, kind: 'implement', dependsOn: [] }] },
+    actions: [{ id: stepId, status: 'failed' }],
+    attempts: [
+      { id: 'a1', actionId: stepId, ordinal: 1, pool: 'pool-a', model: 'model-a', status: 'failed', failureKind: 'throttle', changedFileCount: 0, startedAt: '2026-09-25T09:00:00.000Z', finishedAt: '2026-09-25T09:01:00.000Z' },
+      { id: 'a2', actionId: stepId, ordinal: 2, pool: secondPool, model: 'model-a', status: 'failed', failureKind: 'throttle', changedFileCount: 0, retryOf: { how: 'wait' }, startedAt: '2026-09-25T09:01:20.000Z', finishedAt: '2026-09-25T09:02:00.000Z' },
+    ],
+  });
+  const event = { type: 'action.finished', committedAt: '2026-09-25T09:03:00.000Z', payload: { actionId: stepId, status: 'failed', failureKind: 'throttle', why: '<the provider\'s rate-limit notice>', retryAfter: BACK_AT } };
+  const marked = needsYouFacts(tries('pool-a'), event, { token: '<shortId>', features: STAGE3_RUN_FEATURES });
+  const lines = renderNeedsYou(marked);
+  assert.match(lines[0], / <step> needs you · rate limited/);
+  assert.match(lines.find((line) => line.startsWith('  try 2 ')), / · after a rate-limit backoff$/);
+  // A rate limit that named a longer wait carries its return: back at, in a marked run only.
+  assert.ok(lines.includes(`  back at   ${BACK_AT}`));
+  assert.equal(needsYouJson(marked).options.waitForIt, `after ${BACK_AT}: bullswarm workflow step rerun <shortId> <step>`);
+  const earlier = needsYouFacts(tries('pool-a'), event, { token: '<shortId>', features: {} });
+  assert.equal(earlier.backAt, undefined);
+  assert.ok(!renderNeedsYou(earlier).some((line) => line.startsWith('  back at') || line.includes('wait for it')));
+  // A saved stage-3 run's move after a usage limit keeps its own words.
+  assert.match(renderNeedsYou(needsYouFacts(tries('pool-b'), event, { token: '<shortId>', features: STAGE3_RUN_FEATURES })).find((line) => line.startsWith('  try 2 ')), / · moved after a usage limit$/);
+  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'skill/references/operations.md', 'docs/guide/observing.md']) {
+    assert.ok(flat(path).includes('`· after a rate-limit backoff`'), path);
+  }
+  // A backoff is never the step's retry: the header counts the backoffs.
+  assert.match(lines[0], / <step> needs you · rate limited · backed off once$/);
+  const twice = { ...tries('pool-a') };
+  twice.attempts = [...twice.attempts, { ...twice.attempts[1], id: 'a3', ordinal: 3 }];
+  assert.match(renderNeedsYou(needsYouFacts(twice, event, { token: '<shortId>', features: STAGE3_RUN_FEATURES }))[0], / <step> needs you · rate limited · backed off twice$/);
+  assert.ok(flat('skill/SKILL.md').includes('(`✗ <step> needs you · rate limited · backed off twice`)'));
+  assert.ok(flat('docs/guide/workflows.md').includes('Its header reads `rate limited · backed off twice` (`once` after one backoff; a backoff is never counted as the retry)'));
+  assert.ok(flat('skill/references/operations.md').includes('the block\'s header counts the backoffs (`backed off twice`)'));
+  assert.ok(flat('skill/SKILL.md').includes('When a return time is known, for this or any other failure, the block prints `back at <time>`'));
+  assert.ok(flat('skill/references/operations.md').includes('Runs started earlier print no `back at`.'));
+});
+
+test('workflow capabilities states the failure rule the docs give', { timeout: 60_000 }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-docs-caps-'));
+  try {
+    const cli = fileURLToPath(new URL('../bin/bullswarm.js', import.meta.url));
+    const run = spawnSync(process.execPath, [cli, 'workflow', 'capabilities'], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, BULLSWARM_HOME: home, BULLSWARM_DEPTH: '0' },
+    });
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const rule = JSON.parse(run.stdout).routing.failureRule;
+    assert.deepEqual(Object.keys(rule), ['retriesPerStep', 'processFailure', 'gateFailure', 'quota', 'throttle', 'noFreePool', 'plannerAndScout', 'then', 'savedRuns']);
+    // The planner and the scout follow the same rule; the planner mode says so too.
+    assert.match(rule.plannerAndScout, /^the dispatched planner and the preflight scout follow the quota, throttle and noFreePool rules: .* stops them with no move to another pool; /);
+    // Nearly spent pools are never fed to the planner or the scout either.
+    assert.match(rule.plannerAndScout, /stops them with no move to another pool; a nearly spent pool \(its window closes soon and the dispatch would push it past its limit\) is never given to them either, unless the caller named it; the run finishes partial/);
+    assert.match(rule.plannerAndScout, /"the workflow planner stopped on a usage limit: <why>" \(or "the preflight scout stopped on a usage limit: <why>" for a scout with no program after it; "stopped: no pool free" when a pool was out for another reason or no pool can run it at all\)/);
+    assert.match(rule.plannerAndScout, /a sign-in failure, a provider error or a worker that died at start still moves them to another pool$/);
+    // Resume after the return time runs the stopped planner turn or scout
+    // again; a scout the run went on without is not run again.
+    assert.match(rule.plannerAndScout, /back at retryAfter when known, and the caller's options \(bullswarm workflow resume after retryAfter runs the stopped planner turn or scout again; plan it yourself with plan revise; or start a new run\); a scout before a caller program lets the run go on without its report, and resume does not run that scout again; /);
+    assert.ok(!/nothing to retry|resume does not run the planner/.test(rule.plannerAndScout));
+    const modes = JSON.parse(run.stdout).engines.autonomousV2.plannerModes;
+    assert.match(modes.dispatched, /a usage limit or no free pool stops the planner \(or the scout before it\) with no move to another pool/);
+    assert.match(modes.dispatched, /a nearly spent pool is never given to either/);
+    // The guides say the same: a draining pool is never fed, not even last.
+    assert.ok(flat('docs/guide/workflows.md').includes('The dispatched planner and the preflight scout are never given such a pool either; only a pool you pinned is exempt (`--orchestrator <pool> --orchestrator-strict` for the planner, `--worker-pool` for the scout).'));
+    assert.ok(flat('docs/guide/routing.md').includes('In a workflow started by this version a `draining` pool does not go last: it is never given a step, the dispatched planner or the preflight scout, even as the only pool left, unless you pinned it.'));
+    assert.match(rule.quota, /ends the step and goes to the caller at once, whatever the pausing switch; never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free$/);
+    assert.match(rule.quota, /with or without a reset, or a full meter/);
+    assert.match(rule.throttle, /backs off on the same pool at most twice without spending the retry \(20 s, then 60 s, or a named wait of at most 2 minutes\), then goes to the caller/);
+    assert.match(rule.throttle, /a longer named wait goes to the caller at once, with retryAfter at its end; a backoff whose pool is no longer free goes to the caller at once, as quota when that pool is out on a usage limit, with retryAfter its known return$/);
+    assert.match(rule.noFreePool, /the step goes to the caller, as quota when every reason is a usage limit, else unavailable; why names each pool and its reason; retryAfter is the earliest known return; /);
+    // A promised retry keeps its own kind (the dispatcher's no-retry tail).
+    assert.match(rule.noFreePool, /a promised retry that finds no free pool keeps the last failure's kind and its why ends "· no retry: <pool> <reason>; …"$/);
+    assert.equal(rule.savedRuns, 'keep their original retry and review rules');
+    for (const [key, text] of Object.entries(rule)) {
+      assert.ok(!/wait for a known return time|move without spending the retry/.test(String(text)), key);
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('no skill page, guide, reference or help text describes a step that waits for a pool', () => {
+  const stale = [
+    'waiting for quota', 'waiting for a pool', 'quota wait', 'wait for a known return time', 'waits for a known return time',
+    'makes the step wait', 'already waiting', 'more than 30 min', 'starts again by itself', 'Quota moves to another eligible pool',
+    'move to another eligible pool without spending the retry', 'never fails for quota', 'waits for one to come back',
+    'the step becomes `waiting`', 'including `waiting`', 'waits on a paused pool', 'waited on a pool', 'up to 15 minutes',
+    'printed only when each of them has a known return time', 'when every one is known', 'resuming before then fails it again at once',
+    'while a return time is known', 'moves the step by itself',
+  ];
+  const unreleased = (text) => text.slice(text.indexOf('## Unreleased'), text.indexOf('\n## ', text.indexOf('## Unreleased') + 1));
+  const pages = [
+    'skill/SKILL.md', 'skill/references/operations.md', 'skill/references/program.md', 'docs/reference/program.md',
+    'docs/guide/workflows.md', 'docs/guide/observing.md', 'docs/guide/routing.md', 'docs/reference/cli.md',
+    'docs/reference/result.md', 'AGENTS.md',
+  ];
+  for (const path of pages) {
+    const text = flat(path);
+    for (const phrase of stale) assert.ok(!text.includes(phrase), `${path}: ${phrase}`);
+  }
+  const changelog = unreleased(read('CHANGELOG.md')).replace(/\s+/g, ' ');
+  assert.ok(changelog.length > 1000, 'the Unreleased section is read');
+  for (const phrase of stale) assert.ok(!changelog.includes(phrase), `CHANGELOG Unreleased: ${phrase}`);
+  // The contract a planner reads, and the resume note, say the same.
+  const contract = v2PlannerContractRules({ executionMode: 'program', plannerMode: 'caller' }).join(' ');
+  for (const phrase of [...stale, 'A pool out of quota makes the step wait']) assert.ok(!contract.includes(phrase), `planner contract: ${phrase}`);
+  assert.ok(!read('src/workflow/cli.js').includes('waited on a pool'));
+  const watch = helpText(['workflow', 'watch']);
+  for (const phrase of stale) assert.ok(!watch.includes(phrase), `workflow watch --help: ${phrase}`);
+  assert.ok(watch.includes('it ends `back to you` and a needs-you block follows'));
+  assert.ok(helpText(['strategy', 'set-pausing']).includes('a spent usage window still ends the step and sends it back to the caller, whatever the switch'));
+  assert.ok(flat('docs/reference/cli.md').includes('a spent usage window still ends the step and comes back to you, whatever the switch'));
 });
 
 // A marked program run with one failed retryable step, one failed gate step,
@@ -769,9 +1006,9 @@ test('the skill and the result reference list the handback options formatV2Handb
   assert.ok(flat('skill/SKILL.md').includes('`its pool is back at <time>`'));
   // The needs-you options are not the end-of-run options (F33).
   assert.ok(!finish.includes('`rerun elsewhere`') && !finish.includes('`accept anyway`'));
-  // Order: the needs-you block, the waiting line, the end of the run, the accept.
+  // Order: the needs-you block, a usage limit's block, the end of the run, the accept.
   const skill = read('skill/SKILL.md');
-  const at = ['### When a step needs you', '### A waiting step', '### When it finishes', '**An accept is a choice, never proof.**'].map((text) => skill.indexOf(text));
+  const at = ['### When a step needs you', '### A usage limit or no free pool', '### When it finishes', '**An accept is a choice, never proof.**'].map((text) => skill.indexOf(text));
   assert.ok(at.every((index, i) => index > 0 && (i === 0 || index > at[i - 1])), `skill order: ${at}`);
 });
 
@@ -808,25 +1045,316 @@ test('the result reference reads independent and requirements[].next as the code
   assert.ok(!source.includes('add a step that fixes'));
 });
 
-test('docs do not overstate the failure rule: not-produced gets its gate retry, quota fails when no return time is known (F31, F36, F38)', () => {
+test('docs do not overstate the failure rule: not-produced gets its gate retry, a usage limit goes to the caller (F31, F36, F38)', () => {
   for (const path of PROGRAM_REFERENCES) {
     const text = flat(path);
     assert.ok(!/not-produced`\. That failure is not retried automatically/.test(text), path);
     assert.ok(text.includes('that failure gets one retry on the same pool in a fresh session with the failure attached, then comes back to you'), path);
     assert.ok(!text.includes('Quota never fails only because it is exhausted'), path);
-    assert.ok(text.includes('A step never fails for quota while a return time is known'), path);
+    // A usage limit, or no free pool, goes to the caller; only a rate limit backs off.
+    assert.ok(text.includes('`quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry'), path);
+    assert.ok(text.includes('Nothing waits for a pool. A limit notice is `quota` when it says a usage window, a quota or a balance is spent, with or without a reset named and whatever the pausing switch'), path);
+    assert.ok(text.includes('the step comes back to you as `quota` when every reason is a usage limit, else as `unavailable`'), path);
+    assert.ok(text.includes('If a route leaves no free pool, the step comes back to you at once'), path);
+  }
+  // The planner contract says the same (program mode, either planner).
+  for (const plannerMode of ['caller', 'dispatched']) {
+    const rules = v2PlannerContractRules({ executionMode: 'program', plannerMode }).join(' ');
+    assert.ok(rules.includes('A usage limit (a spent 5-hour or weekly window, or no credit left), or no free pool that can run the step, sends it back to you at once, with the time its pool is back when that is known; no step waits for a pool, and a usage limit never moves a step to another pool by itself. A transient rate limit (too many requests) backs off on the same pool at most twice, then comes back to you.'), plannerMode);
+    assert.ok(rules.includes('a step it leaves without a free pool comes back to you at once (no eligible pool, or each pool\'s reason) and never waits for one.'), plannerMode);
   }
   const operations = flat('skill/references/operations.md');
   assert.ok(!operations.includes('A run never waits: not for its caller, not for a paused pool'));
-  assert.ok(operations.includes('A step may wait inside the run for a pool whose return time is known'));
+  // No step waits inside a run for a pool (owner decision, 2026-09-25).
+  assert.ok(!operations.includes('A step may wait inside the run for a pool whose return time is known'));
+  assert.ok(operations.includes('A run never waits for its caller, for a silent worker, or for a pool to come back.'));
   assert.ok(operations.includes('retryable, retries?}'));
   // The same-pool process retry is never used after a sign-in failure.
   assert.match(read('src/workflow/v2-dispatch.js'), /soleCandidate && kind !== 'auth'\) next = \{ how: 'same-pool'/);
   const changelog = flat('CHANGELOG.md');
   assert.ok(changelog.includes('(the same pool when it is the only one, except after a sign-in failure)'));
   assert.ok(!changelog.includes('A pool out of quota is not a failure'));
-  assert.ok(changelog.includes('never fails the step while a return time is known'));
   const agents = flat('AGENTS.md');
   assert.ok(!agents.includes('never fail, whatever the pausing switch'));
-  assert.ok(agents.includes('it never fails for quota while a return time is known'));
+  assert.ok(!agents.includes('it never fails for quota while a return time is known'));
+  assert.ok(agents.includes('ends the step and sends it to the caller, whatever the pausing switch: no wait, no automatic move, no retry.'));
+});
+
+// A marked run whose dispatched planner or preflight scout a usage limit
+// stopped, run through the real kernel with a dispatcher that answers every
+// dispatch with the same limit. `mode`: planner (a dispatched planner, no
+// scout), scout (the scout before a dispatched planner), or program (the
+// scout before the caller's own program). `after`: then take one way on from
+// the finished run, 'resume' (workflow resume reopens it; no kernel is
+// relaunched) or 'revise' (plan revise with a program).
+async function limitStopRun({ mode = 'planner', failureKind = 'quota', retryAfter = BACK_AT, after = null } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-docs-limit-'));
+  const bullswarmDir = join(root, 'home');
+  const workspace = join(root, 'repo');
+  mkdirSync(bullswarmDir);
+  mkdirSync(workspace);
+  const settings = mode === 'planner' ? { scout: false } : mode === 'scout' ? { scout: true } : { scout: true, plannerMode: 'caller' };
+  const goalDocument = createV2GoalDocument({
+    goal: 'Deliver a correct report', cwd: workspace, requirements: [{ id: 'report-correct', text: 'report.md exists' }],
+    settings: { concurrency: 1, executionMode: 'program', ...settings },
+  });
+  const seen = [];
+  const dispatch = async (options) => {
+    seen.push({ id: options.action.id, usageLimitsToCaller: options.usageLimitsToCaller === true });
+    const files = options.paths(1);
+    const startedAt = '2026-09-01T09:00:00.000Z';
+    options.onAttempt?.('started', { ordinal: 1, pool: 'pool-a', model: 'model-a', status: 'running', startedAt, taskFile: files.taskFile, outFile: files.outFile, routing: {} });
+    const record = {
+      ordinal: 1, pool: 'pool-a', model: 'model-a', status: 'failed', startedAt, finishedAt: '2026-09-01T09:01:00.000Z',
+      taskFile: files.taskFile, outFile: files.outFile, failureKind, why: '<why>', usage: null, wallSec: 60, routing: {},
+    };
+    options.onAttempt?.('finished', record);
+    return { ok: false, status: 'failed', failureKind, ...(retryAfter ? { retryAfter } : {}), attempts: [record], verdict: { ok: false, why: '<why>' } };
+  };
+  const program = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [{ id: 'write-report', purpose: 'Write the report', dependsOn: [], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Write READY to report.md.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [] }],
+  };
+  try {
+    const run = await runV2AutonomousWorkflow({
+      bullswarmDir, goalDocument, pools: [], runId: 'wf-docslimit-abcdef', dependencies: { dispatchV2Action: dispatch },
+      ...(mode === 'program' ? { initialPlannerResponse: { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write the report.', program } } : {}),
+    });
+    const events = readEvents(run.runDir);
+    const summary = summarizeV2Result(run.result, run.state, { runDir: run.runDir, features: STAGE3_RUN_FEATURES });
+    let resumed = null;
+    let revised = null;
+    if (after === 'resume') {
+      const outcome = reopenV2RunForRetry({ bullswarmDir, runId: 'wf-docslimit-abcdef' });
+      resumed = { status: outcome.status, requeued: outcome.requeued ?? null, dispatch: outcome.dispatch ?? null };
+    }
+    if (after === 'revise') {
+      const request = createRevisionRequest({ program, summary: 'Plan it myself.' }, { source: 'cli' });
+      revised = await reviseV2Program({ bullswarmDir, runId: 'wf-docslimit-abcdef', request, waitMs: 0 });
+    }
+    return { result: run.result, state: run.state, shortId: run.state.shortId, seen, events, summary, resumed, revised };
+  } finally {
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
+// A marked run whose dispatched planner no pool can run at all: the real
+// dispatcher with no pools. The reason comes back with `<id>` for the run.
+async function noPoolPlannerRun() {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-docs-nopool-'));
+  const bullswarmDir = join(root, 'home');
+  const workspace = join(root, 'repo');
+  mkdirSync(bullswarmDir);
+  mkdirSync(workspace);
+  const goalDocument = createV2GoalDocument({
+    goal: 'Deliver a correct report', cwd: workspace, requirements: [{ id: 'report-correct', text: 'report.md exists' }],
+    settings: { concurrency: 1, executionMode: 'program', scout: false },
+  });
+  try {
+    const run = await runV2AutonomousWorkflow({
+      bullswarmDir, goalDocument, pools: [], runId: 'wf-docsnopool-abcdef', parentEnv: {},
+      dependencies: { refreshPools: async () => null },
+    });
+    return { status: run.result.status, reason: run.result.reason.replaceAll(run.state.shortId, '<id>') };
+  } finally {
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
+test('the pages give the reason a planner or scout stopped by a usage limit finishes the run with', async () => {
+  const planner = await limitStopRun({ after: 'revise' });
+  assert.deepEqual(planner.seen, [{ id: 'workflow-planner', usageLimitsToCaller: true }], 'one planner dispatch, told to leave usage limits to the caller');
+  assert.equal(planner.result.status, 'partial');
+  const named = (text, token) => text.replaceAll(planner.shortId, token).replaceAll(BACK_AT, '<time>');
+  const reason = named(planner.result.reason, '<id>');
+  assert.equal(reason, 'the workflow planner stopped on a usage limit: <why> · back at <time> · your call: resume after <time> with bullswarm workflow resume <id>, plan it yourself with bullswarm workflow plan revise <id> --program <file.json>, or start a new run');
+  // Each command it names works on the finished run. plan revise runs the
+  // caller's program:
+  assert.equal(planner.revised.status, 'applied');
+  assert.equal(planner.revised.reopened.previousStatus, 'partial');
+  assert.deepEqual(planner.revised.state.program.actions.map((action) => action.id), ['write-report']);
+  // and resume reopens the run to run the stopped planner again.
+  const plannerResumed = await limitStopRun({ after: 'resume' });
+  assert.deepEqual(plannerResumed.resumed, {
+    status: 'reopened', requeued: ['workflow-planner'],
+    dispatch: { id: 'workflow-planner', who: 'the workflow planner', retryAfter: BACK_AT },
+  });
+  // The result's retry option names it, with the time to wait for.
+  assert.equal(named(planner.summary.handback.options.retry, '<shortId>'), 'bullswarm workflow resume <shortId> after <time> (reruns the workflow planner)');
+  assert.ok(flat('docs/guide/workflows.md').includes('`bullswarm workflow resume <shortId> after <time> (reruns the workflow planner)`'));
+  assert.ok(flat('CHANGELOG.md').includes('`bullswarm workflow resume <run> after <time> (reruns the workflow planner)`'));
+  // What resume prints (cli.js reopenFinishedRun), as the pages quote it.
+  const cli = read('src/workflow/cli.js');
+  assert.ok(cli.includes('console.log(`✓ reopened the ${outcome.previousStatus} run ${id}; running again: ${running.join(\', \')}`);'));
+  assert.ok(cli.includes('console.log(`  note: ${dispatch.who} stopped with its pool back at ${dispatch.retryAfter}; run before then, it can fail the same way again`);'));
+  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md', 'CHANGELOG.md']) {
+    const page = flat(path);
+    assert.ok(!page.includes('does not run the planner or the scout again') && !page.includes('does not run a stopped planner'), path);
+    assert.ok(page.includes('runs the stopped planner or scout again') || page.includes('runs it again'), path);
+    assert.ok(page.includes('running again: the workflow planner'), path);
+  }
+  for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md', 'CHANGELOG.md']) {
+    assert.ok(flat(path).includes('reopened the partial run <'), path);
+  }
+  for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md']) {
+    assert.ok(flat(path).includes('stopped with its pool back at <time>; run before then, it can fail the same way again`'), path);
+  }
+  // The guide shows the reason verbatim; the skill, the CLI reference and the
+  // changelog give it with their own run placeholder.
+  assert.ok(read('docs/guide/workflows.md').includes(`\`\`\`text\n${reason}\n\`\`\``));
+  const withShort = named(planner.result.reason, '<shortId>');
+  assert.ok(flat('skill/SKILL.md').includes(`\`reason: ${withShort}\``));
+  assert.ok(flat('docs/reference/cli.md').includes(`\`${withShort}\``));
+  assert.ok(flat('CHANGELOG.md').includes(`\`${named(planner.result.reason, '<run>')}\``));
+  assert.ok(flat('skill/references/operations.md').includes(`\`${reason}\``));
+  const finished = planner.events.find((event) => event.type === 'planner.finished');
+  assert.deepEqual([finished.payload.failureKind, finished.payload.retryAfter], ['quota', BACK_AT]);
+  assert.ok(flat('skill/references/operations.md').includes('The `planner.finished` and `preflight.scout_finished` events of such a stop carry `failureKind`, `why` and `retryAfter`'));
+  // The watch prints the planner's stop as its own line, and wakes on it.
+  const plannerNotable = notableWatchEvents({ events: [finished], state: planner.state, features: STAGE3_RUN_FEATURES }).notable;
+  assert.equal(plannerNotable.length, 1);
+  const plannerLine = renderWatchEvent(plannerNotable[0]).replace(/^\S+ /, '✗ ').replaceAll(BACK_AT, '<time>').replaceAll('pool-a', '<pool>');
+  assert.equal(plannerLine, '✗ planner stopped · out of quota on <pool> · back at <time>');
+  assert.equal(watchTrouble(plannerNotable[0], { program: true }), 'planner-limit');
+  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'CHANGELOG.md']) {
+    assert.ok(flat(path).includes(`\`${plannerLine}\``), path);
+  }
+  const plannerGeneral = '`✗ planner stopped · <label> on <pool> · back at <time>`';
+  for (const path of ['docs/guide/observing.md', 'skill/references/operations.md', 'docs/reference/cli.md']) {
+    assert.ok(flat(path).includes(plannerGeneral), path);
+  }
+  assert.ok(helpText(['workflow', 'watch']).replace(/\s+/g, ' ').includes(`prints ${plannerGeneral} and the run finishes`));
+  // An unmarked run keeps the rejected planning line; so does any other planner failure (below).
+  assert.deepEqual(notableWatchEvents({ events: [finished], state: planner.state, features: {} }).notable.map((event) => renderWatchEvent(event)), ['× planning attempt rejected · <why>']);
+  assert.ok(flat('docs/guide/observing.md').includes('A planner turn that fails for any other reason, and every planner failure in a run from an earlier version, still prints `× planning attempt rejected · <why>`'));
+  for (const path of ['skill/references/operations.md', 'docs/reference/cli.md']) {
+    assert.ok(flat(path).includes('planner failure still prints `× planning attempt rejected · <why>`'), path);
+  }
+  assert.ok(flat('CHANGELOG.md').includes('(it used to read `× planning attempt rejected · …`)'));
+  // Before it, the planner attempt's own usage-limit line, which ends `no
+  // retry left` and brings no needs-you block. The pool was not paused and
+  // the attempt's event carries no return time: `not paused`.
+  const everyLine = notableWatchEvents({ events: planner.events, state: planner.state, features: STAGE3_RUN_FEATURES }).notable;
+  assert.deepEqual(everyLine.map((event) => event.type), ['attempt.quota', 'planner.finished']);
+  assert.match(renderWatchEvent(everyLine[0]), / workflow-planner usage limit on pool-a · not paused · no retry left$/);
+  assert.equal(watchTrouble(everyLine[0], { program: true }), null);
+  assert.ok(flat('docs/guide/observing.md').includes('a scout or planner attempt that hit a usage limit prints its own usage-limit line, which ends `no retry left` there (`⚠ preflight-scout usage limit on <pool> · … · no retry left`) and is followed by no needs-you block'));
+  assert.ok(flat('skill/references/operations.md').includes('The scout\'s or the planner\'s own usage-limit line before it ends `no retry left`, and no needs-you block follows it.'));
+  assert.ok(helpText(['workflow', 'watch']).replace(/\s+/g, ' ').includes('The scout\'s or the planner\'s own usage-limit line ends `no retry left`, and no needs-you block follows it.'));
+  // A planner failure that is not a limit carries no return time.
+  const signIn = await limitStopRun({ failureKind: 'auth', retryAfter: null });
+  const signInFinished = signIn.events.find((event) => event.type === 'planner.finished');
+  assert.equal(Object.hasOwn(signInFinished.payload, 'retryAfter'), false);
+  // Not a limit: the marked run's watch keeps the rejected planning line.
+  const signInNotable = notableWatchEvents({ events: [signInFinished], state: signIn.state, features: STAGE3_RUN_FEATURES }).notable;
+  assert.deepEqual(signInNotable.map((event) => renderWatchEvent(event)), ['× planning attempt rejected · <why>']);
+  assert.equal(watchTrouble(signInNotable[0], { program: true }), 'rejected');
+  assert.match(signIn.result.reason, /^the workflow planner could not produce a mechanically valid program: /);
+  // No return time: no back at, no "after that time".
+  const unknown = await limitStopRun({ retryAfter: null });
+  assert.equal(unknown.result.reason.replaceAll(unknown.shortId, '<id>'), 'the workflow planner stopped on a usage limit: <why> · your call: bullswarm workflow resume <id> once a pool is free, plan it yourself with bullswarm workflow plan revise <id> --program <file.json>, or start a new run');
+  assert.equal(unknown.summary.handback.options.retry.replaceAll(unknown.shortId, '<id>'), 'bullswarm workflow resume <id> (reruns the workflow planner)');
+  for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md']) {
+    assert.ok(flat(path).includes('drops `back at` when no return time is known'), path);
+    assert.ok(flat(path).includes('`bullswarm workflow resume <id> once a pool is free`'), path);
+  }
+  assert.ok(flat('docs/reference/cli.md').includes('`bullswarm workflow resume <shortId> once a pool is free`'));
+  assert.ok(flat('CHANGELOG.md').includes('`bullswarm workflow resume <run> once a pool is free`'));
+  // No pool free for a reason that is not a usage limit.
+  const noPool = await limitStopRun({ failureKind: 'unavailable' });
+  assert.match(noPool.result.reason, /^the workflow planner stopped: no pool free: <why> · back at /);
+  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/result.md', 'CHANGELOG.md']) {
+    assert.ok(flat(path).includes('`stopped: no pool free`'), path);
+    assert.ok(flat(path).includes('no pool can run it at all'), path);
+  }
+  // No pool can run the planner at all (the real dispatcher, no pools): the
+  // same stop, with the dispatcher's own reason.
+  const none = await noPoolPlannerRun();
+  assert.equal(none.reason, 'the workflow planner stopped: no pool free: no eligible pool: no enabled pool has a model on the high tier for analyze work · your call: bullswarm workflow resume <id> once a pool is free, plan it yourself with bullswarm workflow plan revise <id> --program <file.json>, or start a new run');
+  // A scout with no program after it ends the run the same way.
+  const scout = await limitStopRun({ mode: 'scout', after: 'revise' });
+  assert.deepEqual(scout.seen, [{ id: 'preflight-scout', usageLimitsToCaller: true }], 'no planner runs after the stopped scout');
+  assert.equal(scout.result.reason.replaceAll(scout.shortId, '<id>').replaceAll(BACK_AT, '<time>'), reason.replace('the workflow planner', 'the preflight scout'));
+  assert.equal(scout.revised.status, 'applied');
+  assert.equal(scout.summary.handback.options.retry.replaceAll(scout.shortId, '<id>').replaceAll(BACK_AT, '<time>'), 'bullswarm workflow resume <id> after <time> (reruns the preflight scout)');
+  const scoutResumed = await limitStopRun({ mode: 'scout', after: 'resume' });
+  assert.deepEqual(scoutResumed.resumed, {
+    status: 'reopened', requeued: ['preflight-scout'],
+    dispatch: { id: 'preflight-scout', who: 'the preflight scout', retryAfter: BACK_AT },
+  });
+  // A scout the run went on without (before the caller's program) is not run again.
+  const goneOn = await limitStopRun({ mode: 'program', after: 'resume' });
+  // Resume reopens the run for the program's step (it failed on the same
+  // limit), never for the scout.
+  assert.deepEqual(goneOn.resumed, { status: 'reopened', requeued: ['write-report'], dispatch: null });
+  assert.equal(goneOn.summary.handback.options.retry.replaceAll(goneOn.shortId, '<id>').replaceAll(BACK_AT, '<time>'), 'bullswarm workflow resume <id> after <time> (reruns write-report)');
+  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md']) {
+    assert.ok(/resume`? does not run that scout again/.test(flat(path)), path);
+  }
+  // Where a page says what resume does, it runs the planner or scout again
+  // only when that stop ended the run.
+  assert.ok(flat('docs/reference/cli.md').includes('where a usage limit or no free pool stopped the dispatched planner or the scout and ended the run, it runs that planner or scout again first (`running again: the workflow planner`); run it after the `back at` time, or it can stop the same way. A scout the run went on without (one before your own program) is not run again.'));
+  assert.ok(flat('skill/references/operations.md').includes('also a planner or scout whose stop on a usage limit or no free pool ended the run, which runs first'));
+  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md']) {
+    assert.ok(flat(path).includes('or a usage limit or no free pool stopped the planner or scout and ended the run'), path);
+  }
+  assert.ok(flat('skill/SKILL.md').includes('`retry` appears only when a step is retryable, or when a usage limit or no free pool stopped the planner or scout and ended the run.'));
+  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/guide/routing.md', 'docs/reference/cli.md', 'docs/reference/result.md', 'CHANGELOG.md']) {
+    assert.ok(flat(path).includes('`the preflight scout stopped on a usage limit: …`'), path);
+  }
+});
+
+test('the pages give the line the watch prints for a scout a usage limit stopped, and --until trouble wakes on it', async () => {
+  const withProgram = await limitStopRun({ mode: 'program' });
+  const lineFor = (run) => {
+    const scoutEvent = run.events.find((event) => event.type === 'preflight.scout_finished');
+    assert.equal(scoutEvent.payload.retryAfter, BACK_AT);
+    const { notable } = notableWatchEvents({ events: [scoutEvent], state: run.state, features: STAGE3_RUN_FEATURES });
+    assert.equal(notable.length, 1);
+    assert.equal(watchTrouble(notable[0], { program: true }), 'scout-limit');
+    return renderWatchEvent(notable[0]).replace(/^\S+ /, '⚠ ').replaceAll(BACK_AT, '<time>').replaceAll('pool-a', '<pool>');
+  };
+  const line = lineFor(withProgram);
+  assert.equal(line, '⚠ preflight scout stopped · out of quota on <pool> · back at <time> · the run continues without its report');
+  assert.deepEqual(withProgram.seen.map((entry) => entry.id), ['preflight-scout', 'write-report'], 'the caller\'s program runs without the report');
+  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'CHANGELOG.md']) {
+    assert.ok(flat(path).includes(`\`${line}\``), path);
+  }
+  // Before it, the scout attempt's own usage-limit line, ending `no retry left`.
+  const everyLine = notableWatchEvents({ events: withProgram.events, state: withProgram.state, features: STAGE3_RUN_FEATURES }).notable;
+  assert.deepEqual(everyLine.slice(0, 2).map((event) => event.type), ['attempt.quota', 'preflight.scout_finished']);
+  assert.match(renderWatchEvent(everyLine[0]), / preflight-scout usage limit on pool-a · .* · no retry left$/);
+  // Without a program the line has no tail, and the run finishes instead.
+  const scoutOnly = await limitStopRun({ mode: 'scout' });
+  assert.equal(lineFor(scoutOnly), '⚠ preflight scout stopped · out of quota on <pool> · back at <time>');
+  // No pool free: no pool is named, and no return time is left out.
+  const unpicked = await limitStopRun({ mode: 'program', failureKind: 'unavailable', retryAfter: null });
+  const unpickedEvent = unpicked.events.find((event) => event.type === 'preflight.scout_finished');
+  const [unpickedLine] = notableWatchEvents({ events: [unpickedEvent], state: unpicked.state, features: STAGE3_RUN_FEATURES }).notable;
+  assert.equal(renderWatchEvent(unpickedLine).replace(/^\S+ /, '⚠ '), '⚠ preflight scout stopped · no eligible pool on no pool · the run continues without its report');
+  assert.ok(flat('docs/guide/observing.md').includes('`<pool>` reads `no pool` when none was picked; `back at` is left out when no return time is known'));
+  const general = '`⚠ preflight scout stopped · <label> on <pool> · back at <time>`';
+  assert.ok(flat('docs/guide/observing.md').includes(general));
+  assert.ok(flat('skill/references/operations.md').includes('`⚠ preflight scout stopped · <label> on <pool> · back at <time> · the run continues without its report`'));
+  assert.ok(helpText(['workflow', 'watch']).includes(general));
+  // The labels are the needs-you block's.
+  for (const label of ['out of quota', 'rate limited', 'no eligible pool']) {
+    for (const path of ['docs/guide/observing.md', 'skill/references/operations.md']) assert.ok(flat(path).includes(`\`${label}\``), `${path}: ${label}`);
+  }
+  // An unmarked run prints nothing new.
+  const scoutEvent = withProgram.events.find((event) => event.type === 'preflight.scout_finished');
+  assert.deepEqual(notableWatchEvents({ events: [scoutEvent], state: withProgram.state, features: {} }).notable, []);
+  // The event carries the kernel's decision, and the pages name the field:
+  // the run went on with the caller's program, and finished without one.
+  assert.equal(scoutEvent.payload.runContinues, true);
+  assert.equal(scoutOnly.events.find((event) => event.type === 'preflight.scout_finished').payload.runContinues, false);
+  assert.ok(flat('skill/references/operations.md').includes('the scout\'s also carries `runContinues` (true when the run goes on without its report, false when it finishes there)'));
+  assert.ok(flat('CHANGELOG.md').includes('(the scout\'s also `runContinues`: whether the run goes on without its report)'));
+  // Trouble lists in the watch pages and help name it.
+  // A planner stopped the same way is trouble too (watchTrouble 'planner-limit').
+  assert.ok(flat('skill/SKILL.md').includes('a planner or scout that stopped on a usage limit'));
+  assert.ok(flat('docs/guide/observing.md').includes('a planner or preflight scout that stopped on a usage limit'));
+  assert.ok(flat('skill/references/operations.md').includes('a planner or preflight scout that stopped on a usage limit'));
+  assert.ok(flat('docs/reference/cli.md').includes('a planner or scout stopped on a usage limit'));
+  assert.ok(helpText(['workflow', 'watch']).includes('or at a planner or preflight scout stopped on a usage limit'));
 });

@@ -1041,6 +1041,65 @@ test('a provider error event with unrelated wording stays a provider failure wit
   }
 });
 
+// W5: a usage limit the provider reports inside its own error event keeps its
+// throttle or quota kind. The limit gates run before the stream-error gate,
+// which files only what is left as `provider`.
+const limitEvent = (message, data = {}) => ({
+  type: 'error',
+  error: { name: 'APIError', data: { message, statusCode: 429, ...data } },
+});
+
+test('a usage limit inside a provider error event keeps its throttle or quota kind, never provider (W5)', async () => {
+  const ctx = makeCtx();
+  try {
+    for (const pausing of [true, false]) {
+      const throttled = await watchOnce(streamingEvent(limitEvent('Too many requests')), 'Do the thing.', ctx.dir, ctx.paths, { pausing });
+      assert.equal(throttled.ok, false);
+      assert.equal(throttled.failureKind, 'throttle', throttled.why);
+      assert.equal(throttled.quotaPause.limit, 'throttle');
+      assert.equal(throttled.quotaPause.rule, pausing ? 'transient' : 'off');
+      assert.equal(throttled.quarantineHint, undefined);
+      assert.equal(throttled.throttleRetrySamePool, true);
+      // The stream error is still recorded as what the provider said.
+      assert.equal(throttled.meta.providerFailureType, 'error');
+      // Out of credit with no reset named and no meter read: window wording, no pause.
+      const spent = await watchOnce(
+        streamingEvent(limitEvent('Quota exceeded. Check your plan and billing details.')),
+        'Do the thing.', ctx.dir, ctx.paths, { pausing },
+      );
+      assert.equal(spent.failureKind, 'throttle', spent.why);
+      assert.equal(spent.quotaPause.limit, 'window');
+      assert.equal(spent.quotaPause.rule, pausing ? 'transient' : 'off');
+      assert.equal(spent.meta.providerFailureType, 'error');
+    }
+    // A spent window that names its reset pauses until it, as on any other channel.
+    const before = Date.now();
+    const named = await watchOnce(
+      streamingEvent(limitEvent("You've hit your session limit · resets in 2 hours")),
+      'Do the thing.', ctx.dir, ctx.paths, { pausing: true },
+    );
+    assert.equal(named.failureKind, 'quota', named.why);
+    assert.equal(named.quarantineHint, true);
+    assert.equal(named.quarantineSource, 'message');
+    assert.equal(named.quotaPause.rule, 'message');
+    assert.equal(named.quotaPause.limit, 'window');
+    assert.ok(named.quarantineUntil >= before + 2 * 3600_000 - 60_000 && named.quarantineUntil <= Date.now() + 2 * 3600_000 + 60_000,
+      `unexpected deadline ${named.quarantineUntil}`);
+    // The same event naming an upstream auth phrase too is still the limit, not a bench.
+    const both = await watchOnce(
+      streamingEvent(limitEvent('Too many requests', {
+        responseBody: '{"error":{"message":"Too many requests","type":"rate_limit_error","code":"auth_unavailable"}}',
+      })),
+      'Do the thing.', ctx.dir, ctx.paths, { pausing: true },
+    );
+    assert.equal(both.failureKind, 'throttle', both.why);
+    assert.equal(both.quarantineHint, undefined);
+    assert.doesNotMatch(both.why, /upstream auth failure/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('a generic provider stream error is recovered when a usable answer follows and the worker exits 0', async () => {
   const ctx = makeCtx();
   try {

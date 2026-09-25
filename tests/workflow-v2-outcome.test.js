@@ -7,7 +7,7 @@ import { applyEvidence } from '../src/workflow/ledger.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import {
   V2_RETRYABLE_FAILURE_KINDS, consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope,
-  evaluateV2Progress, formatV2HandbackLines, serializeV2ResultEnvelope, summarizeV2Result, v2RetryPlan, validateV2ResultEnvelope,
+  evaluateV2Progress, formatV2HandbackLines, serializeV2ResultEnvelope, summarizeV2Result, v2LimitStoppedDispatch, v2RetryPlan, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
 import { evidenceFailureWhy } from '../src/workflow/evidence-runner.js';
 
@@ -376,6 +376,40 @@ test('F17: a failed-evidence reason longer than the handback keeps its suffix; t
   assert.equal(summary.handback.unfinished[0].why, plain.slice(0, 160));
 });
 
+test('a marked run\'s reason that names the held pools after ` · no retry: ` keeps that list through the cut', () => {
+  // v2-dispatch.js noRetry: why nothing ran after the attempt, pool by pool.
+  const held = ' · no retry: luna-1 already failed on this step; luna-2 paused for quota until 2026-09-24T03:00:00.000Z';
+  const marked = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
+  const stateFor = (why) => evidenceState({
+    build: { status: 'failed', lastFailure: { kind: 'process', message: why } },
+    attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'process', why }],
+  });
+  const stderr = (count) => `worker exited with code 1: ${'npm ERR! missing script: build '.repeat(count).trim()}`;
+  // Over the summary's 160 characters: result.json keeps it whole, and the
+  // summary cuts the middle.
+  const why = `${stderr(4)}${held}`;
+  assert.ok(why.length > 160 && why.length <= 300, why);
+  const state = stateFor(why);
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z', features: marked });
+  assert.equal(result.handback.unfinished[0].why, why, 'result.json keeps the whole reason');
+  const summary = summarizeV2Result(result, state, { runDir: '/tmp/acme-run', features: marked });
+  const clipped = summary.handback.unfinished[0].why;
+  assert.ok(clipped.length <= 160, clipped);
+  assert.ok(clipped.endsWith(`…${held}`), `the held list survives the cut: ${clipped}`);
+  assert.ok(clipped.startsWith('worker exited with code 1: npm ERR!'), clipped);
+  const line = formatV2HandbackLines(summary).find((entry) => entry.startsWith('  step build:'));
+  // The step declares a check its failed worker never reached.
+  assert.equal(line, `  step build: failed (process) — ${clipped} · evidence not run`);
+  // Over result.json's 300 characters: the stored reason keeps the list too.
+  const longer = `${stderr(12)}${held}`;
+  assert.ok(longer.length > 300, longer);
+  const stored = createV2ResultEnvelope(stateFor(longer), { finishedAt: '2026-09-24T01:10:00Z', features: marked }).handback.unfinished[0].why;
+  assert.ok(stored.length <= 300 && stored.endsWith(`…${held}`), stored);
+  // An unmarked run's stored reason is cut at its end, as before.
+  const unmarked = createV2ResultEnvelope(stateFor(longer), { finishedAt: '2026-09-24T01:10:00Z', features: {} }).handback.unfinished[0].why;
+  assert.equal(unmarked, longer.slice(0, 300));
+});
+
 test('F23: a failed step whose worker failed before its evidence ran reads `evidence not run` in its handback line', () => {
   const summaryOf = (state) => summarizeV2Result(createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' }), state, { runDir: '/tmp/acme-run', features: { deliverableGate: 1, proofLabels: 1 } });
   const stepLine = (summary, id) => formatV2HandbackLines(summary).find((line) => line.startsWith(`  step ${id}:`));
@@ -563,4 +597,46 @@ test('verifyRounds caps go to 4 and the callerDecision pattern follows', () => {
   assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 4, used: 1, stoppedBy: null, phases: [phase(5)] })), /phases\[0\]\.round must be 1 to 4/);
   assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 4, used: 1, stoppedBy: null, phases: [] }, decision('1/5', 1))), /callerDecision\.verifyRounds must read used\/max/);
   assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 4, used: 1, stoppedBy: null, phases: [] }, decision('1/4', 5))), /requirements\[0\]\.round must be 1 to 4/);
+});
+
+// Owner decision (2026-09-25): the planner or scout stop `workflow resume`
+// runs again is the one that ended the run, and only while the relaunched
+// kernel would dispatch it again.
+test('v2LimitStoppedDispatch names the scout or planner turn resume runs again, and nothing else', () => {
+  const at = '2026-09-25T10:00:00.000Z';
+  const reset = '2026-09-25T12:00:00.000Z';
+  const unplanned = () => {
+    const state = createV2State(goal(), { runId: 'wf-test-abcdef', shortId: 'abc234' });
+    state.lifecycle = { status: 'partial', startedAt: at, finishedAt: at, resultFile: null };
+    return state;
+  };
+  // No record: nothing (every unmarked run, and any other failure).
+  assert.equal(v2LimitStoppedDispatch(unplanned()), null);
+  assert.equal(v2LimitStoppedDispatch(null), null);
+  // The scout that ended the run.
+  const scout = unplanned();
+  Object.assign(scout.preflight.scout, { status: 'failed', lastFailure: { kind: 'quota', message: 'usage limit' }, limitStop: { failureKind: 'quota', retryAfter: reset, at } });
+  assert.deepEqual(v2LimitStoppedDispatch(scout), { id: 'preflight-scout', who: 'the preflight scout', failureKind: 'quota', retryAfter: reset });
+  // A scout already run again (pending, or succeeded) is not.
+  assert.equal(v2LimitStoppedDispatch({ ...scout, preflight: { scout: { ...scout.preflight.scout, status: 'pending' } } }), null);
+  // An initial planner turn with still no program.
+  const initial = unplanned();
+  Object.assign(initial.planner, { status: 'failed', limitStop: { failureKind: 'unavailable', retryAfter: null, boundary: 'initial', at, steeringIds: [] } });
+  assert.deepEqual(v2LimitStoppedDispatch(initial), { id: 'workflow-planner', who: 'the workflow planner', failureKind: 'unavailable', retryAfter: null });
+  // A planner no longer failed (it ran again) is not.
+  assert.equal(v2LimitStoppedDispatch({ ...initial, planner: { ...initial.planner, status: 'waiting' } }), null);
+  // An initial turn a program has since replaced is not: the kernel would never plan it again.
+  const programmed = plannedState();
+  Object.assign(programmed.planner, { status: 'failed', limitStop: { failureKind: 'quota', retryAfter: reset, boundary: 'initial', at, steeringIds: [] } });
+  assert.equal(v2LimitStoppedDispatch(programmed), null);
+  // A steering turn runs again when its steering goes back to it.
+  programmed.planner.limitStop = { failureKind: 'quota', retryAfter: reset, boundary: 'steering', at, steeringIds: ['steer-1'] };
+  assert.equal(v2LimitStoppedDispatch(programmed)?.id, 'workflow-planner');
+  programmed.planner.limitStop.steeringIds = [];
+  assert.equal(v2LimitStoppedDispatch(programmed), null);
+  // A gaps turn belongs to a requirements run only.
+  programmed.planner.limitStop = { failureKind: 'quota', retryAfter: reset, boundary: 'gaps', at, steeringIds: [] };
+  assert.equal(v2LimitStoppedDispatch(programmed)?.id, 'workflow-planner');
+  programmed.config.settings.executionMode = 'program';
+  assert.equal(v2LimitStoppedDispatch(programmed), null);
 });

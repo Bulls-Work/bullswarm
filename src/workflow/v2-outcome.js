@@ -51,6 +51,29 @@ export function v2RetryPlan(state) {
   return { rerun, blocked, needsCaller };
 }
 
+// Marked runs (owner decision 2026-09-25): the Workflow Planner or preflight
+// scout whose stop on a usage limit, a rate limit that did not clear, or no
+// free pool ended the run, which `workflow resume` runs again once the pool is
+// back: {id, who, failureKind, retryAfter}, or null. The kernel keeps the stop
+// (`limitStop`) only in a marked run, and only a stop that ended the run: a
+// scout the run went on without is never recorded. A planner stop counts
+// while the relaunched kernel would dispatch that turn again: an initial turn
+// with still no program, a steering turn whose steering goes back to it, or a
+// gaps turn of a requirements run.
+export function v2LimitStoppedDispatch(state) {
+  const scout = state?.preflight?.scout;
+  if (scout?.status === 'failed' && scout.limitStop) {
+    return { id: 'preflight-scout', who: 'the preflight scout', failureKind: scout.limitStop.failureKind, retryAfter: scout.limitStop.retryAfter ?? null };
+  }
+  const stop = state?.planner?.limitStop;
+  if (!stop || state.planner.status !== 'failed') return null;
+  const actions = state.program?.actions?.length ?? 0;
+  const reruns = stop.boundary === 'initial' ? actions === 0
+    : stop.boundary === 'steering' ? actions > 0 && (stop.steeringIds?.length ?? 0) > 0
+      : !isProgramWorkflow(state);
+  return reruns ? { id: 'workflow-planner', who: 'the workflow planner', failureKind: stop.failureKind, retryAfter: stop.retryAfter ?? null } : null;
+}
+
 function resultFail(message) { throw new TypeError(`Invalid V2 result envelope: ${message}`); }
 function resultObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) resultFail(`${name} must be an object`);
@@ -275,7 +298,9 @@ function buildV2Handback(state, { unreadSteering = [], failureRule = false } = {
       id: definition.id,
       status,
       failureKind: typeof failure?.kind === 'string' && failure.kind ? failure.kind : null,
-      why: firstLine(failure?.message, 300),
+      // A marked run's reason keeps its no-retry tail (the held pools) when
+      // it is cut; an unmarked run's is cut at its end, as before.
+      why: failureRule ? clipWhy(failure?.message, 300) : firstLine(failure?.message, 300),
       ...(typeof failure?.retryAfter === 'string' && !Number.isNaN(Date.parse(failure.retryAfter)) ? { retryAfter: failure.retryAfter } : {}),
       retryable: rerun.has(definition.id),
       // Marked runs count the step's automatic retries from its attempts'
@@ -694,9 +719,11 @@ function firstLine(value, limit) {
   return line || null;
 }
 
-// The tail a failed-evidence reason always keeps (§2.7): how many other
-// checks failed, and why no retry follows.
-const KEPT_WHY_SUFFIX = /(?: \(\+\d+ more failed\))?(?: · (?:act steps are not retried|no retry: \S.* is no longer eligible))?$/;
+// The tail a handback reason always keeps (§2.7): how many other checks
+// failed, and why no retry follows — an act step, a pinned pool that is no
+// longer eligible, or a marked run's held pools (v2-dispatch.js noRetry:
+// ` · no retry: <pool> <reason> until <time>; …`).
+const KEPT_WHY_SUFFIX = /(?: \(\+\d+ more failed\))?(?: · (?:act steps are not retried|no retry: \S.*))?$/;
 
 // A handback reason cut to `limit`: when it ends with a kept suffix, the
 // middle goes (marked with an ellipsis) so the suffix survives (F17).
@@ -1070,13 +1097,18 @@ function reviewVerbs(envelope, token, actions) {
   return {};
 }
 
-function summaryHandback(envelope, handback, token, { failureRule = false, actions = [] } = {}) {
+function summaryHandback(envelope, handback, token, { failureRule = false, actions = [], stopped = null } = {}) {
   const retryable = handback.unfinished.filter((entry) => entry.retryable);
   const waits = retryable.map((entry) => Date.parse(entry.retryAfter ?? '')).filter(Number.isFinite);
   // Named only when every step to retry is waiting on a paused pool: resume
   // gets through once the first of them is back.
-  const retryAfter = retryable.length && waits.length === retryable.length ? new Date(Math.min(...waits)).toISOString() : null;
-  const rerunIds = retryable.map((entry) => entry.id);
+  const stepsBackAt = retryable.length && waits.length === retryable.length ? new Date(Math.min(...waits)).toISOString() : null;
+  // A marked run's planner or scout that stopped on a limit and ended the run
+  // (v2LimitStoppedDispatch) runs again first on resume, and nothing after it
+  // runs before it gets through: its own return is the time, when known.
+  const stoppedBackAt = Date.parse(stopped?.retryAfter ?? '');
+  const retryAfter = stopped ? (Number.isFinite(stoppedBackAt) ? new Date(stoppedBackAt).toISOString() : null) : stepsBackAt;
+  const rerunIds = [...(stopped ? [stopped.who] : []), ...retryable.map((entry) => entry.id)];
   // A failed step that declares evidence but whose worker failed first (E15):
   // the result row holds `evidenceResults: null`, and the line says so.
   const notRun = new Set(envelope.actions
@@ -1101,7 +1133,7 @@ function summaryHandback(envelope, handback, token, { failureRule = false, actio
       ...(envelope.executionMode === 'program'
         ? { continue: `bullswarm workflow plan export ${token} --out plan.json, edit it, then bullswarm workflow plan revise ${token} --program plan.json (--rerun <step ids> runs finished steps again)` }
         : {}),
-      ...(retryable.length
+      ...(rerunIds.length
         ? { retry: `bullswarm workflow resume ${token}${retryAfter ? ` after ${retryAfter}` : ''} (reruns ${rerunIds.slice(0, 4).join(', ')}${rerunIds.length > 4 ? ` and ${rerunIds.length - 4} more` : ''})` }
         : {}),
       // A marked run's failed steps come back with the caller verbs (§2.9).
@@ -1332,6 +1364,8 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
     };
   });
   const handback = envelope.handback ?? legacyHandback(envelope);
+  // Marked runs only: the planner or scout whose stop on a limit ended this run.
+  const stopped = flags.failureRule && envelope.status === 'partial' ? v2LimitStoppedDispatch(state) : null;
   const proof = summaryProof(actions);
   return fitResultSummary({
     schemaVersion: 'bullswarm.workflow.result-summary.v1',
@@ -1365,7 +1399,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
     },
     usage: clone(envelope.usage),
-    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule, actions }) } : {}),
+    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule, actions, stopped }) } : {}),
     // The loop's rounds once one ran, and the caller's block when there is one.
     ...(envelope.verifyRounds?.used > 0 ? { verifyRounds: clone(envelope.verifyRounds) } : {}),
     ...(envelope.callerDecision ? { callerDecision: clone(envelope.callerDecision) } : {}),

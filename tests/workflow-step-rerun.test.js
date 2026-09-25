@@ -333,10 +333,14 @@ test('the rerun gets its one automatic retry again: a retry spent before it no l
   assert.equal(countRetries(state, 'build'), 0);
 });
 
-test('a rerun after a failure its pool caused tells the dispatcher to start elsewhere; a failure of the work does not', async (t) => {
+test('a rerun after a failure its pool caused tells the dispatcher to start elsewhere; a usage limit or a failure of the work does not', async (t) => {
   const cases = [
-    { label: 'quota', fails: [['pool-a', 'quota', {}]], leaves: ['pool-a'] },
+    { label: 'sign-in', fails: [['pool-a', 'auth', {}]], leaves: ['pool-a'] },
     { label: 'died at start', fails: [['pool-a', 'process', {}]], leaves: ['pool-a'] },
+    // A usage limit is not the pool's failure: the caller chose where the
+    // rerun goes (owner decision, 2026-09-25), so the dispatcher is told nothing.
+    { label: 'quota', fails: [['pool-a', 'quota', {}]], leaves: [] },
+    { label: 'throttle', fails: [['pool-a', 'throttle', {}]], leaves: [] },
     { label: 'work exit', fails: [['pool-a', 'process', { lastResponse: 'I tried and the tests fail', changedFileCount: 2 }]], leaves: [] },
     { label: 'evidence', fails: [['pool-a', 'failed-evidence', { changedFileCount: 1 }]], leaves: [] },
     // The pool that died first is still left when the retry failed on its work.
@@ -344,7 +348,7 @@ test('a rerun after a failure its pool caused tells the dispatcher to start else
   ];
   for (const [index, { label, fails, leaves }] of cases.entries()) {
     const f = fixture(t);
-    const runId = `wf-rerunp-${'abcde'[index].repeat(6)}`;
+    const runId = `wf-rerunp-${'abcdef0'[index].repeat(6)}`;
     const seen = [];
     let failed = false;
     const at = () => new Date().toISOString();

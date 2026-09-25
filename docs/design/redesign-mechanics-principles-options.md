@@ -114,9 +114,10 @@ today. The content heuristic that decides "verified" leaves the core.
 The failure rule makes one exception to automatic recovery: an `act` step has no
 automatic retry once its worker starts, so an outward action is never repeated
 by retry. A started step that needs the caller returns a needs-you block. Choose
-one of its four commands, then relaunch the printed `next:` watch line. A short
-quota wait needs no action; on a long wait follow the printed options. Accepting
-records evidence `choice`, never proof.
+one of its four commands, then relaunch the printed `next:` watch line. A usage
+limit, or no free pool, returns a needs-you block at once too, with the time
+the pool is back when that is known. Accepting records evidence `choice`, never
+proof.
 
 ## Layer 2: mandatory principles
 
@@ -140,13 +141,14 @@ What these principles do **not** include:
 |---|---|---|
 | A process failure (crash, sign-in failure, provider error) | one retry on another eligible pool; the same pool if it is the only candidate (except auth) | the caller |
 | A gate failure (failed evidence, deliverable not produced, report format, output check) | one retry on the same pool, with the failure attached | the caller |
-| Exhausted quota | move without spending the retry, or wait for a known return time | never fail only because quota is exhausted |
+| A usage limit (a spent 5-hour or weekly window, or no credit left), or no capable pool free | none: no wait, no move, no retry; a transient rate limit backs off on the same pool at most twice first | the caller (owner decision, 2026-09-25) |
 | An `act` step after its worker starts | no automatic retry | the caller |
 
 Rules that hold throughout:
 
-- **Exhausted quota is not a failure.** A pool out of quota makes the step
-  wait, and the step says so.
+- **A usage limit goes to the caller.** It ends the step at once, whatever
+  the pausing switch; nothing waits for a pool or moves the step by itself.
+  The caller reruns it elsewhere, waits for the pool, accepts or cancels.
 - **Only dependents wait.** Steps that do not depend on the failed one keep
   running.
 - **A failed review** gets one fix step built from its findings and one

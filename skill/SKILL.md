@@ -194,10 +194,11 @@ bullswarm workflow watch <shortId> --until trouble
 Start it in the background right after launch, then leave the run alone. It
 prints nothing while work goes well: no attach line, no line per finished
 step. It exits on the first trouble, or on the run's outcome. Trouble is a step
-that needs you after its one retry, a review that still fails after a fix, a
-quota wait longer than 30 minutes, a rejected plan revision, a pause, a stale
-step, or steering left for you. Blocked dependents are listed inside the
-needs-you block; they are not separate trouble.
+that needs you (after its one retry, or at once for a usage limit or when no
+pool is free), a review that still fails after a fix, a rejected plan
+revision, a planner or scout that stopped on a usage limit, a pause, a stale
+step, or steering left for you. Blocked dependents are listed inside the needs-you
+block; they are not separate trouble.
 
 Each exit is one wake. Read the output in one tool call, then act:
 
@@ -221,8 +222,10 @@ A trouble line is a decision point:
 |---|---|---|
 | `✗ <step> needs you · …` | the step failed after its one automatic retry | choose one option in its `your call` block (see "When a step needs you"), run it, and start the printed `next:` watch again |
 | `✗ <step> needs you · review failed …` | the fix and re-review still leave requirements failing | the same: choose one option for the check it names |
-| `⧖ <step> waiting for quota …` | no eligible pool can run it until a known time; it starts again by itself | do nothing for a short wait; for a long one choose a printed option (see "A waiting step") |
+| `✗ <step> needs you · out of quota …` | a usage limit ended the step, or no pool that can run it had quota to spare; nothing waits or moves by itself | choose one option in its `your call` block (see "A usage limit or no free pool") |
 | `× plan revision rejected …` | your revision was not applied | fix the issues it lists and revise again |
+| `⚠ preflight scout stopped · …` | a usage limit, or no free pool, stopped the `--scout` survey; with your program the line ends `the run continues without its report` | nothing: your steps run without the report. Without a program the run finishes and its `reason:` gives your call (see "A usage limit or no free pool") |
+| `✗ planner stopped · …` | a usage limit, or no free pool, stopped the dispatched planner (`--orchestrator`); the run finishes | read the outcome's `reason:` and choose its call: `workflow resume` after the `back at` time runs the planner again, or plan it yourself with `plan revise`, or start a new run (see "A usage limit or no free pool") |
 | `⚠ <step> stalled on <pool> …` | the kernel stopped a silent worker | nothing: the retry runs; if it fails too, a needs-you block follows |
 | `⧖ pause requested …` | someone paused the run | `bullswarm workflow resume <shortId>` when it should go on |
 | `⧖ steering received · …` | a person left guidance for you | decide what it means and revise the plan |
@@ -241,8 +244,8 @@ that succeeded with unfinished items.
 
 A needs-you block is what the watch prints when a step comes back to you: it
 failed after its one automatic retry (or the header says `not retried`: an
-`act` step, a check that could not run, or no retry allowed), or a review still
-fails after its fix. It names what
+`act` step, a check that could not run, a usage limit, or no retry allowed), or
+a review still fails after its fix. It names what
 failed, each try, what is still running and what waits on it, then gives four
 options under `your call:` and the `next:` watch to start again. Choose one:
 
@@ -259,26 +262,76 @@ When another check also failed one, it follows as `also judged by <check>:`
 with its own rerun and `accept anyway` lines. Run one option, then start the
 printed `next:` line again.
 
-### A waiting step
+### A usage limit or no free pool
 
-`⧖ <step> waiting for quota · <pool> back at <time> (in <duration>)` (or
-`waiting for a pool`, or `first back: <pool> at …` when several pools could
-run it, or `waiting for a pool · <pool> is nearly spent, resets at …` when the
-only pool left would run out before its window resets) means no pool can run
-the step until that time. It is not a failure
-and spends no retry: the step starts again by itself when the pool is back,
-and a full watch prints the line for every wait. `--until trouble` wakes on it
-only when the wait is longer than 30 minutes, and then these lines follow:
+A usage limit ends the step: a spent 5-hour or weekly window, or no credit
+left. The step comes straight back to you in a needs-you block (`✗ <step> needs
+you · out of quota …`), whatever the automatic pausing switch and even when the
+notice names no reset. Nothing waits, moves to another pool or retries by
+itself, and the rest of the run keeps going. The same happens when no pool that
+can run the step is free when it is picked: each one is nearly spent, at its
+5-hour limit, paused (for quota, or after a sign-in failure), or benched after
+repeated failures. Its `why` names every pool and its reason (`no pool with
+quota to spare: <pool> paused for quota until <time>; …`, or `no pool free: …`
+when a reason is not a usage limit, and the header then reads `no eligible
+pool`). When another pool that can run the step is free, routing picks it and
+nothing comes back to you. A retry the step was promised (after a crash, a
+sign-in failure or a failed gate) that finds no free pool keeps its own
+failure, and its `why` ends `· no retry: <pool> <reason>; …`.
 
-| Printed option | When it is printed | What it runs |
+A short "too many requests" rate limit is not a usage limit. It backs off on
+the same pool at most twice (20 s, then 60 s, or the wait it names when that
+is at most 2 minutes), then comes back to you (`✗ <step> needs you · rate
+limited · backed off twice`), with automatic pausing on or off. A try after a
+backoff reads `· after a rate-limit backoff`. One that names a longer wait comes back to you
+at once, with `back at` at the end of that wait. One whose pool is no longer
+free for the backoff (paused, at its 5-hour limit, nearly spent or benched in
+the meantime) comes back to you at once too: as `out of quota` when that pool
+is out on a usage limit, with `back at` its return when that is known. A
+sign-in failure, a provider error or a worker that died at start still gets
+the step's one automatic retry by itself, on another free pool when there is
+one.
+
+When a return time is known, for this or any other failure, the block prints
+`back at <time>` (the failed pool's reset, the end of a rate limit's named
+wait, or, when no pool was free, the earliest known return among them) and
+adds one option:
+
+| Printed option | When to choose it | What it runs |
 |---|---|---|
-| `or change the step:` / `then edit it:` | always | the two plan commands above |
-| `or lift the pause:` | a paused pool causes the wait | `bullswarm pools resume <pool>` |
-| `or run it elsewhere:` | a hold, a 5-hour limit or a nearly spent pool, when the step's route allows another pool | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
+| `rerun elsewhere` | another pool can run the step now | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
+| `wait for it` | the step should run on that pool, or nothing else can run it | `after <time>: bullswarm workflow step rerun <shortId> <step>`: run that rerun yourself after the `back at` time; before then the pool is still out |
+| `accept anyway` | you keep the step's result as it is | `bullswarm workflow step accept <shortId> <step> --reason "…"` |
 
-Do nothing for a short wait. For a long one choose one printed option, or
-leave it waiting, and start the `next:` watch again. Do not use `resume` to
-wake a waiting step.
+`change the step` and `take over` are printed too. To stop the whole run
+instead, run `bullswarm workflow cancel <shortId>`. Then start the `next:`
+watch again.
+
+A dispatched planner (`--orchestrator`) and the preflight scout (`--scout`, or
+the scout before a dispatched planner) follow the same rule: a usage limit, a
+rate limit still there after its short backoff, or no free pool stops it and
+tells you; it never moves to another pool by itself. A sign-in failure, a
+provider error or a worker that died at start still moves it to another pool.
+A nearly spent pool is never given to either of them unless you pinned it
+(`--orchestrator <pool> --orchestrator-strict`, `--worker-pool`), and their
+schema correction or same-pool retry never goes back to one: the correction
+moves to another free pool, and with none free it stops and tells you. When the planner stops,
+the watch prints `✗ planner stopped · out of quota on <pool> · back at <time>`
+and the run finishes with `reason: the workflow planner
+stopped on a usage limit: <why> · back at <time> · your call: resume after
+<time> with bullswarm workflow resume <shortId>, plan it yourself with
+bullswarm workflow plan revise <shortId> --program <file.json>, or start a new
+run` (`stopped: no pool free` when a pool was out for another reason or no
+pool can run it at all; no `back at`, and `bullswarm workflow resume <shortId>
+once a pool is free`, when no return time is known). A scout with no
+program after it ends the run the same way, as `the preflight scout stopped on
+a usage limit: …`. After the `back at` time, `bullswarm workflow resume
+<shortId>` runs the stopped planner or scout again (`running again: the
+workflow planner`); before then it can stop the same way. Plan revise and a new
+run stay the other choices. With your program (`--program
+--scout`) the run goes on without the report, and the watch prints `⚠
+preflight scout stopped · out of quota on <pool> · back at <time> · the run
+continues without its report`; `workflow resume` does not run that scout again.
 
 ### A step that looks stale
 
@@ -323,21 +376,24 @@ command per option:
 | Printed option | When | What to do |
 |---|---|---|
 | `continue` | the plan needs a fix, a new step, or a step redone | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` |
-| `retry` | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool | `bullswarm workflow resume <shortId>` |
+| `retry` | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool; or a usage limit or no free pool stopped the planner or scout and ended the run (run it after its `back at` time) | `bullswarm workflow resume <shortId>` |
 | `rerun` | a step failed (runs started by this version) | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]`, with its last attempt's handoff |
 | `accept` | you keep a failed step as it is (runs started by this version) | `bullswarm workflow step accept <shortId> <step> --reason "…"` |
 | `take over` | the rest is small, or needs something only you have (a logged-in browser, a credential, a decision for the user) | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |
 | `restart` | the goal or the approach was wrong | start a new run: `bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>` (`step restart` reruns one running step) |
 
-`retry` appears only when a step is retryable. `resume` on a finished run
-reruns exactly those steps and the steps blocked behind them. When nothing is
+`retry` appears only when a step is retryable, or when a usage limit or no
+free pool stopped the planner or scout and ended the run. `resume` on a
+finished run reruns exactly those steps and the steps blocked behind them, and
+that stopped planner or scout first. When nothing is
 retryable it prints `nothing to retry`, starts nothing, and exits 1. A step
-whose pools were all paused shows `its pool is back at <time>`; resuming
-before then fails it again at once.
+with a known return time shows `its pool is back at <time>`; resuming before
+then can fail it again (at once when no other pool is free).
 
 `resume` keeps the run's saved rules. It is not the way to rerun a failed gate
-in a new run: use `step rerun`, `step accept`, or plan revise. A quota wait with
-a known return time continues inside the run; do not use `resume` to wake it.
+in a new run: use `step rerun`, `step accept`, or plan revise. Nothing inside a
+run waits for a pool to come back: after a usage limit, rerun the step once its
+`back at` time has passed, or elsewhere now.
 
 A failed check is not yours to fix first. In a new run, the kernel adds one fix
 step from the check's findings and one re-review. Do not write a repair step or

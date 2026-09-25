@@ -73,6 +73,8 @@ import {
 import { stepPageModel, turnCountsText } from './step-model.js';
 import { returnedEarlyItems, returnedEarlyText } from './time-box.js';
 import { loopVerdictText } from './verify-rounds.js';
+import { NEEDS_YOU_LABELS } from './step-vocabulary.js';
+import { readRunFeatures, runFeatureFlags } from './run-features.js';
 
 /** Lines of the goal the Preflight segment shows before an ellipsis. */
 const GOAL_PREVIEW_LINES = 5;
@@ -787,6 +789,74 @@ function runTimelineFold(row, { nowMs = Date.now() } = {}) {
   return foldRangeOf(runTimelineFacts(row, { nowMs }).phases);
 }
 
+// A marked run's Workflow Planner or preflight scout that ended on one of these
+// stopped and went to the caller (watch-cli.js, the same set).
+const LIMIT_STOP_KINDS = new Set(['quota', 'throttle', 'unavailable']);
+
+function isoOrNull(value) {
+  const ms = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+// The attempt a planner.finished or preflight.scout_finished event closed: the
+// last one finished by the time it was committed, as the watch reads it.
+function attemptClosedAt(attempts, committedAt) {
+  const at = Date.parse(committedAt ?? '');
+  if (!Number.isFinite(at)) return attempts.at(-1) ?? null;
+  return attempts.filter((attempt) => !(Date.parse(attempt?.finishedAt ?? attempt?.startedAt ?? '') > at)).at(-1) ?? null;
+}
+
+/**
+ * The Run timeline's rows for a marked run whose Workflow Planner or preflight
+ * scout stopped on a usage limit, a rate limit that did not clear, or no free
+ * pool, worded as `bullswarm workflow watch` prints them:
+ * `✗ [Workflow Planner] planner stopped · out of quota on codex · back at <iso>`
+ * and `⚠ Scout stopped · rate limited on codex`. The stop is why the run ended,
+ * so the timeline says it. A limit stop's event carries `retryAfter` (null when
+ * unknown); a run's features.json `failureRule` marks it too, as the watch
+ * reads it. Any other planner or scout failure, and every unmarked run, draws
+ * no row here, as before. A first-turn planner stop sits under Preflight, a
+ * later turn's under its own Planner rule after the phases.
+ */
+function limitStopRows(model) {
+  const state = model.state ?? model.row?.state ?? {};
+  let flags;
+  const marked = () => (flags ??= runFeatureFlags(model.row?.runDir ? readRunFeatures(model.row.runDir) : {})).failureRule;
+  const stopped = (payload) => LIMIT_STOP_KINDS.has(payload?.failureKind)
+    && (Object.hasOwn(payload, 'retryAfter') || marked());
+  const tail = (payload, pool) => `${NEEDS_YOU_LABELS[payload.failureKind]} on ${pool ?? 'no pool'}`
+    + (isoOrNull(payload.retryAfter ?? null) ? ` · back at ${isoOrNull(payload.retryAfter)}` : '');
+  const row = (at, glyph, status, text) => ` ${at ? dimCell(clockText(at)) : dimCell('--:--')}  ${paintStatusGlyph(glyph, status)} ${text}`;
+  const rows = [];
+  for (const event of model.events ?? []) {
+    const payload = event?.payload ?? {};
+    if (event?.type === 'preflight.scout_finished' && payload.status === 'failed' && stopped(payload)) {
+      // `unavailable`: no scout attempt ran, so no pool is named.
+      const pool = payload.pool ?? (payload.failureKind === 'unavailable'
+        ? null : attemptClosedAt(state.preflight?.scout?.attempts ?? [], event.committedAt)?.pool ?? null);
+      const runContinues = typeof payload.runContinues === 'boolean'
+        ? payload.runContinues : (state.program?.actions ?? []).length > 0;
+      rows.push({
+        segment: 'Preflight', at: event.committedAt ?? null,
+        text: row(event.committedAt, glyphs().warn, 'running', `Scout stopped · ${tail(payload, pool)}`
+          + (runContinues ? ' · the run continues without its report' : '')),
+      });
+    }
+    if (event?.type === 'planner.finished' && payload.ok === false && stopped(payload)) {
+      const turn = Number.isInteger(payload.turn) ? payload.turn : null;
+      const attempts = (state.planner?.attempts ?? []).filter((attempt) => turn == null || attempt?.turn === turn);
+      // `unavailable`: no planner attempt ran, so no pool is named.
+      const pool = payload.pool ?? (payload.failureKind === 'unavailable'
+        ? null : attemptClosedAt(attempts, event.committedAt)?.pool ?? null);
+      rows.push({
+        segment: turn == null || turn === 1 ? 'Preflight' : 'Planner', at: event.committedAt ?? null,
+        text: row(event.committedAt, glyphs().fail, 'failed', `[Workflow Planner] planner stopped · ${tail(payload, pool)}`),
+      });
+    }
+  }
+  return rows;
+}
+
 /**
  * `foldOpen` shows the folded phases in place and closes them with a
  * `click to fold` line; `foldHint: false` drops the `click to expand` hint
@@ -821,6 +891,10 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
         push(`${detail.startsWith('       ') ? '       ' : ''}${dimCell(detail.replace(/^       /, ''))}`, { segment: 'Preflight', at: preflight.at });
       }
     }
+  }
+  const stops = limitStopRows(model);
+  for (const stop of stops.filter((item) => item.segment === 'Preflight')) {
+    push(stop.text, { segment: 'Preflight', at: stop.at, milestone: true, limitStop: true });
   }
   const phases = facts.phases;
   const fold = foldRangeOf(phases);
@@ -908,6 +982,11 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
       push(dimCell('click to fold'), { fold: 'collapse', segment: phase.label, phaseIndex: phase.index });
     }
   });
+  const plannerStops = stops.filter((item) => item.segment === 'Planner');
+  if (plannerStops.length) {
+    push(paintRule(phone ? '── Planner' : rule('Planner', null, safeWidth)), { header: true, segment: 'Planner', phaseIndex: -1 });
+    for (const stop of plannerStops) push(stop.text, { segment: 'Planner', at: stop.at, milestone: true, limitStop: true });
+  }
   if (!lines.length) push('no timeline recorded');
   return {
     lines,
@@ -2043,7 +2122,10 @@ function runPage(model, opts, body) {
       });
     } else body.push(text);
   }
-  markStepRows(body, body.lines.slice(timelineStart), workflowPanelModel(row), row?.runId ?? null);
+  // A planner or scout stop row names no step: a word in it (`… without its
+  // report`) that matches a step's id must not open that step's page.
+  markStepRows(body, body.lines.slice(timelineStart).map((text, index) => (timeline.lines[index]?.limitStop ? '' : text)),
+    workflowPanelModel(row), row?.runId ?? null);
   return header;
 }
 

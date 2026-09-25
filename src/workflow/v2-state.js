@@ -162,6 +162,14 @@ const PLANNER_ATTEMPT_FIELDS = new Set([
 const PRESENTATION_STAGE_FIELDS = new Set([
   'id', 'label', 'revision', 'actionIds', 'startedAt', 'completedAt',
 ]);
+// A marked run's Workflow Planner or preflight scout that stopped on a usage
+// limit, a rate limit that did not clear, or no free pool, and so ended the
+// run (`limitStop`, owner decision 2026-09-25). `workflow resume` reads it to
+// run that dispatch again. Optional: runs saved before it, and every unmarked
+// run, carry no field at all.
+const LIMIT_STOP_KINDS = new Set(['quota', 'throttle', 'unavailable']);
+const PLANNER_LIMIT_STOP_FIELDS = new Set(['failureKind', 'retryAfter', 'boundary', 'at', 'steeringIds']);
+const SCOUT_LIMIT_STOP_FIELDS = new Set(['failureKind', 'retryAfter', 'at']);
 const STEERING_FIELDS = new Set([
   'id', 'message', 'queuedAt', 'delivery', 'status', 'deliveredAt', 'decisionSequence',
 ]);
@@ -447,9 +455,25 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
   });
 }
 
+function validateLimitStop(value, fields, name) {
+  object(value, name);
+  noUnknown(value, fields, name);
+  if (!LIMIT_STOP_KINDS.has(value.failureKind)) fail(`${name}.failureKind must be quota, throttle or unavailable`);
+  timestamp(value.retryAfter, `${name}.retryAfter`);
+  timestamp(value.at, `${name}.at`);
+  if (value.at === null) fail(`${name}.at is required`);
+}
+
 function validatePlanner(planner) {
   object(planner, 'state.planner');
-  noUnknown(planner, new Set(['status', 'turns', 'lastDecision', 'session', 'attempts', 'awaiting']), 'state.planner');
+  noUnknown(planner, new Set(['status', 'turns', 'lastDecision', 'session', 'attempts', 'awaiting', 'limitStop']), 'state.planner');
+  if (planner.limitStop !== undefined) {
+    validateLimitStop(planner.limitStop, PLANNER_LIMIT_STOP_FIELDS, 'state.planner.limitStop');
+    if (!PLANNER_BOUNDARIES.has(planner.limitStop.boundary)) fail('state.planner.limitStop.boundary must be initial|gaps|steering');
+    if (!Array.isArray(planner.limitStop.steeringIds) || planner.limitStop.steeringIds.some((id) => typeof id !== 'string' || !id)) {
+      fail('state.planner.limitStop.steeringIds must be an array of ids');
+    }
+  }
   if (!PLANNER_STATUSES.has(planner.status)) fail('state.planner.status is invalid');
   nonNegativeInteger(planner.turns, 'state.planner.turns');
   if (planner.lastDecision !== null && !isObject(planner.lastDecision)) fail('state.planner.lastDecision must be null or an object');
@@ -564,8 +588,9 @@ function validatePreflight(preflight) {
   object(preflight, 'state.preflight');
   noUnknown(preflight, new Set(['scout']), 'state.preflight');
   object(preflight.scout, 'state.preflight.scout');
-  noUnknown(preflight.scout, new Set(['status', 'startedAt', 'finishedAt', 'outputFile', 'attempts', 'lastFailure']), 'state.preflight.scout');
+  noUnknown(preflight.scout, new Set(['status', 'startedAt', 'finishedAt', 'outputFile', 'attempts', 'lastFailure', 'limitStop']), 'state.preflight.scout');
   if (!PREFLIGHT_STATUSES.has(preflight.scout.status)) fail('state.preflight.scout.status is invalid');
+  if (preflight.scout.limitStop !== undefined) validateLimitStop(preflight.scout.limitStop, SCOUT_LIMIT_STOP_FIELDS, 'state.preflight.scout.limitStop');
   timestamp(preflight.scout.startedAt, 'state.preflight.scout.startedAt');
   timestamp(preflight.scout.finishedAt, 'state.preflight.scout.finishedAt');
   nullableString(preflight.scout.outputFile, 'state.preflight.scout.outputFile');
