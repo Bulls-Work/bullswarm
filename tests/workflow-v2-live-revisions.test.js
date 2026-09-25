@@ -123,11 +123,11 @@ async function until(predicate, { timeoutMs = 5000, what = 'condition' } = {}) {
   }
 }
 
-function start(f, runId, actions, ctl) {
+function start(f, runId, actions, ctl, extra = {}) {
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
     initialPlannerResponse: initial(actions),
-    dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
+    dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10, ...extra },
   });
 }
 
@@ -653,4 +653,226 @@ test('a cancelled run reopened by a revision runs the steps the cancellation sto
   assert.equal(ctl.count('c'), 1);
   assert.deepEqual(eventsOf(f, runId, 'workflow.reopened').map((event) => [...event.payload.requeued].sort()), [['a', 'b']]);
   validateV2DurableState(result.state);
+});
+
+// --- Stage 3: route amendments, step accept, and verifyRounds read through the marker ---
+
+// A dispatcher whose listed steps fail (a process failure) and whose checks
+// fail the requirement when `failRequirement` is set; everything else
+// finishes at once, like controller().
+function scripted({ fail = [], failRequirement = false } = {}) {
+  const calls = [];
+  const dispatch = async (options) => {
+    const files = options.paths(1);
+    calls.push(options.action.id);
+    const record = {
+      ordinal: 1, pool: 'pool-a', model: 'fixture', status: 'running',
+      startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile,
+    };
+    writeFileSync(files.taskFile, options.taskText);
+    options.onAttempt?.('started', record);
+    if (fail.includes(options.action.id)) {
+      writeFileSync(files.outFile, `half of ${options.action.id}`);
+      Object.assign(record, { status: 'failed', finishedAt: new Date().toISOString(), failureKind: 'process', why: 'worker exited 1' });
+      options.onAttempt?.('finished', record, { ok: false, why: 'worker exited 1' });
+      return { ok: false, status: 'failed', failureKind: 'process', attempts: [record], verdict: { ok: false, why: 'worker exited 1', outFile: files.outFile } };
+    }
+    if (options.action.evidenceFor?.length) {
+      const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
+      const status = failRequirement ? 'failed' : 'passed';
+      writeFileSync(candidatePath, JSON.stringify({
+        schemaVersion: 'bullswarm.workflow.evidence.v2',
+        requirements: Object.fromEntries(options.action.evidenceFor.map((id) => [id, { status, evidence: [`inspected: ${status}`], concerns: [] }])),
+      }));
+      writeFileSync(files.outFile, 'evidence recorded');
+      const verdict = { ok: true, structured: options.outputValidator('prose'), outFile: files.outFile };
+      Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString() });
+      options.onAttempt?.('finished', record, verdict);
+      return { ok: true, status: 'succeeded', attempts: [record], verdict };
+    }
+    writeFileSync(join(options.targetDir, `${options.action.id}.txt`), options.action.prompt);
+    writeFileSync(files.outFile, `delivered ${options.action.id}`);
+    Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString() });
+    options.onAttempt?.('finished', record);
+    return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
+  };
+  return { dispatch, calls, count: (id) => calls.filter((call) => call === id).length };
+}
+
+const acceptRequest = (state, accept, { source = 'step-accept' } = {}) => createRevisionRequest({
+  ...normalizeRevisionInput(exportV2Plan(state)), summary: `accept ${accept[0].step}: "${accept[0].reason}"`, accept,
+}, { source });
+
+test('revise: an untouched export with a route changes nothing, adding a route amends, and a step-rerun source is recorded', async (t) => {
+  const f = fixture(t);
+  const routed = work('a', { route: { pools: { avoid: ['pool-b', 'pool-a'] } } });
+  const done = await start(f, 'wf-route1-abcdef', [routed, work('b', { dependsOn: ['a'] })], controller());
+  assert.equal(done.result.status, 'completed');
+  const document = exportV2Plan(done.state);
+  assert.deepEqual(document.program.actions[0].route, { pools: { avoid: ['pool-a', 'pool-b'] } }, 'normalised: sorted');
+  const unchanged = planV2Revision(done.state, normalizeRevisionInput(document));
+  assert.equal(unchanged.ok, false);
+  assert.match(unchanged.issues[0], /changes nothing/);
+
+  const edited = structuredClone(document);
+  edited.program.actions.find((action) => action.id === 'b').route = { providers: { avoid: ['grok'] } };
+  const amended = planV2Revision(done.state, normalizeRevisionInput(edited));
+  assert.equal(amended.ok, true, JSON.stringify(amended.issues));
+  assert.deepEqual(amended.changes, { added: [], amended: ['b'], restored: [], removed: [], rerun: [], invalidated: [] }, 'no accepted key when nothing is accepted');
+
+  // What step rerun --avoid builds: route.pools.avoid grows, the step reruns, source step-rerun.
+  const rerunDoc = structuredClone(document);
+  rerunDoc.program.actions.find((action) => action.id === 'a').route.pools.avoid.push('pool-c');
+  const request = createRevisionRequest(normalizeRevisionInput(rerunDoc, { rerun: ['a'], summary: 'step rerun a avoiding pool-c (last attempt: process on pool-a)' }), { source: 'step-rerun' });
+  const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId: 'wf-route1-abcdef', request, waitMs: 0 });
+  assert.equal(revised.status, 'applied');
+  const record = revised.state.revisions.at(-1);
+  assert.deepEqual([record.source, record.changes.amended, record.changes.invalidated], ['step-rerun', ['a'], ['b']]);
+  assert.deepEqual(revised.state.program.actions[0].route, { pools: { avoid: ['pool-a', 'pool-b', 'pool-c'] } });
+  validateV2DurableState(revised.state);
+});
+
+test('step accept: an accept-only revision is a change; the failed step succeeds by choice and its blocked dependents run', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-accpt1-abcdef';
+  const ctl = scripted({ fail: ['a'] });
+  const done = await start(f, runId, [work('a', { produces: [] }), work('b', { dependsOn: ['a'] }), work('c')], ctl);
+  assert.equal(statusOf(done.state, 'a'), 'failed');
+  assert.notEqual(statusOf(done.state, 'b'), 'succeeded');
+
+  const request = acceptRequest(done.state, [{ step: 'a', reason: 'the half file is enough', requirements: null }]);
+  assert.deepEqual(request.accept, [{ step: 'a', reason: 'the half file is enough', requirements: null }]);
+  const planned = planV2Revision(done.state, request);
+  assert.equal(planned.ok, true, JSON.stringify(planned.issues));
+  assert.deepEqual(planned.changes, { added: [], amended: [], restored: [], removed: [], rerun: [], invalidated: ['b'], accepted: ['a'] });
+
+  const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request, waitMs: 0 });
+  assert.equal(revised.status, 'applied');
+  const a = revised.state.actions.find((action) => action.id === 'a');
+  assert.equal(a.status, 'succeeded');
+  assert.equal(a.lastFailure, null);
+  assert.ok(a.outputFile && existsSync(a.outputFile), 'the accepted attempt\'s output');
+  assert.deepEqual(a.artifactIds, []);
+  assert.deepEqual({ ...a.acceptance, at: 'x' }, {
+    evidence: 'choice', reason: 'the half file is enough', attemptId: 'a-1', failureKind: 'process', at: 'x', revision: revised.state.program.revision,
+  });
+  assert.equal(statusOf(revised.state, 'b'), 'pending');
+  assert.deepEqual(revised.state.revisions.at(-1).changes.accepted, ['a']);
+  assert.equal(revised.state.revisions.at(-1).source, 'step-accept');
+  validateV2DurableState(revised.state);
+
+  const resumed = await resume(f, runId, ctl);
+  assert.equal(statusOf(resumed.state, 'b'), 'succeeded', 'the dependent ran');
+  assert.equal(ctl.count('a'), 1, 'an accepted step never runs again on its own');
+  assert.equal(resumed.state.actions.find((action) => action.id === 'a').acceptance.reason, 'the half file is enough');
+
+  // Rerunning it clears the acceptance (D23).
+  const rerun = planV2Revision(resumed.state, normalizeRevisionInput(exportV2Plan(resumed.state), { rerun: ['a'] }));
+  assert.equal(rerun.ok, true, JSON.stringify(rerun.issues));
+  const again = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request: createRevisionRequest(normalizeRevisionInput(exportV2Plan(resumed.state), { rerun: ['a'] }), { source: 'step-rerun' }), waitMs: 0 });
+  const cleared = again.state.actions.find((action) => action.id === 'a');
+  assert.equal(cleared.status, 'pending');
+  assert.equal(cleared.acceptance, undefined);
+  assert.equal(again.state.actions.find((action) => action.id === 'b').acceptance, undefined);
+  validateV2DurableState(again.state);
+});
+
+test('step accept: the §2.8 refusals', async (t) => {
+  const f = fixture(t);
+  const done = await start(f, 'wf-accpt2-abcdef', [work('a'), work('b', { dependsOn: ['a'] }), work('c', { dependsOn: ['b'] }), work('ok')], scripted({ fail: ['a'] }));
+  assert.deepEqual(done.state.actions.map((action) => action.status), ['failed', 'blocked', 'blocked', 'succeeded']);
+  const token = done.state.shortId;
+  const checked = await start(fixture(t), 'wf-accpt4-abcdef', [work('a'), check('check', ['a'])], scripted());
+  const refused = (entry, pattern, state = done.state) => {
+    const planned = planV2Revision(state, acceptRequest(state, [{ requirements: null, ...entry }]));
+    assert.equal(planned.ok, false, `expected a refusal for ${JSON.stringify(entry)}`);
+    assert.match(planned.issues.join('\n'), pattern);
+  };
+  refused({ step: 'a', reason: '' }, /^--reason is required: say why you accept it \(it is recorded as evidence "choice"\)$/);
+  refused({ step: 'a', reason: 'two\nlines' }, /^--reason must be one line of at most 500 characters$/);
+  refused({ step: 'a', reason: 'x'.repeat(501) }, /^--reason must be one line of at most 500 characters$/);
+  refused({ step: 'ok', reason: 'fine' }, /^step ok succeeded and no requirement it checks is failing; nothing to accept$/);
+  refused({ step: 'check', reason: 'fine' }, /^step check succeeded and no requirement it checks is failing; nothing to accept$/, checked.state);
+  refused({ step: 'b', reason: 'fine' }, /^step b is blocked by a; accept or rerun a first$/);
+  refused({ step: 'c', reason: 'fine' }, /^step c is blocked by a; accept or rerun a first$/);
+  refused({ step: 'ghost', reason: 'fine' }, new RegExp(`^run ${token} has no step "ghost"$`));
+  refused({ step: 'a', reason: 'fine', requirements: ['deliver'] }, /^step a does not check deliver$/);
+  refused({ step: 'check', reason: 'fine', requirements: ['deliver'] }, /^requirement deliver is not failing \(passed\); nothing to accept$/, checked.state);
+  refused({ step: 'check', reason: 'fine', requirements: ['other'] }, /^step check does not check other$/, checked.state);
+
+  const running = structuredClone(done.state);
+  running.actions.find((action) => action.id === 'ok').status = 'waiting';
+  refused({ step: 'ok', reason: 'fine' }, /^step ok is still running; wait for it to finish or restart it$/, running);
+  const pending = structuredClone(done.state);
+  Object.assign(pending.actions.find((action) => action.id === 'ok'), { status: 'pending' });
+  refused({ step: 'ok', reason: 'fine' }, /^step ok has not run yet; nothing to accept$/, pending);
+  const interrupted = structuredClone(done.state);
+  interrupted.actions.find((action) => action.id === 'a').status = 'interrupted';
+  refused({ step: 'a', reason: 'fine' }, new RegExp(`^step a did not finish \\(interrupted\\); run it again with bullswarm workflow resume ${token} or bullswarm workflow step rerun ${token} a$`), interrupted);
+  const isolated = structuredClone(done.state);
+  isolated.config.settings.workspaceMode = 'isolated';
+  isolated.attempts.find((attempt) => attempt.actionId === 'a').cwd = '/tmp/acme-private-a';
+  refused({ step: 'a', reason: 'fine' }, new RegExp(`^run ${token} is isolated: a's work is in a retained workspace that was never merged back \\(/tmp/acme-private-a\\); merge it yourself, then accept$`), isolated);
+  // A revision that also changes the step it accepts.
+  const both = acceptRequest(done.state, [{ step: 'a', reason: 'fine', requirements: null }]);
+  both.program.actions.find((action) => action.id === 'a').prompt = 'Write a.txt differently.';
+  assert.match(planV2Revision(done.state, both).issues.join('\n'), /^step a is changed by this revision; accept it on its own$/);
+  // A file cannot carry accept: only the verb builds it.
+  assert.throws(() => normalizeRevisionInput({ ...exportV2Plan(done.state), accept: [{ step: 'a', reason: 'x' }] }),
+    (error) => error instanceof V2RevisionError && error.issues.includes('revision.accept is not allowed'));
+});
+
+test('step accept: a check\'s failing requirement is accepted by choice, never verified, and rerunning the check clears it', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-accpt3-abcdef';
+  const done = await start(f, runId, [work('a'), check('check', ['a'])], scripted({ failRequirement: true }));
+  assert.equal(done.state.ledger.requirements.deliver.status, 'failed');
+  const request = acceptRequest(done.state, [{ step: 'check', reason: 'known flake', requirements: null }]);
+  const planned = planV2Revision(done.state, request);
+  assert.equal(planned.ok, true, JSON.stringify(planned.issues));
+  assert.deepEqual(planned.changes.accepted, ['check']);
+  assert.deepEqual(planned.changes.invalidated, [], 'no dependents change');
+  const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request, waitMs: 0 });
+  const runtime = revised.state.actions.find((action) => action.id === 'check');
+  assert.equal(runtime.status, 'succeeded');
+  assert.deepEqual({ ...runtime.acceptance, at: 'x' }, {
+    evidence: 'choice', reason: 'known flake', attemptId: 'check-1', failureKind: null, at: 'x', revision: revised.state.program.revision,
+    requirements: [{ id: 'deliver', workRevision: revised.state.ledger.requirements.deliver.workRevision }],
+  });
+  assert.equal(revised.state.ledger.requirements.deliver.status, 'failed', 'a choice is not proof');
+  validateV2DurableState(revised.state);
+  // Accepting it again: nothing is failing any more.
+  const twice = planV2Revision(revised.state, acceptRequest(revised.state, [{ step: 'check', reason: 'again', requirements: ['deliver'] }]));
+  assert.match(twice.issues.join('\n'), /^requirement deliver is not failing \(accepted\); nothing to accept$/);
+  // Rerunning the check clears it.
+  const rerun = planV2Revision(revised.state, normalizeRevisionInput(exportV2Plan(revised.state), { rerun: ['check'] }));
+  assert.equal(rerun.ok, true, JSON.stringify(rerun.issues));
+  const copy = structuredClone(revised.state);
+  const { applyV2Revision } = await import('../src/workflow/v2-revision.js');
+  applyV2Revision(copy, rerun, { request: { id: 'rev-test-abcdef', source: 'cli' }, at: new Date().toISOString() });
+  assert.equal(copy.actions.find((action) => action.id === 'check').acceptance, undefined);
+});
+
+test('revise: defaults.verifyRounds is read through the run\'s marker (fix cycles with failureRule, total rounds without)', async (t) => {
+  const f = fixture(t);
+  // Launched as a stage-2 run, so the loop starts with the saved-run default.
+  const done = await start(f, 'wf-vrmark-abcdef', [work('a'), check('check', ['a'])], controller(), { runFeatures: { deliverableGate: 1, proofLabels: 1 } });
+  assert.equal(done.result.status, 'completed');
+  assert.equal(done.state.verifyLoop.max, 3, 'this kernel started the loop with the saved-run default');
+  const withRounds = (value) => {
+    const document = exportV2Plan(done.state);
+    document.program.defaults = { verifyRounds: value };
+    return normalizeRevisionInput(document);
+  };
+  const marked = { features: { deliverableGate: true, proofLabels: true, failureRule: true, reviewPlacement: 'caller' } };
+  // As total rounds, 3 is the stored max: nothing changes. As fix cycles, 3 is four rounds.
+  assert.match(planV2Revision(done.state, withRounds(3)).issues.join(' '), /changes nothing/);
+  assert.equal(planV2Revision(done.state, withRounds(3), marked).ok, true);
+  // As fix cycles, 2 is exactly three rounds: nothing changes. As total rounds, 2 lowers the budget.
+  assert.match(planV2Revision(done.state, withRounds(2), marked).issues.join(' '), /changes nothing/);
+  assert.equal(planV2Revision(done.state, withRounds(2)).ok, true);
+  assert.equal(planV2Revision(done.state, withRounds(2), { features: { failureRule: false } }).ok, true, 'failureRule false reads rounds');
+  // 0 is valid only as fix cycles (review only, one round); a saved run clamps it to 1.
+  assert.equal(planV2Revision(done.state, withRounds(0), marked).ok, true);
+  assert.equal(planV2Revision(done.state, withRounds(0)).ok, true);
 });

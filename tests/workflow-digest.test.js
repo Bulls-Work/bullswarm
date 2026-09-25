@@ -168,7 +168,7 @@ test('workflow capabilities reports the step roles beside the unchanged kind lis
   assert.deepEqual(engine.actionRoles.combine.routing.files, { lane: 'build', effort: 'high' });
   assert.deepEqual(engine.actionRoles.act.deliverables, ['outward']);
   assert.deepEqual(engine.deliverableTypes, [...DELIVERABLE_TYPES]);
-  assert.deepEqual(engine.evidenceTypes, { types: [...EVIDENCE_TYPES], usable: ['command', 'schema', 'review'] });
+  assert.deepEqual(engine.evidenceTypes, { types: [...EVIDENCE_TYPES], usable: ['command', 'schema', 'review'], note: 'choice is recorded by bullswarm workflow step accept (never proof)' });
 });
 
 test('three writers → digest → integrator: the integrator reads only the digest and can drill down', { timeout: 120_000 }, (t) => {

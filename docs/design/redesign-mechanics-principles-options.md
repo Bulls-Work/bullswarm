@@ -111,6 +111,13 @@ Each mechanic records facts. None of them decides whether work is good.
 For software, the deliverable snapshot is the git diff, which is what exists
 today. The content heuristic that decides "verified" leaves the core.
 
+The failure rule makes one exception to automatic recovery: an `act` step has no
+automatic retry once its worker starts, so an outward action is never repeated
+by retry. A started step that needs the caller returns a needs-you block. Choose
+one of its four commands, then relaunch the printed `next:` watch line. A short
+quota wait needs no action; on a long wait follow the printed options. Accepting
+records evidence `choice`, never proof.
+
 ## Layer 2: mandatory principles
 
 | # | Principle | What replaces it if we drop it | Why it is mandatory |
@@ -131,8 +138,10 @@ What these principles do **not** include:
 
 | What failed | The automatic retry | Then |
 |---|---|---|
-| The process (crash, auth, quota) | once, on another eligible pool | the caller |
-| A gate (failed evidence, deliverable not produced, failed review, merge conflict) | once, on the same pool, with the failure attached | the caller |
+| A process failure (crash, sign-in failure, provider error) | one retry on another eligible pool; the same pool if it is the only candidate (except auth) | the caller |
+| A gate failure (failed evidence, deliverable not produced, report format, output check) | one retry on the same pool, with the failure attached | the caller |
+| Exhausted quota | move without spending the retry, or wait for a known return time | never fail only because quota is exhausted |
+| An `act` step after its worker starts | no automatic retry | the caller |
 
 Rules that hold throughout:
 
@@ -142,8 +151,10 @@ Rules that hold throughout:
   running.
 - **A failed review** gets one fix step built from its findings and one
   re-review. If it still fails, the step goes to the caller.
-- **More review rounds** are the caller's choice (`defaults.verifyRounds`,
-  default 1).
+- **More fix cycles** are the caller's choice (`defaults.verifyRounds`,
+  0–3, default 1; 0 means review only). Saved runs keep their original rules.
+- **Review placement** is the caller's choice through `route`; Bullswarm records
+  who reviewed and whether that provider also wrote the work.
 
 The watcher is where a step hands over to the caller:
 
@@ -151,15 +162,15 @@ The watcher is where a step hands over to the caller:
 ✗ variants needs you · schema failed after 1 retry
   evidence  node check-assets.mjs out/ → exit 1
             banner-b.png is 1536×1024, expected 1600×533
-  try 1  codex · image model · 11m · 3 files
+  try 1  pool-a · image model · 11m · 3 files
   try 2  same pool, failure attached · 7m · 3 files
   still running: copy · waiting on this: pick
   your call:
-    rerun elsewhere  bullswarm workflow step rerun <id> variants --avoid codex
-    change the step  bullswarm workflow plan export <id> → revise
-    take over        output: …/out-variants-attempt-2.md
+    rerun elsewhere  bullswarm workflow step rerun <id> variants --avoid pool-a
+    change the step  bullswarm workflow plan export <id> --out plan.json → plan revise <id> --program plan.json
+    take over        output: <absolute output path>
     accept anyway    bullswarm workflow step accept <id> variants --reason "…"
-  next: bullswarm workflow watch <id> --until trouble --after 212
+  next: bullswarm workflow watch <id> --until trouble --after <sequence> --since <iso>
 ```
 
 `step rerun --avoid` and `step accept` are new. "Accept anyway" is recorded as

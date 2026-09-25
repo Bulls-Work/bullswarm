@@ -24,7 +24,7 @@ No other top-level field is accepted.
 |---|---|---|
 | `schemaVersion` | yes | exactly `bullswarm.workflow.program.v2` |
 | `actions` | yes | non-empty array of actions |
-| `defaults` | no | object with only `effort` (`high`, `medium`, `low`), `reasoning` (`low`, `medium`, `high`, `xhigh`, `max`, `default`), `timeBox` (whole minutes, 0–240) and `verifyRounds` (1–3); `effort`, `reasoning` and `timeBox` apply where neither the action nor its role or kind sets the field, and `verifyRounds` is the run's cap on verify rounds |
+| `defaults` | no | object with only `effort` (`high`, `medium`, `low`), `reasoning` (`low`, `medium`, `high`, `xhigh`, `max`, `default`), `timeBox` (whole minutes, 0–240) and `verifyRounds` (0–3); `effort`, `reasoning` and `timeBox` apply where neither the action nor its role or kind sets the field. `verifyRounds` counts fix-and-re-review cycles (default 1; 0 means review only); saved runs keep their original 1–3 review-round limit |
 
 You may also wrap the same program in a planner-response envelope (`schemaVersion: "bullswarm.workflow.planner-response.v2"`, `kind: "program"`, `summary`, `program`). `workflow goal --program` and `plan validate` accept either shape. `--summary` names a bare program.
 
@@ -45,6 +45,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 | `kind` | role, kind or lane | one of the kinds below; each belongs to one role and keeps its own routing and gate (table below) |
 | `lane` | role, kind or lane | `analyze` (read-only), `build` (edits), `chore` (mechanical edits); only when there is no role or kind |
 | `deliverable` | no | `files`, `report`, `data`, `media`, `outward`, or `{type, paths}`; data and media need `paths`; every path must be an exact file, not a directory, and be listed in `ownedFiles` when it is not empty (`files` paths too); an isolated run refuses a git-ignored path |
+| `route` | no | `{pools:{use,avoid}, providers:{use,avoid}, independentOf}` — where the step may run; a hard filter before pacing; program-mode runs only; lane stays its own field |
 | `evidence` | no | up to 5 checks Bullswarm runs after the worker: `{type: "command", cmd, timeoutSec?}` or `{type: "schema", file, schema, format?, timeoutSec?}`; `$output` checks the step's final response; `format` is `json` or `jsonl`; refused on review and digest steps |
 | `effort` | no | `high`, `medium`, `low`; overrides the role's or kind's effort |
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, `default`; how hard the picked model thinks |
@@ -52,6 +53,44 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 | `inputs`, `produces` | no | artifact IDs, kebab-case: the producer lists an ID in `produces`, its consumer in `inputs`; omit for ordinary dependencies. `produces` wires data between steps; it is not the deliverable |
 
 `dependsOn` is an input dependency: list an action when a writer needs its files or contract before it can compile or prove its change. It makes the writer wait for that input; it does not represent a phase. Keep each behavior and its focused test in one writer action, and have writers run the checks they own. After integration, put the full browser/e2e gate, commit, and PR in separate ordered steps, in that sequence. Give the browser/e2e step an explicit `timeBox` sized for the full suite. Make the browser/e2e gate a `check` step, and the commit and PR steps `kind: mechanical` (not judged, and with empty ownedFiles they run alone). A step whose declared deliverable was not produced fails as `not-produced`, and so does a build-lane step with no declared deliverable that changes no file and makes no commit. An integrator is not judged by files, so a clean integrator still passes. An `act` step is for outward actions such as sending messages; it is never judged by files.
+
+## Failure and routing rules
+
+| Failure | Automatic action | Then |
+|---|---|---|
+| `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`) | You decide |
+| `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached | You decide |
+| `wait` | `quota`, `throttle`: move to another eligible pool without spending the retry, or wait for a known return time | Quota never fails only because it is exhausted |
+| `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
+| `stop` | `cancelled`, `paused`, `restarted`, `superseded`: no failure retry | The caller controls what runs next |
+
+An `act` step is never retried after its worker starts. A check that cannot run
+also comes to you without a retry. A failed check in a new run gets one fix
+step and one re-review; `defaults.verifyRounds` is 0–3 fix cycles, default 1.
+Saved runs keep their original rules.
+
+One step gets one automatic retry in total. Only its dependents wait; other
+steps keep running. Saved runs keep their rules in `features.json`.
+
+## Placing a step
+
+Use `route` in program-mode runs to constrain which pools or providers may run a
+step. `pools.use` and `providers.use` are allow-lists; `pools.avoid` and
+`providers.avoid` are exclusions. `independentOf` names earlier steps whose
+providers must not run this step, or uses `"writers"` on a step with
+`evidenceFor` to exclude the providers of the work it reviews. A provider is
+the model family; relay pools from one provider count as one. These are hard
+filters before pacing. `route.lane` is not allowed: set the step's own `lane`.
+If a route leaves no eligible pool, the step waits for a known return time or
+fails as no eligible pool.
+
+For example, a check can use `route: { "independentOf": ["write-docs"] }`.
+
+`independentOf` names an earlier dependency, so include that step in
+`dependsOn` directly or through another step. Pool lists use configured pool
+ids, not display labels. Pool/provider names cannot appear in both `use` and
+`avoid`; `writers` is accepted only on a step with `evidenceFor`. A route that
+names an unknown or later step is rejected. An empty route is dropped.
 
 ::: warning
 Never set `defaults.effort` to `high`. High belongs to a `combine` step that merges written code, a design step (`kind: architecture`), and an independent check (`kind: adversarial-acceptance`). A study that reads code and writes markdown is a `produce` step.
@@ -71,15 +110,15 @@ The box is resolved for each attempt, so a retry on another pool gets its own cl
 
 ## Verify rounds
 
-When a mandatory requirement fails its review step, the kernel does not wait for you. It runs a bounded repair loop of at most 3 verify rounds:
+When a mandatory requirement fails its review step, the kernel does not wait for you. It runs a bounded repair loop: by default one fix and one re-review (`defaults.verifyRounds` fix cycles, so at most 4 verify rounds in all), then you:
 
 | Round | What it judges | What follows a failure |
 |---|---|---|
 | 1 | every declared requirement: those a review step names are judged; one no review step names is recorded as `not judged · no evidence step covers it` | a `repair-1` step: the failed requirements with the verifier's evidence, the not-done items and handoffs of the steps that affect them, and ownership of the union of those steps' `ownedFiles`; when every affecting step declares a `report`, a read-only `analyze` step with deliverable `report` and no files instead. A requirement an `act` step affects gets no repair and comes back to you; when only those fail, the loop stops with `stoppedBy: act-step` |
-| 2 (`verify-round-2`) | the failed requirements again, plus any passed requirement whose evidence names a file the repair changed; it also looks for regressions in the repaired files and the same defect elsewhere | a `repair-2` step that also fixes what round 2 discovered |
-| 3 (`verify-round-3`) | final closure: only whether each open requirement now passes; it adds nothing new | none: the run ends |
+| a middle round (`verify-round-2` and on, only when `verifyRounds` is 2 or more) | the failed requirements again, plus any passed requirement whose evidence names a file the repair changed; it also looks for regressions in the repaired files and the same defect elsewhere | the next `repair-<n>` step, which also fixes what the round discovered |
+| the last round (`verify-round-2` by default) | final closure: the failed requirements again, plus any passed requirement whose evidence names a file the repair changed; it checks only whether each now passes and looks for nothing new | none: what still fails comes back to you |
 
-`defaults.verifyRounds` sets the cap from 1 to 3 (default 3; `1` keeps today's single round). A requirement that passed carries forward and is not judged again unless a repair touched a file its evidence names. The run ends as soon as nothing is failing, as `completed · verified`, or after round 3 as `completed · not verified · verify rounds 3/3` with a `callerDecision` block on the [result envelope](/reference/result). There is never a fourth round.
+`defaults.verifyRounds` counts fix-and-re-review cycles (0–3, default 1; 0 means review only). The kernel adds one fix step and one re-review for each cycle, then hands remaining failures to you. Saved runs keep their original 1–3 review rounds (default 3). A requirement that passed carries forward and is not judged again unless a repair touched a file its evidence names.
 
 A requirement no review step covers is never judged and never counts as passed. Round 1 records it as `not judged · no evidence step covers it`, it does not start a repair by itself (only a failed or blocked requirement does), and it appears in the `callerDecision` block of the [result](/reference/result) and in `runs result --summary` when the run ends. A mandatory one keeps the run from being `verified`; an optional one leaves the verdict to the mandatory requirements, and the block still names it. To have it judged, add a review step whose `evidenceFor` names it.
 
@@ -201,7 +240,7 @@ Validate and launch apply the same rules. A kind outside the table, a lane outsi
 - A review step's prompt describes what to inspect only. A directive such as "return only JSON" is rejected; the kernel owns the evidence format.
 - `ownedFiles` must name exact files, not a directory or a glob. Validate also refuses a pinned pool that cannot run a step.
 - A deliverable path must be an exact file, not a directory. When `ownedFiles` is not empty, every deliverable path, `files` paths included, must be listed in it. An isolated run refuses a git-ignored deliverable path, because it copies back only files git would track.
-- `timeBox` is a whole number of minutes from 0 to 240 and `verifyRounds` a whole number from 1 to 3; anything else, and any `repair` field, exits 2.
+- `timeBox` is a whole number of minutes from 0 to 240 and `verifyRounds` a whole number from 0 to 3; anything else, and any `repair` field, exits 2.
 
 Exit 0 always carries `advisories`. `all-writers-high` and `docs-at-high` name an action whose effort is above what its work warrants. `requirement-unchecked` names a requirement no step lists in `evidenceFor`: the run can finish but never verify it.
 
@@ -260,6 +299,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README. 3. Write the run r
     {
       "id": "verify",
       "role": "check",
+      "route": { "independentOf": ["since-flag"] },
       "effort": "high",
       "purpose": "Independently confirm the flag works and is documented, and the records file exists",
       "dependsOn": ["since-flag", "readme", "records", "integrate"],

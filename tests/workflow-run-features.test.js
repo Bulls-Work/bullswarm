@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  RUN_FEATURES_FILE, STAGE2_RUN_FEATURES, readRunFeatures, runFeaturesPath, writeRunFeatures,
+  RUN_FEATURES_FILE, STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES, readRunFeatures, runFeatureFlags, runFeaturesPath, writeRunFeatures,
 } from '../src/workflow/run-features.js';
 
 function runDir(t) {
@@ -47,4 +47,41 @@ test('writeRunFeatures writes the stage-2 marker atomically as JSON', (t) => {
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
   assert.deepEqual(readRunFeatures(dir), { deliverableGate: 1, proofLabels: 1 });
   assert.equal(readRunFeatures(dir).proofLabels === 1, true);
+});
+
+test('runFeatureFlags reads the four marker shapes of the stage-3 compatibility table', () => {
+  const none = { deliverableGate: false, proofLabels: false, failureRule: false, reviewPlacement: 'automatic' };
+  assert.deepEqual(runFeatureFlags({}), none, '0.35.6 and unreleased main: no marker');
+  assert.deepEqual(runFeatureFlags({ deliverableGate: 1 }), { ...none, deliverableGate: true }, 'stage 1');
+  assert.deepEqual(runFeatureFlags({ deliverableGate: 1, proofLabels: 1 }), { ...none, deliverableGate: true, proofLabels: true }, 'stage 2');
+  assert.deepEqual(runFeatureFlags({ deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' }), {
+    deliverableGate: true, proofLabels: true, failureRule: true, reviewPlacement: 'caller',
+  }, 'stage 3');
+  assert.deepEqual(runFeatureFlags(STAGE2_RUN_FEATURES), runFeatureFlags({ deliverableGate: 1, proofLabels: 1 }));
+});
+
+test('runFeatureFlags: a missing file reads as {}, unknown keys are ignored, and only exact values count', (t) => {
+  const dir = runDir(t);
+  const none = { deliverableGate: false, proofLabels: false, failureRule: false, reviewPlacement: 'automatic' };
+  assert.deepEqual(runFeatureFlags(readRunFeatures(dir)), none);
+  for (const value of [undefined, null, [], 'failureRule', 1]) assert.deepEqual(runFeatureFlags(value), none, String(value));
+  assert.deepEqual(runFeatureFlags({ deliverableGate: 1, futureKey: 1, reviewPlacement: 'caller' }), {
+    ...none, deliverableGate: true, reviewPlacement: 'caller',
+  });
+  assert.deepEqual(Object.keys(runFeatureFlags({ futureKey: 1 })), ['deliverableGate', 'proofLabels', 'failureRule', 'reviewPlacement']);
+  assert.deepEqual(runFeatureFlags({ failureRule: true, proofLabels: '1', deliverableGate: 2, reviewPlacement: 'automatic' }), none);
+  assert.deepEqual(runFeatureFlags({ reviewPlacement: 'Caller' }), none);
+});
+
+test('a stage-3 launch writes stage 2\'s keys plus failureRule and reviewPlacement; the reader returns it raw', (t) => {
+  const dir = runDir(t);
+  assert.deepEqual(STAGE3_RUN_FEATURES, { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
+  assert.equal(Object.isFrozen(STAGE3_RUN_FEATURES), true);
+  for (const [key, value] of Object.entries(STAGE2_RUN_FEATURES)) assert.equal(STAGE3_RUN_FEATURES[key], value, key);
+  writeRunFeatures(dir, { ...STAGE3_RUN_FEATURES });
+  assert.equal(readFileSync(join(dir, 'features.json'), 'utf8').trim().startsWith('{'), true);
+  assert.deepEqual(readRunFeatures(dir), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
+  assert.deepEqual(runFeatureFlags(readRunFeatures(dir)), {
+    deliverableGate: true, proofLabels: true, failureRule: true, reviewPlacement: 'caller',
+  });
 });

@@ -149,3 +149,25 @@ test('the kernel side requeues the stopped step and hands its next attempt the r
   writeFileSync(join(runDir, 'restart-other.json'), '{"actionId":"not-other"}');
   assert.deepEqual(readStepRestarts(runDir), [], 'an intent whose file name and step disagree is ignored');
 });
+
+// Stage 3 (D18): --pool never overrides the step's route.
+test('restart refuses a --pool the step\'s route does not allow, and writes nothing', async (t) => {
+  const run = stagedRun(t);
+  const state = JSON.parse(readFileSync(join(run.runDir, 'state.json'), 'utf8'));
+  state.program.actions.find((action) => action.id === 'verify').route = { pools: { avoid: ['codex'] }, providers: { use: ['claude-code', 'codex'] } };
+  writeFileSync(join(run.runDir, 'state.json'), `${JSON.stringify(state)}\n`);
+  const pools = [{ name: 'claude-code' }, { name: 'claude-code:acme' }, { name: 'codex' }, { name: 'grok' }];
+  const poolNames = pools.map((pool) => pool.name);
+  for (const pool of ['codex', 'grok']) {
+    const refused = await restartV2Step({ bullswarmDir: run.home, token: SHORT, stepId: 'verify', pool, poolNames, pools, waitMs: 0 });
+    assert.deepEqual([refused.code, refused.status], [2, 'error'], pool);
+    assert.equal(refused.why, `step verify's route does not allow pool ${pool} (avoid codex · providers claude-code, codex); change the route or use bullswarm workflow step rerun ${SHORT} verify --avoid <pool>`);
+  }
+  assert.deepEqual(readStepRestarts(run.runDir), [], 'a refused restart writes no intent');
+  const allowed = await restartV2Step({ bullswarmDir: run.home, token: SHORT, stepId: 'verify', pool: 'claude-code:acme', poolNames, pools, waitMs: 0 });
+  assert.deepEqual([allowed.code, allowed.status, allowed.pool], [0, 'requested', 'claude-code:acme']);
+  // Without --pool the route is the kernel's business: the restart goes through.
+  clearStepRestart(run.runDir, 'verify');
+  const plain = await restartV2Step({ bullswarmDir: run.home, token: SHORT, stepId: 'verify', waitMs: 0 });
+  assert.deepEqual([plain.code, plain.status], [0, 'requested']);
+});

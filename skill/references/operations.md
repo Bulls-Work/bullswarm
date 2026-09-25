@@ -425,6 +425,32 @@ waits for steering: if the graph finishes first, the result lists it under
 `handback.unreadSteering` and watch prints `steering not acted on`. Revise the
 finished run from a fresh export to deliver it; that reopens the run.
 
+## Retries, waiting and the needs-you block
+
+In new runs, each step gets one automatic retry in total. A process failure
+(crash, silence, sign-in failure) retries on another eligible pool. A gate
+failure (`failed-evidence`, `not-produced`, `schema`, or `semantic`) retries on
+the same pool with the failure attached. A gate retry spends the same one-step
+budget. A started `act` step is never retried automatically; a check that could
+not run also comes straight back to you. Quota moves to another eligible pool
+without spending the retry, or waits for a known return time. Only dependents
+wait; unrelated steps keep running. Runs started earlier keep their saved rules.
+
+When the watch prints a needs-you block, choose one of its four `your call`
+lines, run that command as printed, and relaunch the exact `next:` watch line:
+
+| Choice | What to do |
+|---|---|
+| Rerun elsewhere | Run `bullswarm workflow step rerun <id> <step> --avoid <last-pool>`; the pool stays excluded in the step's route |
+| Change the step | Run `bullswarm workflow plan export <id> --out plan.json`, edit the step, then `bullswarm workflow plan revise <id> --program plan.json` |
+| Take over | Open the absolute `output:` path from the block and finish the work yourself |
+| Accept anyway | Run `bullswarm workflow step accept <id> <step> --reason "…"`; this records `choice`, never proof, and rerunning undoes it |
+
+A waiting line is not a failure. For a short wait, take no action and let the
+watch continue. For a long wait, follow its printed options: revise the plan,
+lift a pool pause with `bullswarm pools resume <pool>`, or, for a step hold or
+5-hour limit, rerun elsewhere with `step rerun --avoid`.
+
 ## When a run finishes: the handback
 
 A run never waits: not for its caller, not for a paused pool, not for a silent
@@ -475,23 +501,24 @@ Where a run used to wait, it now finishes:
 | a launch program the kernel cannot accept | `partial`: the reason lists the issues; nothing ran |
 | requirements open with nothing left to run (older verified-mode runs) | `partial` with gaps |
 | steering unread when the last step ends | the run finishes; `unreadSteering` lists it |
-| every pool able to run a step is paused | the step fails at once (`unavailable` or `quota`) with `retryAfter` |
+| no pool can run a step because quota, a hold, or a 5-hour gate has a known return time | the step is `waiting`; it holds no scheduler slot, and the watch prints when it will try again |
+| no capable pool exists, or no blocked pool has a known return time | the step fails as unavailable (or the final failure kind) |
 | a worker writes nothing for 60 minutes | stopped as `stalled`, retried once mechanically, then handed back |
 | the kernel throws | the run is marked `interrupted` with `kernel stopped on an error: …`; `resume` continues it |
 
-Resume on a finished run is a retry. It reopens the run for pending and
-cancelled steps, failed steps whose kind a retry fixes (`provider`, `quota`,
-`auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`,
-`stalled`), and the steps blocked behind them; moves `result.json` to
+Resume on a finished run reopens pending and cancelled steps, and failed
+steps that its saved run rules allow it to retry, plus the steps blocked behind
+them; moves `result.json` to
 `result-before-resume-<n>.json`; writes `workflow.reopened` with `source:
-resume`; and relaunches the kernel. A step that failed for any other reason
-(the worker reported failure, `ownership`, `not-produced`) stays failed:
-change the plan with `plan revise`. With nothing retryable, resume prints
+resume`; and relaunches the kernel. In new runs, gate failures such as
+`failed-evidence` and `not-produced` stay failed: use `step rerun`, `step
+accept`, or `plan revise`. Saved runs retain
+their original resume rules. With nothing retryable, resume prints
 `nothing to retry`, lists the steps that need you, starts nothing, and exits 1.
 
 | Failure | What happens |
 |---|---|
-| `failed-evidence` | One retry on the same pool with the check output attached; then the step waits for you. An `act` step or a check that cannot run goes to you without a retry. `workflow resume` does not rerun it. |
+| `failed-evidence` | In a new run, it uses the step's one retry on the same pool with the check output attached; then the needs-you block returns it to you. An `act` step or a check that cannot run goes to you without a retry. `workflow resume` does not rerun it. Saved runs keep their old rules. |
 | Evidence killed by a signal | The check fails (`killed by SIG…`); a kernel stop, pause or revision is not a failed check. |
 | Evidence log | Full output is saved as `evidence-<step>-attempt-<n>-<k>.log`. |
 
@@ -710,8 +737,9 @@ document and writes nothing.
 - Schema-invalid evidence receives a bounded correction in the same physical
   agent conversation. Schema-valid semantic failure updates the requirement
   ledger; on a program run the kernel then starts its own repair round (see
-  "The time box and the verify loop"), at most 3 verify rounds in all, and hands
-  the rest back in `callerDecision`. Nothing outside those rounds repairs.
+  "The time box and the verify loop"): one fix and one re-review by default
+  (`defaults.verifyRounds` fix cycles, 0-3), and hands the rest back in the
+  needs-you block and `callerDecision`. Nothing outside those rounds repairs.
 - Concerns remain evidence data. A passed requirement with concerns remains
   passed unless its requirement contract explicitly says otherwise.
 - Use cancellation only for a genuinely hung or no-longer-authorized run.

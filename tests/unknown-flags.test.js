@@ -248,3 +248,35 @@ test('unknownFlagExit reports every unknown flag once, then the usage line', () 
   assert.equal(unknownFlagExit(['anything'], null, { error: () => {} }), null,
     'a path with no table is not flag-checked');
 });
+
+// Stage 3: the two new step verbs have their own rows, so their flags parse
+// and anything else is a usage error with their own usage line.
+test('step rerun and step accept accept their own flags and reject anything else', () => {
+  assert.deepEqual(KNOWN_FLAGS['workflow step rerun'], ['avoid', 'wait', 'json', 'help']);
+  assert.deepEqual(KNOWN_FLAGS['workflow step accept'], ['reason', 'requirement', 'wait', 'json', 'help']);
+  assert.equal(unknownFlagExit(['avoid', 'wait', 'json'], ['workflow', 'step', 'rerun'], { error: () => {} }), null);
+  assert.equal(unknownFlagExit(['reason', 'requirement', 'json'], ['workflow', 'step', 'accept'], { error: () => {} }), null);
+  for (const [argv, usage] of [
+    [['workflow', 'step', 'rerun', 'ab12cd', 'write', '--bogus-flag'], ['workflow', 'step', 'rerun']],
+    [['workflow', 'step', 'accept', 'ab12cd', 'write', '--reason', 'x', '--avoid', 'pool-a'], ['workflow', 'step', 'accept']],
+    [['workflow', 'step', 'rerun', 'ab12cd', 'write', '--reason', 'x'], ['workflow', 'step', 'rerun']],
+  ]) {
+    const result = run(argv);
+    assert.equal(result.status, 2, `${argv.join(' ')}: ${result.stderr}`);
+    assert.match(result.stderr, /unknown flag --(bogus-flag|avoid|reason)/);
+    assert.ok(result.stderr.includes(usageLine(usage)), result.stderr);
+  }
+  // Known flags reach the verb: an unknown run is exit 1, not a flag error.
+  const rerun = run(['workflow', 'step', 'rerun', 'nosuch', 'write', '--avoid', 'pool-a', '--avoid', 'pool-b']);
+  assert.equal(rerun.status, 1, rerun.stderr);
+  assert.match(rerun.stderr, /✗ no run found for "nosuch"/);
+  const accept = run(['workflow', 'step', 'accept', 'nosuch', 'write', '--reason', 'fine', '--requirement', 'requirement-1']);
+  assert.equal(accept.status, 1, accept.stderr);
+  assert.match(accept.stderr, /✗ no run found for "nosuch"/);
+  const bare = run(['workflow', 'step', 'accept', 'nosuch', 'write']);
+  assert.equal(bare.status, 2, bare.stderr);
+  assert.match(bare.stderr, /✗ --reason is required: say why you accept it \(it is recorded as evidence "choice"\)/);
+  const valueless = run(['workflow', 'step', 'rerun', 'nosuch', 'write', '--avoid']);
+  assert.equal(valueless.status, 2, valueless.stderr);
+  assert.match(valueless.stderr, /--avoid requires a value/);
+});

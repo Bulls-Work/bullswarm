@@ -125,19 +125,31 @@ the pool, the reason, the strike count and the deadline. `bullswarm workflow
 watch` renders `retrying on another pool` only when `willRetry` is true;
 otherwise it says `no retry left`.
 
-## Evidence steps keep normal routing
+## Placing a review
 
-An evidence or acceptance step is never pushed onto the free pool: the free tier is switched off for it, and it routes on pace like any other action. It does get one preference — **a model family that wrote the work being judged is chosen last**. Accounts of the same provider family are the same writer. While another eligible family exists, the writer is not selected; when it is the only one left, it runs and the reason says so rather than failing the step. Expiring quota outranks this tie-breaker: an urgent writer can run the evidence step, with `independence waived: <pool> resets in <clock>` in the route reason.
+In new runs, Bullswarm does not move a review away from a writer on its own.
+Place it with the step's optional `route`; `route` is a hard filter before
+quota pacing. Use `independentOf` to avoid providers that worked on named
+upstream steps, or use `"writers"` on a check with `evidenceFor`. Use
+`providers.use` / `providers.avoid` to select provider families, or
+`pools.use` / `pools.avoid` for exact pool ids. Accounts served by one provider
+count as one family. A route that leaves no eligible pool waits for a known
+return time or fails as no eligible pool.
 
-The reason **names the writers it ranked below the winner**, so a surprising pick is explainable. Without the names it read only `normal routing`, which on run `is9aaa` hid why `grok` was preferred over an urgent `claude-code:acme`.
-
-```text
-evidence: independent of claude-code:acme, codex (they produced the judged work) · surplus -5
-evidence step: only the writer pool answerer is eligible
-evidence step: normal routing (free tier not applied)
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    { "id": "write-docs", "role": "produce", "purpose": "Write docs", "dependsOn": [], "affects": ["requirement-1"], "ownedFiles": ["README.md"], "evidenceFor": [], "prompt": "Write README.md." },
+    { "id": "review-docs", "role": "check", "purpose": "Review docs", "dependsOn": ["write-docs"], "affects": [], "ownedFiles": [], "evidenceFor": ["requirement-1"], "route": { "independentOf": ["write-docs"] }, "prompt": "Check README.md against the requirement." }
+  ]
+}
 ```
 
-The last line is what you see when no writer pool was among the candidates at all — there is nothing to name.
+Saved runs keep the former automatic writer avoidance, including its independence
+tie-breaker and urgency waiver. A selected gate retry says `pinned to <pool>
+(the same pool (gate retry))`; a manual restart says `pinned to <pool> (step
+restart)`. Route constraints appear as `route: <summary>` in the reason.
 
 ## A pinned pool says it was pinned
 
@@ -164,6 +176,16 @@ Two preferences apply only among pools that survived the steps above. An explici
 ## The caller
 
 The agent CLI that invoked Bullswarm competes as a pool like any other, and `keepOnClaude: true` in a verdict means it won or nothing else was eligible. It is never protected: it has to win on merit. `--no-caller` removes it from the field, so the task must go to a delegate or fail.
+
+## When a pool runs out
+
+In a new workflow, quota and throttle results do not spend the step's one
+automatic retry. Bullswarm moves to another eligible pool; when no pool is
+available but a return time is known, the step becomes `waiting`, takes no
+scheduler slot, and the watcher prints when it will try again. This applies
+even when automatic pausing is off. A wait with no known return time, or no
+capable pool, is reported as a failure instead of waiting forever. Single
+`bullswarm run` keeps its own behavior, and saved workflows keep their rules.
 
 ## Throttles and exhausted windows
 

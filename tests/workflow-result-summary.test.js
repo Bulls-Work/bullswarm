@@ -271,3 +271,25 @@ test('F16: near the byte budget, the proof object never costs a handback line', 
   }
   assert.ok(fullReason > 0, 'some paddings keep the whole quota reason');
 });
+
+// Stage 3 (§2.9): a marked run's handback carries each failed step's retries
+// and the rerun/accept verbs at every fit level, and the proof still never
+// costs a handback line.
+test('stage 3: retries and the caller verbs survive every fit level; the proof never costs a handback line', () => {
+  const STAGE3 = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
+  for (const loop of [false, true]) for (let padding = 0; padding <= 3000; padding += 50) {
+    const { envelope, state } = nearBudgetRun(padding, { loop });
+    envelope.handback.unfinished[0].retries = 1;
+    const unlabelled = summarizeV2Result(envelope, state, { runDir: '/runs/acme', features: { failureRule: 1, reviewPlacement: 'caller' } });
+    const fresh = summarizeV2Result(envelope, state, { runDir: '/runs/acme', features: STAGE3 });
+    // The smallest levels list fewer steps; a listed failed step keeps its count.
+    const listed = fresh.handback.unfinished.find((entry) => entry.id === 'integrate');
+    if (listed) assert.equal(listed.retries, 1, `padding ${padding}`);
+    assert.match(fresh.handback.options.rerun, /^bullswarm workflow step rerun near01 integrate \[--avoid <pool>\]/);
+    assert.match(fresh.handback.options.accept, /^bullswarm workflow step accept near01 integrate --reason "…"/);
+    const lines = formatV2HandbackLines(fresh);
+    assert.deepEqual(lines, formatV2HandbackLines(unlabelled), `padding ${padding}: the same handback lines with and without proof labels`);
+    const step = lines.find((line) => line.startsWith('  step integrate:'));
+    if (step) assert.match(step, /^ {2}step integrate: failed \(quota\) after 1 retry/);
+  }
+});

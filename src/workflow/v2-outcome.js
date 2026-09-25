@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { scheduleV2Actions } from './v2-scheduler.js';
 import { NOT_JUDGED_STATUS, verifyLoopResult } from './verify-rounds.js';
 import { validateV2DurableState } from './v2-state.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { aggregateAttemptUsage } from './rollup.js';
-import { declaredEvidence, evidenceResultsIssues } from './step-vocabulary.js';
-import { readRunFeatures } from './run-features.js';
+import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vocabulary.js';
+import { readRunFeatures, runFeatureFlags } from './run-features.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -82,20 +83,53 @@ function publicFailure(value) {
   };
 }
 
+function nullableNonEmpty(value, name) {
+  if (value !== null && (typeof value !== 'string' || !value)) resultFail(`${name} must be null or a non-empty string`);
+}
+
 function validateResultEvidence(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['sourceAction', 'status', 'evidence', 'concerns', 'eventSequence', 'mechanicalFailure']), name);
+  exactFields(value, new Set(['sourceAction', 'status', 'evidence', 'concerns', 'eventSequence', 'mechanicalFailure', 'reviewer', 'independent']), name);
   resultString(value.sourceAction, `${name}.sourceAction`);
   if (!REQUIREMENT_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
   stringArray(value.evidence, `${name}.evidence`);
   stringArray(value.concerns, `${name}.concerns`);
   if (!Number.isInteger(value.eventSequence) || value.eventSequence < 0) resultFail(`${name}.eventSequence must be a non-negative integer`);
   if (value.mechanicalFailure !== undefined) failureSummary(value.mechanicalFailure, `${name}.mechanicalFailure`);
+  // Who reviewed (D27): written only by stage-3 kernels.
+  if (value.reviewer !== undefined) {
+    resultObject(value.reviewer, `${name}.reviewer`);
+    exactFields(value.reviewer, new Set(['pool', 'model', 'provider']), `${name}.reviewer`);
+    resultString(value.reviewer.pool, `${name}.reviewer.pool`);
+    nullableNonEmpty(value.reviewer.model, `${name}.reviewer.model`);
+    nullableNonEmpty(value.reviewer.provider, `${name}.reviewer.provider`);
+  }
+  if (value.independent !== undefined && value.independent !== null && typeof value.independent !== 'boolean') resultFail(`${name}.independent must be true, false or null`);
+}
+
+// A caller's choice recorded on a step (D22): never proof.
+function validateResultAcceptance(value, name) {
+  resultObject(value, name);
+  exactFields(value, new Set(['evidence', 'reason', 'at', 'attemptId', 'failureKind', 'requirements']), name);
+  if (value.evidence !== 'choice') resultFail(`${name}.evidence must be choice`);
+  resultString(value.reason, `${name}.reason`);
+  if (typeof value.at !== 'string' || Number.isNaN(Date.parse(value.at))) resultFail(`${name}.at must be an ISO-compatible timestamp`);
+  nullableNonEmpty(value.attemptId, `${name}.attemptId`);
+  nullableNonEmpty(value.failureKind, `${name}.failureKind`);
+  if (value.requirements !== undefined) {
+    if (!Array.isArray(value.requirements) || !value.requirements.length) resultFail(`${name}.requirements must be a non-empty array`);
+    value.requirements.forEach((entry, index) => {
+      resultObject(entry, `${name}.requirements[${index}]`);
+      exactFields(entry, new Set(['id', 'workRevision']), `${name}.requirements[${index}]`);
+      resultString(entry.id, `${name}.requirements[${index}].id`);
+      revision(entry.workRevision, `${name}.requirements[${index}].workRevision`);
+    });
+  }
 }
 
 function validateResultRequirement(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'text', 'mandatory', 'status', 'workRevision', 'evidence']), name);
+  exactFields(value, new Set(['id', 'text', 'mandatory', 'status', 'workRevision', 'evidence', 'accepted']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.text, `${name}.text`);
   if (typeof value.mandatory !== 'boolean') resultFail(`${name}.mandatory must be a boolean`);
@@ -103,6 +137,13 @@ function validateResultRequirement(value, name) {
   revision(value.workRevision, `${name}.workRevision`);
   if (!Array.isArray(value.evidence)) resultFail(`${name}.evidence must be an array`);
   value.evidence.forEach((entry, index) => validateResultEvidence(entry, `${name}.evidence[${index}]`));
+  if (value.accepted !== undefined) {
+    resultObject(value.accepted, `${name}.accepted`);
+    exactFields(value.accepted, new Set(['step', 'reason', 'at']), `${name}.accepted`);
+    resultString(value.accepted.step, `${name}.accepted.step`);
+    resultString(value.accepted.reason, `${name}.accepted.reason`);
+    if (typeof value.accepted.at !== 'string' || Number.isNaN(Date.parse(value.accepted.at))) resultFail(`${name}.accepted.at must be an ISO-compatible timestamp`);
+  }
 }
 
 function validateResultBytes(value, name) {
@@ -129,7 +170,7 @@ function validateResultUsageBytes(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'evidenceResults', 'bytes', 'routeWhy', 'routeCandidates', 'usage']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'evidenceResults', 'bytes', 'routeWhy', 'routeCandidates', 'usage', 'acceptance']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -153,6 +194,7 @@ function validateResultAction(value, name) {
   }
   validateResultBytes(value.bytes, `${name}.bytes`);
   if (value.usage !== undefined && value.usage !== null) validateUsageAggregate(value.usage, `${name}.usage`);
+  if (value.acceptance !== undefined) validateResultAcceptance(value.acceptance, `${name}.acceptance`);
 }
 
 function validateGaps(value, result) {
@@ -189,13 +231,14 @@ function validateHandback(value) {
   value.unfinished.forEach((entry, index) => {
     const name = `handback.unfinished[${index}]`;
     resultObject(entry, name);
-    exactFields(entry, new Set(['id', 'status', 'failureKind', 'why', 'retryAfter', 'retryable']), name);
+    exactFields(entry, new Set(['id', 'status', 'failureKind', 'why', 'retryAfter', 'retryable', 'retries']), name);
     resultString(entry.id, `${name}.id`);
     if (!ACTION_STATUSES.has(entry.status)) resultFail(`${name}.status is invalid`);
     nullableString(entry.failureKind, `${name}.failureKind`);
     nullableString(entry.why, `${name}.why`);
     if (entry.retryAfter !== undefined && (typeof entry.retryAfter !== 'string' || Number.isNaN(Date.parse(entry.retryAfter)))) resultFail(`${name}.retryAfter must be an ISO-compatible timestamp`);
     if (typeof entry.retryable !== 'boolean') resultFail(`${name}.retryable must be a boolean`);
+    if (entry.retries !== undefined && (!Number.isInteger(entry.retries) || entry.retries < 0)) resultFail(`${name}.retries must be a non-negative integer`);
   });
   value.unresolvedRequirements.forEach((entry, index) => {
     const name = `handback.unresolvedRequirements[${index}]`;
@@ -219,7 +262,7 @@ function validateHandback(value) {
 // succeed and whether a plain resume reruns it, every requirement still open
 // with its latest reason, and guidance that arrived too late to act on. The
 // caller decides what happens next; the run never waits for that decision.
-function buildV2Handback(state, { unreadSteering = [] } = {}) {
+function buildV2Handback(state, { unreadSteering = [], failureRule = false } = {}) {
   const runtimeStates = stateByAction(state);
   const plan = v2RetryPlan(state);
   const rerun = new Set([...plan.rerun, ...plan.blocked]);
@@ -235,6 +278,9 @@ function buildV2Handback(state, { unreadSteering = [] } = {}) {
       why: firstLine(failure?.message, 300),
       ...(typeof failure?.retryAfter === 'string' && !Number.isNaN(Date.parse(failure.retryAfter)) ? { retryAfter: failure.retryAfter } : {}),
       retryable: rerun.has(definition.id),
+      // Marked runs count the step's automatic retries from its attempts'
+      // retryOf facts (D3); saved runs carry no count.
+      ...(failureRule && status === 'failed' ? { retries: countRetries(state, definition.id) } : {}),
     };
   }).filter(Boolean);
   const unresolvedRequirements = state.intent.requirements.map((intentRequirement) => {
@@ -416,7 +462,56 @@ function currentEvidence(ledger, requirement) {
       concerns: clone(record.concerns),
       eventSequence: record.eventSequence,
       ...(record.mechanicalFailure ? { mechanicalFailure: publicFailure(record.mechanicalFailure) } : {}),
+      // Who reviewed (D27), on records a stage-3 kernel wrote.
+      ...(record.reviewer ? {
+        reviewer: { pool: record.reviewer.pool, model: record.reviewer.model ?? null, provider: record.reviewer.provider ?? null },
+        independent: reviewIndependence(record.reviewer, record.writers),
+      } : {}),
     }));
+}
+
+// True when no writer attempt shares the reviewer's provider, false when one
+// does, and null when no writer is known or a provider is unknown.
+function reviewIndependence(reviewer, writers) {
+  if (!Array.isArray(writers) || !writers.length) return null;
+  if (reviewer?.provider && writers.some((writer) => writer?.provider === reviewer.provider)) return false;
+  if (!reviewer?.provider || writers.some((writer) => !writer?.provider)) return null;
+  return true;
+}
+
+// The acceptance a result reports (§2.9): the stored record without its
+// revision number.
+function publicAcceptance(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    evidence: 'choice', reason: value.reason, at: value.at,
+    attemptId: value.attemptId ?? null, failureKind: value.failureKind ?? null,
+    ...(Array.isArray(value.requirements) ? { requirements: value.requirements.map(({ id, workRevision }) => ({ id, workRevision })) } : {}),
+  };
+}
+
+// A step accepted by choice (not a check's requirement acceptance).
+function stepAccepted(runtime) {
+  return Boolean(runtime?.acceptance) && !Array.isArray(runtime.acceptance.requirements);
+}
+
+// The current acceptance of one requirement: a check step's acceptance whose
+// recorded workRevision is still the requirement's (D23).
+function requirementAcceptance(state, requirement) {
+  for (const runtime of state.actions ?? []) {
+    const entry = (runtime?.acceptance?.requirements ?? []).find((item) => item.id === requirement.id);
+    if (entry && entry.workRevision === requirement.workRevision) {
+      return { step: runtime.id, reason: runtime.acceptance.reason, at: runtime.acceptance.at };
+    }
+  }
+  return null;
+}
+
+// The run's marker, from the option or the directory its attempts live in.
+function envelopeFlags(state, features) {
+  if (features !== undefined) return runFeatureFlags(features);
+  const file = (state.attempts ?? []).map((attempt) => attempt.taskFile ?? attempt.outputFile).find((path) => typeof path === 'string' && path.includes('/'));
+  return runFeatureFlags(file ? readRunFeatures(dirname(file)) : {});
 }
 
 export function consolidateV2Gaps(state) {
@@ -514,7 +609,7 @@ function readTextQuietly(path) {
   try { return readFileSync(path, 'utf8'); } catch { return null; }
 }
 
-export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null, workspace = null, unreadSteering = [], readText = readTextQuietly } = {}) {
+export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null, workspace = null, unreadSteering = [], readText = readTextQuietly, features = undefined } = {}) {
   validateV2DurableState(state);
   const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
   if (!['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) {
@@ -525,6 +620,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
   const verified = status === 'completed' && (!program || hasPassingRequirementEvidence(state));
   // The repair loop's rounds, measured, and what is left for the caller.
   const loop = program ? verifyLoopResult(state, { readText, token: state.shortId ?? state.runId }) : null;
+  const flags = envelopeFlags(state, features);
+  const acceptedSteps = state.actions.filter(stepAccepted).length;
   const result = {
     schemaVersion: V2_RESULT_SCHEMA_VERSION,
     runId: state.runId,
@@ -534,9 +631,10 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     status,
     verified,
     ...(program ? { executionMode: 'program', ...(workspace ? { workspace: clone(workspace) } : {}) } : {}),
-    reason: progress.reason,
+    reason: `${progress.reason}${acceptedSteps ? ` · ${acceptedSteps} step${acceptedSteps === 1 ? '' : 's'} accepted by choice` : ''}`,
     requirements: state.intent.requirements.map((intentRequirement) => {
       const requirement = state.ledger.requirements[intentRequirement.id];
+      const accepted = requirementAcceptance(state, requirement);
       return {
         id: requirement.id,
         text: intentRequirement.text,
@@ -544,6 +642,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         status: requirement.status,
         workRevision: requirement.workRevision,
         evidence: currentEvidence(state.ledger, requirement),
+        ...(accepted ? { accepted } : {}),
       };
     }),
     actions: state.program.actions.map((definition) => {
@@ -574,13 +673,14 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         routeWhy: attempt?.routeWhy ?? null,
         routeCandidates: clone(attempt?.routeCandidates ?? null),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
+        ...(runtime?.acceptance ? { acceptance: publicAcceptance(runtime.acceptance) } : {}),
       };
     }),
     gaps: status === 'completed' && verified ? null : (progress.gaps ?? consolidateV2Gaps(state)),
     usage: resultUsage(state),
     finishedAt,
     // Anything short of a verified run with no unread guidance is handed back.
-    ...(status === 'completed' && verified && !unreadSteering.length ? {} : { handback: buildV2Handback(state, { unreadSteering }) }),
+    ...(status === 'completed' && verified && !unreadSteering.length ? {} : { handback: buildV2Handback(state, { unreadSteering, failureRule: flags.failureRule }) }),
     ...(loop ? { verifyRounds: loop.verifyRounds, callerDecision: loop.callerDecision } : {}),
   };
   validateV2ResultEnvelope(result);
@@ -707,7 +807,7 @@ function fitResultSummary(summary) {
     if (level === 'named') return named;
     if (level === 'full') return dropNullFields(named);
     if (level === 'routing') return dropNullFields({ ...named, bytes: null });
-    if (level === 'status') return dropNullFields({ id: named.id, status: named.status, outFile: named.outFile ?? null });
+    if (level === 'status') return dropNullFields({ id: named.id, status: named.status, outFile: named.outFile ?? null, accepted: named.accepted ?? null });
     return { id: named.id, status: named.status };
   });
   const requirementsAt = (limit) => summary.requirements.map((requirement) => ({
@@ -828,7 +928,7 @@ function legacyHandback(envelope) {
   };
 }
 
-function summaryHandback(envelope, handback, token) {
+function summaryHandback(envelope, handback, token, { failureRule = false } = {}) {
   const retryable = handback.unfinished.filter((entry) => entry.retryable);
   const waits = retryable.map((entry) => Date.parse(entry.retryAfter ?? '')).filter(Number.isFinite);
   // Named only when every step to retry is waiting on a paused pool: resume
@@ -840,6 +940,8 @@ function summaryHandback(envelope, handback, token) {
   const notRun = new Set(envelope.actions
     .filter((action) => action.status === 'failed' && Object.hasOwn(action, 'evidenceResults') && action.evidenceResults === null)
     .map((action) => action.id));
+  const failedIds = envelope.executionMode === 'program' ? handback.unfinished.filter((entry) => entry.status === 'failed').map((entry) => entry.id) : [];
+  const failedStep = failedIds.length === 1 ? failedIds[0] : '<step>';
   return {
     unfinished: handback.unfinished.map((entry) => ({
       id: entry.id,
@@ -849,6 +951,7 @@ function summaryHandback(envelope, handback, token) {
       ...(entry.status === 'failed' && notRun.has(entry.id) ? { evidenceNotRun: true } : {}),
       ...(entry.retryAfter ? { retryAfter: entry.retryAfter } : {}),
       retryable: entry.retryable,
+      ...(Number.isInteger(entry.retries) ? { retries: entry.retries } : {}),
     })),
     unreadSteering: handback.unreadSteering.map((entry) => ({ id: entry.id, message: firstLine(entry.message, 160) ?? '' })),
     // Every option the caller has, as a command. Which one to take is theirs.
@@ -859,6 +962,11 @@ function summaryHandback(envelope, handback, token) {
       ...(retryable.length
         ? { retry: `bullswarm workflow resume ${token}${retryAfter ? ` after ${retryAfter}` : ''} (reruns ${rerunIds.slice(0, 4).join(', ')}${rerunIds.length > 4 ? ` and ${rerunIds.length - 4} more` : ''})` }
         : {}),
+      // A marked run's failed steps come back with the caller verbs (§2.9).
+      ...(failureRule && failedIds.length ? {
+        rerun: `bullswarm workflow step rerun ${token} ${failedStep} [--avoid <pool>] (runs it again with its last attempt's handoff)`,
+        accept: `bullswarm workflow step accept ${token} ${failedStep} --reason "…" (recorded as your choice, never proof)`,
+      } : {}),
       takeOver: `do the unfinished work yourself; bullswarm workflow runs result ${token} --json names every step's output`,
       restart: 'start a new run: bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>',
     },
@@ -904,7 +1012,8 @@ export function formatV2HandbackLines(summary) {
   const lines = [...loopLines];
   for (const entry of handback.unfinished) {
     const kind = entry.failureKind && entry.failureKind !== entry.status ? ` (${entry.failureKind})` : '';
-    lines.push(`  step ${entry.id}: ${entry.status}${kind}${entry.why ? ` — ${entry.why}` : ''}${entry.evidenceNotRun ? ' · evidence not run' : ''}${entry.retryAfter ? ` · its pool is back at ${entry.retryAfter}` : ''}`);
+    const retries = entry.retries > 0 ? ` after ${entry.retries} retr${entry.retries === 1 ? 'y' : 'ies'}` : '';
+    lines.push(`  step ${entry.id}: ${entry.status}${kind}${retries}${entry.why ? ` — ${entry.why}` : ''}${entry.evidenceNotRun ? ' · evidence not run' : ''}${entry.retryAfter ? ` · its pool is back at ${entry.retryAfter}` : ''}`);
   }
   if (handback.unfinishedOmitted) lines.push(`  … and ${handback.unfinishedOmitted} more unfinished step(s)`);
   // A requirement the decision block already names is not listed twice.
@@ -915,7 +1024,7 @@ export function formatV2HandbackLines(summary) {
   }
   if (open.length > 6) lines.push(`  … and ${open.length - 6} more open requirement(s)`);
   for (const entry of handback.unreadSteering) lines.push(`  steering not acted on: ${entry.message}`);
-  const labels = { continue: 'continue', retry: 'retry', takeOver: 'take over', restart: 'restart' };
+  const labels = { continue: 'continue', retry: 'retry', rerun: 'rerun', accept: 'accept', takeOver: 'take over', restart: 'restart' };
   const options = Object.entries(handback.options ?? {});
   if (options.length) {
     lines.push('your call:');
@@ -924,9 +1033,9 @@ export function formatV2HandbackLines(summary) {
   return lines;
 }
 
-// What can back a finished step, in the order labels list them (E22). Stage 3
-// adds `choice` (D34); every builder below iterates over the types it is
-// given, so that extension needs no reshaping here.
+// What can back a finished step, in the order labels list them (E22). Stage
+// 3's `choice` (D34) is not a proof type: an accepted step's label is
+// `['choice']` alone, and the summary counts it apart, never as proven.
 export const PROOF_TYPES = Object.freeze(['command', 'schema', 'review']);
 
 function isReviewStep(definition) {
@@ -944,7 +1053,12 @@ function isReviewStep(definition) {
  * not all of them have passed yet.
  */
 export function stepProof(state, definition, { atFinish = false, features } = {}) {
-  if (!definition || isReviewStep(definition) || definition.kind === 'digest') return null;
+  if (!definition) return null;
+  // A step the caller accepted is backed by that choice, whatever the marker
+  // (only stage-3 code can accept, D34). A check's requirement acceptance
+  // labels no step.
+  if (stepAccepted((state?.actions ?? []).find((action) => action.id === definition.id))) return { by: ['choice'], reviewPending: false };
+  if (isReviewStep(definition) || definition.kind === 'digest') return null;
   if (features !== undefined && features?.proofLabels !== 1 && !declaredEvidence(definition).length) return null;
   const runtime = (state?.actions ?? []).find((action) => action.id === definition.id) ?? null;
   if (!atFinish && runtime?.status !== 'succeeded') return null;
@@ -970,22 +1084,27 @@ export function stepProof(state, definition, { atFinish = false, features } = {}
 export function formatV2ProofLabel(proof) {
   if (!proof) return null;
   const by = proof.by ?? [];
+  if (by.includes('choice')) return 'accepted by choice';
   if (by.length) return `proven by ${by.join(', ')}${proof.reviewPending ? ' · review pending' : ''}`;
   return proof.reviewPending ? 'review pending' : 'unproven';
 }
 
 // The summary's top-level proof (§2.8): how many labelled rows are proven,
-// by which type, and which are not.
+// by which type, and which are not. Steps accepted by choice (D34) are counted
+// apart and never as proven; the keys appear only when there is one, so a
+// saved run's summary reads as before.
 function summaryProof(rows) {
   const labelled = rows.filter((row) => Array.isArray(row.proof));
   if (!labelled.length) return null;
   const byType = Object.fromEntries(PROOF_TYPES.map((type) => [type, labelled.filter((row) => row.proof.includes(type)).length]));
+  const acceptedRows = labelled.filter((row) => row.proof.includes('choice'));
   const unprovenRows = labelled.filter((row) => !row.proof.length);
   return {
-    proven: labelled.length - unprovenRows.length,
-    byType,
+    proven: labelled.length - unprovenRows.length - acceptedRows.length,
+    byType: acceptedRows.length ? { ...byType, choice: acceptedRows.length } : byType,
     unproven: unprovenRows.length,
     unprovenSteps: unprovenRows.slice(0, 4).map((row) => row.id),
+    ...(acceptedRows.length ? { accepted: acceptedRows.length, acceptedSteps: acceptedRows.slice(0, 4).map((row) => row.id) } : {}),
   };
 }
 
@@ -998,8 +1117,13 @@ export function formatV2ProofLine(summary) {
   if (!proof) return null;
   const parts = [];
   if (proof.proven > 0) {
-    const types = Object.entries(proof.byType ?? {}).filter(([, count]) => count > 0).map(([type, count]) => `${type} ${count}`);
+    const types = Object.entries(proof.byType ?? {}).filter(([type, count]) => type !== 'choice' && count > 0).map(([type, count]) => `${type} ${count}`);
     parts.push(`${proof.proven} step${proof.proven === 1 ? '' : 's'} proven${types.length ? ` (${types.join(', ')})` : ''}`);
+  }
+  if (proof.accepted > 0) {
+    const names = proof.acceptedSteps ?? [];
+    const more = proof.accepted - names.length;
+    parts.push(`${proof.accepted} accepted by choice${names.length ? `: ${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : ''}`);
   }
   if (proof.unproven > 0) {
     const names = proof.unprovenSteps ?? [];
@@ -1024,11 +1148,14 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
     const dir = runDirOf(envelope.actions.map((action) => ({ outFile: fallback(action.outFile, action.outputFile) })), runDir);
     runFeatures = dir ? readRunFeatures(dir) : {};
   }
+  const flags = runFeatureFlags(runFeatures);
   const actions = envelope.actions.map((action) => {
     const definition = stateActionFor(state, action.id);
     const attempt = latestAttemptFor(state, action.id);
     // A label only under the marker, or on a step that declares evidence (E23).
     const proof = action.status === 'succeeded' ? stepProof(state, definition, { features: runFeatures ?? {} }) : null;
+    const acceptance = action.acceptance ?? (state?.actions ?? []).find((entry) => entry.id === action.id)?.acceptance ?? null;
+    const accepted = action.status === 'succeeded' && acceptance && !Array.isArray(acceptance.requirements) ? firstLine(acceptance.reason, 80) : null;
     return {
       id: action.id,
       kind: fallback(action.kind, definition?.kind),
@@ -1037,6 +1164,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       effort: fallback(action.effort, definition?.effort),
       status: action.status,
       ...(proof ? { proof: proof.by } : {}),
+      ...(accepted ? { accepted } : {}),
       pool: fallback(action.pool, attempt?.pool),
       model: fallback(action.model, attempt?.model),
       reasoning: appliedReasoning(fallback(action.reasoning, attempt?.reasoning)),
@@ -1077,7 +1205,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
     },
     usage: clone(envelope.usage),
-    ...(handback ? { handback: summaryHandback(envelope, handback, shortId) } : {}),
+    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule }) } : {}),
     // The loop's rounds once one ran, and the caller's block when there is one.
     ...(envelope.verifyRounds?.used > 0 ? { verifyRounds: clone(envelope.verifyRounds) } : {}),
     ...(envelope.callerDecision ? { callerDecision: clone(envelope.callerDecision) } : {}),
@@ -1153,8 +1281,8 @@ const VERIFY_ROUND_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed
 function validateResultVerifyRounds(value) {
   resultObject(value, 'verifyRounds');
   exactFields(value, new Set(['max', 'used', 'stoppedBy', 'phases']), 'verifyRounds');
-  if (!Number.isInteger(value.max) || value.max < 1 || value.max > 3) resultFail('verifyRounds.max must be 1, 2 or 3');
-  if (!Number.isInteger(value.used) || value.used < 0 || value.used > 3) resultFail('verifyRounds.used must be 0 to 3');
+  if (!Number.isInteger(value.max) || value.max < 1 || value.max > 4) resultFail('verifyRounds.max must be 1 to 4');
+  if (!Number.isInteger(value.used) || value.used < 0 || value.used > 4) resultFail('verifyRounds.used must be 0 to 4');
   if (value.stoppedBy !== null && !VERIFY_ROUND_STOPS.has(value.stoppedBy)) resultFail('verifyRounds.stoppedBy is invalid');
   if (!Array.isArray(value.phases)) resultFail('verifyRounds.phases must be an array');
   value.phases.forEach((phase, index) => {
@@ -1162,7 +1290,7 @@ function validateResultVerifyRounds(value) {
     resultObject(phase, name);
     exactFields(phase, new Set(['kind', 'round', 'steps', 'judged', 'failed', 'notJudged', 'requirements', 'wallMinutes', 'pools', 'apiUsd', 'unmeasured', 'cost']), name);
     if (!['verify', 'repair'].includes(phase.kind)) resultFail(`${name}.kind must be verify|repair`);
-    if (!Number.isInteger(phase.round) || phase.round < 1 || phase.round > 3) resultFail(`${name}.round must be 1 to 3`);
+    if (!Number.isInteger(phase.round) || phase.round < 1 || phase.round > 4) resultFail(`${name}.round must be 1 to 4`);
     stringArray(phase.steps, `${name}.steps`);
     stringArray(phase.pools, `${name}.pools`);
     if (phase.kind === 'verify') {
@@ -1181,7 +1309,7 @@ function validateResultVerifyRounds(value) {
 function validateResultCallerDecision(value) {
   resultObject(value, 'callerDecision');
   exactFields(value, new Set(['verifyRounds', 'requirements']), 'callerDecision');
-  if (typeof value.verifyRounds !== 'string' || !/^\d\/[1-3]$/.test(value.verifyRounds)) resultFail('callerDecision.verifyRounds must read used/max');
+  if (typeof value.verifyRounds !== 'string' || !/^\d\/[1-4]$/.test(value.verifyRounds)) resultFail('callerDecision.verifyRounds must read used/max');
   if (!Array.isArray(value.requirements) || !value.requirements.length) resultFail('callerDecision.requirements must be a non-empty array');
   value.requirements.forEach((entry, index) => {
     const name = `callerDecision.requirements[${index}]`;
@@ -1189,7 +1317,7 @@ function validateResultCallerDecision(value) {
     exactFields(entry, new Set(['id', 'status', 'round', 'evidence', 'next']), name);
     resultString(entry.id, `${name}.id`);
     if (entry.status !== NOT_JUDGED_STATUS && (!REQUIREMENT_STATUSES.has(entry.status) || entry.status === 'passed')) resultFail(`${name}.status is invalid`);
-    if (!Number.isInteger(entry.round) || entry.round < 1 || entry.round > 3) resultFail(`${name}.round must be 1 to 3`);
+    if (!Number.isInteger(entry.round) || entry.round < 1 || entry.round > 4) resultFail(`${name}.round must be 1 to 4`);
     if (typeof entry.evidence !== 'string') resultFail(`${name}.evidence must be a string`);
     resultString(entry.next, `${name}.next`);
   });

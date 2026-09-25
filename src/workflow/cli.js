@@ -26,7 +26,11 @@ import {
   pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run,
 } from './v2-runtime.js';
 import { formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
-import { prepareV2DispatchPools, requestStepRestart, workerSilenceTimeoutSec } from './v2-dispatch.js';
+import {
+  clearStepRestart, prepareV2DispatchPools, readStepRestarts, requestStepRestart, workerSilenceTimeoutSec,
+} from './v2-dispatch.js';
+import { readRunFeatures, runFeatureFlags } from './run-features.js';
+import { poolPassesRoute, resolveRouteFilter, routeIssuesForPools, routeSummary } from './step-route.js';
 import {
   createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, REVISION_CHANGE_KINDS, V2RevisionError,
 } from './v2-revision.js';
@@ -47,7 +51,7 @@ import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
 import { stepJsonModel } from './step-json.js';
 import { listAssignments } from '../lib/assignments.js';
-import { resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
+import { loadPoolLabels, resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -196,7 +200,10 @@ function goalSettings(opts) {
     .filter(([flag]) => opts[flag] != null)
     .map(([flag, setting]) => {
       const value = Number(opts[flag]);
-      if (!Number.isInteger(value) || value < (flag === 'retry-attempts' ? 0 : 1)) throw new Error(`--${flag} must be a ${flag === 'retry-attempts' ? 'non-negative' : 'positive'} integer`);
+      // Stage 3 (D2): one automatic retry per step by default, at most 3.
+      if (flag === 'retry-attempts') {
+        if (!Number.isInteger(value) || value < 0 || value > 3) throw new Error('--retry-attempts must be 0, 1, 2 or 3');
+      } else if (!Number.isInteger(value) || value < 1) throw new Error(`--${flag} must be a positive integer`);
       return [setting, value];
     }));
   return settings;
@@ -494,6 +501,7 @@ async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null } =
     },
     observe: goalObserveCommands(token, { callerPlanner }),
     logs: { stdout: stdoutPath, stderr: stderrPath },
+    ...(opts.verifyRoundsMeaning ? { verifyRoundsMeaning: opts.verifyRoundsMeaning } : {}),
   };
   launch.instructions = goalLaunchInstructions(launch.observe);
   if (!opts.silentLaunch && opts.json) console.log(JSON.stringify(launch, null, 2));
@@ -745,6 +753,36 @@ function pinnedPoolIssues(doc, program, pools) {
   return issues;
 }
 
+// Stage 3 §2.4: the route checks that need the configured pool list (unknown
+// pool or provider names, a label instead of an id, nothing capable left, the
+// run pin outside the route). Only programs that route a step pay for them.
+function programRoutes(actions) {
+  return (actions ?? []).some((action) => action?.route && typeof action.route === 'object');
+}
+
+function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR())) {
+  if (!programRoutes(actions) || !Array.isArray(pools)) return [];
+  const routing = doc?.config?.workerRouting ?? {};
+  const preferredModel = routing.model ?? routing.preferredModel ?? null;
+  return routeIssuesForPools({ actions }, pools, {
+    runPin: routing.strictPool ?? routing.pool ?? null,
+    preparePools: (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options }),
+    labels,
+  });
+}
+
+// The configured pools without a live meter refresh: enough for the route
+// checks, which ignore pauses, holds and 5-hour gates.
+function configuredPools() {
+  try { return buildPools(BULLSWARM_DIR(), Date.now()).pools; } catch { return null; }
+}
+
+// D35: a program that sets verifyRounds is told that it now counts fix cycles.
+const VERIFY_ROUNDS_NOTE = 'note: defaults.verifyRounds counts fix cycles since this version (1 = one fix and one re-review, 0 = review only); it counted review rounds before';
+function setsVerifyRounds(program) {
+  return program?.verifyRounds !== undefined || program?.defaults?.verifyRounds !== undefined;
+}
+
 // Advisories are advice, never a rejection: they go to stderr so a --json
 // caller keeps a clean stdout document, and the exit code is untouched.
 function printAdvisories(advisories, { stream = console.error } = {}) {
@@ -905,11 +943,16 @@ async function wfGoal(opts) {
     const workspaceIssues = [
       ...workspacePathIssues(previewed.program, doc.intent.cwd, { isolated: doc.config.settings.workspaceMode === 'isolated' }),
       ...pinnedPoolIssues(doc, previewed.program, pools),
+      ...routePoolIssues(previewed.program.actions, pools, doc),
     ];
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
     // The same lines `plan validate` prints, at the moment the program is
     // actually launched. The kernel also stores them on the run state.
     printAdvisories(programAdvisories(previewed.program, { requirements: doc.intent.requirements }));
+    if (setsVerifyRounds(previewed.program)) {
+      console.error(VERIFY_ROUNDS_NOTE);
+      opts.verifyRoundsMeaning = 'fix cycles';
+    }
   }
 
   if (!opts.foreground && !resumeRunId && !opts.request) {
@@ -1025,9 +1068,11 @@ async function planValidate(opts) {
   // Everything a launch refuses, validate refuses too.
   const workspaceIssues = workspacePathIssues(accepted.program, doc.intent.cwd, { isolated: doc.config.settings.workspaceMode === 'isolated' });
   const routing = doc.config?.workerRouting ?? {};
-  if (routing.strictPool ?? routing.pool) {
+  const pinned = Boolean(routing.strictPool ?? routing.pool);
+  if (pinned || programRoutes(accepted.program.actions)) {
     const { pools } = await livePoolNames();
-    workspaceIssues.push(...pinnedPoolIssues(doc, accepted.program, pools));
+    if (pinned) workspaceIssues.push(...pinnedPoolIssues(doc, accepted.program, pools));
+    workspaceIssues.push(...routePoolIssues(accepted.program.actions, pools, doc));
   }
   if (workspaceIssues.length) return refuseProgramInvalid(goal, opts, workspaceIssues, { message: 'program invalid against the contract (nothing launched)' });
   const next = goalNextCommands(goal, doc.intent.cwd, opts);
@@ -1044,6 +1089,7 @@ async function planValidate(opts) {
         ...(action.evidence ? { evidence: action.evidence } : {}),
         lane: action.lane, effort: action.effort,
         ...(action.reasoning ? { reasoning: action.reasoning } : {}),
+        ...(action.route ? { route: action.route } : {}),
         dependsOn: action.dependsOn,
         affects: action.affects, evidenceFor: action.evidenceFor, ownedFiles: action.ownedFiles,
       })),
@@ -1051,13 +1097,15 @@ async function planValidate(opts) {
     // Advice about the accepted program. Present (possibly empty) on every
     // valid program so a caller can read it without probing for the key.
     advisories: programAdvisories(accepted.program, { requirements: doc.intent.requirements }),
+    ...(setsVerifyRounds(accepted.program) ? { verifyRoundsMeaning: 'fix cycles' } : {}),
     next: { launch: next.launch },
   };
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
   else {
     console.log(`✓ program valid against the contract: ${payload.program.actions.length} action${payload.program.actions.length === 1 ? '' : 's'} for ${payload.requirements.length} requirement${payload.requirements.length === 1 ? '' : 's'} (nothing launched)`);
-    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.role ? ` role=${action.role}` : ''}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
+    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.role ? ` role=${action.role}` : ''}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}${action.route ? ` route: ${routeSummary(action.route)}` : ''}`);
     printAdvisories(payload.advisories, { stream: console.log });
+    if (payload.verifyRoundsMeaning) console.log(VERIFY_ROUNDS_NOTE);
     console.log(`  launch   ${next.launch}`);
   }
   return 0;
@@ -1298,7 +1346,7 @@ function planExport(opts) {
 function printRevisionChanges(changes) {
   const labels = {
     added: 'added', amended: 'amended', restored: 'restored', removed: 'removed',
-    rerun: 'rerun', invalidated: 'rerun (downstream)',
+    rerun: 'rerun', invalidated: 'rerun (downstream)', accepted: 'accepted',
   };
   for (const kind of REVISION_CHANGE_KINDS) {
     const ids = changes?.[kind] ?? [];
@@ -1344,12 +1392,23 @@ async function planRevise(opts) {
   let current;
   try { current = deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8')); }
   catch (err) { console.error(`✗ cannot read the run state: ${err.message}`); return 1; }
-  const precheck = planV2Revision(current, body, { pendingSteeringIds: peekSteering(current, run.runDir).map((entry) => entry.id) });
+  // The run's marker decides how defaults.verifyRounds reads (D13, rule 6).
+  const features = runFeatureFlags(readRunFeatures(run.runDir));
+  const precheck = planV2Revision(current, body, { pendingSteeringIds: peekSteering(current, run.runDir).map((entry) => entry.id), features });
   const id = current.shortId ?? current.runId;
   if (precheck.ok) {
     const directories = workspacePathIssues(body.program, doc.intent.cwd, { isolated: current.config.settings.workspaceMode === 'isolated' });
     if (directories.length) Object.assign(precheck, { ok: false, issues: directories });
   }
+  if (precheck.ok) {
+    // Only the steps this revision (re)starts are checked against today's
+    // pools: a finished step's route is history.
+    const starting = new Set([...precheck.changes.added, ...precheck.changes.amended, ...precheck.changes.restored, ...precheck.changes.rerun]);
+    const routed = precheck.desired.filter((action) => starting.has(action.id));
+    const routeIssues = programRoutes(routed) ? routePoolIssues(routed, configuredPools(), doc) : [];
+    if (routeIssues.length) Object.assign(precheck, { ok: false, issues: routeIssues });
+  }
+  const verifyRoundsNote = features.failureRule && setsVerifyRounds(body.program);
   if (!precheck.ok) {
     if (opts.json) console.log(JSON.stringify({ action: 'plan-revise', status: 'rejected', runId: current.runId, shortId: current.shortId ?? null, programRevision: current.program.revision, issues: precheck.issues }, null, 2));
     printValidationIssues(`revision rejected against ${id} at revision ${current.program.revision} (run unchanged)`, precheck.issues);
@@ -1367,9 +1426,12 @@ async function planRevise(opts) {
     return 2;
   }
   if (outcome.status === 'queued') {
-    const payload = { ...base, status: 'queued', note: `the running kernel has not taken the revision within ${waitSec}s; it applies it at its next check, and watch prints "plan revised"`, next: { watch: `bullswarm workflow watch ${id} --next` } };
+    const payload = { ...base, status: 'queued', note: `the running kernel has not taken the revision within ${waitSec}s; it applies it at its next check, and watch prints "plan revised"`, ...(verifyRoundsNote ? { verifyRoundsMeaning: 'fix cycles' } : {}), next: { watch: `bullswarm workflow watch ${id} --next` } };
     if (opts.json) console.log(JSON.stringify(payload, null, 2));
-    else console.log(`✓ revision ${request.id} queued for ${id}; ${payload.note}`);
+    else {
+      console.log(`✓ revision ${request.id} queued for ${id}; ${payload.note}`);
+      if (verifyRoundsNote) console.log(`  ${VERIFY_ROUNDS_NOTE}`);
+    }
     return 0;
   }
   const paused = outcome.state?.lifecycle?.status === 'paused';
@@ -1382,6 +1444,7 @@ async function planRevise(opts) {
     ...base, status: 'applied', programRevision: outcome.record.programRevision, summary: outcome.record.summary,
     changes: outcome.record.changes, steeringDelivered: outcome.record.steeringIds ?? [],
     appliedBy: outcome.appliedBy, reopened: outcome.reopened ?? null, paused, relaunch,
+    ...(verifyRoundsNote ? { verifyRoundsMeaning: 'fix cycles' } : {}),
     next: paused
       ? { resume: `bullswarm workflow resume ${id}` }
       : { watch: `bullswarm workflow watch ${id} --next`, export: `bullswarm workflow plan export ${id} --out plan.json` },
@@ -1390,6 +1453,7 @@ async function planRevise(opts) {
   const by = outcome.appliedBy === 'kernel' ? 'by its running kernel' : 'directly (no kernel was running)';
   console.log(`✓ plan of ${id} revised to revision ${payload.programRevision} ${by} · ${payload.summary}`);
   printRevisionChanges(payload.changes);
+  if (verifyRoundsNote) console.log(`  ${VERIFY_ROUNDS_NOTE}`);
   if (payload.reopened) console.log(`  reopened the ${payload.reopened.previousStatus} run; its earlier result is archived`);
   if (payload.steeringDelivered.length) console.log(`  steering  ${payload.steeringDelivered.length} instruction(s) marked delivered`);
   if (paused) console.log(`  the run stays paused; continue with: ${payload.next.resume}`);
@@ -1620,7 +1684,7 @@ async function wfCapabilities(opts) {
         // types, of which only review (a check step with evidenceFor) is usable.
         actionRoles: v2RoleCatalog(),
         deliverableTypes: [...DELIVERABLE_TYPES],
-        evidenceTypes: { types: [...EVIDENCE_TYPES], usable: [...USABLE_EVIDENCE_TYPES] },
+        evidenceTypes: { types: [...EVIDENCE_TYPES], usable: [...USABLE_EVIDENCE_TYPES], note: 'choice is recorded by bullswarm workflow step accept (never proof)' },
         stepEvidence: {
           fieldTypes: [...STEP_EVIDENCE_TYPES], maxItems: EVIDENCE_MAX_ITEMS,
           timeoutSec: { default: EVIDENCE_DEFAULT_TIMEOUT_SEC, max: EVIDENCE_MAX_TIMEOUT_SEC },
@@ -1677,7 +1741,8 @@ async function wfCapabilities(opts) {
     },
     routing: {
       automatic: true,
-      selection: 'pools with 5h headroom first (a pool at or above the near-limit threshold is chosen only when no eligible pool below it exists); within that set, approved effort-tier assignment when eligible, otherwise highest time-adjusted quota surplus among lane/capability/model-policy-eligible, enabled, non-quarantined, non-burst-gated pools',
+      selection: 'Constraints first: the step\'s route, a run-wide pin, the model policy and the effort tier. Then 5-hour burst gates, free-first (never for checks), quota urgency, the tier assignment and pace surplus. In runs started by this version a review runs only where its route puts it; earlier runs keep automatic writer avoidance.',
+      failureRule: { retriesPerStep: 1, processFailure: 'retry once on another eligible pool; the same pool when it is the only candidate (except auth)', gateFailure: 'retry once on the same pool with the failure attached', quota: 'move without spending the retry, or wait for a known return time', then: 'caller; only dependents wait', savedRuns: 'keep their original retry and review rules' },
       modelSelection: 'connector-declared discovery and model flag; approved assignments may select a model; excluded models are never dispatched and force an allowed tier fallback when supported',
       strategyPolicy: coreState.strategy?.policy ?? null,
       assignments: coreState.strategy?.assignments ?? {},
@@ -1858,7 +1923,7 @@ const TERMINAL_RUN_STATUSES = new Set(['completed', 'partial', 'cancelled', 'fai
  * --pool value must belong to.
  */
 export async function restartV2Step({
-  bullswarmDir, token, stepId, pool = null, poolNames = null,
+  bullswarmDir, token, stepId, pool = null, poolNames = null, pools = null,
   waitMs = 60_000, pollMs = 200, now = () => new Date().toISOString(),
 } = {}) {
   const fail = (code, why, extra = {}) => ({ code, status: 'error', why, ...extra });
@@ -1890,6 +1955,15 @@ export async function restartV2Step({
   if (pool && Array.isArray(poolNames) && !poolNames.includes(pool)) {
     return fail(2, `unknown pool "${pool}"; configured pools: ${poolNames.join(', ') || 'none'}`, base);
   }
+  // D18: a restart pin never overrides the step's route.
+  const definition = state.program.actions.find((action) => action.id === stepId);
+  if (pool && definition?.route) {
+    const filter = resolveRouteFilter(state, definition, pools ?? []);
+    const target = (pools ?? []).find((entry) => entry?.name === pool) ?? pool;
+    if (filter && !poolPassesRoute(target, filter)) {
+      return fail(2, `step ${stepId}'s route does not allow pool ${pool} (${filter.summary}); change the route or use bullswarm workflow step rerun ${id} ${stepId} --avoid <pool>`, base);
+    }
+  }
   const request = requestStepRestart(resolved.runDir, { actionId: stepId, attemptId: running.id, pool, now });
   const outcome = { ...base, requestId: request.id, stoppedAttemptId: running.id, stoppedPool: running.pool ?? null, pool: request.pool };
   const deadline = Date.now() + Math.max(0, waitMs);
@@ -1903,23 +1977,358 @@ export async function restartV2Step({
   }
 }
 
+// --- workflow step rerun / accept (stage 3 §2.7, §2.8) -----------------------
+// Both are plan revisions the CLI builds for the caller, so they work with a
+// live kernel or offline, reopen a finished run, and leave an audit record.
+// rerun adds --avoid pools to the step's route and hands the last failed
+// attempt's handoff to the next attempt through an already-applied restart
+// intent that counts only once its revision is applied (D20). accept records
+// a failed step, or a check's failing requirements, as the caller's choice.
+
+const STEP_UNFINISHED = new Set(['failed', 'cancelled', 'interrupted', 'blocked']);
+const OLD_KERNEL_HINT = (id) => `  the run's kernel predates step rerun/accept: bullswarm workflow pause ${id}, run this again, then bullswarm workflow resume ${id}`;
+
+// The failed (or cancelled, interrupted) step at the root of why `stepId`
+// cannot run, with its status.
+function blockingRoot(state, stepId, seen = new Set()) {
+  const definitions = new Map(state.program.actions.map((action) => [action.id, action]));
+  const statusOf = (id) => state.actions.find((action) => action.id === id)?.status;
+  for (const dependency of definitions.get(stepId)?.dependsOn ?? []) {
+    if (seen.has(dependency)) continue;
+    seen.add(dependency);
+    const status = statusOf(dependency);
+    if (status === 'blocked' || status === 'pending') {
+      const deeper = blockingRoot(state, dependency, seen);
+      if (deeper) return deeper;
+      if (status === 'blocked') return { id: dependency, status };
+    } else if (STEP_UNFINISHED.has(status)) return { id: dependency, status };
+  }
+  return null;
+}
+
+function currentStepAttempts(state, runtime) {
+  return (state.attempts ?? [])
+    .filter((attempt) => attempt.actionId === runtime.id && attempt.ordinal > (runtime.supersededAttempts ?? 0))
+    .sort((left, right) => left.ordinal - right.ordinal);
+}
+
+// Load a program run for a step verb, or return the refusal.
+function loadStepRun(bullswarmDir, token, stepId, verb) {
+  const resolved = resolveRunId(bullswarmDir, token);
+  if (!resolved) return { refusal: { code: 1, why: `no run found for "${token}"` } };
+  let state;
+  try { state = deserializeV2DurableState(readFileSync(join(resolved.runDir, 'state.json'), 'utf8')); }
+  catch (err) { return { refusal: { code: 1, why: `run "${token}" has no readable state.json (${err.message})` } }; }
+  const id = state.shortId ?? state.runId;
+  if (!isProgramWorkflow(state)) return { refusal: { code: 1, why: `run ${id} is not a program-mode run; step ${verb} needs a run started with --program` } };
+  const runtime = state.actions.find((action) => action.id === stepId);
+  if (!runtime || runtime.status === 'removed' || !state.program.actions.some((action) => action.id === stepId)) {
+    return { refusal: { code: 1, why: `run ${id} has no step "${stepId}"` } };
+  }
+  return { resolved, state, id, runtime };
+}
+
+function stepError(code, why, extra = {}) {
+  return { code, status: 'error', why, ...extra };
+}
+
+// Delete the rerun's own intent only: a newer intent for the step stays.
+function dropRerunIntent(runDir, intent) {
+  if (!intent) return;
+  const current = readStepRestarts(runDir).find((entry) => entry.actionId === intent.actionId);
+  if (current?.id === intent.id) clearStepRestart(runDir, intent.actionId);
+}
+
+function oldKernelRejection(issues) {
+  return issues.some((issue) => /\.route\b[^;]*not allowed|route is not allowed/.test(issue))
+    || issues.some((issue) => issue.startsWith('the revision changes nothing'));
+}
+
+/**
+ * `workflow step rerun`: resolves {code, status: applied|queued|rejected|error, ...}.
+ * `pools` is the configured pool list (objects), `labels` maps pool ids to
+ * labels, and `relaunch(doc, runId)` starts a kernel after an offline apply.
+ */
+export async function rerunV2Step({
+  bullswarmDir, token, stepId, avoid = [], pools = null, labels = {},
+  waitMs = 120_000, pollMs = 250, now = () => new Date().toISOString(), relaunch = null,
+} = {}) {
+  const loaded = loadStepRun(bullswarmDir, token, stepId, 'rerun');
+  if (loaded.refusal) return stepError(loaded.refusal.code, loaded.refusal.why);
+  const { resolved, state, id, runtime } = loaded;
+  const base = { runId: state.runId, shortId: state.shortId ?? null, step: stepId };
+  const status = runtime.status;
+  if (status === 'running') return stepError(1, `step ${stepId} is running; to stop it and run it again: bullswarm workflow step restart ${id} ${stepId} [--pool <pool>]`, base);
+  if (status === 'blocked') {
+    const root = blockingRoot(state, stepId);
+    return stepError(1, `step ${stepId} is blocked by ${root?.id ?? 'a failed dependency'} (${root?.status ?? 'failed'}); rerun or accept ${root?.id ?? 'it'} first`, base);
+  }
+  if (status === 'pending' && !avoid.length) return stepError(1, `step ${stepId} has not run yet; nothing to rerun (add --avoid to keep it off a pool when it runs)`, base);
+
+  // Pool names: ids stay, a label resolves to its id, anything else is refused.
+  const configured = (pools ?? []).map((pool) => pool.name);
+  const idByLabel = new Map(Object.entries(labels ?? {}).map(([poolId, label]) => [label, poolId]));
+  const avoided = [];
+  const notes = [];
+  for (const name of avoid) {
+    if (configured.includes(name)) { if (!avoided.includes(name)) avoided.push(name); continue; }
+    const poolId = idByLabel.get(name);
+    if (poolId && configured.includes(poolId)) {
+      if (!avoided.includes(poolId)) avoided.push(poolId);
+      notes.push(`(label "${name}" is pool ${poolId})`);
+      continue;
+    }
+    return stepError(2, `unknown pool "${name}"; configured pools: ${configured.join(', ') || 'none'}`, base);
+  }
+
+  const document = exportV2Plan(state);
+  const definition = document.program.actions.find((action) => action.id === stepId);
+  if (avoided.length) {
+    const route = definition.route ? JSON.parse(JSON.stringify(definition.route)) : {};
+    const use = route.pools?.use ?? null;
+    if (use && use.every((name) => avoided.includes(name))) {
+      return stepError(2, `step ${stepId} may only use ${use.join(', ')} (route.pools.use); avoiding ${use.length === 1 ? 'it' : 'them'} leaves nothing. Change its route: bullswarm workflow plan export ${id} --out plan.json → plan revise ${id} --program plan.json`, base);
+    }
+    route.pools = { ...(route.pools ?? {}) };
+    route.pools.avoid = [...new Set([...(route.pools.avoid ?? []), ...avoided])].sort();
+    if (use) route.pools.use = use.filter((name) => !avoided.includes(name));
+    definition.route = route;
+    const doc = (() => { try { return JSON.parse(readFileSync(join(resolved.runDir, 'goal.json'), 'utf8')); } catch { return state; } })();
+    const routing = doc?.config?.workerRouting ?? {};
+    const filter = resolveRouteFilter(state, definition, pools ?? []);
+    const capable = prepareV2DispatchPools(pools ?? [], definition, definition.effort ?? 'medium', {
+      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
+      routeFilter: filter, ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true,
+    }).filter((pool) => poolPassesRoute(pool, filter));
+    if (!capable.length) {
+      return stepError(2, `no pool could run ${stepId} after avoiding ${avoided.join(', ')} (${definition.lane}/${definition.effort} work); rerun without --avoid, or change the step's effort or route`, base);
+    }
+    const routeIssues = routePoolIssues([definition], pools, doc, labels);
+    if (routeIssues.length) return { code: 2, status: 'rejected', issues: routeIssues, ...base };
+  }
+
+  const attempts = currentStepAttempts(state, runtime);
+  const last = attempts.at(-1) ?? null;
+  const handoffFrom = status !== 'pending' && last && ['failed', 'interrupted', 'cancelled'].includes(last.status) ? last : null;
+  const lastText = last ? ` (last attempt: ${last.failureKind ?? last.status}${last.pool ? ` on ${last.pool}` : ''})` : '';
+  const body = {
+    summary: `step rerun ${stepId}${avoided.length ? ` avoiding ${avoided.join(', ')}` : ''}${lastText}`,
+    baseRevision: state.program.revision,
+    program: document.program,
+    rerun: status === 'pending' ? [] : [stepId],
+    steeringIds: [],
+  };
+  const features = runFeatureFlags(readRunFeatures(resolved.runDir));
+  const precheck = planV2Revision(state, body, { features });
+  if (!precheck.ok) return { code: 2, status: 'rejected', issues: precheck.issues, ...base };
+
+  const request = createRevisionRequest(body, { source: 'step-rerun', now });
+  const intent = handoffFrom ? requestStepRestart(resolved.runDir, {
+    actionId: stepId, attemptId: handoffFrom.id, pool: null, source: 'step-rerun',
+    revisionRequestId: request.id, appliedAt: now(), now,
+  }) : null;
+  let outcome;
+  try { outcome = await reviseV2Program({ bullswarmDir, runId: state.runId, request, waitMs, pollMs, now }); }
+  catch (err) { dropRerunIntent(resolved.runDir, intent); return stepError(1, err.message, base); }
+  const result = {
+    ...base, requestId: request.id, avoid: avoided, notes,
+    handoffFrom: handoffFrom?.id ?? null,
+    handoff: handoffFrom ? { attemptId: handoffFrom.id, failureKind: handoffFrom.failureKind ?? handoffFrom.status, pool: handoffFrom.pool ?? null } : null,
+    pending: status === 'pending',
+    route: definition.route ?? null,
+    next: { watch: `bullswarm workflow watch ${id} --until trouble` },
+  };
+  if (outcome.status === 'rejected') {
+    dropRerunIntent(resolved.runDir, intent);
+    const issues = outcome.record?.issues ?? [];
+    return { code: 2, status: 'rejected', issues, oldKernel: outcome.appliedBy === 'kernel' && oldKernelRejection(issues), ...result };
+  }
+  if (outcome.status === 'queued') return { code: 0, status: 'queued', programRevision: null, changes: null, appliedBy: null, relaunch: null, ...result };
+  const paused = outcome.state?.lifecycle?.status === 'paused';
+  let relaunched = null;
+  if (outcome.appliedBy === 'offline' && !paused && typeof relaunch === 'function') {
+    try { relaunched = await relaunch(state.runId); }
+    catch (err) { return stepError(1, `rerun of ${stepId} applied to ${id} (revision ${outcome.record.programRevision}) but ${err.message}`, base); }
+  }
+  return {
+    code: 0, status: 'applied', programRevision: outcome.record.programRevision, changes: outcome.record.changes,
+    appliedBy: outcome.appliedBy, paused, relaunch: relaunched, ...result,
+  };
+}
+
+/**
+ * `workflow step accept`: resolves {code, status: applied|queued|rejected|error, ...}.
+ * The refusals are the §2.8 texts planV2Revision reports; the exit code is 2
+ * for a usage problem (reason, requirement) and 1 for a step in the wrong state.
+ */
+export async function acceptV2Step({
+  bullswarmDir, token, stepId, reason, requirements = [],
+  waitMs = 120_000, pollMs = 250, now = () => new Date().toISOString(), relaunch = null,
+} = {}) {
+  const text = typeof reason === 'string' ? reason.trim() : '';
+  if (!text) return stepError(2, '--reason is required: say why you accept it (it is recorded as evidence "choice")');
+  if (text.length > 500 || /[\r\n]/.test(text)) return stepError(2, '--reason must be one line of at most 500 characters');
+  const loaded = loadStepRun(bullswarmDir, token, stepId, 'accept');
+  if (loaded.refusal) return stepError(loaded.refusal.code, loaded.refusal.why);
+  const { resolved, state, id, runtime } = loaded;
+  const base = { runId: state.runId, shortId: state.shortId ?? null, step: stepId };
+  const named = [...new Set(requirements)];
+  const body = {
+    summary: `accept ${stepId}: "${text}"`,
+    baseRevision: state.program.revision,
+    program: exportV2Plan(state).program,
+    rerun: [],
+    steeringIds: [],
+    accept: [{ step: stepId, reason: text, requirements: named.length ? named : null }],
+  };
+  const features = runFeatureFlags(readRunFeatures(resolved.runDir));
+  const precheck = planV2Revision(state, body, { features });
+  if (!precheck.ok) {
+    const [first] = precheck.issues;
+    const usage = /^(--reason|step \S+ does not check |requirement \S+ is not failing)/.test(first ?? '');
+    const single = precheck.issues.length === 1;
+    return single
+      ? stepError(usage ? 2 : 1, first, base)
+      : { code: 2, status: 'rejected', issues: precheck.issues, ...base };
+  }
+  const planned = precheck.acceptances[0];
+  const kind = planned.kind;
+  const before = new Set((runtime.acceptance?.requirements ?? []).map((entry) => entry.id));
+  const acceptedRequirements = kind === 'requirements'
+    ? (named.length ? named : planned.requirements.map((entry) => entry.id).filter((entryId) => !before.has(entryId)))
+    : named;
+  const request = createRevisionRequest(body, { source: 'step-accept', now });
+  let outcome;
+  try { outcome = await reviseV2Program({ bullswarmDir, runId: state.runId, request, waitMs, pollMs, now }); }
+  catch (err) { return stepError(1, err.message, base); }
+  const result = {
+    ...base, requestId: request.id, kind, reason: text, requirements: acceptedRequirements,
+    attemptId: planned.attemptId ?? null, failureKind: planned.failureKind ?? null,
+    next: { watch: `bullswarm workflow watch ${id} --until trouble`, undo: `bullswarm workflow step rerun ${id} ${stepId}` },
+  };
+  if (outcome.status === 'rejected') {
+    const issues = outcome.record?.issues ?? [];
+    return { code: 2, status: 'rejected', issues, oldKernel: outcome.appliedBy === 'kernel' && oldKernelRejection(issues), ...result };
+  }
+  if (outcome.status === 'queued') return { code: 0, status: 'queued', programRevision: null, changes: null, appliedBy: null, relaunch: null, dependents: [], ...result };
+  const paused = outcome.state?.lifecycle?.status === 'paused';
+  let relaunched = null;
+  if (outcome.appliedBy === 'offline' && !paused && typeof relaunch === 'function') {
+    try { relaunched = await relaunch(state.runId); }
+    catch (err) { return stepError(1, `accept of ${stepId} applied to ${id} (revision ${outcome.record.programRevision}) but ${err.message}`, base); }
+  }
+  return {
+    code: 0, status: 'applied', programRevision: outcome.record.programRevision, changes: outcome.record.changes,
+    dependents: outcome.record.changes?.invalidated ?? [], appliedBy: outcome.appliedBy, paused, relaunch: relaunched, ...result,
+  };
+}
+
+function printStepRerun(result, token) {
+  const id = result.shortId ?? token;
+  if (result.status === 'error') { console.error(`✗ ${result.why}`); return; }
+  if (result.status === 'rejected') {
+    console.error(`✗ rerun of ${result.step} rejected (run unchanged)`);
+    for (const issue of result.issues ?? []) console.error(`  - ${issue}`);
+    if (result.oldKernel) console.error(OLD_KERNEL_HINT(id));
+    return;
+  }
+  if (result.status === 'queued') {
+    console.log(`✓ rerun of ${result.step} queued for ${id}; the running kernel applies it at its next check, and watch prints "plan revised"`);
+    return;
+  }
+  const avoiding = result.avoid.length ? ` avoiding ${result.avoid.join(', ')}` : '';
+  const by = result.appliedBy === 'kernel' ? 'applied by its running kernel'
+    : result.paused ? 'applied directly; the run stays paused' : 'applied directly; kernel relaunched';
+  if (result.pending) console.log(`✓ ${result.step} of ${id} will avoid ${result.avoid.join(', ')} when it runs · revision ${result.programRevision}`);
+  else console.log(`✓ ${result.step} of ${id} runs again${avoiding} · revision ${result.programRevision} (${by})`);
+  for (const note of result.notes ?? []) console.log(`  ${note}`);
+  if (result.handoff) console.log(`  handoff  ${result.handoff.attemptId} (${result.handoff.failureKind}${result.handoff.pool ? ` on ${result.handoff.pool}` : ''}) goes to the next attempt`);
+  if (result.avoid.length) console.log(`  route    ${routeSummary(result.route)} · kept for later reruns; remove it with plan export → plan revise`);
+  if (result.paused) console.log(`  resume   bullswarm workflow resume ${id}`);
+  else console.log(`  watch    ${result.next.watch}`);
+}
+
+function printStepAccept(result, token) {
+  const id = result.shortId ?? token;
+  if (result.status === 'error') { console.error(`✗ ${result.why}`); return; }
+  if (result.status === 'rejected') {
+    console.error(`✗ accept of ${result.step} rejected (run unchanged)`);
+    for (const issue of result.issues ?? []) console.error(`  - ${issue}`);
+    if (result.oldKernel) console.error(OLD_KERNEL_HINT(id));
+    return;
+  }
+  if (result.status === 'queued') {
+    console.log(`✓ accept of ${result.step} queued for ${id}; the running kernel applies it at its next check, and watch prints "plan revised"`);
+    return;
+  }
+  if (result.kind === 'requirements') {
+    console.log(`✓ ${result.requirements.join(', ')} accepted by your choice on ${result.step} · "${result.reason}" · revision ${result.programRevision}`);
+    console.log('  evidence   choice (not proof; the run stays not verified)');
+  } else {
+    console.log(`✓ ${result.step} of ${id} accepted by your choice · "${result.reason}" · revision ${result.programRevision}`);
+    console.log('  evidence   choice (not proof; the run is verified only by its checks)');
+    if (result.dependents.length) console.log(`  dependents ${result.dependents.join(', ')} run now`);
+  }
+  if (result.paused) console.log(`  resume     bullswarm workflow resume ${id}`);
+  console.log(`  undo       ${result.next.undo}`);
+}
+
+function stepJson(action, result) {
+  const { code, why, notes, ...rest } = result;
+  return JSON.stringify({ action, ...rest, ...(why ? { why } : {}), ...(notes?.length ? { notes } : {}) }, null, 2);
+}
+
+function listFlag(value) {
+  return (Array.isArray(value) ? value : value == null ? [] : [value])
+    .flatMap((entry) => String(entry).split(',')).map((entry) => entry.trim()).filter(Boolean);
+}
+
+async function relaunchRun(runId) {
+  const resolved = resolveRunId(BULLSWARM_DIR(), runId);
+  const doc = JSON.parse(readFileSync(join(resolved.runDir, 'goal.json'), 'utf8'));
+  return launchDetachedResume(doc, runId, {});
+}
+
+const STEP_VERBS = ['restart', 'rerun', 'accept'];
+
 async function wfStep(opts) {
-  const path = opts.rest[0] === 'restart' ? ['workflow', 'step', 'restart'] : ['workflow', 'step'];
+  const verb = opts.rest[0];
+  const path = STEP_VERBS.includes(verb) ? ['workflow', 'step', verb] : ['workflow', 'step'];
   if (opts.help) { console.log(helpText(path)); return 0; }
   const flagExit = flagErrors(opts, path);
   if (flagExit !== null) return flagExit;
-  const [verb, token, stepId] = opts.rest;
-  if (verb !== 'restart' || !token || !stepId) { console.error(`usage: ${usageLine(['workflow', 'step', 'restart'])}`); return 2; }
+  const [, token, stepId] = opts.rest;
+  if (!STEP_VERBS.includes(verb) || !token || !stepId) { console.error(`usage: ${usageLine(STEP_VERBS.includes(verb) ? path : ['workflow', 'step', 'restart'])}`); return 2; }
   const legacy = legacyRunRefusal(token, opts);
   if (legacy !== null) return legacy;
-  const waitSec = opts.wait == null ? 60 : Number(opts.wait);
+  const waitSec = opts.wait == null ? (verb === 'restart' ? 60 : 120) : Number(opts.wait);
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  if (verb === 'rerun') {
+    const result = await rerunV2Step({
+      bullswarmDir: BULLSWARM_DIR(), token, stepId, avoid: listFlag(opts.avoid),
+      pools: configuredPools() ?? [], labels: loadPoolLabels(BULLSWARM_DIR()), waitMs: waitSec * 1000, relaunch: relaunchRun,
+    });
+    if (opts.json) console.log(stepJson('step-rerun', result));
+    else printStepRerun(result, token);
+    return result.code;
+  }
+  if (verb === 'accept') {
+    const result = await acceptV2Step({
+      bullswarmDir: BULLSWARM_DIR(), token, stepId, reason: opts.reason, requirements: listFlag(opts.requirement),
+      waitMs: waitSec * 1000, relaunch: relaunchRun,
+    });
+    if (opts.json) console.log(stepJson('step-accept', result));
+    else printStepAccept(result, token);
+    return result.code;
+  }
   let poolNames = null;
+  let pools = null;
   if (opts.pool) {
-    try { poolNames = buildPools(BULLSWARM_DIR(), Date.now()).pools.map((pool) => pool.name); } catch { poolNames = null; }
+    pools = configuredPools();
+    poolNames = pools ? pools.map((pool) => pool.name) : null;
   }
   const result = await restartV2Step({
-    bullswarmDir: BULLSWARM_DIR(), token, stepId, pool: opts.pool ?? null, poolNames, waitMs: waitSec * 1000,
+    bullswarmDir: BULLSWARM_DIR(), token, stepId, pool: opts.pool ?? null, poolNames, pools, waitMs: waitSec * 1000,
   });
   const id = result.shortId ?? result.runId ?? token;
   const payload = {
@@ -1968,6 +2377,7 @@ function v2ActionJson(resolved, state, actionId) {
       lane: action.lane,
       effort: action.effort,
       ...(action.reasoning ? { reasoning: action.reasoning } : {}),
+      ...(action.route ? { route: action.route, routeSummary: routeSummary(action.route) } : {}),
       dependsOn: action.dependsOn,
       affects: action.affects,
       evidenceFor: action.evidenceFor,
@@ -1978,7 +2388,10 @@ function v2ActionJson(resolved, state, actionId) {
       outputFile: actionState?.outputFile ?? null,
       artifactIds: actionState?.artifactIds ?? [],
       lastFailure: actionState?.lastFailure ?? null,
+      ...(actionState?.acceptance ? { acceptance: actionState.acceptance } : {}),
     },
+    // Each attempt as stored, including `retryOf` on one the dispatcher
+    // started because of an earlier one (stage 3).
     attempts: (state.attempts ?? []).filter((attempt) => attempt.actionId === actionId),
     events: readEvents(resolved.runDir).filter((event) =>
       event.payload?.actionId === actionId || event.payload?.parentId === actionId),
@@ -2060,7 +2473,7 @@ function workflowHelpPath(sub, opts) {
   if (!sub) return ['workflow'];
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
   if (sub === 'task') return opts.rest[0] === 'show' ? ['workflow', 'task', 'show'] : ['workflow', 'task'];
-  if (sub === 'step') return opts.rest[0] === 'restart' ? ['workflow', 'step', 'restart'] : ['workflow', 'step'];
+  if (sub === 'step') return ['restart', 'rerun', 'accept'].includes(opts.rest[0]) ? ['workflow', 'step', opts.rest[0]] : ['workflow', 'step'];
   const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;
 }
@@ -2074,7 +2487,15 @@ function parseFlags(argv) {
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
     'out', 'rerun', 'base-revision', 'wait', 'width', 'height', 'until', 'pool',
+    'avoid', 'requirement',
   ]);
+  // Repeatable value flags collect every value (step rerun --avoid, step
+  // accept --requirement).
+  const listFlags = new Set(['avoid', 'requirement']);
+  const assign = (key, value) => {
+    if (listFlags.has(key)) out[key] = [...(out[key] ?? []), value];
+    else out[key] = value;
+  };
   // A value flag with no value (end of argv, or the next token is another
   // flag) is a usage error, never a silent default: a bare --program must not
   // launch a dispatched-planner run.
@@ -2110,10 +2531,10 @@ function parseFlags(argv) {
     } else if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       const key = a.slice(2, eq > 0 ? eq : undefined);
-      if (eq > 0) out[key] = a.slice(eq + 1);
+      if (eq > 0) assign(key, a.slice(eq + 1));
       else if (valueFlags.has(key)) {
         if (missingValue(i)) errors.push(`--${key} requires a value`);
-        else out[key] = argv[++i];
+        else assign(key, argv[++i]);
       } else out[key] = true;
     } else out.rest.push(a);
   }

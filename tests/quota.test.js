@@ -611,3 +611,49 @@ test('dropping a refusal marker removes only a synthetic meter snapshot', () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('with pausing off the result names holdUntil: the deadline a pause would have had, and pauses nothing', async () => {
+  const { quarantinePool } = await import('../src/lib/state.js');
+  const claude = connectorOf(PROVIDER_CONNECTORS['claude-code']);
+  // A message that names its reset: the same deadline the 'message' rule uses.
+  const named = decide(claude, CLAUDE_SESSION_WINDOW);
+  assert.equal(named.rule, 'message');
+  const namedOff = decide(claude, CLAUDE_SESSION_WINDOW, { pausing: false });
+  assert.equal(namedOff.rule, 'off');
+  assert.equal(namedOff.pause, false);
+  assert.equal(namedOff.until, null, 'until stays null: nothing is paused');
+  assert.equal(namedOff.holdUntil, named.until);
+  assert.equal(iso(namedOff.holdUntil), '2026-09-08T11:00:00.000Z');
+  // A meter window at or above the threshold: that window's reset.
+  const fullMeter = { ...INCIDENT_METER, seven_day: { utilization: QUOTA_PAUSE_METER_PCT, resets_at: '2026-09-11T12:00:00Z' } };
+  const metered = decide(claude, COMMAND_CODE_THROTTLE, { meter: fullMeter });
+  assert.equal(metered.rule, 'meter');
+  const meteredOff = decide(claude, COMMAND_CODE_THROTTLE, { meter: fullMeter, pausing: false });
+  assert.equal(meteredOff.rule, 'off');
+  assert.equal(meteredOff.holdUntil, metered.until);
+  assert.equal(iso(meteredOff.holdUntil), '2026-09-11T12:00:00.000Z');
+  assert.equal(meteredOff.meterWindow, null, 'no other field of the off result changes');
+  // Neither proof: null, as the 'transient' rule would pause nothing.
+  assert.equal(decide(claude, COMMAND_CODE_THROTTLE).rule, 'transient');
+  const transientOff = decide(claude, COMMAND_CODE_THROTTLE, { pausing: false });
+  assert.equal(transientOff.holdUntil, null);
+  assert.equal(decideQuotaPause({ text: null, meter: null, pausing: false, now: NOW }).holdUntil, null);
+  // The off result is otherwise the old shape, plus holdUntil; the other rules gain nothing.
+  assert.deepEqual(Object.keys(namedOff).sort(), [
+    'decidedAt', 'holdUntil', 'line', 'meter', 'meterWindow', 'pause', 'resetsAt', 'retrySamePool', 'rule', 'until', 'waitMs', 'why',
+  ]);
+  for (const onResult of [named, metered, decide(claude, COMMAND_CODE_THROTTLE)]) assert.equal(Object.hasOwn(onResult, 'holdUntil'), false, onResult.rule);
+  // A holdUntil can never become a pause.
+  for (const off of [namedOff, meteredOff, transientOff]) {
+    assert.equal(quotaPauseProven(off, NOW), false);
+    assert.equal(quotaPauseProven({ ...off, until: off.holdUntil }, NOW), false);
+    const state = { strategy: { pausing: 'off' }, pools: {} };
+    assert.equal(quarantinePool(state, 'claude-code', off.why, NOW, { kind: 'quota', evidence: off }), null);
+    assert.equal(quarantinePool(state, 'claude-code', off.why, NOW, { kind: 'quota', evidence: { ...off, pause: true, until: off.holdUntil } }), null);
+    assert.deepEqual(state.pools, {});
+  }
+  // Even with pausing on in the state, an off result is not proof of a pause.
+  const onState = { pools: {} };
+  assert.equal(quarantinePool(onState, 'claude-code', namedOff.why, NOW, { kind: 'quota', evidence: namedOff }), null);
+  assert.deepEqual(onState.pools, {});
+});

@@ -579,3 +579,174 @@ test('recording the project never throws, and a run with no record reads back nu
     assert.equal(readGoalProject(runDir), null, 'a foreign schema is not a project record');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// --- stage 3: route checks, --retry-attempts range, the verifyRounds note -----
+
+function routedFixture() {
+  const f = fixture();
+  // A second provider, and a display label for the first pool.
+  const beta = JSON.parse(readFileSync(join(f.home, 'connectors', 'goal-agent.json'), 'utf8'));
+  writeFileSync(join(f.home, 'connectors', 'beta-agent.json'), `${JSON.stringify({ ...beta, name: 'beta-agent' }, null, 2)}\n`);
+  const core = JSON.parse(readFileSync(join(f.home, 'state.json'), 'utf8'));
+  core.pools['beta-agent'] = { enabled: true };
+  writeFileSync(join(f.home, 'state.json'), `${JSON.stringify(core, null, 2)}\n`);
+  writeFileSync(join(f.home, 'pool-labels.json'), `${JSON.stringify({ labels: { 'goal-agent': 'alpha' } })}\n`);
+  return f;
+}
+
+function callerProgram({ route = null, defaults = null } = {}) {
+  return {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program',
+    summary: 'Create the bounded artifact and inspect it independently.',
+    program: {
+      schemaVersion: 'bullswarm.workflow.program.v2',
+      ...(defaults ? { defaults } : {}),
+      actions: [
+        {
+          id: 'goal-work', purpose: 'Create done artifact', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'],
+          prompt: 'Create done.txt containing exactly autonomous-complete followed by a newline, then read it back.',
+          lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['done-artifact'], ...(route ? { route } : {}),
+        },
+        {
+          id: 'goal-evidence', purpose: 'Inspect done artifact', dependsOn: ['goal-work'], affects: [], ownedFiles: [],
+          prompt: 'Read done.txt and compare every byte with the required content.',
+          lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['done-artifact'], produces: [],
+        },
+      ],
+    },
+  };
+}
+
+const GOAL_TEXT = 'Create and verify done.txt.';
+
+test('route checks need the configured pools: validate and launch refuse unknown pools, labels, providers and empty routes', () => {
+  const f = routedFixture();
+  try {
+    const cases = [
+      [{ pools: { use: ['nope'] } }, [], /step goal-work route\.pools\.use names "nope", which is not a configured pool \(configured: (beta-agent, goal-agent|goal-agent, beta-agent)\)/],
+      [{ pools: { avoid: ['alpha'] } }, [], /step goal-work route\.pools\.avoid names "alpha", which is a pool label; use its id "goal-agent"/],
+      [{ providers: { use: ['nope'] } }, [], /step goal-work route\.providers\.use names "nope", which no configured pool uses \(providers: beta-agent, goal-agent\)/],
+      [{ pools: { avoid: ['beta-agent', 'goal-agent'] } }, [], /step goal-work: no enabled pool can run it under its route \(build\/low work; route: avoid beta-agent, goal-agent\)/],
+      [{ pools: { avoid: ['goal-agent'] } }, ['--worker-pool', 'goal-agent'], /step goal-work: its route leaves nothing of the run's pinned pool goal-agent \(--worker-pool\)/],
+    ];
+    for (const [index, [route, extra, message]] of cases.entries()) {
+      const file = join(f.root, `routed-${index}.json`);
+      writeFileSync(file, JSON.stringify(callerProgram({ route })));
+      const validated = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', file, ...extra]);
+      assert.equal(validated.status, 2, `validate ${index}: ${validated.stderr || validated.stdout}`);
+      assert.match(validated.stderr, message, `validate ${index}`);
+      const launched = cli(f, ['workflow', 'goal', GOAL_TEXT, '--cwd', f.target, '--program', file, '--json', ...extra]);
+      assert.equal(launched.status, 2, `launch ${index}: ${launched.stderr || launched.stdout}`);
+      const refusal = JSON.parse(launched.stdout);
+      assert.equal(refusal.error, 'program-invalid');
+      assert.ok(refusal.issues.some((issue) => message.test(issue)), `launch ${index}: ${refusal.issues.join(' | ')}`);
+    }
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'nothing launched');
+    // A route every check accepts validates and is echoed back.
+    const good = join(f.root, 'routed-ok.json');
+    writeFileSync(good, JSON.stringify(callerProgram({ route: { pools: { avoid: ['beta-agent'] } } })));
+    const ok = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', good, '--json']);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.deepEqual(JSON.parse(ok.stdout).program.actions[0].route, { pools: { avoid: ['beta-agent'] } });
+    const text = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', good]);
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(text.stdout, /goal-work .* route: avoid beta-agent/);
+  } finally { f.cleanup(); }
+});
+
+test('--retry-attempts is 0 to 3: 4 is a usage error at launch and validate', () => {
+  const f = fixture();
+  try {
+    const file = join(f.root, 'plan.json');
+    writeFileSync(file, JSON.stringify(callerProgram()));
+    for (const argv of [
+      ['workflow', 'goal', GOAL_TEXT, '--cwd', f.target, '--program', file, '--retry-attempts', '4'],
+      ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', file, '--retry-attempts', '4'],
+    ]) {
+      const result = cli(f, argv);
+      assert.equal(result.status, 2, `${argv[1]}: ${result.stderr || result.stdout}`);
+      assert.match(result.stderr, /--retry-attempts must be 0, 1, 2 or 3/);
+    }
+    const zero = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', file, '--retry-attempts', '0']);
+    assert.equal(zero.status, 0, zero.stderr);
+    assert.equal(existsSync(join(f.home, 'workflows')), false);
+  } finally { f.cleanup(); }
+});
+
+const VERIFY_NOTE = 'note: defaults.verifyRounds counts fix cycles since this version (1 = one fix and one re-review, 0 = review only); it counted review rounds before';
+
+async function waitTerminal(f, runId) {
+  const statePath = join(f.home, 'workflows', runId, 'state.json');
+  let state = null;
+  for (let i = 0; i < 400; i++) {
+    try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* write in progress */ }
+    if (['completed', 'partial', 'failed', 'cancelled'].includes(state?.lifecycle?.status) && !state?.runner?.pid) break;
+    if (['completed', 'partial', 'failed', 'cancelled'].includes(state?.lifecycle?.status) && i > 40) break;
+    await new Promise((done) => setTimeout(done, 25));
+  }
+  return state;
+}
+
+test('the verifyRounds note: validate and launch say it when the program sets it, and only then', async () => {
+  const f = fixture();
+  try {
+    const plain = join(f.root, 'plain.json');
+    const counted = join(f.root, 'counted.json');
+    writeFileSync(plain, JSON.stringify(callerProgram()));
+    writeFileSync(counted, JSON.stringify(callerProgram({ defaults: { verifyRounds: 1 } })));
+
+    const text = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', counted]);
+    assert.equal(text.status, 0, text.stderr);
+    assert.ok(text.stdout.includes(VERIFY_NOTE), text.stdout);
+    const json = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', counted, '--json']);
+    assert.equal(json.status, 0, json.stderr);
+    assert.equal(JSON.parse(json.stdout).verifyRoundsMeaning, 'fix cycles');
+    const none = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', plain, '--json']);
+    assert.equal('verifyRoundsMeaning' in JSON.parse(none.stdout), false);
+    const noneText = cli(f, ['workflow', 'plan', 'validate', GOAL_TEXT, '--cwd', f.target, '--program', plain]);
+    assert.ok(!noneText.stdout.includes('verifyRounds counts fix cycles') && !noneText.stderr.includes('verifyRounds counts fix cycles'));
+
+    const launched = cli(f, ['workflow', 'goal', GOAL_TEXT, '--cwd', f.target, '--program', counted, '--json']);
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.ok(launched.stderr.includes(VERIFY_NOTE), launched.stderr);
+    const launch = JSON.parse(launched.stdout);
+    assert.equal(launch.verifyRoundsMeaning, 'fix cycles');
+    await waitTerminal(f, launch.runId);
+    const quiet = cli(f, ['workflow', 'goal', 'Create and verify done.txt again.', '--cwd', f.target, '--program', plain, '--json']);
+    assert.equal(quiet.status, 0, quiet.stderr);
+    assert.ok(!quiet.stderr.includes('verifyRounds counts fix cycles'), quiet.stderr);
+    assert.equal('verifyRoundsMeaning' in JSON.parse(quiet.stdout), false);
+    await waitTerminal(f, JSON.parse(quiet.stdout).runId);
+  } finally { f.cleanup(); }
+});
+
+test('plan revise prints the verifyRounds note for a marked run, never for a saved one', async () => {
+  const f = fixture();
+  try {
+    const counted = join(f.root, 'counted.json');
+    writeFileSync(counted, JSON.stringify(callerProgram({ defaults: { verifyRounds: 1 } })));
+    const run = cli(f, ['workflow', 'goal', GOAL_TEXT, '--cwd', f.target, '--program', counted, '--foreground', '--json']);
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const { runId } = JSON.parse(run.stdout);
+    const runDir = join(f.home, 'workflows', runId);
+    for (const [marker, expected, rounds] of [
+      [{ deliverableGate: 1, proofLabels: 1 }, false, 3],
+      [{ deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' }, true, 3],
+    ]) {
+      writeFileSync(join(runDir, 'features.json'), `${JSON.stringify(marker)}\n`);
+      const plan = join(f.root, `plan-${rounds}.json`);
+      const exported = cli(f, ['workflow', 'plan', 'export', runId, '--out', plan]);
+      assert.equal(exported.status, 0, exported.stderr);
+      const document = JSON.parse(readFileSync(plan, 'utf8'));
+      document.program.defaults = { ...(document.program.defaults ?? {}), verifyRounds: rounds };
+      delete document.program.verifyRounds;
+      writeFileSync(plan, JSON.stringify(document));
+      const revised = cli(f, ['workflow', 'plan', 'revise', runId, '--program', plan, '--json']);
+      assert.equal(revised.status, 0, revised.stderr || revised.stdout);
+      const payload = JSON.parse(revised.stdout);
+      assert.equal(payload.status, 'applied', revised.stdout);
+      assert.equal(payload.verifyRoundsMeaning === 'fix cycles', expected, JSON.stringify(marker));
+      await waitTerminal(f, runId);
+    }
+  } finally { f.cleanup(); }
+});

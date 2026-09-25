@@ -108,7 +108,9 @@ test('failing steps end the run at once with a handback that says what a resume 
   const run = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId: 'wf-handbk1-abcdef',
     initialPlannerResponse: initial([work('a'), work('b'), work('c'), work('d', { dependsOn: ['a'] }), check('verify', ['a', 'b', 'c', 'd'])]),
-    dependencies: { dispatchV2Action: s.dispatch },
+    // Launched as a stage-2 run: its handback keeps the saved-run shape (no
+    // stage-3 `retries`), which is what this test pins.
+    dependencies: { dispatchV2Action: s.dispatch, runFeatures: { deliverableGate: 1, proofLabels: 1 } },
   });
   assert.equal(run.result.status, 'partial');
   assert.equal(run.result.verified, false);
@@ -149,7 +151,8 @@ test('a reason quoting a long check finding cuts it between words and marks the 
   const finding = "README.md read directly (7 lines, 87 bytes): '# e2e-steady', 'A tiny text library.', '## capitalize(word)', 'Upper-cases the first letter.' It contains no mention of truncate and no usage example.";
   const s = scripted({}, { verify: { status: 'failed', evidence: [finding], concerns: [] } });
   const response = initial([work('a'), check('verify', ['a'])]);
-  response.program.defaults = { verifyRounds: 1 };
+  // Review only, no repair: 0 fix cycles in a stage-3 run (D13).
+  response.program.defaults = { verifyRounds: 0 };
   const run = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId: 'wf-handbk4-abcdef',
     initialPlannerResponse: response,
@@ -305,6 +308,55 @@ test('with no pool able to run a step, dispatch fails at once and says why and w
 
   const none = await dispatchV2Action({ ...base, pools: [] });
   assert.equal(none.verdict.why, 'no eligible pool: no enabled pool has a model on the low tier for build work');
+});
+
+// Stage 3 (D8, D9): the marked twin of the test above. A step whose pools are
+// all paused with a known return time waits for the first one back instead of
+// failing; only a step no capable pool will ever come back for still fails.
+test('marked run: with every capable pool paused, the step waits for the first one back instead of failing', async () => {
+  const NOW = Date.parse('2026-09-14T10:00:00Z');
+  const pool = (name, extra = {}) => ({
+    name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
+    modelSelection: { flag: '--model' }, strategyAssignments: { low: { pool: name, model: 'gpt-5.6-luna' } }, ...extra,
+  });
+  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+  let clock = NOW;
+  const slept = [];
+  const dependencies = {
+    watchOnce: async () => { throw new Error('nothing may be dispatched'); },
+    loadState: () => structuredClone(core),
+    saveState: () => {},
+    now: () => clock,
+    liveQuarantines: () => ({}),
+    sleep: async (ms) => { slept.push(ms); clock += ms; },
+  };
+  const base = {
+    action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', targetDir: '/tmp',
+    paths: { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' }, bullswarmDir: '/tmp/bs', dependencies, failureRule: true,
+  };
+  const waits = [];
+  let polls = 0;
+  const waited = await dispatchV2Action({
+    ...base,
+    pools: [
+      pool('luna-1', { quarantine: { until: NOW + 30 * 60_000, reason: 'usage limit', kind: 'quota' } }),
+      pool('luna-2', { quarantine: { until: NOW + 90 * 60_000, reason: 'usage limit', kind: 'quota' } }),
+    ],
+    onWaiting: (wait) => waits.push(wait),
+    // The caller stops the wait after its first sleep (a cancel or a pause).
+    shouldCancel: () => { polls += 1; return slept.length > 0; },
+  });
+  assert.deepEqual(waits, [{ until: '2026-09-14T10:30:00.000Z', pools: ['luna-1'], reason: 'quota' }], 'one wait, for the first pool back');
+  assert.equal(waited.status, 'cancelled', 'it waited, it did not fail');
+  assert.notEqual(waited.failureKind, 'unavailable');
+  assert.deepEqual(waited.attempts, []);
+  assert.ok(slept[0] > 0 && slept[0] <= 30 * 60_000, `sleeps at most until the return: ${slept[0]}`);
+  assert.ok(polls > 0);
+  // Nothing capable at all: it still fails at once, as in a saved run.
+  const none = await dispatchV2Action({ ...base, pools: [], onWaiting: (wait) => waits.push(wait) });
+  assert.equal(none.ok, false);
+  assert.equal(none.failureKind, 'unavailable');
+  assert.equal(waits.length, 1, 'no wait without a return time');
 });
 
 test('a failing requirement keeps its reason in the summary even when a large run has to shrink it', () => {

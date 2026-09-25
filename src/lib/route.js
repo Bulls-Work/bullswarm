@@ -116,6 +116,10 @@
 //       With nothing urgent, independence stays the tie-breaker it was under
 //       R12. (Observed on run is9aaa: grok took an evidence step over an urgent
 //       claude-code:acme that had written the work.)
+//       R12's evidence handling and R13 apply only to runs without
+//       `reviewPlacement: "caller"`: a stage-3 run passes `writerPools: []`, so
+//       a check keeps "no free-first" and gets independence only through its
+//       own `route` (a hard filter applied before this router sees the pools).
 
 import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS } from '../meters/framework.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
@@ -734,6 +738,10 @@ export function isExhausted(pool, now = Date.now()) {
  *                        strictPool (the --worker-pool pin the caller already
  *                        filtered `pools` down to; naming it here is what lets
  *                        the reason say the pick was pinned rather than chosen),
+ *                        pinSource='--worker-pool' (who pinned it: `step
+ *                        restart` or `the same pool (gate retry)` too),
+ *                        routeNote=null (the step's route summary, appended to
+ *                        every reason as ` · route: <summary>`; no ranking change),
  *                        evidence: { writerPools: string[] },
  *                        callerSession, candidateMinutes=null (expected minutes
  *                        of the assignment being routed),
@@ -754,7 +762,11 @@ export function pickPool(lane, pools, opts = {}) {
     candidateMinutes = null,
     inflightPenaltyPct = DEFAULT_INFLIGHT_PENALTY_PCT,
     evidence = null,
+    pinSource = '--worker-pool',
+    routeNote = null,
   } = opts;
+  // D30: the step's route is named on every reason, and never ranks.
+  const noted = (why) => (routeNote ? `${why} · route: ${routeNote}` : why);
 
   const candidateMins = num(candidateMinutes);
   // R13: a writer is a model family, not a pool account — the work
@@ -769,7 +781,7 @@ export function pickPool(lane, pools, opts = {}) {
     return {
       pick: null,
       keepOnClaude: false,
-      why: `unknown lane ${lane}`,
+      why: noted(`unknown lane ${lane}`),
       candidates: [],
       forecast: { candidateMinutes: candidateMins, gated: [] },
     };
@@ -933,14 +945,14 @@ export function pickPool(lane, pools, opts = {}) {
       ? {
           pick: null,
           keepOnClaude: true,
-          why: `${emptyDelegateWhy}; caller takes the lane${benchWhy ? ` · ${benchWhy}` : ''}`,
+          why: noted(`${emptyDelegateWhy}; caller takes the lane${benchWhy ? ` · ${benchWhy}` : ''}`),
           candidates,
           forecast: forecastReport,
         }
       : {
           pick: null,
           keepOnClaude: false,
-          why: `${emptyPoolWhy}${benchWhy ? ` · ${benchWhy}` : ''}`,
+          why: noted(`${emptyPoolWhy}${benchWhy ? ` · ${benchWhy}` : ''}`),
           candidates,
           forecast: forecastReport,
         };
@@ -1063,10 +1075,11 @@ export function pickPool(lane, pools, opts = {}) {
       e.pace >= winnerEntry.pace &&
       e.effective < winnerEntry.effective,
   );
-  const why = routingReason(winnerEntry, {
+  const why = noted(routingReason(winnerEntry, {
     preferred: Boolean(preferredPool) && winnerEntry.pool.name === preferredPool,
     effortTier: opts.effortTier,
     pinned: Boolean(strictPool) && winnerEntry.pool.name === strictPool,
+    pinSource,
     evidence,
     evidenceOnlyWriter,
     independenceWaived,
@@ -1077,7 +1090,7 @@ export function pickPool(lane, pools, opts = {}) {
     skippedDraining,
     overLimit: overLimitEntries,
     yieldedBusier,
-  });
+  }));
 
   // R5: the caller wins its lane only when no eligible delegate remains —
   // or when the caller's own pool entry genuinely wins on merit. Dispatching
@@ -1102,7 +1115,7 @@ export function pickPool(lane, pools, opts = {}) {
     return {
       pick: null,
       keepOnClaude: true,
-      why: 'caller pool won the lane; keep work in-session',
+      why: noted('caller pool won the lane; keep work in-session'),
       candidates,
       forecast: forecastReport,
     };
@@ -1162,6 +1175,7 @@ function routingReason(
     preferred,
     effortTier,
     pinned = false,
+    pinSource = '--worker-pool',
     evidence = null,
     evidenceOnlyWriter = false,
     independenceWaived = false,
@@ -1187,7 +1201,7 @@ function routingReason(
     // stops the reason from claiming a comparison happened (seen on run
     // uamgfi, attempt accept-1, which read "only the writer pool ... is
     // eligible" when the operator had pinned that pool themselves).
-    base = `pinned to ${winnerEntry.pool.name} (--worker-pool)`;
+    base = `pinned to ${winnerEntry.pool.name} (${pinSource || '--worker-pool'})`;
     baseDetail = detail || null;
   } else if (independenceWaived) {
     // R13: the pool judging the work shares a model family with its writer,

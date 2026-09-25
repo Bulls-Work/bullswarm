@@ -20,6 +20,7 @@ import { repairInheritedPaths } from '../src/workflow/verify-rounds.js';
 import { formatV2HandbackLines, summarizeV2Result } from '../src/workflow/v2-outcome.js';
 import { initialWatchMemory, notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 import { clearTimeBoxHistoryCache } from '../src/workflow/time-box.js';
+import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, queueRevisionRequest } from '../src/workflow/v2-revision.js';
 
 const connector = (name) => ({
@@ -62,9 +63,12 @@ const fail = (evidence, concerns = []) => ({ status: 'failed', evidence: [eviden
 /**
  * One kernel run. `scenario.work[id]({ targetDir, task })` edits files and
  * returns the step's report; `scenario.judge(id, ids, { targetDir, task })`
- * returns the evidence for one verify step's requirements.
+ * returns the evidence for one verify step's requirements. `features` is the
+ * marker the run is launched with: a stage-2 launch by default (the saved-run
+ * loop: verifyRounds counts review rounds, default 3), STAGE3_RUN_FEATURES for
+ * the marked loop (D12, D13, D19, D33).
  */
-async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-abcdef', onEvent = null, requirements = REQUIREMENTS, prepare = null } = {}) {
+async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-abcdef', onEvent = null, requirements = REQUIREMENTS, prepare = null, features = STAGE2_RUN_FEATURES } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-loop-kernel-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -101,7 +105,13 @@ async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-a
       return { ok: true, why: 'structured output validated', structured: opts.outputValidator('prose'), meta };
     }
     const handler = scenario.work?.[id];
-    const report = handler?.({ targetDir, task }) ?? `## Done\n- ${id}\n\n## Not done\n- none\n\n## Suggested next step\n- none`;
+    const scripted = handler?.({ targetDir, task });
+    // `{ fail: why }`: the worker exits 1 (a process failure).
+    if (scripted && typeof scripted === 'object') {
+      writeFileSync(files.outFile, scripted.fail);
+      return { ok: false, why: scripted.fail, meta: { exitCode: 1, wallSec: 60 } };
+    }
+    const report = scripted ?? `## Done\n- ${id}\n\n## Not done\n- none\n\n## Suggested next step\n- none`;
     // A build attempt that changes nothing is a no-op. An unscripted step
     // still has to leave a byte change, and the comment does not make alpha()
     // return 2, so the judge's verdict stays the one the scenario wrote.
@@ -118,6 +128,7 @@ async function runLoop(t, scenario, { programDoc = program(), runId = 'wf-loop-a
     ...(onEvent ? { onEvent: (event) => onEvent(event, { runDir }) } : {}),
     initialPlannerResponse: { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Build both modules and check them.', program: programDoc },
     dependencies: {
+      runFeatures: features,
       refreshPools: async () => null,
       timeBoxTimeZone: 'UTC',
       now: () => new Date(clock).toISOString(),
@@ -345,10 +356,13 @@ test('fail in all 3 rounds: stops with the caller-decision block, never a fourth
     'repair round 2 · 1 requirement · repair-2',
     'repair round 2 finished · 1 file changed',
     'verify round 3 of 3 · 1 to re-check',
-    'verify round 3 of 3 · 1 failed · your decision',
   ]);
+  // The caller's close is the review needs-you block (D25, D26), one wake.
+  const block = notable.filter((event) => event.type === 'needs-you').map((event) => renderWatchEvent(event));
+  assert.equal(block.length, 1);
+  assert.match(block[0], /^✗ verify-round-3 needs you · review failed after 2 fixes$/m);
   const trouble = notable.filter((event) => watchTrouble(event) != null).map((event) => `${event.type}:${watchTrouble(event)}`);
-  assert.deepEqual(trouble, ['verify.round:rejected']);
+  assert.deepEqual(trouble, ['needs-you:failed']);
   assert.equal(notable.some((event) => event.type === 'plan.revised'), false, 'kernel revisions are told by the loop lines');
 });
 
@@ -419,9 +433,10 @@ test('verifyRounds: 1 keeps the single round: no repair, the caller decides at 1
   assert.equal(run.result.callerDecision.verifyRounds, '1/1');
   assert.match(run.result.reason, /but not verified: alpha failed/, 'one round reads as it always has');
   assert.doesNotMatch(tasks.verify, /Verify round 1 of/, 'a one-round run gets no round paragraph');
-  // Today's watch: the failing evidence is the trouble line; no round lines.
+  // The watch: the review's needs-you block is the one trouble line (D26); no round lines.
   const notable = notableWatchEvents({ events, state: run.state, nowMs: Date.now() }).notable;
-  assert.deepEqual(notable.filter((event) => watchTrouble(event) != null).map((event) => event.type), ['evidence.recorded']);
+  assert.deepEqual(notable.filter((event) => watchTrouble(event) != null).map((event) => event.type), ['needs-you']);
+  assert.match(renderWatchEvent(notable.find((event) => event.type === 'needs-you')), /^✗ verify needs you · review failed · no automatic fix$/m);
   assert.equal(notable.map((event) => renderWatchEvent(event)).some((line) => /verify round/.test(line ?? '')), false);
 });
 
@@ -632,4 +647,204 @@ test('a repair of an ignored data path inherits that path and the rewrite counts
   assert.equal(attempt.status, 'succeeded');
   assert.ok(attempt.changedFiles.includes('out/summary.json'));
   assert.deepEqual(loop.rounds[0].changedFiles, ['out/summary.json']);
+});
+
+
+// --- Stage 3, marked runs (D12, D13, D19, D33) ------------------------------
+
+const loopNeedsYou = (run, events) => notableWatchEvents({ events, state: run.state, nowMs: Date.now() }).notable
+  .filter((event) => event.type === 'needs-you').map((event) => renderWatchEvent(event));
+const stillOne = ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'a.js'), 'export const alpha = () => 1; // tried\n'); return '## Done\n- tried\n\n## Not done\n- alpha still prints 1'; };
+
+test('marked default: one fix and one re-review, then the caller (max 2, stoppedBy rounds); kernel steps inherit the route', async (t) => {
+  const programDoc = program({ buildA: { route: { pools: { avoid: ['grok'] } } } });
+  programDoc.actions[2].route = { providers: { avoid: ['grok'] } };
+  const { run, loop, ids, events } = await runLoop(t, { work: { ...buggyBuild, 'repair-1': stillOne }, judge: workspaceJudge },
+    { features: STAGE3_RUN_FEATURES, programDoc });
+  assert.equal(loop.max, 2, 'verifyRounds counts fixes: default 1 → two review rounds');
+  assert.deepEqual(ids, ['build-a', 'build-b', 'verify', 'repair-1', 'verify-round-2']);
+  assert.equal(loop.stoppedBy, 'rounds');
+  assert.equal(run.result.verified, false);
+  assert.equal(run.result.callerDecision.verifyRounds, '2/2');
+  const last = events.findLast((event) => event.type === 'workflow.verify-round');
+  assert.deepEqual([last.payload.round, last.payload.of, last.payload.next], [2, 2, 'caller']);
+  // D19: the repair inherits the affecting step's route, the re-review round 1's check's.
+  const byId = Object.fromEntries(run.state.program.actions.map((action) => [action.id, action]));
+  assert.deepEqual(byId['repair-1'].route, { pools: { avoid: ['grok'] } });
+  assert.deepEqual(byId['verify-round-2'].route, { providers: { avoid: ['grok'] } });
+  // No authored evidence: nothing to inherit, and the counts say so.
+  assert.equal(Object.hasOwn(byId['repair-1'], 'evidence'), false);
+  const started = events.find((event) => event.type === 'workflow.repair' && event.payload.stage === 'started').payload;
+  assert.deepEqual([started.evidenceInherited, started.evidenceDropped], [0, 0]);
+  const [block] = loopNeedsYou(run, events);
+  assert.match(block, /^✗ verify-round-2 needs you · review failed after 1 fix$/m);
+});
+
+test('marked verifyRounds 0: review only, no automatic fix', async (t) => {
+  const programDoc = { ...program(), defaults: { verifyRounds: 0 } };
+  const { run, loop, ids, events } = await runLoop(t, { work: buggyBuild, judge: workspaceJudge }, { features: STAGE3_RUN_FEATURES, programDoc });
+  assert.equal(loop.max, 1);
+  assert.deepEqual(ids, ['build-a', 'build-b', 'verify']);
+  assert.equal(run.result.callerDecision.verifyRounds, '1/1');
+  assert.match(loopNeedsYou(run, events)[0], /^✗ verify needs you · review failed · no automatic fix/m);
+});
+
+test('a saved run with no marker keys keeps its old loop: three review rounds', async (t) => {
+  const { loop } = await runLoop(t, { work: allPassing, judge: workspaceJudge }, { features: {} });
+  assert.equal(loop.max, 3);
+});
+
+// build-a, build-b and verify as usual, plus an unrelated step that fails.
+function withUnrelatedFailure() {
+  const doc = program();
+  doc.actions.push(work('docs', { affects: ['gamma'], ownedFiles: ['src/c.js'] }));
+  return doc;
+}
+const failingDocs = { ...buggyBuild, docs: () => ({ fail: 'docs writer crashed' }) };
+
+test('marked: an unrelated failed step no longer cancels the repair of an independent failed review (D12)', async (t) => {
+  const marked = await runLoop(t, {
+    work: { ...failingDocs, 'repair-1': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'a.js'), 'export const alpha = () => 2;\n'); return '## Done\n- fixed'; } },
+    judge: workspaceJudge,
+  }, { features: STAGE3_RUN_FEATURES, programDoc: withUnrelatedFailure(), requirements: [...REQUIREMENTS, { ...GAMMA, mandatory: false }] });
+  assert.deepEqual(marked.ids, ['build-a', 'build-b', 'verify', 'docs', 'repair-1', 'verify-round-2']);
+  assert.equal(marked.run.result.status, 'partial');
+  assert.equal(marked.run.state.ledger.requirements.alpha.status, 'passed', 'the repair ran and the re-review passed');
+  assert.equal(marked.run.state.actions.find((action) => action.id === 'docs').status, 'failed');
+  // docs got its one retry (same pool: the only candidate), then the caller.
+  assert.equal(marked.run.state.attempts.filter((attempt) => attempt.actionId === 'docs').length, 2);
+
+  // The unmarked twin settles with the caller at the first failure.
+  const unmarked = await runLoop(t, { work: failingDocs, judge: workspaceJudge },
+    { programDoc: withUnrelatedFailure(), requirements: [...REQUIREMENTS, { ...GAMMA, mandatory: false }], runId: 'wf-loop-a1b2c3' });
+  assert.deepEqual(unmarked.ids, ['build-a', 'build-b', 'verify', 'docs']);
+  const closed = unmarked.events.findLast((event) => event.type === 'workflow.verify-round');
+  assert.equal(closed.payload.next, 'caller');
+  assert.equal(unmarked.loop.stoppedBy, 'step-failed');
+});
+
+test('marked, the common shape: a failed writer\'s check is blocked, the other check\'s failure is still repaired, and the blocked requirement goes to the caller', async (t) => {
+  const check = (id, dependsOn, evidenceFor) => verify({ id, dependsOn, evidenceFor, prompt: `Inspect ${evidenceFor.join(', ')}.` });
+  const programDoc = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      work('build-a', { affects: ['alpha'], ownedFiles: ['src/a.js'] }),
+      check('check-a', ['build-a'], ['alpha']),
+      work('build-b', { affects: ['beta'], ownedFiles: ['src/b.js'] }),
+      check('check-b', ['build-b'], ['beta']),
+    ],
+  };
+  const { run, ids, loop, events } = await runLoop(t, {
+    work: {
+      'build-a': () => ({ fail: 'build-a crashed' }),
+      'build-b': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'b.js'), 'export const beta = () => 0; // wrong\n'); return '## Done\n- src/b.js'; },
+      'repair-1': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'b.js'), 'export const beta = () => 3;\n'); return '## Done\n- beta fixed'; },
+    },
+    judge: workspaceJudge,
+  }, { features: STAGE3_RUN_FEATURES, programDoc });
+  const status = Object.fromEntries(run.state.actions.map((action) => [action.id, action.status]));
+  assert.deepEqual(status, { 'build-a': 'failed', 'check-a': 'blocked', 'build-b': 'succeeded', 'check-b': 'succeeded', 'repair-1': 'succeeded', 'verify-round-2': 'succeeded' });
+  assert.deepEqual(ids, ['build-a', 'check-a', 'build-b', 'check-b', 'repair-1', 'verify-round-2']);
+  // Round 1 closed at `partial` with check-a blocked: alpha is failing (the caller's), beta repaired.
+  assert.deepEqual(loop.rounds[0].failed, ['alpha', 'beta']);
+  const repair = run.state.program.actions.find((action) => action.id === 'repair-1');
+  assert.deepEqual(repair.dependsOn, ['check-b'], 'never born blocked behind check-a');
+  assert.deepEqual(repair.affects, ['beta']);
+  const verifyRound2 = run.state.program.actions.find((action) => action.id === 'verify-round-2');
+  assert.deepEqual([verifyRound2.dependsOn, verifyRound2.evidenceFor], [['repair-1'], ['beta']]);
+  assert.equal(run.state.ledger.requirements.beta.status, 'passed');
+  assert.notEqual(run.state.ledger.requirements.alpha.status, 'passed');
+  assert.equal(run.state.attempts.some((attempt) => attempt.actionId.startsWith('repair') && /alpha/.test(attempt.taskFile ?? '')), false);
+  assert.equal(run.result.status, 'partial');
+  const round1 = events.find((event) => event.type === 'workflow.verify-round' && event.payload.round === 1 && event.payload.stage === 'finished');
+  assert.deepEqual([round1.payload.failed, round1.payload.next], [['alpha', 'beta'], 'repair']);
+});
+
+const EVIDENCE_A = [
+  { type: 'command', cmd: 'test -f src/a.js' },
+  { type: 'command', cmd: 'grep -q alpha src/a.js' },
+  { type: 'schema', file: 'data/a.json', schema: 'schemas/a.json' },
+  { type: 'command', cmd: 'test -s "$BULLSWARM_STEP_OUTPUT"' },
+  { type: 'command', cmd: 'grep -q export src/a.js' },
+];
+const EVIDENCE_C = [
+  { type: 'command', cmd: 'test -f src/a.js' },
+  { type: 'command', cmd: 'test -r src/a.js' },
+  { type: 'command', cmd: 'grep -q const src/a.js' },
+  { type: 'command', cmd: 'test -s src/a.js' },
+];
+const seedSchema = (workspace) => {
+  mkdirSync(join(workspace, 'data'));
+  mkdirSync(join(workspace, 'schemas'));
+  writeFileSync(join(workspace, 'data', 'a.json'), '{"ok":true}\n');
+  writeFileSync(join(workspace, 'schemas', 'a.json'), JSON.stringify({ type: 'object', required: ['ok'] }));
+};
+function inheritingProgram() {
+  const doc = program({ buildA: { evidence: EVIDENCE_A } });
+  doc.actions.splice(1, 0, work('build-c', { affects: ['alpha'], ownedFiles: ['src/c.js'], evidence: EVIDENCE_C }));
+  doc.actions.find((action) => action.id === 'verify').dependsOn.push('build-c');
+  return doc;
+}
+const buggyWithC = { ...buggyBuild, 'build-c': ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'c.js'), 'export const gamma = () => 4;\n'); return '## Done\n- src/c.js'; } };
+
+test('marked: a files repair runs the evidence of the steps it repairs (D33); the unmarked twin carries none', async (t) => {
+  const fixed = ({ targetDir }) => { writeFileSync(join(targetDir, 'src', 'a.js'), 'export const alpha = () => 2;\n'); return '## Done\n- fixed'; };
+  const marked = await runLoop(t, { work: { ...buggyWithC, 'repair-1': fixed }, judge: workspaceJudge },
+    { features: STAGE3_RUN_FEATURES, programDoc: inheritingProgram(), prepare: seedSchema });
+  const repair = marked.run.state.program.actions.find((action) => action.id === 'repair-1');
+  assert.deepEqual(repair.ownedFiles, ['src/a.js', 'src/c.js']);
+  // Affecting-step order then item order, de-duplicated, the first five; the
+  // schema outside the repair's reach and the step-output command are dropped.
+  assert.deepEqual(repair.evidence.map((item) => item.cmd), ['test -f src/a.js', 'grep -q alpha src/a.js', 'grep -q export src/a.js', 'test -r src/a.js', 'grep -q const src/a.js']);
+  const started = marked.events.find((event) => event.type === 'workflow.repair' && event.payload.stage === 'started').payload;
+  assert.deepEqual([started.evidenceInherited, started.evidenceDropped], [5, 3]);
+  const repairAttempt = marked.run.state.attempts.find((attempt) => attempt.actionId === 'repair-1');
+  assert.deepEqual(repairAttempt.evidenceResults.map((item) => item.status), ['passed', 'passed', 'passed', 'passed', 'passed']);
+  assert.equal(marked.run.result.verified, true);
+
+  const unmarked = await runLoop(t, { work: { ...buggyWithC, 'repair-1': fixed }, judge: workspaceJudge },
+    { programDoc: inheritingProgram(), prepare: seedSchema, runId: 'wf-loop-d4e5f6' });
+  const plain = unmarked.run.state.program.actions.find((action) => action.id === 'repair-1');
+  assert.equal(Object.hasOwn(plain, 'evidence'), false);
+  const plainStarted = unmarked.events.find((event) => event.type === 'workflow.repair' && event.payload.stage === 'started').payload;
+  assert.equal(Object.hasOwn(plainStarted, 'evidenceInherited'), false);
+});
+
+test('marked: an inherited check the repair fails makes it failed-evidence, one same-pool retry, then the needs-you block for repair-1', async (t) => {
+  const programDoc = program({ buildA: { evidence: [{ type: 'command', cmd: '! grep -q tried src/a.js' }] } });
+  const { run, events } = await runLoop(t, { work: { ...buggyBuild, 'repair-1': stillOne }, judge: workspaceJudge },
+    { features: STAGE3_RUN_FEATURES, programDoc });
+  const attempts = run.state.attempts.filter((attempt) => attempt.actionId === 'repair-1');
+  assert.deepEqual(attempts.map((attempt) => [attempt.status, attempt.failureKind]), [['interrupted', 'failed-evidence'], ['failed', 'failed-evidence']]);
+  assert.deepEqual(attempts[1].retryOf, { attempt: 'repair-1-1', how: 'same-pool' });
+  assert.equal(attempts[1].pool, attempts[0].pool);
+  const finished = events.findLast((event) => event.type === 'action.finished' && event.payload.actionId === 'repair-1').payload;
+  assert.deepEqual([finished.status, finished.failureKind, finished.retries, finished.attemptIds], ['failed', 'failed-evidence', 1, ['repair-1-1', 'repair-1-2']]);
+  assert.equal(run.result.status, 'partial');
+  const blocks = loopNeedsYou(run, events);
+  assert.equal(blocks.some((block) => /^✗ repair-1 needs you · command evidence failed after 1 retry$/m.test(block)), true, blocks.join('\n---\n'));
+});
+
+test('marked: a report repair inherits no evidence', async (t) => {
+  const investigate = (id) => ({
+    id, purpose: `Study ${id}`, dependsOn: [], affects: ['alpha'], ownedFiles: [],
+    prompt: 'Write what you found.', role: 'investigate', deliverable: 'report', evidenceFor: [], inputs: [], produces: [],
+    evidence: [{ type: 'command', cmd: 'true' }],
+  });
+  const programDoc = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [investigate('study-a'), {
+      id: 'verify', purpose: 'Check the study', dependsOn: ['study-a'], affects: [], ownedFiles: [],
+      prompt: 'Read the report.', kind: 'adversarial-acceptance', evidenceFor: ['alpha'], inputs: [], produces: [],
+    }],
+  };
+  const { run, events } = await runLoop(t, {
+    work: { 'study-a': () => 'alpha returns 1 today', 'repair-1': () => 'alpha should return 2.' },
+    judge: (id) => (id === 'verify' ? { alpha: fail('the study does not show 2') } : { alpha: pass('the repair names 2') }),
+  }, { features: STAGE3_RUN_FEATURES, programDoc, requirements: [REQUIREMENTS[0]], runId: 'wf-d33rep-abcdef' });
+  const repair = run.state.program.actions.find((action) => action.id === 'repair-1');
+  assert.equal(repair.lane, 'analyze');
+  assert.equal(Object.hasOwn(repair, 'evidence'), false);
+  const started = events.find((event) => event.type === 'workflow.repair' && event.payload.stage === 'started').payload;
+  assert.deepEqual([started.evidenceInherited, started.evidenceDropped], [0, 1]);
 });

@@ -1,12 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
-import { normalizeAttempt, preferredUsage, recordAttemptCapture, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import {
+  GATE_RETRY_HANDOFF_LINE, acceptCallerPlannerResponse, handoffBlock, normalizeAttempt, pauseV2Run, preferredUsage,
+  recordAttemptCapture, runV2AutonomousWorkflow, unpauseV2Run,
+} from '../src/workflow/v2-runtime.js';
+import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { readGoalProject } from '../src/workflow/goal.js';
 import { readRollup, readRollupIndex, readRollups, rollupIndexPath } from '../src/workflow/rollup.js';
 
@@ -75,6 +79,15 @@ test('normalizeAttempt copies evidenceResults only when the checks ran', () => {
   assert.equal(Object.hasOwn(without, 'evidenceResults'), false);
 });
 
+test('normalizeAttempt copies the retry fact only when the attempt has one', () => {
+  const base = { status: 'running', pool: 'relay', model: 'gpt-5.6-luna', startedAt: '2026-09-24T01:00:00.000Z' };
+  const retryOf = { attempt: 'build-1', how: 'same-pool' };
+  const retried = normalizeAttempt({ ...base, retryOf }, { id: 'build-2', actionId: 'build', ordinal: 2 });
+  assert.deepEqual(retried.retryOf, retryOf);
+  assert.notEqual(retried.retryOf, retryOf, 'a copy, not the dispatch record');
+  assert.equal(Object.hasOwn(normalizeAttempt(base, { id: 'build-1', actionId: 'build', ordinal: 1 }), 'retryOf'), false);
+});
+
 test('runs a complete V2 program and kernel—not planner—writes verified result', async () => {
   const f = setup();
   let evidenceTask = '';
@@ -108,7 +121,10 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
     assert.deepEqual(structured, { ok: true, errors: [], value: evidence });
     return { ok: true, status: 'succeeded', verdict: { ok: true, structured, outFile: files.outFile, meta: { exitCode: 0 } } };
   });
-  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-test1a-abcdef', dependencies: { dispatchV2Action: dispatch }, now: (() => { let n = 0; return () => `2026-08-31T01:00:${String(n++).padStart(2, '0')}.000Z`; })() });
+  // An unmarked run (no stage-3 keys, as 0.35.6 and stages 1-2 launched):
+  // review placement stays automatic, so the check is routed away from its
+  // writers (R12/R13). The marked twin is further down.
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-test1a-abcdef', dependencies: { dispatchV2Action: dispatch, runFeatures: {} }, now: (() => { let n = 0; return () => `2026-08-31T01:00:${String(n++).padStart(2, '0')}.000Z`; })() });
   assert.equal(result.result.status, 'completed');
   assert.equal(result.result.verified, true);
   assert.equal(result.state.ledger.requirements['report-correct'].status, 'passed');
@@ -960,4 +976,388 @@ test('the state schema accepts a capture only in its documented shape', async ()
   assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { tokenSource: 'estimated:utf8-bytes/4' }))), /tokenSource is invalid/);
   assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { guessedUsd: 1 }))), /guessedUsd/);
   assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { providerCostUsd: -1 }))), /must not be negative/);
+});
+
+
+// --- Stage 3: the failure rule's kernel side (marker, placement, route,
+// waiting, retry facts, who reviewed). Fake dispatches drive the options the
+// kernel hands the dispatcher, exactly as the real one calls them.
+
+const WORK_REQ = { id: 'work-done', text: 'work.md exists and says done' };
+const NOTES_REQ = { id: 'notes-done', text: 'notes.md exists' };
+
+function stage3Setup(t, settings = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-v2-stage3-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const bullswarmDir = join(root, 'home');
+  const workspace = join(root, 'repo');
+  mkdirSync(bullswarmDir); mkdirSync(workspace);
+  const goal = createV2GoalDocument({
+    goal: 'Deliver the work', cwd: workspace, requirements: [WORK_REQ, NOTES_REQ],
+    settings: { executionMode: 'program', plannerMode: 'caller', workspaceMode: 'shared', scout: false, concurrency: 2, ...settings },
+  });
+  return { root, bullswarmDir, workspace, goal };
+}
+
+const step3 = (id, over = {}) => ({
+  id, purpose: `Run ${id}`, dependsOn: [], affects: ['notes-done'], ownedFiles: [`${id}.md`], prompt: `Do ${id}.`,
+  lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], ...over,
+});
+const programOf = (actions) => ({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Stage-3 kernel test.',
+  program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
+});
+
+// One attempt through the kernel's onAttempt, as the dispatcher reports it.
+function reportAttempt(options, ordinal, { pool = 'relay', ok = true, failureKind = null, why = null, retryOf = null, willRetry = false, changedFileCount = 1 } = {}) {
+  const files = options.paths(ordinal);
+  const startedAt = new Date().toISOString();
+  const started = {
+    ordinal, pool, model: 'gpt-5.6-luna', status: 'running', startedAt, taskFile: files.taskFile, outFile: files.outFile,
+    routing: {}, ...(retryOf ? { retryOf } : {}),
+  };
+  options.onAttempt('started', { ...started });
+  writeFileSync(files.taskFile, options.taskText);
+  writeFileSync(files.outFile, ok ? 'done' : 'it failed');
+  const record = {
+    ...started, status: ok ? 'succeeded' : willRetry ? 'interrupted' : 'failed', finishedAt: new Date().toISOString(),
+    failureKind, why, willRetry, usage: { tokens: { totalKnown: 1 } }, wallSec: 1, changedFileCount,
+  };
+  options.onAttempt('finished', { ...record }, ok ? { ok: true, outFile: files.outFile } : { ok: false, why, failureKind, outFile: files.outFile });
+  return record;
+}
+
+function succeedEvidence(options, requirements, ordinal = 1, attemptOptions = {}) {
+  const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
+  writeFileSync(candidatePath, JSON.stringify({ schemaVersion: 'bullswarm.workflow.evidence.v2', requirements }));
+  const record = reportAttempt(options, ordinal, attemptOptions);
+  const structured = options.outputValidator('prose');
+  return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, structured, outFile: record.outFile } };
+}
+
+const succeed = (options, ordinal = 1, attemptOptions = {}) => {
+  const record = reportAttempt(options, ordinal, attemptOptions);
+  return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, why: 'ok', outFile: record.outFile } };
+};
+
+function launch3(f, { runId, actions, dispatch, dependencies = {}, onEvent = null }) {
+  return runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId, parentEnv: {},
+    initialPlannerResponse: programOf(actions), ...(onEvent ? { onEvent } : {}),
+    dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
+  });
+}
+
+// A run dir the way a kernel left it, for resume tests.
+function savedRun(f, { runId, actions, marker, edit }) {
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  mkdirSync(runDir, { recursive: true });
+  if (marker) writeFileSync(join(runDir, 'features.json'), marker);
+  let state = createV2State(f.goal, { runId, shortId: runId.slice(3, 9) });
+  state = acceptCallerPlannerResponse(state, programOf(actions), { boundary: 'initial', runDir }).state;
+  state.lifecycle.status = 'interrupted';
+  edit(state);
+  writeFileSync(join(runDir, 'goal.json'), JSON.stringify(f.goal));
+  writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
+  return runDir;
+}
+
+const eventsOfType = (runDir, type) => readEvents(runDir).filter((event) => event.type === type);
+const readState = (runDir) => JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+
+test('handoffBlock adds the gate line only for a gate retry, just before the unverified-edits line', () => {
+  const facts = { pool: 'relay', startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z', failureKind: 'not-produced', why: 'no file changed and no commit made' };
+  const plain = handoffBlock(facts);
+  assert.equal(handoffBlock({ ...facts, gate: false }), plain);
+  assert.doesNotMatch(plain, /automatic retry/);
+  const gated = handoffBlock({ ...facts, gate: true }).split('\n');
+  assert.equal(GATE_RETRY_HANDOFF_LINE, '- This is the step\'s one automatic retry: the failure above closed its gate. Fix what it names; your earlier edits are still in the workspace.');
+  assert.deepEqual(gated.slice(-2), [GATE_RETRY_HANDOFF_LINE, '- Those edits are unverified. You decide whether to keep, fix or revert them, and you must report which.']);
+  assert.equal(gated.filter((line) => line !== GATE_RETRY_HANDOFF_LINE).join('\n'), plain);
+});
+
+test('stage 3: a new run is marked, reviews are caller-placed, independentOf feeds the route filter, and who reviewed is recorded', async (t) => {
+  const f = stage3Setup(t);
+  const seen = {};
+  const dispatch = async (options) => {
+    seen[options.action.id] = options;
+    if (options.action.id === 'write') {
+      // Attempt 1 crashed on another provider after changing files; the one
+      // retry succeeded here. Both did work on the step (D17).
+      const first = reportAttempt(options, 1, { pool: 'codex:acme', ok: false, failureKind: 'process', why: 'exit 1', willRetry: true, changedFileCount: 2 });
+      writeFileSync(join(f.workspace, 'work.md'), 'done\n');
+      const second = reportAttempt(options, 2, { pool: 'relay', retryOf: { attempt: 'write-1', how: 'other-pool' } });
+      return { ok: true, status: 'succeeded', attempts: [first, second], verdict: { ok: true, outFile: second.outFile } };
+    }
+    if (options.action.id === 'check') return succeedEvidence(options, { 'work-done': { status: 'passed', evidence: ['work.md says done'], concerns: [] } }, 1, { pool: 'grok' });
+    return succeed(options);
+  };
+  const run = await launch3(f, {
+    runId: 'wf-stage3-abcdef', dispatch,
+    actions: [
+      step3('write', { affects: ['work-done'] }),
+      step3('notes'),
+      step3('check', { dependsOn: ['write'], ownedFiles: [], affects: [], lane: 'analyze', evidenceFor: ['work-done'], route: { independentOf: ['write'] } }),
+    ],
+  });
+  assert.equal(run.result.status, 'completed');
+  assert.deepEqual(JSON.parse(readFileSync(join(run.runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
+  assert.deepEqual(JSON.parse(readFileSync(join(run.runDir, 'features.json'), 'utf8')), { ...STAGE3_RUN_FEATURES });
+  for (const id of ['write', 'notes', 'check']) {
+    assert.equal(seen[id].failureRule, true, id);
+    assert.equal(seen[id].retriesAlready, 0, id);
+    assert.equal(seen[id].pinSource, null, id);
+    assert.equal(typeof seen[id].onWaiting, 'function', id);
+    assert.equal(typeof seen[id].claimWake, 'function', id);
+  }
+  // D15: the check keeps "no free-first" and loses automatic writer avoidance.
+  assert.deepEqual(seen.check.evidence, { writerPools: [] });
+  assert.equal(seen.write.evidence, null);
+  // D17/D18: independence resolves to every provider that did work on write.
+  assert.equal(seen.write.routeFilter, null);
+  assert.deepEqual(seen.check.routeFilter.independentOf, { write: ['codex', 'relay'] });
+  assert.deepEqual(seen.check.routeFilter.independentProviders, ['codex', 'relay']);
+  assert.equal(seen.check.routeFilter.summary, 'independent of write (providers codex, relay)');
+  // The retry fact is stored on the successor, with the run-wide attempt id.
+  const writeAttempts = run.state.attempts.filter((attempt) => attempt.actionId === 'write');
+  assert.equal(Object.hasOwn(writeAttempts[0], 'retryOf'), false);
+  assert.deepEqual(writeAttempts[1].retryOf, { attempt: 'write-1', how: 'other-pool' });
+  // A stage-3 run labels a step without evidence (stage 2's proofLabels kept).
+  const finished = Object.fromEntries(eventsOfType(run.runDir, 'action.finished').map((event) => [event.payload.actionId, event.payload]));
+  assert.deepEqual(finished.notes.proof, { by: [], reviewPending: false });
+  // D27: the reviewer and every writer attempt, the crashed one included.
+  const reviewer = { attemptId: 'check-1', pool: 'grok', model: 'gpt-5.6-luna', provider: 'grok' };
+  const writers = [{ actionId: 'write', pool: 'codex:acme', provider: 'codex' }, { actionId: 'write', pool: 'relay', provider: 'relay' }];
+  const recorded = eventsOfType(run.runDir, 'evidence.recorded')[0].payload;
+  assert.deepEqual(recorded.reviewer, reviewer);
+  assert.deepEqual(recorded.writers, writers);
+  const record = run.state.ledger.evidence.find((entry) => entry.sourceAction === 'check');
+  assert.deepEqual(record.reviewer, reviewer);
+  assert.deepEqual(record.writers, writers);
+  // Marked attempt.finished payloads say so (the watch's quota tails read it).
+  assert.ok(eventsOfType(run.runDir, 'attempt.finished').every((event) => event.payload.failureRule === true));
+});
+
+test('an unmarked run keeps automatic review placement and never marks attempt.finished', async (t) => {
+  const f = stage3Setup(t);
+  const seen = {};
+  const dispatch = async (options) => {
+    seen[options.action.id] = options;
+    if (options.action.id === 'check') return succeedEvidence(options, { 'work-done': { status: 'passed', evidence: ['ok'], concerns: [] } }, 1, { pool: 'grok' });
+    return succeed(options);
+  };
+  const run = await launch3(f, {
+    runId: 'wf-unmark-abcdef', dispatch, dependencies: { runFeatures: {} },
+    actions: [step3('write', { affects: ['work-done'] }), step3('check', { dependsOn: ['write'], ownedFiles: [], affects: [], lane: 'analyze', evidenceFor: ['work-done'] })],
+  });
+  assert.equal(run.result.status, 'completed');
+  assert.deepEqual(seen.check.evidence, { writerPools: ['relay'] });
+  assert.equal(seen.check.failureRule, false);
+  assert.ok(eventsOfType(run.runDir, 'attempt.finished').every((event) => !Object.hasOwn(event.payload, 'failureRule')));
+});
+
+test('a resumed stage-2 run keeps its marker file, its labels and its E14 evidence retry', async (t) => {
+  const f = stage3Setup(t);
+  const marker = `${JSON.stringify(STAGE2_RUN_FEATURES, null, 2)}\n`;
+  const runDir = savedRun(f, {
+    runId: 'wf-s2keep-abcdef', marker,
+    actions: [step3('write', { affects: ['work-done'], evidence: [{ type: 'command', cmd: 'true' }] }), step3('notes')],
+    edit: () => {},
+  });
+  const seen = {};
+  const run = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-s2keep-abcdef', pools: [], parentEnv: {},
+    dependencies: { refreshPools: async () => null, dispatchV2Action: async (options) => { seen[options.action.id] = options; return succeed(options); } },
+  });
+  assert.equal(run.result.status, 'completed');
+  assert.equal(readFileSync(join(runDir, 'features.json'), 'utf8'), marker, 'never rewritten');
+  assert.equal(seen.write.failureRule, false);
+  assert.equal(seen.write.evidenceRetryAvailable, true);
+  assert.equal(seen.write.legacyGate, true);
+  const finished = Object.fromEntries(eventsOfType(runDir, 'action.finished').map((event) => [event.payload.actionId, event.payload]));
+  assert.deepEqual(finished.notes.proof, { by: [], reviewPending: false }, 'stage-2 labels kept');
+});
+
+test('retriesAlready is counted from stored retry facts: a kernel resume keeps it, a rerun resets it', async (t) => {
+  const f = stage3Setup(t);
+  const attempts = [
+    { id: 'write-1', actionId: 'write', ordinal: 1, status: 'failed', pool: 'codex', model: null, startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z', failureKind: 'process', why: 'exit 1' },
+    { id: 'write-2', actionId: 'write', ordinal: 2, status: 'interrupted', pool: 'relay', model: null, startedAt: '2026-09-24T10:02:00.000Z', finishedAt: '2026-09-24T10:03:00.000Z', failureKind: 'interrupted', why: 'runner stopped', retryOf: { attempt: 'write-1', how: 'other-pool' } },
+  ];
+  for (const [label, superseded, expected] of [['kernel resume', 0, 1], ['rerun', 2, 0]]) {
+    const runId = superseded ? 'wf-s3rrun-abcdef' : 'wf-s3kres-abcdef';
+    savedRun(f, {
+      runId, marker: JSON.stringify(STAGE3_RUN_FEATURES), actions: [step3('write')],
+      edit: (state) => {
+        state.attempts = attempts.map((attempt) => ({ ...attempt }));
+        Object.assign(state.actions[0], { status: 'interrupted', attempts: 2, supersededAttempts: superseded, startedAt: '2026-09-24T10:00:00.000Z' });
+      },
+    });
+    const seen = [];
+    const run = await runV2AutonomousWorkflow({
+      bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+      dependencies: { refreshPools: async () => null, dispatchV2Action: async (options) => { seen.push(options); return succeed(options); } },
+    });
+    assert.equal(seen[0].retriesAlready, expected, label);
+    // A kernel resume starts a plain attempt: a kernel stop is not the step's failure (D3).
+    assert.equal(Object.hasOwn(run.state.attempts.at(-1), 'retryOf'), false, label);
+    assert.equal(run.state.attempts.at(-1).id, 'write-3', label);
+  }
+});
+
+test('waiting: the step says so, frees its slot at once (kick), and is running again when its attempt starts', async (t) => {
+  const f = stage3Setup(t, { concurrency: 1 });
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  const safety = setTimeout(() => release('timeout'), 5000);
+  t.after(() => clearTimeout(safety));
+  const order = [];
+  let whileWaiting = null;
+  let atStart = null;
+  let runDir = null;
+  const dispatch = async (options) => {
+    if (options.action.id === 'slow') {
+      options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'hold' });
+      order.push('slow waiting');
+      const why = await released;
+      order.push(`slow woke (${why})`);
+      assert.equal(await options.claimWake(), true);
+      const record = reportAttempt(options, 1);
+      return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: record.outFile } };
+    }
+    whileWaiting = readState(runDir).actions.find((action) => action.id === 'slow');
+    order.push('quick ran');
+    release('quick finished');
+    return succeed(options);
+  };
+  const run = await launch3(f, {
+    runId: 'wf-s3wait-abcdef', dispatch, actions: [step3('slow'), step3('quick')],
+    onEvent: (event) => {
+      runDir ??= join(f.bullswarmDir, 'workflows', 'wf-s3wait-abcdef');
+      if (event.type === 'attempt.started' && event.payload.actionId === 'slow') atStart = readState(runDir).actions.find((action) => action.id === 'slow');
+    },
+  });
+  assert.equal(run.result.status, 'completed');
+  assert.deepEqual(order, ['slow waiting', 'quick ran', 'slow woke (quick finished)'], 'with concurrency 1 the independent step ran while the first waited');
+  assert.equal(whileWaiting.status, 'waiting');
+  assert.deepEqual(whileWaiting.lastFailure, { kind: 'waiting', message: 'waiting for quota: relay back at 2026-09-25T09:00:00.000Z' });
+  assert.equal(atStart.status, 'running');
+  assert.equal(atStart.lastFailure, null);
+  const waiting = eventsOfType(run.runDir, 'action.waiting');
+  assert.deepEqual(waiting.map((event) => event.payload), [{ actionId: 'slow', until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'hold' }]);
+});
+
+test('a waiting step whose claim finds a running unrestricted writer stays waiting until the writer finishes', async (t) => {
+  const f = stage3Setup(t, { concurrency: 2 });
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  const claims = [];
+  let writerDone = false;
+  const dispatch = async (options) => {
+    if (options.action.id === 'slow') {
+      options.onWaiting({ until: '2026-09-25T09:00:00.000Z', pools: ['relay'], reason: 'quota' });
+      await released;
+      for (let guard = 0; guard < 200; guard += 1) {
+        const claimed = await options.claimWake();
+        claims.push([claimed, writerDone]);
+        if (claimed) break;
+      }
+      return succeed(options);
+    }
+    // The unrestricted writer (build lane, no ownedFiles) runs alone.
+    release();
+    for (let guard = 0; guard < 200 && !claims.length; guard += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    writerDone = true;
+    return succeed(options);
+  };
+  const run = await launch3(f, {
+    runId: 'wf-s3claim-abcdef', dispatch,
+    actions: [step3('slow'), step3('integrate', { ownedFiles: [] })],
+    dependencies: { wakeClaimRecheckMs: 20 },
+  });
+  assert.equal(run.result.status, 'completed');
+  assert.deepEqual(claims[0], [false, false], 'refused while the unrestricted writer runs');
+  assert.deepEqual(claims.at(-1), [true, true], 'claimed once it finished');
+  const started = eventsOfType(run.runDir, 'attempt.started').map((event) => event.payload.actionId);
+  assert.deepEqual(started, ['integrate', 'slow']);
+});
+
+test('a kernel resume resets a waiting step to pending: no worker ran, nothing is spent', async (t) => {
+  const f = stage3Setup(t);
+  const runDir = savedRun(f, {
+    runId: 'wf-s3wres-abcdef', marker: JSON.stringify(STAGE3_RUN_FEATURES), actions: [step3('write')],
+    edit: (state) => {
+      state.lifecycle.status = 'running';
+      Object.assign(state.actions[0], { status: 'waiting', startedAt: '2026-09-24T10:00:00.000Z', lastFailure: { kind: 'waiting', message: 'waiting for quota: relay back at 2026-09-24T12:00:00.000Z' } });
+    },
+  });
+  const seen = [];
+  const run = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-s3wres-abcdef', pools: [], parentEnv: {},
+    dependencies: { refreshPools: async () => null, dispatchV2Action: async (options) => { seen.push(options); return succeed(options); } },
+  });
+  assert.equal(run.result.status, 'completed');
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].retriesAlready, 0);
+  assert.equal(seen[0].resumeHandoff, null, 'no attempt ran, so nothing is handed on');
+  assert.deepEqual(run.state.attempts.map((attempt) => attempt.id), ['write-1']);
+  assert.equal(eventsOfType(runDir, 'action.started').length, 1);
+});
+
+test('a drain pause stops a waiting step (stop kind paused); it runs again after resume', async (t) => {
+  const f = stage3Setup(t);
+  const runId = 'wf-s3drain-abcdef';
+  let dispatches = 0;
+  const dispatch = async (options) => {
+    dispatches += 1;
+    if (dispatches === 1) {
+      options.onWaiting({ until: '2026-09-26T09:00:00.000Z', pools: ['relay'], reason: 'hold' });
+      // The dispatcher's wait loop: it polls cancel while it sleeps.
+      for (let guard = 0; guard < 500; guard += 1) {
+        if (options.shouldCancel()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts: [], verdict: null };
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error('the drain pause never stopped the waiting step');
+    }
+    return succeed(options);
+  };
+  let pauseRequested = null;
+  const paused = await launch3(f, {
+    runId, dispatch, actions: [step3('write')], dependencies: { controlPollMs: 20 },
+    onEvent: (event) => {
+      if (event.type === 'action.waiting') pauseRequested = pauseV2Run({ bullswarmDir: f.bullswarmDir, runId, mode: 'drain' });
+    },
+  });
+  assert.equal((await pauseRequested).status, 'pausing');
+  assert.equal(paused.result, null);
+  assert.equal(paused.state.lifecycle.status, 'paused');
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  const stopped = eventsOfType(runDir, 'action.finished')[0].payload;
+  assert.deepEqual([stopped.actionId, stopped.status, stopped.failureKind], ['write', 'cancelled', 'paused']);
+  assert.deepEqual(eventsOfType(runDir, 'workflow.paused').at(-1).payload.requeued, ['write']);
+  assert.equal(paused.state.actions[0].status, 'pending');
+  unpauseV2Run({ bullswarmDir: f.bullswarmDir, runId });
+  const resumed = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+    dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, controlPollMs: 20 },
+  });
+  assert.equal(resumed.result.status, 'completed');
+  assert.equal(dispatches, 2);
+});
+
+test('the failed action.finished names the current attempts and, in a marked run, the counted retries', async (t) => {
+  for (const [label, features, runId] of [['marked', STAGE3_RUN_FEATURES, 'wf-s3fail-abcdef'], ['unmarked', STAGE2_RUN_FEATURES, 'wf-s2fail-abcdef']]) {
+    const f = stage3Setup(t);
+    const dispatch = async (options) => {
+      const first = reportAttempt(options, 1, { pool: 'codex', ok: false, failureKind: 'process', why: 'exit 1', willRetry: true });
+      const second = reportAttempt(options, 2, { pool: 'relay', ok: false, failureKind: 'process', why: 'exit 2', retryOf: { attempt: 'write-1', how: 'other-pool' } });
+      return { ok: false, status: 'failed', failureKind: 'process', attempts: [first, second], verdict: { ok: false, why: 'exit 2', failureKind: 'process' } };
+    };
+    const run = await launch3(f, { runId, dispatch, actions: [step3('write')], dependencies: { runFeatures: features } });
+    const finished = eventsOfType(run.runDir, 'action.finished').at(-1).payload;
+    assert.equal(finished.status, 'failed', label);
+    assert.deepEqual(finished.attemptIds, ['write-1', 'write-2'], label);
+    if (label === 'marked') assert.equal(finished.retries, 1);
+    else assert.equal(Object.hasOwn(finished, 'retries'), false, 'a saved run counts attempts minus one in the watcher');
+  }
 });

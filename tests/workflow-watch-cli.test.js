@@ -178,7 +178,15 @@ test('one stale line per attempt, from the probe the watcher is given', () => {
 test('trouble is a failed, rejected, paused, stalled or stale line, or steering for the caller', () => {
   const kinds = [
     [{ type: 'action.finished', status: 'failed' }, 'failed'],
-    [{ type: 'action.finished', status: 'blocked' }, 'failed'],
+    // Stage 3 (D26): blocked dependents are listed inside the needs-you block.
+    [{ type: 'action.finished', status: 'blocked' }, null],
+    [{ type: 'needs-you', actionId: 'a', label: 'deliverable not produced' }, 'failed'],
+    // A loop's verify.round with the caller covers a failed review.
+    [{ type: 'evidence.recorded', loopMax: 1, requirements: [{ id: 'r1', status: 'failed' }] }, null],
+    [{ type: 'evidence.recorded', loopMax: 3, requirements: [{ id: 'r1', status: 'failed' }] }, null],
+    [{ type: 'action.waiting', waitSec: 29 * 60 }, null],
+    [{ type: 'action.waiting', waitSec: 31 * 60 }, 'waiting'],
+    [{ type: 'step.accepted', actionId: 'a', reason: 'fine' }, null],
     [{ type: 'action.finished', status: 'cancelled', failureKind: 'paused' }, 'paused'],
     [{ type: 'action.finished', status: 'cancelled', failureKind: 'superseded' }, null],
     [{ type: 'action.finished', status: 'succeeded' }, null],
@@ -199,6 +207,10 @@ test('trouble is a failed, rejected, paused, stalled or stale line, or steering 
     [{ type: 'step.restarted' }, null],
   ];
   for (const [event, kind] of kinds) assert.equal(watchTrouble(event), kind, JSON.stringify(event));
+  // In program runs a stall is not trouble: the needs-you block covers the
+  // case with no retry left.
+  assert.equal(watchTrouble({ type: 'attempt.stalled' }, { program: true }), null);
+  assert.equal(watchTrouble({ type: 'attempt.stalled' }, { program: false }), 'stalled');
 });
 
 test('a caller restart reads as one restart line and one handoff line, never a cancelled step', () => {
@@ -332,7 +344,7 @@ test('the final block prints the proof line after reason, and the JSONL record c
   assert.deepEqual(record.proof, { proven: 4, byType: { command: 0, schema: 0, review: 4 }, unproven: 0, unprovenSteps: [] });
 });
 
-test('F23: a failed step that declares evidence and failed before it ran reads `evidence not run`; other failed lines read as before', () => {
+test('F23: a failed step that declares evidence and failed before it ran reads `evidence not run`; in a program run each failure is a needs-you block', () => {
   const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
   state.program.actions.push(
     { id: 'widget', purpose: 'Build the widget', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Write widget.js.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], evidence: [{ type: 'command', cmd: 'node --test tests/widget.test.js' }] },
@@ -352,15 +364,132 @@ test('F23: a failed step that declares evidence and failed before it ran reads `
       finished('notes', 'process', 'worker exited with code 1', '2026-09-24T01:09:01.000Z'),
     ],
     state,
-  }).notable.map((event) => renderWatchEvent(event).replace(/ · [^·]+$/, ''));
+  }).notable.map((event) => renderWatchEvent(event, { terminal: true }).split('\n').slice(0, 2).join('\n'));
+  // Stage 3 (D25): a failed program step reads as the needs-you block; each
+  // block reads the attempts as they were when its event was committed.
   assert.deepEqual(lines, [
-    `${glyphs().fail} widget failed · failed-evidence: node --test tests/widget.test.js → exit 1: not ok 1`,
-    `${glyphs().fail} widget failed · process: worker exited with code 1 · evidence not run`,
-    `${glyphs().fail} notes failed · process: worker exited with code 1`,
+    `${glyphs().fail} widget needs you · command evidence failed · not retried\n  evidence  node --test tests/widget.test.js → exit 1`,
+    `${glyphs().fail} widget needs you · worker exited with an error after 1 retry\n  why       worker exited with code 1 · evidence not run`,
+    `${glyphs().fail} notes needs you · worker exited with an error · not retried\n  why       worker exited with code 1`,
   ]);
   // An event without the flag renders exactly as before.
   assert.equal(
     renderWatchEvent({ type: 'action.finished', actionId: 'notes', status: 'failed', failureKind: 'process', why: 'worker exited with code 1', durationSec: 300 }),
     `${glyphs().fail} notes failed · process: worker exited with code 1 · 5m00s`,
   );
+});
+
+// Stage 3 (§2.6, D24): the waiting line, the accepted line, the plan revised
+// `accepted` part, and the needs-you block in a live watch.
+test('a waiting step prints one line; more than 30 minutes away it adds the options and is trouble', () => {
+  const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
+  const committedAt = '2026-09-24T01:00:00.000Z';
+  const waiting = (minutes, reason, pools = ['pool-a']) => ({
+    type: 'action.waiting', committedAt,
+    payload: { actionId: 'verify', until: new Date(Date.parse(committedAt) + minutes * 60_000).toISOString(), pools, reason },
+  });
+  const render = (event) => {
+    const [notable] = notableWatchEvents({ events: [event], state }).notable;
+    return { notable, text: renderWatchEvent(notable, { now: Date.parse(committedAt) }) };
+  };
+  const back = (minutes) => `(?:\\d\\d:\\d\\d|${new Date(Date.parse(committedAt) + minutes * 60_000).toISOString().replace(/\./g, '\\.')})`;
+  const short = render(waiting(10, 'hold'));
+  assert.match(short.text, new RegExp(`^⧖ verify waiting for quota · pool-a back at ${back(10)} \\(in 10m00s\\)$`));
+  assert.equal(watchTrouble(short.notable), null, 'a short wait is not a decision');
+  const hold = render(waiting(120, 'hold'));
+  assert.equal(watchTrouble(hold.notable), 'waiting');
+  assert.deepEqual(hold.text.split('\n').slice(1), [
+    `  or change the step: bullswarm workflow plan export ${SHORT} --out plan.json → plan revise ${SHORT} --program plan.json`,
+    `  or run it elsewhere: bullswarm workflow step rerun ${SHORT} verify --avoid pool-a`,
+  ]);
+  const paused = render(waiting(120, 'quota', ['pool-a', 'pool-b']));
+  assert.match(paused.text.split('\n')[0], new RegExp(`^⧖ verify waiting for quota · first back: pool-a at ${back(120)} \\(in 2h00m\\)$`));
+  assert.equal(paused.text.split('\n')[2], '  or lift the pause:  bullswarm pools resume pool-a');
+  assert.match(render(waiting(10, 'bench')).text, /^⧖ verify waiting for a pool · /);
+  // In --until modes the option lines follow even a short wait.
+  const [shortNotable] = notableWatchEvents({ events: [waiting(10, 'hold')], state }).notable;
+  assert.equal(renderWatchEvent(shortNotable, { now: Date.parse(committedAt), untilMode: true }).split('\n').length, 3);
+  // The JSONL object carries no run token of its own.
+  assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(hold.notable))), ['type', 'actionId', 'until', 'pools', 'reason', 'waitSec']);
+});
+
+test('an accepted step, accepted requirements, and the plan revised `accepted` part', () => {
+  const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
+  const { notable } = notableWatchEvents({
+    state,
+    events: [
+      { type: 'step.accepted', payload: { actionId: 'integrate', reason: 'the flaky test is known', requirements: null } },
+      { type: 'step.accepted', payload: { actionId: 'verify', reason: 'good enough', requirements: ['requirement-1', 'requirement-2'] } },
+      { type: 'program.revised', payload: { source: 'step-accept', programRevision: 4, summary: 'accept integrate: "the flaky test is known"', changes: { accepted: ['integrate'] } } },
+    ],
+  });
+  assert.deepEqual(notable.map((event) => renderWatchEvent(event)), [
+    '✓ integrate accepted by choice · "the flaky test is known"',
+    '✓ requirement-1 accepted by choice on verify · "good enough"\n✓ requirement-2 accepted by choice on verify · "good enough"',
+    `${glyphs().plan} plan revised (revision 4) · accept integrate: "the flaky test is known" · accepted integrate`,
+  ]);
+  assert.equal(notable.every((event) => watchTrouble(event) === null), true);
+});
+
+test('--until trouble wakes on the needs-you block of a failed program step and relaunches from its cursor', async (t) => {
+  const nowMs = minutesAfterLastEvent(1);
+  const run = stagedRun(t, { nowMs });
+  const cursor = run.state.events.sequence;
+  Object.assign(run.state.actions.find((action) => action.id === 'verify'), { status: 'failed', finishedAt: new Date(nowMs).toISOString(), lastFailure: { kind: 'process', message: 'worker exited with code 1' } });
+  Object.assign(run.state.attempts.find((entry) => entry.id === 'verify-1'), { status: 'failed', failureKind: 'process', finishedAt: new Date(nowMs).toISOString() });
+  run.emit('action.finished', { actionId: 'verify', status: 'failed', failureKind: 'process', why: 'worker exited with code 1', attemptIds: ['verify-1'], retries: 0 });
+  const watcher = watch(run, { until: 'trouble', afterSequence: cursor, now: () => nowMs });
+  assert.equal(await watcher.promise, 0);
+  const lines = watcher.lines;
+  assert.equal(lines[0], '✗ verify needs you · worker exited with an error · not retried');
+  assert.ok(lines.includes('  your call:'), lines.join('\n'));
+  assert.equal(lines.at(-1), `next: bullswarm workflow watch ${SHORT} --until trouble --after ${cursor + 1} --since ${new Date(nowMs).toISOString()}`);
+  const jsonl = watch(run, { until: 'trouble', afterSequence: cursor, jsonl: true, now: () => nowMs });
+  assert.equal(await jsonl.promise, 0);
+  const records = jsonl.lines.map((line) => JSON.parse(line));
+  assert.deepEqual(records.map((record) => [record.type, record.sequence]), [['needs-you', cursor + 1]]);
+  assert.equal(records[0].label, 'worker exited with an error');
+});
+
+test('--until trouble prints a short wait without waking, and wakes on a long one', async (t) => {
+  const nowMs = minutesAfterLastEvent(1);
+  const run = stagedRun(t, { nowMs });
+  const cursor = run.state.events.sequence;
+  // appendEvent stamps events with the wall clock, which the wait is measured from.
+  const until = (minutes) => new Date(Date.now() + minutes * 60_000).toISOString();
+  run.emit('action.waiting', { actionId: 'verify', until: until(10), pools: ['pool-a'], reason: 'hold' });
+  run.emit('action.waiting', { actionId: 'verify', until: until(120), pools: ['pool-a'], reason: 'quota' });
+  const watcher = watch(run, { until: 'trouble', afterSequence: cursor, now: () => nowMs });
+  assert.equal(await watcher.promise, 0);
+  const waits = watcher.lines.filter((line) => line.startsWith('⧖ verify waiting for quota'));
+  assert.equal(waits.length, 2, watcher.lines.join('\n'));
+  assert.ok(watcher.lines.includes('  or lift the pause:  bullswarm pools resume pool-a'));
+  assert.match(watcher.lines.at(-1), new RegExp(`^next: bullswarm workflow watch ${SHORT} --until trouble --after ${cursor + 2} --since `));
+  // Only the short wait: printed, but nothing wakes the caller yet.
+  const quiet = stagedRun(t, { nowMs });
+  const start = quiet.state.events.sequence;
+  quiet.emit('action.waiting', { actionId: 'verify', until: until(10), pools: ['pool-a'], reason: 'hold' });
+  const follow = watch(quiet, { until: 'trouble', afterSequence: start, now: () => nowMs, intervalMs: 20 });
+  await eventually(() => follow.lines.length > 0, 'the waiting line');
+  assert.match(follow.lines[0], /^⧖ verify waiting for quota · pool-a back at /);
+  quiet.finish('completed');
+  assert.equal(await follow.promise, 0);
+  assert.equal(follow.lines.some((line) => line.startsWith('next: bullswarm workflow watch')), false, 'a short wait never woke it');
+});
+
+test('a run that ended in the same poll prints the block without your call or next, then the outcome', async (t) => {
+  const nowMs = minutesAfterLastEvent(1);
+  const run = stagedRun(t, { nowMs });
+  const cursor = run.state.events.sequence;
+  Object.assign(run.state.actions.find((action) => action.id === 'verify'), { status: 'failed', finishedAt: new Date(nowMs).toISOString() });
+  Object.assign(run.state.attempts.find((entry) => entry.id === 'verify-1'), { status: 'failed', failureKind: 'process', finishedAt: new Date(nowMs).toISOString() });
+  run.emit('action.finished', { actionId: 'verify', status: 'failed', failureKind: 'process', why: 'worker exited with code 1' });
+  run.state.lifecycle = { ...run.state.lifecycle, status: 'failed', finishedAt: new Date(nowMs).toISOString() };
+  run.save();
+  const watcher = watch(run, { until: 'trouble', afterSequence: cursor, now: () => nowMs });
+  assert.equal(await watcher.promise, 1);
+  const lines = watcher.lines;
+  assert.equal(lines[0], '✗ verify needs you · worker exited with an error · not retried');
+  assert.equal(lines.some((line) => line === '  your call:' || line.startsWith('next: bullswarm workflow watch')), false, lines.join('\n'));
+  assert.ok(lines.some((line) => line.startsWith('outcome: failed')), lines.join('\n'));
 });

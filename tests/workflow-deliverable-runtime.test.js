@@ -272,7 +272,7 @@ async function resumeBuild(t, { marker = false, prior = null, runId = 'wf-gate01
   return { run, seen, runDir };
 }
 
-test('a new run writes features.json with deliverableGate 1 and proofLabels 1', async (t) => {
+test('a new run writes features.json with stage 2\'s keys plus failureRule 1 and reviewPlacement caller', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-marker-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -316,7 +316,7 @@ test('a new run writes features.json with deliverableGate 1 and proofLabels 1', 
     },
   });
   assert.equal(existsSync(join(result.runDir, 'features.json')), true);
-  assert.deepEqual(JSON.parse(readFileSync(join(result.runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
+  assert.deepEqual(JSON.parse(readFileSync(join(result.runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
 });
 
 test('resuming without the marker lets an unchanged build step pass', async (t) => {

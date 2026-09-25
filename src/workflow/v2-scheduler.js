@@ -15,7 +15,11 @@ const STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded',
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const SUCCESS = 'succeeded';
 const UNSUCCESSFUL = new Set(['failed', 'blocked', 'cancelled', 'interrupted']);
-const ACTIVE = new Set(['running', 'waiting']);
+// Only a running step holds a slot. A `waiting` step (no pool can take it
+// until a return time) counts for nothing: not the concurrency cap, the
+// runs-alone rule, the one-mutator rule or owned-file overlap. It claims a
+// slot again through canStartV2Action before it runs.
+const ACTIVE = new Set(['running']);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const object = (value, name) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new SchedulerValidationError(`${name} must be an object`);
@@ -95,7 +99,7 @@ function validateAcyclic(actions, byId) {
   for (const action of actions) visit(action.id);
 }
 
-export function scheduleV2Actions(input, states, options = {}) {
+function prepare(input, states, options) {
   const actions = actionList(input);
   const byId = new Map(actions.map((action) => [action.id, action]));
   for (const action of actions) for (const dep of action.dependsOn) if (!byId.has(dep)) {
@@ -124,6 +128,25 @@ export function scheduleV2Actions(input, states, options = {}) {
       throw new SchedulerValidationError('active mutating actions have an owned file conflict');
     }
   }
+  // Why `action` cannot join `active` plus `selected` now, or null.
+  const deferReason = (action, selected) => {
+    if (selected.length >= concurrency - active.length) return 'concurrency cap';
+    if ((unrestricted(action) && (active.length || selected.length)) || [...active, ...selected].some(unrestricted)) {
+      return 'unrestricted integrator runs alone';
+    }
+    if (workspaceMode === 'shared' && !allowParallelShared && writes(action) && (activeMutators.length || selected.some(writes))) {
+      return 'shared workspace allows one mutating action';
+    }
+    if (writes(action) && [...activeMutators, ...selected.filter(writes)].some((other) => overlap(action.ownedFiles, other.ownedFiles))) {
+      return 'owned file conflict';
+    }
+    return null;
+  };
+  return { actions, byId, status, active, workspaceMode, concurrency, deferReason };
+}
+
+export function scheduleV2Actions(input, states, options = {}) {
+  const { actions, byId, status, active, workspaceMode, concurrency, deferReason } = prepare(input, states, options);
   const memo = new Map();
   const outcome = (id, visiting = new Set()) => {
     if (memo.has(id)) return memo.get(id);
@@ -149,19 +172,23 @@ export function scheduleV2Actions(input, states, options = {}) {
   }
   const selected = [];
   const deferred = [];
-  const available = concurrency - active.length;
   for (const action of ready) {
-    if (selected.length >= available) { deferred.push({ id: action.id, reason: 'concurrency cap' }); continue; }
-    if ((unrestricted(action) && (active.length || selected.length)) || [...active, ...selected].some(unrestricted)) {
-      deferred.push({ id: action.id, reason: 'unrestricted integrator runs alone' }); continue;
-    }
-    if (workspaceMode === 'shared' && !allowParallelShared && writes(action) && (activeMutators.length || selected.some(writes))) {
-      deferred.push({ id: action.id, reason: 'shared workspace allows one mutating action' }); continue;
-    }
-    if (writes(action) && [...activeMutators, ...selected.filter(writes)].some((other) => overlap(action.ownedFiles, other.ownedFiles))) {
-      deferred.push({ id: action.id, reason: 'owned file conflict' }); continue;
-    }
+    const reason = deferReason(action, selected);
+    if (reason) { deferred.push({ id: action.id, reason }); continue; }
     selected.push(action);
   }
   return clone({ workspaceMode, concurrency, active: active.map((action) => action.id), ready: ready.map((action) => action.id), selected: selected.map((action) => action.id), waiting, blocked, deferred });
+}
+
+// D9 claimWake: may `actionId` (a waiting step) start now? It is treated as
+// the only candidate and checked against the running steps alone: the
+// concurrency cap, the runs-alone rule, the one-mutator rule and owned-file
+// overlap. Other waiting and ready steps are ignored. The whole graph is
+// validated exactly as scheduleV2Actions does.
+export function canStartV2Action(input, states, actionId, options = {}) {
+  const { byId, status, deferReason } = prepare(input, states, options);
+  const action = byId.get(actionId);
+  if (!action) throw new SchedulerValidationError(`unknown action "${actionId}"`);
+  if (status.get(actionId) === 'running') return false;
+  return deferReason(action, []) === null;
 }

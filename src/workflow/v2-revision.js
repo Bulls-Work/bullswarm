@@ -15,6 +15,10 @@
 //                                   the result, but its history stays
 //   dependents of an amended,       invalidated: they consumed inputs that are
 //   restored, or rerun step         about to change, so they run again too
+//   `accept` entry (step accept)    accepted: a failed step is recorded as
+//                                   succeeded by the caller's choice, or a
+//                                   check's failing requirements are accepted;
+//                                   a choice is never proof (stage-3 D22)
 //
 // Planning a revision is pure. Applying one mutates the given state in place,
 // on purpose: a live kernel's running actions hold references to their own
@@ -36,7 +40,9 @@ export const V2_REVISION_SCHEMA_VERSION = 'bullswarm.workflow.revision.v1';
 const PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 const DOCUMENT_FIELDS = new Set(['schemaVersion', 'baseRevision', 'summary', 'program', 'rerun', 'steeringIds']);
 const REQUEST_FILE_RE = /^(rev-[a-z0-9]+-[a-f0-9]{6})\.json$/;
-export const REVISION_CHANGE_KINDS = Object.freeze(['added', 'amended', 'restored', 'removed', 'rerun', 'invalidated']);
+export const REVISION_CHANGE_KINDS = Object.freeze(['added', 'amended', 'restored', 'removed', 'rerun', 'invalidated', 'accepted']);
+const ACCEPT_REASON_MAX = 500;
+const UNFINISHED = new Set(['failed', 'blocked', 'cancelled', 'interrupted']);
 
 export class V2RevisionError extends Error {
   constructor(issues) {
@@ -95,6 +101,8 @@ export function normalizeRevisionInput(input, { summary = null, rerun = [], base
   return { summary: text ? text.trim() : null, baseRevision: base, program: clone(program), rerun: rerunIds, steeringIds };
 }
 
+// `accept` comes only from the `step accept` verb (normalizeRevisionInput
+// refuses it in a file), and is written only when present.
 export function createRevisionRequest(body, { source = 'cli', now = () => new Date().toISOString() } = {}) {
   return {
     schemaVersion: V2_REVISION_SCHEMA_VERSION,
@@ -106,6 +114,7 @@ export function createRevisionRequest(body, { source = 'cli', now = () => new Da
     program: clone(body.program),
     rerun: [...(body.rerun ?? [])],
     steeringIds: [...(body.steeringIds ?? [])],
+    ...(Array.isArray(body.accept) && body.accept.length ? { accept: clone(body.accept) } : {}),
   };
 }
 
@@ -156,12 +165,128 @@ function storedDefinitions(state, removed) {
   return byId;
 }
 
+// The failed step at the root of why `id` is blocked, or null.
+function blockingStep(state, definitions, id, seen = new Set()) {
+  for (const dependency of definitions.get(id)?.dependsOn ?? []) {
+    if (seen.has(dependency)) continue;
+    seen.add(dependency);
+    const status = state.actions.find((action) => action.id === dependency)?.status;
+    if (status === 'blocked') return blockingStep(state, definitions, dependency, seen) ?? dependency;
+    if (UNFINISHED.has(status)) return dependency;
+    const deeper = status === 'pending' ? blockingStep(state, definitions, dependency, seen) : null;
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+const currentAttempts = (state, runtime) => (state.attempts ?? [])
+  .filter((attempt) => attempt.actionId === runtime.id && attempt.ordinal > (runtime.supersededAttempts ?? 0))
+  .sort((left, right) => left.ordinal - right.ordinal);
+
+// A requirement the caller already accepted on `stepId`, still current.
+function acceptedOn(runtime, requirement) {
+  return (runtime?.acceptance?.requirements ?? []).some((entry) => entry.id === requirement.id
+    && String(entry.workRevision) === String(requirement.workRevision));
+}
+
+/**
+ * The `accept` entries of a `step accept` revision (stage-3 §2.8), checked
+ * against the live state. Pure: returns the acceptances to apply, and pushes
+ * the §2.8 refusal texts (without the ✗) onto `issues`.
+ */
+function planAcceptances(state, request, desired, issues) {
+  if (request.accept === undefined) return [];
+  const token = state.shortId ?? state.runId;
+  if (!Array.isArray(request.accept) || request.accept.some((entry) => !plain(entry))) {
+    issues.push('revision.accept must be an array of {step, reason, requirements}');
+    return [];
+  }
+  const definitions = new Map(desired.map((action) => [action.id, action]));
+  const runtimeById = new Map(state.actions.map((action) => [action.id, action]));
+  const requirements = state.ledger?.requirements ?? {};
+  const isolated = state.config?.settings?.workspaceMode === 'isolated';
+  const planned = [];
+  const seen = new Set();
+  for (const entry of request.accept) {
+    const step = entry.step;
+    const reason = typeof entry.reason === 'string' ? entry.reason.trim() : '';
+    if (!reason) { issues.push('--reason is required: say why you accept it (it is recorded as evidence "choice")'); continue; }
+    if (reason.length > ACCEPT_REASON_MAX || /[\r\n]/.test(reason)) { issues.push(`--reason must be one line of at most ${ACCEPT_REASON_MAX} characters`); continue; }
+    if (entry.requirements != null && (!Array.isArray(entry.requirements) || entry.requirements.some((id) => typeof id !== 'string' || !id))) {
+      issues.push('revision.accept requirements must be null or an array of requirement ids');
+      continue;
+    }
+    const runtime = runtimeById.get(step);
+    const definition = definitions.get(step);
+    if (typeof step !== 'string' || !runtime || !definition || runtime.status === 'removed') { issues.push(`run ${token} has no step "${step}"`); continue; }
+    if (seen.has(step)) { issues.push(`revision.accept names ${step} twice`); continue; }
+    seen.add(step);
+    const status = runtime.status;
+    if (status === 'running' || status === 'waiting') { issues.push(`step ${step} is still running; wait for it to finish or restart it`); continue; }
+    if (status === 'blocked' || status === 'pending') {
+      const blocker = blockingStep(state, definitions, step);
+      if (status === 'blocked' || blocker) { issues.push(`step ${step} is blocked by ${blocker ?? 'a failed dependency'}; accept or rerun ${blocker ?? 'it'} first`); continue; }
+      issues.push(`step ${step} has not run yet; nothing to accept`);
+      continue;
+    }
+    if (status === 'cancelled' || status === 'interrupted') {
+      issues.push(`step ${step} did not finish (${status}); run it again with bullswarm workflow resume ${token} or bullswarm workflow step rerun ${token} ${step}`);
+      continue;
+    }
+    const checks = new Set(definition.evidenceFor ?? []);
+    const failingIds = [...checks].filter((id) => ['failed', 'blocked'].includes(requirements[id]?.status) && !acceptedOn(runtime, requirements[id]));
+    let named = null;
+    if (Array.isArray(entry.requirements) && entry.requirements.length) {
+      named = [...new Set(entry.requirements)];
+      const before = issues.length;
+      for (const id of named) {
+        if (!checks.has(id)) issues.push(`step ${step} does not check ${id}`);
+        else if (!failingIds.includes(id)) issues.push(`requirement ${id} is not failing (${acceptedOn(runtime, requirements[id]) ? 'accepted' : requirements[id]?.status ?? 'unknown'}); nothing to accept`);
+      }
+      if (issues.length > before) continue;
+    }
+    const attempts = currentAttempts(state, runtime);
+    const requirementEntries = (ids) => ids.map((id) => ({ id, workRevision: requirements[id].workRevision }));
+    if (status === 'failed') {
+      if (isolated && !checks.size && (definition.ownedFiles ?? []).length) {
+        const where = attempts.at(-1)?.cwd ?? 'its private workspace';
+        issues.push(`run ${token} is isolated: ${step}'s work is in a retained workspace that was never merged back (${where}); merge it yourself, then accept`);
+        continue;
+      }
+      const last = attempts.at(-1) ?? null;
+      planned.push({
+        step, reason, kind: 'step',
+        attemptId: last?.id ?? null,
+        failureKind: last?.failureKind ?? runtime.lastFailure?.kind ?? null,
+        outputFile: last?.outputFile ?? null,
+        artifactIds: [...(definition.produces ?? [])],
+        requirements: named ? requirementEntries(named) : null,
+      });
+      continue;
+    }
+    // succeeded: only a check whose requirements are failing has anything to accept.
+    const ids = named ?? failingIds;
+    if (!ids.length) { issues.push(`step ${step} succeeded and no requirement it checks is failing; nothing to accept`); continue; }
+    const earlier = (runtime.acceptance?.requirements ?? []).filter((item) => requirements[item.id] && acceptedOn(runtime, requirements[item.id]) && !ids.includes(item.id));
+    planned.push({
+      step, reason, kind: 'requirements',
+      attemptId: attempts.findLast((attempt) => attempt.status === 'succeeded')?.id ?? null,
+      failureKind: null,
+      requirements: [...clone(earlier), ...requirementEntries(ids)],
+    });
+  }
+  return planned;
+}
+
 /**
  * Compare a requested program with the live plan. Pure: returns what would
  * change, or the issues that reject the revision. `affected` lists the actions
  * whose running agents must be stopped before the revision can apply.
+ * `features` (runFeatureFlags of the run's marker) decides how
+ * `defaults.verifyRounds` reads: fix cycles in a run with `failureRule`,
+ * total review rounds otherwise.
  */
-export function planV2Revision(state, request, { pendingSteeringIds = [] } = {}) {
+export function planV2Revision(state, request, { pendingSteeringIds = [], features = null } = {}) {
   validateV2DurableState(state);
   if (!isProgramWorkflow(state)) {
     return { ok: false, issues: ['only program-mode workflows can be revised; this run uses the older verified execution mode'] };
@@ -187,6 +312,7 @@ export function planV2Revision(state, request, { pendingSteeringIds = [] } = {})
   for (const id of requestedRerun) {
     if (!desiredIds.has(id)) issues.push(`rerun names "${id}", which is not in the revised program`);
   }
+  const acceptances = planAcceptances(state, request, desired, issues);
   if (issues.length) return { ok: false, issues };
 
   const added = [], amended = [], restored = [], rerun = [], kept = [];
@@ -202,6 +328,10 @@ export function planV2Revision(state, request, { pendingSteeringIds = [] } = {})
   const removed = state.program.actions
     .filter((action) => !removedBefore.has(action.id) && !desiredIds.has(action.id))
     .map((action) => action.id);
+  const accepted = acceptances.map((entry) => entry.step);
+  const keptIds = new Set(kept);
+  for (const id of accepted) if (!keptIds.has(id)) issues.push(`step ${id} is changed by this revision; accept it on its own`);
+  if (issues.length) return { ok: false, issues };
 
   // Everything downstream of a changed step, over the revised graph.
   const dependents = new Map();
@@ -210,7 +340,8 @@ export function planV2Revision(state, request, { pendingSteeringIds = [] } = {})
     dependents.get(dependency).push(action.id);
   }
   const reached = new Set();
-  const queue = [...amended, ...restored, ...rerun];
+  // An accepted failed step now counts as succeeded: its blocked dependents run.
+  const queue = [...amended, ...restored, ...rerun, ...acceptances.filter((entry) => entry.kind === 'step').map((entry) => entry.step)];
   while (queue.length) {
     for (const next of dependents.get(queue.shift()) ?? []) {
       if (reached.has(next)) continue;
@@ -218,20 +349,25 @@ export function planV2Revision(state, request, { pendingSteeringIds = [] } = {})
       queue.push(next);
     }
   }
-  const invalidated = kept.filter((id) => reached.has(id) && runtimeById.get(id).status !== 'pending');
+  const acceptedIds = new Set(accepted);
+  const invalidated = kept.filter((id) => reached.has(id) && !acceptedIds.has(id) && runtimeById.get(id).status !== 'pending');
 
   const pending = new Set(pendingSteeringIds);
   const steeringIds = (Array.isArray(request.steeringIds) ? request.steeringIds : []).filter((id) => pending.has(id));
   // A budget-only revision is a change: the loop reads defaults.verifyRounds at commit.
-  const roundsChange = revisedVerifyRounds(state, request.program) !== null;
-  if (![...added, ...amended, ...restored, ...removed, ...rerun].length && !steeringIds.length && !roundsChange) {
+  const countsFixes = features?.failureRule === true || features?.failureRule === 1;
+  const roundsChange = revisedVerifyRounds(state, request.program, { countsFixes }) !== null;
+  // An accept-only revision is a change.
+  if (![...added, ...amended, ...restored, ...removed, ...rerun, ...accepted].length && !steeringIds.length && !roundsChange) {
     return { ok: false, issues: ['the revision changes nothing: every action matches the live plan and no finished step is named in rerun'] };
   }
   return {
     ok: true,
     issues: [],
     desired,
-    changes: { added, amended, restored, removed, rerun, invalidated },
+    // `accepted` only when used, so a record without it still loads in older builds.
+    changes: { added, amended, restored, removed, rerun, invalidated, ...(accepted.length ? { accepted } : {}) },
+    ...(acceptances.length ? { acceptances } : {}),
     affected: [...new Set([...removed, ...amended, ...rerun, ...invalidated])],
     steeringIds,
     nextRevision: state.program.revision + 1,
@@ -264,7 +400,24 @@ export function applyV2Revision(state, planned, { request, at }) {
       status: 'pending', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [],
       lastFailure: null, supersededAttempts: runtime.attempts,
     });
+    // Rerunning a step undoes an accept (D23); the history stays in state.revisions.
+    delete runtime.acceptance;
     if (redefined.has(id)) runtime.programRevision = revision;
+  }
+  for (const entry of planned.acceptances ?? []) {
+    const runtime = runtimeById.get(entry.step);
+    const acceptance = {
+      evidence: 'choice', reason: entry.reason, attemptId: entry.attemptId, failureKind: entry.failureKind, at, revision,
+      ...(entry.requirements ? { requirements: clone(entry.requirements) } : {}),
+    };
+    if (entry.kind === 'step') {
+      Object.assign(runtime, {
+        status: 'succeeded', finishedAt: at, lastFailure: null,
+        outputFile: entry.outputFile && existsSync(entry.outputFile) ? entry.outputFile : null,
+        artifactIds: [...entry.artifactIds],
+      });
+    }
+    runtime.acceptance = acceptance;
   }
   for (const id of removed) {
     const runtime = runtimeById.get(id);

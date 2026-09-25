@@ -37,6 +37,41 @@ function sequence(value) {
   return value;
 }
 
+function nullableText(value, name) {
+  if (value !== null && (typeof value !== 'string' || !value)) fail(`${name} must be null or a non-empty string`);
+  return value;
+}
+
+function exactKeys(value, keys, name) {
+  object(value, name);
+  for (const key of Object.keys(value)) if (!keys.includes(key)) fail(`${name}.${key} is not allowed`);
+  for (const key of keys) if (!Object.hasOwn(value, key)) fail(`${name}.${key} is required`);
+}
+
+// Who reviewed (stage-3 D27): the check step's attempt that judged, and every
+// current-definition attempt that did work on the steps it judged. Additive:
+// records written before it have neither field.
+function reviewerOf(value, name = 'reviewer') {
+  exactKeys(value, ['attemptId', 'pool', 'model', 'provider'], name);
+  nonEmptyString(value.attemptId, `${name}.attemptId`);
+  nonEmptyString(value.pool, `${name}.pool`);
+  nullableText(value.model, `${name}.model`);
+  nullableText(value.provider, `${name}.provider`);
+  return clone(value);
+}
+
+function writersOf(value, name = 'writers') {
+  if (!Array.isArray(value)) fail(`${name} must be an array`);
+  value.forEach((writer, index) => {
+    const at = `${name}[${index}]`;
+    exactKeys(writer, ['actionId', 'pool', 'provider'], at);
+    nonEmptyString(writer.actionId, `${at}.actionId`);
+    nonEmptyString(writer.pool, `${at}.pool`);
+    nullableText(writer.provider, `${at}.provider`);
+  });
+  return clone(value);
+}
+
 function mechanicalFailure(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('mechanicalFailure must be an object');
   return clone(value);
@@ -100,7 +135,7 @@ function actionRevision(action, requirementId) {
   return revision(action.inspectedRevision ?? action.workRevision, 'inspectedRevision');
 }
 
-function evidenceRecord(action, requirementId, result, { workspaceRevision = null } = {}) {
+function evidenceRecord(action, requirementId, result, { workspaceRevision = null, reviewer, writers } = {}) {
   object(action, 'evidence action');
   const actionId = nonEmptyString(action.actionId ?? action.sourceAction, 'source action');
   const inspectedRevision = actionRevision(action, requirementId);
@@ -115,6 +150,8 @@ function evidenceRecord(action, requirementId, result, { workspaceRevision = nul
   if (!Array.isArray(result.concerns ?? [])) fail('concerns must be an array');
   if (result.mechanicalFailure !== undefined && status !== REQUIREMENT_STATUSES.PENDING) fail('mechanicalFailure requires pending status');
   if (status === REQUIREMENT_STATUSES.PENDING && result.mechanicalFailure === undefined) fail('pending evidence requires mechanicalFailure');
+  const reviewerField = reviewer !== undefined ? reviewerOf(reviewer) : undefined;
+  const writersField = writers !== undefined ? writersOf(writers) : undefined;
   return {
     sourceAction: actionId,
     inspectedRevision,
@@ -134,6 +171,8 @@ function evidenceRecord(action, requirementId, result, { workspaceRevision = nul
     concerns: clone(result.concerns ?? []),
     stale: false,
     ...(result.mechanicalFailure !== undefined ? { mechanicalFailure: mechanicalFailure(result.mechanicalFailure) } : {}),
+    ...(reviewerField !== undefined ? { reviewer: reviewerField } : {}),
+    ...(writersField !== undefined ? { writers: writersField } : {}),
   };
 }
 
@@ -177,7 +216,8 @@ export function resolveRequirement(ledger, requirementId) {
   return records[0].status;
 }
 
-export function applyEvidence(ledger, action, envelope) {
+// `reviewer` and `writers` (D27) are written on every record when given.
+export function applyEvidence(ledger, action, envelope, { reviewer, writers } = {}) {
   normalizeLedger(ledger);
   object(action, 'evidence action');
   object(envelope, 'evidence envelope');
@@ -194,7 +234,7 @@ export function applyEvidence(ledger, action, envelope) {
   for (const [id, result] of Object.entries(results)) {
     if (!declared.has(id)) fail(`evidence for ${id} was not declared by evidenceFor`);
     if (!ledger.requirements[id]) fail(`unknown requirement ${id}`);
-    records.push(evidenceRecord(action, id, result, { workspaceRevision: ledger.workRevision }));
+    records.push(evidenceRecord(action, id, result, { workspaceRevision: ledger.workRevision, reviewer, writers }));
   }
   for (const id of declared) if (!(id in results)) fail(`evidence for ${id} was not provided`);
   const lastSequence = ledger.evidence.reduce((max, record) => Math.max(max, record.eventSequence), -1);
@@ -280,6 +320,8 @@ function validateStoredLedger(ledger) {
     }
     if (typeof record.stale !== 'boolean') fail(`invalid stale flag for ${record.requirementId}`);
     if (record.workspaceRevision !== undefined) revision(record.workspaceRevision, `evidence workspaceRevision for ${record.requirementId}`);
+    if (record.reviewer !== undefined) reviewerOf(record.reviewer, `${record.requirementId} evidence reviewer`);
+    if (record.writers !== undefined) writersOf(record.writers, `${record.requirementId} evidence writers`);
     if (record.staleReason !== undefined) {
       nonEmptyString(record.staleReason, `evidence staleReason for ${record.requirementId}`);
       if (record.stale !== true) fail(`staleReason requires a stale record for ${record.requirementId}`);

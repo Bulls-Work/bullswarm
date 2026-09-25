@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_KINDS, ActionValidationError, DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS,
-  KIND_ROLES, PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram,
+  ACTION_KINDS, ActionValidationError, DEFAULT_EFFORT_BY_LANE, FIX_ROUNDS_DEFAULT, KIND_DEFAULTS,
+  KIND_ROLES, PROGRAM_ADVISORY_CODES, VERIFY_ROUNDS_DEFAULT, programAdvisories, validateActionProgram,
 } from '../src/workflow/action-validator.js';
 
 const work = (over = {}) => ({
@@ -347,21 +347,28 @@ test('timeBox is whole minutes 0–240 on an action or in defaults, folded onto 
   assert.deepEqual(run(null, { timeBox: accepted.actions[0].timeBox }).actions, accepted.actions);
 });
 
-test('defaults.verifyRounds is 1–3 and is returned beside the actions, never folded onto them', () => {
-  const run = (defaults) => validateActionProgram(
-    { schemaVersion: 'bullswarm.workflow.program.v2', defaults, actions: [kindWork('implement')] },
+test('defaults.verifyRounds is 0–3 and is returned beside the actions, never folded onto them', () => {
+  const run = (defaults, top = {}) => validateActionProgram(
+    { schemaVersion: 'bullswarm.workflow.program.v2', defaults, ...top, actions: [kindWork('implement')] },
     relaxed,
   );
-  for (const bad of [0, 4, 2.5, '3', null]) {
-    assert.throws(() => run({ verifyRounds: bad }), (error) => error.issues.includes('program.defaults.verifyRounds must be 1, 2 or 3'));
+  // Stage 3 (D13): the value counts fix cycles, so 0 (review only) is valid.
+  for (const bad of [-1, 4, 2.5, '3', null]) {
+    assert.throws(() => run({ verifyRounds: bad }), (error) => error.issues.includes('program.defaults.verifyRounds must be 0, 1, 2 or 3'));
+    assert.throws(() => run(undefined, { verifyRounds: bad }), (error) => error.issues.includes('program.verifyRounds must be 0, 1, 2 or 3'));
   }
-  for (const rounds of [1, 2, 3]) {
+  for (const rounds of [0, 1, 2, 3]) {
     const accepted = run({ verifyRounds: rounds });
     assert.equal(accepted.verifyRounds, rounds);
     assert.equal(Object.hasOwn(accepted.actions[0], 'verifyRounds'), false);
+    // The normalised top-level value validates back to itself.
+    assert.equal(run(undefined, { verifyRounds: accepted.verifyRounds }).verifyRounds, rounds);
   }
+  assert.throws(() => run({ verifyRounds: 0 }, { verifyRounds: 1 }), (error) => error.issues.includes('program.verifyRounds must match program.defaults.verifyRounds'));
   // Absent stays absent, so a revision without it leaves the run's budget alone.
   assert.equal(Object.hasOwn(run({ effort: 'low' }), 'verifyRounds'), false);
+  assert.equal(FIX_ROUNDS_DEFAULT, 1);
+  assert.equal(VERIFY_ROUNDS_DEFAULT, 3);
 });
 
 test('a program without kind or defaults normalizes to byte-identical actions', () => {

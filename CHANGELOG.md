@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- workflow: every step gets one automatic retry, then comes back to you. A
+  crashed, silent or signed-out worker is retried once on another pool that can
+  run the step (the same pool when it is the only one). A failed gate (declared
+  evidence, a deliverable not produced, a report in the wrong format, or output
+  judged failed) is retried once on the same pool with the failure attached. A
+  pool out of quota is not a failure: the step moves to another pool without
+  spending its retry, or waits until a pool is back and says so. Steps that do
+  not depend on a failed step keep running. `--retry-attempts` (0-3, default 1)
+  sets the retries per step. Runs started before this version keep their old
+  retry rules when resumed.
+- workflow: when a step needs you, `watch` prints one block: what failed, each
+  try, what is still running and what waits on it, and four commands (rerun
+  elsewhere, change the step, take over, accept anyway). Two commands are new.
+  `bullswarm workflow step rerun <run> <step> --avoid <pool>` runs a step again
+  off the pools you name, with its last attempt's handoff; the pools stay in the
+  step's route. `bullswarm workflow step accept <run> <step> --reason "…"`
+  accepts a failed step, or a check's failing requirements, as your choice: its
+  dependents run, the record says "choice" and never counts as proof, and
+  rerunning the step undoes it.
+- workflow: a step can say where it runs with `route`: `pools` and `providers`
+  to use or avoid, and `independentOf` (earlier steps, or "writers" on a check)
+  whose providers it must not use. It is applied before quota pacing, and the
+  kernel's fix and re-review steps inherit it. Reviews are no longer moved away
+  from writers' pools on their own; route a check when you want an independent
+  reviewer. Every review records who reviewed (pool, model, provider) and
+  whether that provider also wrote the work. Runs started before this version
+  keep the automatic placement.
+- workflow: a failed check gets one fix step and one re-review, then comes back
+  to you. `defaults.verifyRounds` counts those fix cycles (0-3, default 1;
+  0 means no automatic fix). A plan file written for an earlier version changes
+  meaning: `verifyRounds: 1` used to mean one review round and no fix, and now
+  means one fix and one re-review; set 0 for review only. `plan validate`, launch
+  and `plan revise` print a note when a plan sets it. The fix step also runs the
+  command evidence of the steps it repairs. Runs started before this version
+  keep their budget of up to 3 review rounds.
+- workflow: an `act` step (one that changes the outside world) is never retried
+  automatically once its worker has started; it comes back to you.
+- workflow: exhausted quota makes a step wait even with automatic pausing off:
+  it waits for the reset the limit notice or meter names, without pausing the
+  pool for anything else. A pool at its 5-hour limit no longer reads as "no
+  enabled pool has a model on the tier".
+- workflow: a step you accept reads `accepted by choice`, and the end-of-run
+  proof line counts it separately from proven steps.
+
 - workflow: a program-mode step can say what it does and what it leaves
   behind. `role` is one of `investigate`, `produce`, `transform`, `combine`,
   `check` or `act`, and `deliverable` is `files`, `report`, `data`, `media`

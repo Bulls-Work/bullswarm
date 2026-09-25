@@ -18,7 +18,7 @@ bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
 |---|---|---|
 | `schemaVersion` | yes | exactly `bullswarm.workflow.program.v2` |
 | `actions` | yes | non-empty array of actions |
-| `defaults` | no | object with only `effort` (`high`, `medium`, `low`), `reasoning` (`low`, `medium`, `high`, `xhigh`, `max`, `default`), `timeBox` (whole minutes, 0-240) and `verifyRounds` (1-3); `effort`, `reasoning` and `timeBox` apply where neither the action nor its role or kind sets the field. `verifyRounds` is the most verify rounds the kernel runs before handing the rest to you (default 3; 1 keeps a single round) |
+| `defaults` | no | object with only `effort` (`high`, `medium`, `low`), `reasoning` (`low`, `medium`, `high`, `xhigh`, `max`, `default`), `timeBox` (whole minutes, 0-240) and `verifyRounds` (0-3); `effort`, `reasoning` and `timeBox` apply where neither the action nor its role or kind sets the field. `verifyRounds` counts fix-and-re-review cycles (default 1; 0 means review only). Saved runs keep their original 1-3 review-round limit |
 
 No other top-level field is accepted.
 
@@ -37,11 +37,49 @@ No other top-level field is accepted.
 | `kind` | role, kind or lane | one of the kinds below; each belongs to one role and keeps its own routing and gate (table below) |
 | `lane` | role, kind or lane | `analyze` (read-only), `build` (edits), `chore` (mechanical edits); only when there is no role or kind |
 | `deliverable` | no | `files`, `report`, `data`, `media`, `outward`, or `{type, paths}`; data and media need `paths`; every path must be an exact file, not a directory, and be listed in `ownedFiles` when it is not empty (`files` paths too); an isolated run refuses a git-ignored path |
+| `route` | no | `{pools:{use,avoid}, providers:{use,avoid}, independentOf}` — where the step may run; a hard filter before pacing; program-mode runs only; lane stays its own field |
 | `evidence` | no | up to 5 checks Bullswarm runs after the worker: `{type: "command", cmd, timeoutSec?}` or `{type: "schema", file, schema, format?, timeoutSec?}`; `$output` checks the step's final response; `format` is `json` or `jsonl`; refused on review and digest steps |
 | `effort` | no | `high`, `medium`, `low`; overrides the role's or kind's effort |
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, `default`; how hard the picked model thinks, outranks every configured level |
 | `timeBox` | no | whole minutes, 0-240: the soft time box written into this step's task; `0` leaves it out. Omit it to take `defaults.timeBox`, else a box computed from this home's recorded attempts. A guide, never a timeout |
 | `inputs`, `produces` | no | artifact IDs, kebab-case: the producer lists an ID in `produces`, its consumer in `inputs`; omit for ordinary dependencies. `produces` wires data between steps; it is not the deliverable |
+
+## Failure and routing rules
+
+| Failure | Automatic action | Then |
+|---|---|---|
+| `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`) | You decide |
+| `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached | You decide |
+| `wait` | `quota`, `throttle`: move to another eligible pool without spending the retry, or wait for a known return time | Quota never fails only because it is exhausted |
+| `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
+| `stop` | `cancelled`, `paused`, `restarted`, `superseded`: no failure retry | The caller controls what runs next |
+
+An `act` step is never retried after its worker starts. A check that cannot run
+also comes to you without a retry. A failed check in a new run gets one fix
+step and one re-review; `defaults.verifyRounds` is 0–3 fix cycles, default 1.
+Saved runs keep their original rules. One step gets one automatic retry in
+total. Only its dependents wait; other steps keep running. Saved runs keep their
+rules in `features.json`.
+
+## Placing a step
+
+Use `route` in program-mode runs to constrain which pools or providers may run a
+step. `pools.use` and `providers.use` are allow-lists; `pools.avoid` and
+`providers.avoid` are exclusions. `independentOf` names earlier steps whose
+providers must not run this step, or uses `"writers"` on a step with
+`evidenceFor` to exclude the providers of the work it reviews. A provider is
+the model family; relay pools from one provider count as one. These are hard
+filters before pacing. `route.lane` is not allowed: set the step's own `lane`.
+If a route leaves no eligible pool, the step waits for a known return time or
+fails as no eligible pool.
+
+For example, a check can use `route: { "independentOf": ["write-docs"] }`.
+
+`independentOf` names an earlier dependency, so include that step in
+`dependsOn` directly or through another step. Pool lists use configured pool
+ids, not display labels. Pool/provider names cannot appear in both `use` and
+`avoid`; `writers` is accepted only on a step with `evidenceFor`. A route that
+names an unknown or later step is rejected. An empty route is dropped.
 
 Any other field is rejected. Resolution per field: the action's own `lane` or
 `effort`, then the kind table, else the role table, then `defaults`, then the
@@ -79,12 +117,13 @@ A step whose `## Not done` lists items still succeeds. It is recorded as
 `returned early · N not done`, and the items go to the verifiers with the rest
 of the evidence.
 
-When a mandatory requirement fails its check, the kernel repairs it itself, at
-most 3 verify rounds in all: it adds a `repair-<n>` step and a
-`verify-round-<n>` step to the program, which you will see in `plan export`.
-Never author a repair step, and do not add a fix step for an ordinary failing
-check. `defaults.verifyRounds` (1-3, default 3) sets the cap. What is still
-failing after the last round comes back in the result's caller-decision block.
+When a mandatory requirement fails its check, the kernel adds one fix step
+from the check's findings and one re-review. Both appear in `plan export`; never
+author a repair step or your own retry loop for an ordinary failing check. What
+still fails comes back to you in the needs-you block and `callerDecision`.
+`defaults.verifyRounds` counts fix-and-re-review cycles (0-3, default 1); 0
+means review only. Runs started before this version keep their original limit
+of up to 3 review rounds.
 
 ## Roles and deliverables
 
@@ -329,7 +368,7 @@ each, and use exactly the same goal text for validate and launch.
   must be listed in it. An isolated run refuses a git-ignored deliverable
   path, because it copies back only files git would track.
 - `timeBox` must be a whole number from 0 to 240 and `verifyRounds` a whole
-  number from 1 to 3; anything else, and any `repair` field or type, exits 2.
+  number from 0 to 3; anything else, and any `repair` field or type, exits 2.
 
 ## Example
 
@@ -386,6 +425,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README. 3. Write the run r
     {
       "id": "verify",
       "role": "check",
+      "route": { "independentOf": ["since-flag"] },
       "effort": "high",
       "purpose": "Independently confirm the flag works and is documented, and the records file exists",
       "dependsOn": ["since-flag", "readme", "records", "integrate"],

@@ -234,3 +234,62 @@ test('legacy records without a workspace revision are superseded by current-work
   assert.deepEqual(ledger.evidence.map((record) => record.stale), [true, true, false]);
   assert.throws(() => deserializeLedger(JSON.stringify({ ...ledger, evidence: ledger.evidence.map((record, index) => (index === 2 ? { ...record, staleReason: 'workspace-superseded' } : record)) })), /staleReason requires a stale record/);
 });
+
+test('evidence records carry who reviewed and the writers when given, and old records still load', () => {
+  const reviewer = { attemptId: 'check-1-1', pool: 'pool-a', model: 'model-x', provider: 'grok' };
+  const writers = [
+    { actionId: 'build-a', pool: 'claude-code:acme', provider: 'claude-code' },
+    { actionId: 'build-a', pool: 'pool-b', provider: null },
+  ];
+  const base = createLedger([{ id: 'quality' }], { workRevision: 'r1' });
+  const ledger = applyEvidence(base, action(), { requirements: { quality: pass() } }, { reviewer, writers });
+  assert.deepEqual(ledger.evidence[0].reviewer, reviewer);
+  assert.deepEqual(ledger.evidence[0].writers, writers);
+  assert.deepEqual(ledger.requirements.quality.evidence[0], ledger.evidence[0]);
+  assert.deepEqual(deserializeLedger(serializeLedger(ledger)), ledger);
+  // Cloned, not shared with the caller's objects.
+  reviewer.pool = 'changed';
+  assert.equal(ledger.evidence[0].reviewer.pool, 'pool-a');
+  // A null model and an empty writer list are facts too.
+  const unknownModel = applyEvidence(base, action(), { requirements: { quality: pass() } }, {
+    reviewer: { attemptId: 'check-1-1', pool: 'pool-a', model: null, provider: null }, writers: [],
+  });
+  assert.deepEqual(deserializeLedger(serializeLedger(unknownModel)).evidence[0].writers, []);
+  // Not given: the record has neither key (the stage-2 shape, byte for byte).
+  const plain = applyEvidence(base, action(), { requirements: { quality: pass() } });
+  assert.equal(Object.hasOwn(plain.evidence[0], 'reviewer'), false);
+  assert.equal(Object.hasOwn(plain.evidence[0], 'writers'), false);
+  assert.deepEqual(deserializeLedger(serializeLedger(plain)), plain);
+  // Only one of them.
+  const reviewerOnly = applyEvidence(base, action(), { requirements: { quality: pass() } }, { reviewer: ledger.evidence[0].reviewer });
+  assert.equal(Object.hasOwn(reviewerOnly.evidence[0], 'writers'), false);
+});
+
+test('malformed reviewer and writers are refused on write and on load', () => {
+  const base = createLedger([{ id: 'quality' }], { workRevision: 'r1' });
+  const reviewer = { attemptId: 'check-1-1', pool: 'pool-a', model: 'model-x', provider: 'grok' };
+  const writer = { actionId: 'build-a', pool: 'pool-b', provider: 'codex' };
+  const write = (fields) => applyEvidence(base, action(), { requirements: { quality: pass() } }, fields);
+  const bad = [
+    [{ reviewer: null }, /reviewer must be an object/],
+    [{ reviewer: 'pool-a' }, /reviewer must be an object/],
+    [{ reviewer: { ...reviewer, extra: 1 } }, /reviewer\.extra is not allowed/],
+    [{ reviewer: { attemptId: 'check-1-1', pool: 'pool-a', model: 'model-x' } }, /reviewer\.provider is required/],
+    [{ reviewer: { ...reviewer, attemptId: '' } }, /reviewer\.attemptId must be a non-empty string/],
+    [{ reviewer: { ...reviewer, pool: null } }, /reviewer\.pool must be a non-empty string/],
+    [{ reviewer: { ...reviewer, model: 3 } }, /reviewer\.model must be null or a non-empty string/],
+    [{ writers: writer }, /writers must be an array/],
+    [{ writers: [null] }, /writers\[0\] must be an object/],
+    [{ writers: [{ ...writer, model: 'm' }] }, /writers\[0\]\.model is not allowed/],
+    [{ writers: [{ actionId: 'build-a', pool: 'pool-b' }] }, /writers\[0\]\.provider is required/],
+    [{ writers: [writer, { ...writer, actionId: '' }] }, /writers\[1\]\.actionId must be a non-empty string/],
+    [{ writers: [{ ...writer, provider: '' }] }, /writers\[0\]\.provider must be null or a non-empty string/],
+  ];
+  for (const [fields, pattern] of bad) {
+    assert.throws(() => write(fields), pattern, JSON.stringify(fields));
+    const stored = write({ reviewer, writers: [writer] });
+    Object.assign(stored.evidence[0], fields);
+    stored.requirements.quality.evidence = [stored.evidence[0]];
+    assert.throws(() => deserializeLedger(JSON.stringify(stored)), pattern, `load ${JSON.stringify(fields)}`);
+  }
+});

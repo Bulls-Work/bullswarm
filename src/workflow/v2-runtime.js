@@ -15,7 +15,7 @@ import {
 import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
 import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
-import { scheduleV2Actions } from './v2-scheduler.js';
+import { canStartV2Action, scheduleV2Actions } from './v2-scheduler.js';
 import {
   assertV2Resume, createV2DurableState, deserializeV2DurableState,
   serializeV2DurableState, validateV2GoalDocument, v2PlannerMode,
@@ -34,13 +34,15 @@ import {
   consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, stepProof, v2RetryPlan,
 } from './v2-outcome.js';
 import {
-  appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
+  WAKE_CLAIM_RECHECK_MS, appliedStepRestart, attemptArtifactsOnDisk, clearStepRestart, dispatchV2Action, durableAttemptHandoff,
   markStepRestartApplied, readStepRestarts, requeueRestartedStep, snapshotPossible,
 } from './v2-dispatch.js';
-import { declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary.js';
+import { countRetries, declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary.js';
+import { resolveRouteFilter, workAttempts } from './step-route.js';
+import { modelFamilyOf } from '../lib/route.js';
 import { evidenceBriefLines, evidenceItemTimeoutSec, rewriteEvidenceCwd } from './evidence-runner.js';
 import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
-import { STAGE2_RUN_FEATURES, readRunFeatures, writeRunFeatures } from './run-features.js';
+import { STAGE3_RUN_FEATURES, readRunFeatures, runFeatureFlags, writeRunFeatures } from './run-features.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
 import {
@@ -96,7 +98,7 @@ export function acceptCallerPlannerResponse(state, response, { boundary, runDir,
     onEvent?.(event);
   }
   if (boundary === 'gaps') next.budget.expansions += 1;
-  ensureVerifyLoop(next, response);
+  ensureVerifyLoop(next, response, runFeatureFlags(readRunFeatures(runDir)));
   const known = new Set(next.actions.map((action) => action.id));
   for (const action of next.program.actions) if (!known.has(action.id)) {
     next.actions.push({
@@ -121,24 +123,49 @@ export function acceptCallerPlannerResponse(state, response, { boundary, runDir,
 // writes it at a boundary or `plan show` refreshes it with steering queued
 // while the run was paused. Steering is surfaced (peeked), never consumed.
 // The repair loop's durable record, written once, when a program run accepts
-// its first program. `defaults.verifyRounds` (1–3) sets the budget, default 3.
-// A saved run without the record keeps its old behaviour.
-function ensureVerifyLoop(state, response) {
+// its first program. In a run marked `failureRule` (D13) `defaults.verifyRounds`
+// counts fix cycles (0-3, default 1); otherwise total review rounds (1-3,
+// default 3). A saved run without the record keeps its old behaviour.
+function ensureVerifyLoop(state, response, features = null) {
   if (!isProgramWorkflow(state) || state.verifyLoop || response?.kind !== 'program') return;
   const program = response.program ?? {};
-  state.verifyLoop = createVerifyLoop(program.verifyRounds ?? program.defaults?.verifyRounds);
+  state.verifyLoop = createVerifyLoop(program.verifyRounds ?? program.defaults?.verifyRounds, { countsFixes: features?.failureRule === true });
 }
 
 // After a caller revision: its `defaults.verifyRounds` sets the budget for
 // the rest of the run (never below the rounds already closed), and a program
-// run whose first program arrived by revision gets its loop now.
-function applyRevisionLoopBudget(state, request, hadActions) {
+// run whose first program arrived by revision gets its loop now. The value is
+// read through the run's marker, as at launch.
+function applyRevisionLoopBudget(state, request, hadActions, features = null) {
   if (!isProgramWorkflow(state)) return;
   if (!state.verifyLoop) {
-    if (!hadActions) ensureVerifyLoop(state, { kind: 'program', program: request?.program });
+    if (!hadActions) ensureVerifyLoop(state, { kind: 'program', program: request?.program }, features);
     return;
   }
-  applyRevisionVerifyRounds(state, request?.program);
+  applyRevisionVerifyRounds(state, request?.program, { countsFixes: features?.failureRule === true });
+}
+
+// What a committed revision's acceptances look like on the event log (§2.8):
+// one `step.accepted` per accepted step or check, after the revision commits.
+function acceptedEventPayloads(planned) {
+  return (planned?.acceptances ?? []).map((entry) => ({
+    actionId: entry.step,
+    reason: entry.reason,
+    requirements: Array.isArray(entry.requirements) ? entry.requirements.map((item) => item.id) : null,
+  }));
+}
+
+// D20: a `step rerun` writes its applied restart intent before it submits the
+// revision. When that revision is rejected, the intent must not outlive it:
+// delete the step's intent, but only the one that belongs to this request.
+function clearRejectedRerunIntent(runDir, request) {
+  if (request?.source !== 'step-rerun' || typeof request.id !== 'string') return;
+  const steps = new Set(Array.isArray(request.rerun) ? request.rerun : []);
+  for (const entry of readStepRestarts(runDir)) {
+    if (entry.source === 'step-rerun' && entry.revisionRequestId === request.id && (!steps.size || steps.has(entry.actionId))) {
+      clearStepRestart(runDir, entry.actionId);
+    }
+  }
 }
 
 function composeCallerPlannerRequest(state, { boundary, turn, requestPath, candidatePath, correction = null, pendingSteering = [], scoutReport = null }) {
@@ -305,17 +332,19 @@ function commitRevisionUnderLease(runDir, request, { now }) {
   if (!TERMINAL.has(state.lifecycle.status) && existsSync(cancelFile) && JSON.parse(readFileSync(cancelFile, 'utf8'))?.requested) {
     return { status: 'rejected', record: { issues: [`the run has a pending cancellation; finalize it with bullswarm workflow cancel ${token} before revising`] }, state, reopened: null };
   }
-  const planned = planV2Revision(state, request, { pendingSteeringIds: peekSteering(state, runDir).map((entry) => entry.id) });
+  const features = runFeatureFlags(readRunFeatures(runDir));
+  const planned = planV2Revision(state, request, { pendingSteeringIds: peekSteering(state, runDir).map((entry) => entry.id), features });
   if (!planned.ok) {
     state.revisions = [...(state.revisions ?? []), rejectedRevisionRecord(request, planned.issues, at)];
     appendEvent(runDir, state, 'program.revision_rejected', { requestId: request.id, issues: planned.issues, source: request.source ?? 'cli' });
     writeRunState(runDir, state);
+    clearRejectedRerunIntent(runDir, request);
     return { status: 'rejected', record: state.revisions.at(-1), state, reopened: null };
   }
   const previousStatus = state.lifecycle.status;
   const hadActions = state.program.actions.length > 0;
   const committed = commitV2Revision(state, planned, { request, runDir, at });
-  applyRevisionLoopBudget(state, request, hadActions);
+  applyRevisionLoopBudget(state, request, hadActions, features);
   let reopened = null;
   if (TERMINAL.has(previousStatus)) {
     const resultFile = state.lifecycle.resultFile ?? join(runDir, 'result.json');
@@ -354,6 +383,7 @@ function commitRevisionUnderLease(runDir, request, { now }) {
     appendEvent(runDir, state, 'steering.delivered', { steeringId: entry.id, message: entry.message, decisionSequence: entry.decisionSequence, source: 'revision' });
   }
   appendEvent(runDir, state, 'program.revised', revisionEventPayload(committed.record));
+  for (const payload of acceptedEventPayloads(planned)) appendEvent(runDir, state, 'step.accepted', payload);
   writeRunState(runDir, state);
   removeStaleReceipts(runDir, committed.staleReceipts);
   return { status: 'applied', record: committed.record, state, reopened };
@@ -594,6 +624,8 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     // whatever event happened to arrive last (`lastAgentEvent` is any kind).
     ...(record.lastResponse !== undefined ? { lastResponse: record.lastResponse } : {}),
     ...(record.handoff !== undefined ? { handoff: clone(record.handoff) } : {}),
+    // D3: the attempt the dispatcher started because of an earlier one, and how.
+    ...(record.retryOf !== undefined ? { retryOf: clone(record.retryOf) } : {}),
     ...(record.outputTruncated !== undefined ? { outputTruncated: record.outputTruncated } : {}),
     ...(record.outputSource !== undefined ? { outputSource: record.outputSource } : {}),
     // What the provider reported at worker exit (recordAttemptCapture).
@@ -1302,9 +1334,13 @@ export function handoffBlock(facts = {}) {
   // Only when the attempt ran its checks, so every other handoff stays
   // byte-identical (§2.11).
   if (Array.isArray(facts.evidenceResults) && facts.evidenceResults.length) lines.push(...evidenceHandoffLines(facts.evidenceResults));
+  // Stage 3 (§2.3): only the gate retry of a marked run carries this line.
+  if (facts.gate === true) lines.push(GATE_RETRY_HANDOFF_LINE);
   lines.push('- Those edits are unverified. You decide whether to keep, fix or revert them, and you must report which.');
   return lines.join('\n');
 }
+
+export const GATE_RETRY_HANDOFF_LINE = '- This is the step\'s one automatic retry: the failure above closed its gate. Fix what it names; your earlier edits are still in the workspace.';
 
 const HANDOFF_TAIL_LINES = 10;
 const HANDOFF_LINE_CHARS = 200;
@@ -1569,9 +1605,11 @@ async function runV2Kernel({
     // checkout is there, the remote is there. Stamp it now so the rollup and
     // every later reindex agree on which project this run belongs to.
     recordGoalProject(runDir, goalDocument.intent.cwd, { now });
-    // The run's marker (D16, E23): a new run gets every key this code knows;
-    // a resumed run keeps the file it was started with, never rewritten.
-    writeRunFeatures(runDir, { ...STAGE2_RUN_FEATURES });
+    // The run's marker (D16, E23, D28): a new run gets every key this code
+    // knows; a resumed run keeps the file it was started with, never
+    // rewritten. `dependencies.runFeatures` lets a test launch a run the way
+    // an earlier stage did (a saved-run twin).
+    writeRunFeatures(runDir, { ...(dependencies.runFeatures ?? STAGE3_RUN_FEATURES) });
     state = createV2DurableState(goalDocument, { runId: id, shortId: nextShortId(bullswarmDir) });
   }
   // Read once. Missing or unreadable is `{}`: the legacy lane rule stays off
@@ -1579,6 +1617,11 @@ async function runV2Kernel({
   // before stage 1 or 2 resumes with its original semantics.
   const runFeatures = readRunFeatures(runDir);
   const legacyGate = runFeatures.deliverableGate === 1;
+  // Stage 3 (D28) branches on the keys, never on the file: `failureRule`
+  // (one retry then the caller, waiting, fix-cycle verifyRounds, inherited
+  // repair evidence) and `reviewPlacement` (reviews run where the caller
+  // routes them). Stage 2's proof labels keep reading `runFeatures`.
+  const features = runFeatureFlags(runFeatures);
 
   let scoutReport = typeof scout === 'string' && scout.trim() ? scout.trim() : null;
   if (!scoutReport && state.preflight.scout.status === 'succeeded' && state.preflight.scout.outputFile && existsSync(state.preflight.scout.outputFile)) {
@@ -1636,6 +1679,42 @@ async function runV2Kernel({
       });
     }
   };
+  // D25: a failed `action.finished` names the current definition's attempts
+  // and, in a marked run, its counted retries, so a watcher replaying from an
+  // older cursor still shows the tries as they were.
+  const failedFacts = (actionId) => {
+    const superseded = actionState(state, actionId)?.supersededAttempts ?? 0;
+    const attemptIds = state.attempts
+      .filter((attempt) => attempt.actionId === actionId && attempt.ordinal > superseded)
+      .map((attempt) => attempt.id);
+    return { attemptIds, ...(features.failureRule ? { retries: countRetries(state, actionId, superseded) } : {}) };
+  };
+  const providerOfPool = (name) => modelFamilyOf(pools.find((pool) => pool?.name === name) ?? name);
+  // D27: who judged, and every current-definition attempt that did work on
+  // the steps the check judges (D17), crashed attempts that changed files
+  // included. One writer entry per step and pool.
+  const reviewFacts = (action) => {
+    const runtime = actionState(state, action.id);
+    const judged = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded'
+      && attempt.ordinal > (runtime?.supersededAttempts ?? 0));
+    const reviewer = judged?.pool
+      ? { attemptId: judged.id, pool: judged.pool, model: judged.model ?? null, provider: providerOfPool(judged.pool) ?? null }
+      : undefined;
+    const judgedIds = new Set(action.evidenceFor ?? []);
+    const writers = [];
+    const seen = new Set();
+    for (const step of state.program.actions) {
+      if (step.id === action.id || (step.evidenceFor ?? []).length) continue;
+      if (!(step.affects ?? []).some((id) => judgedIds.has(id))) continue;
+      if (actionState(state, step.id)?.status === 'removed') continue;
+      for (const attempt of workAttempts(state, step.id)) {
+        if (!attempt.pool || seen.has(`${step.id}\u0000${attempt.pool}`)) continue;
+        seen.add(`${step.id}\u0000${attempt.pool}`);
+        writers.push({ actionId: step.id, pool: attempt.pool, provider: providerOfPool(attempt.pool) ?? null });
+      }
+    }
+    return { reviewer, writers };
+  };
   let interrupted = false;
   // Actions to stop while the run itself goes on: actionId -> {kind, message},
   // where kind is superseded (a plan revision replaced the step) or paused.
@@ -1678,7 +1757,7 @@ async function runV2Kernel({
   // An act step whose kernel died during its checks (F14) finished as failed
   // in reconcileResume, before the event log was open: say so now.
   for (const { actionId, why } of actStepsToCaller) {
-    emit('action.finished', { actionId, status: 'failed', failureKind: 'failed-evidence', why });
+    emit('action.finished', { actionId, status: 'failed', failureKind: 'failed-evidence', why, ...failedFacts(actionId) });
   }
 
   let plannerExhausted = false;
@@ -1994,7 +2073,7 @@ async function runV2Kernel({
     state = applyV2PlannerResponse(state, accepted, { boundary });
     state.planner.session = result.session ?? state.planner.session;
     if (boundary === 'gaps') state.budget.expansions += 1;
-    ensureVerifyLoop(state, accepted);
+    ensureVerifyLoop(state, accepted, features);
     initializeNewActions(state);
     persist();
     emit('planner.finished', { turn: state.planner.turns, ok: true, kind: accepted.kind, summary: accepted.summary, programRevision: state.program.revision });
@@ -2042,6 +2121,11 @@ async function runV2Kernel({
     // the writers. Not the step's own `evidence` checks (E20).
     const review = action.evidenceFor.length > 0;
     const baseAttemptOrdinal = runtime.attempts;
+    const runWideAttemptId = (local) => {
+      const prefix = `${action.id}-`;
+      const ordinal = String(local).startsWith(prefix) ? Number(String(local).slice(prefix.length)) : NaN;
+      return Number.isInteger(ordinal) && ordinal > 0 ? `${action.id}-${baseAttemptOrdinal + ordinal}` : local;
+    };
     const contract = review ? { schemaVersion: EVIDENCE_CONTRACT_SCHEMA_VERSION, evidenceFor: clone(action.evidenceFor) } : null;
     const contractPath = review ? join(runDir, `contract-${action.id}.json`) : null;
     const candidatePath = review ? join(runDir, `candidate-${action.id}.json`) : null;
@@ -2083,6 +2167,9 @@ async function runV2Kernel({
       ? buildEvidenceTask(state, action, contractPath, candidatePath)
       : digest ? buildDigestTask(state, action, targetDir) : buildWorkTask(state, action, targetDir, runDir);
     const observedRequirementBytes = embeddedRequirementBytes(state, action, { evidence: review, digest });
+    // Unmarked runs keep today's writer avoidance byte for byte (R12/R13). A
+    // run with caller-placed reviews (D15) passes no writers: the check keeps
+    // "no free-first", and independence comes only from its route.
     const writerPools = review
       ? [...new Set(state.attempts
         .filter((attempt) => attempt.status === 'succeeded'
@@ -2151,9 +2238,43 @@ async function runV2Kernel({
       // inspected work so the router can prefer a different eligible pool. A
       // writer remains a valid fallback when it is the only eligible choice;
       // the route reason names that exception for operators.
-      evidence: review ? { writerPools } : null,
+      evidence: review ? { writerPools: features.reviewPlacement === 'caller' ? [] : writerPools } : null,
       maxMechanicalRetries: config.maxMechanicalRetries,
       evidenceRetryAvailable,
+      // Stage 3 (§2.1): one automatic retry per step, counted from stored
+      // `retryOf` facts so a kernel resume neither refunds nor spends it.
+      failureRule: features.failureRule,
+      retriesAlready: countRetries(state, action.id, runtime.supersededAttempts ?? 0),
+      // The step's route (D18): a hard filter on every pool list, in every run
+      // where it is present.
+      routeFilter: resolveRouteFilter(state, action, pools),
+      pinSource: restart?.pool ? 'step restart' : null,
+      // D9: a step no pool can take waits without holding a slot. The loop is
+      // kicked so the freed slot is refilled at once.
+      onWaiting: ({ until, pools: waitPools, reason }) => {
+        const names = Array.isArray(waitPools) ? [...waitPools] : [];
+        runtime.status = 'waiting';
+        runtime.lastFailure = { kind: 'waiting', message: `waiting for quota: ${names.join(', ') || 'a pool'} back at ${until}` };
+        emit('action.waiting', { actionId: action.id, until, pools: names, reason: reason ?? null });
+        kick();
+      },
+      // Before a waiting step runs again it claims a slot against the running
+      // steps, and takes it in the same tick, so two waking steps can never
+      // both take the last one. Otherwise it re-asks after the next settled
+      // task (or a few seconds) and the dispatcher keeps it waiting.
+      claimWake: async () => {
+        const claim = () => {
+          if (stopRequested.has(action.id) || state.pause || refreshCancellation()) return false;
+          if (!canStartV2Action(state.program.actions, state.actions, action.id, schedulingOptions)) return false;
+          runtime.status = 'running';
+          runtime.lastFailure = null;
+          persist();
+          return true;
+        };
+        if (claim()) return true;
+        await nextSettleOr(wakeClaimRecheckMs);
+        return claim();
+      },
       // The checks run in the isolated copy before integration (E5), with the
       // private-copy side-effect scope.
       privateWorkspace: Boolean(isolated),
@@ -2168,10 +2289,16 @@ async function runV2Kernel({
       timeBox,
       ledgerAttempts: state.attempts,
       onAttempt: (stage, record, verdict) => {
+        // The dispatcher names attempts by its own count; the run's ids start
+        // after this step's earlier attempts.
+        if (record?.retryOf?.attempt) record = { ...record, retryOf: { attempt: runWideAttemptId(record.retryOf.attempt), how: record.retryOf.how } };
         if (stage === 'started') {
           const ordinal = baseAttemptOrdinal + record.ordinal;
           currentAttemptId = `${action.id}-${ordinal}`;
           runtime.attempts = ordinal;
+          // A waiting step that got a pool is running again.
+          runtime.status = 'running';
+          runtime.lastFailure = null;
           if (record.handoff) {
             const prior = state.attempts.findLast((item) => item.actionId === action.id);
             if (prior?.id) record = { ...record, handoff: { ...record.handoff, from: prior.id } };
@@ -2286,6 +2413,9 @@ async function runV2Kernel({
             ...(attempt?.notes ? { notes: clone(attempt.notes) } : (record.notes ? { notes: clone(record.notes) } : {})),
             ...(attempt?.outputSamples ? { outputSamples: clone(attempt.outputSamples) } : (record.outputSamples ? { outputSamples: clone(record.outputSamples) } : {})),
             ...evidenceOutcomePayload(record),
+            // Marked runs: the watch reads quota tails as "moving (no retry
+            // spent)" or "waiting for a pool".
+            ...(features.failureRule ? { failureRule: true } : {}),
             ...(record.stalled ? {
               stalled: true,
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
@@ -2377,7 +2507,7 @@ async function runV2Kernel({
       runtime.status = 'failed';
       runtime.lastFailure = { kind: 'failed-evidence', message: actStoppedWhy };
       persist();
-      emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'failed-evidence', why: actStoppedWhy });
+      emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'failed-evidence', why: actStoppedWhy, ...failedFacts(action.id) });
       releaseWorkspace();
       completePresentationStages();
       return;
@@ -2408,6 +2538,7 @@ async function runV2Kernel({
       emit('action.finished', {
         actionId: action.id, status: runtime.status, failureKind: stop?.kind ?? result.failureKind, why: stop?.message ?? result.verdict?.why ?? null,
         ...(!stop && !interrupted && result.retryAfter ? { retryAfter: result.retryAfter } : {}),
+        ...(runtime.status === 'failed' ? failedFacts(action.id) : {}),
       });
       releaseWorkspace();
       completePresentationStages();
@@ -2425,7 +2556,7 @@ async function runV2Kernel({
         runtime.status = 'failed';
         runtime.lastFailure = { kind: 'ownership', message: `out-of-scope mutation: ${outOfScope.join(', ')}`, ownership };
         persist();
-        emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'ownership', outOfScope });
+        emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'ownership', outOfScope, ...failedFacts(action.id) });
         releaseWorkspace();
         completePresentationStages();
         return;
@@ -2443,7 +2574,7 @@ async function runV2Kernel({
             integration,
           };
           persist();
-          emit('action.finished', { actionId: action.id, status: 'failed', failureKind: runtime.lastFailure.kind, paths });
+          emit('action.finished', { actionId: action.id, status: 'failed', failureKind: runtime.lastFailure.kind, paths, ...failedFacts(action.id) });
           releaseWorkspace();
           completePresentationStages();
           return;
@@ -2454,13 +2585,17 @@ async function runV2Kernel({
     if (review) {
       const inspectedRevisions = Object.fromEntries(action.evidenceFor.map((id) => [id, state.ledger.requirements[id].workRevision]));
       const sequence = state.events.sequence + 1;
+      const { reviewer, writers } = reviewFacts(action);
       state.ledger = applyEvidence(state.ledger, {
         actionId: action.id, evidenceFor: action.evidenceFor, inspectedRevisions, eventSequence: sequence,
-      }, result.verdict.structured.value);
+      }, result.verdict.structured.value, { ...(reviewer ? { reviewer } : {}), writers });
       runtime.status = 'succeeded';
       runtime.artifactIds = [];
       persist();
-      emit('evidence.recorded', { actionId: action.id, requirements: action.evidenceFor, statuses: Object.fromEntries(action.evidenceFor.map((id) => [id, state.ledger.requirements[id].status])) });
+      emit('evidence.recorded', {
+        actionId: action.id, requirements: action.evidenceFor, statuses: Object.fromEntries(action.evidenceFor.map((id) => [id, state.ledger.requirements[id].status])),
+        ...(reviewer ? { reviewer } : {}), writers,
+      });
     } else {
       runtime.status = 'succeeded';
       runtime.artifactIds = clone(action.produces ?? []);
@@ -2508,7 +2643,7 @@ async function runV2Kernel({
     if (workspace && existsSync(retainedRoot)) for (const entry of readdirSync(retainedRoot, { withFileTypes: true })) {
       if (entry.isDirectory()) workspace.warnings.push(`Inspect retained isolated work at ${join(retainedRoot, entry.name)} before retrying.`);
     }
-    const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason, workspace, unreadSteering });
+    const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason, workspace, unreadSteering, features: runFeatures });
     const resultPath = join(runDir, 'result.json');
     writeResultAtomic(resultPath, result);
     spawnRetentionSweep({ bullswarmDir, trigger: 'kernel' });
@@ -2550,11 +2685,34 @@ async function runV2Kernel({
         Object.assign(attempt, { status: runtime.status, finishedAt, failureKind: runtime.lastFailure.kind, why: runtime.lastFailure.message });
         runtime.outputFile ??= attempt.outputFile;
       }
-      emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: runtime.lastFailure.kind, why: runtime.lastFailure.message });
+      emit('action.finished', {
+        actionId: action.id, status: runtime.status, failureKind: runtime.lastFailure.kind, why: runtime.lastFailure.message,
+        ...(runtime.status === 'failed' ? failedFacts(action.id) : {}),
+      });
       completePresentationStages();
     }
   };
   const activeTasks = new Map();
+  let wakeLoop = null;
+  let kickPending = false;
+  const kick = () => {
+    if (wakeLoop) wakeLoop();
+    else kickPending = true;
+  };
+  // A waiting step's slot claim is re-asked after every settled task (D9).
+  const settleWaiters = new Set();
+  const notifySettled = () => {
+    const waiters = [...settleWaiters];
+    settleWaiters.clear();
+    for (const resolve of waiters) resolve();
+  };
+  const nextSettleOr = (ms) => new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); settleWaiters.delete(done); resolve(); };
+    const timer = setTimeout(done, ms);
+    timer.unref?.();
+    settleWaiters.add(done);
+  });
+  const wakeClaimRecheckMs = dependencies.wakeClaimRecheckMs ?? WAKE_CLAIM_RECHECK_MS;
 
   // Live control. Callers and operators write intents next to the run (a
   // queued plan revision, pause.json, cancellation.json, steering). The kernel
@@ -2586,16 +2744,22 @@ async function runV2Kernel({
     } catch { /* the next poll retries */ }
     return false;
   };
-  // Wait until an active action settles or a control intent arrives.
+  // Wait until an active action settles, a control intent arrives, or a step
+  // starts waiting for a pool (kick, D9): its slot is free, so the loop
+  // refills it at once. A kick while nothing waits is kept for the next wait.
   const waitForProgress = () => new Promise((resolve) => {
     let settled = false;
-    const timer = setInterval(() => { if (controlPending()) done(); }, controlPollMs);
+    let timer = null;
     const done = () => {
       if (settled) return;
       settled = true;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
+      if (wakeLoop === done) wakeLoop = null;
       resolve();
     };
+    if (kickPending) { kickPending = false; done(); return; }
+    timer = setInterval(() => { if (controlPending()) done(); }, controlPollMs);
+    wakeLoop = done;
     if (activeTasks.size) Promise.race(activeTasks.values()).then(done, done);
   });
 
@@ -2609,10 +2773,14 @@ async function runV2Kernel({
 
   const planQueuedRevision = (request) => planV2Revision(state, request, {
     pendingSteeringIds: peekSteering(state, runDir).map((entry) => entry.id),
+    features,
   });
   const rejectRevision = (request, issues) => {
     state.revisions = [...(state.revisions ?? []), rejectedRevisionRecord(request, issues, now())];
     emit('program.revision_rejected', { requestId: request.id, issues: [...issues], source: request.source ?? 'cli' });
+    // The CLI that queued a step rerun may be gone (it returned `queued`):
+    // only the kernel can remove the intent its rejected revision left (D20).
+    clearRejectedRerunIntent(runDir, request);
   };
   // Stop exactly the running agents the revision replaces, let the rest keep
   // going, then apply the revision to the state they all share.
@@ -2630,12 +2798,13 @@ async function runV2Kernel({
     }
     const hadActions = state.program.actions.length > 0;
     const committed = commitV2Revision(state, planned, { request, runDir, at: now() });
-    applyRevisionLoopBudget(state, request, hadActions);
+    applyRevisionLoopBudget(state, request, hadActions, features);
     persist();
     for (const entry of committed.deliveredSteering) {
       emit('steering.delivered', { steeringId: entry.id, message: entry.message, decisionSequence: entry.decisionSequence, source: 'revision' });
     }
     emit('program.revised', revisionEventPayload(committed.record));
+    for (const payload of acceptedEventPayloads(planned)) emit('step.accepted', payload);
     removeStaleReceipts(runDir, committed.staleReceipts);
   };
 
@@ -2657,7 +2826,7 @@ async function runV2Kernel({
       program: { schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, actions: [...exportV2Plan(state).program.actions, action] },
       rerun: [], steeringIds: [],
     };
-    const planned = planV2Revision(state, request, { pendingSteeringIds: [] });
+    const planned = planV2Revision(state, request, { pendingSteeringIds: [], features });
     if (!planned.ok) { rejectRevision(request, planned.issues); return false; }
     const committed = commitV2Revision(state, planned, { request, runDir, at: now() });
     persist();
@@ -2669,21 +2838,25 @@ async function runV2Kernel({
   // At the boundary where every live step has succeeded: close the open
   // round, add a repair while rounds remain, or add the next round's verify
   // step once a repair succeeded. True when a step was added (the run goes
-  // on); false when the run finishes now.
-  const advanceVerifyLoop = () => {
+  // on); false when the run finishes now. With `repairableOnly` (marked runs
+  // at `partial`, D12) only the requirements whose writers all succeeded and
+  // that a succeeded check judged are repaired. The kernel's steps inherit
+  // the route of the steps they stand for (D19); in a marked run a files
+  // repair also runs their evidence (D33).
+  const advanceVerifyLoop = ({ repairableOnly = false } = {}) => {
     const loop = programExecution ? state.verifyLoop : null;
     if (!loop) return false;
     // The step that stopped the loop has succeeded since (resume, revision).
     if (loop.stoppedBy === 'step-failed') loop.stoppedBy = null;
     for (let guard = 0; guard < 8; guard += 1) {
-      const next = nextLoopStep(state);
+      const next = nextLoopStep(state, { repairableOnly });
       if (next.step === 'close-round') {
         emit('workflow.verify-round', closeRound(state, { at: now() }));
         continue;
       }
       if (next.step === 'add-repair') {
         const round = loop.rounds.at(-1);
-        const plan = planRepairStep(state);
+        const plan = planRepairStep(state, { repairableOnly, inheritRoute: true, inheritEvidence: features.failureRule });
         Object.assign(round, plan.record, { repairStartedAt: now() });
         if (!applyKernelLoopStep(plan.action, { round: round.round, kind: 'repair' })) {
           Object.assign(round, { repairActionId: null, repairRequirements: [], repairOwnedFiles: [], repairUnrestricted: false, repairStartedAt: null });
@@ -2694,6 +2867,7 @@ async function runV2Kernel({
         emit('workflow.repair', {
           round: round.round, stage: 'started', actionId: plan.action.id, requirements: [...round.repairRequirements],
           ownedFiles: [...round.repairOwnedFiles], unrestricted: round.repairUnrestricted, discovery: round.discovery.length,
+          ...(features.failureRule ? { evidenceInherited: plan.evidenceCounts?.inherited ?? 0, evidenceDropped: plan.evidenceCounts?.dropped ?? 0 } : {}),
         });
         return true;
       }
@@ -2715,7 +2889,7 @@ async function runV2Kernel({
           persist();
           return false;
         }
-        const verify = planVerifyStep(state, { round: round.round + 1, repairActionId: round.repairActionId, toJudge: recheck.toJudge });
+        const verify = planVerifyStep(state, { round: round.round + 1, repairActionId: round.repairActionId, toJudge: recheck.toJudge, inheritRoute: true });
         const opened = openNextRound(state, { verifyActionId: verify.id, toJudge: recheck.toJudge, carried: recheck.carried, at: now() });
         if (!applyKernelLoopStep(verify, { round: opened.round, kind: 'verify' })) {
           loop.rounds.pop();
@@ -2733,6 +2907,22 @@ async function runV2Kernel({
       return false;
     }
     return false;
+  };
+
+  // D12, marked runs only: a failed step elsewhere no longer cancels the
+  // repair of an independent failed review. The open round closes even when
+  // some of its checks did not succeed (their requirements stay failing and go
+  // to the caller), then the loop repairs what it still can. True when a step
+  // was added.
+  const advanceVerifyLoopAtPartial = () => {
+    const loop = programExecution ? state.verifyLoop : null;
+    if (!loop) return false;
+    const open = loop.rounds.at(-1);
+    if (open && open.closedAt == null) {
+      const closed = closeRound(state, { at: now(), partial: true });
+      if (closed) emit('workflow.verify-round', closed);
+    }
+    return advanceVerifyLoop({ repairableOnly: true });
   };
 
   // A run that finishes because a step failed: a round whose verify steps all
@@ -2821,6 +3011,12 @@ async function runV2Kernel({
       for (const actionId of activeTasks.keys()) if (!stopRequested.has(actionId)) {
         stopRequested.set(actionId, { kind: 'paused', message: 'stopped by workflow pause; it runs again after resume' });
       }
+    }
+    // A waiting step has no worker to drain and may wait until a weekly
+    // reset (D9): any pause stops it, and it runs again after resume.
+    for (const actionId of activeTasks.keys()) {
+      if (stopRequested.has(actionId) || actionState(state, actionId)?.status !== 'waiting') continue;
+      stopRequested.set(actionId, { kind: 'paused', message: 'stopped by workflow pause; it runs again after resume' });
     }
     if (activeTasks.size) { await waitForProgress(); return null; }
     clearPauseStops();
@@ -2947,9 +3143,18 @@ async function runV2Kernel({
       // finished without usage delays nothing, and what it priced is durable now.
       if (!activeTasks.size && priceFinishedAttempts()) persist();
       const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
+      // A waiting step (D9) holds no scheduler slot, but its dispatch is still
+      // in flight: the run never finishes, repairs or re-plans under it.
+      if (activeTasks.size && ['ready-to-finalize', 'partial', 'needs-planner'].includes(progress.status)) {
+        await waitForProgress();
+        continue;
+      }
       // The repair loop decides at the boundary before the run may finish.
       if (progress.status === 'ready-to-finalize' && !interrupted && advanceVerifyLoop()) continue;
-      if (progress.status === 'partial' && !interrupted) settleVerifyLoopAtPartial();
+      if (progress.status === 'partial' && !interrupted) {
+        if (features.failureRule && advanceVerifyLoopAtPartial()) continue;
+        settleVerifyLoopAtPartial();
+      }
       if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
       if (progress.status === 'needs-planner') {
         const planned = await runPlanner(progress.boundary);
@@ -2981,7 +3186,10 @@ async function runV2Kernel({
       persist();
       if (programExecution) {
         for (const actionId of selected) {
-          const task = runActionSafely(definition(state, actionId)).finally(() => activeTasks.delete(actionId));
+          const task = runActionSafely(definition(state, actionId)).finally(() => {
+            activeTasks.delete(actionId);
+            notifySettled();
+          });
           activeTasks.set(actionId, task);
         }
         await waitForProgress();

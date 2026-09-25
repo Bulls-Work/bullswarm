@@ -572,7 +572,7 @@ function renderV2Details(row, { interactive = true } = {}) {
     lines.push(`   ${statusIcon(status)} ${stage.label} · ${progress.completed}/${progress.total} · ${status}`);
     for (const id of stage.actionIds) {
       const action = state.actions.find((entry) => entry.id === id);
-      lines.push(`     ${statusIcon(action?.status)} ${id} · ${action?.status ?? 'pending'}`);
+      lines.push(`     ${statusIcon(action?.status)} ${id} · ${stepStatusLabel(action)}`);
     }
   }
   if (!state.presentation.stages.length) lines.push('   planning has not created the first program yet');
@@ -715,6 +715,15 @@ function pushColumns(body, cells, { width, gap = 2, indent = 1 } = {}) {
   return lines;
 }
 
+// A step the caller accepted (stage-3 D22) reads `accepted`, never as proven
+// work; its glyph stays the succeeded one. A check's requirement acceptance
+// changes no step label.
+export function stepStatusLabel(action) {
+  const status = action?.status ?? 'pending';
+  const acceptance = action?.acceptance;
+  return status === 'succeeded' && acceptance && typeof acceptance === 'object' && !Array.isArray(acceptance.requirements) ? 'accepted' : status;
+}
+
 export function actionRoleLabel(action) {
   if (action.kind) return action.kind;
   if (action.role) return action.role;
@@ -731,7 +740,7 @@ export function agentDetailLines(model, width, spinnerFrame) {
       const blocked = (model.selectedPhase.blockedActions ?? []).find((entry) => entry.id === action.id);
       lines.push(blocked
         ? `${glyphs().blocked} ${action.id} · ${actionRoleLabel(action)} · never dispatched`
-        : `${statusIcon(action.status, spinnerFrame)} ${action.id} · ${actionRoleLabel(action)} · ${action.status}`);
+        : `${statusIcon(action.status, spinnerFrame)} ${action.id} · ${actionRoleLabel(action)} · ${stepStatusLabel(action)}`);
       if (blocked) {
         lines.push(`  blocked by ${blocked.blockedBy.length ? blocked.blockedBy.join(', ') : 'a failed dependency'}`);
       }

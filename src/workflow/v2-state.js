@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
-import { DELIVERABLE_TYPES, evidenceResultsIssues } from './step-vocabulary.js';
+import { DELIVERABLE_TYPES, RETRY_FACTS, evidenceResultsIssues } from './step-vocabulary.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 
@@ -24,13 +24,22 @@ const PREFLIGHT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed',
 const ACTION_STATE_FIELDS = new Set([
   'id', 'status', 'attempts', 'programRevision', 'workRevision', 'startedAt', 'finishedAt',
   'outputFile', 'artifactIds', 'lastFailure', 'supersededAttempts',
+  // Stage 3: present only while a caller's `step accept` is current (D22);
+  // any reset of the step clears it.
+  'acceptance',
 ]);
+const ACCEPTANCE_FIELDS = new Set(['evidence', 'reason', 'attemptId', 'failureKind', 'at', 'revision', 'requirements']);
+const ACCEPTANCE_REASON_MAX = 500;
 const PAUSE_FIELDS = new Set(['requestedAt', 'mode', 'source', 'pausedAt']);
 const REVISION_RECORD_FIELDS = new Set([
   'id', 'status', 'source', 'queuedAt', 'processedAt', 'summary', 'baseRevision',
   'programRevision', 'changes', 'steeringIds', 'issues',
 ]);
-const REVISION_CHANGE_FIELDS = new Set(['added', 'amended', 'restored', 'removed', 'rerun', 'invalidated']);
+const REVISION_CHANGE_FIELDS = new Set(['added', 'amended', 'restored', 'removed', 'rerun', 'invalidated', 'accepted']);
+// Change lists a revision record may leave out: `accepted` (stage 3) is absent
+// from every record written before it existed.
+const OPTIONAL_REVISION_CHANGE_FIELDS = new Set(['accepted']);
+const RETRY_FACT_SET = new Set(RETRY_FACTS);
 const ATTEMPT_FIELDS = new Set([
   'id', 'actionId', 'ordinal', 'status', 'pool', 'model', 'startedAt',
   'finishedAt', 'taskFile', 'outputFile', 'failure', 'failureKind', 'why',
@@ -84,6 +93,10 @@ const ATTEMPT_FIELDS = new Set([
   // finished. Present only when the checks ran (E15); at most 5 entries with a
   // closed key set (step-vocabulary.js `evidenceResultsIssues`).
   'evidenceResults',
+  // Stage 3 (D3): `{attempt, how}` on an attempt the dispatcher started
+  // because of an earlier one (`how` is a RETRY_FACTS value). Written only in
+  // runs marked failureRule, never on the failed attempt itself.
+  'retryOf',
 ]);
 const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried']);
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
@@ -684,6 +697,7 @@ function validateRevisions(revisions, program) {
       object(entry.changes, `${at}.changes`);
       noUnknown(entry.changes, REVISION_CHANGE_FIELDS, `${at}.changes`);
       for (const field of REVISION_CHANGE_FIELDS) {
+        if (OPTIONAL_REVISION_CHANGE_FIELDS.has(field) && entry.changes[field] === undefined) continue;
         const list = entry.changes[field];
         if (!Array.isArray(list) || list.some((id) => typeof id !== 'string' || !ID_RE.test(id))) fail(`${at}.changes.${field} must be an array of action ids`);
       }
@@ -778,9 +792,41 @@ function validateActionStates(actions, program, live = false) {
       nonNegativeInteger(action.supersededAttempts, `state.actions[${index}].supersededAttempts`);
       if (action.supersededAttempts > action.attempts) fail(`state.actions[${index}].supersededAttempts cannot exceed attempts`);
     }
+    if (action.acceptance !== undefined) validateAcceptance(action.acceptance, `state.actions[${index}].acceptance`);
     if (action.status === 'removed' && !live) fail(`state.actions[${index}] is removed, which requires an applied plan revision`);
   }
   for (const id of programIds) if (!ids.has(id)) fail(`state.actions is missing program action ${id}`);
+}
+
+// A caller's `step accept` (stage-3 D22): recorded as evidence "choice",
+// never proof. `requirements` is present only for a requirement acceptance.
+function validateAcceptance(value, at) {
+  object(value, at);
+  noUnknown(value, ACCEPTANCE_FIELDS, at);
+  if (value.evidence !== 'choice') fail(`${at}.evidence must be choice`);
+  if (typeof value.reason !== 'string' || !value.reason.trim() || value.reason.length > ACCEPTANCE_REASON_MAX || /[\r\n]/.test(value.reason)) {
+    fail(`${at}.reason must be one line of 1 to ${ACCEPTANCE_REASON_MAX} characters`);
+  }
+  timestamp(value.at, `${at}.at`);
+  if (value.at === null) fail(`${at}.at is required`);
+  nonNegativeInteger(value.revision, `${at}.revision`);
+  for (const field of ['attemptId', 'failureKind']) {
+    if (value[field] === undefined) fail(`${at}.${field} must be null or a non-empty string`);
+    nullableString(value[field], `${at}.${field}`);
+  }
+  if (value.requirements !== undefined) {
+    if (!Array.isArray(value.requirements) || !value.requirements.length) fail(`${at}.requirements must be a non-empty array`);
+    const seen = new Set();
+    for (const [index, entry] of value.requirements.entries()) {
+      const entryAt = `${at}.requirements[${index}]`;
+      object(entry, entryAt);
+      noUnknown(entry, new Set(['id', 'workRevision']), entryAt);
+      requiredString(entry.id, `${entryAt}.id`);
+      if (seen.has(entry.id)) fail(`${at}.requirements must not repeat ${entry.id}`);
+      seen.add(entry.id);
+      if ((typeof entry.workRevision !== 'string' && typeof entry.workRevision !== 'number') || entry.workRevision === '') fail(`${entryAt}.workRevision must be a string or number`);
+    }
+  }
 }
 
 // Byte counts are measured, never estimated: each field is a real file size or
@@ -948,7 +994,26 @@ function validateAttempts(attempts, program) {
     if (attempt.evidenceResults !== undefined) validateAttemptEvidenceResults(attempt.evidenceResults, `state.attempts[${index}].evidenceResults`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
+    if (attempt.retryOf !== undefined) validateRetryOf(attempt.retryOf, `state.attempts[${index}].retryOf`);
   }
+  // A retry follows an earlier attempt of the same step.
+  const byId = new Map(attempts.map((attempt) => [attempt.id, attempt]));
+  for (const [index, attempt] of attempts.entries()) {
+    if (attempt.retryOf === undefined) continue;
+    const earlier = byId.get(attempt.retryOf.attempt);
+    if (!earlier || earlier.actionId !== attempt.actionId || !(earlier.ordinal < attempt.ordinal)) {
+      fail(`state.attempts[${index}].retryOf.attempt must name an earlier attempt of ${attempt.actionId}`);
+    }
+  }
+}
+
+// Stage-3 D3: written on the attempt the dispatcher started because of an
+// earlier one, and only in runs marked failureRule.
+function validateRetryOf(value, at) {
+  object(value, at);
+  noUnknown(value, new Set(['attempt', 'how']), at);
+  requiredString(value.attempt, `${at}.attempt`);
+  if (!RETRY_FACT_SET.has(value.how)) fail(`${at}.how must be ${RETRY_FACTS.join('|')}`);
 }
 
 function validateAttemptTimeBox(box, at) {
@@ -976,16 +1041,17 @@ function idArray(value, at) {
 }
 
 // Optional: absent on runs accepted before 0.35.2 and on non-program runs.
-// Rounds are numbered 1.. in order, and there are never more than three.
+// Rounds are numbered 1.. in order, and there are never more than four
+// (stage 3: `verifyRounds` fix cycles 0-3, so 1-4 review rounds).
 function validateVerifyLoop(loop, state) {
   if (loop === undefined) return;
   object(loop, 'state.verifyLoop');
   noUnknown(loop, VERIFY_LOOP_FIELDS, 'state.verifyLoop');
   if (!isProgramWorkflow(state)) fail('state.verifyLoop requires a program workflow');
-  if (!Number.isInteger(loop.max) || loop.max < 1 || loop.max > 3) fail('state.verifyLoop.max must be 1, 2 or 3');
+  if (!Number.isInteger(loop.max) || loop.max < 1 || loop.max > 4) fail('state.verifyLoop.max must be 1 to 4');
   if (loop.stoppedBy !== null && !VERIFY_LOOP_STOPS.has(loop.stoppedBy)) fail('state.verifyLoop.stoppedBy must be null|passed|rounds|revision|step-failed|act-step');
   if (!Array.isArray(loop.rounds)) fail('state.verifyLoop.rounds must be an array');
-  if (loop.rounds.length > 3) fail('state.verifyLoop.rounds must hold at most three rounds');
+  if (loop.rounds.length > 4) fail('state.verifyLoop.rounds must hold at most four rounds');
   const requirementIds = new Set(state.intent.requirements.map((requirement) => requirement.id));
   const known = (ids, at) => { for (const id of ids) if (!requirementIds.has(id)) fail(`${at} references unknown requirement ${id}`); };
   for (const [index, round] of loop.rounds.entries()) {

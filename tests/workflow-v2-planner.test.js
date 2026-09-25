@@ -405,19 +405,23 @@ test('the planning contract teaches timeBox and verifyRounds and says where the 
   assert.match(contract.program.actionFields.timeBox, /^optional whole minutes 0-240/);
   assert.match(contract.program.actionFields.timeBox, /never a timeout/);
   assert.match(contract.program.defaults.note, /timeBox\)/);
-  assert.match(contract.program.defaults.note, /verifyRounds \(1-3, default 3\)/);
+  // Stage 3 (D13): in program mode verifyRounds counts fix cycles.
+  assert.match(contract.program.defaults.note, /verifyRounds \(0-3, default 1: fix-and-re-review cycles\)/);
+  assert.equal(contract.program.defaults.verifyRounds, '0-3, default 1: fix-and-re-review cycles');
   const box = contract.rules.filter((rule) => rule.includes('`timeBox` field'));
   assert.equal(box.length, 1);
   assert.match(box[0], /`## Done`, `## Not done`, `## Suggested next step`/);
   assert.match(box[0], /`timeBox: 0` leaves the paragraph out/);
   assert.match(box[0], /not a timeout/);
   assert.match(box[0], /returned early/);
-  const loop = contract.rules.filter((rule) => rule.includes('bounded repair loop'));
+  const loop = contract.rules.filter((rule) => rule.includes('the kernel adds one fix step'));
   assert.equal(loop.length, 1);
-  assert.match(loop[0], /at most 3 verify rounds/);
-  assert.match(loop[0], /`repair-<n>` and `verify-round-<n>`/);
+  assert.match(loop[0], /one fix step \(`repair-1`\) built from its findings and one re-review \(`verify-round-2`\)/);
+  assert.match(loop[0], /`defaults\.verifyRounds` \(0-3, default 1\) sets how many fix-and-re-review cycles run; 0 means no automatic fix/);
   assert.match(loop[0], /Never author a repair step/);
   assert.match(loop[0], /`callerDecision`/);
+  assert.match(loop[0], /needs-you block/);
+  assert.ok(!contract.rules.some((rule) => rule.includes('bounded repair loop')), 'the stage-2 loop rule is replaced');
   // The old advice to author repairs by hand is gone.
   assert.ok(!contract.rules.some((rule) => /Repairs or further investigation belong in an explicitly authored follow-up program\.$/.test(rule) && rule.includes('result status describes')));
   // Authors still may not invent repair fields.
@@ -428,13 +432,13 @@ test('every planner rule set states the time box once, and only program runs sta
   for (const executionMode of ['program', 'verified']) {
     const rules = v2PlannerContractRules({ executionMode });
     assert.equal(rules.filter((rule) => rule.includes('`timeBox` field')).length, 1, executionMode);
-    assert.equal(rules.filter((rule) => rule.includes('bounded repair loop')).length, executionMode === 'program' ? 1 : 0, executionMode);
+    assert.equal(rules.filter((rule) => rule.includes('the kernel adds one fix step')).length, executionMode === 'program' ? 1 : 0, executionMode);
   }
   const verifiedPrompt = buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null }));
   assert.match(verifiedPrompt, /optional per-action `timeBox` field/);
   assert.match(verifiedPrompt, /reviewer, verify, repair/);
   const programPrompt = buildV2PlannerPrompt(createV2PlannerContext(programState(), { scout: null }));
-  assert.match(programPrompt, /bounded repair loop of at most 3 verify rounds/);
+  assert.match(programPrompt, /the kernel adds one fix step \(`repair-1`\)/);
 });
 
 test('a program may carry timeBox and verifyRounds, and still cannot declare repair steps', () => {
@@ -526,7 +530,7 @@ test('the program-mode contract carries roles, kind roles, deliverable and evide
   assert.match(deliverable[0], /When ownedFiles is not empty, every deliverable path must be listed in it/);
   assert.match(deliverable[0], /files, data and media need build or chore; report and outward need analyze/);
   assert.match(deliverable[0], /`produces`\/`inputs` are data-flow labels between steps, not the deliverable/);
-  const repair = contract.rules.find((rule) => rule.includes('bounded repair loop'));
+  const repair = contract.rules.find((rule) => rule.includes('the kernel adds one fix step'));
   assert.ok(repair.endsWith('The kernel never repairs a requirement an `act` step affects; it hands it back.'), repair);
 });
 
@@ -596,4 +600,66 @@ test('the role example validates as a program-mode plan and resolves the same ro
     goal: 'Fix the parser', cwd: '/tmp/repo', settings: { concurrency: 2 },
     requirements: [{ id: 'requirement-1', text: 'The parser handles trailing commas' }],
   }), { runId: 'wf-rolev-abcdef', shortId: 'rlv234' })), (error) => error.issues.some((issue) => issue.includes('role and deliverable need a program-mode run')));
+});
+
+// --- stage 3: the failure rule, route and the fix-cycle meaning ----------------
+
+test('program rules state the failure rule and the route field once; verified rules state neither', () => {
+  for (const plannerMode of ['caller', 'dispatched']) {
+    const rules = v2PlannerContractRules({ executionMode: 'program', plannerMode });
+    const failure = rules.filter((rule) => rule.startsWith('Each step gets one automatic retry, then comes back to you'));
+    assert.equal(failure.length, 1, plannerMode);
+    assert.ok(failure[0].includes('a crashed, silent or signed-out worker is retried on another eligible pool'));
+    assert.ok(failure[0].includes('is retried on the same pool with the failure attached'));
+    assert.ok(failure[0].includes('An act step is never retried once its worker started'));
+    assert.ok(failure[0].includes('A pool out of quota makes the step wait, never fail'));
+    assert.ok(failure[0].includes('(step rerun --avoid, plan revise, take over, step accept)'));
+    const route = rules.filter((rule) => rule.startsWith('The optional `route` keeps a step on or off pools'));
+    assert.equal(route.length, 1, plannerMode);
+    assert.ok(route[0].includes('`independentOf` names earlier steps (or "writers" on a step with evidenceFor)'));
+    assert.ok(route[0].includes('It is a hard filter applied before quota pacing'));
+    assert.ok(route[0].includes('A review runs where you route it; Bullswarm records who reviewed.'));
+    // None of the new rules is mistaken for the kind rule.
+    for (const rule of [...failure, ...route]) assert.ok(!rule.includes('`kind` field'));
+    assert.equal(rules.filter((rule) => rule.includes('`kind` field')).length, 1);
+  }
+  const verified = v2PlannerContractRules({ executionMode: 'verified' });
+  assert.ok(!verified.some((rule) => rule.includes('one automatic retry') || rule.includes('`route`') || rule.includes('the kernel adds one fix step')));
+});
+
+test('the program-mode contract documents route, the fix-cycle verifyRounds and choice evidence', () => {
+  const contract = buildV2PlannerContract(createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode: 'program', concurrency: 2 },
+  }));
+  assert.equal(contract.program.actionFields.route, 'optional {pools:{use,avoid}, providers:{use,avoid}, independentOf} — where the step may run; a hard filter before pacing');
+  assert.match(contract.program.route.shape, /pools\?: \{use\?, avoid\?\}, providers\?: \{use\?, avoid\?\}, independentOf\?: \[stepId, \.\.\.\] \| "writers"/);
+  assert.match(contract.program.route.independentOf, /"writers" only on a step with evidenceFor/);
+  assert.match(contract.program.evidenceTypes.note, /choice is recorded by bullswarm workflow step accept/);
+  assert.equal(contract.program.defaults.verifyRounds, '0-3, default 1: fix-and-re-review cycles');
+});
+
+test('the verified-mode contract is unchanged by stage 3', () => {
+  const contract = buildV2PlannerContract(createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode: 'verified', concurrency: 2 },
+  }));
+  assert.equal('route' in contract.program.actionFields, false);
+  assert.equal('route' in contract.program, false);
+  assert.equal('verifyRounds' in contract.program.defaults, false);
+  assert.match(contract.program.defaults.note, /verifyRounds \(1-3, default 3\)/);
+});
+
+test('a program may route a step, and verifyRounds 0 is a valid program default', () => {
+  const routed = response();
+  routed.program.defaults = { verifyRounds: 0 };
+  routed.program.actions[0].route = { pools: { avoid: ['pool-b', 'pool-a', 'pool-a'] } };
+  const accepted = validateV2PlannerResponse(routed, programState());
+  assert.deepEqual(accepted.program.actions[0].route, { pools: { avoid: ['pool-a', 'pool-b'] } });
+  assert.equal(accepted.program.verifyRounds, 0);
+  const lane = response();
+  lane.program.actions[0].route = { lane: 'build' };
+  assert.throws(() => validateV2PlannerResponse(lane, programState()), (error) => error.issues.some((issue) => issue.includes('route.lane is not a route key')));
 });

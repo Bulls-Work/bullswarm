@@ -930,7 +930,7 @@ bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --progra
 | `--max-actions <n>` | soft planning target for total actions across planner revisions; essential actions may exceed it | `100` |
 | `--no-scout` | with `--orchestrator`: skip the read-only repository reconnaissance before the dispatched planner creates its first program | the scout runs first for a dispatched planner |
 | `--concurrency <n>` | max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap | `4` |
-| `--retry-attempts <0..3>` | bounded retries for mechanical failures only; semantic evidence never auto-repairs | `1` |
+| `--retry-attempts <0..3>` | automatic retries per step before it comes back to you; a process failure retries elsewhere, a gate failure retries on the same pool with its failure attached | `1` |
 | `--resume <shortId\|runId>` | resume a V2 autonomous run; old autonomous runs fail closed before dispatch | starts a new goal |
 | `--detach` | rarely needed — explicitly requests the default independent-launch behavior; cannot combine with `--watch` | the default launch already detaches |
 | `--again` | start another copy even when an ongoing run already has the same goal text in the same `--cwd`; only a new launch is checked, never `--resume` or the internal `--request` relaunch | off (a duplicate of an ongoing goal is refused) |
@@ -965,7 +965,7 @@ bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd 
 | `--max-actions <n>` | advisory action target recorded in the contract settings | `100` |
 | `--max-expansion-rounds <n>` | advisory gap-round target recorded in the contract settings | `2` |
 | `--concurrency <n>` | execution concurrency recorded in the contract settings | `4` |
-| `--retry-attempts <0..3>` | mechanical retry allowance recorded in the contract settings | `1` |
+| `--retry-attempts <0..3>` | automatic retries per step recorded in the contract settings | `1` |
 | `--scout` | describe a kernel scout ahead of your program and retain the flag in launch guidance | off for a caller-authored program |
 | `--worker-pool <pool\|auto>` | pin the worker pool the contract echoes back | `auto` |
 | `--worker-model <model\|auto>` | pin the worker model the contract echoes back | `auto` |
@@ -997,7 +997,7 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 | `--max-actions <n>` | advisory action target for the previewed run | `100` |
 | `--max-expansion-rounds <n>` | advisory gap-round target for the previewed run | `2` |
 | `--concurrency <n>` | execution concurrency for the previewed run | `4` |
-| `--retry-attempts <0..3>` | mechanical retry allowance for the previewed run | `1` |
+| `--retry-attempts <0..3>` | automatic retries per step for the previewed run | `1` |
 
 Read-only. Exit 0 valid, 2 invalid, 1 bad cwd.
 
@@ -1119,7 +1119,7 @@ bullswarm workflow resume ab12cd --json
 | `--watch` | detach, then follow until terminal or paused; cannot combine with `--foreground` or `--json` | off |
 | `--json` | print the relaunch document (or, with `--foreground`, the final result or pause document) | human launch instructions |
 
-`--program`, `--orchestrator`, `--scout`, and `--suggested-plan` are rejected here (use `plan revise` to change the plan). A failed step whose failure is about the work itself is not rerun.
+`--program`, `--orchestrator`, `--scout`, and `--suggested-plan` are rejected here (use `plan revise` to change the plan). In a new run, `failed-evidence` and `not-produced` stay failed: use `step rerun`, `step accept`, or `plan revise`. Saved runs keep their original resume rules.
 
 ### reindex
 
@@ -1288,7 +1288,7 @@ bullswarm workflow watch ab12cd --until trouble
 | `--heartbeat <seconds>` | print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1 | off in event mode, `60` with `--classic` |
 | `--stall-after <seconds>` | report a running agent as silent after this many seconds without activity; must be >= 1 | `300` |
 | `--next` | print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status | off (follows until terminal or pause) |
-| `--until <outcome\|trouble>` | print only trouble and outcome lines; `trouble` exits at the first failed, rejected, paused, stalled, stale, or steering line | off |
+| `--until <outcome\|trouble>` | print only trouble and outcome lines; `trouble` exits for a needs-you block, a review needing you, a quota wait over 30 minutes, a rejected revision, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
 | `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall does not fire again | report every agent silent past `--stall-after` at attach |
 | `--jsonl` | emit one JSON object per line instead of human text; every object carries `sequence`; the `next:` relaunch line is not printed | off (human text) |
@@ -1296,6 +1296,48 @@ bullswarm workflow watch ab12cd --until trouble
 | `--verbose` | include started, retry, and steering-delivered lines in event mode, and per-agent action detail with `--classic` | off (compact) |
 
 Read-only. Exits 0 if the run reaches a delivered status (or on `--once`), 1 if it reaches a non-delivered terminal status. `--next` exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running. `--until trouble` prints a cursor-bearing relaunch line and, for stale work, the exact `workflow step restart` command. `--until` cannot combine with `--next`, `--once`, `--classic`, or `--heartbeat`.
+
+### step rerun
+
+Rerun a failed or finished step, carrying its last attempt's handoff. Add
+`--avoid` to exclude pools; the exclusions are saved in the step's route.
+
+```bash
+bullswarm workflow step rerun ab12cd write-report
+bullswarm workflow step rerun ab12cd write-report --avoid pool-a,pool-b
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--avoid <pool,...>` | repeat the flag or pass a comma-separated list; avoid these pools on this rerun and later reruns | no additional exclusions |
+| `--wait <seconds>` | wait for a live kernel to apply the revision | `120` |
+| `--json` | machine-readable result | human confirmation |
+
+A pending step accepts `--avoid` to amend its route without running it. A
+running step needs `step restart`; a blocked step needs its failed dependency
+resolved first. `failed-evidence` and `not-produced` are not rerun by
+`workflow resume`. The command checks that some capable pool remains.
+
+### step accept
+
+Record your choice to accept a failed step or failing requirements from a check.
+A choice is recorded as evidence `choice`; it never makes a requirement
+verified.
+
+```bash
+bullswarm workflow step accept ab12cd write-report --reason "The report is sufficient"
+bullswarm workflow step accept ab12cd verify --requirement requirement-2 --reason "Accept this gap"
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--reason <text>` | required, one line, at most 500 characters; saved with the choice | required |
+| `--requirement <id>` | accept only this failing requirement checked by the step; may be repeated | all failing requirements checked by the step |
+| `--wait <seconds>` | wait for a live kernel to apply the revision | `120` |
+| `--json` | machine-readable result | human confirmation |
+
+Accepting a failed step lets its dependents run. A later rerun clears the
+acceptance. An isolated writer whose work was never merged cannot be accepted.
 
 ### step restart
 

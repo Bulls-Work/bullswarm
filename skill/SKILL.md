@@ -118,6 +118,12 @@ author the graph.
   on the digest instead of the raw writers and gets `digestOf` links to them;
   the digest keeps every shared-file request. No review step depends on a
   digest.
+- **Placing a step.** Use the optional `route` to choose pools or providers,
+  avoid pools, or keep a review independent of earlier work. `independentOf`
+  names earlier steps, or use `"writers"` on a check with `evidenceFor`.
+  For example: `"route": { "independentOf": ["build-parser"] }`. Routes are
+  hard filters before quota pacing; `lane` remains its own field. Saved runs
+  keep the old automatic writer avoidance.
 - **Effort.** Writers are `produce` steps. High belongs to three kinds of
   step: a `combine` step that merges written code (the sole writer after
   parallel work), a design step (`kind: architecture`, a read-only judgment
@@ -186,9 +192,10 @@ bullswarm workflow watch <shortId> --until trouble
 Start it in the background right after launch, then leave the run alone. It
 prints nothing while work goes well: no attach line, no line per finished
 step. It exits on the first trouble, or on the run's outcome. Trouble is a step
-that failed or was blocked, a last verify round that left a requirement
-failing, a rejected plan revision, a pause, a stalled worker, a step that looks stale, or steering
-left for you.
+that needs you after its one retry, a review that still fails after a fix, a
+quota wait longer than 30 minutes, a rejected plan revision, a pause, a stale
+step, or steering left for you. Blocked dependents are listed inside the
+needs-you block; they are not separate trouble.
 
 Each exit is one wake. Read the output in one tool call, then act:
 
@@ -210,17 +217,20 @@ A trouble line is a decision point:
 
 | Line | What it means | What to do |
 |---|---|---|
-| `✗ <step> failed …` / `⊘ <step> blocked …` | the step did not succeed | read its output (`bullswarm workflow action show <shortId> <step>` names `outputFile`); revise the plan (section 4), or let the run finish and retry |
-| `✗ verify round <r> of <max> · <k> failed · your decision` | the loop is done and left requirements failing | read the caller-decision block (see below) |
+| `✗ <step> needs you · …` | the step failed after its one automatic retry | choose one command in its `your call` block; act on that line and start the printed `next:` watch again |
+| `✗ <step> needs you · review failed …` | the fix and re-review still leave requirements failing | choose one command in its `your call` block; act on that line and start the printed `next:` watch again |
+| `⧖ <step> waiting for quota …` | no eligible pool can run it yet | do nothing for a short wait; for a long wait, change the step or lift the pool pause, as the following lines say |
 | `× plan revision rejected …` | your revision was not applied | fix the issues it lists and revise again |
-| `⚠ <step> stalled on <pool> …` | the kernel stopped a silent worker | nothing: it retries on another pool or hands the step back |
+| `⚠ <step> stalled on <pool> …` | the kernel stopped a silent worker | nothing: the retry runs; if it fails too, a needs-you block follows |
 | `⧖ pause requested …` | someone paused the run | `bullswarm workflow resume <shortId>` when it should go on |
 | `⧖ steering received · …` | a person left guidance for you | decide what it means and revise the plan |
 | `⚠ <step> looks stale: <reasons>` | the step may be stuck | see below |
 
-A check that rejects a requirement while rounds remain is not trouble: the
-kernel repairs it and the watch stays quiet. A full watch (without `--until
-trouble`) prints one line per round, `◆ verify round 2 of 3 · 3 to re-check`,
+A check that rejects a requirement while a fix cycle remains is not trouble:
+the kernel adds one fix and one re-review, and the watch stays quiet. In a new
+run `defaults.verifyRounds` counts fix cycles (0-3, default 1); 0 means review
+only. Runs started before this version keep up to 3 review rounds. A full watch
+(without `--until trouble`) prints one line per round, `◆ verify round 2 of 3 · 3 to re-check`,
 `✗ verify round 1 of 3 · 2 failed · repair next`, `↻ repair round 1 · 2
 requirements · repair-1`, and `◐ <step> returned early · N not done` for a step
 that succeeded with unfinished items.
@@ -257,43 +267,36 @@ Then start the watch again.
 ### When it finishes
 
 `outcome:` gives `completed`, `partial` or `cancelled` and whether the run is
-verified (`completed · not verified · verify rounds 3/3` means the loop ran to
-its end); `reason:` says why in one line. `completed` means every step
+verified (`completed · not verified · verify rounds 2/2` is the default loop cap); `reason:` says why in one line. `completed` means every step
 succeeded. `verified` means every mandatory requirement passed its check,
 which can still miss bugs. Anything short of verified is followed by what is
 left: `step <id>: <status> (<kind>) — <why>` for each unfinished step,
 `requirement <id>: <status> — <why>` for each open requirement, and `steering
-not acted on:` for guidance that arrived too late. Then `your call:` gives one
-command per option:
+not acted on:` for guidance that arrived too late.
 
 | Option | When | What to do |
 |---|---|---|
-| continue | the plan needs a fix, a new step, or a step redone | export, edit, and revise the plan (section 4) |
-| retry | a step stopped for a reason a retry fixes: no pool, a paused pool, a crashed or silent worker | `bullswarm workflow resume <shortId>` |
-| take over | the rest is small, or needs something only you have (a logged-in browser, a credential, a decision for the user) | do it yourself; `runs result <shortId> --json` names every step's output |
-| restart | the goal or the approach was wrong | start a new `workflow goal` run (a whole new run; `step restart` reruns one running step) |
+| rerun elsewhere | another eligible pool may succeed | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
+| change the step | its prompt, evidence, dependencies, or route needs changing | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` |
+| take over | the remaining work is small or needs something only you have | use the `output:` path printed in the block and do the work yourself |
+| accept anyway | you choose to keep a failed result or a failing requirement | `bullswarm workflow step accept <shortId> <step> --reason "…"`. It records evidence `choice`, never proof; rerunning the step undoes acceptance |
 
-`retry` appears only when a step is retryable. `resume` on a finished run
-reruns exactly those steps and the steps blocked behind them. When nothing is
-retryable it prints `nothing to retry`, starts nothing, and exits 1. A step
-whose pools were all paused shows `its pool is back at <time>`; resuming
-before then fails it again at once.
+`resume` keeps the run's saved rules. It is not the way to rerun a failed gate
+in a new run: use `step rerun`, `step accept`, or plan revise. A quota wait with
+a known return time continues inside the run; do not use `resume` to wake it.
 
-A failed check is not yours to repair first. When a check rejects a mandatory
-requirement, the kernel runs a bounded loop of at most 3 verify rounds: it adds
-a `repair-<n>` step built from the verifier's evidence, the not-done items and
-the handoffs of the steps that affect the requirement, then a
-`verify-round-<n>` step that re-checks it. Round 1 judges everything; round 2
-re-checks the failures and looks for regressions; round 3 is final closure. A
-requirement that passed is judged again only when a repair touched a file its
-evidence names. Do not hand-add a fix step for an ordinary failing check, and
-do not revise the plan to fake a second round: the kernel counts the rounds, and
-a revision never adds or refunds one. The steps it adds show in `plan export`;
-keep them as they are. `defaults.verifyRounds` (1-3, default 3) sets the cap; in
-a revision it sets it for the rest of the run.
+A failed check is not yours to fix first. In a new run, the kernel adds one fix
+step from the check's findings and one re-review. Do not write a repair step or
+a retry loop yourself. `defaults.verifyRounds` counts fix cycles (0-3, default
+1); 0 means review only. Remaining failures come back in a needs-you block. Runs
+started before this version keep their original limit of up to 3 review rounds.
+An `act` step is never retried automatically after its worker starts; its
+needs-you block says `not retried: act step`, and a rerun is your deliberate
+choice.
 
 The run ends as soon as nothing is failing (`completed · verified`) or after
-round 3 (`completed · not verified · verify rounds 3/3`). In the second case
+the configured fix cycles (the default failure outcome is `completed · not
+verified · verify rounds 2/2`). In the second case
 act on the **caller-decision block**, and only on it:
 
 ```bash
@@ -341,6 +344,8 @@ second, even while agents are running:
 | an unchanged id listed in `rerun` | its finished result is discarded and it runs again |
 | an action you deleted | removed: stopped if running, never runs again, reported as `removed` and not counted against the result |
 | anything that depends on an amended or rerun step | runs again, because its inputs change |
+| adding or changing `route` | amends the step and reruns it |
+| `step rerun --avoid <pool>` | adds that pool to `route.pools.avoid`; remove it with a plan revise |
 
 Rules that matter when you edit:
 

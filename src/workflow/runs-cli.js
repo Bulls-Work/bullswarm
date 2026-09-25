@@ -32,6 +32,7 @@ import { aggregateAttemptUsage } from './rollup.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { poolLabel } from '../lib/pool-labels.js';
+import { routeSummary } from './step-route.js';
 
 function jsonOut(obj, opts) {
   if (!(opts.json || opts.summary)) return;
@@ -243,11 +244,16 @@ function legacyRunName(r) {
 function printV2ProgramRouting(state) {
   const actions = Array.isArray(state?.program?.actions) ? state.program.actions : [];
   if (!actions.length) return;
-  const status = new Map((state.actions ?? []).map((entry) => [entry.id, entry.status]));
+  const runtimes = new Map((state.actions ?? []).map((entry) => [entry.id, entry]));
   for (const action of actions) {
     const kind = action.kind ? `  kind ${action.kind}` : '';
     const role = action.role ? `  role ${action.role}` : '';
-    console.log(`  ${String(action.id).padEnd(24)} ${action.lane ?? '?'}/${action.effort ?? '?'}${kind}${role}  ${status.get(action.id) ?? 'unknown'}`);
+    const runtime = runtimes.get(action.id);
+    // A step the caller accepted reads as such (stage-3 D22), not as a success.
+    const status = runtime?.status === 'succeeded' && runtime.acceptance && !Array.isArray(runtime.acceptance.requirements)
+      ? 'accepted' : runtime?.status ?? 'unknown';
+    const route = routeSummary(action.route);
+    console.log(`  ${String(action.id).padEnd(24)} ${action.lane ?? '?'}/${action.effort ?? '?'}${kind}${role}  ${status}${route ? `  route ${route}` : ''}`);
   }
 }
 

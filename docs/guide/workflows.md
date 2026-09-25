@@ -20,7 +20,7 @@ Reach for a workflow instead when the work splits into parallel territories, whe
 
 ## You are the planner
 
-The calling agent writes the program. The **kernel** is Bullswarm's own runtime, not an agent: it validates the graph, routes each action to a pool, schedules dependencies, retries mechanical failures, and computes the result.
+The calling agent writes the program. The **kernel** is Bullswarm's own runtime, not an agent: it validates the graph, applies each step's route, schedules dependencies, retries each step once, and computes the result.
 
 Start from the contract, which prints the requirement IDs, rules, schema, and a worked example for your exact goal:
 
@@ -38,7 +38,7 @@ bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd 
 | `--orchestrator auto\|<pool>` | dispatch a Workflow Planner agent at every planning boundary instead of planning yourself | off (you are the planner) |
 | `--isolation` | per-worker worktrees and strict exact-file ownership checks | off (shared workspace, advisory territories) |
 | `--concurrency <n>` | maximum parallel dispatches | 4 |
-| `--retry-attempts <0..3>` | bounded retries for mechanical failures | 1 |
+| `--retry-attempts <0..3>` | automatic retries per step before it comes back to you | 1 |
 
 ## Decompose into actions with exact-file territories
 
@@ -181,6 +181,7 @@ Goal: `1. Add --since to runs list. 2. Document it in README. 3. Write the run r
     {
       "id": "verify",
       "role": "check",
+      "route": { "independentOf": ["since-flag"] },
       "effort": "high",
       "purpose": "Independently confirm the flag works and is documented, and the records file exists",
       "dependsOn": ["since-flag", "readme", "records", "integrate"],
@@ -240,12 +241,47 @@ A run never waits for its caller: when nothing more can happen on its own it fin
 
 | Option | When it fits | What to do |
 | --- | --- | --- |
-| continue | the plan needs a fix, a new step, or a step redone | export, edit, and revise the plan |
-| retry | a step stopped for a reason a retry fixes, such as a quota or a crashed worker | `bullswarm workflow resume <shortId>` |
-| take over | the rest is small, or needs something only you have | do it yourself; `runs result` names every step's output |
-| restart | the goal or the approach was wrong | start a new `workflow goal` run |
+| change the step | its prompt, evidence, dependencies, or route needs changing | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then revise |
+| rerun elsewhere | another eligible pool may succeed | `bullswarm workflow step rerun <shortId> <step> --avoid <pool>` |
+| take over | the remaining work is small or needs something only you have | use the output path in the needs-you block |
+| accept anyway | you choose to keep a failed result | `bullswarm workflow step accept <shortId> <step> --reason "…"`; this is choice, never proof |
+| waiting for quota | the return time is short | wait; the step holds no scheduler slot |
+| long quota wait | the watcher prints options | revise the step, lift a named pause, or rerun elsewhere as printed |
 
-A failed check is a plan problem, not a retry: export the plan, add a step that fixes what the evidence names, and add that step's id to the check's `dependsOn`, so the check runs again after the fix.
+## The failure rule and needs-you block
+
+Each step gets one automatic retry in total. A process failure retries on
+another eligible pool; a gate failure retries on the same pool with the failure
+attached. A started `act` step is never retried automatically. Quota moves to
+another eligible pool without spending the retry, or makes the step wait for a
+known return time. Only dependents wait; unrelated steps keep running. Saved
+runs keep their original rules.
+
+When a step needs you, the watch gives one block with the failure, each try,
+steps still running, dependents waiting on it, and four commands. For example:
+
+```text
+✗ variants needs you · command evidence failed after 1 retry
+  evidence  node check-assets.mjs out/ → exit 1
+            banner-b.png has the wrong dimensions
+  try 1  pool-a · image model · 11m · 3 files
+  try 2  same pool, failure attached · 7m · 3 files
+  still running: copy · waiting on this: pick
+  your call:
+    rerun elsewhere  bullswarm workflow step rerun <id> variants --avoid pool-a
+    change the step  bullswarm workflow plan export <id> --out plan.json → plan revise <id> --program plan.json
+    take over        output: <absolute output path>
+    accept anyway    bullswarm workflow step accept <id> variants --reason "…"
+  next: bullswarm workflow watch <id> --until trouble --after <sequence> --since <iso>
+```
+
+Choose one `your call` command, then relaunch the exact `next:` line. Rerunning
+with `--avoid` keeps that pool excluded in the step's route. Accepting records
+`choice`, never proof; rerunning the step undoes acceptance. A short quota wait
+needs no action. For a long wait, follow its printed options: revise the step,
+lift a named pause with `bullswarm pools resume <pool>`, or rerun elsewhere for
+a hold or 5-hour limit. `step accept` is also the deliberate way to accept a
+failing review requirement.
 
 ```bash
 # the compact result: status, verified, reason, every action, usage, and next

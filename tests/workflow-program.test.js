@@ -173,7 +173,7 @@ test('negative evidence is reported without an automatic gap round or a verified
       requirements: { deliver: { status: 'failed', evidence: ['The gate found an unfinished item.'], concerns: ['Needs another edit.'] } },
     }));
     return { verdict: { ok: true, structured: options.outputValidator('') } };
-  }, {}, { verifyRounds: 1 });
+  }, {}, { verifyRounds: 0 });
   assert.equal(result.result.status, 'completed');
   assert.equal(result.result.verified, false);
   assert.equal(result.result.requirements[0].status, 'failed');

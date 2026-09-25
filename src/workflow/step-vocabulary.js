@@ -189,3 +189,63 @@ export function evidenceResultsIssues(value, name) {
 export function declaredEvidence(action) {
   return Array.isArray(action?.evidence) ? action.evidence : [];
 }
+
+// The failure rule (stage 3, D1). Each stored failureKind belongs to one
+// class; the class is derived, so stored kinds never change and saved runs
+// read the same. `stop` kinds are not failures. Any other kind is `caller`.
+export const FAILURE_CLASSES = Object.freeze({
+  process: Object.freeze(['auth', 'provider', 'process', 'interrupted', 'stalled']),
+  gate: Object.freeze(['not-produced', 'failed-evidence', 'schema', 'semantic']),
+  wait: Object.freeze(['quota', 'throttle']),
+  caller: Object.freeze(['ownership', 'ownership-conflict', 'runtime', 'unavailable']),
+  stop: Object.freeze(['cancelled', 'paused', 'restarted', 'superseded']),
+});
+const FAILURE_CLASS_BY_KIND = new Map(Object.entries(FAILURE_CLASSES)
+  .flatMap(([name, kinds]) => kinds.map((kind) => [kind, name])));
+
+/** 'process' | 'gate' | 'wait' | 'caller' | 'stop'; 'caller' for an unknown kind. */
+export function failureClassOf(kind) {
+  return (typeof kind === 'string' && FAILURE_CLASS_BY_KIND.get(kind)) || 'caller';
+}
+
+// The needs-you header label per failureKind (stage-3 §2.5). `failed-evidence`
+// has two: the caller picks by the type of the first failing item.
+export const NEEDS_YOU_LABELS = Object.freeze({
+  'failed-evidence': Object.freeze({ command: 'command evidence failed', schema: 'schema evidence failed' }),
+  'not-produced': 'deliverable not produced',
+  schema: 'report format failed',
+  semantic: 'output check failed',
+  process: 'worker exited with an error',
+  provider: 'provider error',
+  stalled: 'worker went silent',
+  auth: 'sign-in failed',
+  interrupted: 'worker was killed',
+  throttle: 'rate limited',
+  quota: 'out of quota',
+  unavailable: 'no eligible pool',
+  'ownership-conflict': 'merge conflict',
+  ownership: 'wrote outside its files',
+  runtime: 'kernel error',
+});
+
+// `attempt.retryOf.how` (D3): why the dispatcher started this attempt after an
+// earlier one. The step's retry budget counts the first two, never `wait`.
+export const RETRY_FACTS = Object.freeze(['other-pool', 'same-pool', 'wait']);
+const COUNTED_RETRY_FACTS = new Set(['other-pool', 'same-pool']);
+
+/**
+ * Retries the step's current definition has spent (D2/D3): its attempts after
+ * `supersededAttempts` whose `retryOf.how` is other-pool or same-pool. A
+ * failed attempt with no successor spends nothing. `supersededAttempts`
+ * defaults to the step's stored value. Pure; never throws.
+ */
+export function countRetries(state, stepId, supersededAttempts) {
+  const superseded = Number.isInteger(supersededAttempts) ? supersededAttempts
+    : (state?.actions ?? []).find((action) => action?.id === stepId)?.supersededAttempts ?? 0;
+  let count = 0;
+  for (const attempt of state?.attempts ?? []) {
+    if (attempt?.actionId !== stepId || !(attempt.ordinal > superseded)) continue;
+    if (COUNTED_RETRY_FACTS.has(attempt.retryOf?.how)) count += 1;
+  }
+  return count;
+}

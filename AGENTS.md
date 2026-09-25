@@ -24,6 +24,11 @@ the no-op gate is now 'declared deliverable not produced' (failure kind
 program steps may declare command and schema `evidence` that the kernel runs
 after the worker, a failure is `failed-evidence` with one same-pool retry, and
 finished steps in new runs are labelled `proven by …` or `finished · unproven`.
+Stage 3 (failure rule and routing constraints) has landed: one automatic retry
+per step, then the caller; quota waits; the needs-you block with `step rerun
+--avoid` and `step accept`; the per-step `route`; `verifyRounds` counts fixes
+(default 1); reviews are placed only by route. Runs started earlier keep their
+rules (`features.json`).
 
 ## Non-negotiable doctrine
 
@@ -36,20 +41,33 @@ finished steps in new runs are labelled `proven by …` or `finished · unproven
    core logic (see `docs/reference/providers.md`).
 4. Quarantine always auto-releases; recursion depth is core-owned via env
    (`BULLSWARM_DEPTH`).
-5. Workflow dispatches must honor the same guarantees as single runs:
-   `BULLSWARM_DEPTH` is propagated, burst-gated pools are excluded, and
-   auth verdicts quarantine the pool + append to the shared decision log
-   (R6/R7/R8 in `src/workflow/v2-dispatch.js`).
-6. Adversarial verification is a first-class primitive: an action naming
-   requirements in `evidenceFor` is dispatched under an evidence contract and
-   judges them from the durable artifact, so a requirement is only verified by
-   work someone else inspected (R-skeptic).
+5. Workflow dispatches honor the same guarantees as single runs:
+   `BULLSWARM_DEPTH` is propagated, burst-gated pools are excluded, and auth
+   verdicts quarantine the pool and append to the shared decision log
+   (R6/R7/R8 in `src/workflow/v2-dispatch.js`). A step's `route`, the run's
+   pin and the step's capability tier are hard filters applied before pace
+   ranks what is left. The failure rule is one automatic retry per step (a
+   process failure on another eligible pool, a gate failure on the same pool
+   with the failure attached), then the caller. An `act` step is never retried
+   once its worker started. Exhausted quota makes a step wait and say so, never
+   fail, whatever the pausing switch. Only a failed step's dependents wait.
+6. Review is a caller option, recorded as a fact. A step naming requirements
+   in `evidenceFor` is dispatched under the evidence contract and judges them
+   from the durable artifact. Where it runs is the caller's choice through
+   `route` (`independentOf`, `providers`, `pools`); Bullswarm never moves a
+   review on its own, and records who reviewed (pool, model, provider) and
+   whether that provider also wrote the work. A caller's `step accept` is
+   recorded as evidence `choice` and never makes a requirement verified.
+   Runs started before this rule keep automatic writer avoidance (R12/R13).
 7. New goal workflows are caller-planned programs in a shared workspace.
    `bullswarm workflow goal --program` executes the graph; `--orchestrator`
    explicitly delegates planning. File territories are advisory scheduling
-   hints, and the graph finishes without automatic gap rounds. `verified`
-   separately records requirement evidence. `--isolation` opts into strict
-   per-worker worktrees. Saved V2 runs preserve their original semantics.
+   hints. A failed check gets one fix step and one re-review
+   (`defaults.verifyRounds`, default 1, 0-3), then the caller, who takes over
+   through the watcher's needs-you block: rerun elsewhere, change the step,
+   take over, or accept anyway. `verified` separately records requirement
+   evidence. `--isolation` opts into strict per-worker worktrees. Saved V2
+   runs preserve their original semantics (`features.json`).
 8. Historical authored-graph runs remain visible as read-only `legacy` rows.
    Their executor was removed in 0.27.0; driving commands fail closed before
    dispatch and historical run directories remain untouched.

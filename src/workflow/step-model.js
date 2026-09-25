@@ -25,6 +25,7 @@ import { finiteOrNull } from '../lib/num.js';
 import { isFreeModel } from '../lib/usage.js';
 import { loadTemplates, ownsPoolName, providerDirs } from '../lib/providers.js';
 import { returnedEarlyItems, returnedEarlyText, timeBoxText } from './time-box.js';
+import { routeSummary } from './step-route.js';
 
 const START_STATUSES = new Set([
   'started', 'start', 'running', 'pending', 'in_progress', 'in-progress', 'queued',
@@ -1657,7 +1658,9 @@ function attemptCountText(attempts, selected) {
   const total = attempts?.length ?? 0;
   const ordinal = finiteOrNull(selected?.ordinal) ?? (total ? 1 : null);
   if (ordinal == null) return null;
-  return total > 1 ? `attempt ${ordinal} of ${total}` : `attempt ${ordinal} of ${total || 1}`;
+  // A gate retry (stage-3 D5) ran on the same pool with the failure attached.
+  const retry = selected?.retryOf?.how === 'same-pool' ? ' · same pool, failure attached' : '';
+  return `${total > 1 ? `attempt ${ordinal} of ${total}` : `attempt ${ordinal} of ${total || 1}`}${retry}`;
 }
 
 function verificationSummary(requirements) {
@@ -2036,6 +2039,10 @@ function stepPresentation({
       // Only a step that stores a role carries the field, so kind-only
       // presentations stay byte-identical.
       ...(textOrNull(action?.role) ? { role: textOrNull(action.role) } : {}),
+      // Stage 3: where the step may run, and the caller's choice to accept
+      // it; present only when set, so older presentations stay byte-identical.
+      ...(routeSummary(action?.route) ? { route: routeSummary(action.route) } : {}),
+      ...(action?.acceptance && typeof action.acceptance === 'object' ? { acceptance: acceptanceModel(action.acceptance) } : {}),
       lane: textOrNull(action?.lane),
       promptLines: String(prompt ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 3),
       owns: basenames(action?.ownedFiles),
@@ -2044,6 +2051,16 @@ function stepPresentation({
       bytes: selected?.bytes && typeof selected.bytes === 'object' ? clone(selected.bytes) : null,
     },
     cost: costRows(money, { running, attempts, selected }),
+  };
+}
+
+function acceptanceModel(value) {
+  return {
+    reason: textOrNull(value.reason),
+    at: textOrNull(value.at),
+    attemptId: textOrNull(value.attemptId),
+    failureKind: textOrNull(value.failureKind),
+    requirements: Array.isArray(value.requirements) ? value.requirements.map((entry) => textOrNull(entry?.id)).filter(Boolean) : null,
   };
 }
 

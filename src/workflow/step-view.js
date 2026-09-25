@@ -854,6 +854,12 @@ function taskLines(presentation, { width, phone }) {
   if ((task.owns ?? []).length) lines.push(...labelRow('owns', task.owns.join(' · '), { width, ...label }).slice(0, 2).map((line) => paintLabelRow(line, 'owns')));
   if ((task.after ?? []).length) lines.push(...labelRow('after', task.after.join(' · '), { width, ...label }).slice(0, 1).map((line) => paintLabelRow(line, 'after')));
   if (!phone && (task.affects ?? []).length) lines.push(...labelRow('affects', task.affects.join(' · '), { width, ...label }).slice(0, 2).map((line) => paintLabelRow(line, 'affects')));
+  if (task.route) lines.push(...labelRow('route', task.route, { width, ...label }).slice(0, 2).map((line) => paintLabelRow(line, 'route')));
+  if (task.acceptance) {
+    // A choice, never proof (stage-3 D22): the reason, and what it covers.
+    const covers = task.acceptance.requirements?.length ? `${task.acceptance.requirements.join(', ')} · ` : '';
+    lines.push(...labelRow('accepted', `by choice · ${covers}"${task.acceptance.reason ?? ''}"`, { width, ...label }).slice(0, 2).map((line) => paintLabelRow(line, 'accepted')));
+  }
   if (!phone) {
     const bytes = task.bytes ?? {};
     const full = number(bytes.authorPrompt ?? bytes.output);

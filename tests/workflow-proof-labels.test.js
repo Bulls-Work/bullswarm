@@ -255,3 +255,162 @@ test('fit levels: the row proof is dropped at `status`, and the top-level proof 
   }
   assert.deepEqual([...seen.keys()].sort(), ['bare', 'named|full|routing', 'status'], `levels reached: ${JSON.stringify([...seen])}`);
 });
+
+// Stage 3 (D34): a step the caller accepted is backed by `choice`, which is
+// counted apart and never as proven.
+const accept = (state, id, reason = 'the flaky test is known upstream') => {
+  const runtime = state.actions.find((action) => action.id === id);
+  runtime.status = 'succeeded';
+  runtime.acceptance = { evidence: 'choice', reason, attemptId: `${id}-1`, failureKind: 'failed-evidence', at: '2026-09-24T01:08:00.000Z', revision: 3 };
+  return state;
+};
+
+test('stepProof: an accepted step is backed by choice, with or without the marker; a requirement acceptance labels no step', () => {
+  const state = accept(manySteps(3), 'step-01');
+  const step = state.program.actions[1];
+  for (const features of [undefined, {}, MARKED, { deliverableGate: 1 }]) {
+    assert.deepEqual(stepProof(state, step, { features }), { by: ['choice'], reviewPending: false }, JSON.stringify(features));
+  }
+  assert.equal(formatV2ProofLabel({ by: ['choice'], reviewPending: false }), 'accepted by choice');
+  // A check step's requirement acceptance changes no label: it stays out of review.
+  const checked = programState({ reviewerStatus: 'succeeded' });
+  checked.actions[1].acceptance = {
+    evidence: 'choice', reason: 'good enough', attemptId: null, failureKind: null, at: '2026-09-24T01:08:00.000Z', revision: 4,
+    requirements: [{ id: 'requirement-1', workRevision: 'work-1' }],
+  };
+  assert.equal(stepProof(checked, checked.program.actions[1]), null);
+  assert.deepEqual(stepProof(checked, checked.program.actions[0], { features: MARKED }), { by: [], reviewPending: false });
+});
+
+test('summary proof counts a choice apart and the line names it between proven and unproven', () => {
+  const state = accept(manySteps(4, { declare: (index) => index < 2 }), 'step-02', 'stubborn upstream flake');
+  state.program.actions[2].id = 'stubborn';
+  state.actions[2].id = 'stubborn';
+  state.attempts[2].actionId = 'stubborn';
+  state.program.actions[3].id = 'readme';
+  state.actions[3].id = 'readme';
+  state.attempts[3].actionId = 'readme';
+  const summary = summarizeV2Result(envelopeFor(state), state, { features: MARKED });
+  assert.deepEqual(summary.proof, {
+    proven: 2, byType: { command: 2, schema: 0, review: 0, choice: 1 }, unproven: 1, unprovenSteps: ['readme'],
+    accepted: 1, acceptedSteps: ['stubborn'],
+  });
+  assert.deepEqual(summary.actions.find((row) => row.id === 'stubborn').proof, ['choice']);
+  assert.equal(summary.actions.find((row) => row.id === 'stubborn').accepted, 'stubborn upstream flake');
+  assert.equal(formatV2ProofLine(summary), 'proof: 2 steps proven (command 2) · 1 accepted by choice: stubborn · 1 finished · unproven: readme');
+  assert.equal(formatV2ProofLine({ proof: { proven: 0, byType: { command: 0, schema: 0, review: 0, choice: 1 }, unproven: 0, unprovenSteps: [], accepted: 1, acceptedSteps: ['stubborn'] } }), 'proof: 1 accepted by choice: stubborn');
+  assert.equal(formatV2ProofLine({ proof: { proven: 0, byType: { choice: 6 }, unproven: 0, unprovenSteps: [], accepted: 6, acceptedSteps: ['a', 'b', 'c', 'd'] } }), 'proof: 6 accepted by choice: a, b, c, d and 2 more');
+  // Without an acceptance the keys are absent, so saved runs read as before.
+  const plain = summarizeV2Result(envelopeFor(manySteps(2)), manySteps(2), { features: MARKED });
+  assert.deepEqual(Object.keys(plain.proof), ['proven', 'byType', 'unproven', 'unprovenSteps']);
+  assert.deepEqual(Object.keys(plain.proof.byType), ['command', 'schema', 'review']);
+});
+
+test('fit levels: the accepted reason stays through `status` and goes at `bare`; it is at most 80 characters', () => {
+  const levelOf = (row) => (Object.hasOwn(row, 'kind') ? 'named|full|routing' : Object.hasOwn(row, 'outFile') ? 'status' : 'bare');
+  const seen = new Set();
+  const reason = `known flake ${'x'.repeat(120)}`;
+  for (const count of [2, 20, 30, 40, 60, 90, 140]) {
+    const state = accept(manySteps(count), 'step-00', reason);
+    const summary = summarizeV2Result(envelopeFor(state), state, { features: MARKED });
+    const level = levelOf(summary.actions[0]);
+    seen.add(level);
+    if (level === 'bare') assert.equal(Object.hasOwn(summary.actions[0], 'accepted'), false, `${count} steps`);
+    else assert.equal(summary.actions[0].accepted, reason.slice(0, 80), `${level} (${count} steps)`);
+    assert.equal(summary.proof.accepted, 1, 'the top-level count stays');
+  }
+  assert.deepEqual([...seen].sort(), ['bare', 'named|full|routing', 'status']);
+});
+
+// Stage-3 presentation (§4 "Presentation"): an accepted step reads `accepted`
+// in runs show, the step page and the dashboard, and a routed step shows its
+// route; steps with neither read exactly as before.
+test('presentation: runs show, the step page and the dashboard read an accepted step and a route', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdirSync } = await import('node:fs');
+  const { createV2GoalDocument, createV2State } = await import('../src/workflow/v2-state.js');
+  const { deriveV2DependencyStages } = await import('../src/workflow/v2-presentation.js');
+  const { stepPageModel } = await import('../src/workflow/step-model.js');
+  const { renderStepPage } = await import('../src/workflow/step-view.js');
+  const { stepStatusLabel, statusIcon } = await import('../src/workflow/dashboard.js');
+  const state = createV2State(createV2GoalDocument({
+    goal: 'Ship the acme widget', cwd: '/tmp/acme', settings: { concurrency: 2, workspaceMode: 'shared', executionMode: 'program' },
+    requirements: [{ id: 'widget-works', text: 'The widget works' }],
+  }), { runId: 'wf-acme-accept', shortId: 'acc234' });
+  state.lifecycle = { status: 'completed', startedAt: '2026-09-24T01:00:00Z', finishedAt: '2026-09-24T01:10:00Z', resultFile: null };
+  state.planner = { status: 'waiting', turns: 1, lastDecision: { kind: 'program-created' }, session: null, attempts: [] };
+  const step = (id, extra = {}) => ({ id, purpose: `Do ${id}`, dependsOn: [], affects: [], ownedFiles: [], prompt: `Do ${id}.`, lane: 'build', effort: 'medium', evidenceFor: [], inputs: [], produces: [], ...extra });
+  state.program = {
+    schemaVersion: 'bullswarm.workflow.program.v2', revision: 2,
+    actions: [
+      step('stubborn', { route: { pools: { avoid: ['pool-a'] }, providers: { use: ['grok'] } } }),
+      step('plain', { dependsOn: ['stubborn'] }),
+    ],
+  };
+  state.actions = state.program.actions.map((action) => ({
+    id: action.id, status: 'succeeded', attempts: 0, programRevision: 2, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null,
+  }));
+  state.actions[0].acceptance = { evidence: 'choice', reason: 'the flaky test is known upstream', attemptId: null, failureKind: 'failed-evidence', at: '2026-09-24T01:08:00.000Z', revision: 2 };
+  state.presentation = { stages: deriveV2DependencyStages(state.program.actions, 2) };
+
+  // runs show
+  const home = mkdtempSync(join(tmpdir(), 'bs-accept-views-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const runDir = join(home, 'workflows', state.runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'bullswarm.js'), 'workflow', 'runs', 'show', state.runId], {
+    cwd: ROOT, env: { ...process.env, BULLSWARM_HOME: home }, encoding: 'utf8',
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const lines = run.stdout.split('\n');
+  assert.ok(lines.includes(`  ${'stubborn'.padEnd(24)} build/medium  accepted  route avoid pool-a · providers grok`), run.stdout);
+  assert.ok(lines.includes(`  ${'plain'.padEnd(24)} build/medium  succeeded`), run.stdout);
+
+  // The step page's task card.
+  const row = { runId: state.runId, shortId: state.shortId, state, status: 'completed' };
+  const page = (actionId) => {
+    const model = stepPageModel({ row, assignments: [], pools: [] }, { actionId, nowMs: Date.parse('2026-09-24T01:20:00Z') });
+    const body = [];
+    renderStepPage(model, { width: 120 }, body);
+    return { task: model.presentation.task, text: body.map(String).join('\n').replace(/\x1B\[[0-9;]*m/g, '') };
+  };
+  const accepted = page('stubborn');
+  assert.equal(accepted.task.route, 'avoid pool-a · providers grok');
+  assert.deepEqual(accepted.task.acceptance, { reason: 'the flaky test is known upstream', at: '2026-09-24T01:08:00.000Z', attemptId: null, failureKind: 'failed-evidence', requirements: null });
+  assert.match(accepted.text, /route {3}avoid pool-a · providers grok/);
+  assert.match(accepted.text, /accepted by choice · "the flaky test is/);
+  const plain = page('plain');
+  assert.equal(Object.hasOwn(plain.task, 'route'), false);
+  assert.equal(Object.hasOwn(plain.task, 'acceptance'), false);
+
+  // The dashboard label keeps the succeeded glyph; waiting uses the waiting glyph.
+  assert.equal(stepStatusLabel({ ...state.program.actions[0], ...state.actions[0] }), 'accepted');
+  assert.equal(stepStatusLabel({ status: 'succeeded' }), 'succeeded');
+  assert.equal(stepStatusLabel({ status: 'succeeded', acceptance: { reason: 'x', requirements: [{ id: 'r1', workRevision: 'w' }] } }), 'succeeded', 'a requirement acceptance labels no step');
+  assert.equal(statusIcon('waiting'), statusIcon('queued'));
+});
+
+test('the step page header says a gate retry ran on the same pool with the failure attached', async () => {
+  const { createV2GoalDocument, createV2State } = await import('../src/workflow/v2-state.js');
+  const { deriveV2DependencyStages } = await import('../src/workflow/v2-presentation.js');
+  const { stepPageModel } = await import('../src/workflow/step-model.js');
+  const state = createV2State(createV2GoalDocument({
+    goal: 'Ship the acme widget', cwd: '/tmp/acme', settings: { concurrency: 2, workspaceMode: 'shared', executionMode: 'program' },
+    requirements: [{ id: 'widget-works', text: 'The widget works' }],
+  }), { runId: 'wf-acme-gate', shortId: 'gat234' });
+  state.lifecycle = { status: 'partial', startedAt: '2026-09-24T01:00:00Z', finishedAt: '2026-09-24T01:10:00Z', resultFile: null };
+  state.planner = { status: 'waiting', turns: 1, lastDecision: { kind: 'program-created' }, session: null, attempts: [] };
+  state.program = { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [
+    { id: 'build', purpose: 'Build', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Build.', lane: 'build', effort: 'medium', evidenceFor: [], inputs: [], produces: [] },
+  ] };
+  state.actions = [{ id: 'build', status: 'failed', attempts: 2, programRevision: 1, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: { kind: 'not-produced', message: 'no file changed and no commit made' } }];
+  state.attempts = [
+    { id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'not-produced', pool: 'pool-a', startedAt: '2026-09-24T01:00:00Z', finishedAt: '2026-09-24T01:04:00Z' },
+    { id: 'build-2', actionId: 'build', ordinal: 2, status: 'failed', failureKind: 'not-produced', pool: 'pool-a', startedAt: '2026-09-24T01:05:00Z', finishedAt: '2026-09-24T01:09:00Z', retryOf: { attempt: 'build-1', how: 'same-pool' } },
+  ];
+  state.presentation = { stages: deriveV2DependencyStages(state.program.actions, 1) };
+  const row = { runId: state.runId, shortId: state.shortId, state, status: 'partial' };
+  const model = stepPageModel({ row, assignments: [], pools: [] }, { actionId: 'build', nowMs: Date.parse('2026-09-24T01:20:00Z') });
+  assert.equal(model.presentation.header.attemptText, 'attempt 2 of 2 · same pool, failure attached');
+});

@@ -14,6 +14,28 @@ export const RUN_FEATURES_FILE = 'features.json';
 // What a stage-2 launch writes (E23).
 export const STAGE2_RUN_FEATURES = Object.freeze({ deliverableGate: 1, proofLabels: 1 });
 
+// What a stage-3 launch writes (D28): stage 2's keys plus the failure rule and
+// caller-placed reviews. A missing key means the older rule.
+export const STAGE3_RUN_FEATURES = Object.freeze({
+  deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller',
+});
+
+/**
+ * The marker as flags, for code that branches on it. Pure. A key counts only
+ * with its exact stored value; unknown keys are ignored.
+ * @returns {{deliverableGate: boolean, proofLabels: boolean, failureRule: boolean,
+ *   reviewPlacement: 'caller'|'automatic'}}
+ */
+export function runFeatureFlags(features) {
+  const raw = features !== null && typeof features === 'object' && !Array.isArray(features) ? features : {};
+  return {
+    deliverableGate: raw.deliverableGate === 1,
+    proofLabels: raw.proofLabels === 1,
+    failureRule: raw.failureRule === 1,
+    reviewPlacement: raw.reviewPlacement === 'caller' ? 'caller' : 'automatic',
+  };
+}
+
 export function runFeaturesPath(runDir) {
   return join(runDir, RUN_FEATURES_FILE);
 }

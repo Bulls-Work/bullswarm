@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { applyEvidence } from '../src/workflow/ledger.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import {
@@ -398,4 +401,166 @@ test('F23: a failed step whose worker failed before its evidence ran reads `evid
   const plainSummary = summaryOf(plain);
   assert.equal(Object.hasOwn(plainSummary.handback.unfinished[0], 'evidenceNotRun'), false);
   assert.equal(stepLine(plainSummary, 'notes'), '  step notes: failed (process) — worker exited with code 1');
+});
+
+// Stage 3 (§2.9, D22, D27, D34): acceptance, who reviewed, retries and the
+// caller verbs in the handback, and the verifyRounds caps.
+const STAGE3 = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
+const ACCEPTED_AT = '2026-09-24T01:08:00.000Z';
+
+test('an accepted step reports its acceptance, the reason names it, and the fields are exact', () => {
+  const state = evidenceState({
+    build: {
+      status: 'succeeded',
+      acceptance: { evidence: 'choice', reason: 'the flaky test is known upstream', attemptId: 'build-2', failureKind: 'failed-evidence', at: ACCEPTED_AT, revision: 3 },
+    },
+    attempts: [
+      { id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'failed-evidence', evidenceResults: [FAILED_CHECK] },
+      { id: 'build-2', actionId: 'build', ordinal: 2, status: 'failed', failureKind: 'failed-evidence', evidenceResults: [FAILED_CHECK], retryOf: { attempt: 'build-1', how: 'same-pool' } },
+    ],
+  });
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z', features: STAGE3 });
+  assert.deepEqual(result.actions[0].acceptance, {
+    evidence: 'choice', reason: 'the flaky test is known upstream', at: ACCEPTED_AT, attemptId: 'build-2', failureKind: 'failed-evidence',
+  });
+  assert.equal(Object.hasOwn(result.actions[1], 'acceptance'), false, 'a step nobody accepted keeps the older shape');
+  assert.match(result.reason, / · 1 step accepted by choice$/);
+  assert.equal(result.verified, false, 'a choice is not proof');
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  const bad = (mutate) => { const value = structuredClone(result); mutate(value.actions[0].acceptance); return value; };
+  assert.throws(() => validateV2ResultEnvelope(bad((value) => { value.revision = 3; })), /actions\[0\]\.acceptance\.revision is not allowed/);
+  assert.throws(() => validateV2ResultEnvelope(bad((value) => { value.evidence = 'command'; })), /acceptance\.evidence must be choice/);
+  assert.throws(() => validateV2ResultEnvelope(bad((value) => { value.reason = ''; })), /acceptance\.reason must be a non-empty string/);
+  assert.throws(() => validateV2ResultEnvelope(bad((value) => { value.at = 'soon'; })), /acceptance\.at must be an ISO-compatible timestamp/);
+  assert.throws(() => validateV2ResultEnvelope(bad((value) => { value.requirements = [{ id: 'widget-works' }]; })), /requirements\[0\]\.workRevision must be a string or number/);
+});
+
+test('an accepted requirement reports who accepted it while its work revision holds; a moved revision lapses it', () => {
+  const state = evidenceState();
+  state.ledger = applyEvidence(state.ledger, {
+    actionId: 'notes', evidenceFor: ['widget-works'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'widget-works': { status: 'failed', evidence: ['the widget drops the last word'], concerns: [] } } });
+  const workRevision = state.ledger.requirements['widget-works'].workRevision;
+  state.actions[1].acceptance = {
+    evidence: 'choice', reason: 'good enough for the demo', attemptId: null, failureKind: null, at: ACCEPTED_AT, revision: 4,
+    requirements: [{ id: 'widget-works', workRevision }],
+  };
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z', features: STAGE3 });
+  assert.deepEqual(result.requirements[0].accepted, { step: 'notes', reason: 'good enough for the demo', at: ACCEPTED_AT });
+  assert.equal(result.requirements[0].status, 'failed', 'the requirement is still failing');
+  assert.deepEqual(result.actions[1].acceptance.requirements, [{ id: 'widget-works', workRevision }]);
+  assert.doesNotMatch(result.reason, /accepted by choice/, 'a requirement acceptance accepts no step');
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  const extra = structuredClone(result);
+  extra.requirements[0].accepted.revision = 4;
+  assert.throws(() => validateV2ResultEnvelope(extra), /requirements\[0\]\.accepted\.revision is not allowed/);
+  state.actions[1].acceptance.requirements[0].workRevision = 'an-older-revision';
+  assert.equal(Object.hasOwn(createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z', features: STAGE3 }).requirements[0], 'accepted'), false);
+});
+
+test('evidence entries name the reviewer and whether it was independent of the writers', () => {
+  const judged = (writers) => {
+    const state = evidenceState();
+    state.ledger = applyEvidence(state.ledger, {
+      actionId: 'notes', evidenceFor: ['widget-works'], inspectedRevision: 'initial', eventSequence: 1,
+    }, { requirements: { 'widget-works': { status: 'passed', evidence: ['it works'], concerns: [] } } }, {
+      reviewer: { attemptId: 'notes-1', pool: 'grok', model: 'grok-4', provider: 'grok' },
+      ...(writers ? { writers } : {}),
+    });
+    return createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z', features: STAGE3 }).requirements[0].evidence[0];
+  };
+  const other = judged([{ actionId: 'build', pool: 'claude-code:acme', provider: 'claude-code' }]);
+  assert.deepEqual(other.reviewer, { pool: 'grok', model: 'grok-4', provider: 'grok' });
+  assert.equal(other.independent, true);
+  assert.equal(judged([{ actionId: 'build', pool: 'grok', provider: 'grok' }, { actionId: 'build', pool: 'codex', provider: 'codex' }]).independent, false);
+  assert.equal(judged([]).independent, null, 'no writer attempt known');
+  assert.equal(judged([{ actionId: 'build', pool: 'mystery', provider: null }]).independent, null);
+  // A record without the fields (a saved run's) keeps the older shape.
+  const state = evidenceState();
+  state.ledger = applyEvidence(state.ledger, {
+    actionId: 'notes', evidenceFor: ['widget-works'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'widget-works': { status: 'passed', evidence: ['it works'], concerns: [] } } });
+  const plain = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' }).requirements[0].evidence[0];
+  assert.deepEqual(Object.keys(plain), ['sourceAction', 'status', 'evidence', 'concerns', 'eventSequence']);
+  // Exact fields.
+  const result = createV2ResultEnvelope(evidenceState(), { finishedAt: '2026-09-24T01:10:00Z' });
+  result.requirements[0].evidence = [{ ...other }];
+  assert.equal(validateV2ResultEnvelope(result), true);
+  result.requirements[0].evidence = [{ ...other, reviewer: { ...other.reviewer, attemptId: 'notes-1' } }];
+  assert.throws(() => validateV2ResultEnvelope(result), /evidence\[0\]\.reviewer\.attemptId is not allowed/);
+  result.requirements[0].evidence = [{ ...other, independent: 'yes' }];
+  assert.throws(() => validateV2ResultEnvelope(result), /independent must be true, false or null/);
+});
+
+test('a marked run hands back each failed step\'s retries and the rerun and accept verbs; a saved run reads as before', () => {
+  const failed = () => evidenceState({
+    build: { status: 'failed', lastFailure: { kind: 'failed-evidence', message: 'node --test tests/widget.test.js → exit 1: not ok 1' } },
+    attempts: [
+      { id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'failed-evidence', evidenceResults: [FAILED_CHECK] },
+      { id: 'build-2', actionId: 'build', ordinal: 2, status: 'failed', failureKind: 'failed-evidence', evidenceResults: [FAILED_CHECK], retryOf: { attempt: 'build-1', how: 'same-pool' } },
+    ],
+  });
+  const state = failed();
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z', features: STAGE3 });
+  assert.equal(result.handback.unfinished[0].retries, 1);
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  const summary = summarizeV2Result(result, state, { runDir: '/tmp/acme-run', features: STAGE3 });
+  assert.equal(summary.handback.unfinished[0].retries, 1);
+  assert.equal(summary.handback.options.rerun, 'bullswarm workflow step rerun evd234 build [--avoid <pool>] (runs it again with its last attempt\'s handoff)');
+  assert.equal(summary.handback.options.accept, 'bullswarm workflow step accept evd234 build --reason "…" (recorded as your choice, never proof)');
+  const lines = formatV2HandbackLines(summary);
+  assert.ok(lines.includes('  step build: failed (failed-evidence) after 1 retry — node --test tests/widget.test.js → exit 1: not ok 1'), lines.join('\n'));
+  assert.ok(lines.includes(`  rerun     ${summary.handback.options.rerun}`));
+  assert.ok(lines.includes(`  accept    ${summary.handback.options.accept}`));
+  // Two failed steps: the commands name <step>.
+  const two = failed();
+  two.actions[1] = { ...two.actions[1], status: 'failed', attempts: 1, lastFailure: { kind: 'process', message: 'worker exited with code 1' } };
+  two.attempts.push({ id: 'notes-1', actionId: 'notes', ordinal: 1, status: 'failed', failureKind: 'process' });
+  const both = summarizeV2Result(createV2ResultEnvelope(two, { finishedAt: '2026-09-24T01:10:00Z', features: STAGE3 }), two, { runDir: '/tmp/acme-run', features: STAGE3 });
+  assert.match(both.handback.options.rerun, /^bullswarm workflow step rerun evd234 <step> \[--avoid <pool>\]/);
+  assert.deepEqual(both.handback.unfinished.map((entry) => entry.retries), [1, 0]);
+  // A saved run (stage-2 marker): no count, no new verbs, the line as before.
+  const saved = createV2ResultEnvelope(failed(), { finishedAt: '2026-09-24T01:10:00Z', features: { deliverableGate: 1, proofLabels: 1 } });
+  assert.equal(Object.hasOwn(saved.handback.unfinished[0], 'retries'), false);
+  const savedSummary = summarizeV2Result(saved, failed(), { runDir: '/tmp/acme-run', features: { deliverableGate: 1, proofLabels: 1 } });
+  assert.equal(Object.hasOwn(savedSummary.handback.options, 'rerun'), false);
+  assert.equal(Object.hasOwn(savedSummary.handback.options, 'accept'), false);
+  assert.ok(formatV2HandbackLines(savedSummary).includes('  step build: failed (failed-evidence) — node --test tests/widget.test.js → exit 1: not ok 1'));
+  // The count is exact-field checked.
+  const badRetries = structuredClone(result);
+  badRetries.handback.unfinished[0].retries = -1;
+  assert.throws(() => validateV2ResultEnvelope(badRetries), /retries must be a non-negative integer/);
+});
+
+test('the envelope reads the marker from its attempts\' run directory when no features are passed', (t) => {
+  const runDir = mkdtempSync(join(tmpdir(), 'bs-outcome-marker-'));
+  t.after(() => rmSync(runDir, { recursive: true, force: true }));
+  const state = evidenceState({
+    build: { status: 'failed', lastFailure: { kind: 'process', message: 'worker exited with code 1' } },
+    attempts: [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'process', taskFile: join(runDir, 'task-build-attempt-1.md') }],
+  });
+  assert.equal(Object.hasOwn(createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' }).handback.unfinished[0], 'retries'), false);
+  writeFileSync(join(runDir, 'features.json'), JSON.stringify(STAGE3));
+  assert.equal(createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' }).handback.unfinished[0].retries, 0);
+});
+
+test('verifyRounds caps go to 4 and the callerDecision pattern follows', () => {
+  const state = plannedState();
+  state.actions = [
+    { id: 'write-report', status: 'succeeded', attempts: 0, programRevision: 1, outputFile: '/tmp/report.md', artifactIds: ['report'] },
+    { id: 'check-report', status: 'succeeded', attempts: 0, programRevision: 1, artifactIds: [] },
+  ];
+  state.ledger = applyEvidence(state.ledger, {
+    actionId: 'check-report', evidenceFor: ['report-correct'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'report-correct': { status: 'failed', evidence: ['wrong total'], concerns: [] } } });
+  const base = createV2ResultEnvelope(state, { finishedAt: '2026-08-31T01:10:00Z', plannerExhausted: true });
+  const phase = (round) => ({ kind: 'verify', round, steps: ['check-report'], judged: 1, failed: ['report-correct'], wallMinutes: 2, pools: ['grok'], apiUsd: null, unmeasured: 0, cost: '—' });
+  const withLoop = (verifyRounds, callerDecision) => ({ ...structuredClone(base), verifyRounds, ...(callerDecision ? { callerDecision } : {}) });
+  const decision = (rounds, round) => ({ verifyRounds: rounds, requirements: [{ id: 'report-correct', status: 'failed', round, evidence: 'wrong total', next: 'bullswarm workflow plan export abc234 --out plan.json' }] });
+  assert.equal(validateV2ResultEnvelope(withLoop({ max: 4, used: 4, stoppedBy: 'rounds', phases: [phase(4)] }, decision('4/4', 4))), true);
+  assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 5, used: 1, stoppedBy: null, phases: [] })), /verifyRounds\.max must be 1 to 4/);
+  assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 4, used: 5, stoppedBy: null, phases: [] })), /verifyRounds\.used must be 0 to 4/);
+  assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 4, used: 1, stoppedBy: null, phases: [phase(5)] })), /phases\[0\]\.round must be 1 to 4/);
+  assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 4, used: 1, stoppedBy: null, phases: [] }, decision('1/5', 1))), /callerDecision\.verifyRounds must read used\/max/);
+  assert.throws(() => validateV2ResultEnvelope(withLoop({ max: 4, used: 1, stoppedBy: null, phases: [] }, decision('1/4', 5))), /requirements\[0\]\.round must be 1 to 4/);
 });

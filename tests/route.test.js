@@ -1389,6 +1389,51 @@ test('a --worker-pool pin says it was pinned instead of claiming a comparison', 
   assert.equal(unpinned.why, 'evidence step: only the writer pool codex is eligible');
 });
 
+test('D30: the pin names who pinned it, and the default text is unchanged', () => {
+  const pools = () => [pool('codex', { pace: 10 })];
+  const opts = { callerEligible: false, callerSession: false, now: NOW, strictPool: 'codex' };
+  const byDefault = pickPool('build', pools(), opts);
+  const explicitDefault = pickPool('build', pools(), { ...opts, pinSource: '--worker-pool' });
+  const nullSource = pickPool('build', pools(), { ...opts, pinSource: null });
+  assert.ok(byDefault.why.startsWith('pinned to codex (--worker-pool)'), byDefault.why);
+  assert.equal(explicitDefault.why, byDefault.why);
+  assert.equal(nullSource.why, byDefault.why);
+  const restart = pickPool('build', pools(), { ...opts, pinSource: 'step restart' });
+  assert.ok(restart.why.startsWith('pinned to codex (step restart)'), restart.why);
+  assert.equal(restart.why, byDefault.why.replace('(--worker-pool)', '(step restart)'));
+  const gate = pickPool('build', pools(), { ...opts, pinSource: 'the same pool (gate retry)' });
+  assert.ok(gate.why.startsWith('pinned to codex (the same pool (gate retry))'), gate.why);
+  // The pin label never changes the pick or the ranking.
+  assert.deepEqual(gate.candidates, byDefault.candidates);
+  assert.equal(gate.pick.pool, 'codex');
+});
+
+test('D30: routeNote is appended to every reason and never ranks', () => {
+  const pools = () => [
+    pool('codex', { meter: { type: 'weekly', windowStart: NOW - 84 * HOUR, usedPct: 10 }, costRank: 3 }),
+    pool('grok', { meter: { type: '5h', windowStart: NOW - 4 * HOUR, usedPct: 80 }, costRank: 2 }),
+  ];
+  const opts = { callerEligible: false, callerSession: false, now: NOW };
+  const plain = pickPool('build', pools(), opts);
+  const noted = pickPool('build', pools(), { ...opts, routeNote: 'avoid pool-b · providers codex, grok' });
+  assert.equal(noted.pick.pool, plain.pick.pool);
+  assert.deepEqual(noted.candidates, plain.candidates);
+  assert.equal(noted.why, `${plain.why} · route: avoid pool-b · providers codex, grok`);
+  // A pinned pick and an empty pool list carry it too.
+  const pinned = pickPool('build', [pool('codex', { pace: 10 })], {
+    ...opts, strictPool: 'codex', pinSource: 'the same pool (gate retry)', routeNote: 'use codex',
+  });
+  assert.ok(pinned.why.startsWith('pinned to codex (the same pool (gate retry))'), pinned.why);
+  assert.ok(pinned.why.endsWith(' · route: use codex'), pinned.why);
+  const empty = pickPool('build', [], { ...opts, routeNote: 'use codex' });
+  assert.equal(empty.pick, null);
+  assert.equal(empty.why, 'no eligible pool · route: use codex');
+  // No note, no clause: null and an empty string both leave the text alone.
+  assert.equal(pickPool('build', pools(), { ...opts, routeNote: null }).why, plain.why);
+  assert.equal(pickPool('build', pools(), { ...opts, routeNote: '' }).why, plain.why);
+  assert.doesNotMatch(plain.why, /route:/);
+});
+
 // R13: expiring quota over verifier independence; independence by model family.
 
 test('a writer is judged by model family, not pool account', () => {

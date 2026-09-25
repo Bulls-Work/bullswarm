@@ -16,8 +16,10 @@ import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument, deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import {
-  runV2AutonomousWorkflow, submitCallerPlannerResponse, acceptCallerPlannerResponse, readCallerPlannerRequest,
+  runV2AutonomousWorkflow, submitCallerPlannerResponse, acceptCallerPlannerResponse, readCallerPlannerRequest, reviseV2Program,
 } from '../src/workflow/v2-runtime.js';
+import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { queueSteering } from '../src/workflow/steering.js';
 import {
@@ -659,7 +661,8 @@ test('CLI: detached program returns negative evidence durably without another pl
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify({ ...cliProgram('skip-work'), defaults: { verifyRounds: 1 } }));
+    // A stage-3 run counts fix cycles (D13): 0 is review only, no repair.
+    writeFileSync(programPath, JSON.stringify({ ...cliProgram('skip-work'), defaults: { verifyRounds: 0 } }));
     const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const launch = JSON.parse(launched.stdout);
@@ -1433,7 +1436,7 @@ test('CLI: a role-only program validates, dispatches on the role routing, judges
     assert.equal(report.verified, true);
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
     const runDir = join(f.home, 'workflows', report.runId);
-    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
     const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
     assert.deepEqual(state.program.actions.map(shape), expected);
     const routed = state.attempts.map((attempt) => [attempt.actionId, attempt.routing?.lane, attempt.routing?.effort, attempt.status]);
@@ -1594,7 +1597,7 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
 
     const [runId] = readdirSync(join(f.home, 'workflows'));
     const runDir = join(f.home, 'workflows', runId);
-    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
     const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
     const attemptsOf = (id) => state.attempts.filter((attempt) => attempt.actionId === id);
 
@@ -1617,13 +1620,18 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     assert.equal(first.evidenceResults[0].tail, 'retry.txt says broken');
     assert.equal(second.status, 'succeeded');
     assert.equal(second.pool, first.pool);
-    assert.match(second.routeWhy, /^retry on the same pool after failed evidence · /);
+    // Stage 3 (D5, D30): the failed check is the step's one gate retry, forced
+    // onto the same pool; the successor records it (D3), the failed attempt does not.
+    assert.match(second.routeWhy, /^pinned to \S+ \(the same pool \(gate retry\)\) · /);
+    assert.deepEqual(second.retryOf, { attempt: first.id, how: 'same-pool' });
+    assert.equal(Object.hasOwn(first, 'retryOf'), false);
     assert.equal(second.evidenceResults[0].status, 'passed');
     const retryTask = readFileSync(second.taskFile, 'utf8');
     assert.match(retryTask, /## Prior attempt on this step/);
     assert.match(retryTask, /- Failure: failed-evidence — grep -qx fixed retry\.txt .* → exit 1: retry\.txt says broken/);
     assert.match(retryTask, /- Evidence Bullswarm ran after that attempt:\n {2}- command `grep -qx fixed retry\.txt [^\n]*`: failed · exit 1 · \d+s\n/);
     assert.match(retryTask, /\n {6}retry\.txt says broken\n/);
+    assert.match(retryTask, /\n- This is the step's one automatic retry: the failure above closed its gate\. Fix what it names; your earlier edits are still in the workspace\.\n- Those edits are unverified\./);
     assert.equal(readFileSync(join(f.target, 'retry.txt'), 'utf8'), 'fixed\n');
 
     // A schema check on the step's own final response (one fenced block, unwrapped).
@@ -1646,7 +1654,7 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     // The handback names the failed check (§2.7) and does not offer a plain retry.
     assert.deepEqual(envelope.handback.unfinished, [{
       id: 'always-fails', status: 'failed', failureKind: 'failed-evidence', retryable: false,
-      why: 'echo "acme check failed" && exit 3 → exit 3: acme check failed',
+      why: 'echo "acme check failed" && exit 3 → exit 3: acme check failed', retries: 1,
     }]);
     const row = (id) => envelope.actions.find((action) => action.id === id);
     assert.deepEqual(row('retry-once').evidenceResults, second.evidenceResults);
@@ -1675,4 +1683,143 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     assert.deepEqual(refusal.needsCaller.map((entry) => [entry.id, entry.failureKind]), [['always-fails', 'failed-evidence']]);
     assert.equal(JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).attempts.length, state.attempts.length, 'resume relaunched nothing');
   } finally { f.cleanup(); }
+});
+
+
+// --- Stage 3 end to end: the failure rule through the real kernel and the
+// real dispatcher, with fake workers (watchOnce) and made-up pools. One run:
+// a gate failure gets its one retry on the same pool and then goes to the
+// caller; a process failure gets its one retry on another pool; a step that
+// no pool can take waits without holding the only slot; and the caller's
+// accept unblocks the failed step's dependent.
+
+test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a waiting step that holds no slot, and an accept that unblocks a dependent', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-stage3-e2e-'));
+  try {
+    const bullswarmDir = join(root, 'home');
+    const workspace = join(root, 'repo');
+    mkdirSync(bullswarmDir); mkdirSync(workspace);
+    spawnSync('git', ['init', '-q', workspace]);
+    writeFileSync(join(workspace, 'README.md'), 'acme\n');
+    spawnSync('git', ['-C', workspace, 'add', '.']);
+    spawnSync('git', ['-C', workspace, '-c', 'user.name=Acme Dev', '-c', 'user.email=dev@example.com', 'commit', '-qm', 'seed']);
+    const ids = ['slow', 'crash', 'gate', 'after'];
+    const goal = createV2GoalDocument({
+      goal: 'Deliver four files', cwd: workspace,
+      requirements: ids.map((id) => ({ id: `${id}-done`, text: `${id}.txt is delivered` })),
+      settings: { executionMode: 'program', plannerMode: 'caller', workspaceMode: 'shared', scout: false, concurrency: 1 },
+    });
+    const stepOf = (id, over = {}) => ({
+      id, purpose: `Deliver ${id}.txt`, dependsOn: [], affects: [`${id}-done`], ownedFiles: [`${id}.txt`],
+      prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], ...over,
+    });
+    const actions = [
+      stepOf('slow', { route: { pools: { use: ['pool-a'] } } }),
+      stepOf('crash'),
+      stepOf('gate', { evidence: [{ type: 'command', cmd: 'grep -q fixed gate.txt' }] }),
+      stepOf('after', { dependsOn: ['gate'] }),
+    ];
+    const connector = (name) => ({
+      name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
+      modelSelection: { flag: '--model' },
+      strategyAssignments: Object.fromEntries(['low', 'medium', 'high'].map((tier) => [tier, { pool: name, model: 'acme-model' }])),
+    });
+    const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+    const calls = {};
+    // The fake provider: slow's first attempt is rate limited with a named
+    // reset (pausing off, so a hold on this step only); crash's first worker
+    // exits 1; gate always writes what its check refuses.
+    const worker = async (pool, task, targetDir, files, opts) => {
+      const id = opts.attemptId.replace(/-\d+$/, '');
+      calls[id] = (calls[id] ?? 0) + 1;
+      writeFileSync(files.taskFile, task);
+      if (id === 'slow' && calls[id] === 1) {
+        writeFileSync(files.outFile, 'rate limited');
+        return {
+          ok: false, failureKind: 'throttle', why: 'rate limited until the window resets',
+          quotaPause: { rule: 'off', pause: false, until: null, holdUntil: new Date(Date.now() + 1500).toISOString() },
+          meta: { exitCode: 1, wallSec: 1 },
+        };
+      }
+      if (id === 'crash' && calls[id] === 1) {
+        writeFileSync(files.outFile, 'boom');
+        return { ok: false, why: 'worker exited 1', meta: { exitCode: 1, wallSec: 1 } };
+      }
+      writeFileSync(join(targetDir, `${id}.txt`), id === 'gate' ? `broken ${calls[id]}\n` : `${id} done\n`);
+      writeFileSync(files.outFile, `## Done\n- ${id}.txt (${pool.name})`);
+      return { ok: true, why: 'ok', meta: { exitCode: 0, wallSec: 1 } };
+    };
+    const dependencies = {
+      refreshPools: async () => null, controlPollMs: 20, wakeClaimRecheckMs: 50,
+      dispatchV2Action: (options) => dispatchV2Action({
+        ...options, pools: [connector('pool-a'), connector('pool-b')],
+        dependencies: {
+          watchOnce: worker, loadState: () => structuredClone(core),
+          saveState: (_dir, next) => Object.assign(core, structuredClone(next)), uuid: () => 'session-fixed',
+        },
+      }),
+    };
+    const runId = 'wf-s3e2e-abcdef';
+    const first = await runV2AutonomousWorkflow({
+      bullswarmDir, goalDocument: goal, pools: [], runId, parentEnv: {},
+      initialPlannerResponse: { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Four files.', program: { schemaVersion: 'bullswarm.workflow.program.v2', actions } },
+      dependencies,
+    });
+    const runDir = first.runDir;
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
+    assert.equal(first.result.status, 'partial');
+    const attemptsOf = (state, id) => state.attempts.filter((attempt) => attempt.actionId === id);
+    const events = readEvents(runDir);
+    const seq = (predicate) => events.find(predicate)?.sequence ?? Infinity;
+
+    // The waiting step: it waited for its only allowed pool, and while it
+    // waited the only slot ran other steps; then it ran on that pool.
+    const [slow1, slow2] = attemptsOf(first.state, 'slow');
+    assert.deepEqual([slow1.pool, slow1.failureKind, slow2.pool, slow2.status], ['pool-a', 'throttle', 'pool-a', 'succeeded']);
+    assert.deepEqual(slow2.retryOf, { attempt: 'slow-1', how: 'wait' }, 'a wait is recorded and never spends the retry');
+    const waiting = events.find((event) => event.type === 'action.waiting');
+    assert.deepEqual([waiting.payload.actionId, waiting.payload.pools, waiting.payload.reason], ['slow', ['pool-a'], 'hold']);
+    const crashStarted = seq((event) => event.type === 'attempt.started' && event.payload.attemptId === 'crash-1');
+    const slowRestarted = seq((event) => event.type === 'attempt.started' && event.payload.attemptId === 'slow-2');
+    assert.ok(waiting.sequence < crashStarted && crashStarted < slowRestarted, 'with concurrency 1, crash ran while slow waited');
+
+    // The process failure: one retry, on the other pool.
+    const [crash1, crash2] = attemptsOf(first.state, 'crash');
+    assert.equal(attemptsOf(first.state, 'crash').length, 2);
+    assert.deepEqual([crash1.failureKind, crash2.status], ['process', 'succeeded']);
+    assert.notEqual(crash2.pool, crash1.pool);
+    assert.deepEqual(crash2.retryOf, { attempt: 'crash-1', how: 'other-pool' });
+
+    // The gate failure: one retry forced onto the same pool with the failure
+    // attached, then the caller, whose dependent is blocked.
+    const gateAttempts = attemptsOf(first.state, 'gate');
+    assert.deepEqual(gateAttempts.map((attempt) => [attempt.status, attempt.failureKind]), [['interrupted', 'failed-evidence'], ['failed', 'failed-evidence']]);
+    assert.equal(gateAttempts[1].pool, gateAttempts[0].pool);
+    assert.deepEqual(gateAttempts[1].retryOf, { attempt: 'gate-1', how: 'same-pool' });
+    assert.match(gateAttempts[1].routeWhy, /\(the same pool \(gate retry\)\)/);
+    assert.match(readFileSync(gateAttempts[1].taskFile, 'utf8'), /- This is the step's one automatic retry: the failure above closed its gate\./);
+    const gateFailed = events.findLast((event) => event.type === 'action.finished' && event.payload.actionId === 'gate').payload;
+    assert.deepEqual([gateFailed.status, gateFailed.retries, gateFailed.attemptIds], ['failed', 1, ['gate-1', 'gate-2']]);
+    assert.equal(first.state.actions.find((action) => action.id === 'after').status, 'blocked');
+    assert.equal(calls.after, undefined);
+    assert.equal(first.result.handback.unfinished.find((entry) => entry.id === 'gate').retries, 1);
+
+    // The caller accepts the failed gate: its dependent runs, and the run completes.
+    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    const request = createRevisionRequest({
+      ...normalizeRevisionInput(exportV2Plan(state)), baseRevision: state.program.revision,
+      accept: [{ step: 'gate', reason: 'broken is what this demo ships', requirements: null }],
+    }, { source: 'step-accept' });
+    const accepted = await reviseV2Program({ bullswarmDir, runId, request, waitMs: 0 });
+    assert.deepEqual([accepted.status, accepted.appliedBy, accepted.record.changes.accepted], ['applied', 'offline', ['gate']]);
+    assert.equal(accepted.state.actions.find((action) => action.id === 'after').status, 'pending');
+    const second = await runV2AutonomousWorkflow({ bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {}, dependencies });
+    assert.equal(second.result.status, 'completed');
+    assert.equal(calls.after, 1);
+    const gate = second.state.actions.find((action) => action.id === 'gate');
+    assert.deepEqual([gate.status, gate.acceptance.evidence, gate.acceptance.attemptId, gate.acceptance.failureKind], ['succeeded', 'choice', 'gate-2', 'failed-evidence']);
+    assert.equal(readFileSync(join(workspace, 'after.txt'), 'utf8'), 'after done\n');
+    assert.ok(readEvents(runDir).some((event) => event.type === 'step.accepted' && event.payload.actionId === 'gate'));
+    assert.equal(attemptsOf(second.state, 'gate').length, 2, 'accepting never reruns the step');
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });

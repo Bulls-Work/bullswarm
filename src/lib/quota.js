@@ -682,7 +682,8 @@ function quoted(line, max = 160) {
  * @returns {{pause: boolean, rule: 'message'|'meter'|'transient'|'off',
  *   line: string|null, until: number|null, resetsAt: string|null,
  *   meter: object|null, meterWindow: object|null, waitMs: number|null,
- *   retrySamePool: boolean, decidedAt: string, why: string}}
+ *   retrySamePool: boolean, decidedAt: string, why: string,
+ *   holdUntil?: number|null}} `holdUntil` is on the 'off' result only.
  */
 export function decideQuotaPause({
   connector = null, failure = null, text = null, pool = null, bullswarmDir = null,
@@ -708,8 +709,14 @@ export function decideQuotaPause({
   };
   const none = { until: null, resetsAt: null, meterWindow: null };
   if (!on) {
+    // The deadline the two proofs below would have paused until. It pauses
+    // nothing: a workflow step may hold that pool for itself until then
+    // (stage-3 D8a); quotaPauseProven() refuses any 'off' result.
+    const offWindow = classified.explicit ? null : fullMeterWindow(reading);
+    const holdUntil = classified.explicit ? classified.resetAt
+      : offWindow ? Date.parse(offWindow.resetsAt) : null;
     return {
-      ...base, ...none, pause: false, rule: 'off',
+      ...base, ...none, pause: false, rule: 'off', holdUntil: Number.isFinite(holdUntil) ? holdUntil : null,
       why: `limit notice ${said} · pool not paused: automatic pausing is off (bullswarm strategy set-pausing on)`
         + (summary ? ` · meter ${summary}` : ''),
     };

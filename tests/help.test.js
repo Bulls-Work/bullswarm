@@ -271,9 +271,9 @@ test('help describes the bare command as the dashboard with setup as the fallbac
 
 test('workflow help documents failed evidence and the planner contract evidence field', () => {
   const resume = helpText(['workflow', 'resume']);
-  assert.match(resume, /a check that failed it, failed evidence, a semantic failure/);
-  // The stage-1 clause stays: such a step still fails not-produced and is not rerun.
-  assert.ok(resume.includes('(a check that failed it, failed evidence, a semantic failure, a declared deliverable that was not produced, or a build-lane step with no declared deliverable that changed nothing) is not rerun; add a fix step or name it in plan revise --rerun'));
+  // Stage 3 rewords the resume safety line and points at the caller verbs;
+  // the stage-1 clause (a build-lane step that changed nothing) still holds.
+  assert.ok(resume.includes('a failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun; use step rerun, step accept, or plan revise'), resume);
   const contract = helpText(['workflow', 'plan', 'contract']);
   assert.match(contract, /evidence checks Bullswarm runs after steps/);
 });
@@ -365,4 +365,43 @@ test('no command synopsis is hand-typed outside src/help.js', () => {
     redirectCallSites >= 30,
     `expected at least 30 usageLine()/helpText() redirect call sites outside help.js, found ${redirectCallSites}`,
   );
+});
+
+test('workflow step help lists restart, rerun and accept, each with its own entry', () => {
+  const step = helpText(['workflow', 'step']);
+  for (const verb of ['restart <runId> <step>', 'rerun <runId> <step>', 'accept <runId> <step>']) assert.ok(step.includes(verb), verb);
+  assert.ok(step.includes("run a failed or finished step again with its last attempt's handoff; --avoid keeps it off pools and stays in the step's route"));
+  assert.ok(step.includes('accept a failed step, or a check\'s failing requirements, by your choice (--reason); dependents run; recorded as evidence "choice", never proof'));
+  const workflow = helpText(['workflow']);
+  assert.ok(workflow.includes('step rerun <runId> <step>'));
+  assert.ok(workflow.includes('step accept <runId> <step>'));
+
+  const rerun = helpText(['workflow', 'step', 'rerun']);
+  assert.equal(rerun.split('\n')[0], 'Usage: bullswarm workflow step rerun <runId> <step> [--avoid <pool>]... [--wait <seconds>] [--json]');
+  assert.match(rerun, /--avoid <pool>/);
+  assert.match(rerun, /route\.pools\.avoid/);
+  assert.match(rerun, /bullswarm workflow step rerun ab12cd write-report --avoid pool-a/);
+  assert.match(helpForArgs(['workflow', 'step', 'rerun', '--help']), /^Usage: bullswarm workflow step rerun /);
+
+  const accept = helpText(['workflow', 'step', 'accept']);
+  assert.equal(accept.split('\n')[0], 'Usage: bullswarm workflow step accept <runId> <step> --reason "<why>" [--requirement <id>]... [--wait <seconds>] [--json]');
+  for (const flag of ['--reason <text>', '--requirement <id>', '--wait <seconds>', '--json']) assert.ok(accept.includes(flag), flag);
+  assert.match(accept, /never as proof/);
+  assert.match(accept, /undo: bullswarm workflow step rerun <runId> <step>/);
+});
+
+test('--retry-attempts reads as automatic retries per step in all three places', () => {
+  const wording = 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached)';
+  for (const path of [['workflow', 'goal'], ['workflow', 'plan', 'validate'], ['workflow', 'plan', 'contract']]) {
+    const text = helpText(path);
+    assert.ok(text.includes(`--retry-attempts <0..3>`), path.join(' '));
+    assert.ok(text.includes(wording), path.join(' '));
+    assert.ok(!text.includes('mechanical retry allowance'), path.join(' '));
+  }
+});
+
+test('watch --until lists needs you and long waits as trouble, and blocked dependents inside the block', () => {
+  const watch = helpText(['workflow', 'watch']);
+  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale, steering or waiting \(more than 30 min\) line/);
+  assert.match(watch, /blocked dependents are listed inside the needs-you block/);
 });

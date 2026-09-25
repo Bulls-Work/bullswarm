@@ -299,7 +299,13 @@ const TIME_BOX_RULE = 'The optional per-action `timeBox` field (whole minutes, 0
 
 // The kernel's bounded repair loop, stated once for the program rule set.
 // Authors still may not write repair steps: the kernel adds them itself.
-const REPAIR_LOOP_RULE = 'When a mandatory requirement fails its evidence, the kernel runs a bounded repair loop of at most 3 verify rounds (`defaults.verifyRounds` may set 1-3; 1 keeps the single round). It adds the steps `repair-<n>` and `verify-round-<n>` to the program itself, owning the union of the failing requirements\' `ownedFiles`; they appear in `plan export`. Never author a repair step, a repair field or your own retry loop for an ordinary failing check. Round 1 judges every requirement, round 2 re-checks the failures and looks for regressions, round 3 is final closure, and a requirement that passed is judged again only when a repair touched a file its evidence names. What is still failing after the last round is handed back in the result\'s `callerDecision` block with one suggested next step each. The kernel never repairs a requirement an `act` step affects; it hands it back.';
+const REPAIR_LOOP_RULE = 'When a check fails a mandatory requirement, the kernel adds one fix step (`repair-1`) built from its findings and one re-review (`verify-round-2`); what still fails comes back to you in the needs-you block and in the result\'s `callerDecision`. `defaults.verifyRounds` (0-3, default 1) sets how many fix-and-re-review cycles run; 0 means no automatic fix. The fix and the re-review inherit the route of the steps they stand for, the fix also runs the command evidence of the steps it repairs, and both appear in `plan export`. Never author a repair step, a repair field or your own retry loop for an ordinary failing check. The kernel never repairs a requirement an `act` step affects; it hands it back.';
+
+// Stage 3: one automatic retry per step, then the caller (program mode only).
+const FAILURE_RULE = 'Each step gets one automatic retry, then comes back to you: a crashed, silent or signed-out worker is retried on another eligible pool; a failed gate (declared evidence, a deliverable not produced, a report in the wrong format, output judged failed) is retried on the same pool with the failure attached. An act step is never retried once its worker started; it comes back to you. A pool out of quota makes the step wait, never fail. Steps that do not depend on a failed step keep running. Never author retry steps: the watcher\'s needs-you block gives your options (step rerun --avoid, plan revise, take over, step accept).';
+
+// Stage 3: where a step may run (program mode only).
+const ROUTE_FIELD_RULE = 'The optional `route` keeps a step on or off pools: `pools.use`/`pools.avoid` name pool ids, `providers.use`/`providers.avoid` name providers (claude-code, codex, grok, …; a provider that serves several vendors counts as one), and `independentOf` names earlier steps (or "writers" on a step with evidenceFor) whose providers this step must not use. It is a hard filter applied before quota pacing; a step it leaves without a pool waits for one to come back, or fails as no eligible pool. Lane and effort stay their own fields. A review runs where you route it; Bullswarm records who reviewed.';
 
 // One source of truth for the planning contract. The dispatched planner
 // prompt, the caller-facing `workflow plan contract`, and every durable
@@ -321,6 +327,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     DIGEST_KIND_RULE,
     REASONING_FIELD_RULE,
     TIME_BOX_RULE,
+    ROUTE_FIELD_RULE,
     workspaceMode === 'isolated'
       ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Deliverable paths must be files git would track: a git-ignored path is refused, because isolation copies back only tracked files. Order overlapping writers. Review steps inspect the integrated target workspace.'
       : 'All agents share the target worktree. ownedFiles lists intended territory and provides overlap scheduling hints; it is not an exact-file enforcement gate. Overlapping territories are serialized automatically. An analyze action is read-only. A build/chore action with empty ownedFiles is an unrestricted integrator and runs alone.',
@@ -329,6 +336,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Judge acceptance with observable behavior and the repository checks. Reproduce regressions where applicable, run focused tests after changes, then the requested full gates on the integrated tree. Preserve every acceptance qualifier; do not accept vacuous tests or a green unrelated suite as proof.',
     'Review steps are optional. To request structured independent judgment, use a check step (analyze) with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.',
     'The result status describes graph execution; verified separately records passing requirement evidence. Read per-action failures, outputs, and evidence before claiming the product is ready.',
+    FAILURE_RULE,
     REPAIR_LOOP_RULE,
     'What the loop leaves is the caller\'s decision: read the `callerDecision` block of the result, then either take over, or add a step through a plan revision. Further investigation belongs in an explicitly authored follow-up program.',
     workspaceMutation === 'forbidden'
@@ -416,6 +424,7 @@ function programActionFields(stateOrGoal) {
       lane: 'analyze | build | chore — omit when kind supplies it, or when role does',
       effort: 'high | medium | low — omit to take it from kind, role, program defaults, or the lane default',
       produces: 'optional artifact IDs this action produces for later actions (data-flow labels, not the deliverable)',
+      route: 'optional {pools:{use,avoid}, providers:{use,avoid}, independentOf} — where the step may run; a hard filter before pacing',
     } : {}),
   };
 }
@@ -527,7 +536,7 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
         evidenceTypes: {
           types: [...EVIDENCE_TYPES],
           usable: [...USABLE_EVIDENCE_TYPES],
-          note: 'command and schema go in a step\'s evidence field; review is a check step with evidenceFor; choice is recorded by the caller',
+          note: 'command and schema go in a step\'s evidence field; review is a check step with evidenceFor; choice is recorded by bullswarm workflow step accept (never proof)',
         },
         stepEvidence: {
           fieldTypes: [...STEP_EVIDENCE_TYPES], maxItems: EVIDENCE_MAX_ITEMS,
@@ -536,12 +545,22 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
           schemaFormats: ['json', 'jsonl'], outputFile: '$output', env: [...EVIDENCE_ENV_KEYS],
           actRetry: false, checker: CHECKER_PATH,
         },
+        route: {
+          shape: '{pools?: {use?, avoid?}, providers?: {use?, avoid?}, independentOf?: [stepId, ...] | "writers"}',
+          pools: 'configured pool ids (not labels); use keeps the step on them, avoid keeps it off',
+          providers: 'the provider that runs the model (claude-code, codex, grok, ...); a relay serving several vendors counts as one',
+          independentOf: 'earlier steps (ancestors through dependsOn) whose providers this step must not use; "writers" only on a step with evidenceFor, meaning the work steps it judges',
+          note: 'optional, program mode only; a hard filter before quota pacing on every attempt, never waived for urgency; lane and effort stay their own fields; empty lists are dropped',
+        },
       } : {}),
       defaults: {
         allowed: ['effort', 'reasoning', 'timeBox', 'verifyRounds'],
-        note: 'optional program-level object; any other key is a validation error. Per field the order is action > kind > program defaults > lane default (effort), action > program defaults > run > strategy > connector (reasoning), and action > program defaults > computed from recorded attempts > 20 minutes (timeBox). verifyRounds (1-3, default 3) is the most verify rounds the kernel runs before handing the rest to the caller; it is program-level only.',
+        note: isProgramWorkflow(goalDocument)
+          ? 'optional program-level object; any other key is a validation error. Per field the order is action > kind > program defaults > lane default (effort), action > program defaults > run > strategy > connector (reasoning), and action > program defaults > computed from recorded attempts > 20 minutes (timeBox). verifyRounds (0-3, default 1: fix-and-re-review cycles) is how many times the kernel fixes a failing requirement and reviews it again before handing the rest to the caller; 0 means review only; it is program-level only.'
+          : 'optional program-level object; any other key is a validation error. Per field the order is action > kind > program defaults > lane default (effort), action > program defaults > run > strategy > connector (reasoning), and action > program defaults > computed from recorded attempts > 20 minutes (timeBox). verifyRounds (1-3, default 3) is the most verify rounds the kernel runs before handing the rest to the caller; it is program-level only.',
         ...(isProgramWorkflow(goalDocument) ? {
           roleNote: 'a role-only action resolves action > role > program defaults > lane default; kind and role never both survive normalisation',
+          verifyRounds: '0-3, default 1: fix-and-re-review cycles',
         } : {}),
       },
       advisories: {

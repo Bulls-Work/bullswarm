@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { ACTION_KINDS, KIND_DEFAULTS, validateActionProgram } from '../src/workflow/action-validator.js';
 import { EVIDENCE_ENV_KEYS, EVIDENCE_MAX_TIMEOUT_SEC, runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from '../src/workflow/schema-check.js';
-import { KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, evidenceResultsIssues, roleRouting } from '../src/workflow/step-vocabulary.js';
+import { FAILURE_CLASSES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, STEP_EVIDENCE_TYPES, evidenceResultsIssues, roleRouting } from '../src/workflow/step-vocabulary.js';
 import { formatV2ProofLabel, stepProof } from '../src/workflow/v2-outcome.js';
 import { deliverableVerdict, snapshotPossible } from '../src/workflow/v2-dispatch.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
@@ -144,13 +144,13 @@ test('the example programs in both program references validate in program mode',
       // list is pinned, so a moved, added or dropped step fails here.
       const actions = accepted.actions;
       assert.deepEqual(
-        actions.map((action) => [action.id, action.role, action.deliverable?.type, action.lane, action.effort, action.dependsOn, action.affects, action.evidenceFor]),
+        actions.map((action) => [action.id, action.role, action.deliverable?.type, action.lane, action.effort, action.dependsOn, action.affects, action.evidenceFor, action.route]),
         [
-          ['since-flag', 'produce', 'files', 'build', 'medium', [], ['requirement-1'], []],
-          ['readme', 'produce', 'files', 'build', 'medium', [], ['requirement-2'], []],
-          ['records', 'produce', 'data', 'build', 'medium', [], ['requirement-3'], []],
-          ['integrate', 'combine', 'files', 'build', 'high', ['since-flag', 'readme'], ['requirement-1', 'requirement-2'], []],
-          ['verify', 'check', 'report', 'analyze', 'high', ['since-flag', 'readme', 'records', 'integrate'], [], ['requirement-1', 'requirement-2', 'requirement-3']],
+          ['since-flag', 'produce', 'files', 'build', 'medium', [], ['requirement-1'], [], undefined],
+          ['readme', 'produce', 'files', 'build', 'medium', [], ['requirement-2'], [], undefined],
+          ['records', 'produce', 'data', 'build', 'medium', [], ['requirement-3'], [], undefined],
+          ['integrate', 'combine', 'files', 'build', 'high', ['since-flag', 'readme'], ['requirement-1', 'requirement-2'], [], undefined],
+          ['verify', 'check', 'report', 'analyze', 'high', ['since-flag', 'readme', 'records', 'integrate'], [], ['requirement-1', 'requirement-2', 'requirement-3'], { independentOf: ['since-flag'] }],
         ],
         path,
       );
@@ -288,8 +288,11 @@ test('the enforced rules and field rows name the deliverable path refusals', () 
 test('not-produced covers a build-lane step that changed nothing, and stoppedBy lists every stop', () => {
   const result = flat('docs/reference/result.md');
   assert.ok(result.includes('`not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit)'));
-  // F18: help and the result reference list the same not-rerun cases.
-  assert.match(helpText(['workflow', 'resume']), /\(a check that failed it, failed evidence, a semantic failure, a declared deliverable that was not produced, or a build-lane step with no declared deliverable that changed nothing\) is not rerun/);
+  // F18: help and the result reference list the same not-rerun cases (stage 3
+  // reworded the list and points to step rerun, step accept or plan revise).
+  const notRerun = '(declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun';
+  assert.ok(helpText(['workflow', 'resume']).includes(`${notRerun}; use step rerun, step accept, or plan revise`));
+  assert.ok(result.includes(`${notRerun} by \`workflow resume\``));
   const row = result.match(/\| `stoppedBy` \| ([^\n]*) \|/)[1];
   const listed = [...row.matchAll(/`([a-z-]+)` \(/g)].map((match) => match[1]);
   assert.deepEqual(listed, [...VERIFY_LOOP_STOPS]);
@@ -317,6 +320,26 @@ test('a rerun after not-produced is judged again, and a workspace git cannot see
     assert.ok(text.includes('a workspace git cannot see (not a repository, or a folder the repository ignores) is judged only on exact `ownedFiles`'), `${path}: files row`);
   }
   assert.ok(flat('CHANGELOG.md').includes('a rerun of a step that failed `not-produced` is judged again'));
+});
+
+test('program references document the failure classes and validate routed examples', () => {
+  for (const path of PROGRAM_REFERENCES) {
+    const [table] = tablesWithHeader(path, ['failure', 'automatic action', 'then']);
+    assert.ok(table, `${path}: failure-rule table`);
+    assert.deepEqual(table.rows.map((row) => row[0]), Object.keys(FAILURE_CLASSES), `${path}: failure classes`);
+    for (const [failureClass, kinds] of Object.entries(FAILURE_CLASSES)) {
+      assert.ok(table.rows.find((row) => row[0] === failureClass), `${path}: ${failureClass}`);
+      for (const kind of kinds) assert.ok(flat(path).includes(`\`${kind}\``), `${path}: ${kind}`);
+    }
+    for (const example of examplePrograms(path)) {
+      const verified = example.actions.find((action) => action.id === 'verify');
+      assert.deepEqual(verified.route, { independentOf: ['since-flag'] }, `${path}: routed check example`);
+      assert.ok(verified.dependsOn.includes('since-flag'), `${path}: route target is a dependency`);
+    }
+    const text = flat(path);
+    assert.ok(text.includes('one automatic retry in total'), `${path}: retry budget`);
+    assert.ok(text.includes('Only its dependents wait; other steps keep running.'), `${path}: dependents`);
+  }
 });
 
 // Stage-2 docs review (F22-F34, F19) and the fresh-caller run: each claim is

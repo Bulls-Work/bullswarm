@@ -417,3 +417,120 @@ test('verifyLoop.stoppedBy act-step loads', () => {
     /stoppedBy must be null\|passed\|rounds\|revision\|step-failed\|act-step/,
   );
 });
+
+test('an attempt retryOf loads with exact keys, a RETRY_FACTS how, and an earlier attempt of the same step', () => {
+  const state = roleProgramState();
+  state.attempts[1] = { ...state.attempts[1], retryOf: { attempt: 'write-work-1', how: 'same-pool' } };
+  const loaded = deserializeV2DurableState(serializeV2DurableState(state));
+  assert.deepEqual(loaded.attempts[1].retryOf, { attempt: 'write-work-1', how: 'same-pool' });
+  assert.equal(Object.hasOwn(loaded.attempts[0], 'retryOf'), false);
+  for (const how of ['other-pool', 'wait']) {
+    const copy = structuredClone(state);
+    copy.attempts[1].retryOf.how = how;
+    assert.equal(deserializeV2DurableState(serializeV2DurableState(copy)).attempts[1].retryOf.how, how);
+  }
+  const reject = (retryOf, pattern, index = 1) => {
+    const copy = structuredClone(state);
+    copy.attempts[index] = { ...copy.attempts[index], retryOf };
+    assert.throws(() => validateV2DurableState(copy), pattern);
+  };
+  reject(null, /attempts\[1\]\.retryOf must be an object/);
+  reject({ attempt: 'write-work-1', how: 'again' }, /retryOf\.how must be other-pool\|same-pool\|wait/);
+  reject({ attempt: 'write-work-1' }, /retryOf\.how must be/);
+  reject({ attempt: '', how: 'wait' }, /retryOf\.attempt/);
+  reject({ attempt: 'write-work-1', how: 'wait', pool: 'sample' }, /retryOf\.pool is not allowed/);
+  reject({ attempt: 'write-work-1', how: 'wait', result: 'x' }, /retryOf\.result is a legacy autonomous field/);
+  reject({ attempt: 'other-step-1', how: 'wait' }, /retryOf\.attempt must name an earlier attempt of write-work/);
+  reject({ attempt: 'write-work-2', how: 'wait' }, /attempts\[1\]\.retryOf\.attempt must name an earlier attempt/);
+  reject({ attempt: 'write-work-2', how: 'wait' }, /attempts\[0\]\.retryOf\.attempt must name an earlier attempt/, 0);
+});
+
+test('an action acceptance loads, and every rule of its validator refuses', () => {
+  const state = roleProgramState();
+  const acceptance = {
+    evidence: 'choice', reason: 'the output is good enough for acme', attemptId: 'write-work-2',
+    failureKind: 'failed-evidence', at: '2026-09-17T02:40:00.000Z', revision: 2,
+  };
+  state.actions[0] = { ...state.actions[0], acceptance };
+  assert.deepEqual(deserializeV2DurableState(serializeV2DurableState(state)).actions[0].acceptance, acceptance);
+  const requirementAcceptance = { ...acceptance, failureKind: null, attemptId: null, requirements: [{ id: 'result-versioned', workRevision: 'initial' }, { id: 'tests-pass', workRevision: 3 }] };
+  const withRequirements = structuredClone(state);
+  withRequirements.actions[0].acceptance = requirementAcceptance;
+  assert.deepEqual(deserializeV2DurableState(serializeV2DurableState(withRequirements)).actions[0].acceptance, requirementAcceptance);
+  // Absent on a step no caller accepted.
+  assert.equal(Object.hasOwn(roleProgramState().actions[0], 'acceptance'), false);
+  assert.doesNotThrow(() => validateV2DurableState(roleProgramState()));
+  const reject = (patch, pattern) => {
+    const copy = structuredClone(state);
+    copy.actions[0].acceptance = typeof patch === 'function' ? patch({ ...acceptance }) : { ...acceptance, ...patch };
+    assert.throws(() => validateV2DurableState(copy), pattern);
+  };
+  reject(() => 'choice', /actions\[0\]\.acceptance must be an object/);
+  reject({ evidence: 'review' }, /acceptance\.evidence must be choice/);
+  reject(({ evidence, ...rest }) => rest, /acceptance\.evidence must be choice/);
+  reject({ reason: '' }, /acceptance\.reason must be one line of 1 to 500 characters/);
+  reject({ reason: '   ' }, /acceptance\.reason must be one line/);
+  reject({ reason: 'x'.repeat(501) }, /acceptance\.reason must be one line of 1 to 500 characters/);
+  reject({ reason: 'line one\nline two' }, /acceptance\.reason must be one line/);
+  reject({ reason: 7 }, /acceptance\.reason must be one line/);
+  reject({ at: 'yesterday' }, /acceptance\.at must be an ISO-compatible timestamp/);
+  reject({ at: null }, /acceptance\.at is required/);
+  reject({ revision: -1 }, /acceptance\.revision must be a non-negative integer/);
+  reject({ revision: 1.5 }, /acceptance\.revision must be a non-negative integer/);
+  reject({ attemptId: 42 }, /acceptance\.attemptId must be null or a non-empty string/);
+  reject(({ attemptId, ...rest }) => rest, /acceptance\.attemptId must be null or a non-empty string/);
+  reject({ failureKind: '' }, /acceptance\.failureKind must be null or a non-empty string/);
+  reject({ requirements: [] }, /acceptance\.requirements must be a non-empty array/);
+  reject({ requirements: 'result-versioned' }, /acceptance\.requirements must be a non-empty array/);
+  reject({ requirements: [{ id: 'result-versioned' }] }, /requirements\[0\]\.workRevision must be a string or number/);
+  reject({ requirements: [{ id: 'result-versioned', workRevision: '' }] }, /requirements\[0\]\.workRevision must be a string or number/);
+  reject({ requirements: [{ id: '', workRevision: 1 }] }, /requirements\[0\]\.id/);
+  reject({ requirements: [{ id: 'a', workRevision: 1, status: 'failed' }] }, /requirements\[0\]\.status is not allowed/);
+  reject({ requirements: [{ id: 'a', workRevision: 1 }, { id: 'a', workRevision: 2 }] }, /acceptance\.requirements must not repeat a/);
+  reject({ extra: true }, /acceptance\.extra is not allowed/);
+  // Legacy autonomous names stay refused here as everywhere in state.
+  reject({ decision: 'accept' }, /acceptance\.decision is a legacy autonomous field/);
+  reject({ reviewer: 'me' }, /acceptance\.reviewer is a legacy autonomous field/);
+});
+
+test('a revision record may carry changes.accepted, and older records without it still load', () => {
+  const state = roleProgramState();
+  const record = {
+    id: 'rev-accept', status: 'applied', source: 'step-accept', queuedAt: '2026-09-17T02:40:00.000Z',
+    processedAt: '2026-09-17T02:40:01.000Z', summary: 'accept write-work: "fine"', baseRevision: 1,
+    programRevision: 1, steeringIds: [], issues: null,
+    changes: { added: [], amended: [], restored: [], removed: [], rerun: [], invalidated: [] },
+  };
+  state.revisions = [record];
+  assert.equal(Object.hasOwn(deserializeV2DurableState(serializeV2DurableState(state)).revisions[0].changes, 'accepted'), false);
+  state.revisions[0].changes.accepted = ['write-work'];
+  const loaded = deserializeV2DurableState(serializeV2DurableState(state));
+  assert.deepEqual(loaded.revisions[0].changes.accepted, ['write-work']);
+  for (const bad of [null, 'write-work', ['Not An Id']]) {
+    const copy = structuredClone(state);
+    copy.revisions[0].changes.accepted = bad;
+    assert.throws(() => validateV2DurableState(copy), /changes\.accepted must be an array of action ids/);
+  }
+  const unknown = structuredClone(state);
+  unknown.revisions[0].changes.approved = [];
+  assert.throws(() => validateV2DurableState(unknown), /changes\.approved is not allowed/);
+});
+
+test('verifyLoop max goes to 4 with at most four rounds', () => {
+  const state = roleProgramState();
+  const round = (n, closed = true) => ({
+    round: n, verifyActionIds: ['write-work'], startedAt: '2026-09-17T02:40:00.000Z',
+    closedAt: closed ? '2026-09-17T02:41:00.000Z' : null, toJudge: ['result-versioned'], carried: [], passed: [],
+    failed: ['result-versioned'], discovery: [], repairActionId: null, repairRequirements: [], repairOwnedFiles: [],
+    repairUnrestricted: false, repairStartedAt: null, repairFinishedAt: null, changedFiles: null,
+  });
+  state.verifyLoop = { max: 4, stoppedBy: 'rounds', rounds: [round(1), round(2), round(3), round(4)] };
+  assert.equal(deserializeV2DurableState(serializeV2DurableState(state)).verifyLoop.max, 4);
+  for (const max of [0, 5, 2.5]) {
+    assert.throws(() => validateV2DurableState({ ...state, verifyLoop: { ...state.verifyLoop, max } }), /state\.verifyLoop\.max must be 1 to 4/);
+  }
+  assert.throws(
+    () => validateV2DurableState({ ...state, verifyLoop: { ...state.verifyLoop, rounds: [round(1), round(2), round(3), round(4), round(5)] } }),
+    /state\.verifyLoop\.rounds must hold at most four rounds/,
+  );
+});

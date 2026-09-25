@@ -8,13 +8,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
-import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
-import { readStepRestarts, requestStepRestart, stepRestartPath } from '../src/workflow/v2-dispatch.js';
+import { reviseV2Program, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { dispatchV2Action, readStepRestarts, requestStepRestart, stepRestartPath } from '../src/workflow/v2-dispatch.js';
+import { createRevisionRequest, exportV2Plan, normalizeRevisionInput, queueRevisionRequest } from '../src/workflow/v2-revision.js';
 import { restartV2Step } from '../src/workflow/cli.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
@@ -192,3 +193,179 @@ test('the command line validates --until and step restart before touching a run'
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+
+
+// --- Stage 3: the kernel side of step rerun / accept, and the pin label ------
+
+const readState = (runDir) => JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+// A failed assertion must not leave a held step running: cancel the run and
+// wait for its kernel, so the test file always ends.
+async function guarded(runDir, kernel, body) {
+  let finished = false;
+  try {
+    const result = await body();
+    finished = true;
+    return result;
+  } finally {
+    if (!finished) {
+      try { writeFileSync(join(runDir, 'cancellation.json'), JSON.stringify({ requested: true, requestedAt: new Date().toISOString(), reason: 'test cleanup' })); } catch { /* run dir gone */ }
+      await kernel.catch(() => {});
+    }
+  }
+}
+const revisionOf = (runDir, { source, rerun = [], accept = null, baseRevision }) => {
+  const state = readState(runDir);
+  const body = normalizeRevisionInput(exportV2Plan(state), { rerun });
+  return createRevisionRequest({ ...body, baseRevision: baseRevision ?? state.program.revision, ...(accept ? { accept } : {}) }, { source });
+};
+
+test('a restart --pool runs through the real dispatcher pinned, and the route reason says the restart pinned it', async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-rstpin-abcdef';
+  const connector = (name) => ({
+    name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
+    modelSelection: { flag: '--model' },
+    strategyAssignments: Object.fromEntries(['low', 'medium', 'high'].map((tier) => [tier, { pool: name, model: 'gpt-5.6-luna' }])),
+  });
+  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+  let held = true;
+  const worker = async (_connector, task, targetDir, files, opts) => {
+    writeFileSync(files.taskFile, task);
+    if (held) {
+      held = false;
+      writeFileSync(join(targetDir, 'a.txt'), 'partial');
+      for (;;) {
+        if (opts.shouldCancel?.()) return { ok: false, cancelled: true, why: 'cancelled', meta: { cancelled: true } };
+        await new Promise((done) => setTimeout(done, 5));
+      }
+    }
+    writeFileSync(join(targetDir, 'a.txt'), 'done');
+    writeFileSync(files.outFile, 'delivered a');
+    return { ok: true, why: 'ok', meta: { exitCode: 0, wallSec: 1 } };
+  };
+  const kernel = runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
+    initialPlannerResponse: initial([work('a')]),
+    dependencies: {
+      controlPollMs: 10, refreshPools: async () => null,
+      dispatchV2Action: (options) => dispatchV2Action({
+        ...options, pools: [connector('codex'), connector('grok')],
+        dependencies: {
+          watchOnce: worker, loadState: () => structuredClone(core), saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
+          uuid: () => 'session-fixed',
+        },
+      }),
+    },
+  });
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  const done = await guarded(runDir, kernel, async () => {
+    await until(() => readState(runDir).attempts.length === 1, 'a-1 running');
+    const restarted = await restartV2Step({ bullswarmDir: f.bullswarmDir, token: runId, stepId: 'a', pool: 'grok', waitMs: 5000 });
+    assert.equal(restarted.status, 'restarted');
+    return kernel;
+  });
+  assert.equal(done.result.status, 'completed');
+  const second = done.state.attempts.find((attempt) => attempt.id === 'a-2');
+  assert.equal(second.pool, 'grok');
+  assert.match(second.routeWhy, /^pinned to grok \(step restart\)/);
+  assert.doesNotMatch(second.routeWhy, /--worker-pool/);
+});
+
+test('a queued step rerun the live kernel rejects: the kernel deletes its intent, and a later plan revise --rerun carries no handoff', async (t) => {
+  const f = fixture(t);
+  const ctl = controller();
+  ctl.hold('a');
+  const runId = 'wf-rrrej-abcdef';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  const kernel = start(f, runId, [work('a'), work('b')], ctl);
+  const done = await guarded(runDir, kernel, async () => {
+  await until(() => readEvents(runDir).some((event) => event.type === 'action.finished' && event.payload.actionId === 'b'), 'b finished');
+  // What `step rerun` leaves when its CLI returned `queued`: an applied intent
+  // naming the revision, and the revision in the queue.
+  const request = revisionOf(runDir, { source: 'step-rerun', rerun: ['b'], baseRevision: 99 });
+  requestStepRestart(runDir, { actionId: 'b', attemptId: 'b-1', source: 'step-rerun', revisionRequestId: request.id, appliedAt: new Date().toISOString() });
+  // Another step's rerun intent, for another request, is left alone.
+  requestStepRestart(runDir, { actionId: 'a', attemptId: 'a-1', source: 'step-rerun', revisionRequestId: 'rev-other-000000', appliedAt: new Date().toISOString() });
+  queueRevisionRequest(runDir, request);
+  await until(() => readEvents(runDir).some((event) => event.type === 'program.revision_rejected'), 'the rejection');
+  assert.equal(existsSync(stepRestartPath(runDir, 'b')), false, 'the rejected rerun\'s intent is gone');
+  assert.equal(existsSync(stepRestartPath(runDir, 'a')), true, 'an intent of another request stays');
+  rmSync(stepRestartPath(runDir, 'a'));
+  // A later plain rerun of b: no stale handoff.
+  const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request: revisionOf(runDir, { source: 'cli', rerun: ['b'] }), waitMs: 5000 });
+  assert.equal(revised.status, 'applied');
+  await until(() => ctl.count('b') === 2, 'b ran again');
+  const restarted = await restartV2Step({ bullswarmDir: f.bullswarmDir, token: runId, stepId: 'a', waitMs: 5000 });
+  assert.equal(restarted.status, 'restarted');
+  return kernel;
+  });
+  assert.equal(done.result.status, 'completed');
+  const rerunCall = ctl.calls.filter((call) => call.actionId === 'b')[1];
+  assert.equal(rerunCall.resumeHandoff, null);
+  assert.doesNotMatch(rerunCall.taskText, /## Prior attempt on this step/);
+});
+
+test('step accept through the live kernel and through an offline apply: step.accepted follows the revision, and the dependent runs', async (t) => {
+  const f = fixture(t);
+  const ctl = controller();
+  const failing = new Set(['a']);
+  const dispatch = async (options) => {
+    if (!failing.delete(options.action.id)) return ctl.dispatch(options);
+    const files = options.paths(1);
+    const record = { ordinal: 1, pool: 'fixture', model: 'fixture-model', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
+    options.onAttempt?.('started', record);
+    writeFileSync(files.outFile, 'nearly');
+    Object.assign(record, { status: 'failed', finishedAt: new Date().toISOString(), failureKind: 'semantic', why: 'the report says it is incomplete' });
+    options.onAttempt?.('finished', record);
+    return { ok: false, status: 'failed', failureKind: 'semantic', attempts: [record], verdict: { ok: false, why: record.why } };
+  };
+  ctl.hold('h');
+  const runId = 'wf-accept-abcdef';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  const kernel = runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
+    initialPlannerResponse: initial([work('a'), work('c', { dependsOn: ['a'] }), work('h')]),
+    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+  });
+  let accepted = null;
+  const done = await guarded(runDir, kernel, async () => {
+  await until(() => readState(runDir).actions.find((action) => action.id === 'c').status === 'blocked', 'c blocked behind the failed a');
+  accepted = await reviseV2Program({
+    bullswarmDir: f.bullswarmDir, runId, waitMs: 5000,
+    request: revisionOf(runDir, { source: 'step-accept', accept: [{ step: 'a', reason: 'good enough for the demo', requirements: null }] }),
+  });
+  assert.deepEqual([accepted.status, accepted.appliedBy, accepted.record.changes.accepted], ['applied', 'kernel', ['a']]);
+  await until(() => ctl.count('c') === 1, 'the dependent ran');
+  await restartV2Step({ bullswarmDir: f.bullswarmDir, token: runId, stepId: 'h', waitMs: 5000 });
+  return kernel;
+  });
+  assert.equal(done.result.status, 'completed');
+  const events = readEvents(runDir);
+  const revisedAt = events.findIndex((event) => event.type === 'program.revised' && event.payload.requestId === accepted.record.id);
+  const acceptedEvent = events.findIndex((event) => event.type === 'step.accepted');
+  assert.ok(revisedAt >= 0 && acceptedEvent === revisedAt + 1, 'step.accepted right after the revision');
+  assert.deepEqual(events[acceptedEvent].payload, { actionId: 'a', reason: 'good enough for the demo', requirements: null });
+  const a = done.state.actions.find((action) => action.id === 'a');
+  assert.deepEqual([a.status, a.acceptance.evidence, a.acceptance.attemptId], ['succeeded', 'choice', 'a-1']);
+
+  // Offline: a finished run whose failed step is accepted with no kernel alive.
+  const g = fixture(t);
+  const offlineId = 'wf-acptof-abcdef';
+  const offlineDir = join(g.bullswarmDir, 'workflows', offlineId);
+  failing.add('a');
+  const finished = await runV2AutonomousWorkflow({
+    bullswarmDir: g.bullswarmDir, goalDocument: g.goalDocument, pools: [], runId: offlineId,
+    initialPlannerResponse: initial([work('a'), work('c', { dependsOn: ['a'] })]),
+    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+  });
+  assert.equal(finished.result.status, 'partial');
+  const offline = await reviseV2Program({
+    bullswarmDir: g.bullswarmDir, runId: offlineId, waitMs: 0,
+    request: revisionOf(offlineDir, { source: 'step-accept', accept: [{ step: 'a', reason: 'shipped by hand', requirements: null }] }),
+  });
+  assert.deepEqual([offline.status, offline.appliedBy], ['applied', 'offline']);
+  const offlineEvents = readEvents(offlineDir);
+  assert.equal(offlineEvents.at(-1).type, 'step.accepted');
+  assert.deepEqual(offlineEvents.at(-1).payload, { actionId: 'a', reason: 'shipped by hand', requirements: null });
+  assert.equal(offlineEvents.at(-2).type, 'program.revised');
+});

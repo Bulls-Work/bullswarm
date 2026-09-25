@@ -6,6 +6,7 @@ import {
   ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, STEP_EVIDENCE_TYPES, WRITING_DELIVERABLES,
   deliverableTypeOf, laneFitsDeliverable, roleRouting,
 } from './step-vocabulary.js';
+import { normalizeRoute } from './step-route.js';
 
 export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES };
 
@@ -49,14 +50,21 @@ const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning', 'timeBox', 'verif
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
   'kind', 'role', 'lane', 'effort', 'deliverable', 'evidence', 'evidenceFor', 'inputs', 'produces', 'reasoning',
-  'timeBox',
+  'timeBox', 'route',
 ]);
 // The soft time box, in whole minutes; 0 leaves the paragraph out. A guide
 // written into the task, never a limit the kernel enforces (time-box.js).
 export const TIME_BOX_MAX_MINUTES = 240;
-// How many verify rounds the kernel may run before it hands failures back.
+// How many verify rounds the kernel may run before it hands failures back, in
+// runs started before stage 3 (their stored value counts review rounds).
 export const VERIFY_ROUNDS_DEFAULT = 3;
+// Stage 3 (D13): in marked runs `verifyRounds` counts fix-and-re-review
+// cycles, 0 to 3; 0 is review only. A saved run clamps a 0 to 1 when it reads
+// the value, which there also means no fix.
+export const FIX_ROUNDS_DEFAULT = 1;
+const VERIFY_ROUNDS_MIN = 0;
 const VERIFY_ROUNDS_MAX = 3;
+const isVerifyRounds = (value) => Number.isInteger(value) && value >= VERIFY_ROUNDS_MIN && value <= VERIFY_ROUNDS_MAX;
 const isTimeBox = (value) => Number.isInteger(value) && value >= 0 && value <= TIME_BOX_MAX_MINUTES;
 
 // Only reject direct response instructions. Product-inspection prompts often
@@ -386,8 +394,8 @@ function programDefaults(program, issues) {
     else issues.push(`program.defaults.timeBox must be a whole number of minutes from 0 to ${TIME_BOX_MAX_MINUTES}`);
   }
   if (raw.verifyRounds !== undefined) {
-    if (Number.isInteger(raw.verifyRounds) && raw.verifyRounds >= 1 && raw.verifyRounds <= VERIFY_ROUNDS_MAX) defaults.verifyRounds = raw.verifyRounds;
-    else issues.push('program.defaults.verifyRounds must be 1, 2 or 3');
+    if (isVerifyRounds(raw.verifyRounds)) defaults.verifyRounds = raw.verifyRounds;
+    else issues.push('program.defaults.verifyRounds must be 0, 1, 2 or 3');
   }
   return defaults;
 }
@@ -397,8 +405,8 @@ function programDefaults(program, issues) {
 // present.
 function normalizedVerifyRounds(program, defaults, issues) {
   if (program.verifyRounds === undefined) return;
-  if (!(Number.isInteger(program.verifyRounds) && program.verifyRounds >= 1 && program.verifyRounds <= VERIFY_ROUNDS_MAX)) {
-    issues.push('program.verifyRounds must be 1, 2 or 3');
+  if (!isVerifyRounds(program.verifyRounds)) {
+    issues.push('program.verifyRounds must be 0, 1, 2 or 3');
   } else if (defaults.verifyRounds !== undefined && defaults.verifyRounds !== program.verifyRounds) {
     issues.push('program.verifyRounds must match program.defaults.verifyRounds');
   } else defaults.verifyRounds = program.verifyRounds;
@@ -695,6 +703,13 @@ export function validateActionProgram(program, runtime = {}) {
     });
     if (evidence) action.evidence = evidence;
     else delete action.evidence;
+    // Written back only when it says something, so a no-op route is never an
+    // amendment and a second pass changes nothing (D16).
+    const route = normalizeRoute(action.route, at, issues, {
+      program, actionIndex: index, evidenceFor, relaxedGraph: runtime.relaxedGraph, knownActions,
+    });
+    if (route) action.route = route;
+    else delete action.route;
     const roleLaneOnWrongEvidence = roleKnown && action.role !== 'check' && !laneGiven;
     if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze' && !roleLaneOnWrongEvidence) {
       issues.push(`${at} evidence actions must use lane analyze`);

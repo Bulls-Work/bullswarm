@@ -966,6 +966,8 @@ const workflowText = rich({
     { name: 'tui [runId]', desc: 'open the dashboard (Home, Runs, Run, Step, Budget, Stats, Fleet, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
     { name: 'watch <runId>', desc: 'follow low-noise progress until terminal; --until outcome|trouble prints only what needs you' },
     { name: 'step restart <runId> <step>', desc: 'stop a running step and run it again with its handoff, optionally on another pool; nothing restarts on its own' },
+    { name: 'step rerun <runId> <step>', desc: 'run a failed or finished step again with its last attempt\'s handoff; --avoid keeps it off pools and stays in the step\'s route' },
+    { name: 'step accept <runId> <step>', desc: 'accept a failed step, or a check\'s failing requirements, by your choice (--reason); dependents run; recorded as evidence "choice", never proof' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
@@ -977,8 +979,8 @@ const workflowText = rich({
       + 'stdout are TTYs; non-interactive callers receive this help text instead',
     'goal dispatches real coding-agent CLI processes and writes durable state under '
       + '~/.bullswarm/workflows/<runId>/',
-    'capabilities, tui, watch, events, action show, and task show are read-only; cancel, steer, step restart, plan submit, '
-      + 'and runs delete are the exceptions — see their own --help',
+    'capabilities, tui, watch, events, action show, and task show are read-only; cancel, steer, step restart, step rerun, '
+      + 'step accept, plan submit, and runs delete are the exceptions — see their own --help',
     'legacy authored-graph runs are read-only; driving commands fail closed before dispatch',
     'plan contract, plan validate, plan show, and plan export are read-only; plan submit and plan revise write the accepted program into the run and relaunch its kernel when none is running',
     'pause writes a pause request the kernel honors within about a second; resume lifts it',
@@ -1035,7 +1037,7 @@ const workflowGoalText = rich({
     { flag: '--max-actions <n>', desc: 'soft planning target for total actions across planner revisions; essential actions may exceed it', default: '100' },
     { flag: '--no-scout', desc: 'with --orchestrator: skip the read-only repository reconnaissance before the dispatched planner creates its first program', default: 'the scout runs first for a dispatched planner' },
     { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap', default: '4' },
-    { flag: '--retry-attempts <0..3>', desc: 'bounded retries for mechanical failures only; semantic evidence never auto-repairs', default: '1' },
+    { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached)', default: '1' },
     { flag: '--resume <shortId|runId>', desc: 'resume a V2 autonomous run; old autonomous runs fail closed before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
     { flag: '--again', desc: 'start another copy even when an ongoing run already has the same goal text in the same --cwd; the lookup happens before anything is validated or launched, and only a new launch is checked', default: 'off (a duplicate of an ongoing goal is refused)' },
@@ -1124,7 +1126,7 @@ const workflowPlanValidateText = rich({
     { flag: '--max-actions <n>', desc: 'advisory action target for the previewed run', default: '100' },
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target for the previewed run', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency for the previewed run', default: '4' },
-    { flag: '--retry-attempts <0..3>', desc: 'mechanical retry allowance for the previewed run', default: '1' },
+    { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached)', default: '1' },
   ],
   safety: ['read-only — nothing is launched, dispatched, or written; the exit code is the verdict (0 valid, 2 invalid, 1 bad cwd)'],
   examples: [{ cmd: 'bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json' }],
@@ -1169,7 +1171,7 @@ const workflowResumeText = rich({
   safety: [
     'planner mode, routing pins, and settings are durable; --program, --orchestrator, --scout, and --suggested-plan are rejected here (use workflow plan revise to change the plan)',
     'dispatches real coding-agent CLI processes for any unfinished actions, the same as workflow goal',
-    'a failed step whose failure is about the work itself (a check that failed it, failed evidence, a semantic failure, a declared deliverable that was not produced, or a build-lane step with no declared deliverable that changed nothing) is not rerun; add a fix step or name it in plan revise --rerun',
+    'a failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun; use step rerun, step accept, or plan revise',
   ],
   examples: [
     { cmd: 'bullswarm workflow resume ab12cd --watch' },
@@ -1193,7 +1195,7 @@ const workflowPlanContractText = rich({
     { flag: '--max-actions <n>', desc: 'advisory action target recorded in the contract settings', default: '100' },
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target recorded in the contract settings', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency recorded in the contract settings', default: '4' },
-    { flag: '--retry-attempts <0..3>', desc: 'mechanical retry allowance recorded in the contract settings', default: '1' },
+    { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached)', default: '1' },
     { flag: '--scout', desc: 'describe a kernel scout ahead of your program and retain the flag in launch guidance', default: 'off for a caller-authored program' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the contract echoes back', default: 'auto (routing decides per action)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the worker model the contract echoes back', default: 'auto' },
@@ -1457,13 +1459,16 @@ const workflowWatchText = rich({
     + 'default. A running step whose stale score crosses the threshold (quiet with no command running, no '
     + 'file change while commands continue, the same command repeated, wall time over 3x the expected '
     + 'minutes) prints one `⚠ <step> looks stale: <reasons>` line; nothing is stopped, the caller decides '
-    + '(`workflow step restart`). `--until outcome` prints only trouble lines (failed, rejected, paused, '
-    + 'stalled, stale, steering) and the outcome, and exits at the outcome; `--until trouble` also exits '
-    + 'at the first trouble line with a `next:` relaunch line. Distinct from the full-screen tui and the '
+    + '(`workflow step restart`). `--until outcome` prints only trouble lines (needs you, failed, rejected, '
+    + 'paused, stalled, stale, steering, waiting (more than 30 min)) and the outcome, and exits at the outcome; '
+    + '`--until trouble` also exits at the first trouble line with a `next:` relaunch line. In a program '
+    + 'run a failed step prints one needs-you block (what failed, each try, and your options: step rerun, '
+    + 'plan revise, take over, step accept); blocked dependents are listed inside the needs-you block as '
+    + '"waiting on this" and are not trouble of their own. Distinct from the full-screen tui and the '
     + 'machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
-    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first failed, rejected, paused, stalled, stale or steering line; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
+    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale, steering or waiting (more than 30 min) line; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
     { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; V2 runs only; cannot combine with --next', default: 'off (event mode)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
     { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off in event mode, 60 with --classic' },
@@ -1577,13 +1582,25 @@ const workflowTaskShowText = rich({
 
 const workflowStepText = rich({
   usage: 'bullswarm workflow step <command> ...',
-  purpose: 'Act on one step of a running workflow.',
+  purpose: 'Act on one step of a workflow: restart a running step, run a failed or finished step again, '
+    + 'or accept a failed step by your choice. These are the caller\'s answers to a watch line: nothing '
+    + 'restarts, reruns, or accepts a step on its own.',
   argsTitle: 'Commands',
-  args: [{ name: 'restart <runId> <step>', desc: 'stop the running step and run it again with its handoff' }],
+  args: [
+    { name: 'restart <runId> <step>', desc: 'stop the running step and run it again with its handoff' },
+    { name: 'rerun <runId> <step>', desc: 'run a failed or finished step again with its last attempt\'s handoff; --avoid keeps it off pools and stays in the step\'s route' },
+    { name: 'accept <runId> <step>', desc: 'accept a failed step, or a check\'s failing requirements, by your choice (--reason); dependents run; recorded as evidence "choice", never proof' },
+  ],
   options: [],
-  safety: ['restart stops a running agent; see its own --help'],
-  examples: [{ cmd: 'bullswarm workflow step restart ab12cd write-report' }],
-  next: 'bullswarm workflow step restart <runId> <step> after a watch line says the step looks stale.',
+  safety: [
+    'restart stops a running agent; rerun and accept are plan revisions (recorded in the run, applied by its kernel or directly); see each one\'s --help',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow step restart ab12cd write-report' },
+    { cmd: 'bullswarm workflow step rerun ab12cd write-report --avoid pool-a' },
+    { cmd: 'bullswarm workflow step accept ab12cd write-report --reason "the flaky check is known upstream"' },
+  ],
+  next: 'bullswarm workflow step restart <runId> <step> after a watch line says the step looks stale; step rerun or step accept after a needs-you block.',
 });
 
 const workflowStepRestartText = rich({
@@ -1612,6 +1629,68 @@ const workflowStepRestartText = rich({
     { cmd: 'bullswarm workflow step restart ab12cd write-report --pool codex', note: 'move it to another pool' },
   ],
   next: 'bullswarm workflow watch <runId> --until trouble to follow the restarted step.',
+});
+
+const workflowStepRerunText = rich({
+  usage: 'bullswarm workflow step rerun <runId> <step> [--avoid <pool>]... [--wait <seconds>] [--json]',
+  purpose: 'Run a failed, cancelled, interrupted, finished, or waiting step of a program run again. Its next '
+    + 'attempt carries the last failed attempt\'s handoff block (what it did, its failure, its evidence), and '
+    + 'its automatic retry is available again. --avoid adds pools to the step\'s route (route.pools.avoid), '
+    + 'so this attempt, its automatic retry, and later reruns stay off them; the route shows in plan export and '
+    + 'a plan revise removes it. On a step that has not run yet, --avoid only changes its route. It is a plan '
+    + 'revision (source step-rerun): the running kernel applies it, or it is applied directly and the kernel '
+    + 'relaunched. plan revise --rerun is the same rerun without the handoff.',
+  args: [
+    { name: '<runId>', desc: 'shortId or runId of a program-mode run' },
+    { name: '<step>', desc: 'the step (action id) to run again' },
+  ],
+  options: [
+    { flag: '--avoid <pool>', desc: 'keep the step off this configured pool (a pool label resolves to its id); repeat it or give a comma list', default: 'no change to the route' },
+    { flag: '--wait <seconds>', desc: 'how long to wait for a running kernel to apply the revision before reporting it queued', default: '120' },
+    { flag: '--json', desc: 'print {action: "step-rerun", status, avoid, handoffFrom, programRevision, changes, appliedBy, relaunch, next}', default: 'human text' },
+  ],
+  safety: [
+    'writes a plan revision into the run and one restart intent (restart-<step>.json) carrying the handoff; a rejected revision leaves the run unchanged and removes the intent',
+    'refused on a running step (use step restart), on a blocked step (act on the failed dependency first), and on a step that has not run yet unless --avoid is given',
+    'exit 2 when a pool is unknown, when avoiding it leaves the step\'s route.pools.use empty, or when no configured pool could run the step after avoiding it',
+    'dispatches the step again (and anything that depends on it) on the run\'s kernel',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow step rerun ab12cd write-report', note: 'same routing, with the last attempt\'s handoff' },
+    { cmd: 'bullswarm workflow step rerun ab12cd write-report --avoid pool-a', note: 'the needs-you "rerun elsewhere" option' },
+    { cmd: 'bullswarm workflow step rerun ab12cd write-report --avoid pool-a,pool-b --json' },
+  ],
+  next: 'bullswarm workflow watch <runId> --until trouble to follow the step.',
+});
+
+const workflowStepAcceptText = rich({
+  usage: 'bullswarm workflow step accept <runId> <step> --reason "<why>" [--requirement <id>]... [--wait <seconds>] [--json]',
+  purpose: 'Accept a failed step of a program run by your choice: it becomes succeeded with evidence '
+    + '"choice", its output is the accepted attempt\'s output, and the steps blocked behind it run. On a '
+    + 'check step (or a kernel verify-round step) whose requirements are failing, it accepts those '
+    + 'requirements instead (all of them, or the ones named with --requirement): the review loop and the '
+    + 'result\'s callerDecision stop asking about them, and they stay not verified. A choice is recorded as a '
+    + 'choice, never as proof. It is a plan revision (source step-accept); rerunning the step undoes it.',
+  args: [
+    { name: '<runId>', desc: 'shortId or runId of a program-mode run' },
+    { name: '<step>', desc: 'the failed step, or the check step whose failing requirements you accept' },
+  ],
+  options: [
+    { flag: '--reason <text>', desc: 'why you accept it, one line of at most 500 characters; recorded as the evidence', default: 'required' },
+    { flag: '--requirement <id>', desc: 'accept only this failing requirement of a check step; repeat it for several', default: 'every failing requirement the step checks' },
+    { flag: '--wait <seconds>', desc: 'how long to wait for a running kernel to apply the revision before reporting it queued', default: '120' },
+    { flag: '--json', desc: 'print {action: "step-accept", status, reason, requirements, programRevision, changes, appliedBy, relaunch, next}', default: 'human text' },
+  ],
+  safety: [
+    'writes a plan revision into the run; the durable result shows the step as accepted by choice, never as proven or verified',
+    'refused on a step that is running, waiting, pending, blocked, cancelled, or interrupted, on a succeeded step with nothing failing, and on a writer of an isolated run whose work was never merged back',
+    'undo: bullswarm workflow step rerun <runId> <step>',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow step accept ab12cd write-report --reason "the flaky upstream test is tracked separately"', note: 'the needs-you "accept anyway" option' },
+    { cmd: 'bullswarm workflow step accept ab12cd check-report --requirement requirement-2 --reason "out of scope for this release"' },
+  ],
+  next: 'bullswarm workflow watch <runId> --until trouble to follow the dependents that now run.',
 });
 
 // --- workflow runs ----------------------------------------------------------
@@ -1908,6 +1987,8 @@ const HELP = {
     step: {
       _text: workflowStepText,
       restart: { _text: workflowStepRestartText },
+      rerun: { _text: workflowStepRerunText },
+      accept: { _text: workflowStepAcceptText },
     },
     runs: runsHelp(),
   },

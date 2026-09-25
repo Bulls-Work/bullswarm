@@ -15,7 +15,7 @@ import {
   acceptCallerPlannerResponse, handoffBlock, pauseV2Run, runV2AutonomousWorkflow, unpauseV2Run,
 } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action, requestStepRestart } from '../src/workflow/v2-dispatch.js';
-import { readRunFeatures } from '../src/workflow/run-features.js';
+import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES, readRunFeatures } from '../src/workflow/run-features.js';
 import { formatV2ProofLabel, v2RetryPlan } from '../src/workflow/v2-outcome.js';
 import { staleScore } from '../src/lib/stale.js';
 
@@ -172,7 +172,8 @@ test('a passing check: results on the attempt, the receipt and the result; event
   assert.equal(Object.hasOwn(run.state.attempts.find((entry) => entry.actionId === 'notes'), 'evidenceResults'), false);
 
   const runDir = run.runDir;
-  assert.deepEqual(readRunFeatures(runDir), { deliverableGate: 1, proofLabels: 1 });
+  // A stage-3 launch writes stage 2's keys plus its own (D28).
+  assert.deepEqual(readRunFeatures(runDir), { ...STAGE3_RUN_FEATURES });
   const receipt = JSON.parse(readFileSync(join(runDir, 'completion-write.json'), 'utf8'));
   assert.deepEqual(receipt.verdict.evidenceResults, attempt.evidenceResults, 'E31: the receipt carries the results');
 
@@ -200,11 +201,14 @@ test('a passing check: results on the attempt, the receipt and the result; event
 
 test('a failing check retries once on the same pool with the check output, then fails the step', async (t) => {
   const f = fixture(t);
+  // A stage-2 launch (its marker, E14 byte for byte); the stage-3 twin follows.
   const run = await launch(f, {
     runId: 'wf-evfail-abcdef',
     actions: [step({ evidence: [{ type: 'command', cmd: 'echo "acme check: write.txt says nope" && grep -q ready write.txt' }] })],
     dispatch: realDispatch({ worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'nope\n') }),
+    dependencies: { runFeatures: STAGE2_RUN_FEATURES },
   });
+  assert.deepEqual(readRunFeatures(run.runDir), { ...STAGE2_RUN_FEATURES });
   const [first, second] = run.state.attempts;
   assert.equal(run.state.attempts.length, 2);
   assert.equal(first.status, 'interrupted');
@@ -226,6 +230,38 @@ test('a failing check retries once on the same pool with the check output, then 
   const finished = eventsOf(run.runDir, 'action.finished').at(-1).payload;
   assert.equal(finished.failureKind, 'failed-evidence');
   assert.equal(Object.hasOwn(finished, 'proof'), false);
+});
+
+test('stage 3: a failing check is the step\'s one gate retry, forced onto the same pool with the gate line, then the caller', async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  const run = await launch(f, {
+    runId: 'wf-evgate-abcdef',
+    actions: [step({ evidence: [{ type: 'command', cmd: 'echo "acme check: write.txt says nope" && grep -q ready write.txt' }] })],
+    dispatch: realDispatch({ seen, worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'nope\n') }),
+  });
+  assert.deepEqual(readRunFeatures(run.runDir), { ...STAGE3_RUN_FEATURES });
+  assert.equal(seen[0].failureRule, true);
+  assert.equal(seen[0].retriesAlready, 0);
+  const [first, second] = run.state.attempts;
+  assert.equal(run.state.attempts.length, 2, 'exactly one retry, never a third attempt');
+  assert.deepEqual([first.status, first.failureKind], ['interrupted', 'failed-evidence']);
+  assert.deepEqual([second.status, second.failureKind], ['failed', 'failed-evidence']);
+  assert.equal(second.pool, first.pool);
+  assert.match(second.routeWhy, /^pinned to codex \(the same pool \(gate retry\)\)/);
+  assert.equal(Object.hasOwn(first, 'retryOf'), false, 'the failed attempt carries no retry fact');
+  assert.deepEqual(second.retryOf, { attempt: 'write-1', how: 'same-pool' });
+  const task = readFileSync(second.taskFile, 'utf8');
+  assert.match(task, /- Failure: failed-evidence — /);
+  assert.match(task, /\n- This is the step's one automatic retry: the failure above closed its gate\. Fix what it names; your earlier edits are still in the workspace\.\n- Those edits are unverified\./);
+  const attemptFinished = eventsOf(run.runDir, 'attempt.finished').map((event) => event.payload);
+  assert.deepEqual(attemptFinished.map((payload) => [payload.willRetry, payload.failureRule]), [[true, true], [false, true]]);
+  const finished = eventsOf(run.runDir, 'action.finished').at(-1).payload;
+  assert.deepEqual([finished.status, finished.failureKind], ['failed', 'failed-evidence']);
+  assert.deepEqual(finished.attemptIds, ['write-1', 'write-2']);
+  assert.equal(finished.retries, 1);
+  const result = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
+  assert.equal(result.handback.unfinished[0].retries, 1);
 });
 
 async function resumeWithAttempts(t, { runId, attempts, actionState, marker = null, evidence = [{ type: 'command', cmd: 'true' }] }) {

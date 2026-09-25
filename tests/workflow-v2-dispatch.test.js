@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import {
-  classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, durableAttemptHandoff, snapshotPossible, statDeliverablePaths,
-  trackedDiffStatForTests,
+  appliedStepRestart, classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, durableAttemptHandoff,
+  prepareV2DispatchPools, requestStepRestart, snapshotPossible, statDeliverablePaths, trackedDiffStatForTests,
 } from '../src/workflow/v2-dispatch.js';
+import { countRetries } from '../src/workflow/step-vocabulary.js';
+import { resolveRouteFilter } from '../src/workflow/step-route.js';
 import { handoffBlock, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { loadState, saveState } from '../src/lib/state.js';
@@ -3037,4 +3039,566 @@ test('evidence: log files carry the run-wide attempt number from the task file, 
     ]);
     assert.match(readFileSync(join(home, 'evidence-ev-report-attempt-3-1.log'), 'utf8'), /first run: marker missing/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- stage 3: the failure rule (§2.1), marked runs ---------------------------
+// Every case passes `failureRule: true`; the unmarked twins above run with the
+// defaults and must not move.
+
+const processFail = (why = 'worker exited 1') => ({ ok: false, failureKind: 'process', why, meta: { exitCode: 1, wallSec: 1 } });
+const conversational = (name, extra = {}) => connector(name, {
+  conversation: { newArgs: ['--session', '{sessionId}'], resumeArgs: ['--resume', '{sessionId}'] }, ...extra,
+});
+const freePool = (name) => connector(name, {
+  model: 'provider/union-free',
+  modelProfiles: [{ match: 'union-free', free: true }],
+  strategyAssignments: { low: { pool: name, model: 'provider/union-free' } },
+});
+const stall = { ok: false, failureKind: 'stalled', why: 'stalled: no output', meta: { exitCode: null, wallSec: 2 } };
+
+// A clock the dispatcher's sleeps advance, so a wait of hours takes no time.
+function fakeClock(start = Date.parse('2026-08-31T01:00:00Z')) {
+  const clock = { t: start, slept: [] };
+  clock.now = () => (clock.t += 1);
+  clock.sleep = async (ms) => { clock.slept.push(ms); clock.t += ms; };
+  return clock;
+}
+
+// One marked dispatch of the plain `action` with its seams recorded.
+async function markedDispatch(verdicts, { dependencies: extra = {}, ...opts } = {}) {
+  const h = harness(verdicts);
+  const inner = h.dependencies.watchOnce;
+  const tasks = [];
+  const lifecycle = [];
+  const waits = [];
+  const facts = [];
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    bullswarmDir: '/tmp/bs',
+    failureRule: true,
+    onAttempt: (stage, record) => lifecycle.push({ stage, record }),
+    onWaiting: (event) => waits.push(event),
+    handoffBlock: (value) => { facts.push(value); return handoffBlock(value); },
+    ...opts,
+    dependencies: {
+      ...h.dependencies,
+      watchOnce: async (c, task, dir, p, o) => { tasks.push(task); return inner(c, task, dir, p, o); },
+      ...extra,
+    },
+  });
+  return { result, tasks, lifecycle, waits, facts, core: h.core };
+}
+
+const pickedPools = (result) => result.attempts.map((attempt) => attempt.pool);
+const retryFacts = (result) => result.attempts.map((attempt) => attempt.retryOf ?? null);
+
+test('failure rule: a process failure with 3 eligible pools is retried once on another pool, then the caller', async () => {
+  const { result, lifecycle } = await markedDispatch([processFail(), processFail(), processFail()], {
+    pools: [connector('luna-1'), connector('luna-2'), connector('luna-3')],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failureKind, 'process');
+  assert.equal(result.attempts.length, 2, 'no fall-through to the third pool (D10)');
+  assert.notEqual(result.attempts[0].pool, result.attempts[1].pool);
+  assert.deepEqual(result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'other-pool' });
+  assert.equal(Object.hasOwn(result.attempts[0], 'retryOf'), false, 'the failed attempt carries no retry fact');
+  assert.deepEqual(result.attempts.map((attempt) => [attempt.status, attempt.willRetry]), [['interrupted', true], ['failed', false]]);
+  // The fact is on the record before onAttempt('started') (D3).
+  const started = lifecycle.filter((entry) => entry.stage === 'started').map((entry) => entry.record);
+  assert.equal(Object.hasOwn(started[0], 'retryOf'), false);
+  assert.deepEqual(started[1].retryOf, { attempt: 'do-work-1', how: 'other-pool' });
+  const finished = lifecycle.filter((entry) => entry.stage === 'finished').map((entry) => entry.record);
+  assert.equal(Object.hasOwn(finished[0], 'retryOf'), false);
+});
+
+test('failure rule: the only candidate gets a same-pool retry, and auth never reuses its pool', async () => {
+  const same = await markedDispatch([processFail(), good], { pools: [connector('luna-1')] });
+  assert.equal(same.result.ok, true);
+  assert.deepEqual(pickedPools(same.result), ['luna-1', 'luna-1']);
+  assert.deepEqual(same.result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'same-pool' });
+
+  const auth = { ok: false, quarantineHint: true, why: 'auth expired', meta: { exitCode: 1 } };
+  const alone = await markedDispatch([auth, good], { pools: [connector('luna-1')] });
+  assert.equal(alone.result.failureKind, 'auth');
+  assert.deepEqual(pickedPools(alone.result), ['luna-1']);
+  assert.equal(alone.result.attempts[0].willRetry, false);
+  const moved = await markedDispatch([auth, good], { pools: [connector('luna-1'), connector('luna-2')], preferredPool: 'luna-1' });
+  assert.equal(moved.result.ok, true);
+  assert.deepEqual(pickedPools(moved.result), ['luna-1', 'luna-2']);
+  assert.deepEqual(moved.result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'other-pool' });
+});
+
+test('failure rule: not-produced is retried on the same pool, forced, in a fresh session, with the failure attached', async () => {
+  const launch = [conversational('pool-a', { pace: 90 }), conversational('pool-b', { pace: -90 })];
+  const flipped = [conversational('pool-a', { pace: -90 }), conversational('pool-b', { pace: 90 })];
+  // Without the pin the router would move the retry to pool-b.
+  assert.equal(pickPool('build', flipped, { callerEligible: false, callerSession: false, effortTier: 'medium' }).pick.pool, 'pool-b');
+  const refreshCalls = [];
+  const facts = [];
+  let session = 0;
+  await withEvidence('bs-fr-notproduced-', {
+    action: produceFiles(),
+    watches: (repo) => [() => good, () => { writeFileSync(join(repo, 'owned.txt'), 'changed\n'); return good; }],
+    pools: launch,
+    failureRule: true,
+    refreshPools: async (opts) => { refreshCalls.push(opts); return refreshCalls.length === 1 ? launch : flipped; },
+    handoffBlock: (value) => { facts.push(value); return handoffBlock(value); },
+    dependencies: { uuid: () => `session-${++session}` },
+  }, ({ result, tasks }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-a']);
+    const [first, second] = result.attempts;
+    assert.equal(first.failureKind, 'not-produced');
+    assert.equal(first.status, 'interrupted');
+    assert.deepEqual(second.retryOf, { attempt: 'write-work-1', how: 'same-pool' });
+    assert.match(second.routeWhy, /^pinned to pool-a \(the same pool \(gate retry\)\)/);
+    // A fresh session (D7): a new id, never a resumed conversation.
+    assert.notEqual(second.session.sessionId, first.session.sessionId);
+    assert.notEqual(second.continued, true);
+    assert.deepEqual(refreshCalls, [{ force: false }, { force: true }]);
+    assert.match(tasks[1], /## Prior attempt on this step/);
+    assert.match(tasks[1], /- Failure: not-produced — /);
+    assert.equal(facts.length, 1);
+    assert.equal(facts[0].gate, true, 'the gate line is asked for (§2.3)');
+    assert.equal(facts[0].failureKind, 'not-produced');
+  });
+});
+
+test('failure rule: a semantic gate retry keeps the first attempt\'s write (D19) and continues the conversation', async () => {
+  const seen = [];
+  const facts = [];
+  await withEvidence('bs-fr-semantic-', {
+    action: produceFiles(),
+    watches: (repo) => [
+      ({ opts }) => { seen.push(opts.conversation); writeFileSync(join(repo, 'owned.txt'), 'changed\n'); return textFailure; },
+      ({ opts }) => { seen.push(opts.conversation); return good; },
+    ],
+    pools: [conversational('pool-a'), conversational('pool-b')],
+    preferredPool: 'pool-a',
+    failureRule: true,
+    handoffBlock: (value) => { facts.push(value); return handoffBlock(value); },
+  }, ({ result }) => {
+    assert.equal(result.ok, true, 'attempt 2 changed nothing, but the step wrote its path');
+    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-a']);
+    assert.equal(result.attempts[0].failureKind, 'semantic');
+    assert.deepEqual(result.attempts[1].retryOf, { attempt: 'write-work-1', how: 'same-pool' });
+    assert.equal(result.attempts[1].continued, true);
+    assert.deepEqual(seen, [{ sessionId: 'session-fixed', resume: false }, { sessionId: 'session-fixed', resume: true }]);
+    assert.equal(facts[0].gate, true);
+  });
+});
+
+test('failure rule: failed evidence gets one same-pool retry in the same conversation, with the check output attached', async () => {
+  const facts = [];
+  await withEvidence('bs-fr-evidence-', {
+    action: reportStep([failsUntilFixed]),
+    watches: [answer('broken\n'), answer('fixed\n')],
+    plain: true,
+    pools: [conversational('pool-a'), conversational('pool-b')],
+    preferredPool: 'pool-a',
+    failureRule: true,
+    handoffBlock: (value) => { facts.push(value); return handoffBlock(value); },
+  }, ({ result, tasks }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-a']);
+    assert.deepEqual(result.attempts[1].retryOf, { attempt: 'ev-report-1', how: 'same-pool' });
+    assert.equal(result.attempts[1].continued, true);
+    assert.equal(facts[0].gate, true);
+    assert.deepEqual(facts[0].evidenceResults, result.attempts[0].evidenceResults);
+    assert.match(tasks[1], /Evidence Bullswarm ran after that attempt/);
+    assert.match(tasks[1], /first run: marker missing/);
+  });
+});
+
+test('failure rule: E14 is replaced; a process retry then failed evidence is exactly 2 attempts, while the stage-2 twin keeps its third', async () => {
+  const run = (options, check) => withEvidence('bs-fr-e14-', {
+    action: reportStep([failsUntilFixed]),
+    watches: [processFail(), answer('broken\n'), answer('fixed\n')],
+    plain: true,
+    pools: [connector('pool-a'), connector('pool-b')],
+    preferredPool: 'pool-a',
+    evidenceRetryAvailable: true,
+    ...options,
+  }, check);
+  await run({ failureRule: true }, ({ result }) => {
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-b']);
+    assert.deepEqual(retryFacts(result), [null, { attempt: 'ev-report-1', how: 'other-pool' }]);
+    assert.equal(result.attempts[1].willRetry, false);
+    assert.doesNotMatch(result.attempts[1].why, /no retry/);
+  });
+  await run({}, ({ result }) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-b', 'pool-b']);
+    assert.ok(result.attempts.every((attempt) => !Object.hasOwn(attempt, 'retryOf')), 'unmarked runs store no retry fact');
+  });
+  const quarantined = [connector('pool-a'), connector('pool-b', { quarantine: { until: Date.parse('2027-01-01T00:00:00Z'), reason: 'auth' } })];
+  await run({
+    refreshPools: async (opts) => (opts.force ? quarantined : [connector('pool-a'), connector('pool-b')]),
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-b']);
+    assert.match(result.attempts[1].why, / · no retry: pool-b is no longer eligible$/);
+  });
+});
+
+test('failure rule: the schema correction spends the budget, and a second schema failure goes to the caller', async () => {
+  const schema = { ok: false, why: 'invalid', failureKind: 'schema', structured: { errors: ['bad'] }, meta: { exitCode: 0 } };
+  const { result, tasks } = await markedDispatch([schema, schema, good], {
+    preferredPool: 'luna-1', outputValidator: () => ({ ok: true }), correctionTask: () => 'correct it',
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.failureKind, 'schema');
+  assert.deepEqual(pickedPools(result), ['luna-1', 'luna-1'], 'no other pool is tried');
+  assert.deepEqual(result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'same-pool' });
+  assert.match(result.attempts[1].routeWhy, /^pinned to luna-1 \(the same pool \(gate retry\)\)/);
+  assert.equal(tasks[1], 'correct it');
+  // With the step's retry already spent, a schema failure is not corrected.
+  const spent = await markedDispatch([schema, good], {
+    preferredPool: 'luna-1', outputValidator: () => ({ ok: true }), correctionTask: () => 'correct it', retriesAlready: 1,
+  });
+  assert.equal(spent.result.failureKind, 'schema');
+  assert.equal(spent.result.attempts.length, 1);
+});
+
+test('failure rule: a gate retry whose pool was paused meanwhile runs elsewhere and records other-pool', async () => {
+  const later = Date.parse('2027-01-01T00:00:00Z');
+  const { result, tasks, facts } = await markedDispatch([textFailure, good], {
+    preferredPool: 'luna-1',
+    refreshPools: async (opts) => (opts.force
+      ? [connector('luna-1', { quarantine: { until: later, reason: 'auth' } }), connector('luna-2')]
+      : [connector('luna-1'), connector('luna-2')]),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(pickedPools(result), ['luna-1', 'luna-2']);
+  assert.equal(result.attempts[0].failureKind, 'semantic');
+  assert.deepEqual(result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'other-pool' });
+  assert.match(result.attempts[1].routeWhy, /^gate retry moved: luna-1 cannot take work now · /);
+  assert.match(tasks[1], /## Prior attempt on this step/);
+  assert.equal(facts[0].gate, true, 'the same handoff goes to the other pool');
+});
+
+test('failure rule: a cancel between a failure and the next start leaves no retry fact and spends nothing', async () => {
+  let stop = false;
+  const killed = { ok: false, why: 'worker killed', meta: { signal: 'SIGTERM', exitCode: null } };
+  const { result } = await markedDispatch([() => { stop = true; return killed; }, good], {
+    shouldCancel: () => stop,
+  });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].failureKind, 'interrupted');
+  assert.ok(result.attempts.every((attempt) => !Object.hasOwn(attempt, 'retryOf')));
+  const state = {
+    actions: [{ id: 'do-work', supersededAttempts: 0 }],
+    attempts: result.attempts.map((attempt) => ({ ...attempt, id: `do-work-${attempt.ordinal}`, actionId: 'do-work' })),
+  };
+  assert.equal(countRetries(state, 'do-work'), 0);
+});
+
+test('failure rule: an act step is not retried once its worker started (D32), unless it never spawned', async () => {
+  const act = { id: 'announce', role: 'act', lane: 'analyze', effort: 'low', deliverable: { type: 'outward' } };
+  const failed = await markedDispatch([processFail(), good], { action: act });
+  assert.equal(failed.result.failureKind, 'process');
+  assert.equal(failed.result.attempts.length, 1);
+  assert.equal(failed.result.attempts[0].willRetry, false);
+  const quota = await markedDispatch([quotaVerdict(), good], { action: act });
+  assert.equal(quota.result.failureKind, 'quota');
+  assert.equal(quota.result.attempts.length, 1, 'no move and no wait after a mid-attempt usage limit');
+  assert.deepEqual(quota.waits, []);
+  const spawn = { ok: false, why: 'spawn fake ENOENT', meta: { spawnError: 'ENOENT', exitCode: null } };
+  const neverStarted = await markedDispatch([spawn, good], { action: act, preferredPool: 'luna-1' });
+  assert.equal(neverStarted.result.ok, true);
+  assert.deepEqual(pickedPools(neverStarted.result), ['luna-1', 'luna-2']);
+  assert.deepEqual(neverStarted.result.attempts[1].retryOf, { attempt: 'announce-1', how: 'other-pool' });
+  await withEvidence('bs-fr-act-', {
+    action: { ...act, lane: 'analyze', effort: 'medium', evidence: [{ type: 'command', cmd: 'test -f outbox.txt' }] },
+    watches: [answer('posted\n'), answer('posted again\n')],
+    plain: true,
+    failureRule: true,
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts.length, 1);
+    assert.equal(result.attempts[0].why, 'test -f outbox.txt → exit 1 · act steps are not retried');
+  });
+});
+
+test('failure rule: a free stall spends the budget and never walks the pool list', async () => {
+  const none = await markedDispatch([stall, good], { pools: [freePool('free'), connector('paid')], maxMechanicalRetries: 0 });
+  assert.equal(none.result.failureKind, 'stalled');
+  assert.deepEqual(pickedPools(none.result), ['free']);
+  const one = await markedDispatch([stall, stall, good], { pools: [freePool('free'), connector('paid'), connector('paid-2')] });
+  assert.equal(one.result.failureKind, 'stalled');
+  assert.equal(one.result.attempts.length, 2);
+  assert.equal(one.result.attempts[0].pool, 'free');
+  assert.deepEqual(one.result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'other-pool' });
+});
+
+test('failure rule: quota moves to another pool without spending the retry', async () => {
+  const { result, core, waits } = await markedDispatch([quotaVerdict(), processFail(), good], {
+    pools: [connector('luna-1'), connector('luna-2'), connector('luna-3')], preferredPool: 'luna-1',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts.length, 3);
+  assert.equal(new Set(pickedPools(result)).size, 3);
+  assert.deepEqual(retryFacts(result), [
+    null,
+    { attempt: 'do-work-1', how: 'wait' },
+    { attempt: 'do-work-2', how: 'other-pool' },
+  ]);
+  assert.equal(core.pools['luna-1'].quarantine.until, QUOTA_RESET);
+  assert.deepEqual(waits, []);
+});
+
+test('failure rule: quota on the only pool waits for its return time, then runs there again', async () => {
+  const clock = fakeClock();
+  const { result, waits } = await markedDispatch([quotaVerdict(), good], {
+    pools: [connector('luna-1')],
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(pickedPools(result), ['luna-1', 'luna-1']);
+  assert.deepEqual(waits, [{ until: new Date(QUOTA_RESET).toISOString(), pools: ['luna-1'], reason: 'quota' }]);
+  assert.deepEqual(result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'wait' });
+  assert.ok(Date.parse(result.attempts[1].startedAt) >= QUOTA_RESET);
+  // It re-reads the pools at least every 5 minutes while it waits.
+  assert.ok(clock.slept.length > 1 && clock.slept.every((ms) => ms <= 5 * 60_000), clock.slept.join(','));
+});
+
+test('failure rule: with pausing off a hold is this step\'s own wait, and no return time fails the step', async () => {
+  const holdUntil = Date.parse('2026-08-31T01:30:00Z');
+  const offLimit = (hold) => ({
+    ok: false,
+    failureKind: 'throttle',
+    throttleWaitMs: null,
+    throttleRetrySamePool: true,
+    quotaPause: { pause: false, rule: 'off', line: "You've hit your limit", until: null, holdUntil: hold },
+    why: 'limit notice "You\'ve hit your limit" · pool not paused: automatic pausing is off',
+    meta: { exitCode: 1, wallSec: 0.2 },
+  });
+  const clock = fakeClock();
+  const held = await markedDispatch([offLimit(holdUntil), good], {
+    pools: [connector('luna-1')], dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(held.result.ok, true);
+  assert.equal(held.core.pools['luna-1']?.quarantine, undefined, 'a hold is never written to shared state');
+  assert.deepEqual(held.waits, [{ until: new Date(holdUntil).toISOString(), pools: ['luna-1'], reason: 'hold' }]);
+  assert.deepEqual(pickedPools(held.result), ['luna-1', 'luna-1']);
+  assert.ok(Date.parse(held.result.attempts[1].startedAt) >= holdUntil);
+  assert.deepEqual(held.result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'wait' });
+
+  const unknown = await markedDispatch([offLimit(null), offLimit(null), offLimit(null), good], {
+    pools: [connector('luna-1')], dependencies: { sleep: async () => {} },
+  });
+  assert.equal(unknown.result.ok, false);
+  assert.equal(unknown.result.failureKind, 'throttle');
+  assert.equal(unknown.result.attempts.length, 3, 'the two short same-pool waits, then no known return time');
+  assert.deepEqual(unknown.waits, []);
+  assert.deepEqual(retryFacts(unknown.result).map((fact) => fact?.how ?? null), [null, 'wait', 'wait']);
+});
+
+test('failure rule: a 5h-gated only pool waits for its reset, and without one fails on the 5-hour limit', async () => {
+  const clock = fakeClock();
+  const reset = new Date(clock.t + 10 * 60_000).toISOString();
+  const gated = () => connector('luna-1', { burstGate: true, fiveHourResetsAt: reset });
+  const waited = await markedDispatch([good], {
+    pools: [gated()],
+    refreshPools: async () => [clock.t >= Date.parse(reset) ? connector('luna-1') : gated()],
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(waited.result.ok, true);
+  assert.deepEqual(waited.waits, [{ until: reset, pools: ['luna-1'], reason: '5h-limit' }]);
+  assert.equal(Object.hasOwn(waited.result.attempts[0], 'retryOf'), false, 'a wait before the first attempt is not a retry');
+
+  const noReset = await markedDispatch([good], { pools: [connector('luna-1', { burstGate: true })] });
+  assert.equal(noReset.result.failureKind, 'unavailable');
+  assert.equal(noReset.result.attempts.length, 0);
+  assert.equal(noReset.result.verdict.why, 'no eligible pool: every pool that can run this step is at its 5-hour limit');
+  const unmarked = await markedDispatch([good], { pools: [connector('luna-1', { burstGate: true })], failureRule: false });
+  assert.equal(unmarked.result.verdict.why, 'no eligible pool: no enabled pool has a model on the low tier for build work');
+});
+
+test('failure rule: no capable pool fails unavailable at once, with no wait', async () => {
+  const { result, waits } = await markedDispatch([good], { pools: [connector('luna-1', { enabled: false })] });
+  assert.equal(result.failureKind, 'unavailable');
+  assert.equal(result.attempts.length, 0);
+  assert.deepEqual(waits, []);
+});
+
+test('failure rule: a throttle waits twice on the same pool, then moves, and every step is a wait', async () => {
+  const slept = [];
+  const { result, core } = await markedDispatch([transientVerdict(), transientVerdict(), transientVerdict(), good], {
+    dependencies: { sleep: async (ms) => { slept.push(ms); } },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(pickedPools(result), ['luna-1', 'luna-1', 'luna-1', 'luna-2']);
+  assert.deepEqual(slept, [20_000, 60_000]);
+  assert.deepEqual(retryFacts(result).map((fact) => fact?.how ?? null), [null, 'wait', 'wait', 'wait']);
+  assert.equal(core.pools['luna-1']?.quarantine, undefined);
+});
+
+test('failure rule: the budget is the step\'s; retriesAlready and --retry-attempts 0 leave no retry', async () => {
+  const resumed = await markedDispatch([processFail(), good], { retriesAlready: 1 });
+  assert.equal(resumed.result.failureKind, 'process');
+  assert.equal(resumed.result.attempts.length, 1);
+  const zero = await markedDispatch([processFail(), good], { maxMechanicalRetries: 0 });
+  assert.equal(zero.result.attempts.length, 1);
+  const gate = await markedDispatch([textFailure, good], { maxMechanicalRetries: 0 });
+  assert.equal(gate.result.failureKind, 'semantic');
+  assert.equal(gate.result.attempts.length, 1);
+});
+
+test('failure rule: a cancel during a wait ends the step cancelled', async () => {
+  const clock = fakeClock();
+  let waited = false;
+  const { result, waits } = await markedDispatch([quotaVerdict(), good], {
+    pools: [connector('luna-1')],
+    onWaiting: () => { waited = true; },
+    shouldCancel: () => waited,
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(waits.length, 0, 'the recorder was replaced');
+  assert.equal(waited, true);
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.attempts.length, 1);
+});
+
+test('failure rule: a waking step waits for claimWake, re-asking it', async () => {
+  const clock = fakeClock();
+  const answers = [false, false, true];
+  let claims = 0;
+  const { result } = await markedDispatch([quotaVerdict(), good], {
+    pools: [connector('luna-1')],
+    claimWake: async () => answers[claims++],
+    dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(claims, 3);
+  assert.deepEqual(clock.slept.slice(-2), [5_000, 5_000]);
+  assert.ok(Date.parse(result.attempts[1].startedAt) >= QUOTA_RESET + 10_000);
+});
+
+test('route: a hard filter on prepare, the capable set and the no-eligible reason', async () => {
+  const pools = () => [connector('codex'), connector('grok'), connector('claude-code:acme'), connector('claude-code')];
+  const names = (filter) => prepareV2DispatchPools(pools(), action, 'low', { routeFilter: filter }).map((pool) => pool.name).sort();
+  const filter = (extra) => ({
+    usePools: null, avoidPools: [], useProviders: null, avoidProviders: [], independentProviders: [], independentOf: {}, summary: '', ...extra,
+  });
+  assert.deepEqual(names(null), ['claude-code', 'claude-code:acme', 'codex', 'grok']);
+  assert.deepEqual(names(filter({ usePools: ['grok'] })), ['grok']);
+  assert.deepEqual(names(filter({ avoidPools: ['grok'] })), ['claude-code', 'claude-code:acme', 'codex']);
+  assert.deepEqual(names(filter({ useProviders: ['claude-code'] })), ['claude-code', 'claude-code:acme']);
+  assert.deepEqual(names(filter({ avoidProviders: ['claude-code'] })), ['codex', 'grok']);
+  assert.deepEqual(names(filter({ independentProviders: ['codex', 'grok'] })), ['claude-code', 'claude-code:acme']);
+
+  const routed = (route, attempts = []) => {
+    const step = { ...action, route };
+    const state = {
+      program: { actions: [{ id: 'write-a', lane: 'build' }, step] },
+      actions: [{ id: 'write-a', supersededAttempts: 0 }, { id: 'do-work', supersededAttempts: 0 }],
+      attempts,
+    };
+    return resolveRouteFilter(state, step, pools());
+  };
+  const use = await markedDispatch([good], { pools: pools(), routeFilter: routed({ pools: { use: ['grok'] } }) });
+  assert.deepEqual(pickedPools(use.result), ['grok']);
+  assert.match(use.result.attempts[0].routeWhy, / · route: use grok$/);
+
+  const none = await markedDispatch([good], {
+    pools: pools(),
+    routeFilter: routed({ pools: { avoid: ['claude-code', 'claude-code:acme', 'codex', 'grok'] } }),
+  });
+  assert.equal(none.result.failureKind, 'unavailable');
+  assert.equal(none.result.verdict.why,
+    'no eligible pool under the step\'s route (avoid claude-code, claude-code:acme, codex, grok): no enabled pool left has a model on the low tier for build work');
+
+  const wrote = [{ id: 'write-a-1', actionId: 'write-a', ordinal: 1, status: 'succeeded', pool: 'codex', changedFileCount: 2 }];
+  const shared = await markedDispatch([good], {
+    pools: [connector('codex')],
+    routeFilter: routed({ independentOf: ['write-a'] }, wrote),
+  });
+  assert.equal(shared.result.failureKind, 'unavailable');
+  assert.equal(shared.result.verdict.why,
+    'no eligible pool under the step\'s route (independent of write-a (providers codex)): every pool that could run it shares a provider with write-a (codex)');
+  const independent = await markedDispatch([good], { pools: pools(), routeFilter: routed({ independentOf: ['write-a'] }, wrote) });
+  assert.notEqual(independent.result.attempts[0].pool, 'codex');
+});
+
+test('route: pinSource reaches the attempt\'s route reason', async () => {
+  const { result } = await markedDispatch([good], { strictPool: 'luna-1', pinSource: 'step restart' });
+  assert.match(result.attempts[0].routeWhy, /^pinned to luna-1 \(step restart\)/);
+  const plain = await markedDispatch([good], { strictPool: 'luna-1', failureRule: false });
+  assert.match(plain.result.attempts[0].routeWhy, /^pinned to luna-1 \(--worker-pool\)/);
+});
+
+test('appliedStepRestart ignores a step-rerun intent whose revision is not applied (D20)', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'bs-step-rerun-intent-'));
+  try {
+    const failed = { id: 'do-work-1', actionId: 'do-work', ordinal: 1, status: 'failed', pool: 'luna-1', failureKind: 'process', why: 'exit 1' };
+    requestStepRestart(runDir, {
+      actionId: 'do-work', attemptId: 'do-work-1', source: 'step-rerun', revisionRequestId: 'rev-1',
+      appliedAt: '2026-08-31T01:00:00.000Z',
+    });
+    const state = (revisions) => ({ attempts: [failed], revisions });
+    assert.equal(appliedStepRestart(state(undefined), runDir, 'do-work'), null);
+    assert.equal(appliedStepRestart(state([{ id: 'rev-1', status: 'rejected' }]), runDir, 'do-work'), null);
+    assert.equal(appliedStepRestart(state([{ id: 'rev-2', status: 'applied' }]), runDir, 'do-work'), null);
+    const applied = appliedStepRestart(state([{ id: 'rev-1', status: 'applied' }]), runDir, 'do-work');
+    assert.equal(applied.request.revisionRequestId, 'rev-1');
+    assert.equal(applied.pool, null);
+    assert.match(applied.handoff.block, /## Prior attempt on this step/);
+    // Other intents keep their rule, and never carry the new key.
+    const plain = requestStepRestart(runDir, { actionId: 'do-work', attemptId: 'do-work-1', pool: 'luna-2' });
+    assert.equal(Object.hasOwn(plain, 'revisionRequestId'), false);
+    assert.equal(appliedStepRestart(state([]), runDir, 'do-work'), null, 'not applied yet');
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+test('failure rule: a long named throttle wait holds the pool until finishedAt plus the wait', async () => {
+  const clock = fakeClock();
+  const long = transientVerdict({ throttleWaitMs: 2 * 3600_000, throttleRetrySamePool: false });
+  const { result, waits } = await markedDispatch([long, good], {
+    pools: [connector('luna-1')], dependencies: { now: clock.now, sleep: clock.sleep },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(waits.length, 1);
+  assert.equal(waits[0].reason, 'hold');
+  assert.equal(Date.parse(waits[0].until), Date.parse(result.attempts[0].finishedAt) + 2 * 3600_000);
+  assert.deepEqual(result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'wait' });
+});
+
+test('failure rule: a promised move that no pool can take is corrected, and the step goes to the caller', async () => {
+  let refreshes = 0;
+  const { result, lifecycle } = await markedDispatch([transientVerdict({ throttleRetrySamePool: false }), good], {
+    preferredPool: 'luna-1',
+    // luna-2 is switched off between the decision and the pick.
+    refreshPools: async () => (++refreshes === 1
+      ? [connector('luna-1'), connector('luna-2')]
+      : [connector('luna-1'), connector('luna-2', { enabled: false })]),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.failureKind, 'throttle');
+  assert.equal(result.attempts.length, 1);
+  assert.deepEqual([result.attempts[0].status, result.attempts[0].willRetry], ['failed', false]);
+  const stages = lifecycle.map((entry) => [entry.stage, entry.record.status]);
+  assert.deepEqual(stages, [['started', 'running'], ['finished', 'interrupted'], ['corrected', 'failed']]);
+});
+
+test('failure rule: a check that could not run goes to the caller with no retry', async () => {
+  await withEvidence('bs-fr-fault-', {
+    action: reportStep([{ type: 'schema', file: 'data.json', schema: 'schemas/event.json' }]),
+    watches: [answer('done\n'), answer('done again\n')],
+    plain: true,
+    failureRule: true,
+    prepare: (dir) => writeFileSync(join(dir, 'data.json'), '{"a":1}\n'),
+  }, ({ result }) => {
+    assert.equal(result.failureKind, 'failed-evidence');
+    assert.equal(result.attempts.length, 1);
+    assert.equal(result.attempts[0].willRetry, false);
+    assert.match(result.attempts[0].why, /^check could not run: /);
+  });
 });

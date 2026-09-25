@@ -5,9 +5,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  actAffectedRequirements, applyRevisionVerifyRounds, callerDecision, closeRound, createVerifyLoop, firstSuggestedStep, loopStageLabel, loopVerdictText,
-  NOT_JUDGED_STATUS, nextLoopStep, notJudgedRequirements, planRepairStep, recheckSet, repairInheritedPaths, roundBrief, roundPhases, verifyLoopResult,
-  verifyRoundLabel,
+  actAffectedRequirements, applyRevisionVerifyRounds, callerDecision, closeRound, createVerifyLoop, failingRequirements, firstSuggestedStep,
+  inheritedRepairEvidence, loopStageLabel, loopVerdictText, narrowedFailingRequirements, NOT_JUDGED_STATUS, nextLoopStep, notJudgedRequirements,
+  planRepairStep, planVerifyStep, recheckSet, repairInheritedPaths, requirementAcceptances, revisedVerifyRounds, roundBrief, roundPhases,
+  VERIFY_ROUNDS_MAX, verifyLoopResult, verifyRoundLabel,
 } from '../src/workflow/verify-rounds.js';
 import { validateActionProgram } from '../src/workflow/action-validator.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
@@ -349,7 +350,7 @@ function programState() {
   });
 }
 
-test('state.verifyLoop is checked: its fields, at most three rounds, no legacy names, program runs only', () => {
+test('state.verifyLoop is checked: its fields, at most four rounds, no legacy names, program runs only', () => {
   const state = programState();
   state.verifyLoop = { max: 3, stoppedBy: null, rounds: [round({ toJudge: ['alpha'] })] };
   assert.equal(validateV2DurableState(state), true);
@@ -358,13 +359,13 @@ test('state.verifyLoop is checked: its fields, at most three rounds, no legacy n
     edit(copy);
     assert.throws(() => validateV2DurableState(copy), pattern);
   };
-  broken((copy) => { copy.verifyLoop.max = 4; }, /verifyLoop\.max must be 1, 2 or 3/);
+  broken((copy) => { copy.verifyLoop.max = 5; }, /verifyLoop\.max must be 1 to 4/);
   broken((copy) => { copy.verifyLoop.rounds[0].decision = 'x'; }, /legacy autonomous field/);
   broken((copy) => { copy.verifyLoop.rounds[0].toJudge = ['nope']; }, /unknown requirement nope/);
   broken((copy) => { copy.verifyLoop.stoppedBy = 'tired'; }, /stoppedBy must be/);
   broken((copy) => {
-    copy.verifyLoop.rounds = [1, 2, 3, 4].map((n) => round({ round: n, toJudge: ['alpha'], closedAt: 'x' }));
-  }, /at most three rounds/);
+    copy.verifyLoop.rounds = [1, 2, 3, 4, 5].map((n) => round({ round: n, toJudge: ['alpha'], closedAt: 'x' }));
+  }, /at most four rounds/);
   broken((copy) => { copy.config.settings.executionMode = undefined; }, /requires a program workflow/);
   broken((copy) => { copy.attempts = [{ id: 'build-1', actionId: 'build', ordinal: 1, status: 'succeeded', changedFiles: [3] }]; }, /changedFiles must list at most 200 paths/);
 });
@@ -451,4 +452,194 @@ test('act-affected failures are not repaired, and a report-only failure repairs 
     deliverable: { type: 'data', paths: ['out/summary.json', 'out/rows.json'] },
   });
   assert.deepEqual(repairInheritedPaths(inherited, 'repair-1'), ['out/rows.json', 'out/summary.json']);
+});
+
+// --- Stage 3: fix cycles, the partial boundary, inherited route and evidence, acceptance ---
+
+test('createVerifyLoop with countsFixes reads verifyRounds as fix cycles (max = fixes + 1); without it, as total rounds', () => {
+  assert.equal(VERIFY_ROUNDS_MAX, 4);
+  const fixes = (value) => createVerifyLoop(value, { countsFixes: true }).max;
+  assert.deepEqual([fixes(undefined), fixes(0), fixes(1), fixes(2), fixes(3), fixes(7), fixes(-1), fixes('2')], [2, 1, 2, 3, 4, 4, 1, 2]);
+  assert.deepEqual(createVerifyLoop(0, { countsFixes: true }), { max: 1, stoppedBy: null, rounds: [] });
+  const rounds = (value) => createVerifyLoop(value).max;
+  assert.deepEqual([rounds(undefined), rounds(0), rounds(1), rounds(2), rounds(3), rounds(4), rounds('2')], [3, 1, 1, 2, 3, 3, 3], 'saved runs keep 1-3, default 3');
+  assert.equal(createVerifyLoop(3, { countsFixes: false }).max, 3);
+});
+
+test('revisedVerifyRounds reads the value through the marker, never below the rounds already closed', () => {
+  const marked = synthetic({ loop: { max: 2, stoppedBy: null, rounds: [round()] } });
+  const fixes = (value, state = marked) => revisedVerifyRounds(state, { defaults: { verifyRounds: value } }, { countsFixes: true });
+  assert.deepEqual([fixes(0), fixes(1), fixes(2), fixes(3)], [1, null, 3, 4]);
+  const saved = synthetic({ loop: { max: 3, stoppedBy: null, rounds: [round()] } });
+  const total = (value) => revisedVerifyRounds(saved, { defaults: { verifyRounds: value } });
+  assert.deepEqual([total(0), total(1), total(2), total(3)], [1, 1, 2, null]);
+  assert.equal(revisedVerifyRounds(saved, { verifyRounds: 1 }), 1, 'the top-level form too');
+  assert.equal(revisedVerifyRounds(saved, { defaults: {} }), null, 'absent leaves it alone');
+  const twoClosed = synthetic({ loop: { max: 3, stoppedBy: null, rounds: [round({ closedAt: 'x' }), round({ round: 2, closedAt: 'x' })] } });
+  assert.equal(fixes(0, twoClosed), 2, 'never below the rounds already closed');
+  assert.equal(applyRevisionVerifyRounds(marked, { defaults: { verifyRounds: 3 } }, { countsFixes: true }), true);
+  assert.equal(marked.verifyLoop.max, 4);
+  assert.equal(applyRevisionVerifyRounds(saved, { defaults: { verifyRounds: 3 } }), false);
+});
+
+const accept = (requirements, over = {}) => ({
+  evidence: 'choice', reason: 'good enough for now', attemptId: null, failureKind: null, at: '2026-09-25T01:00:00.000Z', revision: 3,
+  requirements, ...over,
+});
+
+test('failingRequirements and callerDecision skip a current acceptance; it lapses when workRevision moves', () => {
+  const state = synthetic({ loop: { max: 1, stoppedBy: 'rounds', rounds: [round({ closedAt: 'x', failed: ['alpha'] })] } });
+  assert.deepEqual(failingRequirements(state), ['alpha']);
+  state.actions.find((action) => action.id === 'verify').acceptance = accept([{ id: 'alpha', workRevision: 'w1' }]);
+  assert.deepEqual(failingRequirements(state), []);
+  assert.deepEqual([...requirementAcceptances(state)], [['alpha', { step: 'verify', reason: 'good enough for now', at: '2026-09-25T01:00:00.000Z' }]]);
+  assert.equal(callerDecision(state, { token: 'syn123' }), null, 'nothing is left for the caller');
+  assert.equal(state.ledger.requirements.alpha.status, 'failed', 'a choice is not proof: the ledger is untouched');
+  assert.equal(loopVerdictText({ ...state, lifecycle: { ...state.lifecycle, status: 'completed' } }), 'not verified');
+  state.ledger.requirements.alpha.workRevision = 'w2';
+  assert.deepEqual(failingRequirements(state), ['alpha'], 'a later fix or rerun moved workRevision: the acceptance lapsed');
+  assert.deepEqual(callerDecision(state, { token: 'syn123' }).requirements.map((entry) => entry.id), ['alpha']);
+  // A step acceptance (no requirements) and a removed step accept nothing.
+  state.ledger.requirements.alpha.workRevision = 'w1';
+  state.actions.find((action) => action.id === 'verify').acceptance = accept(undefined, { attemptId: 'verify-1', failureKind: 'semantic' });
+  assert.deepEqual(failingRequirements(state), ['alpha']);
+  state.actions.find((action) => action.id === 'verify').acceptance = accept([{ id: 'alpha', workRevision: 'w1' }]);
+  state.actions.find((action) => action.id === 'verify').status = 'removed';
+  assert.deepEqual(failingRequirements(state), ['alpha']);
+});
+
+/**
+ * The common D12 shape: writer A failed, its check `check-a` is blocked;
+ * writer B succeeded and `check-b` failed B's requirement.
+ */
+function partialShape({ beta = 'failed', routes = {}, evidence = {} } = {}) {
+  const program = [
+    { id: 'build-a', kind: 'implement', lane: 'build', effort: 'medium', dependsOn: [], affects: ['alpha'], ownedFiles: ['src/a.js'], evidenceFor: [], ...(routes['build-a'] ? { route: routes['build-a'] } : {}), ...(evidence['build-a'] ? { evidence: evidence['build-a'] } : {}) },
+    { id: 'build-b', kind: 'implement', lane: 'build', effort: 'high', dependsOn: [], affects: ['beta'], ownedFiles: ['src/b.js'], evidenceFor: [], ...(routes['build-b'] ? { route: routes['build-b'] } : {}), ...(evidence['build-b'] ? { evidence: evidence['build-b'] } : {}) },
+    { id: 'check-a', kind: 'adversarial-acceptance', lane: 'analyze', effort: 'high', dependsOn: ['build-a'], affects: [], ownedFiles: [], evidenceFor: ['alpha'], ...(routes['check-a'] ? { route: routes['check-a'] } : {}) },
+    { id: 'check-b', kind: 'adversarial-acceptance', lane: 'analyze', effort: 'high', dependsOn: ['build-b'], affects: [], ownedFiles: [], evidenceFor: ['beta'], ...(routes['check-b'] ? { route: routes['check-b'] } : {}) },
+  ];
+  const state = synthetic({ statuses: { alpha: 'pending', beta }, evidence: [evidenceRecord('beta', beta, ['src/b.js: beta() printed 1'], { source: 'check-b' })] });
+  state.program.actions = program;
+  state.actions = [
+    { id: 'build-a', status: 'failed' }, { id: 'build-b', status: 'succeeded' },
+    { id: 'check-a', status: 'blocked' }, { id: 'check-b', status: 'succeeded' },
+  ];
+  state.verifyLoop = { max: 2, stoppedBy: null, rounds: [round({ verifyActionIds: ['check-a', 'check-b'], toJudge: ['alpha', 'beta'] })] };
+  return state;
+}
+
+test('closeRound partial and repairableOnly (D12): only what a succeeded check judged on succeeded work is repaired, never born blocked', () => {
+  const state = partialShape();
+  const payload = closeRound(state, { at: '2026-09-25T01:00:00.000Z', partial: true });
+  assert.deepEqual([payload.failed, payload.next], [['alpha', 'beta'], 'repair'], 'the blocked check\'s requirement stays failing');
+  assert.deepEqual(narrowedFailingRequirements(state), ['beta']);
+  assert.deepEqual(nextLoopStep(state, { repairableOnly: true }), { step: 'add-repair', round: 1 });
+  const { action, record } = planRepairStep(state, { repairableOnly: true });
+  assert.deepEqual([action.affects, action.dependsOn, action.ownedFiles, record.repairRequirements], [['beta'], ['check-b'], ['src/b.js'], ['beta']]);
+  assert.equal(action.route, undefined, 'no route without inheritRoute');
+  assert.equal(action.evidence, undefined, 'no evidence without inheritEvidence');
+  // The unmarked plan depends on the blocked check too (the stage-2 defect D12 fixes).
+  const legacy = planRepairStep(state);
+  assert.deepEqual([legacy.action.affects, legacy.action.dependsOn], [['beta'], ['check-a', 'check-b']]);
+
+  // Nothing left to repair: the round goes to the caller, and the loop settles.
+  const onlyBlocked = partialShape({ beta: 'passed' });
+  const closed = closeRound(onlyBlocked, { at: 'x', partial: true });
+  assert.deepEqual([closed.failed, closed.next], [['alpha'], 'caller']);
+  assert.deepEqual(nextLoopStep(onlyBlocked, { repairableOnly: true }), { step: 'finish', stoppedBy: 'step-failed' });
+  assert.equal(closeRound(partialShape({ beta: 'passed' }), { at: 'x' }).next, 'repair', 'without partial, today\'s rule');
+  // A failing requirement with no current record (a check judged nothing) is not repaired.
+  const stale = partialShape();
+  stale.ledger.evidence[0].stale = true;
+  assert.deepEqual(narrowedFailingRequirements(stale), []);
+});
+
+test('repair and verify steps carry the inherited route (D19)', () => {
+  const routes = {
+    'build-a': { pools: { avoid: ['pool-a'] } },
+    'build-b': { pools: { use: ['pool-c'], avoid: ['pool-b'] }, providers: { avoid: ['grok'] } },
+    'check-a': { independentOf: ['build-a'] },
+    'check-b': { pools: { avoid: ['pool-x'] }, independentOf: ['build-b'] },
+  };
+  const state = partialShape({ routes });
+  closeRound(state, { at: 'x', partial: true });
+  const plan = planRepairStep(state, { repairableOnly: true, inheritRoute: true });
+  assert.deepEqual(plan.action.route, { pools: { use: ['pool-c'], avoid: ['pool-b'] }, providers: { avoid: ['grok'] } });
+  // Both writers: avoid unions, use only when every affecting step has one, never independentOf.
+  const failedBoth = structuredClone(state);
+  failedBoth.ledger.requirements.alpha.status = 'failed';
+  const both = planRepairStep(failedBoth, { inheritRoute: true }).action.route;
+  assert.deepEqual(both, { pools: { avoid: ['pool-a', 'pool-b'] }, providers: { avoid: ['grok'] } });
+
+  state.program.actions.push(plan.action);
+  state.actions.push({ id: plan.action.id, status: 'succeeded' });
+  Object.assign(state.verifyLoop.rounds[0], plan.record);
+  const verify = planVerifyStep(state, { round: 2, repairActionId: 'repair-1', toJudge: ['beta'], inheritRoute: true });
+  assert.deepEqual(verify.dependsOn, ['repair-1']);
+  assert.deepEqual(verify.route, { pools: { avoid: ['pool-x'] }, independentOf: ['build-b', 'repair-1'] },
+    'independent of the named steps and the repair; build-a does not run before it, so it is left out');
+  assert.equal(planVerifyStep(state, { round: 2, repairActionId: 'repair-1', toJudge: ['beta'] }).route, undefined);
+
+  const writers = partialShape({ routes: { 'check-b': { independentOf: 'writers' } } });
+  closeRound(writers, { at: 'x', partial: true });
+  const repair = planRepairStep(writers, { repairableOnly: true, inheritRoute: true });
+  assert.equal(repair.action.route, undefined, 'a repair never inherits independentOf');
+  writers.program.actions.push(repair.action);
+  writers.actions.push({ id: repair.action.id, status: 'succeeded' });
+  Object.assign(writers.verifyLoop.rounds[0], repair.record);
+  assert.deepEqual(planVerifyStep(writers, { round: 2, repairActionId: 'repair-1', toJudge: ['beta'], inheritRoute: true }).route, { independentOf: 'writers' });
+});
+
+test('a files repair inherits the affecting steps\' evidence (D33); a report repair inherits none', () => {
+  const items = [
+    { type: 'command', cmd: 'npm test' },
+    { type: 'command', cmd: 'npm test' },
+    { type: 'schema', file: 'out/b.json', schema: 'schemas/b.json' },
+    { type: 'schema', file: '$output', schema: 'schemas/report.json' },
+    { type: 'command', cmd: 'node check.js "$BULLSWARM_STEP_OUTPUT"' },
+    { type: 'schema', file: 'src/b.js', schema: 'schemas/b.json', format: 'json' },
+  ];
+  const state = partialShape({ evidence: { 'build-b': items } });
+  closeRound(state, { at: 'x', partial: true });
+  const plan = planRepairStep(state, { repairableOnly: true, inheritEvidence: true });
+  assert.deepEqual(plan.action.evidence, [
+    { type: 'command', cmd: 'npm test' },
+    { type: 'schema', file: 'src/b.js', schema: 'schemas/b.json', format: 'json' },
+  ]);
+  assert.deepEqual(plan.evidenceCounts, { inherited: 2, dropped: 3 });
+  assert.equal(planRepairStep(state, { repairableOnly: true }).action.evidence, undefined, 'unmarked runs: no evidence');
+
+  // An unrestricted repair reaches every file; the first five after de-duplication.
+  const many = Array.from({ length: 7 }, (_, index) => ({ type: 'command', cmd: `npm run check-${index}` }));
+  const capped = inheritedRepairEvidence([{ id: 'glue', evidence: [...many, { type: 'schema', file: 'out/x.json', schema: 's.json' }] }], { unrestricted: true });
+  assert.deepEqual(capped.evidence.map((item) => item.cmd), ['npm run check-0', 'npm run check-1', 'npm run check-2', 'npm run check-3', 'npm run check-4']);
+  assert.deepEqual([capped.inherited, capped.dropped], [5, 3]);
+  // A declared deliverable path is within reach.
+  const data = inheritedRepairEvidence([{ id: 'rows', deliverable: { type: 'data', paths: ['out/rows.json'] }, evidence: [{ type: 'schema', file: 'out/rows.json', schema: 's.json' }] }]);
+  assert.deepEqual(data.evidence, [{ type: 'schema', file: 'out/rows.json', schema: 's.json' }]);
+
+  const report = synthetic({ loop: { max: 2, stoppedBy: null, rounds: [round({ closedAt: 'x', failed: ['alpha'] })] } });
+  for (const action of report.program.actions) if (action.id !== 'verify') action.affects = [];
+  report.program.actions.push({
+    id: 'study', role: 'investigate', lane: 'analyze', effort: 'medium', dependsOn: [], affects: ['alpha'], ownedFiles: [], evidenceFor: [],
+    deliverable: { type: 'report' }, evidence: [{ type: 'command', cmd: 'npm test' }],
+  });
+  report.actions.push({ id: 'study', status: 'succeeded' });
+  const planned = planRepairStep(report, { inheritEvidence: true });
+  assert.equal(planned.action.deliverable, 'report');
+  assert.equal(planned.action.evidence, undefined);
+  assert.deepEqual(planned.evidenceCounts, { inherited: 0, dropped: 1 });
+});
+
+test('callerDecision next names fix, rerun the review elsewhere and accept, with the reviewer and its pool', () => {
+  const state = synthetic({ loop: { max: 1, stoppedBy: 'rounds', rounds: [round({ closedAt: 'x', failed: ['alpha'] })] } });
+  state.attempts = [{ id: 'verify-1', actionId: 'verify', ordinal: 1, status: 'succeeded', pool: 'pool-b' }];
+  assert.equal(callerDecision(state, { token: 'syn123' }).requirements[0].next,
+    'fix it with a step (bullswarm workflow plan export syn123 --out plan.json → plan revise), rerun the review elsewhere (bullswarm workflow step rerun syn123 verify --avoid pool-b), or accept it (bullswarm workflow step accept syn123 verify --reason "…")');
+  state.attempts = [];
+  assert.match(callerDecision(state, { token: 'syn123' }).requirements[0].next, /step rerun syn123 verify --avoid <pool>\)/, 'an unknown pool stays a placeholder');
+  // The repair report's own suggestion and the act-step text are unchanged.
+  const act = synthetic({ extraActions: [actStep(['alpha'])], loop: { max: 1, stoppedBy: 'rounds', rounds: [round({ closedAt: 'x', failed: ['alpha'] })] } });
+  assert.equal(callerDecision(act, { token: 'syn123' }).requirements[0].next, ACT_NEXT);
 });
