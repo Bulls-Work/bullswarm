@@ -305,6 +305,40 @@ test("grok's real spent-balance error event (HTTP 402) is a spent window with no
   assert.equal(limitOf(grok, providerErrorRecords(long, []))?.signature, 'usage balance exhausted');
 });
 
+// Out of credit is a limit to wait out or move off, never a failure or a
+// sign-in bench. Each sentence is the CLI's own wording, read from its
+// installed code on 2026-09-25 (claude 2.1.282, codex 0.155.1,
+// command-code 1.65.0, opencode 1.18.31, grok 1.0.40).
+const OUT_OF_CREDIT = {
+  'claude-code': ['Credit balance is too low', 'Credit balance too low · Add funds: https://platform.claude.com/settings/billing'],
+  codex: [
+    'Your workspace is out of credits. Add credits to continue.',
+    "You're out of credits.",
+    'You hit your spend cap set in your workspace settings.',
+    "You've reached your workspace credit limit",
+  ],
+  'command-code': [
+    'Error: You have insufficient credits to make this request. Please purchase more credits.',
+    'Premium credits exhausted',
+    "You've reached your weekly usage limit.",
+    "You've reached today's limit on gpt-6-luna.",
+  ],
+  opencode: ['Quota exceeded. Check your plan and billing details.'],
+  grok: ['API error (status 402 Payment Required): Grok Build usage balance exhausted'],
+};
+
+test('every provider reads its own out-of-credit wording as a spent window, never a sign-in failure', () => {
+  for (const [name, lines] of Object.entries(OUT_OF_CREDIT)) {
+    const connector = connectorOf(PROVIDER_CONNECTORS[name]);
+    for (const line of lines) {
+      assert.equal(limitOf(connector, line)?.limit, 'window', `${name}: ${line}`);
+    }
+  }
+  // Quota is matched before sign-in everywhere, but claude-code no longer lists
+  // its billing wording as a sign-in phrase at all.
+  assert.equal(connectorOf(PROVIDER_CONNECTORS['claude-code']).authSignatures.includes('credit balance'), false);
+});
+
 test('every provider classifies both wordings: throttle retries, window pauses', () => {
   for (const [name, path] of Object.entries(PROVIDER_CONNECTORS)) {
     const connector = connectorOf(path);

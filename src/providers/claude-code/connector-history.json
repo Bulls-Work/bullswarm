@@ -6,6 +6,7 @@
       "values": [
         "3bff1995d80c6b87",
         "3ea41175eb52afef",
+        "6044f220f561ac86",
         "78b0a5c3ea78d241"
       ],
       "items": [
@@ -251,9 +252,11 @@
     "quotaSignatures": {
       "absent": true,
       "values": [
-        "603273c3114fd3b7"
+        "603273c3114fd3b7",
+        "bd8fb87d808ba6a7"
       ],
       "items": [
+        "764e110217c20d84",
         "ceb9232b0b065a4d",
         "d153fee8823b1329",
         "d23fd1f532affb6c"

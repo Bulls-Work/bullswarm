@@ -23,8 +23,13 @@
     "not authenticated",
     "cmd login"
   ],
-  "$comment-quotaSignatures": "empty on purpose: no cmd-specific usage-limit wording has been observed yet; DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js covers the generic provider phrasings.",
-  "quotaSignatures": [],
+  "$comment-quotaSignatures": "out-of-credit and spent-window wording from command-code 1.65.0's own code (checked 2026-09-25): stderr `Error: You have insufficient credits to make this request. Please purchase more credits …`, `Premium credits exhausted`, and `You've reached your <window> usage limit.` or `You've reached today's limit on <model>.` DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js cover the generic phrasings.",
+  "quotaSignatures": [
+    "insufficient credits",
+    "premium credits exhausted",
+    "usage limit",
+    "reached today's limit on"
+  ],
   "outputExtraction": {
     "strategy": "event-stream"
   },

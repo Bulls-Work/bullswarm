@@ -183,7 +183,11 @@
     },
     "quotaSignatures": {
       "values": [
-        "4f53cda18c2baa0c"
+        "4f53cda18c2baa0c",
+        "9993a6f605a6480e"
+      ],
+      "items": [
+        "bfa011ccc13affda"
       ]
     },
     "reasoning": {

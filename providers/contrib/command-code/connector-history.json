@@ -211,7 +211,14 @@
     "quotaSignatures": {
       "absent": true,
       "values": [
-        "4f53cda18c2baa0c"
+        "4f53cda18c2baa0c",
+        "520afe3d78a0eb8e"
+      ],
+      "items": [
+        "08272aae81d982fb",
+        "c8c2fb938a78dfe0",
+        "cae12c1368301175",
+        "f35d6253d2593a19"
       ]
     },
     "reasoning": {

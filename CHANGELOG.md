@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- providers: running out of credit is a usage limit for every provider, not a
+  failure. Claude Code's `Credit balance is too low` used to bench the pool as
+  a broken sign-in; Codex (`You're out of credits`, `You hit your spend cap`),
+  Command Code (`You have insufficient credits`, `Premium credits exhausted`,
+  `You've reached today's limit on …`) and OpenCode (`Quota exceeded. Check
+  your plan and billing details.`) messages were not recognised at all. Each is
+  now read as a limit: the step waits for the pool's reset or moves to another
+  pool. The phrases come from each CLI's own strings (claude 2.1.282, codex
+  0.155.1, command-code 1.65.0, opencode 1.18.31).
 - workers bill the account of the pool they run on. When the caller itself ran
   under a Claude home (`CLAUDE_CONFIG_DIR` set), every `claude-code` pool
   spawned with the caller's home instead of its own, so every Claude pool
