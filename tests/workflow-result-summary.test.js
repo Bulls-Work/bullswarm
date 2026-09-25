@@ -4,6 +4,7 @@ import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLine, summarizeV2Result, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
@@ -310,4 +311,112 @@ test('stage 3: retries and the caller verbs are kept where there is room, shed b
     assert.ok(lines.some((line) => line.startsWith('  step integrate: failed')), `padding ${padding}`);
   }
   assert.ok(kept > 0 && shed > 0, `both cases are exercised (${kept} kept, ${shed} shed)`);
+});
+
+// L2 (a real stage-3 run, 2026-09-25): 5 steps, 1 failed, 5 pending
+// requirements and ~560 bytes of usage per step came out at 5075 bytes; the
+// per-step usage stayed and the failed step went from the handback, with its
+// rerun/accept verbs. A stage-3 run sheds the per-step usage first.
+const STAGE3_FEATURES = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
+const REFUSE_WHY = 'the step finished without writing out/refuse.txt, the deliverable it declares';
+
+function stepUsage(attempts, tokens) {
+  return {
+    attempts, minutes: 0.81, tokens, cacheRead: tokens - 24000, cacheWrite: 21096, reasoning: 519, apiUsd: 0.266213, apiKnownSubtotalUsd: 0.266213,
+    subscriptionUsd: null, subscriptionKnownSubtotalUsd: 0.005664, measuredAttempts: attempts, pricedAttempts: attempts, subscriptionPricedAttempts: 1,
+    tokenSource: 'provider-reported', subscriptionBasis: 'unknown:below-resolution', subscriptionDeltaPct: 0.024628, subscriptionWindow: 'weekly',
+    subscriptionWindows: { weekly: 0.02462788983174387, session: 0.13571428571428573 }, unpricedAttempts: 0, unmeasuredAttempts: 0,
+  };
+}
+
+function stepsRun(ids, failed, { accepted = [] } = {}) {
+  const runDir = '/private/tmp/acme-scratch/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/scratchpad/stage3-e2e/home2/workflows/wf-mugg7y5o-ad5557';
+  const requirements = ids.slice(0, 5).map((_, index) => ({ id: `requirement-${index + 1}`, status: 'pending', mandatory: true, evidence: [] }));
+  const envelope = {
+    runId: 'wf-mugg7y5o-ad5557', shortId: 'ezpvzs', status: 'partial', verified: false, executionMode: 'program',
+    reason: `${failed.length} of ${ids.length} steps did not succeed: ${failed.map((id) => `${id} failed (not-produced)`).join(', ')} · 1 step accepted by choice`,
+    finishedAt: '2026-09-25T04:18:13.567Z',
+    goal: 'Stage 3 probe A3. 1. Write out/flaky.txt. 2. Write out/stubborn.txt. 3. List the headings of notes.md. 4. Run a slow command and report.',
+    requirements,
+    actions: ids.map((id) => ({
+      id, kind: 'implement', status: failed.includes(id) ? 'failed' : 'succeeded', outputFile: `${runDir}/out-${id}-attempt-1.md`,
+      ...(accepted.includes(id) ? { acceptance: { reason: 'the file is fine as written' } } : {}),
+    })),
+    usage: {
+      total: 690056, byPool: { 'pool-a': 690056 }, bytes: { taskFiles: 30633, dependencyInputs: 1567, outputs: 9394 },
+      totals: { ...stepUsage(8, 690056), minutes: 4.3 },
+      steps: Object.fromEntries(ids.map((id) => [id, stepUsage(failed.includes(id) ? 2 : 1, 153003)])),
+    },
+    handback: {
+      unfinished: failed.map((id) => ({ id, status: 'failed', failureKind: 'not-produced', why: REFUSE_WHY, retryable: false, retries: 1 })),
+      unresolvedRequirements: requirements.map(({ id }) => ({ id, status: 'pending', why: 'no evidence recorded for the current work' })),
+      unreadSteering: [],
+    },
+  };
+  return { envelope, runDir };
+}
+
+const exampleRun = () => stepsRun(['flaky', 'stubborn', 'refuse', 'slow', 'after-stubborn'], ['refuse'], { accepted: ['stubborn'] });
+const summaryBytes = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
+test('L2: a stage-3 run sheds its per-step usage before the failed step and its rerun/accept verbs', () => {
+  const { envelope, runDir } = exampleRun();
+  for (const row of Object.values(envelope.usage.steps)) assert.ok(summaryBytes(row) > 520 && summaryBytes(row) < 600, `${summaryBytes(row)} bytes per step`);
+  const summary = summarizeV2Result(envelope, null, { runDir, features: STAGE3_FEATURES });
+  assert.ok(summaryBytes(summary) < 4096, `summary ${summaryBytes(summary)} bytes must fit`);
+  assert.deepEqual(summary.handback.unfinished, [{ id: 'refuse', status: 'failed', failureKind: 'not-produced', why: REFUSE_WHY, retryable: false, retries: 1 }]);
+  assert.equal(Object.hasOwn(summary.handback, 'unfinishedOmitted'), false);
+  assert.equal(summary.handback.options.rerun, "bullswarm workflow step rerun ezpvzs refuse [--avoid <pool>] (runs it again with its last attempt's handoff)");
+  assert.equal(summary.handback.options.accept, 'bullswarm workflow step accept ezpvzs refuse --reason "…" (recorded as your choice, never proof)');
+  const lines = formatV2HandbackLines(summary);
+  assert.ok(lines.includes(`  step refuse: failed (not-produced) after 1 retry — ${REFUSE_WHY}`), lines.join('\n'));
+  assert.ok(lines.includes(`  rerun     ${summary.handback.options.rerun}`));
+  assert.ok(lines.includes(`  accept    ${summary.handback.options.accept}`));
+  // Only the per-step rows gave way; totals and byPool stay whole.
+  assert.deepEqual(summary.usage.totals, envelope.usage.totals);
+  assert.deepEqual(summary.usage.byPool, envelope.usage.byPool);
+  for (const row of Object.values(summary.usage.steps)) assert.deepEqual(Object.keys(row), ['attempts', 'minutes', 'tokens']);
+  // Every open requirement keeps its reason.
+  for (const requirement of summary.requirements) assert.equal(requirement.why, 'no evidence recorded for the current work');
+});
+
+test('L2: a 25-step stage-3 run with 3 failed steps keeps all 3 in the handback', () => {
+  const ids = Array.from({ length: 25 }, (_, index) => `step-${String(index + 1).padStart(2, '0')}`);
+  const failed = ['step-04', 'step-13', 'step-22'];
+  const { envelope, runDir } = stepsRun(ids, failed);
+  const summary = summarizeV2Result(envelope, null, { runDir, features: STAGE3_FEATURES });
+  assert.deepEqual(summary.handback.unfinished.map((entry) => entry.id), failed);
+  assert.equal(Object.hasOwn(summary.handback, 'unfinishedOmitted'), false);
+  assert.deepEqual(summary.usage.steps, {});
+  assert.equal(summary.usage.stepsOmitted, true);
+  assert.deepEqual(summary.usage.totals, envelope.usage.totals);
+  assert.ok(summaryBytes(summary) < 4096, `summary ${summaryBytes(summary)} bytes must fit`);
+  const lines = formatV2HandbackLines(summary);
+  for (const id of failed) assert.ok(lines.some((line) => line.startsWith(`  step ${id}: failed (not-produced) after 1 retry — `)), `${id}\n${lines.join('\n')}`);
+});
+
+test('L2: saved runs (no marker, stage 1, stage 2) keep their summary byte for byte; only a stage-3 run sheds usage', () => {
+  const { envelope, runDir } = exampleRun();
+  const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  // Pinned from the summaries 041ef73 printed for this shape, before per-step usage could be shed.
+  const pinned = {
+    none: [5422, '51a4a2cfa7dfae72d43db200a5b7f6383e6f3d1f85e96722e56a9c945fe39976'],
+    stage1: [5422, '51a4a2cfa7dfae72d43db200a5b7f6383e6f3d1f85e96722e56a9c945fe39976'],
+    stage2: [5422, '51a4a2cfa7dfae72d43db200a5b7f6383e6f3d1f85e96722e56a9c945fe39976'],
+  };
+  const markers = { none: {}, stage1: { deliverableGate: 1 }, stage2: { deliverableGate: 1, proofLabels: 1 } };
+  for (const [label, features] of Object.entries(markers)) {
+    const saved = summarizeV2Result(structuredClone(envelope), null, { runDir, features });
+    assert.deepEqual([summaryBytes(saved), digest(saved)], pinned[label], label);
+    // As before: at most the unknown (null) fields go, never a known one or a row.
+    for (const [id, row] of Object.entries(envelope.usage.steps)) {
+      assert.deepEqual(saved.usage.steps[id], Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null)), `${label}: ${id}`);
+    }
+    assert.equal(Object.hasOwn(saved.usage, 'stepsOmitted'), false);
+  }
+  // The same run under the stage-3 marker is the one that changes.
+  const stage2 = summarizeV2Result(structuredClone(envelope), null, { runDir, features: markers.stage2 });
+  const stage3 = summarizeV2Result(structuredClone(envelope), null, { runDir, features: STAGE3_FEATURES });
+  assert.notDeepEqual(stage3.usage.steps, stage2.usage.steps);
+  assert.deepEqual(stage3.handback.unfinished.map((entry) => entry.id), ['refuse']);
 });

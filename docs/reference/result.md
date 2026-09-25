@@ -230,6 +230,8 @@ objects and money-pair basis, are available through `workflow action show`.
 
 If the summary would exceed 4,096 bytes, fields shrink in a fixed order (concerns, then per-action detail, then an open requirement's `why` last); the verify-round phases shrink to `{ kind, round, wallMinutes, pools, cost }` and a decision's `evidence` to 120 characters, and its ids and `next` are never dropped.
 
+A run started with the stage-3 marker (`failureRule`) sheds its per-step usage before any handback entry, handback `why`, requirement `why` or round row: first each `usage.steps` entry's null fields, then each entry down to `{ attempts, minutes, tokens }`, then `usage.steps` becomes `{}` with `usage.stepsOmitted: true` (`usage.totals` and `usage.byPool` stay; the full result keeps every row).
+
 ## handback
 
 Anything short of a verified run with no unread guidance is handed back. The run never waits for the caller.

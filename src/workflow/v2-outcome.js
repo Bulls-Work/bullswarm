@@ -853,7 +853,7 @@ function fitWithAdditions(summary, { plan, build, fitIndex, smallestAt }) {
   const { proof, ...unlabelled } = summary;
   const floorAt = fitIndex(unlabelled, (candidate) => shedStage3(candidate, STAGE3_SHEDS.at(-1)));
   const [floor, floorLevel] = plan[floorAt];
-  const floored = ([step, level]) => [{
+  const floored = ([step, level, usage]) => [{
     ...step,
     why: Math.max(step.why, floor.why),
     handbackWhy: Math.max(step.handbackWhy, floor.handbackWhy),
@@ -861,7 +861,7 @@ function fitWithAdditions(summary, { plan, build, fitIndex, smallestAt }) {
   }, {
     phases: level.phases === 'none' && floorLevel.phases !== 'none' ? 'compact' : level.phases,
     evidence: Math.max(level.evidence, floorLevel.evidence),
-  }];
+  }, usage];
   const withProof = (candidate, value) => (value ? { ...candidate, proof: value } : candidate);
   const shedUsage = (candidate) => (candidate.usage?.steps
     ? { ...candidate, usage: { ...candidate.usage, steps: Object.fromEntries(Object.entries(candidate.usage.steps).map(([id, step]) => [id, dropNullFields(step)])) } }
@@ -883,7 +883,26 @@ function fitWithAdditions(summary, { plan, build, fitIndex, smallestAt }) {
   return shedUsage(shedStage3(withProof(build(summary, ...floored(plan[Math.max(floorAt, smallestAt)])), proof), STAGE3_SHEDS.at(-1)));
 }
 
-function fitResultSummary(summary) {
+// A stage-3 run's per-step usage, shed before any handback line, handback
+// reason, requirement reason or round row is (L2): the per-step rows are in
+// the full result, the failed step and its verbs are what the caller acts on.
+// 1 drops the unknown (null) fields, 2 keeps { attempts, minutes, tokens },
+// 3 empties `steps` and says so; the totals and `byPool` always stay.
+const USAGE_STEP_FIELDS = ['attempts', 'minutes', 'tokens'];
+
+function usageAt(usage, level) {
+  const steps = usage?.steps;
+  if (!level || !steps || typeof steps !== 'object' || !Object.keys(steps).length) return usage;
+  if (level >= 3) return { ...usage, steps: {}, stepsOmitted: true };
+  return {
+    ...usage,
+    steps: Object.fromEntries(Object.entries(steps).map(([id, step]) => [id, level >= 2
+      ? Object.fromEntries(USAGE_STEP_FIELDS.filter((key) => Object.hasOwn(step, key)).map((key) => [key, step[key]]))
+      : dropNullFields(step)])),
+  };
+}
+
+function fitResultSummary(summary, { failureRule = false } = {}) {
   const actionsAt = (level) => summary.actions.map((action) => {
     // Output paths are always basenames under `next.runDir`: one directory
     // string instead of N absolute prefixes, and the summary's size no longer
@@ -927,13 +946,14 @@ function fitResultSummary(summary) {
   };
   const loopKeys = Object.hasOwn(summary, 'verifyRounds') || Object.hasOwn(summary, 'callerDecision');
   // `source` is the summary, or the summary without its proof labels.
-  const build = (source, step, level) => {
+  const build = (source, step, level, usage = 0) => {
     const actions = Object.hasOwn(source, 'proof') ? actionsAt(step.actions) : actionsAt(step.actions).map(({ proof: _proof, ...action }) => action);
     return {
       ...source,
       actions,
       requirements: requirementsAt(step.why, step.actions),
       concerns: concernsAt(step.concern, step.concerns),
+      ...(usage ? { usage: usageAt(source.usage, usage) } : {}),
       ...(summary.handback ? { handback: handbackAt(step.handbackWhy, step.handbackCount) } : {}),
       ...(loopKeys ? { verifyRounds: fitVerifyRounds(summary.verifyRounds, level) } : {}),
       ...(summary.callerDecision ? { callerDecision: fitCallerDecision(summary.callerDecision, level) } : {}),
@@ -941,25 +961,34 @@ function fitResultSummary(summary) {
     };
   };
   const [firstStep, ...laterSteps] = RESULT_SUMMARY_FIT_STEPS;
-  const plan = loopKeys
+  const levels = loopKeys
     ? [
       ...LOOP_FIT_LEVELS.map((level) => [firstStep, level]),
       ...laterSteps.map((step) => [step, LOOP_FIT_LEVELS.at(-1)]),
       [RESULT_SUMMARY_FIT_STEPS.at(-1), LOOP_LAST_RESORT],
     ]
     : RESULT_SUMMARY_FIT_STEPS.map((step) => [step, LOOP_FIT_LEVELS[0]]);
-  // Nothing fits (a run with many steps: `usage.steps` is never cut). The
-  // round rows are dropped only when that alone reaches the budget.
+  // A stage-3 run sheds its per-step usage at the last level that still has
+  // every handback line and reason and the whole round rows, and keeps it shed
+  // from there on (a saved run's plan is unchanged).
+  const cutsAt = levels.findIndex(([step, level]) => step.why < firstStep.why || step.handbackWhy < firstStep.handbackWhy
+    || step.handbackCount < firstStep.handbackCount || level.phases !== 'full' || level.evidence < LOOP_FIT_LEVELS[0].evidence);
+  const plan = failureRule && cutsAt > 0
+    ? [
+      ...levels.slice(0, cutsAt).map(([step, level]) => [step, level, 0]),
+      ...[1, 2, 3].map((usage) => [...levels[cutsAt - 1], usage]),
+      ...levels.slice(cutsAt).map(([step, level]) => [step, level, 3]),
+    ]
+    : levels;
+  // Nothing fits (a run with many steps: a saved run's `usage.steps` is never
+  // cut). The round rows are dropped only when that alone reaches the budget.
   const smallestAt = plan.length - (loopKeys ? 2 : 1);
   const fitIndex = (source, post = (candidate) => candidate) => {
-    const index = plan.findIndex(([step, level]) => summarySize(post(build(source, step, level))) < RESULT_SUMMARY_BYTE_BUDGET);
+    const index = plan.findIndex((entry) => summarySize(post(build(source, ...entry))) < RESULT_SUMMARY_BYTE_BUDGET);
     return index === -1 ? smallestAt : index;
   };
   if (hasStage3Additions(summary)) return fitWithAdditions(summary, { plan, build, fitIndex, smallestAt });
-  if (!summary.proof) {
-    const [step, level] = plan[fitIndex(summary)];
-    return build(summary, step, level);
-  }
+  if (!summary.proof) return build(summary, ...plan[fitIndex(summary)]);
   // A summary with proof labels (a new run's) picks its handback detail as if
   // it had none: the level the same run fits at without `proof` is the floor
   // for every handback reason, step count, requirement reason and round row,
@@ -969,7 +998,7 @@ function fitResultSummary(summary) {
   const { proof, ...unlabelled } = summary;
   const floorAt = fitIndex(unlabelled);
   const [floor, floorLevel] = plan[floorAt];
-  const floored = ([step, level]) => [{
+  const floored = ([step, level, usage]) => [{
     ...step,
     why: Math.max(step.why, floor.why),
     handbackWhy: Math.max(step.handbackWhy, floor.handbackWhy),
@@ -977,7 +1006,7 @@ function fitResultSummary(summary) {
   }, {
     phases: level.phases === 'none' && floorLevel.phases !== 'none' ? 'compact' : level.phases,
     evidence: Math.max(level.evidence, floorLevel.evidence),
-  }];
+  }, usage];
   const withProof = (candidate, value) => ({ ...candidate, proof: value });
   const shedUsage = (candidate) => (candidate.usage?.steps
     ? { ...candidate, usage: { ...candidate.usage, steps: Object.fromEntries(Object.entries(candidate.usage.steps).map(([id, step]) => [id, dropNullFields(step)])) } }
@@ -1347,7 +1376,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       runDir: runDirOf(actions, runDir),
       outputs: actions.map((action) => action.outFile).filter(Boolean),
     },
-  });
+  }, { failureRule: flags.failureRule });
 }
 
 export function validateV2ResultEnvelope(result) {
