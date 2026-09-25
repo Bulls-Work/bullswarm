@@ -26,6 +26,8 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 | `--add-dir <dir>` | Working directory the delegate operates in. | current directory |
 | `--task-file <file>` | Read the task text from a file instead of trailing words. | — (one task source required) |
 | `--prompt <text>` | Pass the task text inline as one flag value. | — (one task source required) |
+| `--batch <tasks.jsonl>` | Run each line of a JSONL file as its own run and print one array of verdicts. See [Many tasks in one call](/reference/cli#many-tasks-in-one-call). | off — one task |
+| `--concurrency <n>` | With `--batch`: how many tasks run at once. | 4 |
 | `--effort <high\|medium\|low>` | Override the effort tier used for model-tier routing. | derived from `--lane` (analyze→medium, build→medium, chore→low) |
 | `--reasoning <low\|medium\|high\|xhigh\|max\|default>` | Run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing. | the strategy reasoning setting for the effort tier, else the connector default |
 | `--timeout <seconds>` | Hard wall-clock kill timer for the delegate process. | none — the delegate may run to completion |
@@ -34,6 +36,7 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 | `--no-caller` | Exclude the calling agent from routing, so the task must go to a delegate pool or fail. | off — the caller competes for the lane |
 | `--answer-schema <file.json>` | A JSON Schema the worker's final answer must match; the verdict carries `answer` and `answerCheck`. A missing or invalid answer exits 1, with no retry. | off — no typed answer |
 | `--answer-file <path>` | Where the worker writes its typed answer; needs `--answer-schema`. | `answer-<stamp>.json` next to the run's output |
+| `--avoid-pool`, `--use-provider`, `--avoid-provider`, `--independent-of` | Route filters: keep this run off a pool or provider, or off the provider that ran an earlier run. See [Route filters](/reference/cli#route-filters). | none |
 | `--json` | Print the machine-readable verdict document. | human-readable summary line |
 
 The task itself is also accepted as trailing words: `bullswarm run --lane analyze "list every TODO in src/"`.

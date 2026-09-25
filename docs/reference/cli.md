@@ -244,6 +244,8 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--add-dir <dir>` | working directory the delegate operates in | current directory |
 | `--task-file <file>` | read the task text from a file instead of trailing words | unset |
 | `--prompt <text>` | pass the task text inline as one flag value | unset |
+| `--batch <tasks.jsonl>` | run each line of a JSONL file as its own single run and print one JSON array of the verdicts; see [Many tasks in one call](#many-tasks-in-one-call) | off — one task |
+| `--concurrency <n>` | with `--batch`: how many tasks run at once | 4 |
 | `--effort <high\|medium\|low>` | override the effort tier used for model-tier routing | derived from `--lane` (analyze→medium, build→medium, chore→low) |
 | `--reasoning <low\|medium\|high\|xhigh\|max\|default>` | run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing | strategy reasoning setting for the effort tier, else the connector default |
 | `--timeout <seconds>` | hard wall-clock kill timer for the delegate process | none — the delegate is allowed to run to completion |
@@ -252,6 +254,10 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--no-caller` | exclude the calling agent from routing, so the task must go to a delegate pool or fail | off — the caller competes for the lane like any other pool |
 | `--answer-schema <file.json>` | a JSON Schema the worker's final answer must match; the worker is told to write the answer as JSON, and the verdict carries `answer` and `answerCheck`; a missing or invalid answer exits 1, with no retry | off — no typed answer |
 | `--answer-file <path>` | where the worker writes its typed answer; needs `--answer-schema` | `answer-<stamp>.json` next to the run's output in the runs folder |
+| `--avoid-pool <pool>` | route filter: never use this pool (its id or label); repeat the flag or give a comma list. See [Route filters](#route-filters) | none |
+| `--use-provider <provider>` | route filter: use only pools of this provider; repeat or comma list | any provider |
+| `--avoid-provider <provider>` | route filter: never use a pool of this provider; repeat or comma list | none |
+| `--independent-of <run>` | route filter: never use the provider that ran an earlier run (its `outFile` or decision-log `id`); repeatable | none |
 | `--json` | print the machine-readable verdict document | human-readable summary line |
 
 One attempt only: a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. The JSON shape is in [Result envelope](/reference/result).
@@ -286,6 +292,42 @@ When the check fails, `ok` is `false` and the command exits 1. `why` reads `answ
 
 The schema uses the same subset as a workflow schema check. Asserted keywords: `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `minProperties`, `maxProperties`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf`, `not`, and `$ref`. Ignored annotations and containers: `$schema`, `$id`, `$comment`, `$defs`, `definitions`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` and `format`. Only local `#` references work. `format` is not checked. Any other keyword, a non-local reference, the array form of `items`, and a boolean `exclusiveMinimum` or `exclusiveMaximum` are refused, never skipped. A schema file may be up to 1 MiB and an answer up to 32 MiB.
 
+### Route filters
+
+Four flags narrow where one run may go, so your own code can decide who checks whom. They are the workflow step `route` as flags: `--avoid-pool` is `pools.avoid`, `--use-provider` and `--avoid-provider` are `providers.use` and `providers.avoid`, and `--independent-of` is `independentOf` for an earlier run.
+
+```bash
+# A writer, then a checker that never shares the writer's provider.
+bullswarm run --lane build --add-dir . --json "Fix the date parser"   # note its outFile
+bullswarm run --lane analyze --add-dir . --no-caller --independent-of ~/.bullswarm/runs/out-<stamp>.md --json "Review the date parser fix"
+```
+
+- **A provider** is the part of a pool id before `:`. `claude-code` and
+  `claude-code:acme` are both provider `claude-code`.
+- **Hard filters, before pace.** A pool they take out is not a candidate. The
+  calling agent is held to them too: with `--use-provider grok` the caller
+  cannot keep the task either.
+- **Never widened.** When they take out every enabled pool, the run exits 1
+  with `no pool left after route filters (<filters>): <pool> (<why>), ...`.
+  A pool they keep that is switched off is named at the end
+  (`; passes the filters but disabled: <pool>`). Nothing runs and nothing is
+  logged. This holds with `--dry-run` too.
+- **`--independent-of <run>`** reads this home's decision log. `<run>` is the
+  `outFile` from the earlier run's `--json` verdict, or its decision-log `id`.
+  Every pool of the provider that ran it is taken out. A run that is not in the
+  log exits 2: it is still running, it stayed with the caller, it was only a
+  `--dry-run`, or it is older than the last 500 decisions.
+- **Names are checked.** A pool that is not configured, or a provider that no
+  configured pool uses, exits 2. A pool label resolves to its id.
+- **What you see.** The `--json` verdict carries `routeFilter`: `summary`,
+  the resolved `avoidPools`, `useProviders` and `avoidProviders`,
+  `independentOf` (`ref`, `id`, `pool`, `provider`, `outFile` for each earlier
+  run), `left` (the enabled pools still in play), `filteredOut` (`pool`,
+  `provider`, `why` for each pool taken out), `callerFilteredOut` when the
+  caller was taken out, and `empty`. `routeWhy` ends with `· route: <summary>`,
+  in the decision log too. Without `--json`, a `filtered out:` line lists the
+  pools, the caller as `the caller <name>`.
+
 ### What a run records
 
 A real dispatch (not `--dry-run`) writes two durable records, which is what makes
@@ -315,6 +357,61 @@ in the run's `routeWhy`. A rung left on the connector's CLI default is never
 probed, a paid model is never probed, no model catalogue is scanned, and a
 replacement model is never chosen. `--dry-run` never probes: a preview does not
 call a provider.
+
+### Many tasks in one call
+
+`run --batch` runs each line of a JSONL file as its own `run` and prints one
+JSON array of the verdicts, in file order. Use it when your own code (a loop,
+or the one agent a Workflow script uses to run commands) has many independent
+tasks to hand out.
+
+```bash
+# Run every line as its own task, two at a time, and print one array of verdicts.
+bullswarm run --batch tasks.jsonl --concurrency 2 --json
+```
+
+Each line is one JSON object:
+
+```json
+{"id": "auth", "lane": "analyze", "addDir": ".", "prompt": "Does src/auth.js check token expiry? Answer with file:line."}
+{"id": "db", "lane": "chore", "taskFile": "tasks/db.md", "effort": "low"}
+```
+
+| Key | Meaning |
+|---|---|
+| `id` | required: a non-empty string, unique in the file; its verdict carries it |
+| `lane` | required: `analyze`, `build` or `chore`, as `--lane` |
+| `prompt` or `taskFile` | exactly one, as `--prompt` or `--task-file` |
+| `addDir` | as `--add-dir` (default: the current directory) |
+| `effort`, `reasoning` | as `--effort` and `--reasoning` |
+| `avoidPool`, `useProvider`, `avoidProvider`, `independentOf` | the [route filters](#route-filters) `--avoid-pool`, `--use-provider`, `--avoid-provider` and `--independent-of`; each takes one value or a list. `independentOf` names a finished run, so not a line of the same batch |
+
+Relative paths resolve against the current directory, as the flags do.
+
+- **Checked before anything runs.** A line that is not a JSON object, a missing
+  or bad value, a duplicate `id`, an unknown key, or a route filter that names
+  no configured pool or provider or no finished run exits 2, with one message
+  per problem. `answerSchema` and `answerFile` are refused the same way until
+  `run` has `--answer-schema`.
+- **Each task is a normal single run.** Same routing, same checks, same records
+  (an assignment while it runs, a decision-log entry after), one attempt, no
+  retry. A usage limit fails that task only.
+- **At most N at a time** (`--concurrency`, default 4). Tasks start in file
+  order, and each one is routed only after the task before it has booked its
+  pool in the in-flight ledger, so routing sees the batch's own picks.
+- **One array out.** Each element is that task's `run --json` verdict plus `id`
+  and `exit` (the code a single run would have exited with). Exit 0 when every
+  task is ok, 1 when any failed; the array says which. A task that routing keeps
+  on the caller comes back `ok: true, keepOnClaude: true` and did not run.
+- **Batch-wide flags:** only `--concurrency`, `--json`, `--no-caller`,
+  `--timeout` and `--dry-run`, applied to every task. Any other `run` flag exits
+  2: set it on each line. `--dry-run` previews each line on its own; previews
+  book nothing, so they do not see each other.
+- **No saved state.** A batch cannot be resumed. Work that must outlive the
+  calling session belongs in `workflow goal`.
+
+Without `--json` it prints one line per task (`OK <id> [pool] why`, then the
+output file) and a total.
 
 ## health
 
