@@ -7,7 +7,7 @@ description: Every bullswarm command, subcommand, flag, and default, in the orde
 
 After this page you can invoke any `bullswarm` verb with the flags the running binary actually accepts, and look up a default without guessing.
 
-There are exactly two ways to start work: `bullswarm run` dispatches one bounded task, and `bullswarm workflow goal` executes a program you author. Reach for a specific command's `--help` when this page and the binary might have drifted after an upgrade.
+There are exactly two ways to start work: `bullswarm run` dispatches one bounded task, and `bullswarm workflow goal` executes a program you author. A flow you drive yourself is many `run` steps whose typed answers you branch on (see [Typed answers](#typed-answers)). Reach for a specific command's `--help` when this page and the binary might have drifted after an upgrade.
 
 ```bash
 # Print the top-level command list, then one command's full help.
@@ -250,6 +250,8 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--heartbeat <seconds>` | print one compact progress heartbeat to stderr per interval without streaming delegate output | off |
 | `--dry-run` | print the routing decision, the forecast, and the exact command that would be spawned, without spawning, registering an assignment, or writing the decision log | off (dispatches for real) |
 | `--no-caller` | exclude the calling agent from routing, so the task must go to a delegate pool or fail | off — the caller competes for the lane like any other pool |
+| `--answer-schema <file.json>` | a JSON Schema the worker's final answer must match; the worker is told to write the answer as JSON, and the verdict carries `answer` and `answerCheck`; a missing or invalid answer exits 1, with no retry | off — no typed answer |
+| `--answer-file <path>` | where the worker writes its typed answer; needs `--answer-schema` | `answer-<stamp>.json` next to the run's output in the runs folder |
 | `--json` | print the machine-readable verdict document | human-readable summary line |
 
 One attempt only: a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. The JSON shape is in [Result envelope](/reference/result).
@@ -258,6 +260,31 @@ One attempt only: a usage limit exits 1 with no retry, and the pool's meter is r
 # Show the exact argv, including the clamped reasoning flag, without dispatching.
 bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"
 ```
+
+### Typed answers
+
+`--answer-schema` makes the run return a JSON answer that has been checked against your schema, so a caller can branch on it.
+
+```bash
+# Ask for a checked answer; exit 1 when it is missing or does not match.
+bullswarm run --lane analyze --no-caller --json --add-dir . --answer-schema review.schema.json --prompt "Review src/parser.js and say whether it passes"
+```
+
+The schema is read before routing. A schema that is unreadable, not JSON, or uses a keyword outside the supported subset exits 2, and no worker starts. `--answer-file` without `--answer-schema` exits 2 too. The worker's task ends with a section that names the answer file and quotes the schema. After the worker exits, Bullswarm reads that file, accepts one surrounding code fence, parses the JSON, and checks it.
+
+| Field | Meaning |
+|---|---|
+| `answer` | the parsed answer, or `null` when the file is missing or not JSON |
+| `answerCheck.ok` | `true` when the answer matches the schema |
+| `answerCheck.errors` | one line per mismatch, such as `$.tables must be <= 5` |
+| `answerCheck.file` | the answer file |
+| `answerCheck.why` | `null` when the answer is valid; otherwise a short reason, such as `not valid: 1 error` or `file missing: <path>` |
+| `answerCheck.notes` | only when there is one: `unwrapped one fenced code block`, or `format is not checked (<n> places)` |
+| `workerOk` | the worker's own verdict, apart from the check. It is also in the run's decision-log entry, and a pool's ok share counts it, not `ok` |
+
+When the check fails, `ok` is `false` and the command exits 1. `why` reads `answer check failed (<reason>) · <the worker's why>`, or just the worker's `why` when the worker failed too. A valid answer beside a reply that is empty or has no result in it (exit 0) passes: the answer is the result, and `why` reads `answer valid (reply: <reason>)`. Nothing is retried: the caller decides whether to rerun, change the schema, or read `outFile`. A file named with `--answer-file` that already exists and is not rewritten by this run fails the check (`answer file not rewritten by this run`), so a loop can reuse one path safely. Without `--json`, one `answer:` line says `valid` or `INVALID` with the first errors and the file. When routing keeps the task on the caller (`keepOnClaude: true`), nothing runs and the verdict has no `answer`; pass `--no-caller` when every step must return one.
+
+The schema uses the same subset as a workflow schema check. Asserted keywords: `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `minProperties`, `maxProperties`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf`, `not`, and `$ref`. Ignored annotations and containers: `$schema`, `$id`, `$comment`, `$defs`, `definitions`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` and `format`. Only local `#` references work. `format` is not checked. Any other keyword, a non-local reference, the array form of `items`, and a boolean `exclusiveMinimum` or `exclusiveMaximum` are refused, never skipped. A schema file may be up to 1 MiB and an answer up to 32 MiB.
 
 ### What a run records
 

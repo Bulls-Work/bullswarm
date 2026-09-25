@@ -26,8 +26,10 @@ result. The [program format](/reference/program) turns that shape into a graph.
 ## 2. Hand the goal to your main agent
 
 Ask the main agent to use the packaged Bullswarm skill. One bounded answer can
-go through `bullswarm run`; work with parallel territories, integration, or an
-independent check needs a caller-authored workflow program.
+go through `bullswarm run`, and the main agent can chain such runs itself,
+branching on each one's schema-checked answer. Work that must outlive the
+session, parallel writers with integration, or an independent check that
+Bullswarm runs needs a caller-authored workflow program.
 
 The main agent should read the contract, inspect the repository, write the
 program, and validate it before launch. Bullswarm does not invent missing

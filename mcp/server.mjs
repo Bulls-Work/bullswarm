@@ -3,6 +3,7 @@
 // One implementation; every MCP client (Claude Code, Codex, Cursor, …)
 // can offload without shell plumbing.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createInterface } from 'node:readline';
 import { main } from '../src/cli.js';
 import { getVersion } from '../src/lib/version.js';
@@ -13,7 +14,7 @@ const TOOLS = [
   {
     name: 'bullswarm_run',
     description:
-      'Offload a task to the best available coding-agent pool, routed by quota pace and verified by content. Returns a verdict: ok=true means read outFile; keepOnClaude=true means do it in-session; ok=false means the why field names the failed gate.',
+      'Offload a task to the best available coding-agent pool, routed by quota pace and verified by content. Returns a verdict: ok=true means read outFile; keepOnClaude=true means do it in-session; ok=false means the why field names the failed gate. With answerSchema, ok=true also means the answer field holds JSON that matched the schema; an invalid answer is ok=false with answerCheck.errors, and nothing is retried.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -21,6 +22,9 @@ const TOOLS = [
         task: { type: 'string', description: 'The task text to delegate.' },
         addDir: { type: 'string', description: 'Target repository directory.' },
         timeout: { type: 'number' },
+        answerSchema: { type: 'string', description: 'Absolute path to a JSON Schema file the final answer must match. A bad schema is exitCode 2 before any worker starts.' },
+        answerFile: { type: 'string', description: 'Absolute path where the worker writes its JSON answer (needs answerSchema). Default: next to the run output.' },
+        noCaller: { type: 'boolean', description: 'Always send the task to a delegate, never keepOnClaude. Use it for each step of a flow you drive.' },
       },
       required: ['lane', 'task'],
     },
@@ -53,41 +57,55 @@ function exitWhenDrained() {
   if (inputClosed && pendingCalls === 0) process.exit(0);
 }
 
-async function callTool(name, args) {
-  // Reuse the CLI verbs but capture stdout instead of leaking to our protocol
-  // stream: swap console.log for the duration of the call.
-  const chunks = [];
-  const origLog = console.log;
-  const origErr = console.error;
-  console.log = (...a) => chunks.push(a.join(' '));
-  console.error = () => {};
+// Reuse the CLI verbs but capture their console output instead of leaking it
+// into our protocol stream. Each call captures into its own buffer, so calls
+// that overlap (a caller running several steps at once) never read each
+// other's verdicts. Swapping console.log per call lost them all.
+const captured = new AsyncLocalStorage();
+for (const method of ['log', 'error']) {
+  const original = console[method].bind(console);
+  console[method] = (...a) => {
+    const buffer = captured.getStore();
+    if (buffer) buffer[method].push(a.join(' '));
+    else original(...a);
+  };
+}
+
+function callTool(name, args) {
+  const buffer = { log: [], error: [] };
+  return captured.run(buffer, () => runTool(name, args, buffer));
+}
+
+async function runTool(name, args, { log: chunks, error: errors }) {
+  // Every caller value travels as one `--name=value` token, so a task or path
+  // that starts with `--` is never read as a flag.
+  const argv =
+    name === 'bullswarm_run'
+      ? [
+          'run',
+          '--lane',
+          args.lane,
+          '--json',
+          ...(args.noCaller === true ? ['--no-caller'] : []),
+          ...(args.addDir ? [`--add-dir=${args.addDir}`] : []),
+          ...(args.timeout ? [`--timeout=${args.timeout}`] : []),
+          ...(args.answerSchema ? [`--answer-schema=${args.answerSchema}`] : []),
+          ...(args.answerFile ? [`--answer-file=${args.answerFile}`] : []),
+          ...(typeof args.task === 'string' ? [`--prompt=${args.task}`] : []),
+        ]
+      : name === 'bullswarm_health'
+        ? ['health']
+        : ['pools', '--json'];
+  const code = await main(argv);
+  let parsed = null;
   try {
-    const argv =
-      name === 'bullswarm_run'
-        ? [
-            'run',
-            '--lane',
-            args.lane,
-            '--json',
-            ...(args.addDir ? ['--add-dir', args.addDir] : []),
-            ...(args.timeout ? ['--timeout', String(args.timeout)] : []),
-            ...args.task.split(' '),
-          ]
-        : name === 'bullswarm_health'
-          ? ['health']
-          : ['pools', '--json'];
-    const code = await main(argv);
-    let parsed = null;
-    try {
-      parsed = JSON.parse(chunks.join('\n'));
-    } catch {
-      parsed = chunks.join('\n');
-    }
-    return { content: [{ type: 'text', text: JSON.stringify({ exitCode: code, verdict: parsed }, null, 2) }] };
-  } finally {
-    console.log = origLog;
-    console.error = origErr;
+    parsed = JSON.parse(chunks.join('\n'));
+  } catch {
+    parsed = chunks.join('\n');
   }
+  // A usage error prints only to stderr; hand its words back with the code.
+  const stderr = code !== 0 && errors.length ? { stderr: errors.join('\n') } : {};
+  return { content: [{ type: 'text', text: JSON.stringify({ exitCode: code, verdict: parsed, ...stderr }, null, 2) }] };
 }
 
 function handleMessage(line) {

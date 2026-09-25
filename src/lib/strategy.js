@@ -668,11 +668,13 @@ export function rungRecord(decisionLog, pool, tier) {
   // dispatcher's fixed cancellation message.
   const stopped = (row) => row.failureKind === 'cancelled' || row.why === 'workflow cancellation requested';
   const verdicts = rows.filter((row) => typeof row.ok === 'boolean' && !stopped(row));
+  // A run whose typed answer failed its schema counts the worker's own verdict
+  // (`workerOk`): the schema is the caller's, and it can be the wrong part.
   return {
     dispatches: rows.length,
     medianMinutes: minutes.length ? Math.round(medianOf(minutes) * 100) / 100 : null,
     okShare: verdicts.length
-      ? Math.round((verdicts.filter((row) => row.ok).length / verdicts.length) * 1000) / 1000
+      ? Math.round((verdicts.filter((row) => row.workerOk ?? row.ok).length / verdicts.length) * 1000) / 1000
       : null,
   };
 }

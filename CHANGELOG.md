@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- run: `--answer-schema <file.json>` returns a checked JSON answer. The worker
+  is told to write its final answer as JSON to a file (`--answer-file <path>`,
+  or one next to the run's output), and the verdict carries `answer`,
+  `answerCheck` (`ok`, `errors`, `file`, `why`) and `workerOk`, the worker's
+  own verdict. A missing or invalid answer, or a named file this run did not
+  rewrite, sets `ok: false` and exits 1, with no retry. A valid answer beside
+  an empty or result-free reply passes. A schema that is unreadable, not JSON,
+  or uses a keyword outside the workflow schema subset exits 2 before any
+  worker starts. A pool's ok share, its incumbency and `health` count
+  `workerOk`, so a failed check against the caller's schema is not held
+  against the pool. Runs without the flag are unchanged.
+- skill: a caller that keeps the control flow chains `run` steps with typed
+  answers. `skill/references/compose.md` has three recipes: check each
+  finding in parallel, fix until the review passes, and let a judge pick
+  among proposals. `workflow goal` is for work that must outlive the session
+  or parallel writers that need an integration step.
+- MCP: `bullswarm_run` takes `noCaller`, `answerSchema` and `answerFile`, and
+  returns `stderr` when a failed call printed there (a usage error does). The
+  task goes to `run` as one value, so task text that starts with `--` is no
+  longer read as a flag. Calls that overlap each get their own output back;
+  they used to get each other's, or nothing.
 - workflow: every step gets one automatic retry, then comes back to you. A
   crashed, silent or signed-out worker is retried once on another pool that can
   run the step (the same pool when it is the only one, except after a sign-in

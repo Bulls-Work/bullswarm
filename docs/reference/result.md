@@ -40,6 +40,7 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `meta.wallSec`, `meta.outBytes` | duration and extracted output size |
 | `meta.usage` | complete v2 attempt usage: provider-reported, transcript-summed, estimated, or unknown exclusive token classes; `api.usd` is the local dated rate-card calculation and `subscription.usd` is the separately measured or calibrated quota-window amount |
 | `structured` | only when an output validator ran (workflow evidence): `{ ok, errors, value? }` |
+| `answer`, `answerCheck`, `workerOk` | only with `--answer-schema`: the parsed typed answer, its schema check `{ ok, errors, file, why }`, and the worker's own verdict. `ok` then also needs `answerCheck.ok` — see [Typed answers](/reference/cli#typed-answers) |
 
 `--dry-run` prints `ok`, `dryRun: true`, `keepOnClaude`, `why`, `forecast`, `candidates`, `pick` (resolved argv including the clamped reasoning flag), and `reasoning`. It omits `outFile`, `taskFile`, `contentUsableDespiteExit`, `meta`, and the failure fields, because nothing was spawned. `--dry-run` with no eligible pool and `keepOnClaude: true` still exits 0. `--dry-run` that cannot pick and cannot keep the task sets `ok: false` and exits 1.
 

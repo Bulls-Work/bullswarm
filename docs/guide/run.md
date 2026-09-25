@@ -32,6 +32,8 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 | `--heartbeat <seconds>` | Print one compact progress heartbeat to stderr per interval, without streaming delegate output. | off |
 | `--dry-run` | Print the routing decision, the forecast, and the exact command that would be spawned, without spawning or registering anything. | off (dispatches for real) |
 | `--no-caller` | Exclude the calling agent from routing, so the task must go to a delegate pool or fail. | off — the caller competes for the lane |
+| `--answer-schema <file.json>` | A JSON Schema the worker's final answer must match; the verdict carries `answer` and `answerCheck`. A missing or invalid answer exits 1, with no retry. | off — no typed answer |
+| `--answer-file <path>` | Where the worker writes its typed answer; needs `--answer-schema`. | `answer-<stamp>.json` next to the run's output |
 | `--json` | Print the machine-readable verdict document. | human-readable summary line |
 
 The task itself is also accepted as trailing words: `bullswarm run --lane analyze "list every TODO in src/"`.
@@ -75,6 +77,7 @@ reasoning: high (connector)
 | `ok: true`, `keepOnClaude: false` | The output passed the verify gate. | Read `outFile`; the work is done. |
 | `ok: false` | `why` names the gate that failed. | Read `outFile` before re-running — the delegate may still have written something usable. |
 | `contentUsableDespiteExit: true` | The process exited non-zero, but the content still verified. | Read `outFile` first; re-run only if it is incomplete. |
+| `answerCheck.ok: false` | The worker finished, but its typed answer is missing or does not match the schema. `workerOk` keeps the worker's own verdict. | Read `answerCheck.errors`, then rerun, change the schema, or read `outFile` yourself. Nothing was retried. |
 
 ```bash
 # the human-readable form, when you are watching one run
@@ -86,6 +89,35 @@ The human line is `OK`/`FAIL`, the pool, and `why`; with `--json` you also get `
 ::: tip
 `keepOnClaude: true` is not an error. It means no delegate was eligible or worth spending, so the task is yours to do in this session. Add `--no-caller` to force it to a delegate pool instead.
 :::
+
+## Typed answers
+
+Add `--answer-schema` when your next move depends on the result. The worker is told to write its final answer as JSON to a file; Bullswarm parses that file and checks it against your schema.
+
+```bash
+# the review must answer {"passed": true|false, "problems": [...]}
+bullswarm run --lane analyze --no-caller --json --add-dir . --answer-schema review.schema.json --prompt "Review src/parser.js and say whether it passes"
+```
+
+The verdict then carries `answer` (the parsed JSON) and `answerCheck` (`ok`, `errors`, `file`, `why`). A missing answer, or one that does not match, sets `ok: false` and exits 1. Nothing is retried: you decide what happens next. A schema Bullswarm cannot check exits 2 before any worker starts. The supported keywords are listed under [Typed answers](/reference/cli#typed-answers) in the CLI reference.
+
+## Compose your own flow
+
+A flow with stages, loops or one step per item does not need a workflow. Keep the control flow in your own script, or in a Claude Code Workflow script whose agents each run one `bullswarm run`, and branch on each step's typed answer. This loop fixes and reviews until the review passes, at most three rounds:
+
+```bash
+cp fix.md task.md
+for round in 1 2 3; do
+  bullswarm run --lane build --no-caller --json --add-dir "$REPO" \
+    --task-file task.md > fix.json || { jq -r .why fix.json; break; }
+  bullswarm run --lane analyze --no-caller --json --add-dir "$REPO" --task-file review.md \
+    --answer-schema review.schema.json > review.json || { jq -r .why review.json; break; }
+  jq -e '.answer.passed' review.json > /dev/null && { echo "passed in round $round"; break; }
+  { cat fix.md; echo; echo '## The last review found'; jq -r '.answer.problems[]' review.json; } > task.md
+done
+```
+
+`--no-caller` makes every step a delegate, so no step comes back `keepOnClaude: true` without an answer. Background jobs and `wait` fan a step out over many items. The packaged skill's `references/compose.md` has this loop and two more recipes: check each finding in parallel, and let a judge pick among several proposals. Use a [workflow](/guide/workflows) instead when the work must outlive your session, or when parallel writers share one worktree and need an integration step.
 
 ## Re-judge saved outputs
 

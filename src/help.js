@@ -356,6 +356,8 @@ const runText = rich({
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
     { flag: '--dry-run', desc: 'print the routing decision, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
     { flag: '--no-caller', desc: 'exclude the calling agent from routing, so the task must go to a delegate pool or fail', default: 'off — the caller competes for the lane like any other pool' },
+    { flag: '--answer-schema <file.json>', desc: 'a JSON Schema the worker\'s final answer must match; the worker is told to write the answer as JSON to a file, and the verdict carries `answer`, `answerCheck` {ok, errors} and `workerOk` (the worker\'s own verdict). A missing or invalid answer exits 1, with no retry. A schema that is unreadable, not JSON, or uses an unsupported keyword exits 2 before any worker starts', default: 'off — no typed answer' },
+    { flag: '--answer-file <path>', desc: 'where the worker writes its answer (needs --answer-schema); a file this run does not rewrite fails the check. Put it inside --add-dir when the worker can only write there', default: 'answer-<stamp>.json next to the run\'s output in the runs folder' },
     { flag: '--json', desc: 'print the machine-readable verdict document', default: 'human-readable summary line' },
   ],
   safety: [
@@ -363,11 +365,13 @@ const runText = rich({
     'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of the run and releases it when the attempt ends; --dry-run registers nothing',
     'one attempt only: a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
+    'with --answer-schema: keeps a copy of the schema next to the run\'s output and creates the answer file\'s folder when it is missing; the worker writes the answer file',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },
     { cmd: 'bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"', note: 'shows the exact argv, including the clamped reasoning flag, without dispatching' },
     { cmd: 'bullswarm run --lane build --add-dir . --dry-run "Refactor the loader"', note: 'prints a `forecast:` line — inflight count, projected 5h percent before and after this assignment, its expected minutes, the measured burn rate, and the basis of that estimate' },
+    { cmd: 'bullswarm run --lane analyze --add-dir . --json --answer-schema todos.schema.json "Count the TODO comments in src/ per file"', note: 'one step of a caller-owned loop: `answer` is JSON that matched the schema, or `ok` is false and `answerCheck.errors` says why' },
   ],
   next: 'bullswarm health to re-judge saved outputs, or bullswarm pools to check routing/quota state before the next run.',
 });

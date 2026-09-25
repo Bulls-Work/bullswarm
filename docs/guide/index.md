@@ -25,9 +25,11 @@ anyone independently checked the result.
 
 Bullswarm gives your main agent two deliberate ways to hand work off:
 
-- one bounded outcome goes through `bullswarm run`;
-- parallel territories, integration, or independent acceptance use a
-  caller-authored `bullswarm workflow goal` program.
+- one bounded outcome goes through `bullswarm run`, and a flow you drive
+  yourself chains such runs, each returning a schema-checked JSON answer;
+- work that outlives your session, parallel writers with integration, or
+  independent acceptance use a caller-authored `bullswarm workflow goal`
+  program.
 
 The router compares each eligible pool with its own quota clock, accounts for
 work already in flight, and prefers quota at risk of expiring. Durable run,
@@ -59,8 +61,12 @@ bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/so
 ```
 
 Use `run` when the work ends in one answer you could describe in a paragraph.
-Use `workflow goal` when it has parallel territories, an integration step, or
-acceptance you want judged on its own — see [Workflows](/guide/workflows).
+Chain several runs yourself when the work has stages, loops or one step per
+item: `--answer-schema` gives each step a checked JSON answer to branch on —
+see [Compose your own flow](/guide/run#compose-your-own-flow).
+Use `workflow goal` when the work must outlive your session, when parallel
+writers need an integration step, or when you want acceptance judged on its
+own — see [Workflows](/guide/workflows).
 
 ## The four rules
 

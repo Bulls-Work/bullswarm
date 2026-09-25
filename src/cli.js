@@ -1,7 +1,7 @@
 // bullswarm CLI — verbs: setup (wizard), run, health, pools.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import {
   expiringSoonView, fiveHourElapsedPct, formatResetsIn, pickPool,
@@ -32,6 +32,9 @@ import { flagNames, unknownFlagExit } from './lib/cli-flags.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
 import { projectName } from './lib/project.js';
+import {
+  answerFileMtime, answerInstruction, checkAnswer, loadAnswerSchema, withAnswerCheck,
+} from './lib/answer.js';
 import {
   describeAssignment, expectedMinutesFromSpendModel, listAssignments,
   registerAssignment, releaseAssignment, updateAssignment, withLedger,
@@ -389,11 +392,26 @@ async function cmdRun(opts) {
     console.error('usage: choose one of --prompt or trailing task text');
     return 2;
   }
-  const taskText = opts['task-file']
+  let taskText = opts['task-file']
     ? readFileSync(opts['task-file'], 'utf8')
     : opts.prompt ?? opts.rest.join(' ');
   if (!taskText.trim()) {
     console.error('empty task: pass --task-file, --prompt, or the task as arguments');
+    return 2;
+  }
+  // A typed answer's schema is vetted before routing, so a bad schema is a
+  // usage error, never a dispatched worker whose answer cannot be checked.
+  if (opts['answer-schema'] === true || opts['answer-file'] === true) {
+    console.error('usage: --answer-schema and --answer-file require a value');
+    return 2;
+  }
+  if (opts['answer-file'] != null && opts['answer-schema'] == null) {
+    console.error('usage: --answer-file needs --answer-schema');
+    return 2;
+  }
+  const answerSchema = opts['answer-schema'] == null ? null : loadAnswerSchema(opts['answer-schema']);
+  if (answerSchema?.error) {
+    console.error(answerSchema.error);
     return 2;
   }
 
@@ -589,6 +607,22 @@ async function cmdRun(opts) {
     return 0;
   }
 
+  // The typed answer goes next to the run's output unless the caller names a
+  // file. The worker is checked against a copy of the schema it was shown, so
+  // a caller editing its schema file mid-run changes nothing. A named file may
+  // already exist; one this run never rewrites is stale, not an answer.
+  let typedAnswer = null;
+  if (answerSchema) {
+    typedAnswer = {
+      answerFile: resolve(opts['answer-file'] ?? join(runDir, `answer-${stamp}.json`)),
+      schemaFile: join(runDir, `answer-schema-${stamp}.json`),
+    };
+    writeFileSync(typedAnswer.schemaFile, `${answerSchema.text}\n`);
+    try { mkdirSync(dirname(typedAnswer.answerFile), { recursive: true }); } catch { /* the check reports it */ }
+    typedAnswer.mtimeBefore = answerFileMtime(typedAnswer.answerFile);
+    taskText += answerInstruction(answerSchema.text, typedAnswer.answerFile);
+  }
+
   const heartbeat = createRunHeartbeat({ intervalSec: heartbeatSec });
   heartbeat.start();
   const startedAt = new Date().toISOString();
@@ -652,6 +686,9 @@ async function cmdRun(opts) {
   const endedMs = Date.parse(endedAt);
   const durationMs = Number.isFinite(startedMs) && Number.isFinite(endedMs) && endedMs >= startedMs
     ? endedMs - startedMs : null;
+  // Checked before anything is recorded, so the decision log and the task
+  // ledger say what the verdict says.
+  if (typedAnswer) verdict = withAnswerCheck(verdict, checkAnswer(typedAnswer));
   verdict.routeWhy = route.why;
   verdict.routeCandidates = route.candidates;
 
@@ -662,8 +699,9 @@ async function cmdRun(opts) {
   // A failure is recorded in the decision log and nowhere else: no pool is
   // paused or benched for it (state.js S1).
   updateState(getBullswarmDir(), (fresh) => {
-    // Persist incumbency on success.
-    if (verdict.ok) {
+    // Persist incumbency on the pool's own success: a failed answer check is
+    // the caller's contract, not the pool's result.
+    if (verdict.workerOk ?? verdict.ok) {
       fresh.incumbents ??= {};
       fresh.incumbents[lane] = connector.name;
     }
@@ -676,6 +714,15 @@ async function cmdRun(opts) {
       picked: connector.name,
       keepOnClaude: false,
       ok: verdict.ok,
+      ...(verdict.answerCheck ? {
+        workerOk: verdict.workerOk,
+        answerCheck: {
+          ok: verdict.answerCheck.ok,
+          why: verdict.answerCheck.why,
+          errors: verdict.answerCheck.errors.slice(0, 3),
+          file: verdict.answerCheck.file,
+        },
+      } : {}),
       why: verdict.why,
       routeWhy: route.why,
       routeCandidates: route.candidates,
@@ -762,6 +809,10 @@ function emit(verdict, opts) {
       console.log(`reasoning: ${verdict.reasoning.applied} (${verdict.reasoning.source}${clamped})`);
     }
     if (verdict.outFile) console.log(`output: ${verdict.outFile}`);
+    if (verdict.answerCheck) {
+      const a = verdict.answerCheck;
+      console.log(`answer: ${a.ok ? 'valid' : `INVALID — ${a.errors.slice(0, 3).join('; ')}`} (${a.file})`);
+    }
     const usage = verdict.meta?.usage;
     if (usage) {
       const t = usage.tokens ?? {};
@@ -800,8 +851,9 @@ function cmdHealth(opts) {
         file: f,
         savedVerdict: decision ? (decision.ok ? 'OK' : 'FAIL') : 'unlogged',
         rejudge: j.verdict,
+        // The worker's own verdict: a failed answer check is not the gate.
         gateAteWork:
-          decision != null && decision.ok === false && j.verdict === 'pass',
+          decision != null && (decision.workerOk ?? decision.ok) === false && j.verdict === 'pass',
       });
     }
   }

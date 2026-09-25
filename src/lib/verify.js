@@ -18,6 +18,11 @@ export const FAILURE_SCAN_HEAD = 400; // chars scanned for failure patterns
 export const SHORT_OUTPUT_MAX = 600;  // below this, whole output is the head
 export const MIN_SUBSTANCE_CHARS = 80;
 export const MIN_MULTI_UNIT_SUBSTANCE_CHARS = 40;
+// The two reasons that judge only the reply's prose: nothing at all, or talk
+// with no result in it. A run's checked typed answer can stand in for both
+// (answer.js); every other reason is the worker failing.
+export const EMPTY_OUTPUT = 'empty output';
+export const NO_SUBSTANCE = 'announcement without substance';
 
 // Patterns indicating the DELEGATE ITSELF failed (not that it discusses
 // failure). Case-insensitive against the head or tail slice.
@@ -185,7 +190,7 @@ export function hasStructuredAnswer(text) {
 export function judgeContent(text, { exitCode, expectWork = true, acceptVerifyJson = false } = {}) {
   void exitCode; // content-only judgment; exit handled by the caller
   if (typeof text !== 'string' || text.trim().length === 0) {
-    return { verdict: 'fail', why: 'empty output' };
+    return { verdict: 'fail', why: EMPTY_OUTPUT };
   }
   if (scanForFailure(text)) {
     return { verdict: 'fail', why: 'failure pattern at output head or tail' };
@@ -195,7 +200,7 @@ export function judgeContent(text, { exitCode, expectWork = true, acceptVerifyJs
     return { verdict: 'fail', why: 'structured: error object, not an answer' };
   }
   if (expectWork && !looksLikeWork(text) && !(acceptVerifyJson && hasVerifyJson(text)) && !hasStructuredAnswer(text)) {
-    return { verdict: 'intent_only', why: 'announcement without substance' };
+    return { verdict: 'intent_only', why: NO_SUBSTANCE };
   }
   return { verdict: 'pass', why: 'content passed all gates' };
 }

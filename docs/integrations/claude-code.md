@@ -24,7 +24,7 @@ bullswarm integrate status --agents claude
 bullswarm integrate remove --yes --agents claude
 ```
 
-The skill's instructions send the agent straight to `bullswarm run` for one bounded outcome, or to `bullswarm workflow goal` when the work has parallel territories, an integration step, or acceptance judged on its own — there is no classifier or preview command to learn first. The exact text written into each agent's config is on [Codex and Grok](/integrations/agent-clis).
+The skill's instructions send the agent straight to `bullswarm run` for one bounded outcome, to a flow of such runs it drives itself with schema-checked answers when the work has stages, loops or one step per item, or to `bullswarm workflow goal` when the work must outlive the session or parallel writers need an integration step — there is no classifier or preview command to learn first. The exact text written into each agent's config is on [Codex and Grok](/integrations/agent-clis).
 
 ## The MCP server
 
@@ -32,7 +32,7 @@ The skill's instructions send the agent straight to `bullswarm run` for one boun
 
 | Tool | What it does |
 |---|---|
-| `bullswarm_run` | takes `lane`, `task`, optional `addDir` and `timeout`; dispatches one bounded task and returns `{ exitCode, verdict }` |
+| `bullswarm_run` | takes `lane`, `task`, optional `addDir`, `timeout`, `noCaller`, `answerSchema` and `answerFile` (`run`'s `--add-dir`, `--timeout`, `--no-caller`, `--answer-schema` and `--answer-file`); dispatches one bounded task and returns `{ exitCode, verdict }`, plus `stderr` when a failed call printed there (a usage error does) |
 | `bullswarm_health` | re-judges saved outputs against their verdicts and reports verify-gate failures |
 | `bullswarm_pools` | returns each pool's meter state, pace position, and in-flight load (`bullswarm pools --json`) |
 

@@ -1,6 +1,6 @@
 ---
 name: bullswarm
-description: Delegate bounded work through Bullswarm to one quota-routed coding agent or a shared-worktree workflow, and steer a running workflow by revising its plan (add, change, remove, or rerun steps; pause and resume). Use for /bullswarm, offloading, independent verification, or requested multi-agent execution.
+description: Delegate bounded work through Bullswarm to one quota-routed coding agent, a flow of such runs you drive with schema-checked JSON answers, or a shared-worktree workflow, and steer a running workflow by revising its plan (add, change, remove, or rerun steps; pause and resume). Use for /bullswarm, offloading, independent verification, or requested multi-agent execution.
 ---
 
 # Bullswarm
@@ -17,12 +17,17 @@ work directly unless it explicitly requires nested delegation.
 
 ## 1. Choose the shape
 
-One agent for one bounded outcome: a review, a localized fix, a study with one
-deliverable. A workflow when the work splits into parallel territories, needs
-integration, or needs independent acceptance. Decide from the request itself;
-there is no classifier command.
+One `bullswarm run` per bounded outcome: a review, a localized fix, a study
+with one deliverable. When the work has stages, loops or one step per item,
+you drive them: your own loop, or a Claude Code Workflow script whose agents
+each shell out to `bullswarm run`. Give each step `--answer-schema` so it
+returns checked JSON you can branch on; [compose.md](references/compose.md)
+has three recipes. Use a workflow (`workflow goal`) when the work must outlive
+this session, or when parallel writers share one worktree and need an
+integration step. Decide from the request itself; there is no classifier
+command.
 
-## 2a. One agent
+## 2a. One run, or a flow of runs
 
 ```bash
 bullswarm run --lane=analyze --add-dir=<abs-dir> --prompt='<task>' --json
@@ -34,6 +39,14 @@ yourself; `ok: true` means read `outFile` and check its content before using
 it; `ok: false` means inspect and report the failure. A clean exit code is not
 proof of success. Do not run `doctor` unless dispatch reports a readiness
 problem.
+
+Add `--answer-schema <file.json>` when you will branch on the result. The
+worker writes its answer as JSON, Bullswarm checks it against the schema, and
+the verdict carries `answer` and `answerCheck` (`ok`, `errors`). A missing or
+invalid answer sets `ok: false` and exits 1, with the worker's own verdict in
+`workerOk`. Nothing is retried: rerun, change the schema, or read `outFile`
+yourself. In a flow of runs pass `--no-caller`, so no step comes back
+`keepOnClaude: true` with no answer.
 
 ## 2b. A workflow
 

@@ -112,9 +112,13 @@ bullswarm workflow runs delete <shortId> --yes
 If you are an agent that wants to offload bounded work via bullswarm,
 read `skill/SKILL.md` — that's the agent-facing user guide. There are
 exactly two ways to start work, and the caller chooses the shape itself: one
-bounded outcome goes to `bullswarm run`; parallel territories, integration,
-or independent acceptance go to `bullswarm workflow goal` with a program you
-author (`bullswarm workflow plan contract` returns the schema). There is no
+bounded outcome goes to `bullswarm run`, and a caller that wants to keep the
+control flow (stages, loops, one step per item) chains such runs, each with
+`--answer-schema` so it returns a checked JSON answer
+(`skill/references/compose.md`); work that must outlive the session, parallel
+writers with integration, or independent acceptance go to
+`bullswarm workflow goal` with a program you author
+(`bullswarm workflow plan contract` returns the schema). There is no
 classifier or preview step. The skill is published alongside the package and
 is the canonical reference for the CLI surface.
 

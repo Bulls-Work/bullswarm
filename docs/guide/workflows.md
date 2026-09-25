@@ -9,14 +9,15 @@ After this page you can tell when a workflow beats a single run, write the progr
 
 ## When a workflow beats a single run
 
-`bullswarm run` sends one bounded outcome to one agent: a review, a localized fix, a study with one deliverable.
+`bullswarm run` sends one bounded outcome to one agent: a review, a localized fix, a study with one deliverable. Stages, loops and one step per item can stay with you too: chain `run` steps whose typed answers you branch on (see [Compose your own flow](/guide/run#compose-your-own-flow)).
 
-Reach for a workflow instead when the work splits into parallel territories, when shared files need an integration step after the writers finish, or when acceptance must be judged by someone other than the author.
+Reach for a workflow instead when the work must outlive your session, when parallel writers share one worktree and need an integration step after they finish, or when you want Bullswarm itself to run the checks and an independent review with its fix cycle.
 
 | Shape of the work | Entry point |
 | --- | --- |
 | One bounded outcome, one agent | `bullswarm run` — see [Run](/guide/run) |
-| Parallel territories, integration, or independent acceptance | `bullswarm workflow goal` — the rest of this page |
+| Stages, loops or one step per item that you drive | many `bullswarm run` steps with `--answer-schema` — see [Compose your own flow](/guide/run#compose-your-own-flow) |
+| Work that outlives your session, parallel writers with integration, or checks and independent acceptance run by Bullswarm | `bullswarm workflow goal` — the rest of this page |
 
 ## You are the planner
 
