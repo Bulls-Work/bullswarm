@@ -17,7 +17,7 @@ const REQUIREMENT_STATUSES = new Set(['pending', 'passed', 'failed', 'blocked'])
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
 // Failure kinds a plain retry can fix: the work itself was never judged (no
-// pool, a paused pool, a crashed or silent worker, unreadable output). A step
+// pool, a spent pool, a crashed or silent worker, unreadable output). A step
 // that failed for any other reason (the worker reported failure, it wrote
 // outside its files) needs the caller to change something before it reruns.
 export const V2_RETRYABLE_FAILURE_KINDS = Object.freeze([
@@ -964,7 +964,7 @@ function fitResultSummary(summary, { failureRule = false } = {}) {
       unfinished: selected.map((entry) => dropNullFields({
         ...entry,
         // A retry deadline without its cause is not an actionable handback.
-        // Preserve the paused-pool explanation even in the smallest summary.
+        // Preserve the spent-pool explanation even in the smallest summary.
         why: clipWhy(entry.why, entry.retryAfter ? Math.max(limit, 200) : limit),
       })),
       ...(unfinished.length > selected.length ? { unfinishedOmitted: unfinished.length - selected.length } : {}),
@@ -1100,7 +1100,7 @@ function reviewVerbs(envelope, token, actions) {
 function summaryHandback(envelope, handback, token, { failureRule = false, actions = [], stopped = null } = {}) {
   const retryable = handback.unfinished.filter((entry) => entry.retryable);
   const waits = retryable.map((entry) => Date.parse(entry.retryAfter ?? '')).filter(Number.isFinite);
-  // Named only when every step to retry is waiting on a paused pool: resume
+  // Named only when every step to retry is waiting on a spent pool: resume
   // gets through once the first of them is back.
   const stepsBackAt = retryable.length && waits.length === retryable.length ? new Date(Math.min(...waits)).toISOString() : null;
   // A marked run's planner or scout that stopped on a limit and ended the run

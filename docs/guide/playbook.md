@@ -38,7 +38,7 @@ steps or automatically add gap rounds after the graph finishes.
 The kernel schedules dependency-ready actions across eligible provider pools.
 Independent implementation and docs actions can run together; integration
 waits for both; acceptance waits for integration. Routing still applies the
-same quota pace, five-hour protection, load, quarantine, and model-rung rules
+same quota pace, spent-window, load, and model-rung rules
 that a single `bullswarm run` uses.
 
 ```bash

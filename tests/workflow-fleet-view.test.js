@@ -76,20 +76,16 @@ test('Fleet keeps the sub-tabs and every row inside every supported width', () =
   assert.notEqual(phone.lines[3], 'architecture · adversarial-acceptance');
 });
 
-test('Fleet shows a free-model probe strike reason in the provider blurb', () => {
-  const result = fleetLines([
-    { name: 'opencode', enabled: true, bench: { until: null, reason: 'probe: 404', count: 1 } },
-  ], [
-    { pool: 'opencode', tier: 'low', model: 'zen/union-free', dispatches: 0 },
-  ], { width: 120, by: 'provider', ansi: false });
-  assert.match(result.lines.join('\n'), /strike \(probe: 404\)/);
-});
-
-test('Fleet lane view keeps the probe reason beside the rung', () => {
-  const result = fleetLines([
-    { name: 'opencode', enabled: true, bench: { until: null, reason: 'probe: provider error', count: 1 } },
-  ], [
-    { pool: 'opencode', tier: 'low', model: 'zen/union-free', dispatches: 0 },
-  ], { width: 120, by: 'lane', ansi: false });
-  assert.match(result.lines.join('\n'), /probe: provider error/);
+test('Fleet shows no strike, bench or pause for an old record on a pool, in either view', () => {
+  const old = [{
+    name: 'opencode', enabled: true,
+    bench: { until: Date.parse('2026-09-16T13:00:00.000Z'), reason: 'probe: 404', count: 2 },
+    quarantine: { until: Date.parse('2026-09-16T13:00:00.000Z'), reason: 'usage limit', kind: 'quota' },
+  }];
+  const rung = [{ pool: 'opencode', tier: 'low', model: 'zen/union-free', dispatches: 0 }];
+  for (const by of ['provider', 'lane']) {
+    const text = fleetLines(old, rung, { width: 120, by, ansi: false, nowMs: Date.parse('2026-09-16T12:00:00.000Z') }).lines.join('\n');
+    assert.match(text, /union-free/, by);
+    assert.doesNotMatch(text, /strike|bench|paused|quarantin|probe: 404/i, by);
+  }
 });

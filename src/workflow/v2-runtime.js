@@ -418,7 +418,7 @@ function commitRevisionUnderLease(runDir, request, { now }) {
 /**
  * Reopen a finished program run so `workflow resume` runs its unfinished steps
  * again: steps that never ran or were stopped, steps whose failure a retry can
- * fix (no pool, a paused pool, a crashed or silent worker), and the steps
+ * fix (no pool, a spent pool, a crashed or silent worker), and the steps
  * blocked behind them. Steps the caller has to change first stay as they are.
  * In a marked run, a Workflow Planner or preflight scout whose stop on a
  * usage limit, a rate limit that did not clear, or no free pool ended the run
@@ -1590,7 +1590,7 @@ async function runV2Kernel({
 } = {}) {
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   const dispatch = dependencies.dispatchV2Action ?? dispatchV2Action;
-  // Meters and quarantines move while a run is in flight. Every dispatch site
+  // Meters move while a run is in flight. Every dispatch site
   // re-reads them through this refresher instead of the list captured at
   // launch, and the dispatch loop gets the same function so it can re-read
   // between its own retries.
@@ -2543,16 +2543,6 @@ async function runV2Kernel({
               silentSec: record.silentSec ?? null,
             } : {}),
           });
-          if (record.bench?.until != null) {
-            emit('pool.benched', {
-              pool: record.bench.pool ?? record.pool ?? null,
-              reason: record.bench.reason ?? null,
-              count: record.bench.count ?? null,
-              until: record.bench.until,
-              actionId: action.id,
-              attemptId: currentAttemptId,
-            });
-          }
         }
       },
       onActivity: ({ at, bytes }) => {

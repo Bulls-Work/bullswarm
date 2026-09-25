@@ -1,21 +1,17 @@
-// `bullswarm pools resume <pool>` and `bullswarm strategy set-pausing on|off`,
-// exercised against the real binary on throwaway homes, plus the plain-words
-// pause line `bullswarm pools` prints (quota.js Q6).
+// `bullswarm pools` and a single `bullswarm run` against the real binary on
+// throwaway homes: no pool is ever paused or benched (owner decision
+// 2026-09-25, state.js S1), and the commands that managed pauses are gone.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { poolStatusText } from '../src/cli.js';
-import { decideQuotaPause } from '../src/lib/quota.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'bin', 'bullswarm.js');
-const NOW = Date.parse('2026-09-21T06:30:00Z');
-const TRANSIENT = 'Error: Rate limit exceeded. Please wait a moment and try again.';
-const SESSION = "You've hit your session limit · resets in 2 hours";
 
 function makeHome(state = {}) {
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-pools-cli-'));
@@ -39,130 +35,83 @@ function run(home, argv) {
 
 const readState = (home) => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
 
-function quotaRecord(now = Date.now()) {
-  const evidence = decideQuotaPause({ text: SESSION, meter: null, pausing: true, now });
-  return {
-    until: evidence.until, reason: evidence.why, kind: 'quota', rule: evidence.rule,
-    line: evidence.line, meter: evidence.meter, meterWindow: null, resetsAt: evidence.resetsAt,
-    pausedAt: new Date(now).toISOString(),
-  };
-}
-
-test('pools resume lifts a quota pause at once, logs it, and drops the refusal meter marker', () => {
-  const home = makeHome({ pools: { 'claude-code': { quarantine: quotaRecord() } } });
-  try {
-    writeFileSync(join(home, 'meters', 'claude-code.json'), JSON.stringify({
-      pool: 'claude-code', source: 'quota-refusal', captured_at: new Date().toISOString(),
-      quota_refusal: { refused_at: new Date().toISOString(), resets_at: new Date(Date.now() + 3600_000).toISOString(), window: '5h' },
-      five_hour: { utilization: 100, resets_at: new Date(Date.now() + 3600_000).toISOString(), source: 'quota-refusal' },
-    }));
-    const result = run(home, ['pools', 'resume', 'claude-code']);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /^claude-code resumed — lifted this pause: paused until .* · usage window spent, provider named the reset · provider: "You've hit your session limit · resets in 2 hours"/);
-    assert.match(result.stdout, /dropped the 100% quota-refusal meter marker; the next meter read is live/);
-    const state = readState(home);
-    assert.equal(state.pools['claude-code'].quarantine, undefined);
-    const entry = state.decisionLog.at(-1);
-    assert.equal(entry.kind, 'pool-resume');
-    assert.equal(entry.pool, 'claude-code');
-    assert.equal(entry.lifted.quarantine.kind, 'quota');
-    assert.equal(existsSync(join(home, 'meters', 'claude-code.json')), false);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-
-test('pools resume --json reports what it lifted; an unpaused pool is left as it was', () => {
+test('pools resume and strategy set-pausing are unknown commands now: exit 2, the usual message, nothing written', () => {
   const home = makeHome({ pools: { grok: { quarantine: { until: Date.now() + 600_000, reason: 'auth signature', kind: 'auth' } } } });
   try {
-    const lifted = run(home, ['pools', 'resume', 'grok', '--json']);
-    assert.equal(lifted.status, 0, lifted.stderr);
-    const body = JSON.parse(lifted.stdout);
-    assert.equal(body.pool, 'grok');
-    assert.equal(body.resumed, true);
-    assert.equal(body.lifted.quarantine.kind, 'auth');
-    assert.equal(body.lifted.refusalMeterMarker, false);
-    const again = run(home, ['pools', 'resume', 'grok']);
-    assert.equal(again.status, 0, again.stderr);
-    assert.equal(again.stdout.trim(), 'grok was not paused; nothing to lift');
-    assert.equal(readState(home).decisionLog.filter((e) => e.kind === 'pool-resume').length, 1);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-
-test('pools resume refuses an unknown pool or a missing name with exit 2 and writes nothing', () => {
-  const home = makeHome();
-  try {
-    const unknown = run(home, ['pools', 'resume', 'no-such-pool']);
-    assert.equal(unknown.status, 2);
-    assert.match(unknown.stderr, /unknown pool "no-such-pool"/);
-    const missing = run(home, ['pools', 'resume']);
-    assert.equal(missing.status, 2);
-    assert.match(missing.stderr, /usage: bullswarm pools resume <pool> \[--json\]/);
-    assert.equal(readState(home).decisionLog.length, 0);
+    // The same message any other stray pools subcommand gets. (The first
+    // command in a fresh home completes its setup, which writes state.json.)
     const stray = run(home, ['pools', 'frobnicate']);
     assert.equal(stray.status, 2);
-    assert.match(stray.stderr, /unknown pools subcommand "frobnicate"/);
+    assert.match(stray.stderr, /^✗ unknown pools subcommand "frobnicate"\n/);
+    const before = readFileSync(join(home, 'state.json'), 'utf8');
+    const resume = run(home, ['pools', 'resume', 'grok']);
+    assert.equal(resume.status, 2, resume.stdout);
+    assert.match(resume.stderr, /^✗ unknown pools subcommand "resume"\n/);
+    assert.match(resume.stderr, /usage: bullswarm pools /);
+    for (const argv of [['strategy', 'set-pausing', 'off'], ['strategy', 'set-pausing', 'on', '--json']]) {
+      const pausing = run(home, argv);
+      assert.equal(pausing.status, 2, `${argv.join(' ')}: ${pausing.stdout}`);
+      // What `strategy` answers every subcommand it does not know.
+      assert.equal(pausing.stderr, run(home, ['strategy', 'frobnicate']).stderr, argv.join(' '));
+      assert.match(pausing.stderr, /^✗ Usage: bullswarm strategy /);
+      assert.equal(pausing.stdout, '');
+    }
+    assert.equal(readFileSync(join(home, 'state.json'), 'utf8'), before, 'nothing was written');
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });
 
-test('strategy set-pausing off|on is stored in state.json; anything else is a usage error', () => {
-  const home = makeHome();
-  try {
-    const off = run(home, ['strategy', 'set-pausing', 'off']);
-    assert.equal(off.status, 0, off.stderr);
-    // The switch pauses nothing, and changes no failure kind.
-    assert.equal(off.stdout.trim(), 'automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); '
-      + 'a spent usage window still goes back to the caller, and a retry after a sign-in failure still skips the pools that share '
-      + 'that credential · bullswarm strategy set-pausing on restores it');
-    assert.equal(readState(home).strategy.pausing, 'off');
-    const on = run(home, ['strategy', 'set-pausing', 'on', '--json']);
-    assert.equal(on.status, 0, on.stderr);
-    assert.deepEqual(JSON.parse(on.stdout), { pausing: 'on' });
-    assert.equal('pausing' in (readState(home).strategy ?? {}), false);
-    const bad = run(home, ['strategy', 'set-pausing', 'maybe']);
-    assert.equal(bad.status, 2);
-    assert.match(bad.stderr, /usage: bullswarm strategy set-pausing <on\|off> \[--json\]/);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-
-test('bullswarm pools says why a pool is paused, in plain words, with the lift command', () => {
-  const evidence = decideQuotaPause({
-    text: TRANSIENT,
-    meter: {
-      captured_at: '2026-09-21T06:20:00Z',
-      five_hour: { utilization: 48, resets_at: '2026-09-21T08:00:00Z' },
-      seven_day: { utilization: 96, resets_at: '2026-09-24T12:00:00Z' },
+// The owner's state.json still held a bench for opencode, and older homes
+// hold quarantines, `strategy.pausing: "off"` and strikes. `bullswarm pools`
+// reads past them: no PAUSED, BENCHED or strikes text, no switch line.
+test('bullswarm pools reads a state.json with old quarantine, bench and switch records without a pause', () => {
+  const until = Date.now() + 3 * 24 * 3600_000;
+  const home = makeHome({
+    strategy: { pausing: 'off' },
+    pools: {
+      echo: { enabled: true, quarantine: { until, reason: 'usage limit', kind: 'quota', rule: 'message' }, bench: { until, reason: 'stall', count: 2 } },
+      opencode: { bench: { until: null, reason: 'provider', count: 1 } },
     },
-    pausing: true,
-    now: NOW,
+    config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
   });
-  const quarantine = { ...evidence, kind: 'quota', reason: evidence.why };
-  assert.equal(
-    poolStatusText({ name: 'claude-code', enabled: true, quarantine }, NOW, { timeZone: 'UTC' }),
-    'PAUSED until Thu 24 Sep 12:00 · usage window spent, meter read weekly 96% (>= 95%)'
-      + ` · provider: "${TRANSIENT}" · meter then: 5h 48% · weekly 96%`
-      + ' · lift now: bullswarm pools resume claude-code',
-  );
-  assert.equal(
-    poolStatusText({ name: 'grok', enabled: true, quarantine: { until: NOW + 600_000, kind: 'auth', reason: 'auth signature' } }, NOW, { timeZone: 'UTC' }),
-    'PAUSED until 06:40 · auth: auth signature · lift now: bullswarm pools resume grok',
-  );
-  assert.equal(poolStatusText({ name: 'codex', enabled: true, bench: { until: null, reason: 'stall', count: 1 } }, NOW), 'ready strikes=1(stall)');
-  assert.equal(poolStatusText({ name: 'codex', enabled: false }, NOW), 'disabled');
+  try {
+    const before = readFileSync(join(home, 'state.json'), 'utf8');
+    const text = run(home, ['pools']);
+    assert.equal(text.status, 0, text.stderr);
+    assert.doesNotMatch(`${text.stdout}${text.stderr}`, /PAUSED|BENCHED|strikes=|automatic pausing|quarantine|bench expired/i);
+    const echo = text.stdout.split('\n').find((line) => line.startsWith('echo '));
+    assert.ok(echo, text.stdout);
+    assert.match(echo, / ready/);
+    const json = run(home, ['pools', '--json']);
+    assert.equal(json.status, 0, json.stderr);
+    const body = JSON.parse(json.stdout);
+    assert.deepEqual(Object.keys(body), ['pools']);
+    for (const pool of body.pools) {
+      for (const key of ['quarantine', 'bench', 'pauseWhy']) assert.equal(Object.hasOwn(pool, key), false, `${pool.name}.${key}`);
+    }
+    assert.equal(readFileSync(join(home, 'state.json'), 'utf8'), before, '`pools` observes; it rewrites nothing');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a pool status is disabled or ready with its 5-hour flags; an old record on the view changes nothing', () => {
+  assert.equal(poolStatusText({ name: 'codex', enabled: false }), 'disabled');
+  assert.equal(poolStatusText({ name: 'codex', enabled: true }), 'ready');
+  assert.equal(poolStatusText({ name: 'codex', enabled: true, burstGate: true, nearFiveHourLimit: true }), 'ready BURST-GATED NEAR-5H-LIMIT');
+  assert.equal(poolStatusText({
+    name: 'grok', enabled: true,
+    quarantine: { until: Date.now() + 600_000, kind: 'auth', reason: 'auth signature' },
+    bench: { until: null, reason: 'stall', count: 1 },
+  }), 'ready');
 });
 
 // A home with only the echo test pool, for a single `bullswarm run`.
-function echoHome(strategy = null) {
+function echoHome() {
   const home = makeHome({
     pools: { echo: { enabled: true } },
     config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
-    ...(strategy ? { strategy } : {}),
   });
   mkdirSync(join(home, 'connectors'), { recursive: true });
   writeFileSync(join(home, 'connectors', 'echo.json'), readFileSync(join(ROOT, 'src', 'providers', 'echo', 'connector.json')));
@@ -180,24 +129,76 @@ function runEcho(home, argv) {
   });
 }
 
-// A single run is under the limits-to-caller rule. With pausing
-// off a spent window with its reset named is still `quota`, and the 100%
-// refusal marker is written (the echo pool has no meter reader), so the next
-// pick sees the spent pool; nothing is paused.
-test('run: with pausing off a spent usage window is quota, pauses nothing and writes the refusal marker', () => {
-  const home = echoHome({ pausing: 'off' });
+// A single run is under the limits-to-caller rule: a spent window with its
+// reset named is `quota`, with that reset as retryAfter, and the 100% refusal
+// marker is written with a named reset (the echo pool has no meter reader), so
+// the next pick sees the spent pool. Nothing is paused.
+test('run: a spent usage window with its reset named is quota, pauses nothing and writes a named refusal marker', () => {
+  const home = echoHome();
   try {
     const result = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--json', '--prompt', 'FAIL:quota']);
     assert.equal(result.status, 1, result.stderr);
     const verdict = JSON.parse(result.stdout);
     assert.equal(verdict.failureKind, 'quota', verdict.why);
-    assert.equal(verdict.quotaPause.rule, 'off');
-    assert.equal(verdict.quarantineHint, undefined);
+    assert.equal(verdict.usageLimit.rule, 'message');
+    assert.match(verdict.why, /^usage window spent: provider said "Error: usage limit reached · resets in 45 minutes" · back at /);
+    for (const key of ['quarantineHint', 'quarantineUntil', 'quarantineSource', 'quarantinedUntil', 'quarantinedSiblings', 'quotaPause']) {
+      assert.equal(Object.hasOwn(verdict, key), false, key);
+    }
     assert.equal(verdict.meterRefresh.source, 'quota-refusal');
     const marker = JSON.parse(readFileSync(join(home, 'meters', 'echo.json'), 'utf8'));
     assert.equal(marker.source, 'quota-refusal');
-    assert.equal(marker.quota_refusal.resets_at, new Date(verdict.quotaPause.holdUntil).toISOString());
-    assert.equal(readState(home).pools.echo.quarantine, undefined, 'pausing off: not paused');
+    assert.equal(marker.quota_refusal.resets_at, verdict.retryAfter);
+    assert.equal(marker.quota_refusal.reset_source, 'named');
+    const state = readState(home);
+    assert.equal(state.pools.echo.quarantine, undefined, 'not paused');
+    assert.equal(state.pools.echo.bench, undefined, 'not benched');
+    // The named marker keeps the pool out until its reset.
+    const next = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    assert.equal(next.status, 1, next.stderr);
+    assert.equal(JSON.parse(next.stdout).pick, undefined);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// MUST FIX (wave B): a window-worded notice that names no reset, on a pool
+// with no meter reader, wrote the 100% refusal marker with a GUESSED reset
+// (a whole week from now) that routing counted, so the pool was shut out for
+// days with nothing to lift it. The marker now says the reset was guessed,
+// and a guessed marker keeps no pool out.
+test('run: a usage limit that names no reset, on a pool with no meter reader, is quota and the next run still offers the pool', () => {
+  const home = makeHome({
+    pools: { limited: { enabled: true } },
+    config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
+  });
+  try {
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    const worker = join(home, 'connectors', 'limited-worker.mjs');
+    writeFileSync(worker, 'const task = (await import("node:fs")).readFileSync(process.argv[2], "utf8");\n'
+      + 'console.log(task.includes("LIMIT") ? "You\'ve hit your usage limit" : "## Done\\n\\nAll checks passed; the work is complete and verified.");\n');
+    const echo = JSON.parse(readFileSync(join(ROOT, 'src', 'providers', 'echo', 'connector.json'), 'utf8'));
+    writeFileSync(join(home, 'connectors', 'limited.json'), JSON.stringify({
+      ...echo, name: 'limited', spawn: { cmd: [process.execPath, worker, '{taskFile}'] },
+    }));
+    const limited = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--json', '--prompt', 'LIMIT']);
+    assert.equal(limited.status, 1, limited.stderr);
+    const verdict = JSON.parse(limited.stdout);
+    assert.equal(verdict.pick.pool, 'limited');
+    assert.equal(verdict.failureKind, 'quota', verdict.why);
+    assert.equal(verdict.retryAfter, undefined, 'no reset was named');
+    assert.equal(verdict.why, 'usage window spent: provider said "You\'ve hit your usage limit" · no reset named · meter not read');
+    const marker = JSON.parse(readFileSync(join(home, 'meters', 'limited.json'), 'utf8'));
+    assert.equal(marker.quota_refusal.reset_source, 'guessed');
+    assert.equal(marker.seven_day.utilization, 100);
+    // The next routing still offers the pool: the guessed marker is not a wall.
+    const next = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    assert.equal(next.status, 0, next.stdout);
+    assert.equal(JSON.parse(next.stdout).pick.pool, 'limited');
+    // `pools` names the refusal without calling the pool blocked.
+    const pools = run(home, ['pools']);
+    assert.match(pools.stdout, /limited .*\[refused (just now|\d+m ago) · reset unknown\]/);
+    assert.doesNotMatch(pools.stdout, /limited .*blocked/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

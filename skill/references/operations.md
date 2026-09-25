@@ -80,12 +80,12 @@ still prints). With `--jsonl` that line is absent: take `--after` from the
 `sequence` field carried by every emitted object. `--heartbeat` is opt-in for V2 (legacy still
 defaults to 60s). `--stall-after` (default 300s) reports a silent running
 agent. A usage-limit failure always prints, verbose or not: `⚠ ... usage
-limit on <pool> · paused until <deadline>`. In a run started by this version
-it ends `back to you` and a needs-you block follows (see "Retries, usage
-limits and the needs-you block"); nothing waits for the pool or moves the
-step. There, a pool that was not paused for it (pausing off, or no proof)
-reads `not paused` in place of the pause; the needs-you block that follows
-carries the return time as `back at <time>` when it is known. In a run from an earlier version it ends `retrying on another pool`,
+limit on <pool>`, with `back at <time>` in it when the watch knows when the
+pool is back. In a run started by this version it ends `back to you` and a
+needs-you block follows (see "Retries, usage limits and the needs-you
+block"); nothing waits for the pool or moves the step, and the block carries
+the return time as `back at <time>` when it is known. In a run from an
+earlier version it ends `retrying on another pool`,
 then `↺ ... now on <pool> · <model>` prints once the mechanical retry lands on
 another pool. Use `--verbose` only for diagnosis. `--classic` forces the older
 heartbeat-based watcher (transition-on-change snapshots plus a periodic
@@ -440,7 +440,7 @@ In new runs, each step gets one automatic retry in total. A process failure
 (crash, silence, sign-in failure, provider error, a worker that died at start)
 retries on another eligible pool (the same pool when it is the only one, except
 after a sign-in failure). After a sign-in failure the retry also skips every
-pool that shares that credential, whatever the pausing switch. A gate failure (`failed-evidence`, `not-produced`,
+pool that shares that credential, for that step only; nothing is stored. A gate failure (`failed-evidence`, `not-produced`,
 `schema`, or `semantic`) retries on the same pool with the failure attached. A
 gate retry spends the same one-step budget. A started `act` step is never
 retried automatically; a check that could not run also comes straight back to
@@ -449,29 +449,28 @@ keep their saved rules.
 
 A usage limit ends the step: a spent 5-hour or weekly window, or no credit
 left. The step comes straight back to you as `quota`; nothing waits, moves to
-another pool or retries by itself. That holds whatever the automatic pausing
-switch, and for a limit notice that names no reset (its block then prints
-`back at` only when every pool that can run the step is out and one of them
-has a known return). The pool's meter is read again at once (when it cannot
-be read, the pool is recorded as full until the reset), and later steps route
-on that reading: a window it shows at 100% keeps the pool out until that window
-resets. A short "too many requests" rate limit is not a usage
+another pool or retries by itself. That holds for a limit notice that names
+no reset too (its block then prints `back at` only when every pool that can
+run the step is out and one of them has a known return). Bullswarm never
+remembers a spent or dead pool from one step to the next: nothing pauses or
+benches a pool. The pool's meter is read again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and
+later steps route on that reading: a window it shows at 100% keeps the pool
+out until that window resets. A short "too many requests" rate limit is not a usage
 limit: it backs off on the same pool at most twice (20 s, then 60 s, or the
 wait it names when that is at most 2 minutes), then comes back to you as
-`throttle`, with pausing on or off. One that names a longer wait comes back to
+`throttle`. One that names a longer wait comes back to
 you at once, with `back at` at the end of that wait. One whose pool is no
-longer free for the backoff (another run paused it, or it reached its 5-hour,
-weekly or monthly limit, is nearly spent or benched) comes back to you at once too: as `quota`
+longer free for the backoff (it reached its 5-hour, weekly or monthly limit,
+or is nearly spent) comes back to you at once too: as `quota`
 when that pool is out on a usage limit, with `back at` its return when that is
 known. A try after a backoff reads `· after a rate-limit backoff`, and the
 block's header counts the backoffs (`backed off twice`). When no
-pool that can run a step is free at its pick (each one is nearly spent, at its
-5-hour, weekly or monthly limit, paused for quota or after a sign-in failure,
-or benched after repeated failures), the step comes back to you too: as
+pool that can run a step is free at its pick (each one is nearly spent, or at
+its 5-hour, weekly or monthly limit), the step comes back to you too: as
 `quota` when every reason is a usage limit, else as `unavailable`. Its `why`
 names each pool: `<pool> at its 5-hour limit until <time>`, `<pool> at its
-weekly limit until <time>` (or `monthly`), `<pool> paused for quota until
-<time>`. A retry the step was promised
+weekly limit until <time>` (or `monthly`), `<pool> nearly spent (forecast
+<n>%) until <time>`. A retry the step was promised
 (a process or gate retry, or a backoff) that finds no free pool keeps its own
 failure kind, except as above, and its `why` ends `· no retry: <pool>
 <reason>; …`. A pool about to run out before its window resets is never given
@@ -546,12 +545,11 @@ requirement; another check that failed one follows as `also judged by
 <check>:` with its own rerun and accept lines.
 
 After a usage limit a full watch prints `⚠ <step> usage limit on <pool> ·
-paused until <time> · … · back to you` (`not paused` in place of the pause
-when the pool was not paused for it: the line carries no return time), then
-the needs-you block, which carries the return time as `back at <time>` when it
-is known. The block's
+back to you` (the attempt carries no return time, so the line names none),
+then the needs-you block, which carries the return time as `back at <time>`
+when it is known. The block's
 `why` is the provider's limit notice, or, when no pool was free, every capable
-pool with its reason (`no pool with quota to spare: <pool> paused for quota
+pool with its reason (`no pool with quota to spare: <pool> at its 5-hour limit
 until <time>; …`, or `no pool free: …`). When a return time is known, after
 any failure, it adds `back at <time>`: the failed pool's reset, the end of a
 rate limit's named wait, or, when no pool was free, the earliest known return
@@ -622,7 +620,7 @@ Where a run used to wait, it now finishes:
 | requirements open with nothing left to run (older verified-mode runs) | `partial` with gaps |
 | steering unread when the last step ends | the run finishes; `unreadSteering` lists it |
 | a usage limit on the pool running a step | the step fails as `quota` at once and comes back to you, with `retryAfter` when the reset is known; the rest of the run goes on |
-| no pool that can run a step is free (nearly spent, at its 5-hour, weekly or monthly limit, paused, or benched) | the step fails as `quota` when every reason is a usage limit, else as `unavailable`; `why` names each pool's reason, and `retryAfter` is the earliest known return |
+| no pool that can run a step is free (nearly spent, or at its 5-hour, weekly or monthly limit) | the step fails as `quota` when every reason is a usage limit, else as `unavailable`; `why` names each pool's reason, and `retryAfter` is the earliest known return |
 | no capable pool exists | the step fails as `unavailable` |
 | a usage limit, or no free pool, on the dispatched planner | `partial`: `the workflow planner stopped on a usage limit: …` with its `your call` (`workflow resume` after the `back at` time runs the planner again; or plan it yourself with `plan revise`; or start a new run) |
 | a usage limit, or no free pool, on the scout with no program after it | `partial`: `the preflight scout stopped on a usage limit: …`, with the same `your call` |
@@ -704,8 +702,8 @@ bullswarm strategy inventory --json
 bullswarm strategy routes --json
 ```
 
-Automatic routing chooses the most-behind capable eligible pool, honors burst
-gates and quarantine, and applies only explicitly approved model choices and
+Automatic routing chooses the most-behind capable eligible pool, honors the
+spent-window gates, and applies only explicitly approved model choices and
 exclusions. `strategy apply` sets each pool's model per tier and pins no tier;
 a tier goes to one pool only when someone pinned it with `strategy assign`
 (`strategy clear-assignment` removes it). A pool with any metered window at
@@ -713,8 +711,8 @@ a tier goes to one pool only when someone pinned it with `strategy assign`
 pool at or above 75% of its 5-hour window is still eligible: it is ordered
 after another eligible pool that is behind pace, a soft penalty, not a skip;
 `bullswarm pools` shows the reading as `5h=<n>%` with a `NEAR-5H-LIMIT` label,
-and meters and quarantines are re-read before every dispatch rather than
-frozen at launch.
+and meters are re-read before every dispatch rather than frozen at launch.
+Nothing else about a pool carries over from an earlier failure.
 
 Those thresholds apply to the forecast, not to the reading: a pool's
 projection (its reading plus what its in-flight agents will still spend) plus
@@ -840,19 +838,14 @@ document and writes nothing.
 
 ## Recovery and stopping rules
 
-- An auth signature is failure kind `auth`, whatever the pausing switch: the
-  step's retry skips every pool that shares that credential. With automatic
-  pausing on, the pool (and its credential-group siblings) is also paused for
-  a 10-minute re-probe window, so later dispatches use another eligible pool.
+- An auth signature is failure kind `auth`: the step's retry skips every pool
+  that shares that credential, for that step only. Nothing is stored, so a
+  later step can pick the pool again.
 - A provider usage limit is the distinct failure kind `quota`: the attempt is
-  killed at once. The pool is paused only on proof and with automatic pausing
-  on: until the reset the provider's line named, or until the reset of the
-  window its own meter shows at 95% or more. A pause holds across runs until
-  it expires. In a workflow started by this version and in a single
-  `bullswarm run`, whatever the switch, the pool's meter is read again at once
-  (when it cannot be read, the pool is recorded as full until the reset), and
+  killed at once. In a workflow started by this version and in a single
+  `bullswarm run`, the pool's meter is read again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and
   a window it shows at 100% keeps the pool out of later steps until that
-  window resets. In a workflow
+  window resets. Nothing else is remembered about the pool. In a workflow
   started by this version the step then comes back to you at once, with
   `retryAfter` (its `back at` time) when the reset is known; nothing moves it
   or waits for the reset. Runs started earlier move the action to a pool that

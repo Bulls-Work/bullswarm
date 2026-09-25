@@ -41,24 +41,28 @@ route. Runs started earlier keep their rules (`features.json`).
 3. Provider quirks live in the provider's directory (`src/providers/<name>/`,
    `providers/contrib/<name>/`, or `~/.bullswarm/providers/<name>/`), never in
    core logic (see `docs/reference/providers.md`).
-4. Quarantine always auto-releases; recursion depth is core-owned via env
-   (`BULLSWARM_DEPTH`).
+4. A spent or dead pool is never remembered across steps: nothing pauses or
+   benches a pool, and every pick reads the live meters. The one fact that
+   outlives a step is the 100% refusal marker a usage limit writes when the
+   meter cannot be read, and it counts only when its reset was named or
+   measured, never guessed (`refusalResetKnown` in `src/meters/framework.js`).
+   Recursion depth is core-owned via env (`BULLSWARM_DEPTH`).
 5. Workflow dispatches honor the same guarantees as single runs, in
    `src/workflow/v2-dispatch.js`: `BULLSWARM_DEPTH` is checked and propagated
    (`assertDepthAllowed` and `childDepthEnv` in `dispatchV2Action`), pools at
    a spent window are excluded (`preparePools`), and a sign-in failure is
-   failure kind `auth` whatever the pausing switch: the step's retry skips the
-   pool's credential group, and with pausing on the pool and its siblings are
-   paused in the same locked update that appends to the shared decision log
-   (`appendDecision`). A step's `route`, the run's pin and the step's
+   failure kind `auth`: the step's retry skips every pool in the dead
+   credential's group (`upstreamGroupOf`), a choice held for that dispatch
+   only and never stored. A step's `route`, the run's pin and the step's
    capability tier are hard filters applied before pace ranks what is left. The failure rule is one automatic retry per step (a
    process failure on another eligible pool, a gate failure on the same pool
    with the failure attached), then the caller. An `act` step is never retried
    once its worker started. A usage limit (a spent 5-hour or weekly window, or
-   no credit left) ends the step and sends it to the caller, whatever the
-   pausing switch: no wait, no automatic move, no retry. The pool's meter is
-   re-read after it (or recorded as full until the reset), whatever the
-   switch, so a window at 100% keeps that pool out of later steps. Finding no capable pool
+   no credit left) ends the step and sends it to the caller: no wait, no
+   automatic move, no retry. The pool's meter is re-read after it
+   (when that read fails, the refusal marker counts the pool as full only until
+   a reset the provider named or a reading measured, never a guessed one), so
+   a window at 100% keeps that pool out of later steps. Finding no capable pool
    free at the pick sends the step to the caller too. Nothing waits for a
    pool inside a run; only a transient rate limit backs off on the same pool,
    at most twice (20 s, then 60 s, or a named wait of at most 2 minutes), then

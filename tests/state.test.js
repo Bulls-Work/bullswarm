@@ -6,15 +6,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  loadState, saveState, updateState, quarantinePool, quarantineUpstreamSiblings,
-  sweepQuarantines, upstreamGroupOf,
-  recordPoolStrike, clearPoolStrikes, sweepBenches, BENCH_COOLDOWN_MS, BENCH_AFTER_STRIKES,
+  loadState, saveState, updateState, upstreamGroupOf,
   acquireStateLock, releaseStateLock, stateLockPath, STATE_LOCK_STALE_MS,
   assertDepthAllowed, currentDepth, childDepthEnv, DEPTH_ENV,
-  migratePoolNameHome, resumePool, setPausing, pausingEnabled,
+  migratePoolNameHome,
 } from '../src/lib/state.js';
-import { decideQuotaPause } from '../src/lib/quota.js';
 import { buildPools } from '../src/lib/config.js';
+import { pickPool } from '../src/lib/route.js';
 import { getMeterReading } from '../src/meters/registry.js';
 
 function tmpDir() {
@@ -146,29 +144,44 @@ test('a meter-only read runs the home migration before opening the cache', async
   } finally { cleanup(); }
 });
 
-test('quarantine auto-releases after the probe window (S1)', () => {
-  const s = loadState('/nonexistent-bullswarm-test'); // memory-only
-  const now = Date.now();
-  quarantinePool(s, 'grok', 'auth signature', now);
-  assert.equal(sweepQuarantines(s, now + 1000).length, 0); // still benched
-  const released = sweepQuarantines(s, now + 11 * 60_000);
-  assert.deepEqual(released, ['grok']); // automatic return to service
-  assert.equal(s.pools.grok.quarantine, undefined);
-});
-
-test('expired quarantine is absent from runtime pool views before persistence catches up', async () => {
+// S1: no pool is paused, benched or struck out. A home written by an earlier
+// version can still hold those records (the owner's held a bench for
+// opencode); they are read by nothing and route as if absent.
+test('a state.json holding old quarantine and bench records routes normally (S1)', () => {
   const { dir, cleanup } = tmpDir();
   try {
-    const { mkdirSync, writeFileSync } = await import('node:fs');
     mkdirSync(join(dir, 'connectors'), { recursive: true });
-    writeFileSync(join(dir, 'connectors', 'grok.json'), JSON.stringify({
-      name: 'grok', spawn: { cmd: ['grok'] }, lanes: ['analyze'], costRank: 1,
-    }));
+    for (const name of ['grok', 'relay']) {
+      writeFileSync(join(dir, 'connectors', `${name}.json`), JSON.stringify({
+        name, spawn: { cmd: [name] }, lanes: ['analyze', 'build', 'chore'], costRank: 1,
+      }));
+    }
+    const now = Date.parse('2026-09-25T10:00:00Z');
     const state = loadState(dir);
-    state.pools.grok = { enabled: true, quarantine: { until: 1000, reason: 'old failure' } };
+    state.strategy = { pausing: 'off' };
+    state.pools.grok = {
+      enabled: true,
+      quarantine: { until: now + 7 * 24 * 3600_000, reason: 'usage limit', kind: 'quota', rule: 'message' },
+      bench: { until: now + 600_000, reason: 'stall', count: 2 },
+    };
+    // A quarantine with no end (null used to mean forever) and a first strike.
+    state.pools.relay = { enabled: true, quarantine: { until: null, reason: 'auth', kind: 'auth' }, bench: { until: null, reason: 'provider', count: 1 } };
     saveState(dir, state);
-    const built = buildPools(dir, 1001);
-    assert.equal(built.pools[0].quarantine, null);
+    const before = readFileSync(join(dir, 'state.json'), 'utf8');
+    const { pools } = buildPools(dir, now);
+    assert.deepEqual(pools.map((pool) => pool.name).sort(), ['grok', 'relay']);
+    for (const pool of pools) {
+      assert.equal(pool.enabled, true, pool.name);
+      assert.equal(Object.hasOwn(pool, 'quarantine'), false, `${pool.name}: no pause on the view`);
+      assert.equal(Object.hasOwn(pool, 'bench'), false, `${pool.name}: no bench on the view`);
+    }
+    // Both pools are offered: the old records keep nothing out.
+    const route = pickPool('build', pools, { now, callerEligible: false });
+    assert.ok(route.pick, route.why);
+    assert.deepEqual(route.candidates.map((candidate) => candidate.pool).sort(), ['grok', 'relay']);
+    assert.doesNotMatch(route.why, /bench|paus|quarantin/i);
+    // Reading never rewrites the file.
+    assert.equal(readFileSync(join(dir, 'state.json'), 'utf8'), before);
   } finally {
     cleanup();
   }
@@ -376,19 +389,7 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
 
 // --- upstream siblings ------------------------------------------------------
 
-/** A decideQuotaPause() proof from a provider line that names its reset. */
-function spentWindow(now, line = "You've hit your session limit · resets in 2 hours", meter = null) {
-  return decideQuotaPause({ text: line, meter, pausing: true, now, timeZone: 'UTC' });
-}
-
 const GROUP = 'relay:relay.example';
-const relayPools = () => ([
-  { name: 'relay', enabled: true, connector: { credentialGroup: GROUP } },
-  { name: 'relay:b', enabled: true, connector: { credentialGroup: GROUP } },
-  { name: 'relay:c', enabled: true, connector: { credentialGroup: GROUP } },
-  { name: 'claude-code', enabled: true, connector: {} },
-  { name: 'relay:retired', enabled: false, connector: { credentialGroup: GROUP } },
-]);
 
 test('an upstream group is read from a pool view or a bare connector', () => {
   assert.equal(upstreamGroupOf({ name: 'x', connector: { credentialGroup: GROUP } }), GROUP);
@@ -402,285 +403,18 @@ test('an upstream group is read from a pool view or a bare connector', () => {
   assert.equal(upstreamGroupOf(null), null);
 });
 
-test('an auth failure benches the whole upstream group on one deadline (2026-09-11)', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-11T12:24:00Z');
-  const until = quarantinePool(s, 'relay:c', 'upstream auth failure', now, { kind: 'auth' });
-  const benched = quarantineUpstreamSiblings(s, relayPools(), {
-    pool: 'relay:c', group: GROUP, reason: 'upstream auth failure', now, until, kind: 'auth',
-  });
-  assert.deepEqual(benched, ['relay', 'relay:b']);
-  assert.equal(s.pools.relay.quarantine.until, until);
-  assert.equal(s.pools.relay.quarantine.kind, 'auth');
-  assert.equal(s.pools.relay.quarantine.reason, 'sibling of relay:c: upstream auth failure');
-  assert.equal(until - now, 10 * 60_000, 'the flat auth re-probe window');
-  assert.equal(s.pools['claude-code']?.quarantine, undefined, 'another credential is untouched');
-  assert.equal(s.pools['relay:retired']?.quarantine, undefined, 'a disabled pool is not benched');
-  // The whole group returns to service together when the window expires.
-  assert.deepEqual(
-    sweepQuarantines(s, now + 10 * 60_000).sort(),
-    ['relay', 'relay:b', 'relay:c'],
-  );
-});
-
-test('a quota quarantine never spreads, and a sibling deadline is never shortened', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-11T12:24:00Z');
-  // A usage limit is one pool's empty window; the siblings still have theirs.
-  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), {
-    pool: 'relay:c', group: GROUP, reason: 'usage limit', now, until: now + 3 * 3600_000, kind: 'quota',
-  }), []);
-  assert.equal(s.pools.relay?.quarantine, undefined);
-
-  // A sibling already out on its own 3-hour quota reset keeps that deadline:
-  // a borrowed 10-minute auth window must not put it back to work early.
-  const ownReset = now + 3 * 3600_000;
-  quarantinePool(s, 'relay', 'usage limit reached', now, {
-    kind: 'quota', evidence: spentWindow(now, 'Error: usage limit reached · resets in 3 hours'),
-  });
-  assert.equal(s.pools.relay.quarantine.until, ownReset);
-  const benched = quarantineUpstreamSiblings(s, relayPools(), {
-    pool: 'relay:c', group: GROUP, reason: 'upstream auth failure', now, until: now + 10 * 60_000, kind: 'auth',
-  });
-  assert.deepEqual(benched, ['relay:b']);
-  assert.equal(s.pools.relay.quarantine.until, ownReset);
-  assert.equal(s.pools.relay.quarantine.kind, 'quota');
-});
-
-test('benching the group is a no-op without a group, a pool, or any members', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.now();
-  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: 'relay', group: null, now }), []);
-  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: null, group: GROUP, now }), []);
-  assert.deepEqual(quarantineUpstreamSiblings(s, null, { pool: 'relay', group: GROUP, now }), []);
-  assert.deepEqual(Object.keys(s.pools), []);
-});
-
-// --- soft bench (S6) ------------------------------------------------------
-// The bench is written by the dispatcher and read by the router out of the one
-// shared record, so these are the writers both sides depend on.
-
-test('the first strike is counted without taking the pool out of service', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
-  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now), null);
-  assert.deepEqual(s.pools.opencode2.bench, { until: null, reason: 'stall', count: 1 });
-});
-
-test('the second consecutive strike benches the pool for the cooldown and drops its incumbency', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  s.incumbents = { build: 'opencode2', analyze: 'codex' };
-  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
-  recordPoolStrike(s, 'opencode2', 'stall', now);
-  const until = recordPoolStrike(s, 'opencode2', 'stall', now);
-  assert.equal(until, now + BENCH_COOLDOWN_MS);
-  assert.deepEqual(s.pools.opencode2.bench, { until, reason: 'stall', count: BENCH_AFTER_STRIKES });
-  // A pool that is not serving work cannot hold the lane against its return.
-  assert.deepEqual(s.incumbents, { analyze: 'codex' });
-});
-
-test('a success clears the strike record entirely', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
-  recordPoolStrike(s, 'opencode2', 'provider', now);
-  recordPoolStrike(s, 'opencode2', 'provider', now);
-  clearPoolStrikes(s, 'opencode2');
-  assert.equal(s.pools.opencode2.bench, undefined);
-  // The next failure starts over at one strike, still in service.
-  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now), null);
-  assert.equal(s.pools.opencode2.bench.count, 1);
-});
-
-test('sweeping releases an expired bench but keeps the strike count', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
-  recordPoolStrike(s, 'opencode2', 'stall', now);
-  recordPoolStrike(s, 'opencode2', 'stall', now);
-  assert.deepEqual(sweepBenches(s, now + BENCH_COOLDOWN_MS - 1), []);
-  assert.deepEqual(sweepBenches(s, now + BENCH_COOLDOWN_MS), ['opencode2']);
-  assert.deepEqual(s.pools.opencode2.bench, { until: null, reason: 'stall', count: 2 });
-  // Still two in a row: a stall right after the cooldown benches it again at once.
-  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now + BENCH_COOLDOWN_MS), now + 2 * BENCH_COOLDOWN_MS);
-});
-
-test('a bench is written beside the quarantine and neither touches the other', () => {
-  const { dir, cleanup } = tmpDir();
-  try {
-    const now = Date.UTC(2026, 8, 17, 12, 0, 0);
-    const s = loadState(dir);
-    s.pools.opencode = { enabled: true };
-    quarantinePool(s, 'opencode', 'upstream auth failure', now);
-    recordPoolStrike(s, 'opencode', 'stall', now);
-    saveState(dir, s);
-    const reloaded = loadState(dir);
-    assert.equal(reloaded.pools.opencode.quarantine.reason, 'upstream auth failure');
-    assert.deepEqual(reloaded.pools.opencode.bench, { until: null, reason: 'stall', count: 1 });
-    // Sweeping benches leaves the quarantine deadline alone.
-    sweepBenches(reloaded, now + 10 * BENCH_COOLDOWN_MS);
-    assert.equal(reloaded.pools.opencode.quarantine.until, now + 10 * 60_000);
-    // ...and the router reads the bench back off the pool view it builds.
-    saveState(dir, reloaded);
-    const { pools } = buildPools(dir, now);
-    const pool = pools.find((p) => p.name === 'opencode');
-    if (pool) assert.deepEqual(pool.bench, reloaded.pools.opencode.bench);
-  } finally { cleanup(); }
-});
-
-// --- the quota pause rule (quota.js Q6) and resume --------------------------
-
-const TRANSIENT = 'Error: Rate limit exceeded. Please wait a moment and try again.';
-
-test('a quota pause without proof is refused: nothing written, null returned', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-21T06:30:00Z');
-  s.incumbents.build = 'claude-code';
-  assert.equal(quarantinePool(s, 'claude-code', 'rate limited (transient)', now, {
-    until: now + 90 * 60_000, kind: 'quota',
-  }), null);
-  // The 2026-09-21 case: a transient line, the meter at 78% weekly / 48% 5h.
-  const transient = decideQuotaPause({
-    text: TRANSIENT,
-    meter: {
-      captured_at: '2026-09-21T06:20:00Z',
-      five_hour: { utilization: 48, resets_at: '2026-09-21T08:00:00Z' },
-      seven_day: { utilization: 78, resets_at: '2026-09-24T12:00:00Z' },
-    },
-    pausing: true,
-    now,
-  });
-  assert.equal(transient.pause, false);
-  assert.equal(quarantinePool(s, 'claude-code', transient.why, now, {
-    until: now + 90 * 60_000, kind: 'quota', evidence: transient,
-  }), null);
-  assert.equal(s.pools['claude-code']?.quarantine, undefined);
-  assert.equal(s.incumbents.build, 'claude-code', 'a refused pause keeps incumbency');
-});
-
-test('a proven quota pause stores the provider line, the meter reading, the rule and the reset', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-21T06:30:00Z');
-  const meter = {
-    captured_at: '2026-09-21T06:20:00Z',
-    five_hour: { utilization: 48, resets_at: '2026-09-21T08:00:00Z' },
-    seven_day: { utilization: 96, resets_at: '2026-09-24T12:00:00Z' },
-  };
-  const evidence = decideQuotaPause({ text: TRANSIENT, meter, pausing: true, now, timeZone: 'UTC' });
-  const until = quarantinePool(s, 'claude-code', 'ignored when evidence says why', now, {
-    until: now + 60_000, kind: 'quota', evidence,
-  });
-  assert.equal(until, Date.parse('2026-09-24T12:00:00Z'), 'the reset the proof names, not the caller');
-  assert.deepEqual(s.pools['claude-code'].quarantine, {
-    until,
-    reason: evidence.why,
-    kind: 'quota',
-    rule: 'meter',
-    line: TRANSIENT,
-    meter: {
-      readAt: '2026-09-21T06:20:00.000Z',
-      windows: [
-        { window: '5h', usedPct: 48, resetsAt: '2026-09-21T08:00:00.000Z' },
-        { window: 'weekly', usedPct: 96, resetsAt: '2026-09-24T12:00:00.000Z' },
-      ],
-    },
-    meterWindow: { window: 'weekly', usedPct: 96, resetsAt: '2026-09-24T12:00:00.000Z' },
-    resetsAt: '2026-09-24T12:00:00.000Z',
-    pausedAt: '2026-09-21T06:30:00.000Z',
-  });
-  // An explicit spent window with a reset pauses until exactly that reset.
-  const message = spentWindow(now);
-  assert.equal(quarantinePool(s, 'codex', message.why, now, { kind: 'quota', evidence: message }), now + 2 * 3600_000);
-  assert.equal(s.pools.codex.quarantine.rule, 'message');
-  // It auto-releases at its reset like every quarantine (S1).
-  assert.deepEqual(sweepQuarantines(s, now + 2 * 3600_000), ['codex']);
-});
-
-test('automatic pausing off refuses every pause: quota, auth, siblings and the bench', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-21T06:30:00Z');
-  assert.equal(pausingEnabled(s), true, 'on by default');
-  assert.equal(setPausing(s, false), false);
-  assert.equal(s.strategy.pausing, 'off');
-  // Quota: even a spent window with a reset names no pause.
-  assert.equal(quarantinePool(s, 'claude-code', 'x', now, { kind: 'quota', evidence: spentWindow(now) }), null);
-  // Auth: a dead credential is not benched either.
-  assert.equal(quarantinePool(s, 'grok', 'auth signature', now, { kind: 'auth' }), null);
-  // The credential-group siblings of an auth pause are part of the switch.
-  assert.equal(quarantinePool(s, 'relay:c', 'upstream auth failure', now, { kind: 'auth' }), null);
-  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), {
-    pool: 'relay:c', group: GROUP, reason: 'upstream auth failure', now, until: now + 10 * 60_000, kind: 'auth',
-  }), []);
-  // The soft bench takes a pool out of service too, so a strike never benches.
-  assert.equal(recordPoolStrike(s, 'codex', 'stall', now), null);
-  assert.equal(recordPoolStrike(s, 'codex', 'stall', now), null);
-  assert.deepEqual(Object.keys(s.pools), [], 'nothing was written at all');
-  assert.equal(setPausing(s, true), true);
-  assert.equal('pausing' in s.strategy, false, 'on is the default, stored as absence');
-  assert.equal(quarantinePool(s, 'claude-code', 'x', now, { kind: 'quota', evidence: spentWindow(now) }), now + 2 * 3600_000);
-  assert.equal(quarantinePool(s, 'grok', 'auth signature', now, { kind: 'auth' }), now + 10 * 60_000);
-});
-
-test('a pause in place before the switch was turned off still lifts with resume', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-21T06:30:00Z');
-  quarantinePool(s, 'grok', 'auth signature', now);
-  recordPoolStrike(s, 'grok', 'stall', now);
-  recordPoolStrike(s, 'grok', 'stall', now);
-  setPausing(s, false);
-  // Nothing new is written while off; what was already there is untouched and
-  // still liftable (`bullswarm pools resume <pool>` keeps working).
-  assert.equal(quarantinePool(s, 'claude-code', 'x', now, { kind: 'quota', evidence: spentWindow(now) }), null);
-  assert.equal(s.pools['claude-code'], undefined);
-  assert.equal(s.pools.grok.quarantine.kind, 'auth');
-  assert.equal(s.pools.grok.bench.count, 2);
-  const lifted = resumePool(s, 'grok', now + 60_000);
-  assert.equal(lifted.quarantine.kind, 'auth');
-  assert.equal(lifted.bench.count, 2);
-  assert.deepEqual(s.pools.grok, {});
-  assert.equal(s.decisionLog.at(-1).kind, 'pool-resume');
-});
-
-test('resume lifts a quota pause at once and logs what it lifted', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-21T06:30:00Z');
-  const evidence = spentWindow(now);
-  quarantinePool(s, 'claude-code', evidence.why, now, { kind: 'quota', evidence });
-  const lifted = resumePool(s, 'claude-code', now + 60_000);
-  assert.equal(lifted.quarantine.rule, 'message');
-  assert.equal(lifted.bench, null);
-  assert.equal(s.pools['claude-code'].quarantine, undefined);
-  assert.deepEqual(s.decisionLog.at(-1), {
-    ts: '2026-09-21T06:31:00.000Z',
-    kind: 'pool-resume',
-    source: 'pools resume',
-    pool: 'claude-code',
-    lifted: {
-      quarantine: { kind: 'quota', until: '2026-09-21T08:30:00.000Z', reason: evidence.why },
-    },
-  });
-});
-
-test('resume lifts an auth pause and an active bench; an unpaused pool is untouched', () => {
-  const s = loadState('/nonexistent-bullswarm-test');
-  const now = Date.parse('2026-09-21T06:30:00Z');
-  quarantinePool(s, 'grok', 'auth signature', now);
-  recordPoolStrike(s, 'grok', 'stall', now);
-  recordPoolStrike(s, 'grok', 'stall', now);
-  const lifted = resumePool(s, 'grok', now);
-  assert.equal(lifted.quarantine.kind, 'auth');
-  assert.equal(lifted.bench.count, 2);
-  assert.deepEqual(s.pools.grok, {});
-  assert.deepEqual(s.decisionLog.at(-1).lifted.bench, { until: '2026-09-21T06:40:00.000Z', reason: 'stall' });
-  const before = s.decisionLog.length;
-  assert.deepEqual(resumePool(s, 'grok', now), { quarantine: null, bench: null });
-  recordPoolStrike(s, 'codex', 'stall', now);
-  assert.deepEqual(resumePool(s, 'codex', now), { quarantine: null, bench: null }, 'a counted strike is not a pause');
-  assert.equal(s.pools.codex.bench.count, 1);
-  assert.equal(s.decisionLog.length, before, 'nothing lifted, nothing logged');
-});
-
-// The strike reasons list had no reader; a strike records the
-// reason its caller names.
-test('the unused bench-reason list stays deleted', async () => {
+// The pause machinery (owner decision 2026-09-25, state.js S1): a sign-in
+// failure's credential group is skipped inside the dispatch that saw it
+// (v2-dispatch.js), and nothing about it is stored.
+test('the pause, bench and strike helpers stay deleted', async () => {
   const state = await import('../src/lib/state.js');
-  assert.equal(Object.hasOwn(state, 'BENCH_REASONS'), false);
+  for (const name of [
+    'quarantinePool', 'quarantineUpstreamSiblings', 'releaseIfProbeDue', 'sweepQuarantines', 'resumePool',
+    'setPausing', 'pausingEnabled', 'recordPoolStrike', 'clearPoolStrikes', 'sweepBenches',
+    'BENCH_COOLDOWN_MS', 'BENCH_AFTER_STRIKES', 'BENCH_REASONS',
+  ]) {
+    assert.equal(Object.hasOwn(state, name), false, name);
+  }
+  const route = await import('../src/lib/route.js');
+  for (const name of ['isQuarantined', 'isBenched']) assert.equal(Object.hasOwn(route, name), false, name);
 });

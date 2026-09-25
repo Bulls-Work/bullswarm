@@ -67,7 +67,7 @@ const top = rich({
     { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, and Grok' },
     { name: 'run', desc: 'dispatch one bounded task' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
-    { name: 'pools', desc: 'show routing pools, meters, load, and pauses; resume lifts one and label manages display names' },
+    { name: 'pools', desc: 'show routing pools, meters, load, and spent windows; label manages display names' },
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
     { name: 'strategy', desc: 'discover models and manage each pool\'s model per tier' },
     { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
@@ -362,7 +362,7 @@ const runText = rich({
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
     'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of the run and releases it when the attempt ends; --dry-run registers nothing',
-    'may pause a pool after a sign-in failure, or after a usage limit with proof, while automatic pausing is on; one attempt only: a usage limit exits 1 with no retry',
+    'one attempt only: a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },
@@ -425,34 +425,35 @@ const updateText = rich({
 const healthText = rich({
   usage: 'bullswarm health [--json]',
   purpose: 'Re-judge every saved delegate output against the real verify gate and report where '
-    + 'a logged FAIL verdict re-judges as a pass (the "gate ate real work" signal), plus any '
-    + 'pool quarantine clustering.',
+    + 'a logged FAIL verdict re-judges as a pass (the "gate ate real work" signal).',
   args: [],
   options: [
     { flag: '--json', desc: 'print the machine-readable health report', default: 'human-readable summary of the same facts' },
   ],
   safety: [
     'reads every out-* file under ~/.bullswarm/runs/ and re-runs the verify judge over each — cost scales with run history size',
-    'if any pool quarantine has expired, writes the released state back to state.json (same sweep other commands perform); otherwise read-only',
+    'reads state.json for the decision log and never changes it (beyond the first-use setup every command does)',
   ],
   examples: [
     { cmd: 'bullswarm health' },
     { cmd: 'bullswarm health --json', note: 'the same facts as a JSON document; exit 1 means unhealthy, not a crash' },
   ],
-  next: 'bullswarm pools to see current routing/quarantine state directly.',
+  next: 'bullswarm pools to see current routing and meter state directly.',
 });
 
 const poolsText = rich({
-  usage: 'bullswarm pools [resume <pool> | label ...] [--force] [--json]',
+  usage: 'bullswarm pools [label ...] [--force] [--json]',
   purpose: 'Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, '
-    + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and '
-    + 'pause/burst-gate status. A paused pool reads `PAUSED until <time> · <why> · lift now: '
-    + 'bullswarm pools resume <pool>`: a quota pause names its proof — the pool\'s own meter at '
-    + '95% or more on a running window, or a provider line that says the usage window is spent '
-    + 'and names its reset — with the exact provider line and the meter reading it was decided '
-    + 'on; an auth pause names the auth failure. A transient rate limit never pauses a pool. '
-    + 'When `bullswarm strategy set-pausing off` is in effect the output opens with '
-    + '`automatic pausing: off`. The 5-hour column reads `5h=<reading>%` alone when '
+    + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and whether a '
+    + 'window is spent. The status after the columns is `disabled`, or `ready` followed by '
+    + '`BURST-GATED` when the 5-hour window is at 100% and `NEAR-5H-LIMIT` when it is near its '
+    + 'line; a weekly or monthly window at 100% keeps the pool out of routing until that window '
+    + 'resets, and the meter column shows the pacing window\'s reading. After a usage limit whose '
+    + 'forced meter read failed, the meter source reads `[blocked · refused <age>]` when the '
+    + 'provider or an earlier reading gave the reset (the pool counts as full until then), and '
+    + '`[refused <age> · reset unknown]` when nobody did (the pool is not kept out). Nothing '
+    + 'pauses or benches a pool, so there is nothing to lift: a spent window comes back by itself '
+    + 'when it resets. The 5-hour column reads `5h=<reading>%` alone when '
     + 'nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is '
     + 'expected to push the window further; routing decides on the right-hand number. '
     + 'A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run: '
@@ -464,36 +465,18 @@ const poolsText = rich({
   args: [],
   options: [
     { flag: '--force', desc: 'bypass the meter cache and re-read live usage for every pool', default: 'off (cached meter readings reused within their TTL)' },
-    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, paceResetsAt, resetSource (provider | declared | null), and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
+    { flag: '--json', desc: 'machine-readable { pools }, each pool carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, paceResetsAt, resetSource (provider | declared | null), and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
   ],
   safety: [
     'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages',
-    'always writes state.json after sweeping expired quarantines back into service, even in --json mode',
+    'reads state.json and never changes it (beyond the first-use setup every command does)',
     'reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours)',
   ],
   examples: [
     { cmd: 'bullswarm pools --force' },
-    { cmd: 'bullswarm pools resume claude-code', note: 'lift that pool\'s pause now' },
+    { cmd: 'bullswarm pools --json', note: 'the same facts, with each pool\'s meter snapshot and spend rates' },
   ],
   next: 'bullswarm assignments to see which run and action each in-flight entry belongs to.',
-});
-
-const poolsResumeText = rich({
-  usage: 'bullswarm pools resume <pool> [--json]',
-  purpose: 'Lift a pool\'s pause at once: its quota or auth pause and any active bench. The lift is '
-    + 'appended to the decision log in state.json with what it lifted, and a synthetic 100% '
-    + 'quota-refusal meter marker is dropped with it so the next meter read is live.',
-  args: [{ name: '<pool>', desc: 'exact pool name from bullswarm pools' }],
-  options: [
-    { flag: '--json', desc: 'machine-readable { pool, resumed, lifted: { quarantine, bench, refusalMeterMarker } }', default: 'one human-readable line' },
-  ],
-  safety: [
-    'writes state.json under the state lock; a pool with nothing to lift is left untouched and exits 0',
-    'an unknown pool name exits 2 and writes nothing',
-    'the pool may pause again on its next limit notice if the rule still proves it spent',
-  ],
-  examples: [{ cmd: 'bullswarm pools resume claude-code' }],
-  next: 'bullswarm pools to confirm the pool reads ready.',
 });
 
 const poolsLabelText = rich({
@@ -581,7 +564,6 @@ const strategyText = rich({
     { name: 'reset-tier', desc: 'return one tier from an explicit allow-list to automatic routing' },
     { name: 'set-reasoning', desc: 'set how hard one effort tier thinks, globally or for one pool' },
     { name: 'reset-reasoning', desc: 'return reasoning depth to the connector defaults' },
-    { name: 'set-pausing', desc: 'turn every automatic pool pause on (default) or off' },
     { name: 'configure', desc: 'atomically apply an agent-authored JSON strategy file' },
     { name: 'refresh', desc: 'discover models and recommend tiers (recommend is an alias)' },
     { name: 'apply', desc: 'approve the last recommendations: each pool\'s model per tier, never a pin' },
@@ -597,7 +579,7 @@ const strategyText = rich({
     { flag: '--json', desc: 'machine-readable output where the subcommand supports it' },
   ],
   safety: [
-    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning/set-rung/set-pausing all mutate ~/.bullswarm/state.json',
+    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning/set-rung all mutate ~/.bullswarm/state.json',
     'refresh (and a cold show) perform live discovery calls against every installed agent CLI and the public OpenRouter model API',
   ],
   examples: [
@@ -700,35 +682,6 @@ const strategyResetReasoningText = rich({
   ],
   examples: [{ cmd: 'bullswarm strategy reset-reasoning --tier low --yes' }],
   next: 'Use strategy routes --json to confirm the level each tier now resolves to.',
-});
-
-const strategySetPausingText = rich({
-  usage: 'bullswarm strategy set-pausing <on|off> [--json]',
-  purpose: 'Turn every automatic pool pause on or off. On (the default), a limit notice pauses a '
-    + 'pool only when the pool\'s own meter reads 95% or more on a window still running, or the '
-    + 'provider line says a usage window is spent and names its reset; every other limit notice '
-    + 'leaves the pool in service. A dead credential pauses its pool with the pools that share that '
-    + 'credential. Off, nothing is paused or benched by a command, and routing still reads meters. The '
-    + 'switch decides only whether a pool stays paused for later work. Either way a sign-in failure is '
-    + 'failure kind auth, and the step\'s retry skips every pool that shares its credential. In a workflow '
-    + 'started by this version a spent usage window still ends the step and sends it back to the caller, '
-    + 'whatever the switch, and the pool\'s meter is read again at once, so a window it shows at 100% keeps '
-    + 'the pool out of later steps until that window resets; a transient rate limit backs off on the same pool at most twice before '
-    + 'it goes back too. A workflow started by an earlier version retries a limit notice, then moves the '
-    + 'attempt to another pool; a single bullswarm run makes one attempt and exits 1.',
-  args: [{ name: '<on|off>', desc: 'new state, stored as strategy.pausing in state.json' }],
-  options: [
-    { flag: '--json', desc: 'print { pausing: "on"|"off" }', default: 'one human-readable line' },
-  ],
-  safety: [
-    'writes state.json under the state lock; new limit notices follow the switch at once',
-    'a pause already in place stays until its reset; bullswarm pools resume <pool> lifts it',
-  ],
-  examples: [
-    { cmd: 'bullswarm strategy set-pausing off', note: 'no pool is paused or benched automatically' },
-    { cmd: 'bullswarm strategy set-pausing on', note: 'back to the strict default rule' },
-  ],
-  next: 'bullswarm pools shows whether pausing is off and why any pool is paused.',
 });
 
 const strategyRungsText = rich({
@@ -1192,7 +1145,7 @@ const workflowResumeText = rich({
   ],
   examples: [
     { cmd: 'bullswarm workflow resume ab12cd --watch' },
-    { cmd: 'bullswarm workflow resume ab12cd --json', note: 'retry a partial run whose step failed on a paused pool, once the handback\'s retryAfter time has passed' },
+    { cmd: 'bullswarm workflow resume ab12cd --json', note: 'retry a partial run whose step failed on a usage limit, once the handback\'s retryAfter time has passed' },
   ],
   next: 'bullswarm workflow watch <runId>, then bullswarm workflow runs result <runId> --json when terminal.',
 });
@@ -1463,11 +1416,10 @@ const workflowWatchText = rich({
     + 'cancellation) and staying silent while work is merely in progress. Plain `workflow watch <runId>` '
     + 'follows until the outcome (a terminal status, a caller-planner wait, or an operator pause). '
     + 'A usage-limit failure always '
-    + 'prints, verbose or not: an `⚠ ... usage limit on <pool> · paused until <deadline>` line. In a run '
-    + 'started by this version it ends `back to you` and a needs-you block follows, with `back at <time>` '
-    + 'and a `wait for it` rerun when the reset is known: nothing waits for the pool or moves the step; a '
-    + 'pool that was not paused for it reads `not paused` in place of the pause, and the needs-you block '
-    + 'after it carries the `back at <time>` line. In '
+    + 'prints, verbose or not: an `⚠ ... usage limit on <pool>` line, with `back at <time>` in it when the '
+    + 'watch knows when the pool is back. In a run started by this version it ends `back to you` and a '
+    + 'needs-you block follows: nothing waits for the pool or moves the step, and the block carries '
+    + '`back at <time>` and a `wait for it` rerun when the reset is known. In '
     + 'a run from an earlier version it ends `retrying on another pool`, then an `↺ ... now on <pool> · '
     + '<model>` line prints once the mechanical retry lands. In a run started by this version a preflight '
     + 'scout stopped by a usage limit, a rate limit or no free pool prints `⚠ preflight scout stopped · '
@@ -1936,7 +1888,7 @@ const HELP = {
   },
   run: { _text: runText },
   health: { _text: healthText },
-  pools: { _text: poolsText, resume: { _text: poolsResumeText }, label: { _text: poolsLabelText } },
+  pools: { _text: poolsText, label: { _text: poolsLabelText } },
   assignments: { _text: assignmentsText },
   doctor: { _text: doctorText },
   home: {
@@ -1956,7 +1908,6 @@ const HELP = {
     'set-model': { _text: strategySetModelText },
     'reset-tier': { _text: strategyResetTierText },
     'set-reasoning': { _text: strategySetReasoningText },
-    'set-pausing': { _text: strategySetPausingText },
     rungs: { _text: strategyRungsText },
     'set-rung': { _text: strategySetRungText },
     'reset-reasoning': { _text: strategyResetReasoningText },

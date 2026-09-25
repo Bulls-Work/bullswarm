@@ -334,7 +334,7 @@ test('connectors(ctx) returns the packaged connector once per login', () => {
     assert.equal(extra.flags.isCaller, false);
     assert.equal(extra.profile.slug, 'work');
     assert.match(extra.profile.command, /CLAUDE_CONFIG_DIR=/);
-    // Separate subscriptions: never benched together.
+    // Separate subscriptions: a sign-in failure on one never skips the other.
     assert.equal(extra.credentialGroup, undefined);
     assert.equal(extra.upstreamGroup, undefined);
   } finally {

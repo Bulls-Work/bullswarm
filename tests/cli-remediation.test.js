@@ -141,7 +141,7 @@ test('health calls a fresh home with an empty decision log healthy', () => {
     assert.equal(report.healthy, true);
     assert.equal(report.decisionLogSize, 0);
     assert.equal(report.gateFailures.length, 0);
-    assert.equal(report.quarantined.length, 0);
+    assert.deepEqual(Object.keys(report).sort(), ['decisionLogSize', 'gateFailures', 'healthy']);
     // The human summary must agree with the document, and the fix hint only
     // belongs on a report that has something to fix.
     const human = run(f.home, ['health']);
@@ -152,20 +152,23 @@ test('health calls a fresh home with an empty decision log healthy', () => {
   } finally { f.cleanup(); }
 });
 
-test('health still flags a quarantine cluster when the decision log is empty', () => {
+test('health reads nothing into old quarantine or bench records: a home holding them is healthy', () => {
   const f = sandbox();
   try {
     const state = JSON.parse(readFileSync(join(f.home, 'state.json'), 'utf8'));
     const until = Date.now() + 10 * 60_000;
     state.pools['local-agent'].quarantine = { until, reason: 'auth', kind: 'auth' };
-    state.pools.other = { enabled: true, quarantine: { until, reason: 'auth', kind: 'auth' } };
+    state.pools.other = { enabled: true, quarantine: { until, reason: 'auth', kind: 'auth' }, bench: { until, reason: 'stall', count: 2 } };
     writeFileSync(join(f.home, 'state.json'), `${JSON.stringify(state)}\n`);
     const result = run(f.home, ['health', '--json']);
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
-    assert.equal(report.healthy, false);
+    assert.equal(report.healthy, true);
     assert.equal(report.decisionLogSize, 0);
-    assert.equal(report.quarantineCluster.length, 2);
+    assert.equal(Object.hasOwn(report, 'quarantineCluster'), false);
+    const human = run(f.home, ['health']);
+    assert.equal(human.status, 0, human.stderr);
+    assert.doesNotMatch(human.stdout, /quarantine/);
   } finally { f.cleanup(); }
 });
 

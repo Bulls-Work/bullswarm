@@ -741,9 +741,9 @@ test('--until trouble wakes on a marked run\'s planner stopped by a usage limit,
 });
 
 // A marked run's quota line: a usage limit sends the step to the caller; a
-// saved stage-3 attempt that promised a retry spent none. Unmarked runs read
-// as before.
-test('a marked run\'s usage-limit line reads `back to you`, or `no retry spent` on a saved attempt; an unmarked run reads as before', () => {
+// saved stage-3 attempt that promised a retry spent none. Unmarked runs keep
+// their tail. A saved why that names a pause reads `back at` that time.
+test('a marked run\'s usage-limit line reads `back to you`, or `no retry spent` on a saved attempt; an unmarked run keeps its tail', () => {
   const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
   const why = 'usage limit · pool paused until 2026-09-24T03:00:00.000Z';
   const line = (extra) => {
@@ -752,7 +752,7 @@ test('a marked run\'s usage-limit line reads `back to you`, or `no retry spent` 
     }).notable;
     return renderWatchEvent(notable, { now: Date.parse('2026-09-20T01:00:00.000Z') });
   };
-  const head = '⚠ verify usage limit on claude-code · paused until 2026-09-24T03:00:00.000Z · ';
+  const head = '⚠ verify usage limit on claude-code · back at 2026-09-24T03:00:00.000Z · ';
   assert.equal(line({ failureRule: true, willRetry: false }), `${head}back to you`);
   assert.equal(line({ failureRule: true, willRetry: true }), `${head}no retry spent`);
   // A saved stage-3 decision to move or wait no longer changes the line.

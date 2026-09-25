@@ -1,7 +1,7 @@
 // Per-dispatch pool refresh.
 //
-// A run used to dispatch from the pool list built once at launch: meters and
-// quarantines observed minutes or hours earlier. A pool that hit its 5h limit
+// A run used to dispatch from the pool list built once at launch: meters
+// observed minutes or hours earlier. A pool that hit its 5h limit
 // mid-run stayed a first-class candidate, so the run kept sending work to a
 // provider that could only fail. The refresher rebuilds the same list the
 // launch path builds, cheaply enough to call before every dispatch:

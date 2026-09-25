@@ -13,9 +13,9 @@
 //   R5. The caller wins its lane only when no eligible delegate remains —
 //       it has to WIN, not be protected.
 //   R6. A pool with a metered window at its limit — its 5-hour, weekly or
-//       monthly reading at 100%, until that window resets — is exhausted;
-//       quarantined pools are ineligible until their quarantine expires (the
-//       re-probe path).
+//       monthly reading at 100%, until that window resets — is exhausted.
+//       Nothing else takes a pool out: no pause or bench is kept between
+//       picks.
 //   R7. A pool at/above FIVE_HOUR_NEAR_LIMIT_PCT of its 5h window is a
 //       last-mile candidate, not a hard skip. When another eligible pool is
 //       behind pace, its near-limit status is a soft ordering penalty. A pick
@@ -103,9 +103,8 @@
 //       in the past, or any window other than weekly/monthly means there is
 //       no lead time to measure and nothing about the pool changes (R8).
 //  R12. A healthy free model forms a tier ahead of metered pools while it is
-//       available; metered pools keep their R1-R11 ordering. A soft-benched
-//       pool is out until its re-probe deadline, and the bench never overrides
-//       quarantine, exhaustion, the 5h wall or last-mile ordering. Evidence steps do
+//       available; metered pools keep their R1-R11 ordering, and free-first
+//       never overrides exhaustion, the 5h wall or last-mile ordering. Evidence steps do
 //       normal routing (and prefer a pool that did not write the evidence) so
 //       a free model cannot judge its own work unless it is the only option.
 //  R13. Expiring quota outranks verifier independence, and independence is
@@ -216,12 +215,6 @@ export function paceScore(pool, now = Date.now()) {
   return Number.isFinite(s) ? s : 0;
 }
 
-export function isQuarantined(pool, now = Date.now()) {
-  if (!pool.quarantine) return false;
-  if (pool.quarantine.until == null) return true;
-  return now < pool.quarantine.until;
-}
-
 /** Whether the model selected for this pool/tier is declared free. */
 export function isFree(pool) {
   if (pool?.free === true) return true;
@@ -245,16 +238,6 @@ export function modelFamilyOf(pool) {
     pool?.connector?.profile?.providerId, pool?.provider, pool?.name, pool?.connector?.name,
   ]).find((value) => typeof value === 'string' && value.trim());
   return raw ? raw.trim().split(':', 1)[0].toLowerCase() : null;
-}
-
-/**
- * A soft bench is active only while it has a concrete future deadline.
- * `until: null` records a first strike without taking the pool out of service;
- * this is deliberately different from quarantine, where null means forever.
- */
-export function isBenched(pool, now = Date.now()) {
-  const until = pool?.bench?.until;
-  return until != null && Number.isFinite(Number(until)) && now < Number(until);
 }
 
 /** Round to one decimal for human-readable routing reasons. */
@@ -692,7 +675,7 @@ export function isExhausted(pool, now = Date.now()) {
  * Pick a pool for a lane.
  * @param {string} lane   analyze | build | chore
  * @param {Array}  pools  enabled pools: {name, costRank, lanes[], meter?,
- *                        quarantine?, incumbent?}. Optional forecast fields,
+ *                        incumbent?}. Optional forecast fields,
  *                        attached by the caller when it tracks them:
  *                        inflight {count, minutes, records:[{remainingMinutes}]},
  *                        spend {fiveHour:{ratePerMinute, source},
@@ -758,17 +741,14 @@ export function pickPool(lane, pools, opts = {}) {
   // emptied it (D7). A pool the model policy rejected is not a pool that lacks
   // a capability, and reporting the wrong one sends an operator to fix a
   // connector when the fix is `strategy set-rung`.
-  const laneCapableBeforeBench = pools.filter(
+  const laneCapable = pools.filter(
     (p) =>
       p.enabled !== false &&
       (p.lanes ?? LANES).includes(lane) &&
       requiredCapabilities.every((capability) =>
         (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)) &&
-      !isQuarantined(p, now) &&
       !isExhausted(p, now),
   );
-  const benchedOut = laneCapableBeforeBench.filter((p) => isBenched(p, now));
-  const laneCapable = laneCapableBeforeBench.filter((p) => !isBenched(p, now));
   // resolveDispatchModel() marks a pool ineligible when the persisted routing
   // policy cannot name a model for this tier — most often an effort tier whose
   // allow-list selects models on other pools only. Filtering here (instead of
@@ -886,9 +866,6 @@ export function pickPool(lane, pools, opts = {}) {
     urgencyState: e.expiring.state,
     free: isFree(e.pool),
     freeModel: e.pool.freeModel ?? null,
-    // A benched pool is filtered before scoring; this explicit false keeps the
-    // candidate shape stable for callers that render routing explanations.
-    benched: false,
   }));
   const forecastReport = {
     candidateMinutes: candidateMins,
@@ -907,19 +884,18 @@ export function pickPool(lane, pools, opts = {}) {
       : '';
     const emptyDelegateWhy = blocked ?? `no eligible delegate pool${withCapabilities}`;
     const emptyPoolWhy = blocked ?? `no eligible pool${withCapabilities}`;
-    const benchWhy = formatBenched(benchedOut);
     return callerEligible
       ? {
           pick: null,
           keepOnClaude: true,
-          why: noted(`${emptyDelegateWhy}; caller takes the lane${benchWhy ? ` · ${benchWhy}` : ''}`),
+          why: noted(`${emptyDelegateWhy}; caller takes the lane`),
           candidates,
           forecast: forecastReport,
         }
       : {
           pick: null,
           keepOnClaude: false,
-          why: noted(`${emptyPoolWhy}${benchWhy ? ` · ${benchWhy}` : ''}`),
+          why: noted(emptyPoolWhy),
           candidates,
           forecast: forecastReport,
         };
@@ -981,7 +957,7 @@ export function pickPool(lane, pools, opts = {}) {
 
     if (preferredEntry) {
       // A user-applied effort-tier assignment is an explicit choice, but it
-      // never bypasses eligibility, quarantine, exhaustion, or the wall.
+      // never bypasses eligibility, exhaustion, or the wall.
       winnerEntry = preferredEntry;
     } else if (incumbentEntry) {
       // R3+R4: challenger needs margin. The cost guard protects the incumbent
@@ -1053,7 +1029,6 @@ export function pickPool(lane, pools, opts = {}) {
     passedIndependent,
     deprioritizedWriters,
     skippedFree,
-    benchedOut,
     skippedDraining,
     overLimit: overLimitEntries,
     yieldedBusier,
@@ -1119,17 +1094,6 @@ function modelPolicyReason(blocked, effortTier) {
   }`;
 }
 
-function formatBenched(benchedOut) {
-  return (benchedOut ?? []).map((p) => {
-    const reason = p.bench?.reason ?? 'unknown';
-    const until = p.bench?.until;
-    const backAt = Number.isFinite(Number(until))
-      ? new Date(Number(until)).toISOString()
-      : 'unknown';
-    return `benched (${reason}, back at ${backAt}): ${p.name}`;
-  }).join(' · ');
-}
-
 /**
  * Explain the pick: why this pool, at what 5h utilization (reading and, when a
  * forecast exists, the projection), how much work it is already carrying, and
@@ -1149,7 +1113,6 @@ function routingReason(
     passedIndependent = [],
     deprioritizedWriters = [],
     skippedFree = [],
-    benchedOut = [],
     skippedDraining = [],
     overLimit = [],
     yieldedBusier = [],
@@ -1229,8 +1192,6 @@ function routingReason(
         .join(', ')}`,
     );
   }
-  const benchWhy = formatBenched(benchedOut);
-  if (benchWhy) clauses.push(benchWhy);
   if (winnerEntry.forecast.nearLimit) {
     const pct = winnerEntry.forecast.forecasted
       ? winnerEntry.forecast.forecast

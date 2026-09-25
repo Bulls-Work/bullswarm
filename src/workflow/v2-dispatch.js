@@ -4,12 +4,11 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './v2-runtime.js';
 import {
-  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isBenched, isFree, isQuarantined,
+  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isFree,
 } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
 import {
-  assertDepthAllowed, childDepthEnv, clearPoolStrikes, loadState, quarantinePool,
-  quarantineUpstreamSiblings, recordPoolStrike, updateState, upstreamGroupOf,
+  assertDepthAllowed, childDepthEnv, loadState, updateState, upstreamGroupOf,
 } from '../lib/state.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier, rungRecord } from '../lib/strategy.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
@@ -90,19 +89,18 @@ function classifyFailure(verdict, pool = null) {
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
   if (verdict?.failureKind === 'not-produced') return 'not-produced';
   if (verdict?.failureKind === 'failed-evidence') return 'failed-evidence';
-  // Quota outranks the quarantine hint: a usage limit also asks for a
-  // quarantine, but it is a healthy credential with an empty window, and only
-  // it carries a real reset deadline.
+  // A usage limit is a healthy credential with an empty window, and only it
+  // carries a real reset.
   if (verdict?.failureKind === 'quota') return 'quota';
-  if (verdict?.failureKind === 'throttle' && !verdict?.quarantineHint) return 'throttle';
-  if (verdict?.quarantineHint) return 'auth';
+  if (verdict?.failureKind === 'throttle') return 'throttle';
+  if (verdict?.failureKind === 'auth') return 'auth';
   if (verdict?.failureKind === 'stalled' || verdict?.meta?.stalled) return 'stalled';
   if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
   if (verdict?.failureKind === 'schema') return 'schema';
   // A free endpoint that returned literally no answer is indistinguishable
   // from a dead provider for routing purposes. Keep semantic announcements and
   // other verifier judgments intact; only the explicit empty-output verdict is
-  // eligible for the provider retry/bench path. Check this before a non-zero
+  // eligible for the provider retry path. Check this before a non-zero
   // exit-code classification because some connectors terminate after emitting
   // an empty response and still need the provider fallback.
   if (pool?.free === true && verdict?.why === 'empty output') return 'provider';
@@ -121,7 +119,7 @@ function workerNeverStarted(verdict) {
 
 // A spent usage window arrives as `quota` from the worker's verdict itself:
 // every dispatch under the usage-limit rules asks watchOnce for the
-// limits-to-caller reading (`usageLimitsToCaller`), whatever the switch.
+// limits-to-caller reading (`usageLimitsToCaller`).
 function markedFailureKind(verdict, pool = null) {
   const kind = classifyFailure(verdict, pool);
   if (kind && kind !== 'cancelled' && workerNeverStarted(verdict) && failureClassOf(kind) !== 'process') return 'process';
@@ -149,15 +147,10 @@ function providerIdFromModel(model) {
 
 function preparePools(pools, action, effort, {
   preferredModel = null, strictPool = null, now = Date.now(),
-  liveQuarantine = null,
-  liveBench = null,
-  // Which pools COULD run this action were none of them paused: used to say
-  // when work can be retried, and to refuse a pin that can never run it.
-  ignoreQuarantine = false,
-  ignoreBench = false,
-  // Stage 3: a pool with a window at its limit (framework.js windowSpent) is
-  // still capable (it comes back at its reset). Passed only for the capable
-  // set of marked runs.
+  // Which pools COULD run this action were none at its limit: a pool with a
+  // window at its limit (framework.js windowSpent) is still capable (it comes
+  // back at its reset). Used to say when work can be retried, and to refuse
+  // a pin or a route that can never run it.
   ignoreBurstGate = false,
   // The step's route (step-route.js resolveRouteFilter): a hard filter on
   // every list this builds, before any ranking (D18).
@@ -167,18 +160,10 @@ function preparePools(pools, action, effort, {
   for (const pool of pools) {
     if (pool.enabled === false || (!ignoreBurstGate && windowSpent(pool, now))) continue;
     if (routeFilter && !poolPassesRoute(pool, routeFilter)) continue;
-    if (!ignoreQuarantine && isQuarantined(pool, now)) continue;
-    if (!ignoreBench && isBenched(pool, now)) continue;
-    // The pool object may predate a quarantine written by another action or
-    // another run. Core state is the shared record, so consult it directly.
-    const live = !ignoreQuarantine && typeof liveQuarantine === 'function' ? liveQuarantine(pool.name) : null;
-    if (live && isQuarantined({ quarantine: live }, now)) continue;
-    const liveBenchRecord = !ignoreBench && typeof liveBench === 'function' ? liveBench(pool.name) : null;
-    if (liveBenchRecord && isBenched({ bench: liveBenchRecord }, now)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its
     // meter. Retargeting it to another provider-qualified model would make the
-    // pool label, quota attribution, and quarantine target untrue. An exact
+    // pool label and quota attribution untrue. An exact
     // model pin may therefore use only the clone for that provider ID.
     const pinnedProvider = providerIdFromModel(preferredModel);
     if (pinnedProvider && connector.profile?.providerId
@@ -824,47 +809,14 @@ export function appliedStepRestart(state, runDir, actionId, formatHandoff = hand
  * Append this attempt's decision to shared core state. Concurrent actions in
  * one workflow all write this file, so the whole read-modify-write happens
  * inside updateCoreState's cross-process lock on a fresh load — a plain
- * load/push/save dropped sibling entries and undid quarantines (S5, D5).
+ * load/push/save dropped sibling entries (S5, D5). The decision log is all a
+ * dispatch writes there: no pool is paused or benched (state.js S1).
  */
-function appendDecision(bullswarmDir, record, {
-  updateCoreState, quarantine = null, strike = null, clearStrikes: clearPool = null,
-} = {}) {
-  let benchResult = null;
+function appendDecision(bullswarmDir, record, { updateCoreState } = {}) {
   updateCoreState(bullswarmDir, (state) => {
     state.decisionLog ??= [];
     state.decisionLog.push(record);
-    if (quarantine) {
-      const kind = quarantine.kind ?? 'auth';
-      const until = quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now, {
-        until: quarantine.until ?? null,
-        kind,
-        evidence: quarantine.evidence ?? null,
-      });
-      // Siblings of a dead credential are benched inside the SAME locked
-      // update, on the deadline quarantinePool just computed — one upstream,
-      // one deadline, no second window opened a millisecond later.
-      quarantineUpstreamSiblings(state, quarantine.groupPools ?? [], {
-        pool: quarantine.pool,
-        group: quarantine.group ?? null,
-        reason: quarantine.reason,
-        now: quarantine.now,
-        until,
-        kind,
-      });
-    }
-    if (clearPool) clearPoolStrikes(state, clearPool);
-    if (strike?.pool) {
-      const until = recordPoolStrike(state, strike.pool, strike.reason, strike.now);
-      const bench = state.pools?.[strike.pool]?.bench ?? null;
-      benchResult = {
-        pool: strike.pool,
-        reason: bench?.reason ?? strike.reason ?? null,
-        count: Number(bench?.count ?? 1),
-        until: bench?.until ?? until ?? null,
-      };
-    }
   });
-  return benchResult;
 }
 
 function selectedModel(pool, effort, preferredModel = null) {
@@ -1026,10 +978,13 @@ export async function dispatchV2Action({
   const limitsOnly = usageLimitsToCaller === true && !failureRule;
   const limitsRule = failureRule || limitsOnly;
   const failureKindOf = failureRule ? markedFailureKind : classifyFailure;
-  const liveQuarantines = dependencies.liveQuarantines ?? (() => {
-    try { return loadCoreState(bullswarmDir).pools ?? {}; }
-    catch { return {}; }
-  });
+  // Credential groups a sign-in failure in THIS dispatch showed dead: no
+  // later pick of this dispatch takes a pool in one, however many pool names
+  // front it (the 2026-09-11 bug: a retry walked three names for one dead
+  // credential). Nothing is stored; the next dispatch starts clean (state.js
+  // S1) and learns of a dead credential only by trying it.
+  const deadGroups = new Set();
+  const inLiveGroup = (pool) => !deadGroups.size || !deadGroups.has(upstreamGroupOf(pool));
   // Stage 3 (marked runs): a pool the router calls "expiring but draining"
   // (its pacing window closes soon and this step would take it past the
   // wall) is never given the step, even when nothing else can take it; the
@@ -1059,13 +1014,10 @@ export async function dispatchV2Action({
   // The pools that can take work now and, among them, the draining ones,
   // read live; prepare() keeps the draining ones out.
   const preparedView = (poolList) => {
-    const live = liveQuarantines();
     const at = now();
     const prepared = preparePools(poolList, action, effort, {
       preferredModel, strictPool, now: at, routeFilter,
-      liveQuarantine: (name) => live[name]?.quarantine ?? null,
-      liveBench: (name) => live[name]?.bench ?? null,
-    }).filter((pool) => !failedProbes.has(pool.name));
+    }).filter((pool) => !failedProbes.has(pool.name) && inLiveGroup(pool));
     return { prepared, draining: drainingAt(prepared, at) };
   };
   const prepare = (poolList) => {
@@ -1089,9 +1041,7 @@ export async function dispatchV2Action({
     { decisionLog: spendDecisionLog },
   );
   let candidates = prepare(pools);
-  // The unfiltered list, kept current across refreshes: a sibling benched for
-  // a shared upstream may itself be ineligible for THIS action (wrong lane,
-  // blocked model) and still has to be taken out of service for every other.
+  // The unfiltered list, kept current across refreshes.
   let allPools = pools;
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
@@ -1211,7 +1161,7 @@ export async function dispatchV2Action({
     limitsReplayFor = null;
     const pin = pinNext;
     pinNext = null;
-    // Meters and quarantines move while an action is in flight. Re-read them
+    // Meters move while an action is in flight. Re-read them
     // before every pick so a pool that just hit its limit — here or in another
     // run — is no longer a candidate. A forced refresh already taken to decide
     // an evidence retry is this pick's refresh (E14).
@@ -1237,11 +1187,11 @@ export async function dispatchV2Action({
       }
     }
     // Stage 3: the pick's pool list, rebuilt from the live picture every time
-    // (prepare() re-reads the shared pauses). A gate retry is forced onto its
+    // (prepare() re-reads the meters). A gate retry is forced onto its
     // pool whenever that pool can take work at this pick, and otherwise this
     // pick falls back to the untried eligible pools; the pin stays until an
     // attempt starts. A backoff replays its own pool only: when that pool can
-    // no longer take the step (paused, a window at its limit, draining, benched)
+    // no longer take the step (a window at its limit, or draining)
     // the step goes to the caller, never to another pool.
     let gatePick = null;
     let markedPools = null;
@@ -1320,34 +1270,17 @@ export async function dispatchV2Action({
       }
     }
     // An evidence retry is pinned to its pool for this one pick: the router
-    // ranks every pool it is given, so re-queuing alone would move it.
+    // ranks every pool it is given, so re-queuing alone would move it. The
+    // fallback list may predate a sign-in failure in this dispatch (no
+    // refresh since), so its dead credential groups are dropped here too.
     const routePools = markedPools ?? backoffPools ?? movedPools ?? (pin
       ? prepare(allPools).filter((candidate) => candidate.name === pin)
-      : remaining.length ? remaining : candidates);
+      : remaining.length ? remaining : candidates.filter(inLiveGroup));
     const onlyPool = pin ?? gatePick;
     const pickStrictPool = onlyPool ?? strictPool;
     const pickAt = now();
-    // Keep active benches in the router's view even though they cannot be
-    // selected. Route owns the human explanation (benched with its deadline);
-    // the dispatch candidate list still excludes them so retry mechanics never
-    // mistake a paused pool for an available fallback.
-    const live = liveQuarantines();
-    const routeBenchCandidates = preparePools(allPools, action, effort, {
-      preferredModel, strictPool, now: pickAt, routeFilter,
-      liveQuarantine: (name) => live[name]?.quarantine ?? null,
-      ignoreBench: true,
-    }).filter((candidate) => {
-      const bench = live[candidate.name]?.bench ?? candidate.bench;
-      return isBenched({ bench }, pickAt);
-    }).map((candidate) => ({
-      ...candidate,
-      bench: live[candidate.name]?.bench ?? candidate.bench,
-    }));
-    const liveBenchedNames = new Set(routeBenchCandidates.map((candidate) => candidate.name));
-    const routingPools = [
-      ...routePools.filter((candidate) => !liveBenchedNames.has(candidate.name)),
-      ...routeBenchCandidates,
-    ].filter((candidate) => !failedProbes.has(candidate.name) && (!onlyPool || candidate.name === onlyPool));
+    const routingPools = routePools
+      .filter((candidate) => !failedProbes.has(candidate.name) && (!onlyPool || candidate.name === onlyPool));
     // The ledger is re-read HERE, before every pick and every retry, not on
     // the refresher's 15s throttle: up to four kernel actions start within
     // milliseconds of each other, and each has to see the assignments the
@@ -1418,9 +1351,6 @@ export async function dispatchV2Action({
         for (let index = remaining.length - 1; index >= 0; index -= 1) {
           if (remaining[index].name === pool.name) remaining.splice(index, 1);
         }
-        updateCoreState(bullswarmDir, (fresh) => {
-          recordPoolStrike(fresh, pool.name, reason, pickAt);
-        });
         // A pinned evidence retry never moves to another pool, and neither
         // does a backoff: its step goes to the caller.
         if (pin) return correctPinnedRetry(pin);
@@ -1564,7 +1494,7 @@ export async function dispatchV2Action({
         onAgentProgress,
         bullswarmDir,
         poolName: pool.name,
-        // A spent usage window is `quota` whatever the pausing switch.
+        // A spent usage window is `quota`, even with no reset named.
         ...(limitsRule ? { usageLimitsToCaller: true } : {}),
         runId: runId ?? runIdFromPaths(files),
         attemptId: `${action.id}-${ordinal}`,
@@ -1759,15 +1689,16 @@ export async function dispatchV2Action({
       }
     }
     // One dead upstream credential is ONE outage however many pool names front
-    // it. The in-memory candidate list predates the quarantine written below,
-    // and a refresher is optional, so the group is dropped here as well — the
-    // next attempt of THIS action must not walk from one pool name to the next
-    // sibling on the same credential into the same failure, as it did on
-    // 2026-09-11.
-    const benchedGroup = kind === 'auth' ? upstreamGroupOf(pool) : null;
-    if (benchedGroup) {
+    // it: the next attempt of THIS action must not walk from one pool name to
+    // the next sibling on the same credential into the same failure, as it
+    // did on 2026-09-11. The group is dropped from the untried list now, and
+    // prepare() keeps it out of every later pick of this dispatch, a refresh
+    // included (`deadGroups`).
+    const deadGroup = kind === 'auth' ? upstreamGroupOf(pool) : null;
+    if (deadGroup) {
+      deadGroups.add(deadGroup);
       for (let i = remaining.length - 1; i >= 0; i -= 1) {
-        if (upstreamGroupOf(remaining[i]) === benchedGroup) remaining.splice(i, 1);
+        if (upstreamGroupOf(remaining[i]) === deadGroup) remaining.splice(i, 1);
       }
     }
     // The pools that can take work now, read live once for what follows this
@@ -1806,9 +1737,9 @@ export async function dispatchV2Action({
     if (failureRule && !verdict.ok && kind !== 'cancelled') {
       const failureClass = failureClassOf(kind);
       const hasBudget = retriesStarted < retryBudget;
-      if (benchedGroup) {
+      if (deadGroup) {
         for (const candidate of allPools) {
-          if (candidate.name !== pool.name && upstreamGroupOf(candidate) === benchedGroup) {
+          if (candidate.name !== pool.name && upstreamGroupOf(candidate) === deadGroup) {
             leftAfterProcessFailure.add(candidate.name);
             tried.add(candidate.name);
           }
@@ -1930,7 +1861,7 @@ export async function dispatchV2Action({
       currentSession = clone(record.session);
     }
     last = verdict;
-    const bench = appendDecision(bullswarmDir, {
+    appendDecision(bullswarmDir, {
       ts: finishedAt, lane: action.lane ?? 'chore', picked: pool.name,
       keepOnClaude: false, ok: verdict.ok, failureKind: verdict.ok ? null : kind, why: verdict.why ?? null,
       wallSec: verdict.meta?.wallSec ?? null, model: record.model,
@@ -1938,21 +1869,7 @@ export async function dispatchV2Action({
       usage: verdict.meta?.usage ?? null, routing: record.routing,
       forecast: record.routing.forecast,
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
-    }, {
-      updateCoreState,
-      clearStrikes: verdict.ok ? pool.name : null,
-      strike: !verdict.ok && (kind === 'stalled' || kind === 'provider')
-        ? { pool: pool.name, reason: kind === 'stalled' ? 'stall' : 'provider', now: now() }
-        : null,
-      quarantine: verdict.quarantineHint ? {
-        pool: pool.name, reason: verdict.why, now: now(),
-        until: verdict.quarantineUntil ?? null,
-        kind: kind === 'quota' ? 'quota' : 'auth',
-        evidence: verdict.quotaPause ?? null,
-        group: upstreamGroupOf(pool), groupPools: allPools,
-      } : null,
-    });
-    if (bench) record.bench = clone(bench);
+    }, { updateCoreState });
     onAttempt?.('finished', clone(record), verdict);
     // A quota failure invalidates this run's meter picture: poll live before
     // choosing where the work goes next.
@@ -2138,49 +2055,41 @@ export async function dispatchV2Action({
   }
 
   // The step fails now rather than waiting for a pool: a run never sits open
-  // on quota. When every pool that can run it is paused, say when the first one
-  // comes back, so the caller knows when `workflow resume` will get through.
-  // Marked runs name each capable pool's reason (a usage limit, a bench, a
-  // process failure here), take a spent usage window as quota, and say why a
-  // promised retry or a backoff did not happen; so do the planner and scout
-  // of a marked run (`limitsRule`).
+  // on quota. Marked runs name each capable pool's reason (a usage limit, a
+  // window at its limit, nearly spent, a process failure here) and when it is
+  // back, take a spent usage window as quota, and say why a promised retry or
+  // a backoff did not happen; so do the planner and scout of a marked run
+  // (`limitsRule`).
   const lane = action.lane ?? 'chore';
   // In marked runs a pool with a window at its limit is still capable: it
   // comes back at that window's reset, so the reason is the limit, never a
   // missing tier (§2.1). A pool off the step's lane is not capable there.
   const onLane = (pool) => !limitsRule || (pool.lanes ?? LANES).includes(lane);
   const capable = preparePools(allPools, action, effort, {
-    preferredModel, strictPool, now: now(), ignoreQuarantine: true, ignoreBench: true, routeFilter,
+    preferredModel, strictPool, now: now(), routeFilter,
     ...(limitsRule ? { ignoreBurstGate: true } : {}),
   }).filter((pool) => !failedProbes.has(pool.name) && onLane(pool));
-  const live = liveQuarantines();
   const endAt = now();
   const lastKind = last ? failureKindOf(last, lastPool) : null;
-  // The failed pool's own reset, when its usage window is spent.
+  // The failed pool's own reset, when its usage window is spent and the
+  // reset is known (quota.js Q6).
   const lastReset = limitsRule && lastKind === 'quota' && lastPool
-    ? toMs(last.quarantineUntil) ?? toMs(last.quotaPause?.until) ?? toMs(last.quotaPause?.holdUntil)
+    ? toMs(last.retryAfter) ?? toMs(last.usageLimit?.until)
     : null;
   const draining = limitsRule ? drainingAt(capable, endAt) : new Map();
+  // Under the usage-limit rules, each capable pool that cannot take the step
+  // now, as {pool, text, limit (a usage limit), back (when it is back)}: a
+  // spent window (known reset or not), a metered window at its limit and a
+  // nearly spent window keep the pool out, even when their return is unknown.
   const held = [];
-  let comesBack = null;
-  // A pause as [reason, return time, is a usage limit].
-  const pause = (record) => [(record.kind ?? 'auth') === 'quota' ? 'paused for quota' : 'paused', toMs(record.until), (record.kind ?? 'auth') === 'quota'];
-  for (const pool of capable) {
-    const quarantines = [pool.quarantine, live[pool.name]?.quarantine].filter(Boolean);
-    const parts = [
-      ...quarantines.map(pause),
-      ['benched', toMs(pool.bench?.until), false], ['benched', toMs(live[pool.name]?.bench?.until), false],
-      ...(pool.name === lastPool?.name && lastReset != null ? [['out of quota', lastReset, true]] : []),
-    ].filter(([, ms]) => ms != null && ms > endAt);
-    if (limitsRule) {
-      // Marked runs only: a pause with no end, a spent window whose reset is
-      // unknown, a metered window at its limit and a nearly spent window keep
-      // the pool out, even when their return is unknown.
-      for (const record of quarantines) if (record.until == null) parts.push(pause(record));
-      if (pool.name === lastPool?.name && lastKind === 'quota' && lastReset == null) parts.push(['out of quota', null, true]);
-      const spent = windowSpent(pool, endAt);
-      if (spent) parts.push([`at its ${spent.window} limit`, toMs(spent.resetsAt), true]);
+  for (const pool of limitsRule ? capable : []) {
+    const parts = [];
+    if (pool.name === lastPool?.name && lastKind === 'quota') {
+      if (lastReset == null) parts.push(['out of quota', null, true]);
+      else if (lastReset > endAt) parts.push(['out of quota', lastReset, true]);
     }
+    const spent = windowSpent(pool, endAt);
+    if (spent) parts.push([`at its ${spent.window} limit`, toMs(spent.resetsAt), true]);
     if (draining.has(pool.name)) {
       const view = draining.get(pool.name);
       parts.push([`nearly spent (forecast ${Number(view.forecast).toFixed(1)}%)`, view.until, true]);
@@ -2188,9 +2097,6 @@ export async function dispatchV2Action({
     if (!parts.length) {
       // A pool the step left after a process failure cannot take its retry.
       if (failureRule && leftAfterProcessFailure.has(pool.name)) held.push({ pool: pool.name, text: `${pool.name} already failed on this step`, limit: false, back: null });
-      // A capable pool that is not paused gives no single time to wait for.
-      comesBack = null;
-      if (!limitsRule) break;
       continue;
     }
     const timed = parts.filter(([, ms]) => ms != null);
@@ -2198,14 +2104,11 @@ export async function dispatchV2Action({
       ? timed.reduce((latest, part) => (part[1] > latest[1] ? part : latest))
       : parts[0];
     held.push({ pool: pool.name, text: back != null ? `${pool.name} ${reason} until ${new Date(back).toISOString()}` : `${pool.name} ${reason}`, limit, back });
-    if (!limitsRule) comesBack = comesBack == null ? back : Math.min(comesBack, back);
   }
   // No capable pool can take the step now: the earliest known return among
   // them (a pool whose return is unknown is skipped).
-  if (limitsRule) {
-    const known = held.map((entry) => entry.back).filter((ms) => ms != null);
-    comesBack = capable.length && held.length === capable.length && known.length ? Math.min(...known) : null;
-  }
+  const known = held.map((entry) => entry.back).filter((ms) => ms != null);
+  const comesBack = capable.length && held.length === capable.length && known.length ? Math.min(...known) : null;
   // The pool a backoff could not be taken or replayed on: its usage limit
   // makes the step's failure quota, and its return is when to try again.
   const blocked = limitsRule && backoffBlocked ? held.find((entry) => entry.pool === backoffBlocked) ?? null : null;
@@ -2236,15 +2139,13 @@ export async function dispatchV2Action({
     ? strictPool
       ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)`
       : `no eligible pool: no enabled pool has a model on the ${effort} tier for ${lane} work`
-    : limitsRule && held.length
+    : held.length
       ? `${failureKind === 'quota' ? 'no pool with quota to spare' : 'no pool free'}: ${held.map((entry) => entry.text).join('; ')}`
-      : retryAfter
-        ? `no eligible pool: every pool that can run this step is paused until ${retryAfter}`
-        : 'no eligible pool';
+      : 'no eligible pool';
   if (!capable.length && routeFilter) {
     // §2.4: the route, not the tier or the pin, emptied the capable set.
     const unrouted = preparePools(allPools, action, effort, {
-      preferredModel, strictPool, now: now(), ignoreQuarantine: true, ignoreBench: true,
+      preferredModel, strictPool, now: now(),
       ...(limitsRule ? { ignoreBurstGate: true } : {}),
     }).filter((pool) => !failedProbes.has(pool.name) && onLane(pool));
     if (unrouted.length) {

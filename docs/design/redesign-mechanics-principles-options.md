@@ -146,9 +146,14 @@ What these principles do **not** include:
 
 Rules that hold throughout:
 
-- **A usage limit goes to the caller.** It ends the step at once, whatever
-  the pausing switch; nothing waits for a pool or moves the step by itself.
-  The caller reruns it elsewhere, waits for the pool, accepts or cancels.
+- **A usage limit goes to the caller.** It ends the step at once; nothing
+  waits for a pool or moves the step by itself. The caller reruns it
+  elsewhere, waits for the pool, accepts or cancels.
+- **A spent or dead pool is never remembered across steps** (owner decision,
+  2026-09-25). Nothing pauses or benches a pool; each pick reads the live
+  meters, so a window at 100% keeps a pool out until its reset. After a
+  sign-in failure the step's retry skips the pools that share the dead
+  credential, for that step only.
 - **Only dependents wait.** Steps that do not depend on the failed one keep
   running.
 - **A failed review** gets one fix step built from its findings and one

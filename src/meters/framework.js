@@ -129,6 +129,30 @@ function resetMsOf(value) {
 }
 
 /**
+ * Is a quota-refusal marker's reset one somebody named or measured? The
+ * marker (meters/registry.js) is the 100% window a forced meter read leaves
+ * behind when it fails after a usage limit. Its reset is `named` (the
+ * provider's notice said when), `measured` (a meter reading of that window
+ * said when), or `guessed` (the last reading rolled forward, or a whole
+ * window from now). A marker written before this was recorded says nothing,
+ * and counts as guessed.
+ */
+export function refusalResetKnown(marker) {
+  const source = marker?.reset_source ?? marker?.resetSource ?? null;
+  return source === 'named' || source === 'measured';
+}
+
+/**
+ * A window the refusal marker filled in with a guessed reset: it is not a
+ * reading, and it never keeps a pool out. Without this a pool with no meter
+ * reader was shut out for up to 7 days (or a month) after one limit notice
+ * that named no reset, with nothing that could lift it.
+ */
+export function guessedRefusalWindow(entry) {
+  return entry?.source === 'quota-refusal' && !refusalResetKnown(entry);
+}
+
+/**
  * The metered window a pool is at its limit on, or null: any window — 5-hour,
  * weekly or monthly — at its limit (atLimit) keeps the pool from being picked
  * until that window resets. The one rule every routing gate reads. Reads a
@@ -136,24 +160,28 @@ function resetMsOf(value) {
  * hand-built view may set only `burstGate`), the pacing window's
  * `usedPct`/`paceResetsAt` under its `pacingWindow`, and `meterSnapshot` for
  * the rest. A declared meter is the operator's figure, not a reading, and
- * never counts. With several at their limit the one that resets last is
- * named, since the pool is back only then; one whose reset is unknown
- * outlasts any known reset.
+ * never counts; nor does a refusal marker's window whose reset was guessed
+ * (guessedRefusalWindow). With several at their limit the one that resets
+ * last is named, since the pool is back only then; one whose reset is
+ * unknown outlasts any known reset.
  *
  * @returns {{window: '5-hour'|'weekly'|'monthly', resetsAt: string|null}|null}
  */
 export function windowSpent(pool, nowMs = Date.now()) {
   if (!pool || typeof pool !== 'object') return null;
   const snapshot = pool.meterSnapshot && typeof pool.meterSnapshot === 'object' ? pool.meterSnapshot : {};
+  const counts = (key) => !guessedRefusalWindow(snapshot[key]);
   const fiveHourUsed = pool.fiveHourUsedPct ?? snapshot.five_hour?.utilization
     ?? (pool.burstGate === true ? BURST_BLOCK_PCT : null);
   const readings = [
-    ['5-hour', fiveHourUsed, pool.fiveHourResetsAt ?? snapshot.five_hour?.resets_at],
-    ['weekly', snapshot.seven_day?.utilization, snapshot.seven_day?.resets_at],
-    ['monthly', snapshot.monthly?.utilization, snapshot.monthly?.resets_at],
+    ...(counts('five_hour') ? [['5-hour', fiveHourUsed, pool.fiveHourResetsAt ?? snapshot.five_hour?.resets_at]] : []),
+    ...(counts('seven_day') ? [['weekly', snapshot.seven_day?.utilization, snapshot.seven_day?.resets_at]] : []),
+    ...(counts('monthly') ? [['monthly', snapshot.monthly?.utilization, snapshot.monthly?.resets_at]] : []),
   ];
   const pacing = normalizePacingWindow(pool.pacingWindow);
-  if (pacing && pool.meterSource !== 'declared') readings.push([pacing, pool.usedPct, pool.paceResetsAt]);
+  if (pacing && pool.meterSource !== 'declared' && counts(pacing === 'monthly' ? 'monthly' : 'seven_day')) {
+    readings.push([pacing, pool.usedPct, pool.paceResetsAt]);
+  }
   let spent = null;
   for (const [window, usedPct, resetsAt] of readings) {
     if (!atLimit(usedPct, resetsAt, nowMs)) continue;
@@ -177,10 +205,12 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
     };
   }
 
+  // A refusal marker's window with a guessed reset is not a reading: the pool
+  // is paced and gated as if that window had not been read at all.
   const windows = {};
   for (const kind of ['five_hour', 'seven_day', 'monthly']) {
     const w = snapshot[kind];
-    if (!w || w.utilization == null) continue;
+    if (!w || w.utilization == null || guessedRefusalWindow(w)) continue;
     const resetsAtMs = w.resets_at ? Date.parse(w.resets_at) : NaN;
     const windowMs =
       kind === 'five_hour' ? WINDOW_MS['5h']
@@ -195,12 +225,13 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
   }
 
   const chosen = pickPacingWindow(windows, opts.pacingWindow);
-  const fiveHourUsed = snapshot.five_hour?.utilization;
+  const fiveHour = guessedRefusalWindow(snapshot.five_hour) ? null : snapshot.five_hour;
+  const fiveHourUsed = fiveHour?.utilization;
   const fiveHourUsedPct = Number.isFinite(fiveHourUsed) ? fiveHourUsed : null;
   // resets_at is reported straight from the snapshot (M2): no reading, no
   // deadline — never a locally assumed one.
-  const fiveHourResetsMs = snapshot.five_hour?.resets_at
-    ? Date.parse(snapshot.five_hour.resets_at)
+  const fiveHourResetsMs = fiveHour?.resets_at
+    ? Date.parse(fiveHour.resets_at)
     : NaN;
   const burstGate = atLimit(fiveHourUsedPct, fiveHourResetsMs, nowMs);
 

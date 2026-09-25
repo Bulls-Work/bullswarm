@@ -41,7 +41,6 @@ const TEST_SEAMS = {
 // line names something that no longer needs it.
 const NOT_YET_REMOVED = {
   'src/cli.js': ['BULLSWARM_DIR'],
-  'src/lib/quota.js': ['pauseWord'],
   'src/lib/stale.js': ['streamFacts'],
   'src/lib/watch.js': ['attemptCapture'],
   'src/meters/framework.js': ['meterIntervalDelta', 'monotonicDelta'],

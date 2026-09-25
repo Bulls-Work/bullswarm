@@ -8,7 +8,7 @@
 //       CLI's vocabulary. Connector-declared phrases stay first — an
 //       installation's own wording outranks a default.
 //   A2. The shared defaults are read ONLY once a stream has already declared a
-//       failure. Matching them on ordinary output would quarantine a pool for
+//       failure. Matching them on ordinary output would fail a worker for
 //       reading auth code, which is precisely the false positive the
 //       error-shape gate exists to prevent (Q2).
 //   A3. Zero dependencies. Case-insensitive substring, exactly like quota
@@ -26,8 +26,8 @@ import { ERROR_SHAPED_LINE } from './quota.js';
  *    model=gpt-5.6-luna; last upstream error: auth_unavailable: Encountered
  *    invalidated oauth token: [REDACTED])","type":"server_error",…}}
  * None of those phrases appeared in any connector's own auth list, so every
- * attempt was reported as a generic provider error and no pool was ever
- * benched. Only phrases any relay can emit belong here; wording one reseller
+ * attempt was reported as a generic provider error and the retry walked the
+ * pools that share the dead credential. Only phrases any relay can emit belong here; wording one reseller
  * uses for its own outages is declared by that provider's `authSignatures`.
  */
 export const DEFAULT_AUTH_SIGNATURES = Object.freeze([

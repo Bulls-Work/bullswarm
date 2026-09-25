@@ -24,14 +24,13 @@
 // pool view actually came from.
 
 import { loadState } from './state.js';
-import { paceScore, isQuarantined } from './route.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js).
 import { finiteOrNull } from './num.js';
 import {
   FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow, declaredResetPacing,
+  guessedRefusalWindow, refusalResetKnown,
 } from '../meters/framework.js';
 import { loadProviders } from './providers.js';
-import { cachedQuotaRefusal } from '../meters/registry.js';
 import { isFreeModel } from './usage.js';
 import {
   configuredModel, disabledModelsForPool, resolveDispatchModel, selectedModelsForTier,
@@ -132,10 +131,6 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       costRank: conn.costRank ?? 5,
       lanes: conn.lanes,
       capabilities: conn.capabilities ?? [],
-      quarantine: isQuarantined({ quarantine: ps.quarantine ?? null }, now)
-        ? ps.quarantine
-        : null,
-      bench: ps.bench ?? null,
       free: selected.free,
       freeModel: selected.model ?? null,
       freeTiers: freeTiersFor(conn, state, name),
@@ -189,18 +184,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
   for (const p of pools) {
     if (!p.enabled) continue;
     const ps = state.pools[p.name] ?? {};
-    const paused = isQuarantined(p, now);
-    // Quota failures quarantine a pool, so the live poll list deliberately
-    // omits it. Still project its persisted refusal marker into `pools` and
-    // Budget without contacting the provider; otherwise the page would erase
-    // the very 100% wall that caused the quarantine.
-    const quotaPaused = paused && (
-      ps.quarantine?.kind === 'quota'
-      || /quota|usage limit|rate limit/i.test(String(ps.quarantine?.reason ?? ''))
-    );
-    const reading = readings[p.name]
-      ?? (quotaPaused ? cachedQuotaRefusal(p.name, { bullswarmDir, nowMs: now }) : null);
-    if (paused && !reading) continue;
+    const reading = readings[p.name] ?? null;
     if (reading) {
       p.meterError = typeof reading.meterError === 'string' && reading.meterError
         ? reading.meterError
@@ -243,13 +227,16 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       p.meterSnapshot = reading.snapshot ?? null;
     } else if (reading?.source === 'quota-refusal') {
       // A five-hour-only provider has no pacing score, but its synthetic 100%
-      // gate is still authoritative. Keep the refusal source and snapshot so
-      // the Budget page and `bullswarm pools` do not fall back to a stale
-      // declared percentage or call this pool unmetered.
+      // gate is still authoritative when its reset was named or measured.
+      // Keep the refusal source and snapshot so the Budget page and `bullswarm
+      // pools` do not fall back to a stale declared percentage or call this
+      // pool unmetered. A marker whose reset was guessed says the pool was
+      // refused and nothing more: no 100% is projected from it.
       p.meterSource = 'quota-refusal';
       p.meterSnapshot = reading.snapshot ?? null;
       p.burstGate = reading.burstGate === true;
-      if (p.quotaRefusalWindow === 'weekly' || p.quotaRefusalWindow === 'monthly') {
+      if (refusalResetKnown(p.quotaRefusal)
+        && (p.quotaRefusalWindow === 'weekly' || p.quotaRefusalWindow === 'monthly')) {
         const selected = p.quotaRefusalWindow === 'monthly'
           ? reading.snapshot?.monthly
           : reading.snapshot?.seven_day;
@@ -314,9 +301,11 @@ function pacedReading(reading, pacingWindow) {
  * older code path still reports a real 5h number instead of null.
  */
 function fiveHourFromReading(reading) {
+  // A refusal marker's guessed 5h window is not a reading (framework.js).
+  const raw5h = guessedRefusalWindow(reading?.snapshot?.five_hour) ? null : reading?.snapshot?.five_hour;
   const usedPct = finiteOrNull(reading?.fiveHourUsedPct)
-    ?? finiteOrNull(reading?.snapshot?.five_hour?.utilization);
-  const raw = reading?.fiveHourResetsAt ?? reading?.snapshot?.five_hour?.resets_at ?? null;
+    ?? finiteOrNull(raw5h?.utilization);
+  const raw = reading?.fiveHourResetsAt ?? raw5h?.resets_at ?? null;
   const resetsMs = typeof raw === 'string' ? Date.parse(raw) : NaN;
   return {
     usedPct,
@@ -334,15 +323,12 @@ export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir, { packaged });
   // Poll only the pools whose readings can be used (D6). The loop above
-  // already skips disabled and quarantined pools when it applies readings, so
-  // asking for theirs read a credential and called a provider usage endpoint
-  // for a number that was thrown away — on every `pools`, every `run` and
-  // every 15-second V2 refresh.
-  const names = Object.keys(connectors).filter((name) => {
-    const ps = state.pools?.[name] ?? {};
-    return poolEnabled(connectors[name], ps)
-      && !isQuarantined({ quarantine: ps.quarantine ?? null }, now);
-  });
+  // already skips disabled pools when it applies readings, so asking for
+  // theirs read a credential and called a provider usage endpoint for a
+  // number that was thrown away — on every `pools`, every `run` and every
+  // 15-second V2 refresh.
+  const names = Object.keys(connectors)
+    .filter((name) => poolEnabled(connectors[name], state.pools?.[name] ?? {}));
   const readings = getReadings
     ? await getReadings(names, {
       force, nowMs: now, onProgress: onProviderProgress,

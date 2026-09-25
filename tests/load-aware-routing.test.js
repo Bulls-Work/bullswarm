@@ -255,7 +255,26 @@ test('a measured spend rate softly penalizes a near-limit pool before its readin
   }
 });
 
-test('the load-aware path excludes only a 5h wall or a future quota retry', () => {
+// A refusal marker as meters/registry.js writes it after a usage limit on a
+// pool whose meter could not be read: its window at 100%, and how its reset
+// is known.
+function writeRefusal(home, pool, { now, resetSource }) {
+  mkdirSync(join(home, 'meters'), { recursive: true });
+  const resetsAt = new Date(now + 2.5 * 60 * MINUTE).toISOString();
+  writeFileSync(join(home, 'meters', `${pool}.json`), JSON.stringify({
+    pool,
+    captured_at: new Date(now).toISOString(),
+    source: 'quota-refusal',
+    quota_refusal: {
+      source: 'quota-refusal', refused_at: new Date(now).toISOString(), resets_at: resetsAt,
+      ...(resetSource ? { reset_source: resetSource } : {}), window: '5-hour', reason: 'usage limit',
+    },
+    five_hour: { utilization: 100, resets_at: resetsAt, source: 'quota-refusal', ...(resetSource ? { reset_source: resetSource } : {}) },
+    seven_day: { utilization: 20, resets_at: new Date(now + 3.5 * 24 * 60 * MINUTE).toISOString() },
+  }, null, 2));
+}
+
+test('the load-aware path excludes only a 5h wall: an old quota pause record excludes nothing', () => {
   const home = fixtureHome();
   try {
     const now = Date.now();
@@ -265,8 +284,8 @@ test('the load-aware path excludes only a 5h wall or a future quota retry', () =
     assert.equal(verdict.pick.pool, 'beta');
     assert.equal((verdict.candidates ?? []).some((candidate) => candidate.pool === 'alpha'), false);
 
-    // A recorded quota retry is a wall even before the next meter poll reaches
-    // 100%; auth/quarantine behavior remains owned by the existing filters.
+    // A quota pause an earlier Bullswarm stored is read by nothing: with its
+    // meter below the wall, alpha is a candidate again.
     const statePath = join(home, 'state.json');
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     state.pools.alpha.quarantine = {
@@ -277,8 +296,22 @@ test('the load-aware path excludes only a 5h wall or a future quota retry', () =
     writeFileSync(statePath, JSON.stringify(state, null, 2));
     writeSnapshot(home, 'alpha', { fiveHourPct: 50, weeklyPct: 20, now });
     verdict = dryRun(home);
-    assert.equal(verdict.pick.pool, 'beta');
-    assert.equal((verdict.candidates ?? []).some((candidate) => candidate.pool === 'alpha'), false);
+    assert.equal((verdict.candidates ?? []).some((candidate) => candidate.pool === 'alpha'), true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a refusal marker keeps its pool out only when its reset was named or measured, never guessed', () => {
+  const home = fixtureHome();
+  try {
+    const now = Date.now();
+    writeSnapshot(home, 'beta', { fiveHourPct: 30, weeklyPct: 20, now });
+    for (const [resetSource, kept] of [['named', false], ['measured', false], ['guessed', true], [null, true]]) {
+      writeRefusal(home, 'alpha', { now, resetSource });
+      const verdict = dryRun(home);
+      assert.equal((verdict.candidates ?? []).some((candidate) => candidate.pool === 'alpha'), kept, `reset ${resetSource ?? 'with no source'}`);
+    }
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

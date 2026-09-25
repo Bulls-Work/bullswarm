@@ -139,7 +139,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 
 | Field | Read by |
 |---|---|
-| `name` (required) | routing, strategy state, meter cache, quarantine |
+| `name` (required) | routing, strategy state, meter cache |
 | `spawn.cmd` with `{taskFile}` (required), `spawn.cwdMode` | the runner (`src/lib/watch.js`). Placeholders: `{taskFile}`, `{cwd}`, `{sessionId}`, `{bullswarmDir}`. `cwdMode: "pwd"` makes the runner set `PWD` and spawn inside the target repository, for CLIs that resolve their project from `$PWD` |
 | `outputExtraction.strategy` (required: `stdout`, `stdout-tail`, `json-field`, `file`, `event-stream`), `eventStream.output` | the watcher |
 | `model`, `modelSelection.flag` and `mode`, `knownModels`, `modelDiscovery` (required: at least `model`) | dispatch, `set-rung`, model discovery. The only `mode` is `replace-or-append`; `knownModels` is a last-resort list when live discovery fails |
@@ -150,7 +150,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `eventStream.rules`, `silenceThresholdSec`, `modelPaths`, `args`, `format` | watcher progress and silence detection |
 | `eventStream.usage` (`match`, `mode`, `fields`, optional `inclusive`) | provider-reported usage extraction; the watcher prefers this before transcript and byte fallback |
 | `eventStream.capture.responseBytes`, `capture.fileBytes` (both optional positive integers) | the per-attempt stream sink (`src/lib/attempt-stream.js`). Core defaults are 64000 bytes per persisted `response` event and 1048576 bytes per stream file; set either only when this CLI's answers or event volume make the default the wrong size. Omit the block and a connector still gets a persisted stream with no code |
-| `authSignatures`, `quotaSignatures`, `throttleSignatures` | verdict classification. An auth hit is failure kind `auth`: the step's retry skips every pool that shares the credential, and with automatic pausing on the pool is paused for 10 minutes. A `quotaSignatures` hit is a usage limit, with or without a reset named: in a workflow started by this version the step comes back to the caller, and a single `bullswarm run` exits 1. The pool is paused only on proof and with automatic pausing on — the notice names a spent window and its reset, or the pool's meter reads 95% or more on a running window. A workflow started by an earlier version reads a hit without that proof as a throttle, as below. A `throttleSignatures` hit is a transient rate limit and never pauses the pool: in a workflow started by this version the step backs off on the same pool at most twice (a named wait of at most 2 minutes), then comes back to the caller; a workflow started by an earlier version retries it on the same pool, then moves it; a single `bullswarm run` exits 1 on either. Generic phrases stay core defaults; list only this CLI's own |
+| `authSignatures`, `quotaSignatures`, `throttleSignatures` | verdict classification. An auth hit is failure kind `auth`: the step's retry skips every pool that shares the credential, for that step only. A `quotaSignatures` hit is a usage limit, with or without a reset named: in a workflow started by this version the step comes back to the caller, and a single `bullswarm run` exits 1; either way the pool's meter is read again at once. A `throttleSignatures` hit is a transient rate limit: in a workflow started by this version the step backs off on the same pool at most twice (a named wait of at most 2 minutes), then comes back to the caller; a workflow started by an earlier version retries it on the same pool, then moves it; a single `bullswarm run` exits 1 on either. Generic phrases stay core defaults; list only this CLI's own |
 | `modelFamilies[]` (`family`, `match`, `tier`, `qualityRank`, `autoRecommend`) | strategy tier suggestions, rungs, and the per-tier model pick; see [Model families, versions, and `unranked`](#model-families-versions-and-unranked) |
 | `generationFallback` (`label`, `tiers[tier].reasoning`, `tiers[tier].why`) | strategy tier suggestions and the rung reasoning `apply` writes; see [Newest-generation fallback](#newest-generation-fallback-generationfallback) |
 | `modelProfiles[]` (`match`, `tier`, `qualityRank`, `pricing`, `pricingSource`, `pricingUpdatedAt`, `autoRecommend`, `free`, `benchmark`) | rungs, the spend model, benchmarks |
@@ -158,7 +158,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `meter.type` (`none`, `declared`, `reader`), `meter.window` | the pool builder's meter ladder: a `readUsage` reading first, then a declared meter, then unmetered |
 | `subscription.plan`, `quotaWindow`, `includedValueUsd`, `resetsAt`, `monthlyPriceUsd` | the pacing window and its denominators; values set in strategy state override them |
 | `costRank` (default 5), `lanes` (default all), `capabilities`, `flags.testFixture`, `flags.isCaller`, `flags.stealth` | routing and strategy |
-| `credentialGroup` (a string; the older `upstreamGroup` is still read) | quarantining siblings that share a credential, and dispatch avoidance |
+| `credentialGroup` (a string; the older `upstreamGroup` is still read) | dispatch avoidance: after a sign-in failure, the step's retry skips every pool in the group |
 | `profile.providerId` | dispatch accepts an `<id>/<model>` pin only on this pool. `profile.configDir` and `profile.command` are display only |
 
 ## First-class CLI model discovery
@@ -441,7 +441,7 @@ the still-unflushed events are lost.
 
 ## Example: a reseller named relay
 
-Relay sells OpenCode access through two accounts. The provider clones the shipped `opencode` template once per account, pins each account's model and reasoning variants, groups both under one credential so a usage limit on one benches its sibling, and reports spend from a wallet:
+Relay sells OpenCode access through two accounts. The provider clones the shipped `opencode` template once per account, pins each account's model and reasoning variants, groups both under one credential so a sign-in failure on one makes the step's retry skip its sibling, and reports spend from a wallet:
 
 ```js
 // ~/.bullswarm/providers/relay/provider.mjs

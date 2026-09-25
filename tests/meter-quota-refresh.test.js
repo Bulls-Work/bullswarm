@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { refreshMeterAfterQuota } from '../src/meters/registry.js';
+import { getMeterReading, refreshMeterAfterQuota } from '../src/meters/registry.js';
 import { MeterCache } from '../src/meters/framework.js';
 import { meterSourceLabel } from '../src/cli.js';
 import { budgetLines } from '../src/workflow/budget-view.js';
+import { budgetModel } from '../src/workflow/budget-model.js';
 import { watchOnce } from '../src/lib/watch.js';
 import { buildPools } from '../src/lib/config.js';
 
@@ -110,11 +111,15 @@ test('a failed forced read writes a 100% five-hour quota-refusal marker with the
     assert.equal(blocked.snapshot.five_hour.resets_at, new Date(resetAt).toISOString());
     assert.equal(blocked.quotaRefusal.source, 'quota-refusal');
     assert.equal(blocked.quotaRefusal.window, '5h');
+    // The reset the message named is recorded as named, on the marker and on
+    // the window it filled in.
+    assert.equal(blocked.quotaRefusal.resetSource, 'named');
+    assert.equal(blocked.snapshot.five_hour.reset_source, 'named');
     assert.equal(f.cache.get('fake-metered').source, 'quota-refusal');
     assert.equal(
       meterSourceLabel({
         meterSource: 'quota-refusal',
-        quotaRefusedAt: blocked.quotaRefusal.refusedAt,
+        quotaRefusal: blocked.quotaRefusal,
       }, NOW + 2 * 60_000),
       'blocked · refused 2m ago',
     );
@@ -122,18 +127,27 @@ test('a failed forced read writes a 100% five-hour quota-refusal marker with the
       rows: [{
         name: 'fake-metered',
         meterSource: 'quota-refusal',
+        quotaRefusal: blocked.quotaRefusal,
         quotaRefusedAt: blocked.quotaRefusal.refusedAt,
         windows: [{ key: '5h', usedPct: 100, elapsedPct: 40, resetsInMinutes: 43 }],
       }],
     }, { ansi: false, width: 100 }).lines;
     assert.match(lines[0], /fake-metered · blocked · refused/);
     assert.match(lines[1], /100\.0%/);
+    // A marker whose reset was guessed, or an older one that does not say,
+    // blocks nothing and says so.
+    for (const marker of [{ ...blocked.quotaRefusal, resetSource: 'guessed' }, { refusedAt: blocked.quotaRefusal.refusedAt }]) {
+      assert.equal(
+        meterSourceLabel({ meterSource: 'quota-refusal', quotaRefusal: marker }, NOW + 2 * 60_000),
+        'refused 2m ago · reset unknown',
+      );
+    }
   } finally {
     f.cleanup();
   }
 });
 
-test('the live pool projection keeps a quarantined refusal visible without polling it', async () => {
+test('the pool projection reads a refusal marker with a known reset as a 100% window; an old quarantine plays no part', async () => {
   const f = fixture();
   try {
     mkdirSync(join(f.home, 'connectors'), { recursive: true });
@@ -149,18 +163,62 @@ test('the live pool projection keeps a quarantined refusal visible without polli
       },
       incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
     }));
-    await refreshMeterAfterQuota('fake-metered', {
+    const refused = await refreshMeterAfterQuota('fake-metered', {
       bullswarmDir: f.home,
       connector,
       nowMs: NOW,
       reader: async () => { throw new Error('offline'); },
     });
-    const pool = buildPools(f.home, NOW, {}).pools.find((entry) => entry.name === 'fake-metered');
+    // No reset named, but the last live reading's five-hour reset is still
+    // ahead: that reset is measured.
+    assert.equal(refused.quotaRefusal.resetSource, 'measured');
+    // The reading routing gets: the cached marker, read back as every
+    // process reads it.
+    const reading = await getMeterReading('fake-metered', { bullswarmDir: f.home, nowMs: NOW });
+    const pool = buildPools(f.home, NOW, { 'fake-metered': reading }).pools.find((entry) => entry.name === 'fake-metered');
     assert.equal(pool.meterSource, 'quota-refusal');
     assert.equal(pool.fiveHourUsedPct, 100);
     assert.equal(pool.burstGate, true);
+    assert.equal(Object.hasOwn(pool, 'quarantine'), false);
   } finally {
     f.cleanup();
+  }
+});
+
+test('a refusal marker with nothing to measure its reset from guesses it, and the pool is not gated', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-meter-quota-'));
+  try {
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    writeFileSync(join(home, 'connectors/fake-metered.json'), JSON.stringify({
+      ...connector, flags: { testFixture: true }, lanes: ['chore'],
+    }));
+    writeFileSync(join(home, 'state.json'), JSON.stringify({
+      version: 1, pools: { 'fake-metered': { enabled: true } }, incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+    }));
+    // No cached reading and no reset named: the marker's reset is a guess.
+    const refused = await refreshMeterAfterQuota('fake-metered', {
+      bullswarmDir: home,
+      connector,
+      nowMs: NOW,
+      reader: async () => { throw new Error('offline'); },
+    });
+    assert.equal(refused.source, 'quota-refusal');
+    assert.equal(refused.quotaRefusal.resetSource, 'guessed');
+    const reading = await getMeterReading('fake-metered', { bullswarmDir: home, nowMs: NOW });
+    const pool = buildPools(home, NOW, { 'fake-metered': reading }).pools.find((entry) => entry.name === 'fake-metered');
+    assert.equal(pool.meterSource, 'quota-refusal');
+    assert.notEqual(pool.fiveHourUsedPct, 100, 'a guessed reset is not a reading');
+    assert.equal(pool.burstGate, false);
+    assert.equal(meterSourceLabel(pool, NOW + 60_000), 'refused 1m ago · reset unknown');
+    // The Budget page draws no 100% window with a guessed reset either: it
+    // says the pool was refused, and nothing more.
+    const row = budgetModel([pool], { now: NOW + 60_000 }).rows[0];
+    assert.deepEqual(row.windows, []);
+    const lines = budgetLines({ rows: [row] }, { ansi: false, width: 100, nowMs: NOW + 60_000 }).lines;
+    assert.match(lines[0], /^fake-metered · refused 1m ago · reset unknown/);
+    assert.doesNotMatch(lines.join('\n'), /100\.0%|resets /);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

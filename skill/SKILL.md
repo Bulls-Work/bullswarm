@@ -266,16 +266,16 @@ printed `next:` line again.
 
 A usage limit ends the step: a spent 5-hour or weekly window, or no credit
 left. The step comes straight back to you in a needs-you block (`✗ <step> needs
-you · out of quota …`), whatever the automatic pausing switch and even when the
-notice names no reset. Nothing waits, moves to another pool or retries by
-itself, and the rest of the run keeps going. The pool's meter is read again at
+you · out of quota …`), even when the notice names no reset. Nothing waits,
+moves to another pool or retries by itself, and the rest of the run keeps
+going. Bullswarm never remembers a spent or dead pool from one step to the
+next: nothing pauses or benches a pool. The pool's meter is read again at
 once, and a window it shows at 100% keeps the pool out of later steps until
 that window resets. The same
 happens when no pool that can run the step is free when it is picked: each one
-is nearly spent, at its 5-hour, weekly or monthly limit, paused (for quota, or
-after a sign-in failure), or benched after repeated failures. Its `why` names
-every pool and its reason (`no pool with quota to spare: <pool> paused for
-quota until <time>; …`, `<pool> at its weekly limit until <time>`, or `no pool
+is nearly spent, or at its 5-hour, weekly or monthly limit. Its `why` names
+every pool and its reason (`no pool with quota to spare: <pool> at its 5-hour
+limit until <time>; …`, `<pool> at its weekly limit until <time>`, or `no pool
 free: …` when a reason is not a usage limit, and the header then reads `no
 eligible pool`). When another pool that can run the step is free, routing picks it and
 nothing comes back to you. A retry the step was promised (after a crash, a
@@ -285,16 +285,17 @@ failure, and its `why` ends `· no retry: <pool> <reason>; …`.
 A short "too many requests" rate limit is not a usage limit. It backs off on
 the same pool at most twice (20 s, then 60 s, or the wait it names when that
 is at most 2 minutes), then comes back to you (`✗ <step> needs you · rate
-limited · backed off twice`), with automatic pausing on or off. A try after a
+limited · backed off twice`). A try after a
 backoff reads `· after a rate-limit backoff`. One that names a longer wait comes back to you
 at once, with `back at` at the end of that wait. One whose pool is no longer
-free for the backoff (paused, at its 5-hour, weekly or monthly limit, nearly
-spent or benched in the meantime) comes back to you at once too: as `out of
+free for the backoff (at its 5-hour, weekly or monthly limit, or nearly
+spent in the meantime) comes back to you at once too: as `out of
 quota` when that pool is out on a usage limit, with `back at` its return when
 that is known. A sign-in failure, a provider error or a worker that died at
 start still gets the step's one automatic retry by itself, on another free
 pool when there is one. After a sign-in failure that retry skips every pool
-that shares the credential, whatever the pausing switch.
+that shares the credential; nothing is stored, so a later step can pick that
+pool again.
 
 When a return time is known, for this or any other failure, the block prints
 `back at <time>` (the failed pool's reset, the end of a rate limit's named
@@ -380,7 +381,7 @@ command per option:
 | Printed option | When | What to do |
 |---|---|---|
 | `continue` | the plan needs a fix, a new step, or a step redone | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` |
-| `retry` | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool; or a usage limit or no free pool stopped the planner or scout and ended the run (run it after its `back at` time) | `bullswarm workflow resume <shortId>` |
+| `retry` | a step stopped for a reason a retry fixes: a crashed or silent worker, a usage limit, or no pool free; or a usage limit or no free pool stopped the planner or scout and ended the run (run it after its `back at` time) | `bullswarm workflow resume <shortId>` |
 | `rerun` | a step failed (runs started by this version) | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]`, with its last attempt's handoff |
 | `accept` | you keep a failed step as it is (runs started by this version) | `bullswarm workflow step accept <shortId> <step> --reason "…"` |
 | `take over` | the rest is small, or needs something only you have (a logged-in browser, a credential, a decision for the user) | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |

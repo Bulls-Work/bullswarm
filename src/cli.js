@@ -1,24 +1,21 @@
 // bullswarm CLI — verbs: setup (wizard), run, health, pools.
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import {
-  expiringSoonView, fiveHourElapsedPct, formatResetsIn, isBenched, pickPool,
+  expiringSoonView, fiveHourElapsedPct, formatResetsIn, pickPool,
 } from './lib/route.js';
 import { argvWithModel, watchOnce } from './lib/watch.js';
 import {
   isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
 } from './lib/reasoning.js';
 import {
-  loadState, quarantinePool, quarantineUpstreamSiblings, sweepBenches, sweepQuarantines,
-  updateState, assertDepthAllowed, childDepthEnv, upstreamGroupOf, recordPoolStrike,
-  pausingEnabled, resumePool, setPausing,
+  loadState, updateState, assertDepthAllowed, childDepthEnv,
 } from './lib/state.js';
-import { describePoolPause, dropQuotaRefusalSnapshot } from './lib/quota.js';
 import { buildPools, buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
-import { windowSpent } from './meters/framework.js';
+import { refusalResetKnown, windowSpent } from './meters/framework.js';
 import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { runUpdate } from './lib/update.js';
@@ -150,7 +147,10 @@ export function meterSourceLabel(pool, nowMs = Date.now()) {
         age = hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
       }
     }
-    return `blocked · refused ${age}`;
+    // A marker whose reset was guessed keeps no pool out (framework.js).
+    return refusalResetKnown(pool?.quotaRefusal ?? pool?.meterSnapshot?.quota_refusal)
+      ? `blocked · refused ${age}`
+      : `refused ${age} · reset unknown`;
   }
   if (source === 'stale' && pool?.meterError) {
     const holdUntil = Number(pool.meterHoldUntil);
@@ -167,80 +167,15 @@ export function meterSourceLabel(pool, nowMs = Date.now()) {
 }
 
 /**
- * A pool's status word and, when it is out of service, why — in plain words.
- * A pause names its deadline, its proof (the provider line and the meter
- * reading it was decided on) and the command that lifts it.
+ * A pool's status word: `disabled`, else `ready` with the 5-hour flags. No
+ * pool is ever paused or benched (state.js S1); a window at its limit shows in
+ * its meter columns.
  */
-export function poolStatusText(p, now = Date.now(), { timeZone = null } = {}) {
+export function poolStatusText(p) {
   if (!p.enabled) return 'disabled';
-  if (p.quarantine) {
-    return `PAUSED ${describePoolPause(p.name, p.quarantine, { now, timeZone }).replace(/^paused /, '')}`;
-  }
-  if (isBenched(p, now)) {
-    return `BENCHED until ${new Date(Number(p.bench.until)).toLocaleTimeString()} `
-      + `(${p.bench.reason ?? '?'}, ${p.bench.count ?? '?'} strikes) · lift now: bullswarm pools resume ${p.name}`;
-  }
   const burst = p.burstGate ? ' BURST-GATED' : '';
   const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
-  // A soft bench (S6) is not a quarantine: the pool is alive but was not
-  // producing. A first strike is counted without taking it out, so say that
-  // too — otherwise a pool one stall from the bench looks perfectly healthy.
-  const strikes = p.bench && Number(p.bench.count ?? 0) > 0
-    ? ` strikes=${p.bench.count}(${p.bench.reason ?? '?'})`
-    : '';
-  return `ready${burst}${nearLimit}${strikes}`;
-}
-
-/**
- * `bullswarm pools resume <pool>`: lift a pause at once. The lift is written
- * to the decision log (state.js resumePool), and a synthetic 100% refusal
- * meter marker goes with it so routing reads the live meter next.
- */
-function cmdPoolsResume(opts) {
-  const home = getBullswarmDir();
-  const pool = resolvePoolId(opts.rest[1], home);
-  if (!pool || opts.rest.length > 2) {
-    console.error(`usage: ${usageLine(['pools', 'resume'])}`);
-    return 2;
-  }
-  const known = new Set(Object.keys(loadConnectors(home, { packaged: true })));
-  let lifted = null;
-  let knownInState = false;
-  updateState(home, (fresh) => {
-    knownInState = Boolean(fresh.pools?.[pool]);
-    if (!known.has(pool) && !knownInState) return false;
-    lifted = resumePool(fresh, pool, Date.now());
-    return Boolean(lifted.quarantine || lifted.bench);
-  });
-  if (!known.has(pool) && !knownInState) {
-    console.error(`✗ unknown pool "${pool}" — bullswarm pools lists them`);
-    return 2;
-  }
-  const marker = dropQuotaRefusalSnapshot(home, pool);
-  const result = {
-    pool,
-    poolLabel: poolLabel(pool, home),
-    resumed: Boolean(lifted?.quarantine || lifted?.bench),
-    lifted: {
-      quarantine: lifted?.quarantine ?? null,
-      bench: lifted?.bench ?? null,
-      refusalMeterMarker: marker,
-    },
-  };
-  if (opts.json) {
-    console.log(JSON.stringify(result, null, 2));
-    return 0;
-  }
-  if (!result.resumed && !marker) {
-    console.log(`${poolLabel(pool, home)} was not paused; nothing to lift`);
-    return 0;
-  }
-  const parts = [];
-  if (lifted?.quarantine) parts.push(`lifted this pause: ${describePoolPause(null, lifted.quarantine)}`);
-  if (lifted?.bench) parts.push(`lifted the bench (${lifted.bench.reason ?? '?'}, ${lifted.bench.count ?? '?'} strikes)`);
-  if (marker) parts.push('dropped the 100% quota-refusal meter marker; the next meter read is live');
-  console.log(`${poolLabel(pool, home)} resumed — ${parts.join('; ')}`);
-  return 0;
+  return `ready${burst}${nearLimit}`;
 }
 
 function knownPoolIds(home) {
@@ -286,40 +221,7 @@ function cmdPoolsLabel(opts) {
   }
 }
 
-/**
- * `bullswarm strategy set-pausing <on|off>`: the automatic-pausing switch,
- * stored as `strategy.pausing` in state.json. Off means no pool is ever paused
- * or benched on a command's own judgement — quota, auth and the credential
- * group a dead credential would bench with it. A spent usage window still
- * goes back to the caller (a run started by this version, or a single run),
- * and a retry after a sign-in failure still skips the pools that share that
- * credential (quota.js Q7).
- */
-function cmdStrategySetPausing(args) {
-  const opts = parseArgs(args);
-  const flagExit = unknownFlagExit(opts._flags, ['strategy', 'set-pausing']);
-  if (flagExit !== null) return flagExit;
-  const value = String(opts.rest[0] ?? '').toLowerCase();
-  if (!['on', 'off'].includes(value) || opts.rest.length > 1) {
-    console.error(`usage: ${usageLine(['strategy', 'set-pausing'])}`);
-    return 2;
-  }
-  let on = true;
-  updateState(getBullswarmDir(), (fresh) => {
-    on = setPausing(fresh, value === 'on');
-  });
-  if (opts.json) {
-    console.log(JSON.stringify({ pausing: on ? 'on' : 'off' }, null, 2));
-  } else {
-    console.log(on
-      ? 'automatic pausing is on: a pool pauses only on proof (quota: its meter at 95% or the provider naming a spent window and its reset; auth: a dead credential) and its credential-group siblings bench with it'
-      : 'automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); a spent usage window still goes back to the caller, and a retry after a sign-in failure still skips the pools that share that credential · bullswarm strategy set-pausing on restores it');
-  }
-  return 0;
-}
-
 async function cmdPools(opts) {
-  if (opts.rest[0] === 'resume') return cmdPoolsResume(opts);
   if (opts.rest[0] === 'label') return cmdPoolsLabel(opts);
   if (opts.rest.length) {
     console.error(`✗ unknown pools subcommand "${opts.rest[0]}"`);
@@ -332,44 +234,13 @@ async function cmdPools(opts) {
     force: opts.force === true,
     getReadings: getAllMeterReadings,
   });
-  // The sweep is a write, so it happens on a fresh locked load (S5) and only
-  // persists when it actually released something: `pools` is an observation
-  // command and must not rewrite state.json just for being run.
-  let released = [];
-  let unbenched = [];
-  updateState(getBullswarmDir(), (fresh) => {
-    released = sweepQuarantines(fresh, now);
-    // A soft bench expires on the same terms and by the same rule (S6): the
-    // cooldown passing returns the pool to service, and the strike count stays
-    // so a stall immediately afterwards is still its second in a row.
-    unbenched = sweepBenches(fresh, now);
-    return released.length > 0 || unbenched.length > 0;
-  });
-  if (released.length && !opts.json) {
-    console.error(`quarantine expired, returned to service: ${released.map((id) => poolLabel(id, getBullswarmDir())).join(', ')}`);
-  }
-  if (unbenched.length && !opts.json) {
-    console.error(`bench expired, returned to service: ${unbenched.map((id) => poolLabel(id, getBullswarmDir())).join(', ')}`);
-  }
-  // The sweep above wrote to state, not to the pool views built before it, so
-  // an expired bench would still print as BENCHED. Re-read what the sweep left.
-  for (const p of pools) {
-    if (p.bench && !isBenched(p, now)) p.bench = { ...p.bench, until: null };
-  }
   // Current cross-process load, from the shared ledger rather than this
   // process's own memory: work another Bullswarm started still shows here —
   // plus the spend rates that turn that load into a projected utilization.
   attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
-  const pausing = pausingEnabled(state);
-  for (const p of pools) {
-    if (p.quarantine) p.pauseWhy = describePoolPause(p.name, p.quarantine, { now });
-  }
   if (opts.json) {
-    console.log(JSON.stringify({ pausing: pausing ? 'on' : 'off', pools }, null, 2));
+    console.log(JSON.stringify({ pools }, null, 2));
     return 0;
-  }
-  if (!pausing) {
-    console.log('automatic pausing: off · nothing is paused or benched by a command (quota, auth or siblings) · bullswarm strategy set-pausing on');
   }
   for (const p of pools) {
     const src = p.meterSource;
@@ -418,7 +289,7 @@ async function cmdPools(opts) {
         ? ` free=${freeTiers.map(([tier, model]) => `${tier}:${model}`).join(',')}`
         : '';
     const display = p.poolLabel ?? poolLabel(p.name, getBullswarmDir());
-    const status = poolStatusText({ ...p, name: display }, now);
+    const status = poolStatusText(p);
     console.log(
       `${display.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour}${free} ${status}${expiringNote}`,
     );
@@ -549,10 +420,6 @@ async function cmdRun(opts) {
     state = loadState(getBullswarmDir());
   }
 
-  // Routing view only: the persisted release happens under the lock, after the
-  // worker, so this copy is never written back (S5).
-  sweepQuarantines(state, now);
-
   const { pools } = await buildPoolsLive(getBullswarmDir(), now, {
     packaged: true,
     getReadings: getAllMeterReadings,
@@ -607,9 +474,8 @@ async function cmdRun(opts) {
   let route = pickPool(lane, candidatePools, routeOptions());
   // A probe is a dispatch preflight, not part of a dry-run preview. On a real
   // run, only a concrete free model selected by strategy is probed. A failed
-  // probe records a strike and is removed from this pick, so routing can fall
-  // through to another free rung or to a metered pool without inventing a
-  // replacement model.
+  // probe is removed from this pick, so routing can fall through to another
+  // free rung or to a metered pool without inventing a replacement model.
   while (!dryRun && route.pick) {
     const poolView = route.pick.connector ?? { name: route.pick.pool };
     const connector = poolView.connector ?? poolView;
@@ -626,9 +492,6 @@ async function cmdRun(opts) {
     const reason = `probe: ${probe.reason}`;
     failedProbes.push(`${reason} on ${connector.name}`);
     failedProbePools.add(connector.name);
-    updateState(getBullswarmDir(), (fresh) => {
-      recordPoolStrike(fresh, connector.name, reason, now);
-    });
     const remainingPools = candidatePools.filter((candidate) => !failedProbePools.has(candidate.name));
     route = pickPool(lane, remainingPools, routeOptions());
   }
@@ -646,7 +509,6 @@ async function cmdRun(opts) {
     // an operator merely asked to see.
     if (!dryRun) {
       updateState(getBullswarmDir(), (fresh) => {
-        sweepQuarantines(fresh, now);
         logDecision(fresh, {
           lane, picked: null, keepOnClaude: true, ok: null, why: route.why,
           forecast: forecastRecord(route, null),
@@ -758,12 +620,11 @@ async function cmdRun(opts) {
       env: childDepthEnv(process.env),
       model: selectedModel,
       reasoning,
-      // The home whose meter, pausing switch and refusal marker the verdict
-      // reads and writes for this pool.
+      // The home whose meter and refusal marker the verdict reads and writes
+      // for this pool.
       bullswarmDir: getBullswarmDir(),
       poolName: connector.name,
-      // One attempt: a spent usage window is `quota` for the caller,
-      // whatever the pausing switch.
+      // One attempt: a spent usage window is `quota` for the caller.
       usageLimitsToCaller: true,
       // A task that finished without measured usage is priced by a detached
       // reconciler pass once its record and the provider's log are written.
@@ -798,35 +659,13 @@ async function cmdRun(opts) {
   // load under the lock (S5). `state` above is the routing snapshot and is now
   // minutes old: saving it would silently undo whatever an operator did while
   // the worker ran (D5).
+  // A failure is recorded in the decision log and nowhere else: no pool is
+  // paused or benched for it (state.js S1).
   updateState(getBullswarmDir(), (fresh) => {
-    sweepQuarantines(fresh, now);
-    // Persist incumbency on success; quarantine hint on auth failure.
+    // Persist incumbency on success.
     if (verdict.ok) {
       fresh.incumbents ??= {};
       fresh.incumbents[lane] = connector.name;
-    } else if (verdict.quarantineHint) {
-      // A usage limit carries its own deadline (the reset the provider named);
-      // an auth failure keeps the flat re-probe window.
-      // A quota pause lands only with its proof (quota.js Q6); without one
-      // quarantinePool refuses it and the pool stays in service.
-      const kind = verdict.failureKind === 'quota' ? 'quota' : 'auth';
-      const until = quarantinePool(fresh, connector.name, verdict.why, now, {
-        until: verdict.quarantineUntil ?? null,
-        kind,
-        evidence: verdict.quotaPause ?? null,
-      });
-      verdict.quarantinedUntil = fresh.pools[connector.name]?.quarantine?.until;
-      // A relayed credential is shared: the pools that front the same upstream
-      // are just as dead, and go out on the same deadline. Quota never spreads.
-      const siblings = quarantineUpstreamSiblings(fresh, pools, {
-        pool: connector.name,
-        group: upstreamGroupOf(poolView),
-        reason: verdict.why,
-        now,
-        until,
-        kind,
-      });
-      if (siblings.length) verdict.quarantinedSiblings = siblings;
     }
     logDecision(fresh, {
       kind: 'run',
@@ -935,16 +774,8 @@ function emit(verdict, opts) {
 // --- health -----------------------------------------------------------------
 
 function cmdHealth(opts) {
-  let state = loadState(getBullswarmDir());
-  // Same locked read-modify-write as every other writer (S5). `health` is an
-  // observation command, so it takes the lock only when a quarantine exists
-  // that could be released, and writes only when one actually was.
-  if (Object.values(state.pools ?? {}).some((pool) => pool?.quarantine)) {
-    state = updateState(
-      getBullswarmDir(),
-      (fresh) => sweepQuarantines(fresh, Date.now()).length > 0,
-    );
-  }
+  // An observation command: it reads state.json and never writes it.
+  const state = loadState(getBullswarmDir());
   const runsDir = join(getBullswarmDir(), 'runs');
   const findings = [];
 
@@ -975,22 +806,13 @@ function cmdHealth(opts) {
     }
   }
 
-  const quarantined = Object.entries(state.pools ?? {})
-    .filter(([, v]) => v.quarantine)
-    .map(([k, v]) => ({ pool: k, poolLabel: poolLabel(k, getBullswarmDir()), until: v.quarantine.until, reason: v.quarantine.reason }));
-
   const report = {
-    // Healthy is the absence of the two defects this command can actually
-    // see: a verify gate that ate real work, and a quarantine cluster. An
-    // empty decision log means nothing has been dispatched yet, which is a
-    // fresh home rather than a fault, so it is reported (below) but never
-    // counted against health.
-    healthy:
-      findings.every((f) => !f.gateAteWork) &&
-      quarantined.length < 2,
+    // Healthy is the absence of the defect this command can actually see: a
+    // verify gate that ate real work. An empty decision log means nothing has
+    // been dispatched yet, which is a fresh home rather than a fault, so it
+    // is reported (below) but never counted against health.
+    healthy: findings.every((f) => !f.gateAteWork),
     gateFailures: findings.filter((f) => f.gateAteWork),
-    quarantineCluster: quarantined.length >= 2 ? quarantined : [],
-    quarantined,
     decisionLogSize: state.decisionLog?.length ?? 0,
   };
   if (opts.json) {
@@ -1004,10 +826,6 @@ function cmdHealth(opts) {
   console.log(`  gate failures: ${report.gateFailures.length}`);
   for (const f of report.gateFailures) {
     console.log(`    ✗ ${f.file}: saved ${f.savedVerdict}, re-judges ${f.rejudge} — the verify gate ate real work`);
-  }
-  console.log(`  quarantined pools: ${report.quarantined.length}${report.quarantineCluster.length ? ' (CLUSTER)' : ''}`);
-  for (const q of report.quarantined) {
-    console.log(`    ${q.poolLabel}: until ${q.until} (${q.reason})`);
   }
   if (!report.healthy) console.log('  fix: bullswarm health --json for the machine-readable report');
   return report.healthy ? 0 : 1;
@@ -1197,7 +1015,6 @@ function topLevelHelpPath(verb, opts) {
   if (verb === undefined) return [];
   if (verb === '--version') return ['version'];
   if (OWN_PARSER.has(verb)) return null;
-  if (verb === 'pools' && opts.rest[0] === 'resume') return ['pools', 'resume'];
   if (verb === 'pools' && opts.rest[0] === 'label') return ['pools', 'label'];
   if (verb === 'integrate') {
     const sub = opts.rest[0] ?? 'status';
@@ -1291,7 +1108,6 @@ export async function main(argv) {
     case 'runs':
       return cmdWorkflow(['runs', ...tail], { runsAlias: ['runs'] });
     case 'strategy':
-      if (tail[0] === 'set-pausing') return cmdStrategySetPausing(tail.slice(1));
       return cmdStrategy(bareStrategyDashboard ? ['tui'] : tail, {
         bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
       });

@@ -414,7 +414,7 @@ export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
   // and any non-TTY `bullswarm setup` re-run it over an existing state.json,
   // where a concurrent run's decision-log append is exactly what a stale copy
   // would drop. Pool entries are merged, never replaced, so a pool's
-  // quarantine and meter survive a re-run.
+  // settings and meter survive a re-run.
   updateState(bullswarmDir, (state) => {
     state.pools ??= {};
     state.config ??= {};

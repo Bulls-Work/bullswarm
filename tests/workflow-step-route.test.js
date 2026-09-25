@@ -339,7 +339,7 @@ test('routeIssuesForPools: the CLI checks against the configured pools', () => {
   // Only a disabled pool left: no enabled pool can run it.
   assert.deepEqual(check({ pools: { use: ['codex'] } }),
     ['step build-a: no enabled pool can run it under its route (build/high work; route: use codex)']);
-  // The capability filter decides with pauses ignored; its answer is still route-filtered.
+  // The capability filter decides with a window at its limit ignored; its answer is still route-filtered.
   const seen = [];
   const preparePools = (list, action, effort, opts) => {
     seen.push({ action: action.id, effort, opts: { ...opts, routeFilter: undefined } });
@@ -349,7 +349,7 @@ test('routeIssuesForPools: the CLI checks against the configured pools', () => {
     ['step build-a: no enabled pool can run it under its route (build/high work; route: use claude-code:acme)']);
   assert.deepEqual(seen[0], {
     action: 'build-a', effort: 'high',
-    opts: { routeFilter: undefined, ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true },
+    opts: { routeFilter: undefined, ignoreBurstGate: true },
   });
   assert.deepEqual(check({ pools: { use: ['grok'] } }, { preparePools }), []);
   // The run pin and the route must meet.

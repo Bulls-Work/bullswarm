@@ -29,18 +29,17 @@
 - workflow: a usage limit, or no pool free, sends the step back to you; a step
   never waits for a pool. A spent usage window (5-hour, weekly or monthly), or
   no credit left, ends the step at once: no wait, no move to another pool, no
-  retry. That holds whatever the automatic pausing switch, and for a limit
-  notice that names no reset. Whatever the switch, the pool's meter is then
-  read again at once (when it cannot be read, the pool is recorded as full
-  until the reset), so a window it shows at 100% keeps the pool out of later
-  steps until that window resets; a single `bullswarm run` does the same. With pausing off, 0.35.6
-  retried a spent window as a rate limit and kept routing on the old reading.
-  When every pool that can run the step is nearly spent, at a 5-hour, weekly
-  or monthly limit, paused (for quota, or after a sign-in failure) or benched,
-  the step stops as well (`no pool with quota to spare: <pool> paused for
-  quota until …`, `<pool> at its 5-hour limit until …`, or `no pool free: …`;
-  a pool at its 5-hour limit no longer reads as "no enabled pool has a model
-  on the tier"); when another pool is free, it takes the step as usual. A
+  retry, even for a limit notice that names no reset. The pool's meter is
+  then read again at once (when it cannot be read, the pool counts as full
+  until its reset only when the provider named that reset or an earlier meter
+  reading gave it), so a window it shows at 100% keeps the pool out of later
+  steps until that window resets; a single `bullswarm run` does the same.
+  When every pool that can run the step is nearly spent, or at a 5-hour,
+  weekly or monthly limit, the step stops as well (`no pool with quota to
+  spare: <pool> at its 5-hour limit until …`, `<pool> nearly spent (forecast
+  …%) until …`, or `no pool free: …`; a pool at its 5-hour limit no longer
+  reads as "no enabled pool has a model on the tier"); when another pool is
+  free, it takes the step as usual. A
   retry the step was promised that finds no free pool keeps its own failure
   and says why (`· no retry: <pool> <reason>; …`). The rest of the run keeps
   going. When a return time is known, the needs-you block shows `back at
@@ -50,13 +49,44 @@
   <step>`); with `--jsonl` they are `backAt` and `options.waitForIt`. The
   watch's usage-limit line ends `back to you`. A short "too many requests"
   rate limit still backs off on the same pool, at most twice (20 s, then 60 s,
-  or the wait it names when that is at most 2 minutes), with pausing on or
-  off, before the step comes back to you; a try after one reads `· after a
-  rate-limit backoff`, and the block's header says `backed off twice` (never
-  `not retried`: a backoff is not the step's retry). One that names a longer
-  wait comes back to you at once, and so does one whose pool is paused or runs
-  out during the backoff. Runs started before this version keep their old
-  rules.
+  or the wait it names when that is at most 2 minutes), before the step comes
+  back to you; a try after one reads `· after a rate-limit backoff`, and the
+  block's header says `backed off twice` (never `not retried`: a backoff is
+  not the step's retry). One that names a longer wait comes back to you at
+  once, and so does one whose pool runs out during the backoff. Runs started
+  before this version keep their old rules.
+- pools: Bullswarm no longer pauses or benches a pool, and never remembers a
+  spent or dead pool from one step to the next. `bullswarm strategy
+  set-pausing`, `bullswarm pools resume`, and the `PAUSED`, `BENCHED`,
+  `strikes=` and `automatic pausing: off` lines in `bullswarm pools` are gone;
+  a pause or bench record an earlier version left in `state.json` is ignored.
+  What replaces them: every pick reads the live meters, so a window at 100%
+  (5-hour, weekly or monthly) keeps a pool out until that window resets, and
+  nothing else does. A usage limit goes back to the caller, and the pool's
+  meter is read again at once; when it cannot be read, the pool counts as full
+  only until a reset the provider named or an earlier reading gave, and a
+  reset nobody knows keeps no pool out (the meter column then reads
+  `[refused <age> · reset unknown]`; such a reset used to be guessed as a
+  whole window from the refusal, which could keep a pool with no meter reader
+  out for up to a week, or a month). After a sign-in failure the step's one
+  automatic retry goes to a pool that does not share the dead credential; the
+  next step routes as usual. A stall, a provider error or a failed free-model
+  probe no longer counts a strike: the step's retry, or the pick, goes to
+  another pool. Before, a proven usage limit paused the pool until its reset,
+  a sign-in failure paused the pool and every pool sharing its credential for
+  10 minutes, and a second stall or failure in a row benched a pool for 10
+  minutes, until the pause ran out, `pools resume` lifted it or `set-pausing
+  off` turned pausing off. For scripts: `pools --json` drops `pausing`,
+  `quarantine` and `pauseWhy`; a `run --json` verdict drops `quarantineHint`,
+  `quarantineUntil`, `quarantineSource`, `quarantinedUntil` and
+  `quarantinedSiblings`, names its limit decision `usageLimit` (it was
+  `quotaPause`), and carries `retryAfter` when a usage limit's reset is
+  known; a run no longer writes `pool.benched` events, and `workflow watch`
+  skips one a saved run holds, prints no `paused until` or `not paused` on
+  its usage-limit line, and with `--jsonl` drops `paused` and `proof` from
+  `attempt.quota`; `bullswarm health` no longer reports paused pools
+  (`quarantined`, `quarantineCluster`) or exits 1 for them; and neither
+  `pools` nor `health` changes `state.json` any more.
 - workflow: the dispatched Workflow Planner (`--orchestrator`) and the
   preflight scout (`--scout`, or the scout before a dispatched planner) follow
   the same rule. A usage limit, a rate limit still there after its short
@@ -126,16 +156,6 @@
   5-hour limit that still gets the work reads `last mile: <pool> 88.1% of 5h,
   a limit mid-attempt goes back to the caller`; it used to end `handoff covers
   the wall`.
-- strategy: with automatic pausing off (`strategy set-pausing off`), a sign-in
-  failure is still a sign-in failure (`auth`). It used to be reported as a
-  provider error, so the step's retry could walk to another pool on the same
-  dead credential; the retry now skips every pool that shares that credential,
-  as it does with pausing on, and the `why` ends `· automatic pausing is off,
-  pool not paused`. The switch decides only whether a pool stays paused for
-  later work, and `set-pausing off` now says so: `a spent usage window still
-  goes back to the caller, and a retry after a sign-in failure still skips the
-  pools that share that credential` (it used to say limit notices are retried
-  and a failed attempt moves to another pool).
 - workflow: `step rerun` and `resume` after a failure the pool caused (a
   sign-in failure, a provider error, or a worker that died before it answered
   or changed a file) start on another pool when one can take the step now.

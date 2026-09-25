@@ -1,6 +1,6 @@
 // Manual subscription-backed regression probe. Not part of `npm test`.
 // It asks the real Grok and Command Code CLIs to inspect auth-related source,
-// reproducing the transport shape that once caused a false quarantine.
+// reproducing the transport shape that was once misread as a sign-in failure.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,7 +30,7 @@ const results = await Promise.all(names.map(async (name) => {
       name,
       ok: verdict.ok,
       why: verdict.why,
-      quarantined: verdict.quarantineHint === true,
+      authFailure: verdict.failureKind === 'auth',
       signal: verdict.meta?.signal ?? null,
       wallSec: verdict.meta?.wallSec ?? null,
       outBytes: verdict.meta?.outBytes ?? null,
@@ -42,4 +42,4 @@ const results = await Promise.all(names.map(async (name) => {
 }));
 
 console.log(JSON.stringify(results, null, 2));
-if (results.some((result) => !result.ok || result.quarantined)) process.exitCode = 1;
+if (results.some((result) => !result.ok || result.authFailure)) process.exitCode = 1;

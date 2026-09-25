@@ -10,6 +10,7 @@ import { listAssignments } from '../lib/assignments.js';
 import { rungsFor } from '../lib/strategy.js';
 import { finiteOrNull } from '../lib/num.js';
 import { getAllMeterReadings } from '../meters/registry.js';
+import { guessedRefusalWindow } from '../meters/framework.js';
 import { attachForecast } from '../lib/forecast.js';
 import { loadState } from '../lib/state.js';
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
@@ -161,9 +162,11 @@ function creditsOf(snapshot) {
  * used% and reset time from `meterSnapshot`, and its elapsed% from the
  * reset time and the window's length — except the pool's own pacing window,
  * whose elapsed% is the pool's (that is the number routing uses). A monthly
- * window that does not pace is measured against 30 days. The reading's
- * credit meter, when the provider counts credits, hangs off the array as
- * `credits` so a caller can iterate windows and still read it.
+ * window that does not pace is measured against 30 days. A refusal marker's
+ * window whose reset was guessed is not a reading and is left out, as routing
+ * leaves it out (framework.js guessedRefusalWindow). The reading's credit
+ * meter, when the provider counts credits, hangs off the array as `credits`
+ * so a caller can iterate windows and still read it.
  */
 export function poolWindows(pool, nowMs = Date.now()) {
   const snapshot = pool?.meterSnapshot ?? null;
@@ -172,6 +175,7 @@ export function poolWindows(pool, nowMs = Date.now()) {
   if (snapshot) {
     for (const [key, field] of WINDOW_FIELDS) {
       const raw = snapshot[field];
+      if (guessedRefusalWindow(raw)) continue;
       const usedPct = finiteOrNull(raw?.utilization);
       if (usedPct == null) continue;
       const resetsAt = typeof raw?.resets_at === 'string' ? raw.resets_at : null;

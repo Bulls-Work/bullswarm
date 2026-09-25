@@ -1,4 +1,3 @@
-import { pauseProof } from '../lib/quota.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 // Low-noise, non-interactive workflow progress watcher.
 // A run is event-based by default: one attach line, then one line per notable
@@ -402,32 +401,10 @@ function staleFor(probe, state, { attempt, actionId }, nowMs) {
   try { return probe({ attempt, action, state, nowMs }); } catch { return null; }
 }
 
-// Epoch ms of a pool's re-probe deadline from the CORE bullswarm state (the
-// one at `<bullswarmDir>/state.json`, distinct from this run's own
-// state.json), when readable.
-function readCoreQuarantineUntilMs(bullswarmDir, pool) {
-  if (!bullswarmDir || !pool) return null;
-  const core = readJson(join(bullswarmDir, 'state.json'));
-  const until = core?.pools?.[pool]?.quarantine?.until;
-  return Number.isFinite(until) ? until : null;
-}
-
-// The proof a quota pause was recorded with (quota.js Q6): the meter window or
-// the provider line that named the reset. Null when the record carries none.
-function coreQuotaPauseProof(bullswarmDir, pool) {
-  if (!bullswarmDir || !pool) return null;
-  return pauseProof(readJson(join(bullswarmDir, 'state.json'))?.pools?.[pool]?.quarantine ?? null);
-}
-
-// ISO timestamp literal embedded in a verdict `why` string, e.g.
-// `usage limit: "..." · pool paused until 2026-09-08T14:59:59.000Z`.
+// ISO timestamp literal embedded in a verdict `why` string, e.g. a run from
+// an earlier version: `usage limit: "..." · pool paused until
+// 2026-09-08T14:59:59.000Z`.
 const ISO_TIMESTAMP_RE = /\b\d{4}-\d{2}-\d{2}T[\d:.]+Z\b/;
-
-function quotaDeadlineIso(bullswarmDir, pool, why) {
-  const untilMs = readCoreQuarantineUntilMs(bullswarmDir, pool);
-  if (untilMs != null) return new Date(untilMs).toISOString();
-  return ISO_TIMESTAMP_RE.exec(String(why ?? ''))?.[0] ?? null;
-}
 
 // Human deadline: HH:MM local when the deadline falls on the same calendar
 // day as `now`, else the full ISO timestamp so the date is never ambiguous.
@@ -498,7 +475,6 @@ export function notableWatchEvents({
   verbose = false,
   nowMs = Date.now(),
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
-  bullswarmDir = null,
   // (attempt record) -> staleScore() result; null skips the stale score.
   stale = null,
   // The run directory, for the marker the needs-you block reads.
@@ -595,10 +571,10 @@ export function notableWatchEvents({
     if (failureKind === 'quota') {
       const pool = record?.pool ?? payload.pool ?? null;
       const why = payload.why ?? record?.why ?? null;
-      const until = quotaDeadlineIso(bullswarmDir, pool, why);
-      // Marked runs file a spent window as quota whether or not the pool was
-      // paused: with no pause found the line says so, or names the return
-      // time the event carries. Unmarked runs keep `paused until`.
+      // When the pool is back: the return time the event carries (`backAt`),
+      // else a time the why names (`until`). No pool is paused (state.js S1),
+      // so nothing is read from the shared state.
+      const until = ISO_TIMESTAMP_RE.exec(String(why ?? ''))?.[0] ?? null;
       const backAt = isoOrNull(payload.retryAfter ?? payload.holdUntil ?? null);
       notable.push({
         type: 'attempt.quota',
@@ -607,8 +583,7 @@ export function notableWatchEvents({
         pool,
         why,
         until,
-        ...((payload.failureRule === true || marked()) && until == null ? { paused: false, ...(backAt ? { backAt } : {}) } : {}),
-        proof: coreQuotaPauseProof(bullswarmDir, pool),
+        ...(backAt ? { backAt } : {}),
         willRetry: payload.willRetry === true,
         // A marked (stage-3) run's line reads "back to you", or "no retry
         // spent" on an attempt that promised one (markedQuotaTail). A move or
@@ -747,17 +722,6 @@ export function notableWatchEvents({
         break;
       case 'attempt.finished':
         onAttemptFinished(payload.actionId, payload);
-        break;
-      case 'pool.benched':
-        notable.push({
-          type: 'pool.benched',
-          pool: payload.pool ?? null,
-          reason: payload.reason ?? null,
-          count: payload.count ?? null,
-          until: payload.until ?? null,
-          actionId: payload.actionId ?? null,
-          attemptId: payload.attemptId ?? null,
-        });
         break;
       case 'planner.attempt_finished':
         onAttemptFinished('workflow-planner', payload);
@@ -1068,12 +1032,9 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
         + (event.willRetry ? 'retrying on another pool' : 'no retry left');
     case 'attempt.quota':
       return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · `
-        // A marked run's limit with no pause found: `not paused`, or the
-        // return time the event carried.
-        + (event.paused === false || (event.failureRule === true && event.until == null)
-          ? (event.backAt ? `back at ${event.backAt} · ` : 'not paused · ')
-          : `paused until ${formatDeadline(event.until, now)} · `)
-        + (event.proof ? `${event.proof} · ` : '')
+        // When the pool is back, when that is known.
+        + (event.backAt ? `back at ${event.backAt} · `
+          : event.until ? `back at ${formatDeadline(event.until, now)} · ` : '')
         + (event.failureRule ? markedQuotaTail(event)
           : (event.willRetry ? 'retrying on another pool' : 'no retry left'));
     case 'attempt.moved':
@@ -1082,14 +1043,6 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
       const said = String(event.lastSaid ?? '').replace(/\s+/g, ' ').trim();
       return `${glyphs().handoff} ${event.actionId} handed off from ${event.pool ?? '?'} · ${event.files ?? 0} file${event.files === 1 ? '' : 's'} · last said "${said}"`;
     }
-    case 'pool.benched':
-      {
-        const until = typeof event.until === 'number'
-          ? (Number.isFinite(event.until) ? new Date(event.until).toISOString() : null)
-          : event.until;
-        return `${glyphs().warn} ${event.pool ?? '?'} benched · ${event.count ?? '?'} stall${event.count === 1 ? '' : 's'} · `
-          + `back at ${formatDeadline(until, now)}`;
-      }
     case 'steering.delivered':
       return '→ steering delivered';
     case 'steering.received':
@@ -1286,7 +1239,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           }
         }
         const collected = notableWatchEvents({
-          events: newEvents, state, memory, verbose, nowMs, stallAfterMs, bullswarmDir,
+          events: newEvents, state, memory, verbose, nowMs, stallAfterMs,
           stale: snapshot.interrupted ? null : staleProbe, runDir: resolved.runDir,
         });
         memory = collected.memory;

@@ -433,13 +433,13 @@ test('watch --until lists needs you as trouble (a usage limit is one), and block
   assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), or at a planner or preflight scout stopped on a usage limit;/);
   assert.match(watch, /blocked dependents are listed inside the needs-you block/);
   // A marked run's scout stopped by a usage limit has its own line, and the
-  // usage-limit line of a pool that was not paused says so.
+  // usage-limit line names no pause: nothing pauses a pool.
   const flatWatch = watch.replace(/\s+/g, ' ');
   assert.ok(flatWatch.includes('`⚠ preflight scout stopped · <label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run has your program'));
   assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped, paused, stalled, stale, steering)'));
   assert.ok(flatWatch.includes('A dispatched planner stopped the same way prints `✗ planner stopped · <label> on <pool> · back at <time>` and the run finishes; any other planner failure still prints `× planning attempt rejected · <why>`.'));
-  assert.ok(flatWatch.includes('a pool that was not paused for it reads `not paused` in place of the pause, and the needs-you block after it carries the `back at <time>` line'));
-  assert.ok(!flatWatch.includes('reads `back at <time>` or `not paused`'));
+  assert.ok(flatWatch.includes('and the block carries `back at <time>` and a `wait for it` rerun when the reset is known'));
+  assert.ok(!flatWatch.includes('not paused') && !flatWatch.includes('paused until <deadline>'));
   // No step waits for a pool, so there is no waiting line to wake on or replay at attach.
   assert.doesNotMatch(watch, /waiting \(more than 30 min\)/);
   assert.doesNotMatch(watch, /already waiting/);

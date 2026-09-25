@@ -159,7 +159,7 @@ async function defaultRunner({ pool, model, home, timeoutMs }) {
  * `runner` is injectable and receives `{ pool, model, home, timeoutMs, now,
  * prompt }`; the default delegates through the pool's own CLI via watchOnce.
  * A skipped (default or paid) model is a successful no-op, so callers can use
- * the result directly without accidentally benching it.
+ * the result directly without accidentally skipping the pool.
  */
 export async function probeFreeModel({
   pool,

@@ -29,10 +29,8 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `outFile` | `~/.bullswarm/runs/out-<stamp>.md` (or `$BULLSWARM_HOME/runs/...`) — the extracted answer. Always read this when `ok` is true |
 | `taskFile` | the prompt file the worker was given |
 | `contentUsableDespiteExit` | `true` when `ok` is false, the process exited non-zero, and the content judge still passed. Do not discard that `outFile` |
-| `failureKind` | present on failure: `quota`, `auth`, `provider`, `process`, `schema`, `stalled` |
-| `quarantineHint` | `true` when the failure asks for a pause: a sign-in failure, whatever the pausing switch, or a usage limit with proof (the pool's own meter at 95% or more on a running window, or a reset the provider's line named) while automatic pausing is on. With automatic pausing on, the pool is paused until `quarantinedUntil`; with `strategy set-pausing off` nothing is paused, a usage limit carries no hint, and `quarantinedUntil` is absent |
-| `quarantineUntil` / `quarantineSource` | a usage limit's pause deadline and its proof: `message` (the reset the provider's line named) or `meter` (the reset of the window the pool's meter showed at 95% or more). Absent when the limit had no proof |
-| `quarantinedSiblings` | other pools in the same `credentialGroup` benched on an **auth** failure. Quota never spreads |
+| `failureKind` | present on failure: `quota`, `throttle`, `auth`, `provider`, `process`, `schema`, `stalled` |
+| `retryAfter` | on a usage limit whose reset is known: that reset, as an ISO time. It is known when the provider's line named it, or when the pool's own meter reads 95% or more on a window still running (that window's reset). Absent otherwise. Nothing is stored about the pool: the next pick reads its meters again |
 | `cancelled` | `true` when a workflow cancellation stopped the worker |
 | `dryRun` | `true` on `--dry-run`. Nothing was spawned, logged, or registered in the assignment ledger |
 | `forecast` | the numbers routing compared: `inflight`, `projectedFiveHourPct`, `forecastFiveHourPct`, `expectedMinutes`, `ratePerMinute`, `estimateSource` |
@@ -43,7 +41,7 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `meta.usage` | complete v2 attempt usage: provider-reported, transcript-summed, estimated, or unknown exclusive token classes; `api.usd` is the local dated rate-card calculation and `subscription.usd` is the separately measured or calibrated quota-window amount |
 | `structured` | only when an output validator ran (workflow evidence): `{ ok, errors, value? }` |
 
-`--dry-run` prints `ok`, `dryRun: true`, `keepOnClaude`, `why`, `forecast`, `candidates`, `pick` (resolved argv including the clamped reasoning flag), and `reasoning`. It omits `outFile`, `taskFile`, `contentUsableDespiteExit`, `meta`, and quarantine fields, because nothing was spawned. `--dry-run` with no eligible pool and `keepOnClaude: true` still exits 0. `--dry-run` that cannot pick and cannot keep the task sets `ok: false` and exits 1.
+`--dry-run` prints `ok`, `dryRun: true`, `keepOnClaude`, `why`, `forecast`, `candidates`, `pick` (resolved argv including the clamped reasoning flag), and `reasoning`. It omits `outFile`, `taskFile`, `contentUsableDespiteExit`, `meta`, and the failure fields, because nothing was spawned. `--dry-run` with no eligible pool and `keepOnClaude: true` still exits 0. `--dry-run` that cannot pick and cannot keep the task sets `ok: false` and exits 1.
 
 ::: warning
 `ok: true` with `keepOnClaude: true` means the caller should do the work itself. It is not a completed delegate. The skill documents this as `keepOnClaude: true`.
@@ -238,7 +236,7 @@ Anything short of a verified run with no unread guidance is handed back. The run
 
 | Field | Meaning |
 |---|---|
-| `unfinished[]` | `{ id, status, failureKind, why, retryAfter?, retryable, retries? }` for every action that is not `succeeded` or `removed`; `retries` counts automatic retries spent by the current definition. `retryAfter` is when the step's pool is back: in a run started by this version, the failed pool's reset after a usage limit, the end of a rate limit's named wait, the return of the pool a rate-limit backoff could no longer use, or, when no pool that can run the step was free, the earliest known return among them; in earlier runs, the earliest return when every pool that can run the step was paused or benched. In the compact summary, a failed step that declares evidence and whose worker failed before any check ran adds `evidenceNotRun: true` |
+| `unfinished[]` | `{ id, status, failureKind, why, retryAfter?, retryable, retries? }` for every action that is not `succeeded` or `removed`; `retries` counts automatic retries spent by the current definition. `retryAfter` is when the step's pool is back: in a run started by this version, the failed pool's reset after a usage limit, the end of a rate limit's named wait, the return of the pool a rate-limit backoff could no longer use, or, when no pool that can run the step was free, the earliest known return among them; in runs started by an earlier version, the return time their saved result recorded. In the compact summary, a failed step that declares evidence and whose worker failed before any check ran adds `evidenceNotRun: true` |
 | `unresolvedRequirements[]` | `{ id, status, why }` for every requirement that is not `passed` |
 | `unreadSteering[]` | `{ id, message, queuedAt }` guidance queued with `workflow steer` that nobody acted on |
 

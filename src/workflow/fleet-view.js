@@ -116,10 +116,6 @@ function recordOf(rung) {
   return parts.join(' · ');
 }
 
-function benchReasonOf(pool) {
-  return pool?.bench?.reason ? String(pool.bench.reason) : null;
-}
-
 function poolBlurb(pool, nowMs) {
   const window = pool?.pacingWindow === 'monthly' || pool?.pacingWindow === 'weekly'
     ? `${pool.pacingWindow} window`
@@ -131,17 +127,10 @@ function poolBlurb(pool, nowMs) {
   const lanes = Array.isArray(pool?.incumbentLane) && pool.incumbentLane.length
     ? `incumbent for ${pool.incumbentLane.join('/')}`
     : null;
-  const bench = pool?.bench?.reason
-    ? (pool.bench.until != null
-      ? `benched (${pool.bench.reason})`
-      : `strike (${pool.bench.reason})`)
-    : null;
   return [
     window,
     used && elapsed ? `${used} of ${elapsed}` : (used || elapsed || 'no meter'),
     reset,
-    pool?.quarantine ? 'quarantined' : null,
-    bench,
     lanes,
   ].filter(Boolean).join(' · ');
 }
@@ -234,9 +223,7 @@ export function fleetLines(
         const sub = String(row.sub ?? '');
         const model = shortModel(modelOf(row.rung));
         const reasoning = reasoningOf(row.rung);
-        const bench = benchReasonOf(row.pool);
-        const record = bench ? `${recordOf(row.rung)} · ${bench}` : recordOf(row.rung);
-        lines.push(fit(fleetPhoneRow(sub, model, reasoning, record, cols, ansi), cols, ansi));
+        lines.push(fit(fleetPhoneRow(sub, model, reasoning, recordOf(row.rung), cols, ansi), cols, ansi));
       }
       lines.push('');
     }
@@ -254,8 +241,7 @@ export function fleetLines(
       const sub = String(row.sub ?? '').padEnd(subWidth).slice(0, subWidth);
       const model = painted(shortModel(modelOf(row.rung)), METER_COLORS.cyan, ansi);
       const reasoning = reasoningOf(row.rung);
-      const bench = benchReasonOf(row.pool);
-      out.push(fit(`  ${sub}${model}${reasoning ? ` · ${reasoning}` : ''}${bench ? ` · ${bench}` : ''}`, width, ansi));
+      out.push(fit(`  ${sub}${model}${reasoning ? ` · ${reasoning}` : ''}`, width, ansi));
       out.push(fit(painted(`${' '.repeat(subWidth + 2)}${recordOf(row.rung)}`, METER_COLORS.dim, ansi), width, ansi));
     }
     return out;

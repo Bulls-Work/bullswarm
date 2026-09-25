@@ -57,24 +57,11 @@ test('buildPoolsLive does not poll a disabled pool', async () => {
   } finally { f.cleanup(); }
 });
 
-test('buildPoolsLive does not poll a pool inside its quarantine window', async () => {
+test('buildPoolsLive polls every enabled pool: an old quarantine or bench record stops no meter read', async () => {
   const f = home({
     alpha: { enabled: true },
-    beta: { enabled: true, quarantine: { until: NOW + 30 * 60_000, reason: 'quota' } },
-    gamma: { enabled: true },
-  });
-  try {
-    const poll = spy();
-    await buildPoolsLive(f.dir, NOW, { getReadings: poll.getReadings });
-    assert.deepEqual(poll.asked, [['alpha', 'gamma']]);
-  } finally { f.cleanup(); }
-});
-
-test('buildPoolsLive polls again once the quarantine has expired', async () => {
-  const f = home({
-    alpha: { enabled: true },
-    beta: { enabled: true, quarantine: { until: NOW - 1, reason: 'quota' } },
-    gamma: { enabled: true },
+    beta: { enabled: true, quarantine: { until: NOW + 30 * 60_000, reason: 'quota', kind: 'quota' } },
+    gamma: { enabled: true, bench: { until: NOW + 30 * 60_000, reason: 'provider', count: 2 } },
   });
   try {
     const poll = spy();
@@ -117,11 +104,12 @@ test('buildPools itself is unchanged: every connector still gets a pool view', (
     const byName = Object.fromEntries(pools.map((pool) => [pool.name, pool]));
     assert.equal(byName.alpha.enabled, true);
     assert.equal(byName.beta.enabled, false);
-    assert.equal(byName.gamma.quarantine.until, NOW + 60_000);
+    assert.equal(byName.gamma.enabled, true, 'an old quarantine record keeps nothing out');
+    assert.equal(Object.hasOwn(byName.gamma, 'quarantine'), false, 'nor does it reach the pool view');
   } finally { f.cleanup(); }
 });
 
-test('buildPools exposes free for the model selected on the requested tier and preserves bench state', () => {
+test('buildPools exposes free for the model selected on the requested tier and drops an old bench record', () => {
   const f = home({
     alpha: {
       enabled: true,
@@ -153,8 +141,6 @@ test('buildPools exposes free for the model selected on the requested tier and p
     const alpha = pools.find((pool) => pool.name === 'alpha');
     assert.equal(alpha.free, true);
     assert.equal(alpha.freeModel, 'opencode/union-alpha');
-    assert.deepEqual(alpha.bench, {
-      until: NOW + 10 * 60_000, reason: 'provider', count: 2,
-    });
+    assert.equal(Object.hasOwn(alpha, 'bench'), false);
   } finally { f.cleanup(); }
 });

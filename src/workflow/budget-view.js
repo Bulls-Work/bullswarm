@@ -1,6 +1,7 @@
 import { cut } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 import { formatMoney } from '../lib/usage-basis.js';
+import { refusalResetKnown } from '../meters/framework.js';
 import { honestApiTotalText } from './spend-facts.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
@@ -160,7 +161,10 @@ function refusalStatus(row, nowMs = Date.now()) {
       age = hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
     }
   }
-  return `blocked · refused ${age}`;
+  // A marker whose reset was guessed keeps no pool out (framework.js).
+  return refusalResetKnown(marker ?? row?.meterSnapshot?.quota_refusal)
+    ? `blocked · refused ${age}`
+    : `refused ${age} · reset unknown`;
 }
 
 function resetLine(window, ansi) {

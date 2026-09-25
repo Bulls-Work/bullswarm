@@ -89,7 +89,7 @@ The human line is `OK`/`FAIL`, the pool, and `why`; with `--json` you also get `
 
 ## Re-judge saved outputs
 
-`bullswarm health` re-runs the verify gate over every saved `out-*` file and reports two things: outputs logged as failures that now pass, and pools whose quarantine has clustered.
+`bullswarm health` re-runs the verify gate over every saved `out-*` file and reports outputs logged as failures that now pass.
 
 ```bash
 # human summary
@@ -102,5 +102,5 @@ bullswarm health --json
 
 - [Routing](/guide/routing) — why the task went to that pool, in the order the code decides.
 - [Workflows](/guide/workflows) — several dependent tasks in one durable run.
-- [Concepts](/guide/concepts) — pools, lanes, surplus, and quarantine in one place.
+- [Concepts](/guide/concepts) — pools, lanes, surplus, and limits in one place.
 - [Result envelope](/reference/result) — every field of the verdict, listed.

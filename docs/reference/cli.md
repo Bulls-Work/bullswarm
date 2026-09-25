@@ -252,7 +252,7 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--no-caller` | exclude the calling agent from routing, so the task must go to a delegate pool or fail | off — the caller competes for the lane like any other pool |
 | `--json` | print the machine-readable verdict document | human-readable summary line |
 
-May quarantine a pool after an authentication failure. The JSON shape is in [Result envelope](/reference/result).
+One attempt only: a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. The JSON shape is in [Result envelope](/reference/result).
 
 ```bash
 # Show the exact argv, including the clamped reasoning flag, without dispatching.
@@ -282,9 +282,8 @@ free model, `run` sends the one-word prompt `PONG` through that pool's own CLI
 and waits at most 30 seconds. The answer is cached per pool and model for 15
 minutes in `$BULLSWARM_HOME/cache/free-model-probes.json`.
 
-A pool that fails the probe records a strike with the reason
-`probe: 404`, `probe: provider error` or `probe: timeout`, is dropped from this
-pick, and routing falls through to the next eligible pool — the reason appears
+A pool that fails the probe is dropped from this pick with the reason
+`probe: 404`, `probe: provider error` or `probe: timeout`, and routing falls through to the next eligible pool — the reason appears
 in the run's `routeWhy`. A rung left on the connector's CLI default is never
 probed, a paid model is never probed, no model catalogue is scanned, and a
 replacement model is never chosen. `--dry-run` never probes: a preview does not
@@ -292,7 +291,7 @@ call a provider.
 
 ## health
 
-Re-judge every saved delegate output against the real verify gate and report where a logged FAIL verdict re-judges as a pass (the "gate ate real work" signal), plus any pool quarantine clustering.
+Re-judge every saved delegate output against the real verify gate and report where a logged FAIL verdict re-judges as a pass (the "gate ate real work" signal).
 
 ```bash
 # Re-judge saved outputs. Exit 1 means unhealthy, not a crash.
@@ -303,79 +302,46 @@ bullswarm health --json
 |---|---|---|
 | `--json` | print the machine-readable health report | human-readable summary of the same facts |
 
-Reads every `out-*` file under `~/.bullswarm/runs/`. If any pool quarantine has expired, writes the released state back to `state.json`; otherwise read-only.
+Reads every `out-*` file under `~/.bullswarm/runs/` and `state.json`, and never changes `state.json`.
 
 ## pools
 
-Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, pace surplus, in-flight assignment count, projected 5-hour utilization, and pause/burst-gate status. `bullswarm pools resume <pool>` lifts a pause.
+Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, pace surplus, in-flight assignment count, projected 5-hour utilization, and whether a window is spent.
 
 The 5-hour column reads `5h=<reading>%` alone when nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is expected to push the window further; routing decides on the right-hand number. A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run. A pool whose weekly window resets within 24 hours, or whose monthly window resets within 3 days, ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON urgency=<n>`.
 
-The status word at the end of the line says why a pool is not taking work, and
-names the reason a soft bench was applied:
+The pool's status comes after the columns: `disabled`, or `ready` followed by
+`BURST-GATED` when the 5-hour window is at 100% and `NEAR-5H-LIMIT` when it is
+near its line. A weekly or monthly window at 100% keeps the pool out of routing
+until that window resets; the meter column shows the pacing window's reading
+(`weekly used 100%`).
+After a usage limit whose forced meter read failed, the meter source reads
+`[blocked · refused <age>]`: the pool counts as full until the reset the
+provider named or an earlier reading gave. When nobody knows that reset it
+reads `[refused <age> · reset unknown]` instead (with `used ?%`) and does not
+keep the pool out. Nothing pauses or benches a pool, so there is nothing to
+lift: a spent window comes back by itself when it resets.
 
-```text
-opencode  cost=1 lanes=analyze/build/chore unmetered surplus=- inflight=0 free=low:zen/union-free  BENCHED until 11:42:08 (probe, 2 strikes)
-grok      cost=2 lanes=analyze/build/chore weekly used 5% elapsed 2.2% [live] surplus=-2.8 inflight=0 ready strikes=1(probe)
-```
+A limit notice that says a usage window, a quota or a balance is spent is a
+usage limit, with or without a reset named. In a workflow started by this
+version it ends the step and comes back to you at once; its reset, when known,
+is the `back at` time. A single `bullswarm run` makes one attempt and exits 1.
+Either way the pool's meter is read again at once, and a window it shows at
+100% keeps the pool out of later picks until that window resets.
 
-A bench reason is one of `stall`, `provider` or `probe`. `provider` covers a
-provider error and a free pool that answered with nothing; `probe` is the
-pre-dispatch free-model liveness check reporting `404`, a provider error or a
-timeout. The first strike prints as `ready strikes=1(<reason>)`:
-the pool is still taking work, and the count is shown so a pool one strike from
-the bench does not read as perfectly healthy. The second strike benches it for a
-10-minute cooldown, after which it returns automatically; a success clears the
-count.
-
-A paused pool says why in plain words, with its deadline, its proof, the exact
-provider line, the meter reading the decision was made on, and the command that
-lifts it:
-
-```text
-claude-code    cost=4 lanes=analyze/build/chore unmetered surplus=- inflight=0 5h=?->26% PAUSED until 20:00 · usage window spent, meter read weekly 96% (>= 95%) · provider: "Error: Rate limit exceeded. Please wait a moment and try again." · meter then: 5h 26% · weekly 96% · lift now: bullswarm pools resume claude-code
-```
-
-An auth pause reads `PAUSED until <time> · auth: <reason> · lift now: bullswarm pools resume <pool>`.
-
-A limit notice pauses a pool for quota only on one of two proofs:
-
-- **meter** — the pool's own meter reads 95% or more on a window that is still
-  running (5h, weekly or monthly). The pause lasts until that window resets.
-  A synthetic 100% refusal marker never counts as a reading.
-- **message** — the provider's line says a usage window is spent *and* names
-  when it resets (`You've hit your session limit · resets 7pm (Asia/Hong_Kong)`).
-  The pause lasts until that reset.
-
-Anything else — `Error: Rate limit exceeded. Please wait a moment and try again.`,
-`429 Too Many Requests`, an overload, a 5xx, a timeout, or a window phrase with no
-reset — never pauses the pool. What happens next depends on who ran it. In a
-workflow started by this version a notice that says a usage window, a quota or
-a balance is spent ends the step and comes back to you at once, with or without
-a reset named and whatever the pausing switch; its reset, when known, is the
-`back at` time, and the pool's meter is read again at once: a window it shows
-at 100% keeps the pool out of later steps until the reset. Any other rate limit backs off on the same pool at most
-twice (20 s, then 60 s, or the wait it names when that is at most 2 minutes)
-and then comes back to you; one that names a longer wait comes back to you at
-once, with `back at` at the end of that wait. Nothing moves to another pool. A
-single `bullswarm run` makes one attempt and exits 1 on either. In a workflow
-started by an earlier version the attempt backs off and retries on the same
-pool, then moves to another pool for that attempt only.
+Any other rate limit — `Error: Rate limit exceeded. Please wait a moment and try again.`,
+`429 Too Many Requests`, an overload — backs off on the same pool at most twice
+(20 s, then 60 s, or the wait it names when that is at most 2 minutes) and then
+comes back to you; one that names a longer wait comes back to you at once, with
+`back at` at the end of that wait. Nothing moves to another pool, and a single
+`bullswarm run` exits 1 on it. In a workflow started by an earlier version the
+attempt backs off and retries on the same pool, then moves to another pool for
+that attempt only.
 
 Quota and auth signatures are matched against the provider's own error channel:
 its stderr, the events it flags as errors, and its terminal `result` record.
 Never an assistant's reply or a tool result — a report that *quotes* a limit
 phrase is not evidence about the pool.
-
-`bullswarm strategy set-pausing off` turns every automatic pause off — quota,
-auth, and the credential-group siblings an auth pause benches with it, plus the
-soft bench a second strike writes; `pools` then opens with
-`automatic pausing: off`. Routing is untouched: meters are still read, and a
-crashed or signed-out attempt still gets the step's retry on another pool. A
-sign-in failure is still failure kind `auth`, so that retry skips every pool
-that shares the credential. In a workflow started by this version a usage
-limit still ends the step and comes back to you, as above, and the pool's
-meter is still read again after it.
 
 ```bash
 # Bypass the meter cache and re-read live usage for every pool.
@@ -385,7 +351,7 @@ bullswarm pools --force
 | Flag | Meaning | Default |
 |---|---|---|
 | `--force` | bypass the meter cache and re-read live usage for every pool | off (cached meter readings reused within their TTL) |
-| `--json` | machine-readable `{ pausing, pools }`; each pool carries `inflight`, `spend` rates, `pacingWindow`, `paceResetsAt`, `resetSource` (`provider` \| `declared` \| `null`), projected percentages, and — when paused — `quarantine` (`until`, `kind`, `reason`, and for quota `rule`, `line`, `meter`, `meterWindow`, `resetsAt`, `pausedAt`) plus the plain-words `pauseWhy` | human-readable aligned table |
+| `--json` | machine-readable `{ pools }`; each pool carries `inflight`, `spend` rates, `pacingWindow`, `paceResetsAt`, `resetSource` (`provider` \| `declared` \| `null`), and projected percentages | human-readable aligned table |
 
 `--json` is also where the per-window numbers behind the `Budget` page live.
 Each entry's `meterSnapshot` is the provider's own reply: `captured_at` (how
@@ -401,26 +367,7 @@ fields Budget detects a price from (`plan_type`, `subscription_type`,
   "monthly": null, "plan_type": "team", "rate_limit_tier": "default_claude_max_5x" }
 ```
 
-Always writes `state.json` after sweeping expired quarantines, even in `--json` mode. Reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours).
-
-### pools resume
-
-Lift a pool's pause at once: its quota or auth pause and any active bench.
-
-```bash
-# Put claude-code back into service now.
-bullswarm pools resume claude-code
-```
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--json` | machine-readable `{ pool, resumed, lifted: { quarantine, bench, refusalMeterMarker } }` | one human-readable line |
-
-The lift is appended to the decision log in `state.json` as a `pool-resume`
-entry naming what it lifted. A synthetic 100% quota-refusal meter snapshot is
-dropped with it, so routing reads the live meter next. A pool with nothing to
-lift is left untouched and the command exits 0; an unknown pool exits 2. The
-pool can pause again on its next limit notice if the rule still proves it spent.
+Never changes `state.json`. Reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours).
 
 ## assignments
 
@@ -446,7 +393,7 @@ Open the provider/model strategy control center on a terminal, or run a subcomma
 bullswarm strategy inventory --json
 ```
 
-`--json` is accepted on subcommands that support it. `refresh` / `apply` / `assign` / `clear-assignment` / `exclude-model` / `include-model` / `set-subscription` / `set-reasoning` / `reset-reasoning` / `set-rung` / `set-pausing` all mutate `state.json`. `refresh` (and a cold `show`) perform live discovery against every installed agent CLI and the public OpenRouter model API.
+`--json` is accepted on subcommands that support it. `refresh` / `apply` / `assign` / `clear-assignment` / `exclude-model` / `include-model` / `set-subscription` / `set-reasoning` / `reset-reasoning` / `set-rung` all mutate `state.json`. `refresh` (and a cold `show`) perform live discovery against every installed agent CLI and the public OpenRouter model API.
 
 Concepts (rungs, allow-lists, autopilot) are in [Configuration](/reference/configuration).
 
@@ -606,42 +553,6 @@ bullswarm strategy reset-reasoning --tier low --yes
 | `--yes` | required approval | none |
 
 With no `--tier` and no `--pool` this clears every configured reasoning level at once. `--tier` alone also removes that tier from every per-pool override.
-
-### set-pausing
-
-Turn every automatic pool pause on (the default) or off. The switch is stored as
-`strategy.pausing` in `state.json` (`"off"`; absent means on).
-
-```bash
-# Never pause or bench a pool automatically; a usage limit still stops the workflow step.
-bullswarm strategy set-pausing off
-# Back to the strict default rule.
-bullswarm strategy set-pausing on
-```
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--json` | print `{ "pausing": "on" \| "off" }` | one human-readable line |
-
-On, a pool pauses for quota only when its own meter reads 95% or more on a
-running window, or the provider says a usage window is spent and names its
-reset (see [pools](#pools)), and a dead credential pauses its pool together
-with the pools that share that credential. Off, nothing is paused or benched by
-a command, and a crashed or signed-out attempt still moves on. The switch
-decides only whether a pool stays paused for later work. A sign-in failure is
-failure kind `auth` either way, and the step's retry skips every pool that
-shares that credential. In a workflow started by this version a spent usage
-window still ends the step and comes back to you, whatever the switch, and the
-pool's meter is read again at once (or the pool is recorded as full until the
-reset), so a window it shows at 100% keeps the pool out of later steps; a
-transient rate limit still backs off
-on the same pool at most twice before it comes back to you. A workflow started by an
-earlier version retries a limit notice on the same pool, then moves the
-attempt to another pool; a single `bullswarm run` makes one attempt and exits 1
-on it. Routing still reads meters. A pause already in place stays until its
-reset; `bullswarm pools resume <pool>` lifts it.
-
-`set-pausing off` prints `automatic pausing is off: no pool is paused or benched by a command (quota, auth or siblings); a spent usage window still goes back to the caller, and a retry after a sign-in failure still skips the pools that share that credential · bullswarm strategy set-pausing on restores it`.
 
 ### configure
 

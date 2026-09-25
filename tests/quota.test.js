@@ -11,19 +11,12 @@ import {
   MAX_THROTTLE_RETRIES,
   THROTTLE_BACKOFF_MS,
   THROTTLE_MAX_WAIT_MS,
-  QUOTA_PAUSE_METER_PCT,
+  QUOTA_METER_SPENT_PCT,
   classifyQuotaLimit,
-  decideQuotaPause,
-  describePoolPause,
-  dropQuotaRefusalSnapshot,
+  decideUsageLimit,
   findQuotaFailure,
-  formatPauseClock,
+  formatResetClock,
   meterReadingOf,
-  pauseProof,
-  pauseWord,
-  quotaPauseProven,
-  pausingEnabled,
-  readPausing,
   parseQuotaResetAt,
   throttleBackoffMs,
   GENERIC_QUOTA_SIGNATURES,
@@ -166,7 +159,7 @@ test('connector-declared signatures extend the defaults', () => {
   assert.equal(noticeOf({ quotaSignatures: [] }, 'usage_credits_required'), 'usage_credits_required');
 });
 
-// Q5: a transient throttle retries on the same pool; only a spent window pauses.
+// Q5: a transient throttle retries on the same pool; only a spent window is a usage limit.
 
 /** The two provider limit notices observed in real runs (2026-09). */
 const COMMAND_CODE_THROTTLE = 'Error: Rate limit exceeded. Please wait a moment and try again.';
@@ -200,17 +193,17 @@ test('the default table splits into window and throttle wording with nothing los
   }
 });
 
-test("command-code's real rate-limit notice is a transient throttle, not a paused pool", () => {
-  // This exact line paused command-code for ~4 hours while its meter read 5%.
+test("command-code's real rate-limit notice is a transient throttle, not a spent window", () => {
+  // This exact line kept command-code out for ~4 hours while its meter read 5%.
   const connector = connectorOf(PROVIDER_CONNECTORS['command-code']);
   assert.deepEqual(limitOf(connector, COMMAND_CODE_THROTTLE), {
     signature: 'rate limit exceeded', limit: 'throttle', transient: true, waitMs: null,
   });
-  // Still a detected limit notice: the attempt ends, it is simply not a pause.
+  // Still a detected limit notice: the attempt ends, it is simply not a spent window.
   assert.equal(noticeOf(connector, COMMAND_CODE_THROTTLE), 'rate limit exceeded');
 });
 
-test("claude-code's real session-limit notice is a spent window that pauses the pool", () => {
+test("claude-code's real session-limit notice is a spent window that names its reset", () => {
   const connector = connectorOf(PROVIDER_CONNECTORS['claude-code']);
   assert.deepEqual(limitOf(connector, CLAUDE_SESSION_WINDOW), {
     signature: 'hit your session limit', limit: 'window', transient: false,
@@ -249,8 +242,7 @@ test("grok's real spent-balance error event (HTTP 402) is a spent window with no
   assert.equal(limitOf(grok, providerErrorRecords(long, []))?.signature, 'usage balance exhausted');
 });
 
-// Out of credit is a limit to wait out or move off, never a failure or a
-// sign-in bench. Each sentence is the CLI's own wording, read from its
+// Out of credit is a usage limit, never a sign-in failure. Each sentence is the CLI's own wording, read from its
 // installed code on 2026-09-25 (claude 2.1.282, codex 0.155.1,
 // command-code 1.65.0, opencode 1.18.31, grok 1.0.40).
 const OUT_OF_CREDIT = {
@@ -283,7 +275,7 @@ test('every provider reads its own out-of-credit wording as a spent window, neve
   assert.equal(connectorOf(PROVIDER_CONNECTORS['claude-code']).authSignatures.includes('credit balance'), false);
 });
 
-test('every provider classifies both wordings: throttle retries, window pauses', () => {
+test('every provider classifies both wordings: throttle retries, window is a usage limit', () => {
   for (const [name, path] of Object.entries(PROVIDER_CONNECTORS)) {
     const connector = connectorOf(path);
     assert.equal(limitOf(connector, COMMAND_CODE_THROTTLE)?.limit, 'throttle', `${name}: throttle`);
@@ -291,7 +283,7 @@ test('every provider classifies both wordings: throttle retries, window pauses',
     assert.equal(limitOf(connector, 'Error: usage limit reached')?.limit, 'window', `${name}: window`);
     assert.equal(limitOf(connector, CLAUDE_SESSION_WINDOW)?.limit, 'window', `${name}: session window`);
   }
-  // Each provider's own declared window wording pauses through its connector.
+  // Each provider's own declared window wording is window wording through its connector.
   const codex = connectorOf(PROVIDER_CONNECTORS.codex);
   assert.equal(limitOf(codex, 'usage_credits_required')?.limit, 'window');
   const claude = connectorOf(PROVIDER_CONNECTORS['claude-code']);
@@ -304,8 +296,8 @@ test('every provider classifies both wordings: throttle retries, window pauses',
 });
 
 test('no provider lists transient throttle wording as an auth signature', () => {
-  // An auth hit pauses a pool for 10 minutes before the limit rule is asked;
-  // grok listed "rate limit" there until 0.35.2, so its 429 paused the pool.
+  // An auth hit is a sign-in failure before the limit rule is asked; grok
+  // listed "rate limit" there until 0.35.2, so its 429 read as a dead credential.
   for (const [name, path] of Object.entries(PROVIDER_CONNECTORS)) {
     for (const phrase of connectorOf(path).authSignatures ?? []) {
       assert.doesNotMatch(phrase, /rate.?limit|too many requests|429/i, `${name}: "${phrase}"`);
@@ -373,7 +365,7 @@ test('classifyQuotaLimit reads the notice it is given', () => {
   }, { now: NOW });
   assert.equal(named.explicit, true);
   assert.equal(iso(named.resetAt), '2026-09-08T11:00:00.000Z');
-  // Wording that names no window is a throttle, never a pause.
+  // Wording that names no window is a throttle, never a spent window.
   assert.equal(classifyQuotaLimit({}, { signature: 'mystery', line: 'mystery' }, { now: NOW }).limit, 'throttle');
 });
 
@@ -390,10 +382,10 @@ test('throttle backoff is short: the named wait, else the fixed schedule', () =>
   assert.equal(throttleBackoffMs(2, { waitMs: null }), 60_000);
 });
 
-// Q6: a pool pauses for quota only on proof — its own meter at >= 95%, or a
-// provider line that says a usage window is spent AND names the reset.
+// Q6: a limit's reset is known only two ways — the pool's own meter at >= 95%,
+// or a provider line that says a usage window is spent AND names the reset.
 
-/** The meter claude-code read when a transient line paused it (2026-09-21). */
+/** The meter claude-code read when a transient line kept it out (2026-09-21). */
 const INCIDENT_METER = {
   captured_at: '2026-09-08T09:55:00Z',
   pool: 'claude-code',
@@ -402,21 +394,19 @@ const INCIDENT_METER = {
   monthly: null,
 };
 
-const decide = (connector, text, opts = {}) => decideQuotaPause({
+const decide = (connector, text, opts = {}) => decideUsageLimit({
   connector,
   failure: findQuotaFailure(connector, text, { now: NOW, timeZone: 'UTC' }),
   meter: INCIDENT_METER,
-  pausing: true,
   now: NOW,
   timeZone: 'UTC',
   ...opts,
 });
 
-test('the real command-code and claude-code transient lines never pause the pool', () => {
+test('the real command-code and claude-code transient lines name no reset', () => {
   for (const name of ['command-code', 'claude-code']) {
     const connector = connectorOf(PROVIDER_CONNECTORS[name]);
     const decision = decide(connector, COMMAND_CODE_THROTTLE);
-    assert.equal(decision.pause, false, name);
     assert.equal(decision.rule, 'transient', name);
     assert.equal(decision.until, null, name);
     assert.equal(decision.retrySamePool, true, name);
@@ -424,37 +414,35 @@ test('the real command-code and claude-code transient lines never pause the pool
     // The why names the line and the reading it was decided on.
     assert.equal(
       decision.why,
-      `rate limited (transient): "${COMMAND_CODE_THROTTLE}" · pool not paused `
-        + '(meter 5h 48% · weekly 78%, below 95%; no spent window with a reset named)',
+      `rate limited (transient): "${COMMAND_CODE_THROTTLE}" · meter 5h 48% · weekly 78%, `
+        + 'below 95%; no spent window with a reset named',
       name,
     );
-    assert.equal(quotaPauseProven(decision, NOW), false, name);
   }
 });
 
-test('a meter at 96% pauses until that window resets, whatever the line says', () => {
+test('a meter at 96% is a spent window until that window resets, whatever the line says', () => {
   const connector = connectorOf(PROVIDER_CONNECTORS['claude-code']);
   const meter = { ...INCIDENT_METER, seven_day: { utilization: 96, resets_at: '2026-09-11T12:00:00Z' } };
   const decision = decide(connector, COMMAND_CODE_THROTTLE, { meter });
-  assert.equal(decision.pause, true);
   assert.equal(decision.rule, 'meter');
   assert.equal(iso(decision.until), '2026-09-11T12:00:00.000Z');
   assert.deepEqual(decision.meterWindow, { window: 'weekly', usedPct: 96, resetsAt: '2026-09-11T12:00:00.000Z' });
   assert.equal(decision.meter.readAt, '2026-09-08T09:55:00.000Z');
-  assert.match(decision.why, /^usage window spent: meter reads weekly 96% \(>= 95%\) · paused until Fri 11 Sep 12:00 \(weekly reset\) · provider said "Error: Rate limit exceeded/);
-  assert.equal(quotaPauseProven(decision, NOW), true);
+  assert.match(decision.why, /^usage window spent: meter reads weekly 96% \(>= 95%\) · back at Fri 11 Sep 12:00 \(weekly reset\) · provider said "Error: Rate limit exceeded/);
   // The threshold is the documented 95%: 94.9% is below it, 95% is at it.
-  assert.equal(QUOTA_PAUSE_METER_PCT, 95);
+  assert.equal(QUOTA_METER_SPENT_PCT, 95);
   const below = decide(connector, COMMAND_CODE_THROTTLE, {
     meter: { ...INCIDENT_METER, five_hour: { utilization: 94.9, resets_at: '2026-09-08T12:00:00Z' } },
   });
-  assert.equal(below.pause, false);
+  assert.equal(below.rule, 'transient');
+  assert.equal(below.until, null);
   const at = decide(connector, COMMAND_CODE_THROTTLE, {
     meter: { ...INCIDENT_METER, five_hour: { utilization: 95, resets_at: '2026-09-08T12:00:00Z' } },
   });
   assert.equal(at.rule, 'meter');
   assert.equal(iso(at.until), '2026-09-08T12:00:00.000Z');
-  // Two full windows: the fullest one is the proof.
+  // Two full windows: the fullest one gives the reset.
   const both = decide(connector, COMMAND_CODE_THROTTLE, {
     meter: {
       ...INCIDENT_METER,
@@ -466,10 +454,9 @@ test('a meter at 96% pauses until that window resets, whatever the line says', (
   assert.equal(iso(both.until), '2026-09-08T12:00:00.000Z');
 });
 
-test('an explicit exhaustion line that names its reset pauses until that reset', () => {
+test('an explicit exhaustion line that names its reset is back at that reset', () => {
   const connector = connectorOf(PROVIDER_CONNECTORS['claude-code']);
   const decision = decide(connector, CLAUDE_SESSION_WINDOW);
-  assert.equal(decision.pause, true);
   assert.equal(decision.rule, 'message');
   // 19:00 Asia/Hong_Kong = 11:00Z, one hour after the fixed clock.
   assert.equal(iso(decision.until), '2026-09-08T11:00:00.000Z');
@@ -477,31 +464,32 @@ test('an explicit exhaustion line that names its reset pauses until that reset',
   assert.equal(decision.line, CLAUDE_SESSION_WINDOW);
   assert.equal(
     decision.why,
-    `usage window spent: provider said "${CLAUDE_SESSION_WINDOW}" · paused until 11:00 (the reset it named)`
+    `usage window spent: provider said "${CLAUDE_SESSION_WINDOW}" · back at 11:00 (the reset it named)`
       + ' · meter 5h 48% · weekly 78%',
   );
-  assert.equal(quotaPauseProven(decision, NOW), true);
-  assert.equal(quotaPauseProven(decision, Date.parse('2026-09-08T11:00:00Z')), false, 'a passed reset proves nothing');
 });
 
-test('window wording without a reset, or a long throttle wait, does not pause below 95%', () => {
+test('window wording without a reset, or a long throttle wait, names no reset below 95%', () => {
   for (const text of ['Error: usage limit reached', 'usage_credits_required', 'Rate limit exceeded · resets 3pm']) {
     const decision = decide(connectorOf(PROVIDER_CONNECTORS.codex), text);
-    assert.equal(decision.pause, false, text);
     assert.equal(decision.rule, 'transient', text);
+    assert.equal(decision.until, null, text);
   }
   assert.equal(decide({}, 'Rate limit exceeded · resets 3pm').retrySamePool, false);
-  // No meter at all is not proof either.
-  assert.equal(decide({}, 'Error: usage limit reached', { meter: null }).pause, false);
+  // No meter at all names no reset either.
+  const unread = decide({}, 'Error: usage limit reached', { meter: null });
+  assert.equal(unread.until, null);
+  // A spent window with no reset says so in plain words.
+  assert.equal(unread.why, 'usage window spent: provider said "Error: usage limit reached" · no reset named · meter not read');
 });
 
-test('both wordings are pinned for every provider: throttle retries, a named spent window pauses', () => {
+test('both wordings are pinned for every provider: throttle retries, a named spent window has its reset', () => {
   const windowWithReset = 'Error: usage limit reached · resets 3pm';
   for (const [name, path] of Object.entries(PROVIDER_CONNECTORS)) {
     const connector = connectorOf(path);
     for (const throttle of [COMMAND_CODE_THROTTLE, '429 Too Many Requests']) {
       const decision = decide(connector, throttle);
-      assert.equal(decision.pause, false, `${name}: ${throttle}`);
+      assert.equal(decision.until, null, `${name}: ${throttle}`);
     }
     const spent = decide(connector, windowWithReset);
     assert.equal(spent.rule, 'message', `${name}: spent window`);
@@ -523,152 +511,52 @@ test('synthetic refusal windows and windows already over are not meter evidence'
     readAt: null,
     windows: [{ window: 'weekly', usedPct: 40, resetsAt: '2026-09-11T12:00:00.000Z' }],
   });
-  assert.equal(decide({}, COMMAND_CODE_THROTTLE, { meter: marker }).pause, false);
+  assert.equal(decide({}, COMMAND_CODE_THROTTLE, { meter: marker }).until, null);
   const over = { captured_at: '2026-09-08T04:00:00Z', five_hour: { utilization: 100, resets_at: '2026-09-08T05:00:00Z' } };
   assert.equal(meterReadingOf(over, { now: NOW }), null);
-  assert.equal(decide({}, COMMAND_CODE_THROTTLE, { meter: over }).pause, false);
+  assert.equal(decide({}, COMMAND_CODE_THROTTLE, { meter: over }).until, null);
 });
 
-test('with automatic pausing off nothing pauses, even a spent window with a reset', () => {
-  const connector = connectorOf(PROVIDER_CONNECTORS['claude-code']);
-  const meter = { ...INCIDENT_METER, five_hour: { utilization: 100, resets_at: '2026-09-08T12:00:00Z' } };
-  for (const text of [CLAUDE_SESSION_WINDOW, COMMAND_CODE_THROTTLE]) {
-    const decision = decide(connector, text, { meter, pausing: false });
-    assert.equal(decision.pause, false, text);
-    assert.equal(decision.rule, 'off', text);
-    assert.match(decision.why, /pool not paused: automatic pausing is off/);
-    assert.equal(quotaPauseProven(decision, NOW), false);
-  }
-  assert.equal(pausingEnabled({}), true, 'default on');
-  assert.equal(pausingEnabled({ strategy: { pausing: 'off' } }), false);
-  assert.equal(pausingEnabled({ strategy: { pausing: false } }), false);
-  assert.equal(pausingEnabled({ strategy: { pausing: 'on' } }), true);
-});
-
-test('the switch and the meter are read from the home when not passed', () => {
+test('the meter is read from the home when not passed, and a state.json switch changes nothing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-quota-home-'));
   try {
     mkdirSync(join(dir, 'meters'), { recursive: true });
     writeFileSync(join(dir, 'meters', 'claude-code.json'), `${JSON.stringify({
       ...INCIDENT_METER, five_hour: { utilization: 99, resets_at: '2026-09-08T12:00:00Z' },
     })}\n`);
-    assert.equal(readPausing(dir), true, 'no state.json: on');
     const connector = connectorOf(PROVIDER_CONNECTORS['claude-code']);
     const failure = findQuotaFailure(connector, COMMAND_CODE_THROTTLE);
-    const on = decideQuotaPause({ connector, failure, pool: 'claude-code', bullswarmDir: dir, now: NOW });
-    assert.equal(on.rule, 'meter');
+    const read = decideUsageLimit({ connector, failure, pool: 'claude-code', bullswarmDir: dir, now: NOW });
+    assert.equal(read.rule, 'meter');
+    // An old home may still say `strategy.pausing: "off"`; nothing reads it.
     writeFileSync(join(dir, 'state.json'), JSON.stringify({ strategy: { pausing: 'off' } }));
-    assert.equal(readPausing(dir), false);
-    const off = decideQuotaPause({ connector, failure, pool: 'claude-code', bullswarmDir: dir, now: NOW });
-    assert.equal(off.rule, 'off');
+    assert.deepEqual(decideUsageLimit({ connector, failure, pool: 'claude-code', bullswarmDir: dir, now: NOW }), read);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a pause reads in plain words: deadline, proof, provider line, meter, and the lift command', () => {
-  const connector = connectorOf(PROVIDER_CONNECTORS['claude-code']);
-  const decision = decide(connector, CLAUDE_SESSION_WINDOW);
-  const record = {
-    until: decision.until, reason: decision.why, kind: 'quota', rule: decision.rule,
-    line: decision.line, meter: decision.meter, meterWindow: decision.meterWindow,
-  };
-  assert.equal(
-    describePoolPause('claude-code', record, { now: NOW, timeZone: 'UTC' }),
-    `paused until 11:00 · usage window spent, provider named the reset · provider: "${CLAUDE_SESSION_WINDOW}"`
-      + ' · meter then: 5h 48% · weekly 78% · lift now: bullswarm pools resume claude-code',
-  );
-  const meterPause = decide(connector, COMMAND_CODE_THROTTLE, {
-    meter: { ...INCIDENT_METER, seven_day: { utilization: 96, resets_at: '2026-09-11T12:00:00Z' } },
-  });
-  assert.match(
-    describePoolPause('claude-code', { ...meterPause, kind: 'quota' }, { now: NOW, timeZone: 'UTC' }),
-    /^paused until Fri 11 Sep 12:00 · usage window spent, meter read weekly 96% \(>= 95%\) · provider: "Error: Rate limit exceeded/,
-  );
-  assert.equal(
-    describePoolPause('grok', { until: NOW + 10 * 60_000, kind: 'auth', reason: 'auth/throttle signature: "unauthorized"' }, { now: NOW, timeZone: 'UTC' }),
-    'paused until 10:10 · auth: auth/throttle signature: "unauthorized" · lift now: bullswarm pools resume grok',
-  );
-  assert.match(
-    describePoolPause('relay', { until: NOW + 60_000, kind: 'quota', reason: 'usage limit' }, { now: NOW, timeZone: 'UTC' }),
-    /quota \(recorded without evidence\): usage limit/,
-  );
-  assert.equal(formatPauseClock(NOW + 60 * 60_000, { now: NOW, timeZone: 'Asia/Hong_Kong' }), '19:00');
-  // The compact dashboard-row form of the same records.
-  const opts = { now: NOW, timeZone: 'UTC' };
-  assert.equal(pauseWord(record, opts), 'paused until 11:00 · provider named the reset');
-  assert.equal(pauseWord({ ...meterPause, kind: 'quota' }, opts), 'paused until Fri 11 Sep 12:00 · meter weekly 96%');
-  assert.equal(pauseWord({ until: NOW + 10 * 60_000, kind: 'auth' }, opts), 'paused until 10:10 · auth');
-  assert.equal(pauseWord(null, opts), null);
-  // The proof alone, for a line that already names the deadline.
-  assert.equal(pauseProof(record), `provider named the reset: "${CLAUDE_SESSION_WINDOW}"`);
-  assert.equal(pauseProof({ ...meterPause, kind: 'quota' }), `meter weekly 96% (>= 95%) · provider: "${COMMAND_CODE_THROTTLE}"`);
-  assert.equal(pauseProof({ until: NOW, kind: 'auth', reason: 'x' }), null);
-  assert.equal(pauseProof({ until: NOW, kind: 'quota', reason: 'usage limit' }), null);
+test('a reset reads as a local clock today, else with its day', () => {
+  assert.equal(formatResetClock(NOW + 60 * 60_000, { now: NOW, timeZone: 'Asia/Hong_Kong' }), '19:00');
+  assert.equal(formatResetClock(Date.parse('2026-09-11T12:00:00Z'), { now: NOW, timeZone: 'UTC' }), 'Fri 11 Sep 12:00');
+  assert.equal(formatResetClock(null, { now: NOW }), '?');
 });
 
-test('dropping a refusal marker removes only a synthetic meter snapshot', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-quota-marker-'));
-  try {
-    mkdirSync(join(dir, 'meters'), { recursive: true });
-    writeFileSync(join(dir, 'meters', 'walled.json'), JSON.stringify({ source: 'quota-refusal', quota_refusal: { refused_at: 'x' } }));
-    writeFileSync(join(dir, 'meters', 'real.json'), JSON.stringify(INCIDENT_METER));
-    assert.equal(dropQuotaRefusalSnapshot(dir, 'walled'), true);
-    assert.equal(dropQuotaRefusalSnapshot(dir, 'real'), false);
-    assert.equal(dropQuotaRefusalSnapshot(dir, 'absent'), false);
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'meters', 'real.json'), 'utf8')), INCIDENT_METER);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('with pausing off the result names holdUntil: the deadline a pause would have had, and pauses nothing', async () => {
-  const { quarantinePool } = await import('../src/lib/state.js');
+test('every decision has one shape: the reset when it is known, and no pause field', () => {
   const claude = connectorOf(PROVIDER_CONNECTORS['claude-code']);
-  // A message that names its reset: the same deadline the 'message' rule uses.
-  const named = decide(claude, CLAUDE_SESSION_WINDOW);
-  assert.equal(named.rule, 'message');
-  const namedOff = decide(claude, CLAUDE_SESSION_WINDOW, { pausing: false });
-  assert.equal(namedOff.rule, 'off');
-  assert.equal(namedOff.pause, false);
-  assert.equal(namedOff.until, null, 'until stays null: nothing is paused');
-  assert.equal(namedOff.holdUntil, named.until);
-  assert.equal(iso(namedOff.holdUntil), '2026-09-08T11:00:00.000Z');
-  // A meter window at or above the threshold: that window's reset.
-  const fullMeter = { ...INCIDENT_METER, seven_day: { utilization: QUOTA_PAUSE_METER_PCT, resets_at: '2026-09-11T12:00:00Z' } };
-  const metered = decide(claude, COMMAND_CODE_THROTTLE, { meter: fullMeter });
-  assert.equal(metered.rule, 'meter');
-  const meteredOff = decide(claude, COMMAND_CODE_THROTTLE, { meter: fullMeter, pausing: false });
-  assert.equal(meteredOff.rule, 'off');
-  assert.equal(meteredOff.holdUntil, metered.until);
-  assert.equal(iso(meteredOff.holdUntil), '2026-09-11T12:00:00.000Z');
-  assert.equal(meteredOff.meterWindow, null, 'no other field of the off result changes');
-  // Neither proof: null, as the 'transient' rule would pause nothing.
-  assert.equal(decide(claude, COMMAND_CODE_THROTTLE).rule, 'transient');
-  const transientOff = decide(claude, COMMAND_CODE_THROTTLE, { pausing: false });
-  assert.equal(transientOff.holdUntil, null);
-  assert.equal(decideQuotaPause({ text: null, meter: null, pausing: false, now: NOW }).holdUntil, null);
-  // The off result is every rule's shape plus holdUntil; the other rules gain nothing.
-  assert.deepEqual(Object.keys(namedOff).sort(), [
-    'decidedAt', 'holdUntil', 'limit', 'line', 'meter', 'meterWindow', 'pause', 'resetsAt', 'retrySamePool', 'rule', 'until', 'waitMs', 'why',
-  ]);
-  assert.deepEqual(Object.keys(named).sort(), [
-    'decidedAt', 'limit', 'line', 'meter', 'meterWindow', 'pause', 'resetsAt', 'retrySamePool', 'rule', 'until', 'waitMs', 'why',
-  ]);
-  for (const onResult of [named, metered, decide(claude, COMMAND_CODE_THROTTLE)]) assert.equal(Object.hasOwn(onResult, 'holdUntil'), false, onResult.rule);
-  // A holdUntil can never become a pause.
-  for (const off of [namedOff, meteredOff, transientOff]) {
-    assert.equal(quotaPauseProven(off, NOW), false);
-    assert.equal(quotaPauseProven({ ...off, until: off.holdUntil }, NOW), false);
-    const state = { strategy: { pausing: 'off' }, pools: {} };
-    assert.equal(quarantinePool(state, 'claude-code', off.why, NOW, { kind: 'quota', evidence: off }), null);
-    assert.equal(quarantinePool(state, 'claude-code', off.why, NOW, { kind: 'quota', evidence: { ...off, pause: true, until: off.holdUntil } }), null);
-    assert.deepEqual(state.pools, {});
+  const fullMeter = { ...INCIDENT_METER, seven_day: { utilization: QUOTA_METER_SPENT_PCT, resets_at: '2026-09-11T12:00:00Z' } };
+  const results = [
+    decide(claude, CLAUDE_SESSION_WINDOW),
+    decide(claude, COMMAND_CODE_THROTTLE, { meter: fullMeter }),
+    decide(claude, COMMAND_CODE_THROTTLE),
+  ];
+  assert.deepEqual(results.map((result) => result.rule), ['message', 'meter', 'transient']);
+  assert.deepEqual(results.map((result) => iso(result.until)), ['2026-09-08T11:00:00.000Z', '2026-09-11T12:00:00.000Z', null]);
+  for (const result of results) {
+    assert.deepEqual(Object.keys(result).sort(), [
+      'decidedAt', 'limit', 'line', 'meter', 'meterWindow', 'resetsAt', 'retrySamePool', 'rule', 'until', 'waitMs', 'why',
+    ], result.rule);
   }
-  // Even with pausing on in the state, an off result is not proof of a pause.
-  const onState = { pools: {} };
-  assert.equal(quarantinePool(onState, 'claude-code', namedOff.why, NOW, { kind: 'quota', evidence: namedOff }), null);
-  assert.deepEqual(onState.pools, {});
 });
 
 test('every decision names the wording it read: limit window for a spent window or balance, throttle for request pacing', () => {
@@ -682,39 +570,40 @@ test('every decision names the wording it read: limit window for a spent window 
     ['429 Too Many Requests', 'throttle'],
   ];
   for (const [text, limit] of cases) {
-    for (const pausing of [true, false]) {
-      for (const [meterName, meter] of [['below 95%', INCIDENT_METER], ['full', fullMeter], ['none', null]]) {
-        const decision = decide(claude, text, { pausing, meter });
-        const label = `${text} · pausing ${pausing} · meter ${meterName}`;
-        assert.equal(decision.line, text, label);
-        assert.equal(decision.limit, limit, label);
-        // The wording is read whatever the rule decided: a throttle can still
-        // pause on a full meter, and a spent window can still be transient.
-        if (!pausing) assert.equal(decision.rule, 'off', label);
-      }
+    for (const [meterName, meter] of [['below 95%', INCIDENT_METER], ['full', fullMeter], ['none', null]]) {
+      const decision = decide(claude, text, { meter });
+      const label = `${text} · meter ${meterName}`;
+      assert.equal(decision.line, text, label);
+      // The wording is read whatever the rule decided: a throttle can still
+      // be spent on a full meter, and a spent window can still name no reset.
+      assert.equal(decision.limit, limit, label);
     }
   }
-  // The rules each case lands on with pausing on, pinned so `limit` is seen
-  // to be independent of them.
+  // The rules each case lands on, pinned so `limit` is seen to be
+  // independent of them.
   assert.equal(decide(claude, 'Credit balance is too low').rule, 'transient');
   assert.equal(decide(claude, "You've hit your session limit").rule, 'transient');
   assert.equal(decide(claude, CLAUDE_SESSION_WINDOW).rule, 'message');
   assert.equal(decide(claude, 'Too many requests').rule, 'transient');
   assert.equal(decide(claude, 'Too many requests', { meter: fullMeter }).rule, 'meter');
   // No notice at all reads as a throttle: nothing says a window is spent.
-  assert.equal(decideQuotaPause({ text: null, meter: null, pausing: true, now: NOW }).limit, 'throttle');
-  assert.equal(decideQuotaPause({ text: null, meter: null, pausing: false, now: NOW }).limit, 'throttle');
+  assert.equal(decideUsageLimit({ text: null, meter: null, now: NOW }).limit, 'throttle');
 });
 
 // The old deadline chain (message, else the cached 5h reset,
-// else a flat 30 minutes) and the raw substring matchers had no caller left.
-// A deadline is only ever measured (Q3); findQuotaFailure is the one matcher.
+// else a flat 30 minutes), the raw substring matchers and the pause machinery
+// (the switch, the proof check and the pause texts) had no caller left. A
+// reset is only ever measured (Q3); findQuotaFailure is the one matcher.
 test('the dead quota helpers stay deleted', async () => {
   const quota = await import('../src/lib/quota.js');
-  for (const name of ['quotaQuarantineUntil', 'DEFAULT_QUOTA_QUARANTINE_MS', 'matchQuotaSignature', 'matchLikelyQuotaFailure']) {
+  for (const name of [
+    'quotaQuarantineUntil', 'DEFAULT_QUOTA_QUARANTINE_MS', 'matchQuotaSignature', 'matchLikelyQuotaFailure',
+    'decideQuotaPause', 'quotaPauseProven', 'pausingEnabled', 'readPausing', 'describePoolPause',
+    'pauseWord', 'pauseProof', 'dropQuotaRefusalSnapshot', 'QUOTA_PAUSE_METER_PCT', 'formatPauseClock',
+  ]) {
     assert.equal(Object.hasOwn(quota, name), false, name);
   }
-  // Without a named reset or a full meter, nothing supplies a deadline.
-  const noProof = decideQuotaPause({ text: 'usage limit reached', meter: null, pausing: true, now: NOW });
-  assert.deepEqual([noProof.pause, noProof.until, noProof.resetsAt], [false, null, null]);
+  // Without a named reset or a full meter, nothing supplies a reset.
+  const noReset = decideUsageLimit({ text: 'usage limit reached', meter: null, now: NOW });
+  assert.deepEqual([noReset.rule, noReset.until, noReset.resetsAt], ['transient', null, null]);
 });

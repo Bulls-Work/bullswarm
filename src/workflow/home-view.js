@@ -6,6 +6,7 @@
 
 import { asciiGlyphsPreferred, glyphs } from '../lib/glyphs.js';
 import { finiteOrNull } from '../lib/num.js';
+import { refusalResetKnown } from '../meters/framework.js';
 import { dayKey } from './history.js';
 import { meterBar, paceWord, untilText } from './usage-view.js';
 import {
@@ -494,9 +495,11 @@ function quotaRefusalText(row, nowMs = Date.now()) {
     ?? marker?.refused_at
     ?? null;
   const at = Date.parse(raw ?? '');
-  if (!Number.isFinite(at)) return 'blocked · refused recently';
-  const minutes = Math.max(0, Math.floor((nowMs - at) / 60_000));
-  return minutes < 1 ? 'blocked · refused just now' : `blocked · refused ${minutes}m ago`;
+  // A marker whose reset was guessed keeps no pool out (framework.js).
+  const known = refusalResetKnown(marker ?? row?.meterSnapshot?.quota_refusal);
+  const minutes = Number.isFinite(at) ? Math.max(0, Math.floor((nowMs - at) / 60_000)) : null;
+  const age = minutes == null ? 'recently' : minutes < 1 ? 'just now' : `${minutes}m ago`;
+  return known ? `blocked · refused ${age}` : `refused ${age} · reset unknown`;
 }
 
 /** The assignment a run's step was dispatched under, if one was recorded. */

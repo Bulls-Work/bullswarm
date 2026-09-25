@@ -22,7 +22,7 @@ import { deliverableVerdict, snapshotPossible } from '../src/workflow/v2-dispatc
 import * as dispatchModule from '../src/workflow/v2-dispatch.js';
 import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
-import { helpText } from '../src/help.js';
+import { HELP_PATHS, helpText } from '../src/help.js';
 import { extractGoalRequirements } from '../src/workflow/goal.js';
 import { pickPool } from '../src/lib/route.js';
 
@@ -736,13 +736,15 @@ test('the skill says a usage limit or no free pool comes back to you, with the b
   assert.equal(json.options.waitForIt, `after ${BACK_AT}: bullswarm workflow step rerun <shortId> <step>`);
   // No pool free: the why names each pool's reason, as the dispatcher words it.
   const dispatch = read('src/workflow/v2-dispatch.js');
-  for (const words of ["'no pool with quota to spare'", "'no pool free'", "'paused for quota'", '· no retry: ']) {
+  for (const words of ["'no pool with quota to spare'", "'no pool free'", '· no retry: ']) {
     assert.ok(dispatch.includes(words), `the dispatcher writes ${words}`);
   }
+  // No pool is paused or benched any more, so no reason says so.
+  for (const words of ['paused for quota', "'benched'"]) assert.ok(!dispatch.includes(words), `the dispatcher no longer writes ${words}`);
   assert.ok(skill.includes('`· no retry: <pool> <reason>; …`'));
-  assert.ok(skill.includes('`no pool with quota to spare: <pool> paused for quota until <time>; …`'));
+  assert.ok(skill.includes('`no pool with quota to spare: <pool> at its 5-hour limit until <time>; …`'));
   assert.ok(skill.includes('`no pool free: …`'));
-  const noPool = renderNeedsYou(limitFacts({ attempts: false, why: `no pool with quota to spare: pool-a paused for quota until ${BACK_AT}` }));
+  const noPool = renderNeedsYou(limitFacts({ attempts: false, why: `no pool with quota to spare: pool-a at its 5-hour limit until ${BACK_AT}` }));
   assert.match(noPool[0], / <step> needs you · out of quota · not retried$/);
   assert.ok(noPool.includes(`  back at   ${BACK_AT}`));
   const notFree = renderNeedsYou(limitFacts({ attempts: false, failureKind: 'unavailable', why: 'no pool free: pool-a already failed on this step' }));
@@ -755,11 +757,12 @@ test('the skill says a usage limit or no free pool comes back to you, with the b
   assert.equal(dispatchModule.MARKED_THROTTLE_MAX_WAIT_MS, 2 * 60_000);
   assert.equal(THROTTLE_MAX_WAIT_MS, 15 * 60_000);
   assert.ok(skill.includes(`It ${THROTTLE_SENTENCE}`));
-  assert.ok(skill.includes('with automatic pausing on or off'));
+  // There is no pausing switch to name any more.
+  assert.ok(!skill.includes('pausing'));
   assert.ok(skill.includes('even when the notice names no reset'));
   assert.ok(skill.includes('One that names a longer wait comes back to you at once, with `back at` at the end of that wait.'));
   // A backoff whose pool is out comes back at once, with that pool's own return.
-  const backoffLost = 'One whose pool is no longer free for the backoff (paused, at its 5-hour, weekly or monthly limit, nearly spent or benched in the meantime) comes back to you at once too: as `out of quota` when that pool is out on a usage limit, with `back at` its return when that is known.';
+  const backoffLost = 'One whose pool is no longer free for the backoff (at its 5-hour, weekly or monthly limit, or nearly spent in the meantime) comes back to you at once too: as `out of quota` when that pool is out on a usage limit, with `back at` its return when that is known.';
   // A process failure retries by itself, on the same pool when it is the only
   // one (except after a sign-in failure): the pages never say it always moves.
   const processRetry = 'A sign-in failure, a provider error or a worker that died at start still gets the step\'s one automatic retry by itself, on another free pool when there is one.';
@@ -797,31 +800,35 @@ test('the workflows guide shows a usage limit\'s block exactly as renderNeedsYou
 });
 
 test('the watch pages give the usage-limit line and the needs-you JSONL fields the code prints', async () => {
-  const quotaLine = (fields) => renderWatchEvent({ type: 'attempt.quota', actionId: '<step>', pool: '<pool>', proof: null, willRetry: false, failureRule: true, ...fields });
-  assert.match(quotaLine({ until: BACK_AT }), / <step> usage limit on <pool> · paused until \S+ · back to you$/);
-  // A marked run's pool that was not paused for it: `not paused` (a notable
-  // that carried a return time would print it; the runtime's never does).
-  assert.match(quotaLine({ until: null, paused: false, backAt: BACK_AT }), new RegExp(` <step> usage limit on <pool> · back at ${BACK_AT} · back to you$`));
-  assert.match(quotaLine({ until: null }), / <step> usage limit on <pool> · not paused · back to you$/);
-  // A real marked run whose step hit a usage limit with its return time known
-  // and no pause: the attempt's event carries no return time, so the line
-  // reads `not paused`, and the needs-you block after it carries `back at`.
+  const quotaLine = (fields) => renderWatchEvent({ type: 'attempt.quota', actionId: '<step>', pool: '<pool>', willRetry: false, failureRule: true, ...fields });
+  // No pool is paused, so the line names no pause: `back at` when the watch
+  // knows when the pool is back (a time the why names, or one the event
+  // carries), else nothing between the pool and the tail.
+  assert.match(quotaLine({ until: BACK_AT }), / <step> usage limit on <pool> · back at \S+ · back to you$/);
+  assert.match(quotaLine({ until: null, backAt: BACK_AT }), new RegExp(` <step> usage limit on <pool> · back at ${BACK_AT} · back to you$`));
+  assert.match(quotaLine({ until: null }), / <step> usage limit on <pool> · back to you$/);
+  for (const until of [BACK_AT, null]) assert.ok(!/paused/.test(quotaLine({ until })), 'the line names no pause');
+  // A real marked run whose step hit a usage limit with its return time
+  // known: the attempt's event carries no return time, so the line names
+  // none, and the needs-you block after it carries `back at`.
   const run = await limitStopRun({ mode: 'program' });
   const stepEvents = run.events.filter((event) => event.payload?.actionId === 'write-report');
   const attemptFinished = stepEvents.find((event) => event.type === 'attempt.finished');
   assert.equal(Object.hasOwn(attemptFinished.payload, 'retryAfter'), false, 'attempt events carry no retryAfter');
   const [limitNotable] = notableWatchEvents({ events: [attemptFinished], state: run.state, features: STAGE3_RUN_FEATURES }).notable;
-  assert.equal(renderWatchEvent(limitNotable).replace(/^\S+ /, '⚠ '), '⚠ write-report usage limit on pool-a · not paused · back to you');
+  assert.equal(renderWatchEvent(limitNotable).replace(/^\S+ /, '⚠ '), '⚠ write-report usage limit on pool-a · back to you');
   const stepFinished = stepEvents.find((event) => event.type === 'action.finished');
   assert.equal(stepFinished.payload.retryAfter, BACK_AT);
   assert.ok(renderNeedsYou(needsYouFacts(run.state, stepFinished, { token: '<id>', features: STAGE3_RUN_FEATURES })).includes(`  back at   ${BACK_AT}`));
-  assert.ok(flat('skill/references/operations.md').includes('(`not paused` in place of the pause when the pool was not paused for it: the line carries no return time), then the needs-you block, which carries the return time as `back at <time>` when it is known'));
-  assert.ok(flat('docs/guide/observing.md').includes('the line reads `not paused` in place of the pause deadline (`⚠ <actionId> usage limit on <pool> · not paused · back to you`): the attempt\'s event carries no return time. The needs-you block that follows carries it instead, as its `back at <time>` line, when the return time is known.'));
-  assert.ok(helpText(['workflow', 'watch']).replace(/\s+/g, ' ').includes('a pool that was not paused for it reads `not paused` in place of the pause, and the needs-you block after it carries the `back at <time>` line'));
+  assert.ok(flat('skill/references/operations.md').includes('After a usage limit a full watch prints `⚠ <step> usage limit on <pool> · back to you` (the attempt carries no return time, so the line names none), then the needs-you block, which carries the return time as `back at <time>` when it is known.'));
+  assert.ok(flat('docs/guide/observing.md').includes('The attempt\'s event carries no return time, so the line reads `⚠ <actionId> usage limit on <pool> · back to you`; the needs-you block that follows carries the time instead, as its `back at <time>` line, when it is known.'));
+  assert.ok(helpText(['workflow', 'watch']).replace(/\s+/g, ' ').includes('an `⚠ ... usage limit on <pool>` line, with `back at <time>` in it when the watch knows when the pool is back. In a run started by this version it ends `back to you` and a needs-you block follows: nothing waits for the pool or moves the step, and the block carries `back at <time>` and a `wait for it` rerun when the reset is known.'));
+  for (const text of [flat('skill/references/operations.md'), flat('docs/guide/observing.md'), helpText(['workflow', 'watch'])]) {
+    assert.ok(!text.includes('not paused') && !text.includes('pause deadline'), 'no page names a pause on the usage-limit line');
+  }
   // A saved stage-3 attempt that promised a retry.
   assert.match(renderWatchEvent({ type: 'attempt.quota', actionId: '<step>', pool: '<pool>', until: null, willRetry: true, failureRule: true }), / · no retry spent$/);
   const operations = flat('skill/references/operations.md');
-  assert.ok(operations.includes('`⚠ <step> usage limit on <pool> · paused until <time> · … · back to you`'));
   assert.ok(operations.includes('`backAt` and `options.waitForIt`'));
   const observing = flat('docs/guide/observing.md');
   assert.ok(observing.includes('the line ends `back to you`'));
@@ -895,7 +902,8 @@ test('workflow capabilities states the failure rule the docs give', { timeout: 6
     // The guides say the same: a draining pool is never fed, not even last.
     assert.ok(flat('docs/guide/workflows.md').includes('The dispatched planner and the preflight scout are never given such a pool either; only a pool you pinned is exempt (`--orchestrator <pool> --orchestrator-strict` for the planner, `--worker-pool` for the scout).'));
     assert.ok(flat('docs/guide/routing.md').includes('In a workflow started by this version a `draining` pool does not go last: it is never given a step, the dispatched planner or the preflight scout, even as the only pool left, unless you pinned it.'));
-    assert.match(rule.quota, /ends the step and goes to the caller at once, whatever the pausing switch; never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free$/);
+    assert.match(rule.quota, /ends the step and goes to the caller at once, never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free$/);
+    assert.ok(!Object.values(rule).some((text) => /paus|bench/.test(String(text))), 'the failure rule names no pause or bench');
     assert.match(rule.quota, /with or without a reset, or a full meter/);
     assert.match(rule.throttle, /backs off on the same pool at most twice without spending the retry \(20 s, then 60 s, or a named wait of at most 2 minutes\), then goes to the caller/);
     assert.match(rule.throttle, /a longer named wait goes to the caller at once, with retryAfter at its end; a backoff whose pool is no longer free goes to the caller at once, as quota when that pool is out on a usage limit, with retryAfter its known return$/);
@@ -940,11 +948,9 @@ test('no skill page, guide, reference or help text describes a step that waits f
   const watch = helpText(['workflow', 'watch']);
   for (const phrase of stale) assert.ok(!watch.includes(phrase), `workflow watch --help: ${phrase}`);
   assert.ok(watch.includes('it ends `back to you` and a needs-you block follows'));
-  assert.ok(helpText(['strategy', 'set-pausing']).includes('a spent usage window still ends the step and sends it back to the caller, whatever the switch'));
-  assert.ok(flat('docs/reference/cli.md').includes('a spent usage window still ends the step and comes back to you, whatever the switch'));
 });
 
-test('the pages give the limit rules the code applies: the last-mile reason, any spent window, auth with pausing off', async () => {
+test('the pages give the limit rules the code applies: the last-mile reason, any spent window, a sign-in failure with nothing paused', async () => {
   const { BURST_BLOCK_PCT, windowSpent } = await import('../src/meters/framework.js');
   const pages = [
     'skill/SKILL.md', 'skill/references/operations.md', 'skill/references/program.md', 'docs/reference/program.md',
@@ -991,19 +997,33 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
       assert.ok(!flat(path).includes(phrase), `${path}: ${phrase}`);
     }
   }
-  const pausing = helpText(['strategy', 'set-pausing']).replace(/\s+/g, ' ');
-  assert.ok(pausing.includes('the pool\'s meter is read again at once, so a window it shows at 100% keeps the pool out of later steps until that window resets'));
-  // A sign-in failure stays `auth` with pausing off; the switch only pauses.
-  assert.ok(pausing.includes('Either way a sign-in failure is failure kind auth, and the step\'s retry skips every pool that shares its credential.'));
-  assert.ok(flat('docs/reference/cli.md').includes('A sign-in failure is failure kind `auth` either way, and the step\'s retry skips every pool that shares that credential.'));
-  assert.ok(flat('CHANGELOG.md').includes('with automatic pausing off (`strategy set-pausing off`), a sign-in failure is still a sign-in failure (`auth`)'));
-  const offLine = read('src/cli.js').match(/'(automatic pausing is off: [^']*)'/)[1];
-  assert.ok(!offLine.includes('retried') && !offLine.includes('moves to another pool'), offLine);
-  assert.ok(flat('docs/reference/cli.md').includes(`\`set-pausing off\` prints \`${offLine}\``));
-  assert.ok(flat('CHANGELOG.md').includes(`\`${offLine.slice(offLine.indexOf('a spent usage window'), offLine.indexOf(' · '))}\``));
-  // The bench reasons the code writes: stall, provider (an empty free answer too), probe.
-  for (const path of ['docs/reference/cli.md', 'docs/guide/routing.md']) assert.ok(!flat(path).includes('**empty output**') && !flat(path).includes('`empty output` or `probe`'), path);
-  assert.ok(flat('docs/reference/cli.md').includes('A bench reason is one of `stall`, `provider` or `probe`.'));
+  // Nothing pauses or benches a pool (owner decision, 2026-09-25): the switch,
+  // pools resume and the bench are gone from the command tree, every help
+  // text and every page. configuration.md names the old state keys only to
+  // say they are ignored, and the CHANGELOG says what was removed.
+  const paths = HELP_PATHS.map((path) => path.join(' '));
+  for (const gone of ['strategy set-pausing', 'pools resume']) assert.ok(!paths.includes(gone), gone);
+  const pauseWords = ['set-pausing', 'pools resume', 'automatic pausing', 'pausing switch', 'PAUSED', 'BENCHED', 'strikes=', 'soft bench', 'soft-bench', 'quarantine', 'Quarantine'];
+  for (const path of HELP_PATHS) {
+    const text = helpText(path);
+    for (const phrase of pauseWords) assert.ok(!text.includes(phrase), `${path.join(' ') || '(root)'} --help: ${phrase}`);
+    assert.ok(!/\bbenched\b/.test(text), `${path.join(' ') || '(root)'} --help names a benched pool`);
+  }
+  const noPausePages = [...pages.filter((path) => path !== 'docs/reference/configuration.md'), 'skill/references/program.md', 'docs/reference/providers.md', 'docs/guide/index.md', 'docs/guide/run.md', 'docs/guide/playbook.md', 'docs/integrations/claude-code.md'];
+  for (const path of noPausePages) {
+    const text = flat(path);
+    for (const phrase of pauseWords) assert.ok(!text.includes(phrase), `${path}: ${phrase}`);
+    assert.ok(!/\bbenched\b/.test(text), `${path} names a benched pool`);
+  }
+  const configuration = flat('docs/reference/configuration.md');
+  assert.ok(configuration.includes('| `pools.<name>.quarantine`, `pools.<name>.bench` | left by 0.35.6 and earlier, which paused a pool after a usage limit or a sign-in failure; ignored now, because nothing pauses a pool any more.'));
+  assert.ok(flat('CHANGELOG.md').includes('`bullswarm strategy set-pausing`, `bullswarm pools resume`, and the `PAUSED`, `BENCHED`, `strikes=` and `automatic pausing: off` lines in `bullswarm pools` are gone'));
+  // A sign-in failure: the step's retry skips the dead credential's group,
+  // for that step only; nothing is stored for the next step.
+  assert.ok(flat('docs/guide/routing.md').includes('every pool in the same credential group (`credentialGroup` in the connector) is skipped for the rest of that step, so the retry never walks from one name to the next on the same dead credential. Nothing is stored: the next step routes as usual and can pick that pool again.'));
+  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md']) {
+    assert.ok(flat(path).includes('After a sign-in failure that retry skips every pool that shares the credential; nothing is stored, so a later step can pick that pool again.'), path);
+  }
   // A single run writes three files: task, out, and one raw capture.
   assert.ok(concepts.includes('Each `bullswarm run` writes three files under `~/.bullswarm/runs/`'));
 });
@@ -1118,7 +1138,7 @@ test('docs do not overstate the failure rule: not-produced gets its gate retry, 
     assert.ok(!text.includes('Quota never fails only because it is exhausted'), path);
     // A usage limit, or no free pool, goes to the caller; only a rate limit backs off.
     assert.ok(text.includes('`quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry'), path);
-    assert.ok(text.includes('Nothing waits for a pool. A limit notice is `quota` when it says a usage window, a quota or a balance is spent, with or without a reset named and whatever the pausing switch'), path);
+    assert.ok(text.includes('Nothing waits for a pool, and nothing about a failed pool is remembered. A limit notice is `quota` when it says a usage window, a quota or a balance is spent, with or without a reset named, or when the pool\'s meter shows the window full'), path);
     assert.ok(text.includes('the step comes back to you as `quota` when every reason is a usage limit, else as `unavailable`'), path);
     assert.ok(text.includes('If a route leaves no free pool, the step comes back to you at once'), path);
   }
@@ -1142,7 +1162,8 @@ test('docs do not overstate the failure rule: not-produced gets its gate retry, 
   const agents = flat('AGENTS.md');
   assert.ok(!agents.includes('never fail, whatever the pausing switch'));
   assert.ok(!agents.includes('it never fails for quota while a return time is known'));
-  assert.ok(agents.includes('ends the step and sends it to the caller, whatever the pausing switch: no wait, no automatic move, no retry.'));
+  assert.ok(agents.includes('ends the step and sends it to the caller: no wait, no automatic move, no retry.'));
+  assert.ok(!agents.includes('pausing'), 'AGENTS.md names no pausing switch');
 });
 
 // A marked run whose dispatched planner or preflight scout a usage limit
@@ -1297,13 +1318,13 @@ test('the pages give the reason a planner or scout stopped by a usage limit fini
   }
   assert.ok(flat('CHANGELOG.md').includes('(it used to read `× planning attempt rejected · …`)'));
   // Before it, the planner attempt's own usage-limit line, which ends `no
-  // retry left` and brings no needs-you block. The pool was not paused and
-  // the attempt's event carries no return time: `not paused`.
+  // retry left` and brings no needs-you block. The attempt's event carries no
+  // return time, so the line names none.
   const everyLine = notableWatchEvents({ events: planner.events, state: planner.state, features: STAGE3_RUN_FEATURES }).notable;
   assert.deepEqual(everyLine.map((event) => event.type), ['attempt.quota', 'planner.finished']);
-  assert.match(renderWatchEvent(everyLine[0]), / workflow-planner usage limit on pool-a · not paused · no retry left$/);
+  assert.match(renderWatchEvent(everyLine[0]), / workflow-planner usage limit on pool-a · no retry left$/);
   assert.equal(watchTrouble(everyLine[0], { program: true }), null);
-  assert.ok(flat('docs/guide/observing.md').includes('a scout or planner attempt that hit a usage limit prints its own usage-limit line, which ends `no retry left` there (`⚠ preflight-scout usage limit on <pool> · … · no retry left`) and is followed by no needs-you block'));
+  assert.ok(flat('docs/guide/observing.md').includes('a scout or planner attempt that hit a usage limit prints its own usage-limit line, which ends `no retry left` there (`⚠ preflight-scout usage limit on <pool> · no retry left`) and is followed by no needs-you block'));
   assert.ok(flat('skill/references/operations.md').includes('The scout\'s or the planner\'s own usage-limit line before it ends `no retry left`, and no needs-you block follows it.'));
   assert.ok(helpText(['workflow', 'watch']).replace(/\s+/g, ' ').includes('The scout\'s or the planner\'s own usage-limit line ends `no retry left`, and no needs-you block follows it.'));
   // A planner failure that is not a limit carries no return time.
@@ -1388,7 +1409,7 @@ test('the pages give the line the watch prints for a scout a usage limit stopped
   // Before it, the scout attempt's own usage-limit line, ending `no retry left`.
   const everyLine = notableWatchEvents({ events: withProgram.events, state: withProgram.state, features: STAGE3_RUN_FEATURES }).notable;
   assert.deepEqual(everyLine.slice(0, 2).map((event) => event.type), ['attempt.quota', 'preflight.scout_finished']);
-  assert.match(renderWatchEvent(everyLine[0]), / preflight-scout usage limit on pool-a · .* · no retry left$/);
+  assert.match(renderWatchEvent(everyLine[0]), / preflight-scout usage limit on pool-a · no retry left$/);
   // Without a program the line has no tail, and the run finishes instead.
   const scoutOnly = await limitStopRun({ mode: 'scout' });
   assert.equal(lineFor(scoutOnly), '⚠ preflight scout stopped · out of quota on <pool> · back at <time>');

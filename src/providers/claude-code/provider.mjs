@@ -449,9 +449,9 @@ export function connectors(ctx = {}) {
     clone.name = poolName;
     // No credentialGroup, deliberately: each home is a SEPARATE subscription
     // with its own credential and its own window. One seat's auth failure
-    // says nothing about the next one, so these pools are never benched
-    // together (contrast the opencode provider, where three pools share one
-    // relay).
+    // says nothing about the next one, so a dispatch never skips one for
+    // another's sign-in failure (contrast the opencode provider, where three
+    // pools share one relay).
     clone.env = { ...(base.env ?? {}), CLAUDE_CONFIG_DIR: account.configDir };
     clone.configDirs = [account.configDir];
     clone.flags = { ...(base.flags ?? {}), isCaller: false };

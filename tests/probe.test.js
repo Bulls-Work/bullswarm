@@ -155,7 +155,7 @@ test('the real default runner classifies stderr 404 and provider errors', async 
   } finally { f.cleanup(); }
 });
 
-test('a failed dispatch probe records its reason and falls through to a metered pool', async () => {
+test('a failed dispatch probe falls through to a metered pool, says why, and stores no strike', async () => {
   const f = home();
   const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
   const free = {
@@ -190,6 +190,6 @@ test('a failed dispatch probe records its reason and falls through to a metered 
     assert.equal(result.ok, true);
     assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['paid']);
     assert.match(result.attempts[0].routeWhy, /probe: 404/);
-    assert.deepEqual(core.pools.free.bench, { until: null, reason: 'probe: 404', count: 1 });
+    assert.deepEqual(core.pools, {}, 'the next dispatch probes the free pool afresh');
   } finally { f.cleanup(); }
 });

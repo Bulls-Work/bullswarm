@@ -689,7 +689,7 @@ function pinnedPoolIssues(doc, program, pools) {
   program.actions.forEach((action, index) => {
     const effort = action.effort ?? 'medium';
     const capable = prepareV2DispatchPools(pools, action, effort, {
-      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool, ignoreQuarantine: true,
+      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool,
     });
     if (!capable.length) {
       issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
@@ -719,7 +719,7 @@ function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_
 }
 
 // The configured pools without a live meter refresh: enough for the route
-// checks, which ignore pauses, benches and 5-hour gates.
+// checks, which ignore the metered-window gates.
 function configuredPools() {
   try { return buildPools(BULLSWARM_DIR(), Date.now()).pools; } catch { return null; }
 }
@@ -1539,8 +1539,8 @@ function reopenFinishedRun(resolvedRun, opts) {
     }
     return 1;
   }
-  // A step that failed with a return time still ahead (its pool out of quota,
-  // paused or benched; every pool that can run it out) can fail the same way
+  // A step that failed with a return time still ahead (its pool out of quota;
+  // every pool that can run it out) can fail the same way
   // when it runs before then. Say so; the caller chose to retry now.
   const retryNow = Date.now();
   const stillOut = (current.actions ?? []).filter((action) => outcome.requeued.includes(action.id)
@@ -1703,9 +1703,9 @@ async function wfCapabilities(opts) {
         retriesPerStep: 1,
         processFailure: 'retry once on another eligible pool; the same pool when it is the only candidate (except auth)',
         gateFailure: 'retry once on the same pool with the failure attached',
-        quota: 'a usage limit (a spent 5-hour or weekly window, or no credit left: a notice that says so, with or without a reset, or a full meter) ends the step and goes to the caller at once, whatever the pausing switch; never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free',
+        quota: 'a usage limit (a spent 5-hour or weekly window, or no credit left: a notice that says so, with or without a reset, or a full meter) ends the step and goes to the caller at once, never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free',
         throttle: 'a transient rate limit (too many requests, no usage window spent) backs off on the same pool at most twice without spending the retry (20 s, then 60 s, or a named wait of at most 2 minutes), then goes to the caller; a longer named wait goes to the caller at once, with retryAfter at its end; a backoff whose pool is no longer free goes to the caller at once, as quota when that pool is out on a usage limit, with retryAfter its known return',
-        noFreePool: 'no capable pool free at the first pick (nearly spent, at its 5-hour limit, paused or benched): the step goes to the caller, as quota when every reason is a usage limit, else unavailable; why names each pool and its reason; retryAfter is the earliest known return; a promised retry that finds no free pool keeps the last failure\'s kind and its why ends "· no retry: <pool> <reason>; …"',
+        noFreePool: 'no capable pool free at the first pick (nearly spent, or a 5-hour, weekly or monthly window at its limit): the step goes to the caller, as quota when every reason is a usage limit, else unavailable; why names each pool and its reason; retryAfter is the earliest known return; a promised retry that finds no free pool keeps the last failure\'s kind and its why ends "· no retry: <pool> <reason>; …"',
         plannerAndScout: 'the dispatched planner and the preflight scout follow the quota, throttle and noFreePool rules: a usage limit, a rate limit still there after its short same-pool backoff, or no free pool stops them with no move to another pool; a nearly spent pool (its window closes soon and the dispatch would push it past its limit) is never given to them either, unless the caller named it; the run finishes partial with "the workflow planner stopped on a usage limit: <why>" (or "the preflight scout stopped on a usage limit: <why>" for a scout with no program after it; "stopped: no pool free" when a pool was out for another reason or no pool can run it at all), back at retryAfter when known, and the caller\'s options (bullswarm workflow resume after retryAfter runs the stopped planner turn or scout again; plan it yourself with plan revise; or start a new run); a scout before a caller program lets the run go on without its report, and resume does not run that scout again; a sign-in failure, a provider error or a worker that died at start still moves them to another pool',
         then: 'caller; only dependents wait',
         savedRuns: 'keep their original retry and review rules',
@@ -1737,7 +1737,6 @@ async function wfCapabilities(opts) {
       burstGate: p.burstGate === true,
       fiveHourUsedPct: p.fiveHourUsedPct ?? null,
       nearFiveHourLimit: p.nearFiveHourLimit === true,
-      quarantined: Boolean(p.quarantine),
     })),
   };
   console.log(JSON.stringify(result, null, 2));
@@ -2077,7 +2076,7 @@ export async function rerunV2Step({
       const filter = resolveRouteFilter(state, definition, pools ?? []);
       const capable = prepareV2DispatchPools(pools ?? [], definition, definition.effort ?? 'medium', {
         preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
-        routeFilter: filter, ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true,
+        routeFilter: filter, ignoreBurstGate: true,
       }).filter((pool) => poolPassesRoute(pool, filter));
       if (!capable.length) {
         return stepError(2, `no pool could run ${stepId} after avoiding ${avoided.join(', ')} (${definition.lane}/${definition.effort} work); rerun without --avoid, or change the step's effort or route`, base);

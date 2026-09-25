@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -20,18 +20,18 @@ process.env.BULLSWARM_UNICODE = '1';
 // an affected user, so a contributor may well have it in their shell.
 delete process.env.BULLSWARM_ASCII;
 
-test('the watch quota line names the proof the pause was recorded with (quota.js Q6)', () => {
+test('the watch quota line says when the pool is back when that is known, and never that it is paused', () => {
   const now = Date.parse('2026-09-21T06:30:00Z');
   const until = new Date(now + 3600_000).toISOString();
+  // A `proof` an older watcher attached is not printed: it came from a pause.
   const line = renderWatchEvent({
     type: 'attempt.quota', actionId: 'write-report', pool: 'claude-code', until, willRetry: true,
     proof: 'meter weekly 96% (>= 95%) · provider: "Error: Rate limit exceeded. Please wait a moment and try again."',
   }, { now });
-  assert.match(line, /^⚠ write-report usage limit on claude-code · paused until \S+ · meter weekly 96% \(>= 95%\) · provider: "Error: Rate limit exceeded\. Please wait a moment and try again\." · retrying on another pool$/);
-  // A record written without evidence keeps the old line.
-  assert.match(
-    renderWatchEvent({ type: 'attempt.quota', actionId: 'a', pool: 'p', until, willRetry: false }, { now }),
-    /^⚠ a usage limit on p · paused until \S+ · no retry left$/,
+  assert.match(line, /^⚠ write-report usage limit on claude-code · back at \S+ · retrying on another pool$/);
+  assert.equal(
+    renderWatchEvent({ type: 'attempt.quota', actionId: 'a', pool: 'p', until: null, willRetry: false }, { now }),
+    '⚠ a usage limit on p · no retry left',
   );
 });
 
@@ -94,7 +94,7 @@ test('stage 3: a marked run\'s attempt.quota tail reads `back to you`, or `no re
     ...(failureRule ? { failureRule: true } : {}), ...(quotaNext ? { quotaNext } : {}),
   }, { now: Date.parse('2026-09-17T02:00:00.000Z') });
   // A usage limit sends the step to the caller: no wait, no move.
-  assert.match(quota(false, true), /^⚠ write-report usage limit on codex · paused until \S+ · back to you$/);
+  assert.match(quota(false, true), /^⚠ write-report usage limit on codex · back at \S+ · back to you$/);
   // A saved stage-3 attempt that promised a retry spent none; its recorded
   // move or wait decision no longer changes the line.
   assert.match(quota(true, true), /· no retry spent$/);
@@ -103,9 +103,9 @@ test('stage 3: a marked run\'s attempt.quota tail reads `back to you`, or `no re
     assert.doesNotMatch(quota(true, true, quotaNext), /moving to another pool|waiting for a pool/, quotaNext);
   }
   assert.match(quota(false, true, 'wait'), /· back to you$/);
-  // Unmarked runs read exactly as before, whatever the event carries.
-  assert.match(quota(true, false), /^⚠ write-report usage limit on codex · paused until \S+ · retrying on another pool$/);
-  assert.match(quota(false, false), /^⚠ write-report usage limit on codex · paused until \S+ · no retry left$/);
+  // Unmarked runs keep their tail, whatever the event carries.
+  assert.match(quota(true, false), /^⚠ write-report usage limit on codex · back at \S+ · retrying on another pool$/);
+  assert.match(quota(false, false), /^⚠ write-report usage limit on codex · back at \S+ · no retry left$/);
   assert.equal(quota(true, false, 'move'), quota(true, false));
   // The notable carries the flag only when the kernel's payload does.
   const state = { config: { settings: { executionMode: 'program' } }, program: { actions: [] }, actions: [], attempts: [] };
@@ -121,47 +121,50 @@ test('stage 3: a marked run\'s attempt.quota tail reads `back to you`, or `no re
   assert.equal(Object.hasOwn(notableWatchEvents({ events: [finished({ failureRule: true })], state: recorded }).notable[0], 'quotaNext'), false);
 });
 
-// Marked runs file a spent window as quota whether or not the pool was paused
-// (a limit notice with no reset, or pausing off): the line never reads
-// `paused until unknown` there.
-test('a marked run\'s usage-limit line reads `not paused` when no pause is found, or `back at` the time the event carries; an unmarked run reads as before', () => {
+// No pool is paused (state.js S1): a usage-limit line says `back at` the
+// return time the event carries, else a time its why names, and nothing
+// about when when neither is known.
+test('a usage-limit line reads `back at` the time the event carries or its why names, and nothing when neither is known', () => {
   const now = Date.parse('2026-09-17T02:00:00.000Z');
   const state = { config: { settings: { executionMode: 'program' } }, program: { actions: [] }, actions: [], attempts: [] };
-  const why = 'rate limited (transient): "You\'ve hit your session limit" · pool not paused (meter not read, below 95%; no spent window with a reset named)';
+  const why = 'usage window spent: provider said "You\'ve hit your session limit" · no reset named · meter not read';
   const finished = (extra) => ({ type: 'attempt.finished', payload: { actionId: 'a', attemptId: 'a-1', status: 'failed', failureKind: 'quota', willRetry: false, pool: 'luna-1', why, ...extra } });
   const line = (extra, options = {}) => {
     const [notable] = notableWatchEvents({ events: [finished(extra)], state, ...options }).notable;
     return [notable, renderWatchEvent(notable, { now })];
   };
-  const [notPaused, notPausedLine] = line({ failureRule: true });
-  assert.equal(notPausedLine, '⚠ a usage limit on luna-1 · not paused · back to you');
-  assert.equal(notPaused.paused, false);
-  assert.equal(Object.hasOwn(notPaused, 'backAt'), false);
+  const [unknown, unknownLine] = line({ failureRule: true });
+  assert.equal(unknownLine, '⚠ a usage limit on luna-1 · back to you');
+  assert.equal(Object.hasOwn(unknown, 'paused'), false);
+  assert.equal(Object.hasOwn(unknown, 'proof'), false);
+  assert.equal(Object.hasOwn(unknown, 'backAt'), false);
   // A return time on the event (an ISO string or epoch ms) is printed as ISO.
   const back = '2026-09-17T04:30:00.000Z';
   assert.equal(line({ failureRule: true, retryAfter: back })[1], `⚠ a usage limit on luna-1 · back at ${back} · back to you`);
   assert.equal(line({ failureRule: true, holdUntil: Date.parse(back) })[1], `⚠ a usage limit on luna-1 · back at ${back} · back to you`);
   assert.equal(line({ failureRule: true, retryAfter: back })[0].backAt, back);
-  // A pause the dispatcher recorded still reads `paused until`.
-  const paused = `usage window spent · pool paused until 2026-09-17T03:00:00.000Z`;
-  assert.match(line({ failureRule: true, why: paused, retryAfter: back })[1], /^⚠ a usage limit on luna-1 · paused until \S+ · back to you$/);
-  assert.equal(Object.hasOwn(line({ failureRule: true, why: paused })[0], 'paused'), false);
+  // A saved run's why that names a pause reads `back at` that time, never
+  // `paused until`; the event's own return time wins.
+  const paused = 'usage window spent · pool paused until 2026-09-17T03:00:00.000Z';
+  assert.match(line({ failureRule: true, why: paused })[1], /^⚠ a usage limit on luna-1 · back at \S+ · back to you$/);
+  assert.equal(line({ failureRule: true, why: paused })[0].until, '2026-09-17T03:00:00.000Z');
+  assert.equal(line({ failureRule: true, why: paused, retryAfter: back })[1], `⚠ a usage limit on luna-1 · back at ${back} · back to you`);
   // A marked event rendered on its own (no notable fields) reads the same.
   assert.equal(renderWatchEvent({ type: 'attempt.quota', actionId: 'a', pool: 'luna-1', until: null, willRetry: false, failureRule: true }, { now }),
-    '⚠ a usage limit on luna-1 · not paused · back to you');
-  // A planner or scout attempt carries no failureRule: the run's marker
-  // decides, and its pool is read from the state by ordinal.
+    '⚠ a usage limit on luna-1 · back to you');
+  // A planner or scout attempt carries no failureRule; its pool is read from
+  // the state by ordinal.
   const scouting = { ...state, preflight: { scout: { attempts: [{ ordinal: 1, pool: 'luna-2', status: 'failed', failureKind: 'quota' }] } } };
   const scoutEvent = { type: 'preflight.scout_attempt_finished', payload: { ordinal: 1, status: 'failed', failureKind: 'quota' } };
   const marked = { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' };
   const [scoutLine] = notableWatchEvents({ events: [scoutEvent], state: scouting, features: marked }).notable;
-  assert.equal(renderWatchEvent(scoutLine, { now }), '⚠ preflight-scout usage limit on luna-2 · not paused · no retry left');
-  // Unmarked runs are byte-identical, whatever the event carries.
-  assert.equal(line({ retryAfter: back })[1], '⚠ a usage limit on luna-1 · paused until unknown · no retry left');
-  assert.equal(Object.hasOwn(line({ retryAfter: back })[0], 'paused'), false);
-  assert.equal(line({ willRetry: true })[1], '⚠ a usage limit on luna-1 · paused until unknown · retrying on another pool');
+  assert.equal(renderWatchEvent(scoutLine, { now }), '⚠ preflight-scout usage limit on luna-2 · no retry left');
+  // Unmarked runs keep their tail.
+  assert.equal(line({ retryAfter: back })[1], `⚠ a usage limit on luna-1 · back at ${back} · no retry left`);
+  assert.equal(line({})[1], '⚠ a usage limit on luna-1 · no retry left');
+  assert.equal(line({ willRetry: true })[1], '⚠ a usage limit on luna-1 · retrying on another pool');
   const [plainScout] = notableWatchEvents({ events: [scoutEvent], state: scouting, features: {} }).notable;
-  assert.equal(renderWatchEvent(plainScout, { now }), '⚠ preflight-scout usage limit on ? · paused until unknown · no retry left');
+  assert.equal(renderWatchEvent(plainScout, { now }), '⚠ preflight-scout usage limit on ? · no retry left');
 });
 
 test('watch snapshot is concise and stable between heartbeats', () => {
@@ -1245,6 +1248,7 @@ test('V2 watch reports a usage-limit quota failure once, then the pool it moved 
     try {
       await waitUntil(() => watch.output.includes('● watching qta234'), `attach missing: ${watch.output}`);
       const untilMs = f.nowMs + 10 * 60_000;
+      // An old pause record in state.json is read by nothing.
       writeFileSync(join(f.home, 'state.json'), JSON.stringify({
         pools: { 'command-code': { quarantine: { until: untilMs, reason: 'usage limit', kind: 'quota' } } },
       }));
@@ -1260,7 +1264,8 @@ test('V2 watch reports a usage-limit quota failure once, then the pool it moved 
         actionId: 'write-report', attemptId: 'write-report-1', status: 'failed', failureKind: 'quota', willRetry: true,
       });
       await waitUntil(() => watch.output.includes('usage limit on command-code'), `quota line missing: ${watch.output}`);
-      assert.match(watch.output, /⚠ write-report usage limit on command-code · paused until \S+ · retrying on another pool/);
+      assert.match(watch.output, /⚠ write-report usage limit on command-code · back at \S+ · retrying on another pool/);
+      assert.doesNotMatch(watch.output, /paused/);
       assert.equal(watch.output.match(/usage limit on command-code/g)?.length, 1, watch.output);
       assert.doesNotMatch(watch.output, /now on relay/);
 
@@ -1299,7 +1304,10 @@ test('V2 jsonl carries the attempt.quota and attempt.moved fields', async () => 
         why: 'usage limit: "session limit"',
         finishedAt: new Date(f.nowMs).toISOString(),
       };
-      f.emit('attempt.finished', { actionId: 'write-report', attemptId: 'write-report-1', status: 'failed', failureKind: 'quota' });
+      f.emit('attempt.finished', {
+        actionId: 'write-report', attemptId: 'write-report-1', status: 'failed', failureKind: 'quota',
+        retryAfter: new Date(untilMs).toISOString(),
+      });
       await waitUntil(() => watch.lines().some((line) => {
         try { return JSON.parse(line).type === 'attempt.quota'; } catch { return false; }
       }), `attempt.quota jsonl missing: ${watch.output}`);
@@ -1308,7 +1316,10 @@ test('V2 jsonl carries the attempt.quota and attempt.moved fields', async () => 
       assert.equal(quotaEvent.attemptId, 'write-report-1');
       assert.equal(quotaEvent.pool, 'command-code');
       assert.equal(quotaEvent.why, 'usage limit: "session limit"');
-      assert.equal(quotaEvent.until, new Date(untilMs).toISOString());
+      // The old pause in state.json is not read: the time is the event's own.
+      assert.equal(quotaEvent.until, null);
+      assert.equal(quotaEvent.backAt, new Date(untilMs).toISOString());
+      assert.equal(Object.hasOwn(quotaEvent, 'proof'), false);
 
       f.state.attempts.push({
         id: 'write-report-2', actionId: 'write-report', ordinal: 2, status: 'running',

@@ -269,7 +269,7 @@ test('a worker that goes silent is stopped as stalled; one that keeps writing ne
   assert.equal(workerSilenceTimeoutSec({ BULLSWARM_WORKER_SILENCE_SEC: 'soon' }), 3600);
 });
 
-test('with no pool able to run a step, dispatch fails at once and says why and when a retry can get through', async () => {
+test('with no pool able to run a step, dispatch fails at once and says why', async () => {
   const NOW = Date.parse('2026-09-14T10:00:00Z');
   const pool = (name, extra = {}) => ({
     name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
@@ -281,26 +281,12 @@ test('with no pool able to run a step, dispatch fails at once and says why and w
     loadState: () => structuredClone(core),
     saveState: () => {},
     now: () => NOW,
-    liveQuarantines: () => ({}),
   };
   const base = { action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', targetDir: '/tmp', paths: { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' }, bullswarmDir: '/tmp/bs', dependencies };
 
-  const paused = await dispatchV2Action({
-    ...base,
-    pools: [
-      pool('luna-1', { quarantine: { until: NOW + 30 * 60_000, reason: 'usage limit', kind: 'quota' } }),
-      pool('luna-2', { quarantine: { until: NOW + 90 * 60_000, reason: 'usage limit', kind: 'quota' } }),
-    ],
-  });
-  assert.equal(paused.ok, false);
-  assert.equal(paused.failureKind, 'unavailable');
-  assert.equal(paused.retryAfter, '2026-09-14T10:30:00.000Z', 'the first pool back');
-  assert.equal(paused.verdict.why, 'no eligible pool: every pool that can run this step is paused until 2026-09-14T10:30:00.000Z');
-  assert.deepEqual(paused.attempts, []);
-
   const oneFree = await dispatchV2Action({
     ...base,
-    pools: [pool('luna-1', { quarantine: { until: NOW + 30 * 60_000, reason: 'usage limit', kind: 'quota' } })],
+    pools: [pool('luna-1')],
     strictPool: 'gone-pool',
   });
   assert.equal(oneFree.retryAfter, undefined);
@@ -314,7 +300,7 @@ test('with no pool able to run a step, dispatch fails at once and says why and w
 // step no capable pool can take now never waits: it goes to the caller at once,
 // with each capable pool's reason and the first known return, and is filed as
 // quota when every pool is out for a usage limit.
-test('marked run: with every capable pool paused, the step goes to the caller at once with the first return, never a wait', async () => {
+test('marked run: with every capable pool at a window limit, the step goes to the caller at once with the first return, never a wait', async () => {
   const NOW = Date.parse('2026-09-14T10:00:00Z');
   const pool = (name, extra = {}) => ({
     name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
@@ -328,22 +314,22 @@ test('marked run: with every capable pool paused, the step goes to the caller at
     loadState: () => structuredClone(core),
     saveState: () => {},
     now: () => clock,
-    liveQuarantines: () => ({}),
     sleep: async (ms) => { slept.push(ms); clock += ms; },
   };
   const base = {
     action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', targetDir: '/tmp',
     paths: { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' }, bullswarmDir: '/tmp/bs', dependencies, failureRule: true,
   };
-  const quotaUntil = (minutes) => ({ quarantine: { until: NOW + minutes * 60_000, reason: 'usage limit', kind: 'quota' } });
+  // A pool whose meter reads its 5-hour window at the limit until then.
+  const quotaUntil = (minutes) => ({ fiveHourUsedPct: 100, fiveHourResetsAt: new Date(NOW + minutes * 60_000).toISOString() });
 
-  // Every capable pool paused for quota: a usage limit, back to the caller.
+  // Every capable pool at its limit: a usage limit, back to the caller.
   const spent = await dispatchV2Action({ ...base, pools: [pool('luna-1', quotaUntil(30)), pool('luna-2', quotaUntil(90))] });
   assert.equal(spent.ok, false);
   assert.equal(spent.status, 'failed', 'it goes to the caller, it does not wait');
   assert.equal(spent.failureKind, 'quota');
   assert.equal(spent.retryAfter, '2026-09-14T10:30:00.000Z', 'the first pool back');
-  assert.equal(spent.verdict.why, 'no pool with quota to spare: luna-1 paused for quota until 2026-09-14T10:30:00.000Z; luna-2 paused for quota until 2026-09-14T11:30:00.000Z');
+  assert.equal(spent.verdict.why, 'no pool with quota to spare: luna-1 at its 5-hour limit until 2026-09-14T10:30:00.000Z; luna-2 at its 5-hour limit until 2026-09-14T11:30:00.000Z');
   assert.deepEqual(spent.attempts, []);
   assert.deepEqual(slept, [], 'no wait of any kind');
   assert.equal(clock, NOW);
@@ -355,19 +341,7 @@ test('marked run: with every capable pool paused, the step goes to the caller at
   });
   assert.equal(walled.failureKind, 'quota');
   assert.equal(walled.retryAfter, '2026-09-14T10:20:00.000Z');
-  assert.equal(walled.verdict.why, 'no pool with quota to spare: luna-1 at its 5-hour limit until 2026-09-14T10:20:00.000Z; luna-2 paused for quota until 2026-09-14T11:30:00.000Z');
-
-  // One pool benched after a sign-in failure: not every reason is a limit, so
-  // no pool is free; the first return is still named.
-  const benched = await dispatchV2Action({
-    ...base,
-    pools: [pool('luna-1', quotaUntil(30)), pool('luna-2', { bench: { until: NOW + 15 * 60_000, reason: 'auth', count: 1 } })],
-  });
-  assert.equal(benched.status, 'failed');
-  assert.equal(benched.failureKind, 'unavailable');
-  assert.equal(benched.retryAfter, '2026-09-14T10:15:00.000Z');
-  assert.equal(benched.verdict.why, 'no pool free: luna-1 paused for quota until 2026-09-14T10:30:00.000Z; luna-2 benched until 2026-09-14T10:15:00.000Z');
-  assert.deepEqual(benched.attempts, []);
+  assert.equal(walled.verdict.why, 'no pool with quota to spare: luna-1 at its 5-hour limit until 2026-09-14T10:20:00.000Z; luna-2 at its 5-hour limit until 2026-09-14T11:30:00.000Z');
 
   // Nothing capable at all: it fails at once, as in a saved run.
   const none = await dispatchV2Action({ ...base, pools: [] });

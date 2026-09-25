@@ -1,6 +1,6 @@
 ---
 title: Routing
-description: How Bullswarm picks a pool for a lane — the exact order it applies pace, headroom, urgency, load, and quarantine.
+description: How Bullswarm picks a pool for a lane — the exact order it applies pace, headroom, urgency, and load.
 ---
 
 # Routing
@@ -31,7 +31,7 @@ explain the pacing preference inside those rules.
 
 Routing runs the same six checks every time, in this order. Each one is a filter or a preference within the set that survived the one before it.
 
-1. **Eligibility** — enabled, capable of the lane, not quarantined, not benched, not exhausted, and allowed a model for the effort tier.
+1. **Eligibility** — enabled, capable of the lane, no metered window at 100%, and allowed a model for the effort tier.
 2. **Forecast ordering** — a pool forecast past 100% of its 5-hour window stays eligible but is ordered last.
 3. **5-hour last mile** — a pool at or above the near-limit line gets a soft ordering penalty only when another eligible pool is behind pace.
 4. **Free models** — while any surviving pool's model for this effort tier costs nothing, only those are selectable.
@@ -42,7 +42,7 @@ The rest of this page is those six steps in detail.
 
 ## Eligibility
 
-A pool has to be enabled, declare the lane, hold any capabilities the work requires, not be quarantined, not be soft-benched, not be exhausted (a metered window — 5-hour, weekly or monthly — at 100% until that window resets), and have an allowed model for the effort tier. A disabled pool simply is not a candidate. Nothing in the later steps can rescue a pool that fails here. A single `bullswarm run` names the pools it left out for a spent window at the end of its reason — `(burst-gated: pool-a, pool-b at its weekly limit)`, where a bare name is at its 5-hour limit.
+A pool has to be enabled, declare the lane, hold any capabilities the work requires, not be exhausted (a metered window — 5-hour, weekly or monthly — at 100% until that window resets), and have an allowed model for the effort tier. A disabled pool simply is not a candidate. Nothing in the later steps can rescue a pool that fails here. Nothing else from a pool's past counts: Bullswarm never pauses or benches a pool after a failure, so a pool that failed one step is a candidate for the next whenever its meters allow it. When a single `bullswarm run` still picks a pool, it names the pools it left out for a spent window at the end of its reason — `(burst-gated: pool-a, pool-b at its weekly limit)`, where a bare name is at its 5-hour limit.
 
 ## Pace and surplus
 
@@ -76,25 +76,10 @@ The answer is cached per pool and model for 15 minutes. A rung that uses the
 connector's CLI default is never probed, paid models are never probed, and
 Bullswarm does not scan a model catalogue or silently choose a replacement.
 
-If the probe reports `404`, a provider error, or a timeout, the pool gets a
-soft-bench strike with the reason `probe: <reason>`, and routing continues with
-the next eligible rung (including a metered pool). That reason is visible in
-the route explanation, `bullswarm pools`, and the Fleet page. A successful
-probe does not alter the selected model.
-
-## Soft bench: alive, but not producing
-
-A free endpoint does not fail the way a metered one does. It has no usage meter, so it can never read as exhausted — when its free window ends the API starts erroring or falling silent rather than reporting 100%. The soft bench is the backstop.
-
-These failures count as a **strike** against a pool:
-
-- **stall** — the worker wrote no output for longer than its silence threshold and was stopped;
-- **provider** — the provider returned a server error, or a free pool returned literally nothing (an empty free answer is recorded as a provider failure; an answer that has substance but the verifier judged thin stays a semantic failure and is not retried elsewhere, because that is a verdict about the answer, not about the pool);
-- **probe** — the pre-dispatch free-model check returned `404`, a provider error, or a timeout.
-
-Strikes are **consecutive**. The first one is recorded without taking the pool out of service. The second benches it for a 10-minute cooldown — the same re-probe window a quarantine uses — after which it returns automatically. The count survives that cooldown and is cleared only by a success, so a pool that stalls again straight after coming back is benched again immediately.
-
-A bench is not a quarantine, and it changes nothing about auth. An upstream auth failure still quarantines, still spreads across a credential group, and its deadline is never shortened by a bench. A benched pool also keeps having its meter read, because it is coming back in ten minutes.
+If the probe reports `404`, a provider error, or a timeout, the pool is left
+out of this pick and routing continues with the next eligible rung (including
+a metered pool). The reason `probe: <reason>` is in the route explanation.
+A successful probe does not alter the selected model.
 
 ## Stall fallback
 
@@ -104,8 +89,7 @@ When an attempt stalls, the run does not stop and the work is not lost:
 
 - the worker's process is ended and **whatever it had already written stays on disk** — the retry writes a new `out-<action>-attempt-<n>` file beside it, never over it;
 - the in-flight ledger entry is released, so the next pick sees the pool as idle;
-- the same action is re-dispatched on the next eligible pool **in the same run**, and its reason line is prefixed with where it came from;
-- the second consecutive stall benches the pool, so later actions in that run do not each wait out the threshold.
+- the same action is re-dispatched on the next eligible pool **in the same run**, and its reason line is prefixed with where it came from.
 
 In a workflow started by this version a stall is a process failure like any
 other: it gets the step's one automatic retry (`--retry-attempts`, default 1)
@@ -118,12 +102,10 @@ most once for the action.
 
 ```text
 fallback from opencode after stall 300s · most-behind capable pool (surplus 40)
-benched (stall, back at 2026-09-17T02:40:36.911Z): opencode
 ```
 
 The run's events carry the same facts: `attempt.finished` gains `stalled`,
-`partialOutput`, `silentSec` and `willRetry`, and a `pool.benched` event names
-the pool, the reason, the strike count and the deadline. `bullswarm workflow
+`partialOutput`, `silentSec` and `willRetry`. `bullswarm workflow
 watch` renders `retrying on another pool` only when `willRetry` is true;
 otherwise it says `no retry left`.
 
@@ -173,7 +155,7 @@ Work already dispatched is charged against a pool before the next pick: each poo
 
 ## Assignments and incumbency
 
-Two preferences apply only among pools that survived the steps above. An explicit effort-tier assignment (`bullswarm strategy assign <tier> --pool <p> --model <m>`) wins if that pool is selectable — it is a preference, never a bypass of eligibility, quarantine, or the gates. Only `assign` makes one: `strategy apply` and `setup --yes --strategy` set each pool's model per tier and pin nothing, so an unpinned tier is picked by surplus at every dispatch. Otherwise the pool that last succeeded in that lane keeps it, unless a challenger beats its effective surplus by 10 points and is no more expensive; an incumbent at −20 surplus or worse forfeits that protection, and one carrying more in-flight work than the challenger loses it too.
+Two preferences apply only among pools that survived the steps above. An explicit effort-tier assignment (`bullswarm strategy assign <tier> --pool <p> --model <m>`) wins if that pool is selectable — it is a preference, never a bypass of eligibility or the gates. Only `assign` makes one: `strategy apply` and `setup --yes --strategy` set each pool's model per tier and pin nothing, so an unpinned tier is picked by surplus at every dispatch. Otherwise the pool that last succeeded in that lane keeps it, unless a challenger beats its effective surplus by 10 points and is no more expensive; an incumbent at −20 surplus or worse forfeits that protection, and one carrying more in-flight work than the challenger loses it too.
 
 ## The caller
 
@@ -181,40 +163,44 @@ The agent CLI that invoked Bullswarm competes as a pool like any other, and `kee
 
 ## When a pool runs out
 
+Bullswarm never remembers a spent or dead pool from one step to the next:
+nothing pauses or benches a pool. Every pick reads the live meters instead, so
+a window at 100% keeps a pool out until that window resets, and nothing else
+does.
+
 In a workflow started by this version, nothing waits for a pool. A usage limit
 ends the step and sends it back to you at once: a limit notice that says a
 usage window, a quota or a balance is spent (with or without a reset named), or
-the pool's meter showing its window full, whatever the automatic pausing
-switch. There is no wait, no move to another pool and no retry, and the rest of
-the run keeps going. The needs-you block shows `back at <time>` when the
-pool's reset is known.
+the pool's meter showing its window full. There is no wait, no move to another
+pool and no retry, and the rest of the run keeps going. The needs-you block
+shows `back at <time>` when the pool's reset is known.
 
 A transient rate limit (`Too many requests`, `Rate limit exceeded`, with no
 usage window spent) backs off on the same pool at most twice, after 20 s and
 then 60 s, or after the wait the provider named when that is at most 2
-minutes. It does so with automatic pausing off too, and spends no retry. Then
-the step comes back to you. One that names a longer wait comes back to you at
-once, with `back at` at the end of that wait. When the pool is no longer free
-for the backoff (another run paused it, it reached its 5-hour limit, or it is
-nearly spent or benched), the step comes back to you instead of moving.
+minutes. It spends no retry. Then the step comes back to you. One that names a
+longer wait comes back to you at once, with `back at` at the end of that wait.
+When the pool is no longer free for the backoff (it reached a 5-hour, weekly
+or monthly limit, or it is nearly spent), the step comes back to you instead
+of moving.
 
 After a usage limit (here and in a single `bullswarm run`) the pool's meter is
-read again at once, whatever the switch; when it cannot be read, the pool is
-recorded as full until the reset. Later steps route on that reading: a window
-it shows at 100% keeps the pool out until that window resets, while a lower
-reading leaves the pool eligible unless it was paused.
+read again at once. When it cannot be read, the pool counts as full until its
+reset, but only when the provider named that reset or an earlier meter reading
+gave it; with no known reset nothing keeps the pool out. Later steps route on
+that reading: a window it shows at 100% keeps the pool out until that window
+resets, while a lower reading leaves the pool eligible.
 
 When no pool that can run the step is free at its pick (each one is nearly
-spent, at a 5-hour, weekly or monthly limit, paused, or benched), the step
-comes back to you as well: as `quota` when every reason is a usage limit, else
-as `unavailable`. Its `why` names each pool and its reason, for example `no
-pool with quota to spare: pool-a paused for quota until <time>; pool-b at its
-5-hour limit until <time>; pool-c at its weekly limit until <time>`, and `back
-at` is the earliest known return among them. A retry the step was
-promised (after a crash, a sign-in failure or a failed gate) that finds no
-free pool keeps its own failure and ends its `why` with `· no retry: <pool>
-<reason>; …`. When another pool that can run the step is free, routing picks it
-as usual.
+spent, or at a 5-hour, weekly or monthly limit), the step comes back to you as
+well: as `quota` when every reason is a usage limit, else as `unavailable`. Its
+`why` names each pool and its reason, for example `no pool with quota to
+spare: pool-a at its 5-hour limit until <time>; pool-b at its weekly limit
+until <time>`, and `back at` is the earliest known return among them. A retry
+the step was promised (after a crash, a sign-in failure or a failed gate) that
+finds no free pool keeps its own failure and ends its `why` with `· no retry:
+<pool> <reason>; …`. When another pool that can run the step is free, routing
+picks it as usual.
 
 The dispatched Workflow Planner (`--orchestrator`) and the preflight scout
 (`--scout`, or the scout before a dispatched planner) follow the same rule: a
@@ -229,22 +215,29 @@ planner or the scout to another pool.
 
 A single `bullswarm run` makes one attempt: a usage limit ends it with exit 1,
 with no retry and no move. Workflows started by an earlier version keep their
-rules: a usage limit pauses the pool (with pausing on) and moves the attempt to
-another pool, and a throttle retries the same pool and then moves, as below.
+rules: a usage limit moves the attempt to another pool, and a throttle retries
+the same pool and then moves, as below.
 
 ## Throttles and exhausted windows
 
-A limit notice pauses a pool for quota (failure kind `quota`, never `process` or `auth`) only on proof: the pool's own meter reads 95% or more on a window that is still running, or the provider's line says a usage window is spent *and* names its reset. The attempt is killed immediately even if the CLI would otherwise hang, and the pool is paused until that window's reset. In a workflow started by this version the step then comes back to you; in one started by an earlier version the action moves elsewhere. The pause record keeps the rule, the provider line and the meter reading, so `bullswarm pools` can say why; `bullswarm pools resume <pool>` lifts it and `bullswarm strategy set-pausing off` turns every automatic pool pause off (quota, auth and the sibling bench). Routing's own meter gating stays either way: in a workflow started by this version and in a single `bullswarm run`, a usage limit makes the pool's meter be read again at once (or the pool is recorded as full until the reset), on or off.
+A limit notice that says a usage window is spent is failure kind `quota`
+(never `process` or `auth`). In a workflow started by an earlier version that
+holds only when the reset is known — the provider's line named it, or the
+pool's own meter reads 95% or more on a window still running — and without one
+the notice is a throttle there. The attempt is killed immediately even if the
+CLI would otherwise hang, and the pool's meter is read again as above. In a
+workflow started by this version the step then comes back to you; in one
+started by an earlier version the action moves elsewhere.
 
-Every other limit notice — `Rate limit exceeded. Please wait a moment and try again.`, `429 Too Many Requests`, an overload, a window phrase with no reset — is failure kind `throttle` and never pauses the pool. In a workflow started by an earlier version the dispatcher retries the same pool up to twice, after 20 s and then 60 s (or after the wait the provider named), without a pause or a mechanical-retry charge; after that the attempt moves to another pool and the pool stays in service. A throttle that names a wait longer than 15 minutes skips the same-pool retry and moves at once. In a workflow started by this version a window phrase with no reset is a usage limit instead (`quota`), and a throttle never moves: it backs off at most twice, for at most 2 minutes each time, and then comes back to you (see above). A single `bullswarm run` records the throttle without a pause but does not retry it. Detection is shape-gated to provider notices, so an agent writing *about* rate limits does not trigger either path.
+Every other limit notice — `Rate limit exceeded. Please wait a moment and try again.`, `429 Too Many Requests`, an overload — is failure kind `throttle`. In a workflow started by an earlier version the dispatcher retries the same pool up to twice, after 20 s and then 60 s (or after the wait the provider named), without a mechanical-retry charge; after that the attempt moves to another pool. A throttle that names a wait longer than 15 minutes skips the same-pool retry and moves at once. In a workflow started by this version a window phrase with no reset is a usage limit instead (`quota`), and a throttle never moves: it backs off at most twice, for at most 2 minutes each time, and then comes back to you (see above). A single `bullswarm run` records the throttle but does not retry it. Detection is shape-gated to provider notices, so an agent writing *about* rate limits does not trigger either path.
 
-## Quarantine on an upstream auth failure
+## A sign-in failure upstream
 
-A relayed credential fails upstream, not in the CLI. When a provider's event stream reports `auth_unavailable`, `authentication_error`, `invalidated oauth token`, `no available channel for model`, or a phrase the connector declares in `authSignatures`, the verdict is `auth` with a quarantine hint, and the pool is benched for the flat 10-minute re-probe window. Pools that share a credential group are benched together on the same deadline, with the reason reading `sibling of <pool>: <why>`; a quota quarantine never spreads, because one seat's window says nothing about the next. With `bullswarm strategy set-pausing off` nothing is benched for later steps, but the verdict is still `auth`, and the step's retry still skips every pool in that credential group, so it never walks from one name to the next on the same dead credential.
+A relayed credential fails upstream, not in the CLI. When a provider's event stream reports `auth_unavailable`, `authentication_error`, `invalidated oauth token`, `no available channel for model`, or a phrase the connector declares in `authSignatures`, the verdict is failure kind `auth`. The step's one automatic retry then goes to a pool that does not share that credential: every pool in the same credential group (`credentialGroup` in the connector) is skipped for the rest of that step, so the retry never walks from one name to the next on the same dead credential. Nothing is stored: the next step routes as usual and can pick that pool again. A usage limit skips no other pool, because one seat's window says nothing about the next.
 
 ## How the decision shows its work
 
-`bullswarm pools` prints one line per pool: `cost=`, `lanes=`, the meter it is paced from, `surplus=`, `inflight=`, the 5-hour column as `5h=<reading>%-><projected>%` with `(<n>% elapsed)`, `free=<model>` when its model costs nothing, then `ready`, `disabled`, `PAUSED until … · <why> · lift now: bullswarm pools resume <pool>`, `BENCHED until … (<reason>, <n> strikes)`, `NEAR-5H-LIMIT`, `BURST-GATED`, or `resets in … EXPIRING-SOON urgency=<n>`. A pool carrying an uncounted-out strike prints `strikes=<n>(<reason>)` beside `ready`. `pools` names no lane and therefore no effort tier, so when free-ness differs per tier the column names each one — `free=medium:opencode/union-alpha`. A stale meter held after a failed poll is marked `[stale · <status-or-kind>, retry in <time>]`; `pools --json` carries the same `meterError` and `meterHoldUntil` fields.
+`bullswarm pools` prints one line per pool: `cost=`, `lanes=`, the meter it is paced from, `surplus=`, `inflight=`, the 5-hour column as `5h=<reading>%-><projected>%` with `(<n>% elapsed)`, `free=<model>` when its model costs nothing, then `ready`, `disabled`, `NEAR-5H-LIMIT`, `BURST-GATED`, or `resets in … EXPIRING-SOON urgency=<n>`. `pools` names no lane and therefore no effort tier, so when free-ness differs per tier the column names each one — `free=medium:opencode/union-alpha`. A stale meter held after a failed poll is marked `[stale · <status-or-kind>, retry in <time>]`; `pools --json` carries the same `meterError` and `meterHoldUntil` fields.
 
 ### Pool display labels
 
@@ -266,11 +259,11 @@ the durable `pool` id and adds `poolLabel` beside it on pool-bearing list rows.
 
 ```text
 answerer       cost=3 lanes=analyze/build/chore unmetered surplus=0 inflight=0 ready
-opencode       cost=1 lanes=analyze/build/chore unmetered surplus=0 inflight=0 free=opencode/union-alpha BENCHED until 10:40:36 AM (stall, 2 strikes)
+opencode       cost=1 lanes=analyze/build/chore unmetered surplus=0 inflight=0 free=opencode/union-alpha ready
 ```
 
 ```bash
-# every pool, with its meter, pace, load, and quarantine state
+# every pool, with its meter, pace, load, and any spent window
 bullswarm pools
 # what is in flight right now, across every Bullswarm process
 bullswarm assignments
@@ -307,5 +300,5 @@ When a pool is near its line and still gets the work, the reason says so in the 
 ## Next steps
 
 - [Run one task](/guide/run) — the command whose routing this page explains.
-- [Concepts](/guide/concepts) — surplus, windows, and quarantine as definitions.
+- [Concepts](/guide/concepts) — surplus, windows, and verdicts as definitions.
 - [Observing runs](/guide/observing) — watching a run once it is dispatched.

@@ -167,7 +167,6 @@ test('event-stream tool output mentioning auth signatures does not kill a health
       },
     };
     const verdict = await watchOnce(streamed, 'Verify auth-related source code.', ctx.dir, ctx.paths);
-    assert.equal(verdict.quarantineHint, undefined);
     assert.doesNotMatch(verdict.why, /auth\/throttle signature/);
     assert.equal(verdict.meta.signal, null);
   } finally {
@@ -175,7 +174,7 @@ test('event-stream tool output mentioning auth signatures does not kill a health
   }
 });
 
-test('a provider auth failure on its own error channel still fails and quarantines', async () => {
+test('a provider auth failure on its own error channel still fails as auth', async () => {
   const ctx = makeCtx();
   try {
     const streamed = {
@@ -192,14 +191,14 @@ test('a provider auth failure on its own error channel still fails and quarantin
     };
     const verdict = await watchOnce(streamed, 'Do the task.', ctx.dir, ctx.paths);
     assert.equal(verdict.ok, false);
-    assert.equal(verdict.quarantineHint, true);
+    assert.equal(verdict.failureKind, 'auth');
     assert.match(verdict.why, /auth\/throttle signature/);
   } finally {
     ctx.cleanup();
   }
 });
 
-test('a declared provider failure event naming auth is upstream auth: fail and quarantine', async () => {
+test('a declared provider failure event naming auth is upstream auth: fail as auth', async () => {
   const ctx = makeCtx();
   try {
     const rows = [{ type: 'error', error: { message: 'Failed to authenticate: OAuth session expired and could not be refreshed' } }];
@@ -217,14 +216,13 @@ test('a declared provider failure event naming auth is upstream auth: fail and q
     const verdict = await watchOnce(streamed, 'Do the task.', ctx.dir, ctx.paths);
     assert.equal(verdict.ok, false);
     assert.equal(verdict.failureKind, 'auth');
-    assert.equal(verdict.quarantineHint, true);
     assert.match(verdict.why, /upstream auth failure: "failed to authenticate"/);
   } finally {
     ctx.cleanup();
   }
 });
 
-test('event-stream final report may discuss authentication failure without quarantine', async () => {
+test('event-stream final report may discuss authentication failure without failing as auth', async () => {
   const ctx = makeCtx();
   try {
     const report = 'Completed the source audit. The unauthorized matcher is a content scanner; source text containing that term is not itself an authentication failure, and the regression checks passed.';
@@ -239,7 +237,6 @@ test('event-stream final report may discuss authentication failure without quara
       },
     };
     const verdict = await watchOnce(streamed, 'Audit auth handling.', ctx.dir, ctx.paths);
-    assert.equal(verdict.quarantineHint, undefined);
     assert.doesNotMatch(verdict.why, /auth\/throttle signature/);
   } finally {
     ctx.cleanup();
@@ -459,7 +456,7 @@ test('lying exit 0 with auth failure is caught by signature gate', async () => {
     const v = await watchOnce(connector, 'FAIL:auth please', ctx.dir, ctx.paths, { timeoutSec: 60 });
     assert.equal(v.ok, false);
     assert.match(v.why, /auth\/throttle signature/);
-    assert.equal(v.quarantineHint, true);
+    assert.equal(v.failureKind, 'auth');
     assert.equal(v.meta.exitCode, 0); // the lie itself
   } finally {
     ctx.cleanup();
@@ -473,7 +470,7 @@ test('a streamed auth or quota signature terminates a provider that would otherw
     const v = await watchOnce(connector, 'FAIL:auth-hang please', ctx.dir, ctx.paths);
     assert.equal(v.ok, false);
     assert.match(v.why, /auth\/throttle signature/);
-    assert.equal(v.quarantineHint, true);
+    assert.equal(v.failureKind, 'auth');
     assert.ok(Date.now() - startedAt < 2000);
   } finally {
     ctx.cleanup();
@@ -609,7 +606,7 @@ test('watch records structured Claude usage before text parsing', async () => {
   }
 });
 
-test('a stream-json usage limit kills a hanging CLI and quarantines until the parsed reset', async () => {
+test('a stream-json usage limit kills a hanging CLI and names the parsed reset', async () => {
   const ctx = makeCtx();
   try {
     // Prints the limit as its final result, then hangs for a minute.
@@ -623,20 +620,19 @@ test('a stream-json usage limit kills a hanging CLI and quarantines until the pa
 
     assert.equal(v.ok, false);
     assert.equal(v.failureKind, 'quota');
-    assert.equal(v.quarantineHint, true);
-    assert.equal(v.quarantineSource, 'message');
     // The reset is the next 20:20 in Hong Kong; bound it by the clock either
     // side of the run so the assertion cannot straddle that instant.
     const acceptable = new Set([
       parseQuotaResetAt(SESSION_LIMIT, { now: before }),
       parseQuotaResetAt(SESSION_LIMIT, { now: Date.now() }),
     ]);
-    assert.ok(acceptable.has(v.quarantineUntil), `unexpected deadline ${v.quarantineUntil}`);
-    // The why is the Q6 decision in plain words: the proof, the line, the reset.
-    assert.equal(v.quotaPause.rule, 'message');
-    assert.equal(v.quotaPause.line, SESSION_LIMIT);
-    assert.equal(v.why, v.quotaPause.why);
-    assert.match(v.why, /^usage window spent: provider said "You've hit your session limit · resets 8:20pm \(Asia\/Hong_Kong\)" · paused until .+ \(the reset it named\)/);
+    assert.ok(acceptable.has(v.usageLimit.until), `unexpected reset ${v.usageLimit.until}`);
+    assert.equal(v.retryAfter, new Date(v.usageLimit.until).toISOString());
+    // The why is the Q6 decision in plain words: the rule, the line, the reset.
+    assert.equal(v.usageLimit.rule, 'message');
+    assert.equal(v.usageLimit.line, SESSION_LIMIT);
+    assert.equal(v.why, v.usageLimit.why);
+    assert.match(v.why, /^usage window spent: provider said "You've hit your session limit · resets 8:20pm \(Asia\/Hong_Kong\)" · back at .+ \(the reset it named\)/);
     assert.equal(v.meta.signal, 'SIGTERM', 'the hanging child was terminated, not waited out');
     assert.equal(v.meta.timedOut, false);
     assert.ok(elapsedMs < 6000, `expected a prompt kill, took ${elapsedMs}ms`);
@@ -669,22 +665,16 @@ test('a reply that is only a limit notice from a zero-usage turn is read as quot
   const ctx = makeCtx();
   try {
     const before = Date.now();
-    const v = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    const v = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths);
     assert.equal(v.ok, false);
     assert.equal(v.failureKind, 'quota', v.why);
-    assert.equal(v.quarantineHint, true);
-    assert.equal(v.quotaPause.rule, 'message');
-    assert.equal(v.quotaPause.line, RELAYED_LIMIT);
+    assert.equal(v.usageLimit.rule, 'message');
+    assert.equal(v.usageLimit.line, RELAYED_LIMIT);
     const acceptable = new Set([
       parseQuotaResetAt(RELAYED_LIMIT, { now: before }),
       parseQuotaResetAt(RELAYED_LIMIT, { now: Date.now() }),
     ]);
-    assert.ok(acceptable.has(v.quarantineUntil), `unexpected deadline ${v.quarantineUntil}`);
-    // With pausing off it is the same notice as a hold on the named reset.
-    const off = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: false });
-    assert.equal(off.failureKind, 'throttle', off.why);
-    assert.equal(off.quotaPause.rule, 'off');
-    assert.ok(acceptable.has(off.quotaPause.holdUntil), `unexpected hold ${off.quotaPause.holdUntil}`);
+    assert.ok(acceptable.has(v.usageLimit.until), `unexpected reset ${v.usageLimit.until}`);
   } finally {
     ctx.cleanup();
   }
@@ -707,7 +697,7 @@ test('a long reply that discusses sign-in and limit wording, repeated in the res
       { type: 'assistant', message: { content: [{ type: 'text', text: report }] } },
       { type: 'result', subtype: 'success', is_error: false, result: report, session_id: 'session-w7', total_cost_usd: 0.01, usage: { input_tokens: 900, cache_read_input_tokens: 0, output_tokens: 300 } },
     ];
-    const v = await watchOnce(relayedConnector(rows), 'Review it.', ctx.dir, ctx.paths, { pausing: true });
+    const v = await watchOnce(relayedConnector(rows), 'Review it.', ctx.dir, ctx.paths);
     assert.equal(v.ok, true, v.why);
     assert.notEqual(v.failureKind, 'auth');
   } finally {
@@ -733,14 +723,18 @@ const grokWith = (script) => {
 test("grok's spent-balance error event ends the attempt as a limit, never a verified reply (L8)", async () => {
   const ctx = makeCtx();
   try {
-    for (const pausing of [true, false]) {
-      const v = await watchOnce(grokWith(rowsScript(GROK_SPENT_BALANCE_ROWS)), 'Check it.', ctx.dir, ctx.paths, { pausing });
-      assert.equal(v.ok, false, `pausing ${pausing}: ${v.why}`);
-      // No reset named and no meter read: a limit to wait out or move off, never a pause by the message.
-      assert.equal(v.failureKind, 'throttle', v.why);
-      assert.match(v.why, /usage balance exhausted/);
-      assert.equal(v.quotaPause.rule, pausing ? 'transient' : 'off');
-    }
+    const v = await watchOnce(grokWith(rowsScript(GROK_SPENT_BALANCE_ROWS)), 'Check it.', ctx.dir, ctx.paths);
+    assert.equal(v.ok, false, v.why);
+    // No reset named and no meter read: outside the limits-to-caller rule
+    // (a run started by an earlier version) that is a throttle.
+    assert.equal(v.failureKind, 'throttle', v.why);
+    assert.match(v.why, /usage balance exhausted/);
+    assert.equal(v.usageLimit.rule, 'transient');
+    assert.equal(v.usageLimit.limit, 'window');
+    // Under the rule it is a usage limit with no known reset.
+    const caller = await watchOnce(grokWith(rowsScript(GROK_SPENT_BALANCE_ROWS)), 'Check it.', ctx.dir, ctx.paths, { usageLimitsToCaller: true });
+    assert.equal(caller.failureKind, 'quota', caller.why);
+    assert.equal(caller.retryAfter, undefined);
   } finally {
     ctx.cleanup();
   }
@@ -752,14 +746,12 @@ test('a reply quoting the limit notice in a longer answer, or from a turn that p
     const report = '## Completed\n\nTaught the watcher the relayed notice and verified it end to end.\n\n'
       + `- Claude Code printed: ${RELAYED_LIMIT}\n`
       + '- Ran the focused watcher suite: every check passed with no failures.\n';
-    const quoted = await watchOnce(relayedConnector(relayedRows(report, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    const quoted = await watchOnce(relayedConnector(relayedRows(report, ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths);
     assert.equal(quoted.ok, true, quoted.why);
     assert.equal(quoted.failureKind, undefined);
-    assert.equal(quoted.quarantineHint, undefined);
-    const spent = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, { ...ZERO_USAGE, output_tokens: 18 })), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    const spent = await watchOnce(relayedConnector(relayedRows(RELAYED_LIMIT, { ...ZERO_USAGE, output_tokens: 18 })), 'Build it.', ctx.dir, ctx.paths);
     assert.notEqual(spent.failureKind, 'quota');
     assert.notEqual(spent.failureKind, 'throttle');
-    assert.equal(spent.quarantineHint, undefined);
   } finally {
     ctx.cleanup();
   }
@@ -769,19 +761,19 @@ test('a CLI that could not be started carries workerNotStarted on the verdict, a
   const ctx = makeCtx();
   try {
     const missing = { ...streamJsonConnector(''), spawn: { cmd: [join(ctx.dir, 'no-such-cli')] } };
-    const v = await watchOnce(missing, 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    const v = await watchOnce(missing, 'Build it.', ctx.dir, ctx.paths);
     assert.equal(v.ok, false);
     assert.match(v.why, /^spawn failed: /);
     assert.equal(v.meta.workerNotStarted, true);
     assert.equal(v.failureKind, undefined, 'the verdict itself is unchanged');
-    const started = await watchOnce(relayedConnector(relayedRows('## Completed\n\nDone and verified.', ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths, { pausing: true });
+    const started = await watchOnce(relayedConnector(relayedRows('## Completed\n\nDone and verified.', ZERO_USAGE)), 'Build it.', ctx.dir, ctx.paths);
     assert.equal(Object.hasOwn(started.meta, 'workerNotStarted'), false);
   } finally {
     ctx.cleanup();
   }
 });
 
-test('tool output quoting a usage limit neither kills nor quarantines', async () => {
+test('tool output quoting a usage limit neither kills nor fails the attempt', async () => {
   const ctx = makeCtx();
   try {
     const report = '## Completed\n\nAudited the quota matcher and its call sites.\n\n'
@@ -795,8 +787,6 @@ test('tool output quoting a usage limit neither kills nor quarantines', async ()
     const v = await watchOnce(connector, 'Audit the quota matcher.', ctx.dir, ctx.paths);
     assert.equal(v.ok, true);
     assert.equal(v.failureKind, undefined);
-    assert.equal(v.quarantineHint, undefined);
-    assert.equal(v.quarantineUntil, undefined);
     assert.equal(v.meta.signal, null, 'a healthy agent must not be signalled');
   } finally {
     ctx.cleanup();
@@ -818,7 +808,6 @@ test('a substantive report discussing usage limits still passes', async () => {
     ]));
     const v = await watchOnce(connector, 'Implement usage-limit recovery.', ctx.dir, ctx.paths);
     assert.equal(v.failureKind, undefined);
-    assert.equal(v.quarantineHint, undefined);
     assert.doesNotMatch(v.why, /usage limit:/);
     assert.equal(v.ok, true);
   } finally {
@@ -826,7 +815,7 @@ test('a substantive report discussing usage limits still passes', async () => {
   }
 });
 
-test('a plain-stdout rate limit is a transient throttle, not auth and not a pause', async () => {
+test('a plain-stdout rate limit is a transient throttle, not auth and not a spent window', async () => {
   const ctx = makeCtx();
   try {
     const plain = {
@@ -838,12 +827,10 @@ test('a plain-stdout rate limit is a transient throttle, not auth and not a paus
     const v = await watchOnce(plain, 'Do the work.', ctx.dir, ctx.paths);
     assert.equal(v.ok, false);
     // `rate limit exceeded` names no spent window (quota.js Q6): a reset two
-    // hours out is a wait too long to sit out on this pool, never a pause.
+    // hours out is a wait too long to sit out on this pool, never a spent window.
     assert.equal(v.failureKind, 'throttle', 'a throttle is not a broken credential');
-    assert.equal(v.quarantineHint, undefined);
-    assert.equal(v.quarantineUntil, undefined);
     assert.equal(v.throttleRetrySamePool, false);
-    assert.equal(v.quotaPause.rule, 'transient');
+    assert.equal(v.usageLimit.rule, 'transient');
     assert.doesNotMatch(v.why, /auth\/throttle signature/);
   } finally {
     ctx.cleanup();
@@ -961,13 +948,12 @@ const streamingEvent = (event, overrides = {}) => ({
   ...overrides,
 });
 
-test('a provider error event carrying the real relay 401 body is an auth failure with a quarantine hint', async () => {
+test('a provider error event carrying the real relay 401 body is an auth failure', async () => {
   const ctx = makeCtx();
   try {
     const verdict = await watchOnce(streamingEvent(RELAY_401_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
     assert.equal(verdict.ok, false);
     assert.equal(verdict.failureKind, 'auth');
-    assert.equal(verdict.quarantineHint, true);
     assert.equal(verdict.why, 'upstream auth failure: "auth_unavailable" (provider stream error)');
     assert.ok(verdict.why.length <= 160, `why is ${verdict.why.length} chars`);
     // Still recorded as what the stream said, so the incident stays readable.
@@ -983,7 +969,6 @@ test('the relay 503 no-auth-available body is the same auth failure, not a retry
   try {
     const verdict = await watchOnce(streamingEvent(RELAY_503_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
     assert.equal(verdict.failureKind, 'auth');
-    assert.equal(verdict.quarantineHint, true);
     assert.match(verdict.why, /^upstream auth failure: "auth_unavailable"/);
   } finally {
     ctx.cleanup();
@@ -998,13 +983,11 @@ test('a model the relay has no channel for is an auth failure once its provider 
     const declared = { authSignatures: ['no available channel for model'] };
     const verdict = await watchOnce(streamingEvent(RELAY_NO_CHANNEL_EVENT, declared), 'Do the thing.', ctx.dir, ctx.paths, {});
     assert.equal(verdict.failureKind, 'auth');
-    assert.equal(verdict.quarantineHint, true);
     assert.equal(verdict.why, 'upstream auth failure: "no available channel for model" (provider stream error)');
     const undeclared = await watchOnce(
       streamingEvent(RELAY_NO_CHANNEL_EVENT, { authSignatures: [] }), 'Do the thing.', ctx.dir, ctx.paths, {},
     );
     assert.notEqual(undeclared.failureKind, 'auth');
-    assert.notEqual(undeclared.quarantineHint, true);
   } finally {
     ctx.cleanup();
   }
@@ -1018,13 +1001,12 @@ test('the shared default phrases match even when the connector declares none of 
       'Do the thing.', ctx.dir, ctx.paths, {},
     );
     assert.equal(verdict.failureKind, 'auth');
-    assert.equal(verdict.quarantineHint, true);
   } finally {
     ctx.cleanup();
   }
 });
 
-test('a provider error event with unrelated wording stays a provider failure with no quarantine hint', async () => {
+test('a provider error event with unrelated wording stays a provider failure, not auth', async () => {
   const ctx = makeCtx();
   try {
     const event = {
@@ -1034,7 +1016,6 @@ test('a provider error event with unrelated wording stays a provider failure wit
     const verdict = await watchOnce(streamingEvent(event), 'Do the thing.', ctx.dir, ctx.paths, {});
     assert.equal(verdict.ok, false);
     assert.equal(verdict.failureKind, 'provider');
-    assert.equal(verdict.quarantineHint, undefined);
     assert.equal(verdict.why, 'provider stream reported error');
   } finally {
     ctx.cleanup();
@@ -1052,48 +1033,44 @@ const limitEvent = (message, data = {}) => ({
 test('a usage limit inside a provider error event keeps its throttle or quota kind, never provider (W5)', async () => {
   const ctx = makeCtx();
   try {
-    for (const pausing of [true, false]) {
-      const throttled = await watchOnce(streamingEvent(limitEvent('Too many requests')), 'Do the thing.', ctx.dir, ctx.paths, { pausing });
-      assert.equal(throttled.ok, false);
-      assert.equal(throttled.failureKind, 'throttle', throttled.why);
-      assert.equal(throttled.quotaPause.limit, 'throttle');
-      assert.equal(throttled.quotaPause.rule, pausing ? 'transient' : 'off');
-      assert.equal(throttled.quarantineHint, undefined);
-      assert.equal(throttled.throttleRetrySamePool, true);
-      // The stream error is still recorded as what the provider said.
-      assert.equal(throttled.meta.providerFailureType, 'error');
-      // Out of credit with no reset named and no meter read: window wording, no pause.
-      const spent = await watchOnce(
-        streamingEvent(limitEvent('Quota exceeded. Check your plan and billing details.')),
-        'Do the thing.', ctx.dir, ctx.paths, { pausing },
-      );
-      assert.equal(spent.failureKind, 'throttle', spent.why);
-      assert.equal(spent.quotaPause.limit, 'window');
-      assert.equal(spent.quotaPause.rule, pausing ? 'transient' : 'off');
-      assert.equal(spent.meta.providerFailureType, 'error');
-    }
-    // A spent window that names its reset pauses until it, as on any other channel.
+    const throttled = await watchOnce(streamingEvent(limitEvent('Too many requests')), 'Do the thing.', ctx.dir, ctx.paths);
+    assert.equal(throttled.ok, false);
+    assert.equal(throttled.failureKind, 'throttle', throttled.why);
+    assert.equal(throttled.usageLimit.limit, 'throttle');
+    assert.equal(throttled.usageLimit.rule, 'transient');
+    assert.equal(throttled.throttleRetrySamePool, true);
+    // The stream error is still recorded as what the provider said.
+    assert.equal(throttled.meta.providerFailureType, 'error');
+    // Out of credit with no reset named and no meter read: window wording, no
+    // known reset, so outside the limits-to-caller rule a throttle.
+    const spent = await watchOnce(
+      streamingEvent(limitEvent('Quota exceeded. Check your plan and billing details.')),
+      'Do the thing.', ctx.dir, ctx.paths,
+    );
+    assert.equal(spent.failureKind, 'throttle', spent.why);
+    assert.equal(spent.usageLimit.limit, 'window');
+    assert.equal(spent.usageLimit.rule, 'transient');
+    assert.equal(spent.meta.providerFailureType, 'error');
+    // A spent window that names its reset is quota with that reset, as on any other channel.
     const before = Date.now();
     const named = await watchOnce(
       streamingEvent(limitEvent("You've hit your session limit · resets in 2 hours")),
-      'Do the thing.', ctx.dir, ctx.paths, { pausing: true },
+      'Do the thing.', ctx.dir, ctx.paths,
     );
     assert.equal(named.failureKind, 'quota', named.why);
-    assert.equal(named.quarantineHint, true);
-    assert.equal(named.quarantineSource, 'message');
-    assert.equal(named.quotaPause.rule, 'message');
-    assert.equal(named.quotaPause.limit, 'window');
-    assert.ok(named.quarantineUntil >= before + 2 * 3600_000 - 60_000 && named.quarantineUntil <= Date.now() + 2 * 3600_000 + 60_000,
-      `unexpected deadline ${named.quarantineUntil}`);
-    // The same event naming an upstream auth phrase too is still the limit, not a bench.
+    assert.equal(named.usageLimit.rule, 'message');
+    assert.equal(named.usageLimit.limit, 'window');
+    assert.ok(named.usageLimit.until >= before + 2 * 3600_000 - 60_000 && named.usageLimit.until <= Date.now() + 2 * 3600_000 + 60_000,
+      `unexpected reset ${named.usageLimit.until}`);
+    assert.equal(named.retryAfter, new Date(named.usageLimit.until).toISOString());
+    // The same event naming an upstream auth phrase too is still the limit, not auth.
     const both = await watchOnce(
       streamingEvent(limitEvent('Too many requests', {
         responseBody: '{"error":{"message":"Too many requests","type":"rate_limit_error","code":"auth_unavailable"}}',
       })),
-      'Do the thing.', ctx.dir, ctx.paths, { pausing: true },
+      'Do the thing.', ctx.dir, ctx.paths,
     );
     assert.equal(both.failureKind, 'throttle', both.why);
-    assert.equal(both.quarantineHint, undefined);
     assert.doesNotMatch(both.why, /upstream auth failure/);
   } finally {
     ctx.cleanup();
@@ -1149,7 +1126,6 @@ test('an agent that merely reads auth source is not an upstream failure: no erro
     };
     const verdict = await watchOnce(connectorWithoutError, 'Inspect the matcher.', ctx.dir, ctx.paths, {});
     assert.equal(verdict.ok, true);
-    assert.equal(verdict.quarantineHint, undefined);
   } finally {
     ctx.cleanup();
   }
@@ -1486,7 +1462,8 @@ test('command-code is spawned without --no-session so its transcript persists', 
 });
 
 // quota.js Q6 end to end: a real child prints the provider's own line, and
-// the verdict carries the pause decision the quarantine will record.
+// the verdict carries the decision (`usageLimit`): the rule, the line, the
+// meter reading and the reset. Nothing is stored in state.json.
 
 const REAL_TRANSIENT = 'Error: Rate limit exceeded. Please wait a moment and try again.';
 
@@ -1499,7 +1476,7 @@ function limitChild(line) {
   };
 }
 
-function limitHome({ usedPct = 48, pausing = null } = {}) {
+function limitHome({ usedPct = 48, state = null } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-watch-limit-'));
   mkdirSync(join(home, 'meters'), { recursive: true });
   const ahead = (h) => new Date(Date.now() + h * 3600_000).toISOString();
@@ -1508,11 +1485,11 @@ function limitHome({ usedPct = 48, pausing = null } = {}) {
     five_hour: { utilization: 48, resets_at: ahead(2) },
     seven_day: { utilization: usedPct, resets_at: ahead(50) },
   }));
-  if (pausing) writeFileSync(join(home, 'state.json'), JSON.stringify({ strategy: { pausing } }));
+  if (state) writeFileSync(join(home, 'state.json'), JSON.stringify(state));
   return home;
 }
 
-test('the real transient line is a throttle with no pause while the meter reads below 95%', async () => {
+test('the real transient line is a throttle while the meter reads below 95%', async () => {
   const ctx = makeCtx();
   const home = limitHome({ usedPct: 78 });
   try {
@@ -1520,17 +1497,16 @@ test('the real transient line is a throttle with no pause while the meter reads 
       bullswarmDir: home, poolName: 'fixture-limit',
     });
     assert.equal(v.failureKind, 'throttle');
-    assert.equal(v.quarantineHint, undefined);
-    assert.equal(v.quotaPause.rule, 'transient');
-    assert.equal(v.quotaPause.line, REAL_TRANSIENT);
-    assert.match(v.why, /^rate limited \(transient\): "Error: Rate limit exceeded\. Please wait a moment and try again\." · pool not paused \(meter 5h 48% · weekly 78%, below 95%/);
+    assert.equal(v.usageLimit.rule, 'transient');
+    assert.equal(v.usageLimit.line, REAL_TRANSIENT);
+    assert.equal(v.why, 'rate limited (transient): "Error: Rate limit exceeded. Please wait a moment and try again." · meter 5h 48% · weekly 78%, below 95%; no spent window with a reset named');
   } finally {
     ctx.cleanup();
     rmSync(home, { recursive: true, force: true });
   }
 });
 
-test('the same line pauses when the pool\'s own meter reads 96%, until that window resets', async () => {
+test('the same line is a usage limit when the pool\'s own meter reads 96%, back at that window\'s reset', async () => {
   const ctx = makeCtx();
   const home = limitHome({ usedPct: 96 });
   try {
@@ -1538,75 +1514,60 @@ test('the same line pauses when the pool\'s own meter reads 96%, until that wind
       bullswarmDir: home, poolName: 'fixture-limit',
     });
     assert.equal(v.failureKind, 'quota');
-    assert.equal(v.quarantineHint, true);
-    assert.equal(v.quotaPause.rule, 'meter');
-    assert.equal(v.quotaPause.meterWindow.usedPct, 96);
-    assert.equal(v.quarantineUntil, v.quotaPause.until);
-    assert.equal(v.quarantineSource, 'meter');
+    assert.equal(v.usageLimit.rule, 'meter');
+    assert.equal(v.usageLimit.meterWindow.usedPct, 96);
+    assert.equal(v.retryAfter, new Date(v.usageLimit.until).toISOString());
   } finally {
     ctx.cleanup();
     rmSync(home, { recursive: true, force: true });
   }
 });
 
-test('with automatic pausing off, outside the limits-to-caller rule, even a spent window with a reset is a throttle, not a pause', async () => {
-  const ctx = makeCtx();
-  const home = limitHome({ usedPct: 100, pausing: 'off' });
-  try {
-    const v = await watchOnce(limitChild("You've hit your session limit · resets in 2 hours"), 'Do the work.', ctx.dir, ctx.paths, {
-      bullswarmDir: home, poolName: 'fixture-limit',
-    });
-    assert.equal(v.failureKind, 'throttle');
-    assert.equal(v.quarantineHint, undefined);
-    assert.equal(v.quotaPause.rule, 'off');
-    assert.match(v.why, /pool not paused: automatic pausing is off/);
-  } finally {
-    ctx.cleanup();
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-
-// A caller under the limits-to-caller rule (a marked step, the
-// planner and scout of a marked run, `bullswarm run`) reads a spent usage
-// window as quota whatever the switch: a notice worded as a spent window, or
-// one whose reset is known. The meter is re-read for it every time, and the
-// 100% refusal marker written when that read fails, so the next pick sees the
-// spent pool. A pause still needs the Q6 proof and the switch on.
-test('under the limits-to-caller rule a spent window is quota whatever the switch, and the refusal marker is written', async () => {
+// A limit whose reset is known is quota for every caller. A caller under the
+// limits-to-caller rule (a marked step, the planner and scout of a marked
+// run, `bullswarm run`) also reads a notice worded as a spent window as
+// quota. The meter is re-read for a quota verdict every time, and the 100%
+// refusal marker written when that read fails, with how its reset is known.
+// An old `strategy.pausing: "off"` in state.json changes nothing.
+test('a known reset is quota for every caller; under the limits-to-caller rule a spent window is quota too, and the refusal marker says how its reset is known', async () => {
   const ctx = makeCtx();
   const failedRead = async () => { throw new Error('meter endpoint unavailable'); };
   const cases = [
-    // [pausing, the notice, weekly meter %, the Q6 rule]
-    ['off', "You've hit your session limit · resets in 2 hours", 48, 'off'],
-    [null, "You've hit your session limit", 48, 'transient'],
-    ['off', REAL_TRANSIENT, 96, 'off'],
+    // [the notice, weekly meter %, the Q6 rule, any other caller's kind, the marker's reset source]
+    ["You've hit your session limit · resets in 2 hours", 48, 'message', 'quota', 'named'],
+    // No reset named: the marker takes the 5h window's own measured reset.
+    ["You've hit your session limit", 48, 'transient', 'throttle', 'measured'],
+    [REAL_TRANSIENT, 96, 'meter', 'quota', 'measured'],
   ];
   try {
-    for (const [pausing, line, usedPct, rule] of cases) {
-      const home = limitHome({ usedPct, pausing });
-      const saved = limitHome({ usedPct, pausing });
+    for (const [line, usedPct, rule, oldKind, resetSource] of cases) {
+      const state = { strategy: { pausing: 'off' } };
+      const home = limitHome({ usedPct, state });
+      const saved = limitHome({ usedPct, state });
       try {
         const v = await watchOnce(limitChild(line), 'Do the work.', ctx.dir, ctx.paths, {
           bullswarmDir: home, poolName: 'fixture-limit', usageLimitsToCaller: true, meterReader: failedRead,
         });
         assert.equal(v.failureKind, 'quota', `${line}: ${v.why}`);
-        assert.equal(v.quotaPause.rule, rule);
-        assert.equal(v.quarantineHint, undefined, 'no proof or no switch: nothing is paused');
-        assert.equal(v.quarantineUntil, undefined);
+        assert.equal(v.usageLimit.rule, rule);
         assert.equal(v.meterRefresh?.source, 'quota-refusal', `${line}: the forced read failed, so the marker is written`);
         const marker = JSON.parse(readFileSync(join(home, 'meters', 'fixture-limit.json'), 'utf8'));
         assert.equal(marker.source, 'quota-refusal');
-        if (v.quotaPause.holdUntil != null) {
-          assert.equal(marker.quota_refusal.resets_at, new Date(v.quotaPause.holdUntil).toISOString(), 'the marker lasts until the known reset');
+        assert.equal(marker.quota_refusal.reset_source, resetSource, line);
+        if (v.usageLimit.until != null) {
+          assert.equal(marker.quota_refusal.resets_at, new Date(v.usageLimit.until).toISOString(), 'the marker lasts until the known reset');
         }
-        // Any other caller (a saved run) keeps the old reading: a throttle,
-        // no forced read, no marker.
+        assert.deepEqual(JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')), state, `${line}: nothing is paused`);
+        // Any other caller (a saved run) keeps the old reading: quota only
+        // with a known reset, else a throttle with no forced read and no marker.
         const old = await watchOnce(limitChild(line), 'Do the work.', ctx.dir, ctx.paths, {
           bullswarmDir: saved, poolName: 'fixture-limit', meterReader: failedRead,
         });
-        assert.equal(old.failureKind, 'throttle', `${line}: ${old.why}`);
-        assert.equal(old.meterRefresh, undefined);
-        assert.equal(JSON.parse(readFileSync(join(saved, 'meters', 'fixture-limit.json'), 'utf8')).source, undefined);
+        assert.equal(old.failureKind, oldKind, `${line}: ${old.why}`);
+        if (oldKind === 'throttle') {
+          assert.equal(old.meterRefresh, undefined);
+          assert.equal(JSON.parse(readFileSync(join(saved, 'meters', 'fixture-limit.json'), 'utf8')).source, undefined);
+        }
       } finally {
         rmSync(home, { recursive: true, force: true });
         rmSync(saved, { recursive: true, force: true });
@@ -1629,7 +1590,7 @@ test('under the limits-to-caller rule a spent window is quota whatever the switc
   }
 });
 
-test('under the limits-to-caller rule a proven pause with the switch on is quota with its quarantine, as before', async () => {
+test('a usage limit with a named reset carries retryAfter and no pause field', async () => {
   const ctx = makeCtx();
   const home = limitHome({ usedPct: 48 });
   try {
@@ -1638,10 +1599,11 @@ test('under the limits-to-caller rule a proven pause with the switch on is quota
       meterReader: async () => { throw new Error('meter endpoint unavailable'); },
     });
     assert.equal(v.failureKind, 'quota');
-    assert.equal(v.quotaPause.rule, 'message');
-    assert.equal(v.quarantineHint, true);
-    assert.equal(v.quarantineUntil, v.quotaPause.until);
-    assert.equal(v.quarantineSource, 'message');
+    assert.equal(v.usageLimit.rule, 'message');
+    assert.equal(v.retryAfter, new Date(v.usageLimit.until).toISOString());
+    for (const key of ['quarantineHint', 'quarantineUntil', 'quarantineSource', 'quotaPause']) {
+      assert.equal(Object.hasOwn(v, key), false, key);
+    }
     assert.equal(v.meterRefresh.source, 'quota-refusal');
   } finally {
     ctx.cleanup();
@@ -1650,7 +1612,7 @@ test('under the limits-to-caller rule a proven pause with the switch on is quota
 });
 
 // --- the provider's error channel (W7) -------------------------------------
-// The false positive of 2026-09-21: a pool was paused with the reason
+// The false positive of 2026-09-21: a pool was taken out with the reason
 // `usage limit: "Codex's `usage_credits_required` is spent-credit wording, not
 // a throttle …"` — a sentence from the agent's OWN reply. The classifiers read
 // the provider's channel only: its stderr, its error events and its terminal
@@ -1676,7 +1638,7 @@ function codexShaped(rows) {
   };
 }
 
-test('a quota-shaped sentence in the agent\'s own reply never pauses a pool', async () => {
+test('a quota-shaped sentence in the agent\'s own reply never fails the attempt', async () => {
   const ctx = makeCtx();
   try {
     const report = [
@@ -1693,8 +1655,7 @@ test('a quota-shaped sentence in the agent\'s own reply never pauses a pool', as
     ]), 'Audit the matcher.', ctx.dir, ctx.paths);
     assert.equal(v.ok, true, v.why);
     assert.equal(v.failureKind, undefined);
-    assert.equal(v.quarantineHint, undefined);
-    assert.equal(v.quotaPause, undefined);
+    assert.equal(v.usageLimit, undefined);
     assert.equal(v.meta.signal, null, 'a healthy agent must not be signalled');
   } finally {
     ctx.cleanup();
@@ -1708,23 +1669,23 @@ test('the same sentence on the provider\'s error event is classified, not ignore
       { type: 'error', message: `${AGENT_QUOTE}, so this request was refused.` },
     ]), 'Audit the matcher.', ctx.dir, ctx.paths);
     assert.equal(v.ok, false);
-    // The phrase names no reset, so it is a transient throttle (quota.js Q6):
-    // the attempt backs off here and then moves on, and the pool is not paused.
+    // The phrase names no reset, so outside the limits-to-caller rule it is a
+    // transient throttle (quota.js Q6): the attempt backs off here and then
+    // moves on.
     assert.equal(v.failureKind, 'throttle');
-    assert.equal(v.quarantineHint, undefined);
-    // The provider's own record carries the words, so the pause reason names
-    // the sentence rather than dropping a failure the provider did report.
-    assert.match(v.quotaPause.line, /usage_credits_required/);
+    // The provider's own record carries the words, so the verdict names the
+    // sentence rather than dropping a failure the provider did report.
+    assert.match(v.usageLimit.line, /usage_credits_required/);
   } finally {
     ctx.cleanup();
   }
 });
 
-// The switch decides whether a pool is paused, never what a
-// sign-in failure is. It stays `auth` with its quarantine hint, so a retry
-// skips the pools that share the credential (the 2026-09-11 sibling walk);
-// state.js refuses the pause itself while the switch is off.
-test('with automatic pausing off a dead credential is still auth with its hint; only the why says the pool was not paused', async () => {
+// A dead credential is `auth` and nothing more: no hint, no pause, and an old
+// `strategy.pausing: "off"` in state.json changes neither the kind nor the
+// why. The dispatcher skips the pools that share the credential for the rest
+// of that dispatch (v2-dispatch.js; the 2026-09-11 sibling walk).
+test('a dead credential is auth with a plain why, whatever an old home says', async () => {
   const ctx = makeCtx();
   const authChild = () => ({
     name: 'fixture-auth',
@@ -1732,32 +1693,25 @@ test('with automatic pausing off a dead credential is still auth with its hint; 
     authSignatures: ['unauthorized'],
     outputExtraction: { strategy: 'stdout' },
   });
-  const on = limitHome({ pausing: null });
-  const off = limitHome({ pausing: 'off' });
+  const plain = limitHome();
+  const old = limitHome({ state: { strategy: { pausing: 'off' } } });
   try {
-    const benched = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
-      bullswarmDir: on, poolName: 'fixture-limit',
-    });
-    assert.equal(benched.failureKind, 'auth');
-    assert.equal(benched.quarantineHint, true, 'on: the dead credential asks for a bench');
-    assert.doesNotMatch(benched.why, /automatic pausing is off/);
-
-    const unpaused = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
-      bullswarmDir: off, poolName: 'fixture-limit',
-    });
-    assert.equal(unpaused.failureKind, 'auth', 'off: still a sign-in failure');
-    assert.equal(unpaused.quarantineHint, true, 'off: the hint stays; state.js refuses the pause');
-    assert.equal(unpaused.why, 'auth/throttle signature: "unauthorized" · automatic pausing is off, pool not paused');
-
+    for (const home of [plain, old]) {
+      const v = await watchOnce(authChild(), 'Do the work.', ctx.dir, ctx.paths, {
+        bullswarmDir: home, poolName: 'fixture-limit',
+      });
+      assert.equal(v.failureKind, 'auth');
+      assert.equal(v.why, 'auth/throttle signature: "unauthorized"');
+      assert.equal(Object.hasOwn(v, 'quarantineHint'), false);
+    }
     // The upstream sign-in failure inside a provider stream error: the same.
-    const relayed = await watchOnce(streamingEvent(RELAY_401_EVENT), 'Do the thing.', ctx.dir, ctx.paths, { pausing: false });
+    const relayed = await watchOnce(streamingEvent(RELAY_401_EVENT), 'Do the thing.', ctx.dir, ctx.paths, { bullswarmDir: old });
     assert.equal(relayed.failureKind, 'auth');
-    assert.equal(relayed.quarantineHint, true);
-    assert.equal(relayed.why, 'upstream auth failure: "auth_unavailable" (provider stream error) · automatic pausing is off, pool not paused');
+    assert.equal(relayed.why, 'upstream auth failure: "auth_unavailable" (provider stream error)');
   } finally {
     ctx.cleanup();
-    rmSync(on, { recursive: true, force: true });
-    rmSync(off, { recursive: true, force: true });
+    rmSync(plain, { recursive: true, force: true });
+    rmSync(old, { recursive: true, force: true });
   }
 });
 

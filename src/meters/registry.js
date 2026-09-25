@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   MeterCache, paceSnapshot, FRESH_MS, STALE_MS, WINDOW_MS,
-  normalizePacingWindow, meterResolutionPct, monotonicIntervalDelta,
+  normalizePacingWindow, meterResolutionPct, monotonicIntervalDelta, refusalResetKnown,
 } from './framework.js';
 import { loadProviders, providerFor } from '../lib/providers.js';
 import { migratePoolNameHome } from '../lib/state.js';
@@ -119,6 +119,9 @@ function quotaRefusalOf(snapshot) {
     source: 'quota-refusal',
     refusedAt,
     resetsAt,
+    // named | measured | guessed; a marker written before this was recorded
+    // has none, and routing reads it as guessed (framework.js refusalResetKnown).
+    resetSource: typeof marker.reset_source === 'string' ? marker.reset_source : null,
     window,
     reason: typeof marker.reason === 'string' ? marker.reason : null,
   };
@@ -127,21 +130,6 @@ function quotaRefusalOf(snapshot) {
 function readingWithMarker(result, snapshot = result?.snapshot) {
   const marker = quotaRefusalOf(snapshot);
   return marker ? { ...result, source: 'quota-refusal', quotaRefusal: marker } : result;
-}
-
-/** Read only a persisted quota-refusal marker; never contacts a provider. */
-export function cachedQuotaRefusal(pool, { bullswarmDir = METERS_DIR(), nowMs = Date.now() } = {}) {
-  migratePoolNameHome(bullswarmDir);
-  const cache = new MeterCache(join(bullswarmDir, 'meters'));
-  const snapshot = cache.get(pool);
-  const marker = quotaRefusalOf(snapshot);
-  if (!marker) return null;
-  return {
-    snapshot,
-    source: 'quota-refusal',
-    quotaRefusal: marker,
-    ...paceSnapshot(snapshot, nowMs),
-  };
 }
 
 function staleResult(cached, nowMs, error, holdUntil, reason) {
@@ -328,29 +316,47 @@ function addCalendarMonth(ms) {
   return date.getTime();
 }
 
+/**
+ * The next reset of a window nobody named, and where it came from: the last
+ * reading's own reset while it is still ahead is `measured` (a reading of this
+ * window said so; a marker's reset keeps the source it was written with).
+ * Rolled forward from a reading whose reset passed, or a whole window from
+ * now with no reading at all, it is `guessed`, and routing does not count a
+ * guessed marker (framework.js windowSpent).
+ */
 function nextResetForWindow(windowKey, prior, nowMs) {
   const info = QUOTA_WINDOWS[windowKey] ?? QUOTA_WINDOWS.seven_day;
-  let reset = finiteMs(prior?.[windowKey]?.resets_at);
+  const entry = prior?.[windowKey];
+  let reset = finiteMs(entry?.resets_at);
+  if (reset != null && reset > nowMs) {
+    const known = entry?.source !== 'quota-refusal' || refusalResetKnown(entry);
+    return {
+      resetsAtMs: reset,
+      resetSource: !known ? 'guessed' : entry?.source === 'quota-refusal' ? entry.reset_source : 'measured',
+    };
+  }
   if (reset != null) {
     for (let count = 0; count < 2400 && reset <= nowMs; count += 1) {
       reset = windowKey === 'monthly' ? addCalendarMonth(reset) : reset + info.ms;
     }
-    if (reset > nowMs) return reset;
+    if (reset > nowMs) return { resetsAtMs: reset, resetSource: 'guessed' };
   }
-  if (windowKey === 'monthly') return addCalendarMonth(nowMs);
-  return nowMs + info.ms;
+  return {
+    resetsAtMs: windowKey === 'monthly' ? addCalendarMonth(nowMs) : nowMs + info.ms,
+    resetSource: 'guessed',
+  };
 }
 
 function quotaRefusalSnapshot(pool, {
-  cached, connector, subscription, nowMs, resetAtMs, reason,
+  cached, connector, subscription, nowMs, resetAtMs, resetSource = 'named', reason,
 } = {}) {
   const windowKey = quotaWindowFor(cached, connector, subscription);
   const info = QUOTA_WINDOWS[windowKey] ?? QUOTA_WINDOWS.seven_day;
-  const namedReset = finiteMs(resetAtMs);
-  const resetsAtMs = namedReset != null && namedReset > nowMs
-    ? namedReset
+  const knownReset = finiteMs(resetAtMs);
+  const next = knownReset != null && knownReset > nowMs
+    ? { resetsAtMs: knownReset, resetSource: resetSource === 'measured' ? 'measured' : 'named' }
     : nextResetForWindow(windowKey, cached, nowMs);
-  const resetsAt = new Date(resetsAtMs).toISOString();
+  const resetsAt = new Date(next.resetsAtMs).toISOString();
   const refusedAt = new Date(nowMs).toISOString();
   const snapshot = cached && typeof cached === 'object' ? { ...cached } : {};
   snapshot.pool ??= pool;
@@ -360,6 +366,7 @@ function quotaRefusalSnapshot(pool, {
     source: 'quota-refusal',
     refused_at: refusedAt,
     resets_at: resetsAt,
+    reset_source: next.resetSource,
     window: info.name,
     reason: reason ? String(reason).slice(0, 300) : null,
   };
@@ -368,6 +375,7 @@ function quotaRefusalSnapshot(pool, {
     utilization: 100,
     resets_at: resetsAt,
     source: 'quota-refusal',
+    reset_source: next.resetSource,
   };
   return { snapshot, marker: quotaRefusalOf(snapshot), windowKey };
 }
@@ -377,7 +385,11 @@ function quotaRefusalSnapshot(pool, {
  * FRESH_MS. A live reading wins and naturally replaces any prior marker; when
  * the reader is absent or fails, the refusal is persisted as a synthetic 100%
  * reading for the shortest available window so stale low usage cannot route
- * another attempt back to the refused pool.
+ * another attempt back to the refused pool. `resetAtMs` is the limit's known
+ * reset and `resetSource` how it is known: `named` (the provider's notice,
+ * the default) or `measured` (a meter reading). With neither the marker's
+ * reset is guessed, and the marker then keeps no pool out
+ * (framework.js windowSpent).
  */
 export async function refreshMeterAfterQuota(pool, opts = {}) {
   const nowMs = finiteMs(opts.nowMs) ?? Date.now();
@@ -405,6 +417,7 @@ export async function refreshMeterAfterQuota(pool, opts = {}) {
     subscription: opts.subscription ?? null,
     nowMs,
     resetAtMs: opts.resetAtMs ?? opts.resetsAt ?? null,
+    resetSource: opts.resetSource ?? 'named',
     reason: opts.reason ?? opts.message ?? null,
   });
   cache.put(pool, marker.snapshot);

@@ -1234,14 +1234,14 @@ test('a kernel resume resets a waiting step to pending: no worker ran, nothing i
 
 test('marked: a step no pool can take now goes to the caller with each pool\'s return, never waits, and the rest of the run goes on', async (t) => {
   const f = stage3Setup(t);
-  // A pool's quarantine holds its return in ms, as the state file stores it.
+  // A pool whose meter reads its 5-hour window at the limit until its reset.
   const soonMs = Date.now() + 2 * 3600_000;
-  const laterMs = Date.now() + 5 * 3600_000;
+  const laterMs = Date.now() + 4 * 3600_000;
   const [soon, later] = [soonMs, laterMs].map((ms) => new Date(ms).toISOString());
   const pausedPool = (name, until) => ({
     name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
     modelSelection: { flag: '--model' }, strategyAssignments: { low: { pool: name, model: 'gpt-5.6-luna' } },
-    quarantine: { until, kind: 'quota', reason: 'usage window spent' },
+    fiveHourUsedPct: 100, fiveHourResetsAt: new Date(until).toISOString(),
   });
   const slept = [];
   // `write` goes through the real dispatcher, with seams that would show a
@@ -1257,7 +1257,7 @@ test('marked: a step no pool can take now goes to the caller with each pool\'s r
     runId: 'wf-s3nofree-abcdef', parentEnv: {}, initialPlannerResponse: programOf([step3('write', { affects: ['work-done'] }), step3('notes')]),
     dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch },
   });
-  const why = `no pool with quota to spare: luna-1 paused for quota until ${soon}; luna-2 paused for quota until ${later}`;
+  const why = `no pool with quota to spare: luna-1 at its 5-hour limit until ${soon}; luna-2 at its 5-hour limit until ${later}`;
   const write = run.state.actions.find((action) => action.id === 'write');
   assert.equal(write.status, 'failed');
   assert.deepEqual(write.lastFailure, { kind: 'quota', message: why, retryAfter: soon });

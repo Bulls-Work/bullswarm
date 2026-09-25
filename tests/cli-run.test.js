@@ -78,7 +78,7 @@ test('pools leaves an explicitly enabled test fixture enabled (D1)', () => {
   } finally { f.cleanup(); }
 });
 
-test('pools does not rewrite state.json when its quarantine sweep released nothing', () => {
+test('pools does not rewrite state.json: it only observes', () => {
   const f = home({ config: { testFixturesMigrated: true } });
   try {
     bullswarm(f.dir, ['pools', '--json']); // settle any first-use writes
@@ -89,17 +89,20 @@ test('pools does not rewrite state.json when its quarantine sweep released nothi
   } finally { f.cleanup(); }
 });
 
-test('pools still persists a quarantine release when the sweep makes one', () => {
+test('pools reads nothing into an old quarantine record: no sweep, no message, no write', () => {
+  const quarantine = { until: Date.now() + 60 * 60_000, reason: 'old auth failure', kind: 'auth' };
   const f = home({
-    echoPool: { enabled: true, quarantine: { until: 1000, reason: 'old auth failure', kind: 'auth' } },
+    echoPool: { enabled: true, quarantine },
     config: { testFixturesMigrated: true },
   });
   try {
+    bullswarm(f.dir, ['pools', '--json']); // settle any first-use writes
+    const before = stateBytes(f.dir);
     const result = bullswarm(f.dir, ['pools']);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stderr, /quarantine expired, returned to service: echo/);
-    const state = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
-    assert.equal(state.pools.echo.quarantine, undefined, 'the release was persisted');
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /quarantin|PAUSED|returned to service/);
+    assert.match(result.stdout, /^echo\s.*\sready\b/m);
+    assert.deepEqual(stateBytes(f.dir), before, 'nothing is swept or rewritten');
   } finally { f.cleanup(); }
 });
 
@@ -197,10 +200,10 @@ test('run records a short failure reason in the task ledger', () => {
   } finally { f.cleanup(); }
 });
 
-// --- free models and the soft bench in `bullswarm pools` --------------------
-// Requirement 5: the observation command has to say when a pool is free and
-// when it is benched, or an operator cannot tell a free-first pick or a paused
-// pool from an ordinary one.
+// --- free models in `bullswarm pools` ---------------------------------------
+// Requirement 5: the observation command has to say when a pool is free, or
+// an operator cannot tell a free-first pick from an ordinary one. No pool is
+// benched or paused any more (state.js S1).
 
 test('pools names the free model a pool would run', () => {
   const f = home();
@@ -213,44 +216,22 @@ test('pools names the free model a pool would run', () => {
   } finally { f.cleanup(); }
 });
 
-test('pools shows a benched pool with its deadline, reason and strike count', () => {
+test('pools shows no bench or strikes for an old bench record, and --json carries none', () => {
   const f = home();
   try {
-    const until = Date.now() + 9 * 60_000;
+    const bench = { until: Date.now() + 9 * 60_000, reason: 'stall', count: 2 };
     const state = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
-    state.pools.echo.bench = { until, reason: 'stall', count: 2 };
+    state.pools.echo.bench = bench;
     writeFileSync(join(f.dir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
     const r = bullswarm(f.dir, ['pools']);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /BENCHED until .* \(stall, 2 strikes\)/);
-    // The bench travels into --json untouched, for a caller that parses it.
+    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /BENCHED|strikes|bench/);
+    assert.match(r.stdout, /^echo\s.*\sready\b/m);
     const j = bullswarm(f.dir, ['pools', '--json']);
     const echo = JSON.parse(j.stdout).pools.find((p) => p.name === 'echo');
-    assert.deepEqual(echo.bench, { until, reason: 'stall', count: 2 });
+    assert.equal(Object.hasOwn(echo, 'bench'), false);
+    assert.equal(Object.hasOwn(echo, 'quarantine'), false);
     assert.equal(echo.free, true);
-  } finally { f.cleanup(); }
-});
-
-test('pools counts a first strike without calling the pool benched, and sweeps an expired bench', () => {
-  const f = home();
-  try {
-    const state = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
-    state.pools.echo.bench = { until: null, reason: 'provider', count: 1 };
-    writeFileSync(join(f.dir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
-    const first = bullswarm(f.dir, ['pools']);
-    assert.match(first.stdout, /ready.*strikes=1\(provider\)/);
-    assert.doesNotMatch(first.stdout, /BENCHED/);
-
-    // An expired bench is released on the same terms as an expired quarantine,
-    // and the strike count stays.
-    const expired = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
-    expired.pools.echo.bench = { until: Date.now() - 1000, reason: 'stall', count: 2 };
-    writeFileSync(join(f.dir, 'state.json'), `${JSON.stringify(expired, null, 2)}\n`);
-    const second = bullswarm(f.dir, ['pools']);
-    assert.match(second.stderr, /bench expired, returned to service: echo/);
-    assert.doesNotMatch(second.stdout, /BENCHED/);
-    assert.match(second.stdout, /strikes=2\(stall\)/);
-    const swept = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
-    assert.deepEqual(swept.pools.echo.bench, { until: null, reason: 'stall', count: 2 });
+    assert.deepEqual(JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8')).pools.echo.bench, bench, 'the old record is left alone');
   } finally { f.cleanup(); }
 });

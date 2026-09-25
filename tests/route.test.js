@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pickPool, paceScore, isQuarantined, isBenched, isExhausted, fiveHourForecast,
+  pickPool, paceScore, isExhausted, fiveHourForecast,
   pacingForecast, DEFAULT_INFLIGHT_PENALTY_PCT, modelFamilyOf,
 } from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT, windowSpent } from '../src/meters/framework.js';
@@ -112,15 +112,23 @@ test('caller does not win while a delegate has headroom', () => {
   assert.equal(r.pick.pool, 'grok');
 });
 
-test('quarantined pools excluded until expiry, then back in service', () => {
-  const until = NOW + 1000;
-  const p = pool('grok', { quarantine: { until } });
-  assert.equal(isQuarantined(p, NOW), true);
-  const during = pickPool('chore', [p], { callerEligible: false, now: NOW });
-  assert.equal(during.candidates.length, 0);
-  assert.equal(isQuarantined(p, NOW + 2000), false);
-  const after = pickPool('chore', [p], { callerEligible: false, now: NOW + 2000 });
-  assert.equal(after.pick.pool, 'grok'); // re-probe path: automatic return
+test('an old quarantine or bench record on a pool view keeps nothing out (R6)', () => {
+  // A view built by hand from an old state.json record: no pause is kept
+  // between picks, so the record is read by nothing.
+  const paused = pool('grok', { quarantine: { until: NOW + 7 * 24 * HOUR, kind: 'quota' } });
+  assert.equal(pickPool('chore', [paused], { callerEligible: false, now: NOW }).pick.pool, 'grok');
+  const forever = pool('grok', { quarantine: { until: null, kind: 'auth' } });
+  assert.equal(pickPool('chore', [forever], { callerEligible: false, now: NOW }).pick.pool, 'grok');
+  const benched = pool('opencode', {
+    free: true, freeModel: 'opencode/union-alpha', pace: -10, bench: { until: NOW + 1_000, reason: 'stall', count: 2 },
+  });
+  const route = pickPool('build', [benched, pool('metered', { pace: 1 })], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(route.pick.pool, 'opencode');
+  assert.match(route.why, /^free pool first: opencode/);
+  assert.doesNotMatch(route.why, /bench/);
+  assert.equal(Object.hasOwn(route.candidates[0], 'benched'), false);
 });
 
 test('a healthy free pool tier wins ahead of metered pools without reordering meters', () => {
@@ -137,30 +145,6 @@ test('a healthy free pool tier wins ahead of metered pools without reordering me
   assert.equal(r.candidates[0].free, true);
   assert.match(r.why, /^free pool first: free-fast/);
   assert.match(r.why, /metered pools ranked below free: metered-a 40, metered-b 2/);
-});
-
-test('a benched free pool is skipped until its deadline, then returns automatically', () => {
-  const until = NOW + 1_000;
-  const free = pool('opencode2', {
-    free: true,
-    freeModel: 'opencode/union-alpha',
-    pace: -10,
-    bench: { until, reason: 'stall', count: 2 },
-  });
-  assert.equal(isBenched(free, NOW), true);
-  const during = pickPool('build', [free, pool('metered', { pace: 1 })], {
-    callerEligible: false, callerSession: false, now: NOW,
-  });
-  assert.equal(during.pick.pool, 'metered');
-  assert.match(during.why, new RegExp(
-    `benched \\(stall, back at ${new Date(until).toISOString()}\\): opencode2`,
-  ));
-  assert.equal(isBenched(free, until), false);
-  const after = pickPool('build', [free, pool('metered', { pace: 100 })], {
-    callerEligible: false, callerSession: false, now: until,
-  });
-  assert.equal(after.pick.pool, 'opencode2');
-  assert.match(after.why, /^free pool first: opencode2/);
 });
 
 test('evidence routing disables free-first and avoids a writer while another pool is eligible', () => {
@@ -235,7 +219,8 @@ test('explicit effort-tier assignment wins only while its pool remains eligible'
   assert.equal(picked.pick.pool, 'assigned');
   assert.match(picked.why, /configured high assignment/);
 
-  pools[1].quarantine = { until: NOW + 10_000 };
+  // Its 5-hour window at its limit: no longer eligible.
+  Object.assign(pools[1], { fiveHourUsedPct: 100, fiveHourResetsAt: new Date(NOW + 10_000).toISOString() });
   const fallback = pickPool('build', pools, {
     callerEligible: false,
     callerSession: false,

@@ -15,7 +15,7 @@ The home is `$BULLSWARM_HOME` when that variable is a non-empty string, otherwis
 
 | Path | What lives there |
 |---|---|
-| `state.json` | pools, quarantine, incumbents, the decision log, `config`, and `strategy` |
+| `state.json` | pools, incumbents, the decision log, `config`, and `strategy` |
 | `state.lock` | exclusive lock for every read-modify-write of `state.json` |
 | `routing.json` | a suggested per-lane order written by `setup`; dispatch does not read it |
 | `providers.json` | `{ "enabled": ["command-code"] }` — which contrib providers to load |
@@ -63,7 +63,7 @@ The file is version `1`. Every write is atomic (temp + rename). Every mutation g
 | Field | Meaning |
 |---|---|
 | `pools.<name>.enabled` | whether the pool is in the routing set. Test-fixture pools are opt-in (`enabled === true`); every other pool is opt-out (`enabled !== false`) |
-| `pools.<name>.quarantine` | a pause: `{ until, reason, kind }` or absent. `kind` is `auth` (default 10 minutes) or `quota`, which is written only on proof — the pool's meter at 95% or more on a running window, or a provider line naming a spent window and its reset — and also records `rule` (`meter` or `message`), `line`, `meter`, `meterWindow`, `resetsAt` and `pausedAt`. Expired pauses auto-release on the next command that sweeps state; `bullswarm pools resume <pool>` lifts one at once |
+| `pools.<name>.quarantine`, `pools.<name>.bench` | left by 0.35.6 and earlier, which paused a pool after a usage limit or a sign-in failure; ignored now, because nothing pauses a pool any more. Routing reads the live meters instead: a window at 100% keeps a pool out until that window resets |
 | `retention` | `{ enabled, workspacesDays }`; see [Retention](#retention) |
 | `incumbents` | last successful pool per lane, so picks do not flap |
 | `decisionLog` | last 500 dispatch records (`ts`, `lane`, `picked`, `keepOnClaude`, `ok`, `why`, `wallSec`, `model`, `reasoning`, `usage`, `outFile`, `forecast`) |
@@ -126,7 +126,7 @@ bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
 | `subscriptions` | `set-subscription` | `{ plan, monthlyPriceUsd, includedValueUsd, quotaWindow, resetsAt }` per pool; overrides the connector |
 | `policy` | `apply`, `refresh --apply`, `auto off` | auto-apply-on-refresh cadence |
 | `lastReport` | `refresh` / `show` / `apply` | cached discovery report; `suggestions[tier].recommended` is the best pick now (never a pin), and `suggestions[tier].assignment` is the pin in force when the report was saved |
-| `pausing` | `set-pausing` | `"off"` stops every automatic pool pause — quota, auth, the credential-group siblings an auth pause benches with it, and the soft bench; absent means on. It decides only whether a pool stays paused for later work. Whatever the switch, a sign-in failure is failure kind `auth` and the step's retry skips every pool that shares its credential; in a workflow started by this version a spent usage window ends the step and goes back to the caller, the pool's meter is read again at once so a window it shows at 100% keeps the pool out of later steps until that window resets, and a transient rate limit backs off on the same pool at most twice, then goes back too. A workflow started by an earlier version retries a limit notice, then moves it to another pool; a single `bullswarm run` makes one attempt and exits 1 |
+| `pausing` | `set-pausing` in 0.35.6 and earlier | ignored now; the command is gone, and nothing pauses a pool |
 
 Reasoning is a separate dimension from the model: the tier chooses which model runs, reasoning chooses how deeply it thinks. Precedence per attempt: action `reasoning` field → `--worker-reasoning` / `run --reasoning` → strategy per-model (that pool's model on that tier) → strategy per-pool → strategy per-tier → connector default → nothing. `default` means append nothing and let the worker CLI decide. A level a connector cannot express is clamped down, never up.
 

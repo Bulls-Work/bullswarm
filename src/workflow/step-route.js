@@ -381,7 +381,7 @@ function stepsWorkingOnPin(program, action, state, pinProvider, pools) {
  * The CLI checks that need the configured pool list (§2.4), as exit-2
  * messages. `labels` maps pool ids to display labels; `preparePools(pools,
  * action, effort, opts)` is the dispatcher's capability filter (called with
- * the pauses, benches and 5h gates ignored); `runPin` is --worker-pool. With
+ * the metered-window gates ignored); `runPin` is --worker-pool. With
  * `state` (a running run) the pin check reads which steps already did work.
  */
 export function routeIssuesForPools(program, pools = [], {
@@ -424,7 +424,7 @@ export function routeIssuesForPools(program, pools = [], {
     }
     const capable = typeof preparePools === 'function'
       ? preparePools(pools, action, action.effort, {
-        routeFilter: filter, ignoreQuarantine: true, ignoreBench: true, ignoreBurstGate: true,
+        routeFilter: filter, ignoreBurstGate: true,
       }).filter((pool) => poolPassesRoute(pool, filter))
       : (pools ?? []).filter((pool) => pool?.enabled !== false && poolPassesRoute(pool, filter));
     if (!capable.length) {

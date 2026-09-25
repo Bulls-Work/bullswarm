@@ -242,7 +242,7 @@ A run never waits for its caller: when nothing more can happen on its own it fin
 | Option | When it fits | What to do |
 | --- | --- | --- |
 | continue | the plan needs a fix, a new step, or a step redone | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` (`--rerun <step ids>` runs finished steps again) |
-| retry | a step stopped for a reason a retry fixes: a crashed or silent worker, no pool, a paused pool; or a usage limit or no free pool stopped the planner or scout and ended the run | `bullswarm workflow resume <shortId>`; it reruns exactly those steps and the steps blocked behind them, and that stopped planner or scout first |
+| retry | a step stopped for a reason a retry fixes: a crashed or silent worker, a usage limit, or no pool free; or a usage limit or no free pool stopped the planner or scout and ended the run | `bullswarm workflow resume <shortId>`; it reruns exactly those steps and the steps blocked behind them, and that stopped planner or scout first |
 | rerun | a step failed in a run started by this version | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]` runs it again with its last attempt's handoff |
 | accept | you choose to keep a failed step as it is | `bullswarm workflow step accept <shortId> <step> --reason "…"`: recorded as your choice, never proof |
 | take over | the rest is small, or needs something only you have | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |
@@ -290,12 +290,12 @@ that judged the failing requirement; another check that failed one gets its
 own `also judged by <check>:` lines with its rerun and accept.
 
 A usage limit ends the step: a spent 5-hour or weekly window, or no credit
-left. The step comes back to you at once, whatever the automatic pausing
-switch. Bullswarm does not wait for the pool, move the step to another pool,
-or retry it, and the rest of the run keeps going. It does read the pool's
-meter again at once (when the meter cannot be read, the pool is recorded as
-full until the reset), and later steps route on that reading: a window it
-shows at 100% keeps the pool out until that window resets. A limit notice that names no
+left. The step comes back to you at once. Bullswarm does not wait for the
+pool, move the step to another pool, or retry it, and the rest of the run
+keeps going. Nothing about the pool is remembered either: Bullswarm reads the
+pool's meter again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and later steps route on that
+reading, so a window it shows at 100% keeps the pool out until that window
+resets. A limit notice that names no
 reset ends the step too; its block then prints `back at` only when every pool
 that can run the step is out and one of them has a known return. When the
 reset is known, the block says when the pool is back and adds a `wait for it`
@@ -317,11 +317,10 @@ option:
 ```
 
 The same happens when no pool that can run the step is free when it is picked:
-each one is nearly spent, at its 5-hour, weekly or monthly limit, paused (for
-quota, or after a sign-in failure), or benched after repeated failures. The
+each one is nearly spent, or at its 5-hour, weekly or monthly limit. The
 `why` line then names every pool and its reason, for example `no pool with
-quota to spare: pool-a paused for quota until <time>; pool-b at its 5-hour
-limit until <time>; pool-c at its weekly limit until <time>`.
+quota to spare: pool-a at its 5-hour limit until <time>; pool-b at its weekly
+limit until <time>; pool-c nearly spent (forecast 97.0%) until <time>`.
 When one of the reasons is not a usage limit it reads `no pool free: …`, and
 the header reads `no eligible pool`. `back at` is then the earliest known
 return among those pools; a pool whose return is unknown is skipped. When
@@ -341,18 +340,18 @@ Your choices after a usage limit, or with no pool free:
 
 A short "too many requests" rate limit is not a usage limit. It backs off on
 the same pool at most twice (20 s, then 60 s, or the wait it names when that
-is at most 2 minutes), then comes back to you, with automatic pausing on or
-off. Its header reads `rate limited · backed off twice` (`once` after one
+is at most 2 minutes), then comes back to you. Its header reads `rate limited · backed off twice` (`once` after one
 backoff; a backoff is never counted as the retry), and a try after a backoff
 reads `· after a rate-limit backoff`. One that names a longer wait comes back to you
 at once, with `back at` at the end of that wait. One whose pool is no longer
-free for the backoff (paused, at its 5-hour, weekly or monthly limit, nearly
-spent or benched in the meantime) comes back to you at once too: as `out of
+free for the backoff (at its 5-hour, weekly or monthly limit, or nearly
+spent in the meantime) comes back to you at once too: as `out of
 quota` when that pool is out on a usage limit, with `back at` its return when
 that is known. A sign-in failure, a provider error or a worker that died at
 start still gets the step's one automatic retry by itself, on another free
 pool when there is one. After a sign-in failure that retry skips every pool
-that shares the credential, whatever the pausing switch.
+that shares the credential; nothing is stored, so a later step can pick that
+pool again.
 
 A pool whose weekly or monthly window closes soon and that this step would
 push past its limit (the router's "expiring but draining") is never given the

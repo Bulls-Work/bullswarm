@@ -25,7 +25,7 @@ import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { queueSteering } from '../src/workflow/steering.js';
 import {
-  buildV2PlannerContract, buildV2PlannerPrompt, createV2PlannerContext, normalizeCallerPlannerResponse,
+  buildV2PlannerContract, buildV2PlannerPrompt, normalizeCallerPlannerResponse,
   v2PlannerContractRules, V2PlannerValidationError,
 } from '../src/workflow/v2-planner.js';
 
@@ -1730,10 +1730,9 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
     const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
     const calls = {};
     // The fake provider: slow's first attempt hits a spent usage window with
-    // a named reset ten minutes out (pausing off, so no pool is paused; the
-    // watcher files it as quota for a marked step, which asks for the
-    // limits-to-caller reading); crash's first worker exits 1; gate always
-    // writes what its check refuses.
+    // a named reset ten minutes out (the watcher files it as quota, with that
+    // reset as retryAfter; nothing is stored on the pool); crash's first
+    // worker exits 1; gate always writes what its check refuses.
     const slowBackAt = new Date(Date.now() + 10 * 60_000).toISOString();
     const worker = async (pool, task, targetDir, files, opts) => {
       const id = opts.attemptId.replace(/-\d+$/, '');
@@ -1742,8 +1741,8 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
       if (id === 'slow' && calls[id] === 1) {
         writeFileSync(files.outFile, 'usage limit reached');
         return {
-          ok: false, failureKind: opts.usageLimitsToCaller === true ? 'quota' : 'throttle', why: 'usage limit reached until the window resets',
-          quotaPause: { rule: 'off', pause: false, limit: 'window', until: null, holdUntil: slowBackAt },
+          ok: false, failureKind: 'quota', why: 'usage limit reached until the window resets', retryAfter: slowBackAt,
+          usageLimit: { rule: 'message', limit: 'window', until: Date.parse(slowBackAt), line: 'usage limit reached' },
           meta: { exitCode: 1, wallSec: 1 },
         };
       }
@@ -1778,8 +1777,7 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
     const events = readEvents(runDir);
     const seq = (predicate) => events.find(predicate)?.sequence ?? Infinity;
 
-    // The usage limit: a spent window (filed as quota, whatever the pausing
-    // switch) ends the step at once. No wait, no move, no retry: it goes to
+    // The usage limit: a spent window (filed as quota) ends the step at once. No wait, no move, no retry: it goes to
     // the caller with the time its pool is back, and the only slot runs the
     // rest of the run.
     const [slow1, ...slowMore] = attemptsOf(first.state, 'slow');

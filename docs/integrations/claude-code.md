@@ -34,7 +34,7 @@ The skill's instructions send the agent straight to `bullswarm run` for one boun
 |---|---|
 | `bullswarm_run` | takes `lane`, `task`, optional `addDir` and `timeout`; dispatches one bounded task and returns `{ exitCode, verdict }` |
 | `bullswarm_health` | re-judges saved outputs against their verdicts and reports verify-gate failures |
-| `bullswarm_pools` | returns each pool's meter state, pace position, and quarantine status |
+| `bullswarm_pools` | returns each pool's meter state, pace position, and in-flight load (`bullswarm pools --json`) |
 
 ```bash
 # register the server for your user account, so every project sees it
