@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- run: your own code can now decide who checks whom, and hand out many tasks
+  in one call. `--avoid-pool`, `--use-provider`, `--avoid-provider` and
+  `--independent-of <run>` are hard route filters applied before pace; they
+  hold the calling agent too, and when they leave no pool the run exits 1 with
+  the reason instead of widening. `--independent-of` takes an earlier run's
+  `outFile` or decision-log id and keeps every pool of that run's provider out.
+  `run --batch <tasks.jsonl> [--concurrency N]` runs each line as its own
+  single run (one attempt, no retry, no saved state) and prints one array of
+  verdicts in file order; it exits 1 when any task failed.
 - workflow: every step gets one automatic retry, then comes back to you. A
   crashed, silent or signed-out worker is retried once on another pool that can
   run the step (the same pool when it is the only one, except after a sign-in

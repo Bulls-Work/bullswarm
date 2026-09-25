@@ -338,7 +338,7 @@ const integrateRetireLegacyText = rich({
 // --- run ------------------------------------------------------------------------
 
 const runText = rich({
-  usage: 'bullswarm run --lane <analyze|build|chore> --add-dir <dir> (--task-file <file> | --prompt <text> | <task text...>) [options]',
+  usage: 'bullswarm run --lane <analyze|build|chore> --add-dir <dir> (--task-file <file> | --prompt <text> | <task text...>) [options]  |  bullswarm run --batch <tasks.jsonl> [--concurrency <n>] [--json]',
   purpose: 'Dispatch one bounded task to the best-available delegate pool (or keep it on the '
     + 'calling agent when nothing suitable is eligible), then verify the saved output before '
     + 'reporting a verdict.',
@@ -350,12 +350,18 @@ const runText = rich({
     { flag: '--add-dir <dir>', desc: 'working directory the delegate operates in', default: 'current directory' },
     { flag: '--task-file <file>', desc: 'read the task text from a file instead of trailing words' },
     { flag: '--prompt <text>', desc: 'pass the task text inline as one flag value' },
+    { flag: '--batch <tasks.jsonl>', desc: 'run each line of a JSONL file as its own single run (one attempt each, the same routing and checks) and print one JSON array of the verdicts in file order, each with its `id` and `exit`. A line is {"id", "lane", "prompt" or "taskFile", optional "addDir", "effort", "reasoning", and the route filters "avoidPool", "useProvider", "avoidProvider", "independentOf" (a value or a list)}. A bad line, an unknown key, or a route filter naming no configured pool or finished run exits 2 before anything runs; exit 1 when any task failed. With --batch only --concurrency, --json, --no-caller, --timeout and --dry-run apply, to every task', default: 'off — one task' },
+    { flag: '--concurrency <n>', desc: 'with --batch: how many tasks run at once. Tasks start in file order, each once the one before it has booked its pool, so routing sees the batch\'s own picks', default: '4' },
     { flag: '--effort <high|medium|low>', desc: 'override the effort tier used for model-tier routing', default: 'derived from --lane (analyze→medium, build→medium, chore→low)' },
     { flag: '--reasoning <low|medium|high|xhigh|max|default>', desc: "run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing and lets the delegate CLI's own configuration decide", default: 'strategy reasoning setting for the effort tier, else the connector default' },
     { flag: '--timeout <seconds>', desc: 'hard wall-clock kill timer for the delegate process', default: 'none — the delegate is allowed to run to completion' },
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
     { flag: '--dry-run', desc: 'print the routing decision, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
     { flag: '--no-caller', desc: 'exclude the calling agent from routing, so the task must go to a delegate pool or fail', default: 'off — the caller competes for the lane like any other pool' },
+    { flag: '--avoid-pool <pool>', desc: 'route filter: never use this pool (its id or label). Repeat the flag or give a comma list', default: 'none' },
+    { flag: '--use-provider <provider>', desc: 'route filter: use only pools of this provider (a pool id\'s part before `:`, so claude-code covers every claude-code:<account> pool). Repeat or comma list', default: 'any provider' },
+    { flag: '--avoid-provider <provider>', desc: 'route filter: never use a pool of this provider. Repeat or comma list', default: 'none' },
+    { flag: '--independent-of <run>', desc: 'route filter: never use the provider that ran an earlier run, named by the outFile path from its --json verdict or its decision-log id, so a checker never shares the writer\'s vendor. Repeatable; a run not in the decision log exits 2', default: 'none' },
     { flag: '--json', desc: 'print the machine-readable verdict document', default: 'human-readable summary line' },
   ],
   safety: [
@@ -363,11 +369,14 @@ const runText = rich({
     'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of the run and releases it when the attempt ends; --dry-run registers nothing',
     'one attempt only: a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
+    'route filters are hard filters, applied before pace, and they hold the calling agent too. They never widen: when they leave no pool the run exits 1 with "no pool left after route filters" and names each pool they took out and why. The verdict lists those pools in `routeFilter.filteredOut`; --dry-run shows them',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },
+    { cmd: 'bullswarm run --batch tasks.jsonl --concurrency 2 --json', note: 'runs every line of tasks.jsonl as its own task, two at a time, and prints one array of verdicts; no retry and no saved state (a batch that must outlive the session belongs in workflow goal)' },
     { cmd: 'bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"', note: 'shows the exact argv, including the clamped reasoning flag, without dispatching' },
     { cmd: 'bullswarm run --lane build --add-dir . --dry-run "Refactor the loader"', note: 'prints a `forecast:` line — inflight count, projected 5h percent before and after this assignment, its expected minutes, the measured burn rate, and the basis of that estimate' },
+    { cmd: 'bullswarm run --lane analyze --add-dir . --no-caller --independent-of ~/.bullswarm/runs/out-<stamp>.md --json "Review the change for bugs"', note: 'a checker on a different provider from the run that wrote out-<stamp>.md' },
   ],
   next: 'bullswarm health to re-judge saved outputs, or bullswarm pools to check routing/quota state before the next run.',
 });

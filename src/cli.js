@@ -31,6 +31,9 @@ import { helpForArgs, usageLine } from './help.js';
 import { flagNames, unknownFlagExit } from './lib/cli-flags.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
+import {
+  applyRunRoute, routeFilterLine, RUN_ROUTE_FLAGS, runRouteFromOpts,
+} from './lib/run-route.js';
 import { projectName } from './lib/project.js';
 import {
   describeAssignment, expectedMinutesFromSpendModel, listAssignments,
@@ -112,10 +115,13 @@ export function parseArgs(argv) {
     if (argv[i].startsWith('--')) {
       const eq = argv[i].indexOf('=');
       const key = argv[i].slice(2, eq > 0 ? eq : undefined);
+      const earlier = args[key];
       if (BOOLEAN_FLAGS.has(key)) args[key] = true;
       else if (eq > 0) args[key] = argv[i].slice(eq + 1);
       else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) args[key] = argv[++i];
       else args[key] = true;
+      // run's route filters repeat (--avoid-pool a --avoid-pool b): keep every value.
+      if (RUN_ROUTE_FLAGS.includes(key)) args[key] = [...(earlier ?? []), args[key]];
     } else rest.push(argv[i]);
   }
   // `_flags` is what the caller literally typed, in order: the unknown-flag
@@ -407,6 +413,19 @@ async function cmdRun(opts) {
     return 1;
   }
 
+  // Route filters (src/lib/run-route.js): a bad name or an unknown run ref is
+  // a usage error here, before anything is refreshed, built or spawned.
+  const runRoute = runRouteFromOpts(opts, {
+    decisionLog: state.decisionLog ?? [],
+    home: getBullswarmDir(),
+    configuredPools: () => Object.entries(loadConnectors(getBullswarmDir(), { packaged: true }))
+      .map(([name, connector]) => ({ name, connector })),
+  });
+  if (runRoute.error) {
+    console.error(runRoute.error);
+    return 2;
+  }
+
   // A preview is a pure read (D3): `--dry-run` must not refresh strategy,
   // because the refresh downloads a datapack and writes the recommendations it
   // derives back into state.json. Decided here, before the refresh, not 50
@@ -438,11 +457,27 @@ async function cmdRun(opts) {
     { decisionLog: state.decisionLog ?? [] },
   );
 
+  // Route filters are hard filters, applied before pace ranks anything. When
+  // they take out every enabled pool the run fails with the reason; it never
+  // widens them and never keeps the task on a caller they exclude.
+  const routed = applyRunRoute(runRoute.filter, pools, {
+    callerName: state.config.callerName ?? 'claude-code',
+    callerEligible: opts['no-caller'] !== true,
+  });
+  const routeFilterField = routed.report ? { routeFilter: routed.report } : {};
+  if (routed.empty) {
+    emit({
+      ok: false, keepOnClaude: false, ...(dryRun ? { dryRun: true } : {}),
+      why: routed.why, routeWhy: routed.why, ...routeFilterField,
+    }, opts);
+    return 1;
+  }
+
   // A pool with a metered window at its limit (framework.js windowSpent: its
   // 5-hour, weekly or monthly window at 100% until that window resets) is
   // excluded from dispatch entirely this run.
-  const gated = pools.filter((p) => windowSpent(p, now));
-  const ungatedPools = gated.length ? pools.filter((p) => !gated.includes(p)) : pools;
+  const gated = routed.pools.filter((p) => windowSpent(p, now));
+  const ungatedPools = gated.length ? routed.pools.filter((p) => !gated.includes(p)) : routed.pools;
   const assignment = state.strategy?.assignments?.[effortTier] ?? null;
   const candidatePools = ungatedPools.map((pool) => ({
     ...pool,
@@ -461,7 +496,8 @@ async function cmdRun(opts) {
   // wording for a tier allow-list that named no model on any pool.
 
   const routeOptions = () => ({
-    callerEligible: opts['no-caller'] !== true,
+    callerEligible: routed.callerEligible,
+    routeNote: runRoute.filter?.summary || null,
     callerName: state.config.callerName ?? 'claude-code',
     now,
     preferredPool: state.strategy?.assignments?.[effortTier]?.pool ?? null,
@@ -518,13 +554,17 @@ async function cmdRun(opts) {
     emit({
       ok: true, keepOnClaude: true, ...(dryRun ? { dryRun: true } : {}),
       why: route.why, routeWhy: route.why, routeCandidates: route.candidates,
+      ...routeFilterField,
       pick: { pool: null, command: null },
       forecast: forecastRecord(route, null), candidates: route.candidates,
     }, opts);
     return 0;
   }
   if (!route.pick) {
-    emit({ ok: false, keepOnClaude: false, why: route.why, routeWhy: route.why, routeCandidates: route.candidates }, opts);
+    emit({
+      ok: false, keepOnClaude: false, why: route.why, routeWhy: route.why, routeCandidates: route.candidates,
+      ...routeFilterField,
+    }, opts);
     return 1;
   }
 
@@ -571,6 +611,7 @@ async function cmdRun(opts) {
       why: route.why,
       routeWhy: route.why,
       routeCandidates: route.candidates,
+      ...routeFilterField,
       forecast: forecastRecord(route, connector.name),
       candidates: route.candidates,
       pick: {
@@ -610,6 +651,8 @@ async function cmdRun(opts) {
     startedAt,
     ...expected,
   }));
+  // `run --batch` starts its next task's routing once this pool is booked.
+  if (typeof opts.onDispatch === 'function') opts.onDispatch();
   let verdict;
   try {
     verdict = await watchOnce(runtimeConnector, taskText, targetDir, paths, {
@@ -654,6 +697,7 @@ async function cmdRun(opts) {
     ? endedMs - startedMs : null;
   verdict.routeWhy = route.why;
   verdict.routeCandidates = route.candidates;
+  Object.assign(verdict, routeFilterField);
 
   // Everything this run changed about shared state, applied at once to a FRESH
   // load under the lock (S5). `state` above is the routing snapshot and is now
@@ -728,7 +772,10 @@ function emit(verdict, opts) {
     const pick = verdict.pick?.pool
       ? { ...verdict.pick, poolLabel: poolLabel(verdict.pick.pool, getBullswarmDir()) }
       : verdict.pick;
-    console.log(JSON.stringify({ ...verdict, ...(pick ? { pick } : {}) }, null, 2));
+    const out = { ...verdict, ...(pick ? { pick } : {}) };
+    // `run --batch` collects each task's verdict into one array instead.
+    if (typeof opts.onVerdict === 'function') opts.onVerdict(out);
+    else console.log(JSON.stringify(out, null, 2));
   }
   else {
     const line = [
@@ -741,6 +788,9 @@ function emit(verdict, opts) {
     if (verdict.routeWhy && verdict.routeWhy !== verdict.why) {
       console.log(withPoolLabels(`route: ${verdict.routeWhy}`, getBullswarmDir()));
     }
+    // What --avoid-pool, --use-provider, --avoid-provider and --independent-of took out.
+    const filteredOut = routeFilterLine(verdict.routeFilter);
+    if (filteredOut) console.log(withPoolLabels(filteredOut, getBullswarmDir()));
     if (Array.isArray(verdict.pick?.command) && verdict.dryRun) {
       console.log(`command: ${verdict.pick.command.join(' ')}`);
     }
@@ -1094,6 +1144,11 @@ export async function main(argv) {
     case 'setup':
       return cmdSetup(opts);
     case 'run':
+      // Many independent single runs from one JSONL file (src/lib/run-batch.js).
+      if (opts.batch !== undefined || opts.concurrency !== undefined) {
+        const { cmdRunBatch } = await import('./lib/run-batch.js');
+        return cmdRunBatch(opts, { runOne: cmdRun, bullswarmDir: getBullswarmDir() });
+      }
       return cmdRun(opts);
     case 'health':
       return cmdHealth(opts);

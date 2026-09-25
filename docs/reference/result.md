@@ -35,6 +35,7 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `dryRun` | `true` on `--dry-run`. Nothing was spawned, logged, or registered in the assignment ledger |
 | `forecast` | the numbers routing compared: `inflight`, `projectedFiveHourPct`, `forecastFiveHourPct`, `expectedMinutes`, `ratePerMinute`, `estimateSource` |
 | `candidates` | routing candidate rows (dry-run and keep-on-caller include this) |
+| `routeFilter` | only with a route filter flag (`--avoid-pool`, `--use-provider`, `--avoid-provider`, `--independent-of`), dry-run included: `summary`, `left`, `filteredOut` (`pool`, `provider`, `why`), `callerFilteredOut`, `independentOf`, `empty`. See [Route filters](/reference/cli#route-filters) |
 | `reasoning` | `{ requested, applied, source, clamped }` — the level this attempt actually ran at |
 | `meta.exitCode`, `meta.signal`, `meta.timedOut`, `meta.stalled`, `meta.cancelled` | process observation |
 | `meta.wallSec`, `meta.outBytes` | duration and extracted output size |

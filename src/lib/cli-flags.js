@@ -62,6 +62,8 @@ const TABLE = {
   '': ['wizard', 'setup', 'yes', 'strategy', 'integrate', 'agents', 'json'],
   setup: ['wizard', 'yes', 'strategy', 'integrate', 'agents', 'json'],
   run: [
+    'avoid-pool', 'use-provider', 'avoid-provider', 'independent-of',
+    'batch', 'concurrency',
     'lane', 'add-dir', 'task-file', 'prompt', 'effort', 'reasoning', 'timeout',
     'heartbeat', 'dry-run', 'json', 'no-caller',
   ],
