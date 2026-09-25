@@ -579,16 +579,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(argv[0], argv.slice(1), {
       cwd: resolvedDir,
-      // PWD: ALWAYS sync to the spawned cwd (stale-PWD is the wrong-repo
-      // hazard). Caller-supplied opts.env takes precedence over
-      // process.env so the runtime can inject BULLSWARM_DEPTH (recursion
-      // guard) and other core-owned env contracts.
-      env: {
-        ...process.env,
-        ...(connector.env ?? {}),
-        ...(opts.env ?? {}),
-        PWD: resolvedDir,
-      },
+      env: workerEnv(connector, opts.env, resolvedDir),
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: opts.processGroup === true,
     });
@@ -1082,6 +1073,24 @@ export function providerErrorRecords(text, declared = [], { agentText = '' } = {
     }
   }
   return kept.join('\n').slice(-ERROR_CHANNEL_MAX_CHARS);
+}
+
+/**
+ * The environment a worker runs with, lowest precedence first:
+ * - this process's environment;
+ * - the caller's (`callerEnv`, usually a full copy of the parent's);
+ * - the pool's own settings (`connector.env`), which say which account the
+ *   pool bills, such as claude-code's CLAUDE_CONFIG_DIR. They must win over
+ *   the caller's copy: a caller running under one Claude home used to send
+ *   every claude-code pool to that one account;
+ * - Bullswarm's own keys from the caller (`BULLSWARM_*`, among them the
+ *   BULLSWARM_DEPTH recursion guard), which no pool setting may override;
+ * - PWD, always the spawned directory (a stale PWD is the wrong-repo hazard).
+ */
+export function workerEnv(connector, callerEnv = {}, cwd = process.cwd(), base = process.env) {
+  const caller = callerEnv ?? {};
+  const own = Object.fromEntries(Object.entries(caller).filter(([key]) => key.startsWith('BULLSWARM_')));
+  return { ...base, ...caller, ...(connector?.env ?? {}), ...own, PWD: cwd };
 }
 
 /**

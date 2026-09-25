@@ -25,6 +25,8 @@ import { discoverConnectorModels } from '../src/lib/strategy.js';
 import { readUsage as readCodexUsage } from '../src/providers/codex/provider.mjs';
 import { readUsage as readGrokUsage } from '../src/providers/grok/provider.mjs';
 import { loadProviders, REPO_ROOT } from '../src/lib/providers.js';
+import { watchOnce, workerEnv } from '../src/lib/watch.js';
+import { childDepthEnv } from '../src/lib/state.js';
 
 const FIRST_CLASS = join(REPO_ROOT, 'src', 'providers');
 
@@ -337,6 +339,42 @@ test('connectors(ctx) returns the packaged connector once per login', () => {
     assert.equal(extra.upstreamGroup, undefined);
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a worker bills its own pool's account even when the caller runs under another Claude home", async () => {
+  const home = makeHome();
+  const work = mkdtempSync(join(tmpdir(), 'bs-claude-env-work-'));
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    twoLogins(home);
+    // The script prints what the worker actually received.
+    const template = {
+      name: 'claude-code',
+      spawn: { cmd: [process.execPath, '-e', 'console.log(JSON.stringify({ config: process.env.CLAUDE_CONFIG_DIR, depth: process.env.BULLSWARM_DEPTH }))'] },
+      outputExtraction: { strategy: 'stdout' },
+    };
+    const pools = connectors({ template, home, env: {}, opts: { accounts: discoverClaudeAccounts({ homeDir: home, envConfigDir: '', platform: 'linux' }) } });
+    // The caller itself runs under the default home, exactly as a CLI caller
+    // with CLAUDE_CONFIG_DIR set does; the CLI hands workers a full copy.
+    process.env.CLAUDE_CONFIG_DIR = resolve(join(home, '.claude'));
+    const callerEnv = childDepthEnv({ ...process.env, BULLSWARM_DEPTH: '1' });
+    for (const pool of pools) {
+      const paths = { taskFile: join(work, `task-${pool.name.replace(':', '-')}.md`), outFile: join(work, `out-${pool.name.replace(':', '-')}.md`) };
+      await watchOnce(pool, 'Report your environment.', work, paths, { env: callerEnv });
+      const seen = JSON.parse(readFileSync(paths.outFile, 'utf8').trim().split('\n').at(-1));
+      assert.equal(seen.config, pool.env.CLAUDE_CONFIG_DIR, pool.name);
+      // The recursion guard is Bullswarm's own and still comes from the caller.
+      assert.equal(seen.depth, '2', pool.name);
+    }
+    assert.equal(pools[1].env.CLAUDE_CONFIG_DIR, resolve(join(home, '.claude-work')));
+    // No pool setting overrides a BULLSWARM_ key; PWD is always the spawned directory.
+    const env = workerEnv({ env: { CLAUDE_CONFIG_DIR: '/pool', BULLSWARM_DEPTH: '9' } }, { CLAUDE_CONFIG_DIR: '/caller', BULLSWARM_DEPTH: '2', PWD: '/stale' }, '/work', {});
+    assert.deepEqual(env, { CLAUDE_CONFIG_DIR: '/pool', BULLSWARM_DEPTH: '2', PWD: '/work' });
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true });
   }
 });
 

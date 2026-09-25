@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- workers bill the account of the pool they run on. When the caller itself ran
+  under a Claude home (`CLAUDE_CONFIG_DIR` set), every `claude-code` pool
+  spawned with the caller's home instead of its own, so every Claude pool
+  billed, and hit the limits of, the caller's one account. A pool's own
+  settings now win over the caller's environment; Bullswarm's own
+  `BULLSWARM_*` variables still come from the caller.
 - providers: a spent Grok Build balance is read as a usage limit. grok ends
   that turn with an error event (`API error (status 402 Payment Required):
   Grok Build usage balance exhausted`) and exit code 0, which was accepted as a
