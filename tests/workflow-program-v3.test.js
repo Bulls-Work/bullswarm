@@ -25,6 +25,7 @@ import {
 } from '../src/workflow/program-v3.js';
 import { ANSWER_MAX_BYTES, answerFileFor, answerInstruction, checkAnswer } from '../src/workflow/answers.js';
 import { V3_REVISE_REFUSED } from '../src/workflow/revision-v3.js';
+import { scheduleV2Actions } from '../src/workflow/v2-scheduler.js';
 import { watchOnce } from '../src/lib/watch.js';
 import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
 import { oneStepV3, section2Example, v2V3Fixtures } from './fixtures/program-v3-fixtures.mjs';
@@ -184,8 +185,8 @@ test('the implicit requirement of a v3 goal is mandatory:false', (t) => {
 
 // --- the stored state --------------------------------------------------------
 
-function acceptedV3State(program = section2Example()) {
-  const state = createV2DurableState(v3Goal('/tmp/acme-repo'), { runId: 'wf-acme-000003', shortId: 'acme03' });
+function acceptedV3State(program = section2Example(), goal = v3Goal('/tmp/acme-repo'), ids = { runId: 'wf-acme-000003', shortId: 'acme03' }) {
+  const state = createV2DurableState(goal, ids);
   return applyV2PlannerResponse(state, {
     schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Research, polish and publish.', program,
   }, { boundary: 'initial', workspacePaths: false });
@@ -660,3 +661,55 @@ test('a dependent step is handed its dependency\'s checked answer file beside it
   assert.equal(Object.hasOwn(reportDep, 'answer'), false, 'a dependency that declares no answer adds no key');
 });
 
+// --- wave B red tests (design section 12): control nodes ---------------------
+
+// The stored v3 shape as the kernel will hand it over: the steps, plus the
+// run's gates and loops as control nodes {id, type, dependsOn} (design
+// section 4). Wave B builds this; until then the scheduler refuses a step
+// that depends on a gate id.
+function controlNodes(state) {
+  const { gates, loops } = state.program.control;
+  return [
+    ...loops.map((loop) => ({ id: loop.id, type: 'loop', dependsOn: [...loop.steps], ownedFiles: [] })),
+    ...gates.map((gate) => ({ id: gate.id, type: 'gate', dependsOn: [...gate.dependsOn], ownedFiles: [] })),
+  ];
+}
+
+test('the scheduler holds dependents behind a waiting gate', { todo: 'wave B: control nodes in the scheduler (design section 4)' }, () => {
+  const state = acceptedV3State();
+  const statuses = Object.fromEntries(state.actions.map((action) => [action.id, action.id === 'post' ? 'pending' : 'succeeded']));
+  statuses.polish = 'passed';
+  statuses.approve = 'waiting';
+  const schedule = scheduleV2Actions([...state.program.actions, ...controlNodes(state)], statuses);
+  assert.deepEqual(schedule.selected, []);
+  assert.deepEqual(schedule.blocked, []);
+  assert.deepEqual(schedule.waiting.map((entry) => entry.id), ['post']);
+});
+
+test('resume leaves control nodes alone', { todo: 'wave B: reconcileResume skips control nodes (design section 4)' }, async (t) => {
+  const f = v3Fixture(t);
+  const runId = 'wf-acme01-a1b2c3';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  mkdirSync(runDir, { recursive: true });
+  const state = acceptedV3State(section2Example(), f.goalDocument, { runId, shortId: 'acme01' });
+  const at = '2026-09-28T08:00:00.000Z';
+  for (const action of state.actions) if (action.id !== 'post') {
+    Object.assign(action, { status: 'succeeded', attempts: 1, startedAt: at, finishedAt: at });
+    state.attempts.push({
+      id: `${action.id}-1`, actionId: action.id, ordinal: 1, status: 'succeeded', pool: 'acme-pool', model: 'acme-model',
+      startedAt: at, finishedAt: at, taskFile: join(runDir, `task-${action.id}.md`), outputFile: join(runDir, `out-${action.id}.md`), failureKind: null, why: null, usage: null,
+    });
+  }
+  Object.assign(state.lifecycle, { status: 'waiting', startedAt: at, waitingFor: [{ id: 'approve', type: 'gate', since: at, note: 'Read brief.md and decide whether to publish' }] });
+  writeFileSync(join(runDir, 'goal.json'), JSON.stringify(f.goalDocument));
+  writeFileSync(join(runDir, 'state.json'), serializeV2DurableState(state));
+  writeFileSync(join(runDir, 'features.json'), JSON.stringify({ ...STAGE3_RUN_FEATURES, programFormat: 3 }));
+  const dispatched = [];
+  const resumed = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+    dependencies: { refreshPools: async () => null, dispatchV2Action: (options) => { dispatched.push(options.action?.id); return scriptedDispatch()(options); } },
+  });
+  assert.deepEqual(dispatched, [], 'nothing behind the waiting gate runs');
+  assert.deepEqual(resumed.state.lifecycle.waitingFor.map((entry) => entry.id), ['approve']);
+  assert.deepEqual(resumed.waiting?.map((entry) => entry.id), ['approve']);
+});
