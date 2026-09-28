@@ -86,6 +86,7 @@ test('--until trouble prints only the stale line, then the relaunch and restart 
   assert.equal(await watcher.promise, 0);
   const at = new Date(nowMs).toISOString();
   assert.deepEqual(watcher.lines, [
+    `watching ${SHORT} until trouble · ${run.state.program.actions.length} steps`,
     '⚠ verify looks stale: quiet 12m with no command running',
     `next: bullswarm workflow watch ${SHORT} --until trouble --after 33 --since ${at}`,
     `  or restart: bullswarm workflow step restart ${SHORT} verify`,

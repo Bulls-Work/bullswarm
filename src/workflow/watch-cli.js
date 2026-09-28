@@ -1142,8 +1142,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   // 'outcome' follows until the run's outcome; 'trouble' also ends on the
   // first trouble line (failed, rejected, scout stopped, planner stopped,
   // paused, stalled, stale, steering).
-  // Either prints only trouble lines, finished loops and the outcome, with no
-  // attach line.
+  // Either prints one start line, then only trouble lines, finished loops and
+  // the outcome, with no attach line.
   until = null,
   // The stale-score probe (see src/lib/stale.js); false turns it off.
   stale = null,
@@ -1253,6 +1253,13 @@ export async function runWorkflowWatch(bullswarmDir, token, {
             sinceMs, stallAfterMs, nowMs, stale: staleProbe,
           });
           lastPrintedAt = nowMs;
+          // --until prints nothing until a wake, so one start line tells a
+          // caller reading its output early that the watch is alive (QA37).
+          if (untilMode && !jsonl) {
+            const removed = new Set((state.actions ?? []).filter((action) => action.status === 'removed').map((action) => action.id));
+            const steps = (state.program?.actions ?? []).filter((action) => !removed.has(action.id)).length;
+            output.write(`watching ${snapshot.shortId ?? snapshot.runId} until ${until} · ${steps} step${steps === 1 ? '' : 's'}\n`);
+          }
           // --next is a wake-up call, not a follow: it prints only what happens.
           if (!next && !untilMode) {
             emitLine({
