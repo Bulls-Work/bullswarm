@@ -22,6 +22,7 @@ import { declaredEvidence, NEEDS_YOU_LABELS } from './step-vocabulary.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
+import { answerSummaryOf } from './answers.js';
 import {
   controlTrouble, controlWatchEvent, parkedFailures, parkedWaitingFor, renderControlEvent, waitingOutcomeLines, waitingWatchLine,
 } from './gates-loops.js';
@@ -327,6 +328,11 @@ function v2Stages(state) {
     ? projectV2DependencyStages(state)
     : state.presentation?.stages ?? [];
   return stages.map((stage) => ({ stage, status: presentationStageStatus(stage, state.actions ?? []) }));
+}
+
+function answerField(state, actionId, committedAt) {
+  const answer = answerSummaryOf(state, actionId, committedAt);
+  return answer ? { answer } : {};
 }
 
 function actionDurationSec(runtime, event, nowMs) {
@@ -643,6 +649,8 @@ export function notableWatchEvents({
           // What backs the step (E22); events of older runs carry none.
           ...(status === 'succeeded' && payload.proof && typeof payload.proof === 'object' ? { proof: payload.proof } : {}),
           ...(status === 'failed' && evidenceNotRun(state, payload, event) ? { evidenceNotRun: true } : {}),
+          // A v3 step's checked answer, cut to one line (answers.js).
+          ...(status === 'succeeded' ? answerField(state, payload.actionId, event.committedAt) : {}),
         });
         break;
       }
@@ -993,7 +1001,7 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
       }
       if (event.status === 'succeeded') {
         const label = formatV2ProofLabel(event.proof);
-        return `${glyphs().ok} ${event.actionId} finished · ${label ? `${label} · ` : ''}${formatDuration(event.durationSec)}`;
+        return `${glyphs().ok} ${event.actionId} finished · ${label ? `${label} · ` : ''}${formatDuration(event.durationSec)}${event.answer ? `\n  answer ${event.answer}` : ''}`;
       }
       if (event.status === 'blocked') return `${glyphs().blocked} ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;
       if (event.status === 'cancelled' && event.failureKind === 'superseded') return `${glyphs().reroute} ${event.actionId} stopped · replaced by a plan revision`;
@@ -1064,9 +1072,9 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
       return `${glyphs().waiting} steering received · ${event.message ?? event.steeringId ?? ''} · revise the plan to act on it`;
     case 'plan.revised': {
       const changes = event.changes ?? {};
-      const parts = [['added', '+'], ['amended', '~'], ['restored', '↺'], ['removed', '-'], ['rerun', '⟲'], ['invalidated', '⟲'], ['accepted', '✓']]
+      const parts = [['added', '+'], ['amended', '~'], ['restored', '↺'], ['removed', '-'], ['rerun', '⟲'], ['invalidated', '⟲'], ['accepted', '✓'], ['addedControl', '+']]
         .filter(([key]) => (changes[key] ?? []).length)
-        .map(([key]) => `${key} ${changes[key].map((entry) => (typeof entry === 'string' ? entry : entry?.step ?? entry?.actionId ?? '?')).join(', ')}`);
+        .map(([key]) => `${key === 'addedControl' ? 'added gates and loops' : key} ${changes[key].map((entry) => (typeof entry === 'string' ? entry : entry?.step ?? entry?.actionId ?? '?')).join(', ')}`);
       return `${glyphs().plan} plan revised (revision ${event.programRevision ?? '?'}) · ${event.summary ?? 'no summary'}${parts.length ? ` · ${parts.join(' · ')}` : ''}`;
     }
     case 'plan.rejected':

@@ -226,3 +226,22 @@ export function resultAnswerIssue(value, name) {
   if (typeof value.attemptId !== 'string' || !value.attemptId) return `${name}.answer.attemptId must be a non-empty string`;
   return null;
 }
+
+const SUMMARY_CHARS = 120;
+
+/**
+ * The one-line answer summary `watch` prints under a finished v3 step: the
+ * checked answer of the latest succeeded attempt finished by `committedAt`,
+ * as compact JSON cut to 120 characters. Null for a step that declares no
+ * answer or has no checked one, so v2 lines never change.
+ */
+export function answerSummaryOf(state, actionId, committedAt = null) {
+  const definition = (state?.program?.actions ?? []).find((action) => action.id === actionId);
+  if (definition?.answer === undefined) return null;
+  const at = Date.parse(committedAt ?? '');
+  const attempt = (state.attempts ?? []).findLast((entry) => entry.actionId === actionId && entry.status === 'succeeded'
+    && entry.answer?.ok === true && (!Number.isFinite(at) || !(Date.parse(entry.finishedAt ?? '') > at)));
+  if (!attempt || attempt.answer.value === undefined) return null;
+  const chars = [...JSON.stringify(attempt.answer.value)];
+  return chars.length > SUMMARY_CHARS ? `${chars.slice(0, SUMMARY_CHARS - 1).join('')}…` : chars.join('');
+}

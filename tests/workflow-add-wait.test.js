@@ -18,6 +18,7 @@ import { appendedActionsV3, appendedProgramV3 } from '../src/workflow/revision-v
 import { exportV2Plan, planV2Revision } from '../src/workflow/v2-revision.js';
 import { v2LiveProgramRuntime } from '../src/workflow/v2-state.js';
 import { addV3Steps, waitV3Nodes } from '../src/workflow/cli-steps.js';
+import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
 import { v2V3Fixtures } from './fixtures/program-v3-fixtures.mjs';
 
 const cli = resolve('bin/bullswarm.js');
@@ -403,4 +404,33 @@ test('wait times out with exit 2 while a live run has not reached the id', async
   assert.equal(result.code, 2);
   assert.equal(result.status, 'timeout');
   assert.ok(Date.now() - started >= 150);
+});
+
+// --- watch -----------------------------------------------------------------------
+
+test('watch prints a finished v3 step\'s answer on one line under it, cut to 120 characters; a step with no answer prints none', async (t) => {
+  const f = fixture(t);
+  const long = { findings: Array.from({ length: 12 }, (_, index) => ({ id: `f${index}`, claim: `acme claim number ${index}` })) };
+  const program = {
+    schemaVersion: V3,
+    steps: [{ id: 'find', prompt: 'Find claims.', answer: findingsAnswer }, { id: 'note', prompt: 'Note it.' }],
+    gates: [{ id: 'review', dependsOn: ['find', 'note'] }],
+  };
+  const run = await launch(f, program, fakeDispatch((id) => (id === 'find' ? { answer: long } : {})));
+  let text = '';
+  const code = await runWorkflowWatch(f.bullswarmDir, run.shortId, { afterSequence: 0, intervalMs: 10, stale: false, output: { write: (chunk) => { text += chunk; } } });
+  assert.equal(code, 0);
+  const lines = text.split('\n');
+  const at = lines.findIndex((line) => /✓ find finished/.test(line));
+  assert.ok(at >= 0, text);
+  assert.match(lines[at + 1], /^  answer \{"findings":\[\{"id":"f0","claim":"acme claim number 0"\}/);
+  assert.equal([...lines[at + 1].slice('  answer '.length)].length, 120);
+  assert.ok(lines[at + 1].endsWith('…'));
+  const noteAt = lines.findIndex((line) => /✓ note finished/.test(line));
+  assert.ok(noteAt >= 0, text);
+  assert.doesNotMatch(lines[noteAt + 1] ?? '', /^  answer /);
+  let jsonl = '';
+  await runWorkflowWatch(f.bullswarmDir, run.shortId, { afterSequence: 0, jsonl: true, intervalMs: 10, stale: false, output: { write: (chunk) => { jsonl += chunk; } } });
+  const finished = jsonl.trim().split('\n').map((line) => JSON.parse(line)).find((line) => line.type === 'action.finished' && line.actionId === 'find');
+  assert.ok(finished.answer.startsWith('{"findings":'));
 });
