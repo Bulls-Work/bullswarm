@@ -3,28 +3,13 @@
 // The shell retains shared dashboard primitives and re-exports the compatibility
 // surface; this module owns the Run-specific durable projections.
 
-import { asciiGlyphsPreferred, glyphs } from '../lib/glyphs.js';
+import { glyphs } from '../lib/glyphs.js';
 import { finiteOrNull } from '../lib/num.js';
 import { formatMoney } from '../lib/usage-basis.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { kernelRepairActionIds, loopStageLabel } from './verify-rounds.js';
-import { cut, progressBar } from './dash-kit.js';
-import {
-  blank,
-  clamp,
-  clockAt,
-  dimText,
-  failMark,
-  minutesText,
-  okMark,
-  outputSparkline,
-  pendingMark,
-  reasoningText,
-  runningMark,
-  tint,
-  visibleLength,
-} from './dashboard.js';
+import { clamp, clockAt } from './dashboard.js';
 import {
   MEASURED_TOKEN_SOURCES, aggregateAttemptUsage, attemptInterval, attemptUsage, attemptWorkerMinutes, attemptsUnion,
   stateAttempts,
@@ -377,31 +362,6 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
   };
 }
 
-function planAttemptDetail(attempt, width) {
-  const cols = Math.max(0, Number(width) || 0);
-  const reasoning = reasoningText(attempt);
-  const pool = attempt?.pool ? String(attempt.pool) : null;
-  const model = attempt?.model ? String(attempt.model) : null;
-  const effortValue = attempt?.effort ?? attempt?.routing?.effort;
-  const effort = effortValue ? String(effortValue) : null;
-  // Keep the pool/model identity atomic. If the full detail does not fit,
-  // remove the pool, then the model; only a remaining effort/reasoning label
-  // may be cut as a last resort. This prevents a short plan cell from ever
-  // painting a misleading `openc…` pool name.
-  const candidates = [
-    [pool, model, effort, reasoning],
-    [model, effort, reasoning],
-    [effort, reasoning],
-    [reasoning],
-    [],
-  ];
-  for (const candidate of candidates) {
-    const text = candidate.filter(Boolean).join(' · ');
-    if (!text || text.length <= cols) return text;
-  }
-  return cols > 0 && reasoning ? cut(reasoning, cols) : '';
-}
-
 /**
  * The plan as the prototype draws it: the levels across the width with their
  * branch topology, a per-step bar on whatever is running, and the pool and
@@ -501,17 +461,6 @@ function planStageStepsName(stage, index) {
   return label;
 }
 
-function planStageHeader(stage, index) {
-  const actions = stage.actions ?? [];
-  const progress = presentationStageStatus(stage, actions);
-  const running = actions.some((action) => action.status === 'running');
-  const failed = actions.some((action) => ['failed', 'blocked', 'cancelled'].includes(action.status));
-  const status = running ? glyphs().started
-    : failed ? glyphs().fail
-      : progress.completed === progress.total && progress.total > 0 ? glyphs().ok : glyphs().pending;
-  return `${planStageLabel(stage, index)} · ${progress.completed}/${progress.total} ${status}`;
-}
-
 /**
  * One whole-phase plan box. The action is attached to the full text so both a
  * mouse click and the dashboard's selected-row Enter open the phase's first
@@ -540,144 +489,6 @@ function planStageBoxParts(stage, index, { runId = null, selectedId = null } = {
     text: selected ? `\x1b[7m${text}\x1b[0m` : text,
     ...(first ? { action: { kind: 'step', actionId: first.id, ...(runId ? { runId } : {}) } } : {}),
   }];
-}
-
-function planStageBoxText(stage, index) {
-  return planStageBoxParts(stage, index)[0]?.text ?? '';
-}
-
-/**
- * `pool · model · effort` for one attempt row, each slot a dash when the
- * attempt never recorded it. The routing reads on the attempt's own row; the
- * page has no room for a metadata line per attempt.
- */
-function attemptRoutingText(attempt) {
-  const pool = attempt?.pool ? String(attempt.pool) : '—';
-  const model = attempt?.model ? String(attempt.model) : '—';
-  const effortValue = attempt?.effort ?? attempt?.routing?.effort;
-  const effort = effortValue ? String(effortValue) : '—';
-  return `${pool} · ${model} · ${effort}`;
-}
-
-function planStageActions(stage, limit = null) {
-  const actions = stage.actions ?? [];
-  if (limit == null || actions.length <= limit) return { actions, omitted: 0 };
-  const keep = Math.max(1, Number(limit) || 1);
-  const rank = (action) => action.status === 'running' ? 0
-    : ['failed', 'blocked', 'cancelled'].includes(action.status) ? 1
-      : action.status === 'succeeded' ? 3 : 2;
-  const running = actions.filter((action) => action.status === 'running');
-  const picked = [...running];
-  for (const action of actions
-    .filter((entry) => !picked.includes(entry))
-    .sort((a, b) => rank(a) - rank(b))) {
-    if (picked.length >= keep) break;
-    picked.push(action);
-  }
-  // Keep the phase's authored order after prioritising running/failed work,
-  // so the summary never makes a column look re-ordered.
-  const shown = actions.filter((action) => picked.includes(action));
-  return { actions: shown, omitted: Math.max(0, actions.length - shown.length) };
-}
-
-function planMoreParts(count, width) {
-  return [{ text: dimText(`+${count} more`, Math.max(1, width)) }];
-}
-
-function phaseActionGlyph(action) {
-  if (action.status === 'succeeded') return okMark();
-  if (action.status === 'running') return runningMark();
-  if (['failed', 'blocked', 'cancelled'].includes(action.status)) return failMark();
-  return pendingMark();
-}
-
-function fittedParts(parts, width) {
-  const limit = Math.max(0, Number(width) || 0);
-  const out = [];
-  let used = 0;
-  for (const part of parts) {
-    if (used >= limit) break;
-    const text = String(part?.text ?? '');
-    const room = limit - used;
-    if (visibleLength(text) <= room) {
-      out.push({ ...part, text });
-      used += visibleLength(text);
-      continue;
-    }
-    if (room > 0) out.push({ ...part, text: cut(text, room) });
-    used = limit;
-    break;
-  }
-  if (used < limit) out.push({ text: ' '.repeat(limit - used) });
-  return out;
-}
-
-/** One phase action row; metadata and the running bar are never subtitle rows. */
-function planPhaseActionParts(action, { width, row, runId, assignments, nowMs, selectedId }) {
-  const actionName = String(action.id);
-  const name = selectedId === action.id ? `\x1b[7m${actionName}\x1b[0m` : actionName;
-  const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id) ?? null;
-  const assignment = (assignments ?? []).find((entry) => entry.runId === runId && entry.actionId === action.id) ?? null;
-  const prefix = `${phaseActionGlyph(action)} `;
-  const base = [{ text: prefix }, {
-    text: name,
-    action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
-  }];
-  const fixed = visibleLength(prefix) + visibleLength(name);
-  const expected = finiteOrNull(assignment?.expectedMinutes ?? attempt?.expectedMinutes);
-  const startedMs = Date.parse(attempt?.startedAt ?? action?.startedAt ?? '');
-  const elapsed = Number.isFinite(startedMs) ? Math.max(0, (nowMs - startedMs) / 60_000) : null;
-  const elapsedText = elapsed == null ? null : minutesText(elapsed);
-  const p50Text = expected == null ? blank() : minutesText(expected);
-  const timing = action.status === 'running' ? `${elapsedText ?? blank()}/${p50Text}` : '';
-  const spark = action.status === 'running' ? outputSparkline(attempt, row?.runDir, 8) : '';
-  const minBar = action.status === 'running' ? 4 : 0;
-  const timingWidth = timing ? visibleLength(timing) + 1 : 0;
-  const sparkWidth = spark ? visibleLength(spark) + 1 : 0;
-  const reasoning = attempt ? reasoningText(attempt) : '';
-  const detailAttempt = attempt && reasoning ? { ...attempt, effort: null, routing: { ...(attempt.routing ?? {}), effort: null } } : attempt;
-  // Prefer the complete pool/model identity when the cell can make room for
-  // it. A narrow phase cell may still fall back to model/reasoning, but a
-  // desktop cell should not spend all its space on a long progress bar first.
-  const fullDetail = detailAttempt ? planAttemptDetail(detailAttempt, Number.MAX_SAFE_INTEGER) : '';
-  const fullDetailWidth = visibleLength(fullDetail);
-  let barWidth = action.status === 'running' && width - fixed - timingWidth - sparkWidth - 1 >= minBar
-    ? Math.max(minBar, Math.min(10, width - fixed - timingWidth - sparkWidth - 1)) : 0;
-  if (action.status === 'running' && fullDetail && width - fixed - timingWidth - sparkWidth - fullDetailWidth - 1 >= 1) {
-    barWidth = Math.min(10, Math.max(1, width - fixed - timingWidth - sparkWidth - fullDetailWidth - 1));
-  }
-  // Seven phases at 120 columns leave deliberately small cells. Keep a
-  // running step's bar and elapsed/p50 on its row by using a one-cell bar and
-  // compact separators before ever dropping the running measurement.
-  const compactBar = action.status === 'running' && !barWidth && width - fixed - visibleLength(timing) >= 1;
-  if (compactBar) barWidth = 1;
-  const detailRoom = Math.max(0, width - fixed - (barWidth ? barWidth + timingWidth + sparkWidth : 1));
-  const detail = detailAttempt ? planAttemptDetail(detailAttempt, detailRoom) : '';
-  if (detail) base.push({ text: ` · ${dimText(detail, detailRoom + 24)}` });
-  if (barWidth) {
-    const measured = expected != null && expected > 0 && elapsed != null;
-    const ratio = measured ? elapsed / expected : 0;
-    const bar = measured
-      ? tint(progressBar(ratio, barWidth), 'green')
-      : tint((asciiGlyphsPreferred() ? '.' : '░').repeat(barWidth), 'dim');
-    base.push({ text: compactBar ? `${bar}${timing}` : ` ${bar} ${timing}${spark ? ` · ${spark}` : ''}` });
-  }
-  return fittedParts(base, width);
-}
-
-/** `✓ 3  ▶ 2  ○ 3`, the run's steps by the state they are in. */
-function stepTally(row) {
-  const actions = row?.state?.actions ?? [];
-  const done = actions.filter((action) => action.status === 'succeeded').length;
-  const running = actions.filter((action) => action.status === 'running').length;
-  const failed = actions.filter((action) => ['failed', 'blocked', 'cancelled'].includes(action.status)).length;
-  const waiting = Math.max(0, actions.length - done - running - failed);
-  return [
-    `${okMark()} ${done}`,
-    running ? `${runningMark()} ${running}` : null,
-    failed ? `${failMark()} ${failed}` : null,
-    `${dimText(glyphs().pending, 2)} ${waiting}`,
-  ].filter(Boolean).join('  ');
 }
 
 const RUN_TERMINAL_ATTEMPTS = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'skipped']);
@@ -946,21 +757,11 @@ export {
   durationClockText,
   attemptDurationMinutes,
   attemptDurationText,
-  planAttemptDetail,
   planStages,
   planStageLabel,
   planStageName,
   planStageStepsName,
-  planStageHeader,
   planStageBoxParts,
-  planStageBoxText,
-  attemptRoutingText,
-  planStageActions,
-  planMoreParts,
-  phaseActionGlyph,
-  fittedParts,
-  planPhaseActionParts,
-  stepTally,
   runClockText,
   runHeaderFacts,
   runSpendFacts,

@@ -1,7 +1,6 @@
 // The render kit the 0.33.0 pages compose from: the thin rules, the page tab
-// row and the period toggle, the share and progress bars, the sparkline, the
-// column band and the compact row, the axis step and the visible-cell
-// truncation.
+// row and the period toggle, the share and progress bars, the column band
+// and the compact row, the axis step and the visible-cell truncation.
 // Every function is pure — strings in, strings out — so a page renders and is
 // asserted without a terminal, and none of them reads a TTY.
 //
@@ -16,9 +15,8 @@
 //      at most 54, at any width from 32 to 200.
 //   2. asciiGlyphsPreferred() decides the glyph, never the anatomy: the
 //      unicode glyph is the default and its ascii twin is exactly one column
-//      wide, the discipline src/lib/glyphs.js documents. Its fallbacks differ
-//      in count where the shape needs it — a sparkline scaled over eight
-//      levels reads as well over five.
+//      wide, the discipline src/lib/glyphs.js documents. Its fallbacks may
+//      differ in count where the shape needs it.
 //
 // Colours come from the one palette the product has, METER_COLORS in
 // usage-view.js, and this file invents none. That palette now carries the
@@ -624,38 +622,6 @@ export function shareBarMeta(parts, { width = 20, colors = true, partialGlyph = 
 }
 
 const SPARK_UNICODE = Object.freeze(['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']);
-const SPARK_ASCII = Object.freeze(['.', ':', '-', '=', '#']);
-
-/**
- * `▂▅▃▇▆▄▅` over the last `width` values, scaled between the quietest and the
- * busiest of that window so the shape reads whatever the units. Fewer values
- * than the width returns that many cells rather than padding the line; a value
- * that is missing (null, NaN) is drawn at the low end, never as a peak; a flat
- * series sits at its low end unless it is a flat non-zero, which sits mid.
- * An ascii terminal gets `.:-=#`. `markers` names indexes in the original
- * values: ▏ replaces that day's glyph for a licence window reset (| in ascii).
- */
-export function sparkline(values, width = 20, { markers = [] } = {}) {
-  const cols = colsOf(width, 20);
-  const list = Array.isArray(values) ? values : [];
-  if (cols <= 0 || !list.length) return '';
-  const window = list.slice(-cols).map(reading);
-  const glyphs = asciiGlyphsPreferred() ? SPARK_ASCII : SPARK_UNICODE;
-  const numbers = window.filter((value) => value != null);
-  if (!numbers.length) return '';
-  const low = Math.min(...numbers);
-  const span = Math.max(...numbers) - low;
-  const middle = Math.floor((glyphs.length - 1) / 2);
-  const marked = new Set(Array.isArray(markers) ? markers : []);
-  const offset = list.length - window.length;
-  return window.map((value, index) => {
-    if (marked.has(offset + index)) return asciiGlyphsPreferred() ? '|' : '▏';
-    if (value == null) return glyphs[0];
-    if (!span) return value > 0 ? glyphs[middle] : glyphs[0];
-    const level = Math.round(((value - low) / span) * (glyphs.length - 1));
-    return glyphs[Math.max(0, Math.min(glyphs.length - 1, level))];
-  }).join('');
-}
 
 /**
  * `▇▇▇░░░░` for a fraction of the whole, rounded to the nearest cell and

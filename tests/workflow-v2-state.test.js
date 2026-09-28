@@ -1,13 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   V2_GOAL_SCHEMA_VERSION, V2_STATE_SCHEMA_VERSION,
   createV2GoalDocument, createV2DurableState, createV2State,
   serializeV2DurableState, deserializeV2DurableState,
-  assertV2Resume, validateV2DurableState, validateV2GoalDocument, attemptOutputSeries,
+  assertV2Resume, validateV2DurableState, validateV2GoalDocument,
 } from '../src/workflow/v2-state.js';
 
 const input = () => ({ goal: 'Implement the result envelope', cwd: '/tmp/repo', requirements: [{ id: 'result-versioned', text: 'Result is versioned' }, { id: 'tests-pass', text: 'Tests pass', mandatory: false }], settings: { concurrency: 2 }, plannerRouting: { pool: 'planner' }, workerRouting: { preferredPool: 'worker' } });
@@ -216,23 +213,6 @@ test('round trips attempt handoff fields and rejects unknown ones', () => {
     })),
     /handoff.extra is not allowed/,
   );
-});
-
-test('attempt output series prefers timestamped stream sizes and falls back to durable samples', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-output-series-'));
-  try {
-    const streamFile = join(dir, 'stream.jsonl');
-    writeFileSync(streamFile, [
-      { at: '2026-09-18T00:00:00.000Z', bytes: 12 },
-      { at: '2026-09-18T00:00:05.000Z', bytes: 48 },
-    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
-    assert.deepEqual(attemptOutputSeries({ streamFile, outputSamples: [[1, 2]] }, dir), [
-      [Date.parse('2026-09-18T00:00:00.000Z'), 12],
-      [Date.parse('2026-09-18T00:00:05.000Z'), 48],
-    ]);
-    rmSync(streamFile);
-    assert.deepEqual(attemptOutputSeries({ streamFile, outputSamples: [[1, 2], [5, 8]] }, dir), [[1, 2], [5, 8]]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('round trips the attempt provider session and rejects a malformed one', () => {

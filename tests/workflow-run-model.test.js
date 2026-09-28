@@ -1,18 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  attemptRoutingText,
-  fittedParts,
-  phaseActionGlyph,
-  planAttemptDetail,
   planLevels,
-  planMoreParts,
   planProgress,
   planStageBoxParts,
-  planStageBoxText,
   planStageName,
-  planStageActions,
-  planStageHeader,
   planStageLabel,
   planStages,
   planStripParts,
@@ -25,7 +17,6 @@ import {
   runHeaderFacts,
   runSpendFacts,
   runTimelineFacts,
-  stepTally,
   workflowPanelModel,
 } from '../src/workflow/run-model.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
@@ -87,10 +78,9 @@ test('Run model projects phases, selected agents, progress and clickable plan pa
   const strip = planStripParts(row, { runId: row.runId });
   assert.deepEqual(strip.filter((part) => part.action).map((part) => part.action.actionId), ['audit', 'report']);
   assert.equal(planLevels(row).length, 2);
-  assert.equal(stepTally(row).includes('1'), true);
 });
 
-test('Run model keeps economics nullable and shapes stage/detail helpers without overflow', () => {
+test('Run model keeps economics nullable and labels its stages', () => {
   const row = fixture();
   const economics = runEconomics(row, [{ name: 'codex', spend: { pacing: { ratePerMinute: 0.5, window: 'weekly' } }, usedPct: 12 }], NOW);
   assert.equal(economics.apiEquivalentUsd, 0.25);
@@ -100,12 +90,6 @@ test('Run model keeps economics nullable and shapes stage/detail helpers without
 
   const stages = planStages(row).stages;
   assert.equal(planStageLabel(stages[0], 0), 'Phase 1 · audit');
-  assert.match(planStageHeader(stages[0], 0), /Phase 1 · audit · 1\/1/);
-  assert.deepEqual(planStageActions({ actions: [{ ...stages[0].actions[0] }, { ...stages[0].actions[0], id: 'audit-copy', status: 'pending' }] }, 1).omitted, 1);
-  assert.equal(phaseActionGlyph(row.state.actions[1]).includes('▶'), true);
-  assert.ok(planAttemptDetail(row.state.attempts[0], 80).length <= 80);
-  assert.ok(fittedParts([{ text: 'abcdef' }], 3)[0].text.length <= 3);
-  assert.match(planMoreParts(2, 20)[0].text, /\+2 more/);
 });
 
 test('Run model unions overlapping attempt clocks and keeps phase boxes phase-only', () => {
@@ -153,7 +137,6 @@ test('Run model unions overlapping attempt clocks and keeps phase boxes phase-on
   const box = planStageBoxParts(stage, 0, { runId: 'wf-box' });
   assert.match(box[0].text, /^\[✓ 1 audit\]$/);
   assert.equal(box[0].action.actionId, 'a');
-  assert.equal(planStageBoxText(stage, 0).includes('1 audit'), true);
 });
 
 test('plan boxes print done/total only where the count says something', () => {
@@ -176,19 +159,6 @@ test('plan boxes print done/total only where the count says something', () => {
   // The box number is the plan's own chain; a trailing period would read as
   // prose and is gone.
   assert.doesNotMatch(running, /\d+\./);
-});
-
-test('Run model names each attempt\'s routing on one line, a dash where nothing was recorded', () => {
-  assert.equal(
-    attemptRoutingText({ pool: 'command-code', model: 'deepseek-v4.1-flash', effort: 'medium' }),
-    'command-code · deepseek-v4.1-flash · medium',
-  );
-  // A routing record the connector never wrote keeps its slot as a dash; the
-  // effort may live under routing.effort when the attempt has no top field.
-  assert.equal(attemptRoutingText({ pool: 'codex', model: 'gpt-test', routing: { effort: 'high' } }), 'codex · gpt-test · high');
-  assert.equal(attemptRoutingText({ pool: 'codex', model: 'gpt-test' }), 'codex · gpt-test · —');
-  assert.equal(attemptRoutingText({}), '— · — · —');
-  assert.equal(attemptRoutingText(null), '— · — · —');
 });
 
 test('Run v2 header and spend facts keep active/span and partial coverage honest', () => {

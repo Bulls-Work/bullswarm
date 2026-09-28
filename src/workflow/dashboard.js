@@ -18,7 +18,7 @@ import { loadUsage, parseMouse, METER_COLORS } from './usage-view.js';
 // The 0.33.0 pages: the render kit, the two aggregation models, and the four
 // view modules each territory owns. The shell composes them and owns no
 // arithmetic of its own beyond laying the lines out.
-import { columns, cut, formatDashboardValue, rule, sparkline, tabsRow } from './dash-kit.js';
+import { columns, cut, formatDashboardValue, rule, tabsRow } from './dash-kit.js';
 import { PERIODS, TREND_METRICS, modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from './stats-model.js';
 import { biggestRuns, budgetModel } from './budget-model.js';
 import { budgetLines, budgetNotes } from './budget-view.js';
@@ -30,7 +30,6 @@ import { readRollups, rollupIndexPath } from './rollup.js';
 import { loadState } from '../lib/state.js';
 import { readMeterHistoryDays } from '../meters/registry.js';
 import { listTasks, taskKey } from '../lib/tasks.js';
-import { attemptOutputSeries } from './v2-state.js';
 import { formatMoneyPair } from '../lib/usage-basis.js';
 import {
   homePage,
@@ -505,18 +504,6 @@ export function formatBytes(value) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** The durable byte timeline for one attempt, plus its measured total. */
-export function outputSparkline(attempt, runDir, width = 8) {
-  let series = [];
-  try { series = attemptOutputSeries(attempt, runDir); } catch { series = []; }
-  if (!series.length) return '';
-  const values = series.map((sample) => sample?.[1]).filter((value) => Number.isFinite(value));
-  if (!values.length) return '';
-  const total = values.at(-1);
-  const spark = sparkline(values, width);
-  return spark ? `${spark} ${formatBytes(total)}` : '';
-}
-
 export function dimText(value, width) {
   return `\x1b[2m${truncate(value, width)}\x1b[0m`;
 }
@@ -565,12 +552,6 @@ function inverseText(text) {
   if (!body) return body;
   return `\x1b[7m${body.replace(/\x1b\[0m/g, '\x1b[0m\x1b[7m')}\x1b[27m`;
 }
-
-/** The run marks, each in the colour the tagged prototype frame gives it. */
-const okMark = () => tint(glyphs().ok, 'green');
-const failMark = () => tint(glyphs().fail, 'red');
-const runningMark = () => tint(glyphs().started, 'cyan');
-const pendingMark = () => dimText(glyphs().pending, 2);
 
 /**
  * A `columns()` band painted into the body at `indent`, each column clickable
@@ -3627,10 +3608,6 @@ export {
   pushColumns,
   ageText,
   clockAt,
-  okMark,
-  failMark,
-  runningMark,
-  pendingMark,
   planProgress,
   planStripParts,
 };

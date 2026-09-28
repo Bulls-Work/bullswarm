@@ -5,7 +5,7 @@ import {
   chartRowCount, columnBars, columns, compactRow, cut, dateLabels, formatDashboardValue, niceStep, periodToggle, progressBar, rule,
   seriesColor,
   seriesColors,
-  shareBar, shareBarMeta, sparkline, tabsRow,
+  shareBar, shareBarMeta, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 
@@ -13,7 +13,6 @@ const SGR = /\x1b\[[0-9;]*m/g;
 const visible = (text) => String(text ?? '').replace(SGR, '');
 const visibleLength = (text) => visible(text).length;
 const WIDTHS = [32, 54, 55, 100, 200];
-const ASCII = ['.', ':', '-', '=', '#'];
 
 function foregroundColoursIn(line, start, width) {
   const colours = new Set();
@@ -98,7 +97,7 @@ const FIELDS = Object.freeze([
 test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
     'SERIES_PALETTE', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'dateLabels', 'formatDashboardValue', 'niceStep', 'periodToggle',
-    'progressBar', 'rule', 'seriesColor', 'seriesColors', 'shareBar', 'shareBarMeta', 'sparkline', 'tabsRow',
+    'progressBar', 'rule', 'seriesColor', 'seriesColors', 'shareBar', 'shareBarMeta', 'tabsRow',
   ]);
 });
 
@@ -261,39 +260,6 @@ test('shareBarMeta mirrors shareBar allocation and exposes contiguous parts', ()
     assert.equal(meta.parts[index].x, meta.parts[index - 1].x + meta.parts[index - 1].width);
   }
   assert.deepEqual(meta.parts.map((part) => Number(part.share.toFixed(2))), [0.25, 0.5, 0.25]);
-});
-
-test('sparkline scales the window and never invents a peak', () => {
-  assert.equal(sparkline([0, 1, 2, 3, 4, 5, 6, 7], 8), '▁▂▃▄▅▆▇█');
-  assert.equal(sparkline([7, 7, 7, 7], 4), '▄▄▄▄', 'a flat non-zero series sits mid');
-  assert.equal(sparkline([0, 0, 0], 3), '▁▁▁', 'a flat zero series sits low');
-  assert.equal(sparkline([null, Number.NaN, undefined], 3), '');
-  assert.equal(sparkline([0, null, 4], 3), '▁▁█', 'a missing day reads at the low end');
-  assert.equal(sparkline([null, 6], 2), '▁▄', 'a missing reading does not set the scale');
-  assert.equal(sparkline(['', 6], 2), '▁▄', 'nor does an empty string, which Number() calls zero');
-  assert.equal(
-    sparkline([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 3),
-    sparkline([10, 11, 12], 3),
-    'the window is the newest values',
-  );
-  assert.equal(sparkline([1, 2], 40).length, 2, 'a short series is not padded out');
-  assert.equal(sparkline([], 10), '');
-  assert.equal(sparkline(null, 10), '');
-  assert.equal(sparkline([1, 2, 3], 0), '');
-});
-
-test('sparkline falls back to ascii and stays inside its width', () => {
-  withEnv(ASCII_ENV, () => {
-    // Eight levels over the five ascii levels the kit keeps: still monotone.
-    const line = sparkline([0, 1, 2, 3, 4, 5, 6, 7], 8);
-    assert.equal(line, '.::--==#');
-    for (const glyph of line) assert.ok(ASCII.includes(glyph), `ascii only, got ${glyph}`);
-  });
-  for (const width of WIDTHS) {
-    const line = sparkline([1, 4, 9, 16, 25, 36, 49, 64, 81, 100, 121, 144], width);
-    assert.equal(line.length, Math.min(width, 12));
-    assert.equal(line.includes('NaN'), false);
-  }
 });
 
 test('progressBar fills, clamps and falls back to ascii', () => {
@@ -512,17 +478,6 @@ test('a reading too small for a cell draws a sliver, and only a true zero is emp
     assert.equal(shareBar([{ value: 0.4 }, { value: 99.6 }], { width: 10, colors: false, partialGlyph: '▏' }), '|.........');
     assert.equal(shareBar([{ value: 0.4 }, { value: 99.6 }], { width: 10, colors: false }), '|.........');
   });
-});
-
-test('sparkline reset markers replace original indexes even in a cropped window', () => {
-  withEnv(UNICODE_ENV, () => {
-    assert.equal(sparkline([0, 1, 2, 3, 4, 5, 6, 7], 8, { markers: [2, 5] }), '▁▂▏▄▅▏▇█');
-    assert.equal(sparkline([0, 1, 2, 3, 4, 5, 6, 7], 3, { markers: [2, 5, 7] }), '▏▅▏');
-    assert.equal(sparkline([1, null, 3], 3, { markers: [1] }), '▁▏█');
-    assert.equal(sparkline([null, null], 2, { markers: [1] }), '');
-    assert.equal(sparkline([1, 2], 9, { markers: [-1, 7] }), '▁█');
-  });
-  withEnv(ASCII_ENV, () => assert.equal(sparkline([0, 1, 2], 3, { markers: [1] }), '.|#'));
 });
 
 test('columnBars without a mark paints a measured figure bare', () => {
@@ -767,7 +722,6 @@ test('no function paints past its width from 32 to 200 columns', () => {
     (width) => tabsRow(TABS, { active: 'stats', width }).text,
     (width) => periodToggle(PERIODS, { active: 'all', width }).text,
     (width) => shareBar([{ value: 4, glyph: '▓' }, { value: 3, glyph: '▒' }, { value: 3, glyph: '░' }], { width }),
-    (width) => sparkline([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9], width),
     (width) => progressBar(0.42, width),
     (width) => columnBars([{ values: [1, 36] }], ['a', 'b'], { width, colors: false }).join('\n'),
     (width) => columns(CELLS, { width }).join('\n'),
@@ -785,7 +739,7 @@ test('no function paints past its width from 32 to 200 columns', () => {
 });
 
 test('no primitive leaks a unicode-only glyph once ascii mode is on', () => {
-  // The bars and the spark; `─` and `…` are the two the glyph table
+  // The bars; `─` and `…` are the two the glyph table
   // documents as safe everywhere and stay.
   const unicodeOnly = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▓', '▒', '░'];
   withEnv(ASCII_ENV, () => {
@@ -794,7 +748,6 @@ test('no primitive leaks a unicode-only glyph once ascii mode is on', () => {
       tabsRow(TABS, { active: 'stats', width: 55 }).text,
       periodToggle(PERIODS, { active: 'all', width: 55 }).text,
       shareBar([{ value: 4, glyph: '▓' }, { value: 3, glyph: '▒' }, { value: 3, glyph: '░' }], { width: 30 }),
-      sparkline([3, 1, 4, 1, 5, 9, 2, 6], 8),
       progressBar(0.42, 12),
       columnBars([{ values: [1, 36] }], ['a', 'b'], { width: 55 }),
       columns(CELLS, { width: 55 }).join('\n'),
@@ -805,7 +758,7 @@ test('no primitive leaks a unicode-only glyph once ascii mode is on', () => {
     assert.deepEqual(leaked, [], `these glyphs still reach an ascii terminal: ${leaked.join(' ')}`);
   });
   withEnv(UNICODE_ENV, () => {
-    const rendered = [sparkline([0, 1], 2), progressBar(1, 2), shareBar([{ value: 1 }], { width: 2 })].join('');
+    const rendered = [progressBar(1, 2), shareBar([{ value: 1 }], { width: 2 })].join('');
     assert.ok(unicodeOnly.some((glyph) => rendered.includes(glyph)), 'unicode mode really draws them');
   });
 });
@@ -818,7 +771,6 @@ test('every primitive survives null, empty and junk data without NaN', () => {
       tabsRow(TABS, { active: value, width: 40 }).text,
       periodToggle(PERIODS, { active: value }).text,
       shareBar([{ value }, { value: 1 }], { width: 10 }),
-      sparkline([value, 1, value], 8),
       progressBar(value, 8),
       columnBars([{ values: [value, 1] }], ['a', 'b'], { width: 40, colors: false }).join('\n'),
       columns([{ rule: 'budget', rows: ['a row'], width: value }, { rows: value }], { width: 40, gap: value }).join('\n'),
@@ -836,7 +788,6 @@ test('every primitive survives null, empty and junk data without NaN', () => {
       tabsRow(value, { active: value, width: value, hidden: value });
       periodToggle(value, { active: value, width: value });
       shareBar(value, { width: value, colors: value });
-      sparkline(value, value);
       progressBar(value, value);
       columnBars(value, value, { width: value, colors: value });
       columns(value, { width: value, gap: value });
@@ -845,7 +796,6 @@ test('every primitive survives null, empty and junk data without NaN', () => {
       cut(value, value);
     }, `nothing throws for ${JSON.stringify(value)}`);
   }
-  assert.equal(sparkline([null, Number.NaN, undefined], 3), '', 'no reading, no sparkline');
 });
 
 test('columnBars keeps one blank cell between per-column totals, rounding a long duration to hours', () => {

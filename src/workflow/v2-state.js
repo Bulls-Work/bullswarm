@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
 import { DELIVERABLE_TYPES, RETRY_FACTS, evidenceResultsIssues } from './step-vocabulary.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
@@ -274,71 +273,6 @@ function nullableString(value, name) {
 function timestamp(value, name) {
   nullableString(value, name);
   if (value !== null && Number.isNaN(Date.parse(value))) fail(`${name} must be an ISO-compatible timestamp`);
-}
-
-function outputTimeMs(value) {
-  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
-  if (typeof value === 'string' && value) {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
-  }
-  return null;
-}
-
-function outputBytesValue(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-function capOutputSeries(series) {
-  if (!Array.isArray(series)) return [];
-  return series
-    .filter((sample) => Array.isArray(sample) && sample.length === 2
-      && outputTimeMs(sample[0]) != null && outputBytesValue(sample[1]) != null)
-    .map(([at, bytes]) => [outputTimeMs(at), outputBytesValue(bytes)])
-    .slice(-ATTEMPT_OUTPUT_SAMPLE_CAP);
-}
-
-function streamOutputSeries(streamFile) {
-  if (typeof streamFile !== 'string' || !streamFile || !existsSync(streamFile)) return [];
-  let body;
-  try { body = readFileSync(streamFile, 'utf8'); } catch { return []; }
-  const series = [];
-  for (const line of body.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let event;
-    try { event = JSON.parse(line); } catch { continue; }
-    if (event?.truncated === true) continue;
-    const at = outputTimeMs(event?.atMs ?? event?.at ?? event?.timestamp ?? event?.time);
-    const bytes = outputBytesValue(
-      event?.outputBytes
-        ?? event?.outputBytesObserved
-        ?? event?.totalBytes
-        ?? event?.bytes
-        ?? event?.size
-        ?? event?.sizeBytes
-        ?? event?.outputSize
-        ?? event?.summaryBytes,
-    );
-    if (at != null && bytes != null) series.push([at, bytes]);
-  }
-  return capOutputSeries(series);
-}
-
-/**
- * Return an attempt's output-over-time series as `[atMs, bytes]` pairs.
- *
- * A persisted stream wins when its event records carry both a timestamp and a
- * byte/size field. Older streams do not, so their durable `outputSamples`
- * fallback is used instead. The result is bounded to the same 240-point cap
- * used by the runtime sampler.
- */
-export function attemptOutputSeries(attempt, runDir = null) {
-  const streamFile = typeof attempt?.streamFile === 'string' ? attempt.streamFile : null;
-  const resolvedStream = streamFile
-    ? (isAbsolute(streamFile) || typeof runDir !== 'string' || !runDir ? streamFile : join(runDir, streamFile))
-    : null;
-  const fromStream = streamOutputSeries(resolvedStream);
-  return fromStream.length ? fromStream : capOutputSeries(attempt?.outputSamples);
 }
 
 function requirementsFor(value) {
