@@ -20,7 +20,7 @@ import { projectV2DependencyStages } from '../src/workflow/v2-presentation.js';
 import { workflowPanelModel } from '../src/workflow/run-model.js';
 import { runPage, workflowTimelineLines } from '../src/workflow/run-view.js';
 import { runTableLines } from '../src/workflow/history-view.js';
-import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
+import { dashboardModel, planStripParts, renderDashboardPage } from '../src/workflow/dashboard.js';
 import { renderWorkflowOverviewPanel } from '../src/workflow/run-view.js';
 import { isOneStepRecord, runCountText } from '../src/workflow/run-counts.js';
 import { stepPageModel } from '../src/workflow/step-model.js';
@@ -192,6 +192,17 @@ test('a narrow timeline keeps the pool beside the round tag: the tier goes first
     // A row without a round tag keeps its tier as before.
     assert.ok(phone.some((line) => /✓ count · grok · tier medium/.test(line)), `${width}: count keeps its tier`);
   }
+});
+
+test('the Home strip joins steps that run one after the other with the sequence separator, even inside one phase', () => {
+  const row = realRow(GATED);
+  const text = (value) => planStripParts(value).map((part) => part.text).join('');
+  // count, then the loop's write → check (one phase), then post behind the gate.
+  assert.equal(text(row), '✓──✓──✓──○');
+  // Two steps of one phase with no edge between them stay side by side.
+  const parallel = structuredClone(row);
+  parallel.state.program.actions.find((action) => action.id === 'check').dependsOn = ['count'];
+  assert.equal(text(parallel), '✓──✓ ✓──○');
 });
 
 test('Run page of a waiting run: the header says where it waits and the next command', () => {

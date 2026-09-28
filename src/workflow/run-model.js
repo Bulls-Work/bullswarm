@@ -298,10 +298,19 @@ function planStripParts(row, { runId = null } = {}) {
   const levels = planLevels(row);
   const mark = glyphs();
   const parts = [];
+  // A v3 phase can hold steps that run one after the other (a loop's steps):
+  // a step that depends on an earlier one in its group is joined by the
+  // sequence separator, not set beside it as a parallel one.
+  const dependsOn = new Map((row?.state?.program?.actions ?? []).map((action) => [action.id, action.dependsOn ?? []]));
+  const follows = (id, earlier, seen = new Set()) => (dependsOn.get(id) ?? []).some((dep) => {
+    if (seen.has(dep)) return false;
+    seen.add(dep);
+    return earlier.has(dep) || follows(dep, earlier, seen);
+  });
   levels.forEach((level, levelIndex) => {
     if (levelIndex) parts.push({ text: '──' });
     level.forEach((action, index) => {
-      if (index) parts.push({ text: ' ' });
+      if (index) parts.push({ text: follows(action.id, new Set(level.slice(0, index).map((entry) => entry.id))) ? '──' : ' ' });
       const glyph = action.status === 'succeeded' ? mark.ok
         : action.status === 'running' ? mark.started
           : ['failed', 'blocked', 'cancelled'].includes(action.status) ? mark.fail
