@@ -250,3 +250,18 @@ test('help: the top level, run, workflow and workflow goal describe v3 and the f
   assert.match(pages.workflow, /workflow wait/);
   assert.doesNotMatch(pages.workflow, /single V2 action\/evidence engine/);
 });
+
+test('walkFolderFiles lists a folder\'s files, skips .git and node_modules, and gives up on a folder too large to list', async (t) => {
+  const { walkFolderFiles } = await import('../src/workflow/folder-walk.js');
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-walk-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'docs')); mkdirSync(join(root, 'node_modules')); mkdirSync(join(root, '.git'));
+  writeFileSync(join(root, 'README.md'), 'acme\n');
+  writeFileSync(join(root, 'docs', 'notes.md'), 'initech\n');
+  writeFileSync(join(root, 'node_modules', 'dep.js'), 'x');
+  writeFileSync(join(root, '.git', 'HEAD'), 'x');
+  assert.deepEqual(walkFolderFiles(root), ['README.md', 'docs/notes.md']);
+  assert.equal(walkFolderFiles(root, { maxFiles: 1 }), null);
+  assert.equal(walkFolderFiles(root, { maxBytes: 5 }), null);
+  assert.equal(walkFolderFiles(join(root, 'missing')), null);
+});

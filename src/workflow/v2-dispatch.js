@@ -25,6 +25,8 @@ import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { declaredDeliverable, declaredEvidence, failureClassOf, roleOf } from './step-vocabulary.js';
 import { poolPassesRoute, routeUnavailableWhy } from './step-route.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
+import { walkFolderFiles } from './folder-walk.js';
+import { isV3Step } from './program-v3.js';
 import {
   evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope,
   restoreChangedOutOfScope, runStepEvidence,
@@ -319,13 +321,16 @@ function uniquePaths(paths) {
 // `git` is false when git cannot see the workspace (trackedFiles). A declared
 // deliverable then hashes its exact owned files and extra paths directly
 // (D21); a legacy step does not.
-function territoryFiles(targetDir, ownedFiles, execFile, extraPaths = [], { directWhenUngit = false } = {}) {
+function territoryFiles(targetDir, ownedFiles, execFile, extraPaths = [], { directWhenUngit = false, walkWhenUngit = false } = {}) {
   const declared = Array.isArray(ownedFiles) ? ownedFiles.filter(Boolean) : [];
   const extras = uniquePaths(extraPaths);
   const tracked = trackedFiles(targetDir, execFile);
   if (tracked == null) {
     if (!directWhenUngit) return { ok: false, files: new Set(), tracked: new Set(), git: false };
     const direct = uniquePaths([...declared, ...extras]);
+    // A v3 step that names no file: the folder's own files (folder-walk.js).
+    const walked = !direct.length && walkWhenUngit ? walkFolderFiles(targetDir) : null;
+    if (walked) return { ok: true, files: new Set(walked), tracked: new Set(), git: false };
     if (!direct.length) return { ok: false, files: new Set(), tracked: new Set(), git: false };
     return { ok: true, files: new Set(direct), tracked: new Set(), git: false };
   }
@@ -431,11 +436,13 @@ export function statDeliverablePaths(targetDir, paths) {
   return stats;
 }
 
-// Git works, or the step names exact owned files or deliverable paths (D21).
+// Git works, or the step names exact owned files or deliverable paths (D21),
+// or a v3 step's folder is small enough to list (folder-walk.js).
 export function snapshotPossible(targetDir, action) {
   if (trackedFiles(targetDir, execFileSync) != null) return true;
   const owned = Array.isArray(action?.ownedFiles) ? action.ownedFiles.filter(Boolean) : [];
-  return owned.length > 0 || (declaredDeliverable(action)?.paths?.length ?? 0) > 0;
+  return owned.length > 0 || (declaredDeliverable(action)?.paths?.length ?? 0) > 0
+    || (isV3Step(action) && walkFolderFiles(targetDir) != null);
 }
 
 function pathStat(table, path) {
@@ -1084,7 +1091,7 @@ export async function dispatchV2Action({
     ...(declaredForSnapshot?.paths ?? []),
     ...(Array.isArray(extraSnapshotPaths) ? extraSnapshotPaths : []),
   ]);
-  const territoryOptions = { directWhenUngit: declaredForSnapshot != null };
+  const territoryOptions = { directWhenUngit: declaredForSnapshot != null, walkWhenUngit: isV3Step(action) };
   const stepEarlier = {
     produced: earlierWork?.produced === true,
     unknown: earlierWork?.unknown === true,

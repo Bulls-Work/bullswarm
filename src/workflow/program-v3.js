@@ -78,6 +78,11 @@ export function isProgramV3(value) {
     || (isObject(value.program) && value.program.schemaVersion === PROGRAM_V3_SCHEMA_VERSION));
 }
 
+/** True for a stored v3 step: only v3 steps carry `retry` (v2 actions never do). */
+export function isV3Step(action) {
+  return action?.retry === 0 || action?.retry === 1;
+}
+
 /** The requirement list of a v3 goal: one implicit, non-mandatory requirement. */
 export function implicitV3Requirements(goal) {
   return [{ id: IMPLICIT_REQUIREMENT_ID, text: String(goal).trim(), mandatory: false }];
