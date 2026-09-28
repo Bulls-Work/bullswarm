@@ -35,6 +35,7 @@ import {
   recordWorkerMinutes, round, sumEntries, sumRecords,
 } from './metrics.js';
 import { isOneStepRecord } from './run-counts.js';
+import { isV3Record } from './v3-phases.js';
 
 /** The period toggle, in the order the toggle shows them. */
 export const PERIODS = Object.freeze(['7d', '30d', 'all']);
@@ -1045,6 +1046,7 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
   const records = selectRecords(toRecords(rollups), range);
   const statusCounts = {};
   let verified = 0;
+  let verifiable = 0;
   let requirementsPassed = null;
   let requirementsTotal = null;
   const durations = [];
@@ -1053,9 +1055,14 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
       ? record.status.trim().toLowerCase()
       : null;
     if (status) statusCounts[status] = (statusCounts[status] ?? 0) + 1;
-    if (record?.verified === true) verified += 1;
-    requirementsPassed = add(requirementsPassed, finite(record?.requirements?.passed));
-    requirementsTotal = add(requirementsTotal, finite(record?.requirements?.total));
+    // A v3 run reports facts per step, never a verification verdict, and its
+    // implicit requirement is no requirement of the caller's: neither counts.
+    if (!isV3Record(record)) {
+      verifiable += 1;
+      if (record?.verified === true) verified += 1;
+      requirementsPassed = add(requirementsPassed, finite(record?.requirements?.passed));
+      requirementsTotal = add(requirementsTotal, finite(record?.requirements?.total));
+    }
     const duration = durationOf(record);
     if (duration) durations.push(duration);
   }
@@ -1065,9 +1072,10 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
     from: range.from,
     to: range.to,
     statusCounts,
-    verified,
-    verifiedTotal: records.length,
-    verifiedShare: share(verified, records.length),
+    // Null (not measured) only when every run in the period is a v3 run.
+    verified: verifiable || !records.length ? verified : null,
+    verifiedTotal: verifiable,
+    verifiedShare: share(verified, verifiable),
     requirementsPassed,
     requirementsTotal,
     requirementsShare: share(requirementsPassed, requirementsTotal),

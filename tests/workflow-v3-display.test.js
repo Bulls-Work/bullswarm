@@ -248,6 +248,7 @@ test('Stats and Home count one-step runs as runs, apart from workflows', () => {
   assert.doesNotMatch(home, /Workflows: 1/);
   const stats = renderDashboardPage(model, { page: 'stats', width: 200, height: 120, nowMs: NOW }).lines.map(visible).join('\n');
   assert.match(stats, /\b1 run\b/);
+  assert.doesNotMatch(stats, /0 verified|0\/1 passed/, 'a v3 run adds nothing to the verification or requirement counts');
   assert.doesNotMatch(stats, /1 workflow\b/);
 });
 
