@@ -46,6 +46,7 @@ import { evidenceBriefLines, evidenceItemTimeoutSec, rewriteEvidenceCwd } from '
 import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
 import { STAGE3_RUN_FEATURES, isProgramV3Run, readRunFeatures, repairLoopApplies, runFeatureFlags, withProgramFormat, writeRunFeatures } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
+import { settleStepAnswer, stepAnswerHooks } from './answers.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
@@ -2295,6 +2296,7 @@ async function runV2Kernel({
     let actStoppedWhy = null;
     let lastProgressPersist = 0;
     const workerAttempt = () => state.attempts.find((item) => item.id === currentAttemptId);
+    const answerHooks = programV3 && !review ? stepAnswerHooks(action, { attempt: workerAttempt }) : null;
     const persistWorkerProgress = () => {
       const time = Date.now();
       if (time - lastProgressPersist >= 1000) { lastProgressPersist = time; persist(); }
@@ -2380,7 +2382,7 @@ async function runV2Kernel({
       // writer remains a valid fallback when it is the only eligible choice;
       // the route reason names that exception for operators.
       evidence: review ? { writerPools: features.reviewPlacement === 'caller' ? [] : writerPools } : null,
-      maxMechanicalRetries: config.maxMechanicalRetries,
+      maxMechanicalRetries: action.retry ?? config.maxMechanicalRetries,
       evidenceRetryAvailable,
       // Stage 3 (§2.1): one automatic retry per step, counted from stored
       // `retryOf` facts so a kernel resume neither refunds nor spends it.
@@ -2401,8 +2403,9 @@ async function runV2Kernel({
       // A plan revision or a pause --now can stop this one action while the
       // rest of the run carries on.
       shouldCancel: () => stopRequested.has(action.id) || refreshCancellation(), onSpawn, onWorkerExit,
-      outputValidator: review ? () => readEvidenceCandidate(candidatePath, contract) : null,
-      correctionTask: review ? correctionTask : null,
+      outputValidator: review ? () => readEvidenceCandidate(candidatePath, contract) : answerHooks?.outputValidator ?? null,
+      correctionTask: review ? correctionTask : answerHooks?.correctionTask ?? null,
+      answerBrief: answerHooks?.answerBrief ?? null,
       handoffBlock,
       resumeHandoff: durablePriorHandoff,
       runDir,
@@ -2425,6 +2428,7 @@ async function runV2Kernel({
           }
           const bytes = clone(dispatchedBytes);
           if (record.timeBox && boxBytes) { bytes.taskFile += boxBytes; bytes.kernel += boxBytes; }
+          if (answerHooks?.briefBytes()) { bytes.taskFile += answerHooks.briefBytes(); bytes.kernel += answerHooks.briefBytes(); }
           state.attempts.push(normalizeAttempt({ ...record, bytes }, { id: currentAttemptId, actionId: action.id, ordinal }));
           const prior = record.handoff
             ? state.attempts.find((item) => item.id === record.handoff.from)
@@ -2613,6 +2617,7 @@ async function runV2Kernel({
     runtime.outputFile = review && result.ok
       ? candidatePath
       : result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null;
+    if (answerHooks) settleStepAnswer(state, runtime, action, result, baseAttemptOrdinal);
     if (!result.ok && actStoppedWhy) {
       // An act step whose checks were stopped (F14): never requeued by a
       // resume, a pause or a restart; the caller decides.

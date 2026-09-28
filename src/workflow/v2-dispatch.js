@@ -870,6 +870,10 @@ export async function dispatchV2Action({
   runReasoning = null,
   outputValidator = null,
   correctionTask = null,
+  // Program v3 (answers.js): `({ files, ordinal }) => text | null`, the answer
+  // paragraph naming this attempt's answer file. Composed per attempt, like
+  // the time box, and never kept in `nextTask`.
+  answerBrief = null,
   handoffBlock: formatHandoff = handoffBlock,
   currentSession = null,
   maxMechanicalRetries = 1,
@@ -1421,7 +1425,9 @@ export async function dispatchV2Action({
     // paragraph with its own clock instead of two. A guide only — nothing
     // below reads it to stop, time out or reroute the attempt.
     const box = typeof timeBox === 'function' ? timeBox({ pool: pool.name, startedAt }) : null;
-    const attemptTask = box?.text ? `${nextTask}\n\n${box.text}` : nextTask;
+    const answerText = typeof answerBrief === 'function' ? answerBrief({ files, ordinal }) : null;
+    const briefed = answerText ? `${nextTask}\n\n${answerText}` : nextTask;
+    const attemptTask = box?.text ? `${briefed}\n\n${box.text}` : briefed;
     // D3: the retry becomes a fact only when its attempt starts. A counted
     // retry is `same-pool` when it landed where the failure happened (a
     // planned same-pool retry that fell back reads `other-pool`).

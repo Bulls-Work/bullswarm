@@ -1513,11 +1513,14 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   let verdict;
   let structured = null;
   let recoveredStructured = null;
+  // A validator that reads a file the worker wrote (a v3 answer file,
+  // workflow/answers.js) does not need a reply: a valid, fresh answer file is
+  // usable output on its own.
+  const readsFile = typeof opts.outputValidator === 'function' && opts.outputValidator.readsFile === true;
   const canInspectRecoveredOutput = Boolean(
     obs.providerFailureType
       && obs.exitCode === 0
-      && typeof output === 'string'
-      && output.trim().length > 0
+      && ((typeof output === 'string' && output.trim().length > 0) || readsFile)
       && !upstreamAuth
       && !quotaFailure,
   );
