@@ -34,6 +34,15 @@ delete process.env.BULLSWARM_ASCII;
 // A top-run card reads a run's state from under BULLSWARM_HOME, so the file
 // points the model at the scrubbed in-repo home (scripts/build-test-home.mjs):
 // rendering a real card never probes the live home.
+
+// These layout checks pin figures of the snapshot's workflows. Since 0.37.0
+// the snapshot's logged single runs count too (tests/workflow-metrics.test.js
+// covers that); near midnight they move between the 7-day window's edges by
+// time zone, so the layout checks read the workflows alone.
+function workflowRollups(dir) {
+  return readRollups(dir).filter((record) => record.kind !== 'task');
+}
+
 const SNAPSHOT = fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
 process.env.BULLSWARM_HOME = SNAPSHOT;
 
@@ -258,7 +267,7 @@ test('Home restores the period band and the recent list below the budget block',
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = dashboardModel(null, {
-    rollups: readRollups(snapshot), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
+    rollups: workflowRollups(snapshot), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
   });
   for (const width of HALF_WIDTHS) {
     const frame = renderDashboardPage(model, { page: 'home', width, height: 400, nowMs, period: '7d' });
@@ -327,7 +336,7 @@ test('Home spend chart: one bar a day for seven days from a $0 axis, whole-dolla
   const snapshot = SNAPSHOT;
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = dashboardModel(null, {
-    rollups: readRollups(snapshot), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
+    rollups: workflowRollups(snapshot), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
   });
   for (const width of HALF_WIDTHS) {
     const frame = renderDashboardPage(model, { page: 'home', width, height: 400, nowMs, period: '7d' });
@@ -367,7 +376,7 @@ test('Home at every width from 110 to 260: the halves and gutter add up to the p
   // at odd widths as well as even ones, and nothing the band says is cut.
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = dashboardModel(null, {
-    rollups: readRollups(SNAPSHOT), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
+    rollups: workflowRollups(SNAPSHOT), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
   });
   const breakdown = model.stats.overview.breakdown;
   const shares = (list) => list.slice(0, 4).map((row) => `${Math.round(row.minutesShare * 100)}%`);
@@ -623,7 +632,7 @@ test('Home shows a partly-priced period as the subtotal the rollups really hold'
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = dashboardModel(null, {
-    rollups: readRollups(snapshot), nowMs, runs: [], period: '7d',
+    rollups: workflowRollups(snapshot), nowMs, runs: [], period: '7d',
     usage: { pools: [], assignments: [] },
   });
   const text = renderDashboardPage(model, { page: 'home', width: 200, height: 60, nowMs })

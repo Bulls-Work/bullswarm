@@ -49,6 +49,7 @@ import { isLegacyRunState, isOngoing } from './short-id.js';
 import { readGoalProject } from './goal.js';
 import { dayKey } from './day-key.js';
 import { sumRecords } from './metrics.js';
+import { taskIdentity } from '../lib/tasks.js';
 
 export { dayKey };
 
@@ -224,6 +225,18 @@ export function historyDays(bullswarmDir, {
   };
 
   const indexed = new Set(records.map((record) => record?.runId).filter(Boolean));
+  // A single run's row is the caller's task row when it passed one (it holds
+  // the prompt text, and keeps the caller's order after the workflows), else
+  // the legacy record, which carries the same fields. It is a task row, never
+  // a legacy workflow row (H7).
+  const passed = new Set((Array.isArray(tasks) ? tasks : []).map(taskIdentity));
+  const rowOf = (record) => {
+    if (record?.kind !== 'task') return record;
+    if (passed.has(taskIdentity(record))) return null;
+    const { legacy, ...fields } = record;
+    return taskHistoryRow(fields);
+  };
+  const push = (day, row) => { if (row) day.rows.push(row); };
   let oldest = null;
   for (const record of [...records, ...uncoveredRuns(bullswarmDir, indexed, now)]) {
     // An unfinished row has no finish time by definition, whatever it carries.
@@ -237,7 +250,7 @@ export function historyDays(bullswarmDir, {
     if (finishedDay) {
       const day = dayOf(finishedDay);
       day.finished += 1;
-      day.rows.push(record);
+      push(day, rowOf(record));
       if (record.verified === true) day.verified += 1;
       const spend = recordSpendUsd(record);
       if (spend != null) day.spendUsd = (day.spendUsd ?? 0) + spend;
@@ -245,12 +258,13 @@ export function historyDays(bullswarmDir, {
     } else if (startedDay) {
       // H5: a run with no finish time is still a workflow that day's reader
       // wants to see; it is filed where it started.
-      dayOf(startedDay).rows.push(record);
+      push(dayOf(startedDay), rowOf(record));
     }
   }
-  // Single tasks have no workflow rollup and must not affect workflow counts,
-  // spend, or verification. They do share the day table, ordered by their
-  // own endedAt timestamp alongside finished workflows.
+  // Single runs logged before 0.37.0 arrive as legacy records and are counted
+  // above like any run; the caller's task rows are filed here, on the same
+  // day. A task the records do not hold (a caller's own list) shares the day
+  // table uncounted.
   for (const task of Array.isArray(tasks) ? tasks : []) {
     const endedDay = dayKey(task?.endedAt ?? task?.finishedAt);
     const startedDay = dayKey(task?.startedAt);

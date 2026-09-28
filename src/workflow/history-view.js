@@ -356,8 +356,10 @@ function topLevelDays(value) {
 }
 
 function dayCount(day, runs) {
+  // A day's model counts single runs with its workflows (0.37.0); the header
+  // names tasks apart, so a day that carries its rows counts them itself.
   const workflows = runs.filter((run) => !isTask(run));
-  if (workflows.length) return workflows.length;
+  if (runs.length) return workflows.length;
   const finished = finite(day?.finished);
   if (finished != null) return Math.max(0, Math.round(finished));
   const count = finite(day?.runs);

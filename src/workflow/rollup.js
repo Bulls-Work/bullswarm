@@ -36,6 +36,7 @@ import {
   aggregateAttemptUsage, attemptMetric, attemptUsage, finite as finiteNumber, intervalMinutes,
   parseIso, poolAndModelMaps, round, stateAttempts,
 } from './metrics.js';
+import { readLegacyTaskRecords } from './metrics-legacy.js';
 
 export const ROLLUP_SCHEMA_VERSION = 'bullswarm.workflow.rollup.v1';
 
@@ -445,7 +446,9 @@ function recordTimeMs(record) {
  *
  * Reads the index. Falls back to the run directories when the index is empty,
  * or when the caller asks for a window that starts before the oldest indexed
- * run — the case where a run finished before the index existed.
+ * run — the case where a run finished before the index existed. Single runs
+ * logged before 0.37.0 come in through the legacy reader (metrics-legacy.js),
+ * so every page counts them like any other run.
  *
  * @param {string} bullswarmDir
  * @param {{since?: *, until?: *, limit?: number|null, now?: number}} [options]
@@ -473,6 +476,10 @@ export function readRollups(bullswarmDir, { since = null, until = null, limit = 
     for (const record of scanRunDirRollups(bullswarmDir)) {
       if (!byId.has(record.runId)) byId.set(record.runId, record);
     }
+  }
+
+  for (const record of readLegacyTaskRecords(bullswarmDir)) {
+    if (!byId.has(record.runId)) byId.set(record.runId, record);
   }
 
   const records = [...byId.values()].filter((record) => {
