@@ -20,6 +20,7 @@ import {
 } from './dashboard.js';
 import { formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
 import { finiteOrNull } from '../lib/num.js';
+import { attemptInterval, coverageSum, unionIntervals } from './metrics.js';
 import { loadTemplates, ownsPoolName, providerDirs } from '../lib/providers.js';
 import { returnedEarlyItems, returnedEarlyText, timeBoxText } from './time-box.js';
 import { routeSummary } from './step-route.js';
@@ -146,77 +147,9 @@ function durationFromAttempt(attempt, nowMs) {
   return durationMs(attempt?.startedAt, finishedAt, nowMs);
 }
 
-function attemptInterval(attempt, nowMs) {
-  const start = dateMs(attempt?.startedAt);
-  if (start == null) return { unknown: true };
-  const recordedEnd = dateMs(attempt?.finishedAt) ?? dateMs(attempt?.endedAt);
-  let end = recordedEnd;
-  const open = end == null
-    && ['started', 'start', 'running', 'in_progress', 'in-progress'].includes(String(attempt?.status ?? '').toLowerCase());
-  if (open) {
-    end = Number.isFinite(nowMs) ? nowMs : Date.now();
-  }
-  if (end == null) {
-    const wall = finiteOrNull(attempt?.wallSec);
-    if (wall != null && wall >= 0) end = start + wall * 1000;
-  }
-  if (end == null || end < start) return { unknown: true };
-  return { start, end, open, spanKnown: recordedEnd != null };
-}
-
-/** Return the active union and wall span for one action's attempts. */
+/** The active union and wall span for one action's attempts (metrics.js M3). */
 export function actionDurationFacts(attempts = [], nowMs = Date.now()) {
-  const records = attempts.map((attempt) => attemptInterval(attempt, nowMs));
-  const unknown = records.some((record) => record?.unknown === true);
-  const intervals = records.filter((record) => Number.isFinite(record?.start) && Number.isFinite(record?.end))
-    .sort((a, b) => a.start - b.start || a.end - b.end);
-  if (unknown) {
-    const measured = intervals.length === 0
-      ? attempts.map((attempt) => durationFromAttempt(attempt, nowMs)).filter((value) => value != null)
-      : [];
-    return {
-      activeMs: measured.length ? measured.reduce((total, value) => total + value, 0) : null,
-      spanMs: null,
-      startMs: intervals[0]?.start ?? null,
-      endMs: intervals.at(-1)?.end ?? null,
-      open: intervals.some((interval) => interval.open),
-      spanKnown: false,
-      unknown: true,
-      intervals,
-    };
-  }
-  if (!intervals.length) {
-    const measured = attempts.map((attempt) => durationFromAttempt(attempt, nowMs)).filter((value) => value != null);
-    return {
-      activeMs: measured.length ? measured.reduce((total, value) => total + value, 0) : null,
-      spanMs: null,
-      startMs: null,
-      endMs: null,
-      open: false,
-      spanKnown: false,
-      unknown: false,
-      intervals: [],
-    };
-  }
-  const merged = [];
-  for (const interval of intervals) {
-    const previous = merged.at(-1);
-    if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
-    else merged.push({ ...interval });
-  }
-  return {
-    activeMs: merged.reduce((total, interval) => total + interval.end - interval.start, 0),
-    // A live attempt has an active clock but no proved terminal wall span.
-    spanMs: intervals.some((interval) => interval.open) || intervals.some((interval) => !interval.spanKnown)
-      ? null
-      : intervals.at(-1).end - intervals[0].start,
-    startMs: intervals[0].start,
-    endMs: intervals.at(-1).end,
-    open: intervals.some((interval) => interval.open),
-    spanKnown: intervals.every((interval) => interval.spanKnown),
-    unknown: false,
-    intervals,
-  };
+  return unionIntervals(attempts.map((attempt) => attemptInterval(attempt, { nowMs })));
 }
 
 function pathCandidates(attempt, runDir, actionId, ordinal) {
@@ -1075,7 +1008,7 @@ export function normalizeAttemptUsage(usage) {
   return normalizeMoney(usage);
 }
 
-function aggregateAttemptUsage(attempts) {
+function aggregateUsageModels(attempts) {
   const records = attempts.map((attempt) => attempt?.usageModel).filter(Boolean);
   if (!records.length) return normalizeAttemptUsage(null);
   if (records.length === 1) return records[0];
@@ -1091,14 +1024,13 @@ function aggregateAttemptUsage(attempts) {
   const tokenSourceValues = [...new Set(records.map((record) => record.tokenSource).filter((value) => value && value !== 'unknown'))];
   const tokenSource = tokenSourceValues.length === 1 ? tokenSourceValues[0] : tokenSourceValues.length ? 'mixed' : 'unknown';
   const tokens = Object.fromEntries([...TOKEN_FIELDS, 'totalKnown'].map((field) => [field, sumToken(field)]));
-  const apiKnownValues = records.map((record) => finiteOrNull(record.api?.usd)).filter((value) => value != null);
-  const subscriptionKnownValues = records.map((record) => finiteOrNull(record.subscription?.usd)).filter((value) => value != null);
-  const apiKnownSubtotalUsd = apiKnownValues.length ? apiKnownValues.reduce((sum, value) => sum + value, 0) : null;
-  const subscriptionKnownSubtotalUsd = subscriptionKnownValues.length
-    ? subscriptionKnownValues.reduce((sum, value) => sum + value, 0)
-    : null;
-  const apiUsd = apiKnownValues.length === records.length ? apiKnownSubtotalUsd : null;
-  const subscriptionUsd = subscriptionKnownValues.length === records.length ? subscriptionKnownSubtotalUsd : null;
+  // The money over the attempts, with coverage (metrics.js M2).
+  const apiMoney = coverageSum(records.map((record) => record.api?.usd));
+  const subscriptionMoney = coverageSum(records.map((record) => record.subscription?.usd));
+  const apiKnownSubtotalUsd = apiMoney.subtotal;
+  const subscriptionKnownSubtotalUsd = subscriptionMoney.subtotal;
+  const apiUsd = apiMoney.whole;
+  const subscriptionUsd = subscriptionMoney.whole;
   const deltaPct = sumField('subscription', 'deltaPct');
   const subscriptionPools = [];
   const subscriptionPoolByName = new Map();
@@ -2320,7 +2252,7 @@ export function stepPageModel(input, {
     })
     : activityModel(parseAttemptStream(null), { nowMs, view, expandedTurn, running: false });
   const selectedUsage = selected?.usageModel ?? normalizeAttemptUsage(null);
-  const totalUsage = aggregateAttemptUsage(enrichedAttempts);
+  const totalUsage = aggregateUsageModels(enrichedAttempts);
   const route = routeModel(selected ?? active, action);
   const resultPath = resultRecord.path ?? retainedPath(state.lifecycle?.resultFile, runDir);
   const durationFacts = actionDurationFacts(rawAttempts, nowMs);
@@ -2434,7 +2366,9 @@ export function stepPageModel(input, {
   const live = verdict.executionStatus === 'running' ? 'live' : 'recorded';
   const poolEconomics = (() => {
     try {
-      return runEconomics(row, input?.pools ?? [], nowMs).pools
+      // The step is the unit: its own attempts' minutes on the pool, never
+      // the whole run's.
+      return runEconomics({ state: { attempts: rawAttempts } }, input?.pools ?? [], nowMs).pools
         .find((entry) => entry.name === (selected?.pool ?? active?.pool ?? selectedAgent?.pool)) ?? null;
     } catch { return null; }
   })();

@@ -66,6 +66,9 @@ import { stepPageModel } from './step-model.js';
 import { taskStepModel } from './task-step.js';
 import { renderStepPage, stepFooterText } from './step-view.js';
 import { withPoolLabels } from '../lib/pool-labels.js';
+import {
+  SUBSCRIPTION_BASIS_RANK, TOKEN_SOURCE_RANK, tokenSourceOf, worstSubscriptionBasis, worstTokenSource,
+} from './metrics.js';
 
 const ESC = '\x1b[';
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -996,41 +999,6 @@ export function meterAnsi() {
 /** The blank a figure with no measurable source is painted as. */
 export function blank() {
   return asciiGlyphsPreferred() ? '-' : '—';
-}
-
-const TOKEN_SOURCE_RANK = Object.freeze({
-  unknown: 0,
-  'estimated:utf8-bytes/4': 1,
-  'transcript-summed': 2,
-  'provider-reported': 3,
-});
-const SUBSCRIPTION_BASIS_RANK = Object.freeze({
-  'unknown:no-price': 0,
-  'unknown:no-meter': 1,
-  'unknown:no-cost': 2,
-  'calibrated:usd-per-pct': 3,
-  'observed:meter-delta': 4,
-});
-
-function tokenSourceOf(value, cost = null) {
-  if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
-  return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
-}
-
-function worstTokenSource(current, candidate) {
-  const next = tokenSourceOf(candidate);
-  if (current == null) return next;
-  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
-}
-
-function subscriptionBasisOf(value) {
-  return Object.hasOwn(SUBSCRIPTION_BASIS_RANK, value) ? value : 'unknown:no-meter';
-}
-
-function worstSubscriptionBasis(current, candidate) {
-  const next = subscriptionBasisOf(candidate);
-  if (current == null) return next;
-  return SUBSCRIPTION_BASIS_RANK[next] < SUBSCRIPTION_BASIS_RANK[current] ? next : current;
 }
 
 /**
@@ -3769,11 +3737,6 @@ export {
   strong,
   inverseText,
   pushColumns,
-  TOKEN_SOURCE_RANK,
-  SUBSCRIPTION_BASIS_RANK,
-  tokenSourceOf,
-  worstTokenSource,
-  worstSubscriptionBasis,
   ageText,
   clockAt,
   okMark,

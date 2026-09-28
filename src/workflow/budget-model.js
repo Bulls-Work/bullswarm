@@ -27,6 +27,11 @@ import { formatDashboardValue } from './dash-kit.js';
 import { spendFacts } from './spend-facts.js';
 import { periodRange } from './stats-model.js';
 import { poolWindows } from './usage-view.js';
+import { localTimeZone } from './day-key.js';
+import {
+  addNullable as add, finite, measuredAttemptCount as measuredAttempts, parseIso, recordEntries,
+  recordTimeMs, recordWorkerMinutes, round, sumEntries, tokenSourceOf, worstTokenSource,
+} from './metrics.js';
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -45,61 +50,12 @@ const MODEL_WINDOW_FIELDS = Object.freeze([
 // The rollup keeps one worst-of basis per pool.  Keep the same ordering in
 // every aggregate on this page: an estimate or an unknown attempt makes the
 // whole money figure unable to claim provider measurement.
-const TOKEN_SOURCE_RANK = Object.freeze({
-  unknown: 0,
-  'estimated:utf8-bytes/4': 1,
-  'transcript-summed': 2,
-  'provider-reported': 3,
-});
-
-function tokenSourceOf(value, cost = null) {
-  if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
-  // Pre-basis rollups only carried costUsd.  Those dollars were the old
-  // bytes/4 fallback, so preserve their honest legacy meaning rather than
-  // treating the field as provider measurement.
-  return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
-}
-
-function worstTokenSource(current, candidate) {
-  const next = tokenSourceOf(candidate);
-  if (current == null) return next;
-  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
-}
-
-function measuredAttempts(source, attempts) {
-  if (!['provider-reported', 'transcript-summed'].includes(source)) return 0;
-  return Math.max(0, Math.trunc(Number(attempts) || 0));
-}
-
-// The same ±15pp thresholds src/workflow/usage-view.js paceWord() uses, so
-// the Budget page and the pool rows never disagree about whether a pool is
-// hot. The word only; the colour belongs to the view.
 const PACE_THRESHOLD_PP = 15;
 
 // ---------------------------------------------------------------- primitives
 
 // Number(null) is 0. A missing price, a missing rate and a missing estimate
 // all have to stay null (B5).
-function finite(value) {
-  if (value == null || value === '' || typeof value === 'boolean') return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
-function round(value, places) {
-  if (!Number.isFinite(value)) return null;
-  const factor = 10 ** places;
-  return Math.round(value * factor) / factor;
-}
-
-function parseIso(value) {
-  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value !== 'string' || !value) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
-
 function capturedAtOf(pools, sampledAt = null) {
   const explicit = parseIso(sampledAt);
   if (explicit != null) return typeof sampledAt === 'string' ? sampledAt : new Date(explicit).toISOString();
@@ -124,10 +80,6 @@ function sampleAgeText(sampledAt, now) {
   return `${days}d ago`;
 }
 
-function add(total, value) {
-  return value == null ? total : (total ?? 0) + value;
-}
-
 function median(values) {
   const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
   if (!sorted.length) return null;
@@ -150,14 +102,6 @@ function nullPaths(value, prefix = '', out = []) {
 }
 
 // ------------------------------------------------------------------ the zone
-
-// B4. Resolved at call time, so a laptop that crosses a border, or a test
-// that pins TZ, gets its own zone rather than the one that was current when
-// this module was first imported.
-function localTimeZone() {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
-  catch { return 'UTC'; }
-}
 
 /**
  * The absolute moment a licence window resets, with the zone named.
@@ -192,10 +136,6 @@ function toRecords(rollups) {
   return (Array.isArray(rollups) ? rollups : []).filter((record) => record && typeof record === 'object');
 }
 
-function recordTimeMs(record) {
-  return parseIso(record?.finishedAt) ?? parseIso(record?.startedAt);
-}
-
 function inRange(record, from, to) {
   const ms = recordTimeMs(record);
   if (ms == null) return false;
@@ -210,59 +150,39 @@ function selectRecords(records, { from, to }) {
     .sort((a, b) => (recordTimeMs(b) ?? 0) - (recordTimeMs(a) ?? 0));
 }
 
-function poolEntry(record, pool) {
-  const pools = record?.pools;
-  if (!pools || typeof pools !== 'object') return null;
-  return pool == null ? null : pools[pool] ?? null;
+/** A record's attempt entries on one pool, or on every pool (metrics.js). */
+function poolEntries(record, pool = null) {
+  const entries = recordEntries(record, { by: 'pool' });
+  return pool == null ? entries : entries.filter((entry) => entry.key === pool);
 }
 
 /** Worker-minutes a record spent, on one pool or across all of them. */
 function workerMinutesOf(record, pool = null) {
-  if (pool != null) return finite(poolEntry(record, pool)?.minutes);
-  let total = null;
-  for (const entry of Object.values(record?.pools ?? {})) total = add(total, finite(entry?.minutes));
-  return total;
-}
-
-function poolEntriesOf(record, pool = null) {
-  return pool != null
-    ? [poolEntry(record, pool)]
-    : Object.values(record?.pools ?? {});
-}
-
-/** The recorded API-equivalent estimate, on one pool or across all of them. */
-function apiEquivalentOf(record, pool = null) {
-  let total = null;
-  for (const entry of poolEntriesOf(record, pool)) total = add(total, finite(entry?.apiUsd ?? entry?.costUsd));
-  return total;
+  return recordWorkerMinutes(record, pool);
 }
 
 /**
- * A record's money with the coverage that produced it.
+ * A record's money on one pool (or all) with the coverage that produced it.
  *
- * `strict` is the whole-scope amount (every attempt priced) and stays null
- * when the scope is partial; `known` is the sum over the attempts that were
- * priced, which the rollup always keeps. The counts travel with them so a
- * surface can read a partial total as the lower bound it is.
+ * `strict` sums each pool's whole amount where the pool had one; `known` is
+ * the sum over the attempts that were priced. The counts travel with them so
+ * a surface can read a partial total as the lower bound it is.
  */
 function apiMoneyOf(record, pool = null) {
   let strict = null;
-  let known = null;
-  let attempts = 0;
-  let priced = 0;
-  let measured = 0;
-  for (const entry of poolEntriesOf(record, pool)) {
-    if (!entry || typeof entry !== 'object') continue;
-    const amount = finite(entry.apiUsd ?? entry.costUsd);
-    const subtotal = finite(entry.apiKnownSubtotalUsd) ?? amount;
-    if (amount != null) strict = add(strict, amount);
-    if (subtotal != null) known = add(known, subtotal);
-    const count = Math.max(0, Math.trunc(finite(entry.attempts) ?? 0));
-    attempts += count;
-    priced += Math.max(0, Math.trunc(finite(entry.pricedAttempts) ?? (amount != null ? count : 0)));
-    measured += Math.max(0, Math.trunc(finite(entry.measuredAttempts) ?? 0));
-  }
-  return { strict, known, attempts, priced, measured };
+  const entries = poolEntries(record, pool);
+  const byPool = new Map();
+  for (const entry of entries) byPool.set(entry.key, [...(byPool.get(entry.key) ?? []), entry]);
+  for (const grouped of byPool.values()) strict = add(strict, sumEntries(grouped).apiUsd);
+  const total = sumEntries(entries);
+  return {
+    strict,
+    known: total.apiKnownSubtotalUsd,
+    attempts: total.attempts,
+    priced: total.pricedAttempts,
+    measured: total.measuredAttempts,
+    tokenSource: entries.length ? total.tokenSource : null,
+  };
 }
 
 // ------------------------------------------------------------------- pacing
@@ -526,14 +446,12 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     const minutes = workerMinutesOf(record, name);
     const money = apiMoneyOf(record, name);
     const cost = money.strict;
-    const entry = poolEntry(record, name);
-    const source = tokenSourceOf(entry?.tokenSource, cost ?? money.known);
-    if (record?.pools && Object.hasOwn(record.pools, name)) runsOnPool += 1;
-    if (entry) {
-      const count = Math.max(0, Math.trunc(Number(entry.attempts) || 0));
-      attempts += count;
+    const source = tokenSourceOf(money.tokenSource, cost ?? money.known);
+    if (money.tokenSource != null) {
+      runsOnPool += 1;
+      attempts += money.attempts;
       pricedAttempts += money.priced;
-      measured += measuredAttempts(source, count);
+      measured += measuredAttempts(source, money.attempts);
       tokenSource = worstTokenSource(tokenSource, source);
     }
     if (minutes != null) { periodMinutes = add(periodMinutes, minutes); perRunMinutes.push(minutes); }
@@ -843,15 +761,9 @@ export function biggestRuns(rollups, { pool = null, period = 'week', now = Date.
 
   const entries = [];
   for (const record of selectRecords(toRecords(rollups), range)) {
-    if (name != null && !(record?.pools && Object.hasOwn(record.pools, name))) continue;
-    const selectedEntries = name != null
-      ? [poolEntry(record, name)]
-      : Object.values(record?.pools ?? {});
-    let tokenSource = null;
-    for (const entry of selectedEntries) {
-      if (!entry) continue;
-      tokenSource = worstTokenSource(tokenSource, tokenSourceOf(entry.tokenSource, entry.costUsd));
-    }
+    const money = apiMoneyOf(record, name);
+    if (name != null && money.tokenSource == null) continue;
+    const tokenSource = money.tokenSource;
     entries.push({
       runId: record.runId ?? null,
       shortId: record.shortId ?? null,
@@ -862,7 +774,7 @@ export function biggestRuns(rollups, { pool = null, period = 'week', now = Date.
       finishedAt: record.finishedAt ?? null,
       workerMinutes: round(workerMinutesOf(record, name), 2),
       wallMinutes: finite(record?.minutes?.wall),
-      apiEquivalentUsd: round(apiEquivalentOf(record, name), 6),
+      apiEquivalentUsd: round(money.strict, 6),
       tokenSource: tokenSource ?? 'unknown',
       apiEquivalentBasis: tokenSource === 'provider-reported'
         ? 'provider-reported'

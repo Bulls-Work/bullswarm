@@ -54,11 +54,11 @@ import {
   stateStartedAt,
   strong,
   tint,
-  tokenSourceOf,
   visibleLength,
   workflowRunLabel,
   wrapLines,
 } from './dashboard.js';
+import { tokenSourceOf } from './metrics.js';
 import { apiMoney, formatMoney } from '../lib/usage-basis.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { taskKey } from '../lib/tasks.js';

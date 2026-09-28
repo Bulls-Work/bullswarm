@@ -12,7 +12,6 @@ import {
   runMinutesInfo,
   runStepCounts,
   todayTopRuns,
-  recordCost,
   recordCostInfo,
   recordMoneyPair,
   taskIdentity,
@@ -100,17 +99,20 @@ test('Home model deduplicates today rows and builds measured licence rows', () =
   assert.equal(poolRatePerMinute(null, { share: { ratePerMinute: 0.25 } }), 0.25);
 });
 
-test('Home model preserves API cost precedence and usage basis', () => {
+test('Home model reads a run\'s money from its attempts, never from a run-level total', () => {
+  // The run-level total disagrees with the pool entry, the attempt grain: the
+  // entry is the answer, so Home, Stats and Budget cannot disagree (0.37.0).
   const record = {
     usage: { apiUsd: 1.25 },
     pools: { codex: { costUsd: 0.5, tokenSource: 'provider-reported' } },
   };
-  assert.equal(recordCost(record), 1.25);
+  assert.equal(recordCostInfo(record).apiUsd, 0.5);
   assert.deepEqual(recordCostInfo(record), {
-    value: 1.25,
-    apiUsd: 1.25,
+    value: 0.5,
+    apiUsd: 0.5,
     // A whole amount carries no subtotal: the strict figure is the answer.
     apiKnownSubtotalUsd: null,
+    // A pre-0.35.2 pool recorded no coverage counts, so none are claimed.
     apiCoverage: { priced: null, attempts: null },
     tokenSource: 'provider-reported',
     subscription: {
@@ -119,14 +121,15 @@ test('Home model preserves API cost precedence and usage basis', () => {
     subscriptionUsd: null,
     subscriptionBasis: 'unknown:no-meter',
   });
-  assert.equal(recordCost({ pools: { codex: { costUsd: 0.5 } } }), 0.5);
-  assert.equal(recordCost({ pools: { codex: { costUsd: null } } }), null);
+  assert.equal(recordCostInfo({ pools: { codex: { costUsd: 0.5 } } }).apiUsd, 0.5);
+  assert.equal(recordCostInfo({ pools: { codex: { costUsd: null } } }).apiUsd, null);
 });
 
 test('Home money shows a partly-priced run as the recorded subtotal, not a dash', () => {
   const partial = {
     runId: 'wf-partial',
     usage: { apiUsd: null, apiKnownSubtotalUsd: 9.523847, pricedAttempts: 3, attempts: 9 },
+    pools: { acme: { attempts: 9, pricedAttempts: 3, apiUsd: null, apiKnownSubtotalUsd: 9.523847 } },
   };
   const info = recordCostInfo(partial);
   assert.equal(info.apiUsd, null, 'the strict total stays strict');
@@ -141,10 +144,18 @@ test('Home money shows a partly-priced run as the recorded subtotal, not a dash'
   // of them is claimed as an estimate.
   assert.equal(recordMoneyPair(partial).facts.suffix, '6 unmeasured');
   // A run whose attempts were all priced is untouched by the fallback.
-  const whole = { runId: 'wf-whole', usage: { apiUsd: 9.760216, apiKnownSubtotalUsd: 9.760216, pricedAttempts: 5, attempts: 5 } };
+  const whole = {
+    runId: 'wf-whole',
+    usage: { apiUsd: 9.760216, apiKnownSubtotalUsd: 9.760216, pricedAttempts: 5, attempts: 5 },
+    pools: { acme: { attempts: 5, pricedAttempts: 5, apiUsd: 9.760216, apiKnownSubtotalUsd: 9.760216 } },
+  };
   assert.match(recordMoneyPair(whole).text, /^~ \$9\.76 api estimated \u00b7 /);
   // No recorded amount at all is still a dash, never a zero.
-  assert.match(recordMoneyPair({ runId: 'wf-none', usage: { apiUsd: null, apiKnownSubtotalUsd: null, pricedAttempts: 0, attempts: 2 } }).text, /^api unknown/);
+  assert.match(recordMoneyPair({
+    runId: 'wf-none',
+    usage: { apiUsd: null, apiKnownSubtotalUsd: null, pricedAttempts: 0, attempts: 2 },
+    pools: { acme: { attempts: 2, pricedAttempts: 0, apiUsd: null, apiKnownSubtotalUsd: null } },
+  }).text, /^api unknown/);
 });
 
 test('Home model medians the period\'s runs on active minutes, or on a labelled span', () => {

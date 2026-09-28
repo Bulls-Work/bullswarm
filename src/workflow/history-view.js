@@ -24,6 +24,7 @@ import { runMinutesInfo, runProject, runStepCounts } from './home-model.js';
 import { poolUsageAggregate, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { cut, rule } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
+import { TOKEN_SOURCE_RANK, tokenSourceOf, worstTokenSource } from './metrics.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
@@ -145,24 +146,6 @@ function clock(value) {
   if (ms == null) return null;
   const date = new Date(ms);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-
-const TOKEN_SOURCE_RANK = Object.freeze({
-  unknown: 0,
-  'estimated:utf8-bytes/4': 1,
-  'transcript-summed': 2,
-  'provider-reported': 3,
-});
-
-function tokenSourceOf(value, cost = null) {
-  if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
-  return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
-}
-
-function worstTokenSource(current, candidate) {
-  const next = tokenSourceOf(candidate);
-  if (current == null) return next;
-  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
 }
 
 function costInfo(value, tokenSource) {

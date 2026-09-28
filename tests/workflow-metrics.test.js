@@ -68,6 +68,8 @@ test('M3: an attempt with no start makes the union unknown, never shorter', () =
   const union = attemptsUnion([attempt({ start: 0, end: 10 }), { pool: 'acme', wallSec: 60 }], { terminal: true });
   assert.equal(union.activeMinutes, null);
   assert.deepEqual(intervalMinutes([{ pool: 'acme', wallSec: 60 }], { terminal: true }), { active: null, span: null });
+  // A finish and measured wall seconds are two measurements: the start follows.
+  assert.equal(attemptsUnion([{ finishedAt: iso(10), wallSec: 120 }], { terminal: true }).activeMinutes, 2);
 });
 
 test('M3: an attempt that recorded no finish ends at its start plus its wall seconds', () => {
@@ -201,7 +203,10 @@ test('M6: an old single-run log entry becomes a one-attempt record, marked legac
 });
 
 test('M6: a log entry with no amount and no start keeps both unknown', () => {
-  const record = legacyTaskRecord(taskEntry({ kind: undefined, source: undefined, id: undefined, startedAt: undefined, usage: { tokenSource: 'unknown' } }));
+  const record = legacyTaskRecord(taskEntry({
+    kind: undefined, source: undefined, id: undefined, startedAt: undefined, wallSec: undefined, durationMs: undefined,
+    usage: { tokenSource: 'unknown' },
+  }));
   assert.equal(record.minutes.active, null);
   assert.equal(recordTotals(record).apiUsd, null);
   assert.equal(recordTotals(record).apiKnownSubtotalUsd, null);

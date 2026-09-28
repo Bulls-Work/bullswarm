@@ -48,6 +48,7 @@ import { legacyRollupRecord, readLegacyRunFacts, readRollups, rollupRecord } fro
 import { isLegacyRunState, isOngoing } from './short-id.js';
 import { readGoalProject } from './goal.js';
 import { dayKey } from './day-key.js';
+import { addNullable, groupEntries, recordEntries, sumEntries } from './metrics.js';
 
 export { dayKey };
 
@@ -85,15 +86,11 @@ function taskHistoryRow(task) {
   };
 }
 
+// Each pool's whole amount, summed over the pools that had one.
 function recordSpendUsd(record) {
-  const pools = record?.pools;
-  if (!pools || typeof pools !== 'object') return null;
   let total = null;
-  for (const pool of Object.values(pools)) {
-    // `costUsd: null` means the run measured no cost. Number(null) is 0, so
-    // a bare Number() here would quietly coin a zero-dollar day (H3).
-    const cost = pool?.costUsd;
-    if (typeof cost === 'number' && Number.isFinite(cost)) total = (total ?? 0) + cost;
+  for (const entries of groupEntries(recordEntries(record, { by: 'pool' })).values()) {
+    total = addNullable(total, sumEntries(entries).apiUsd);
   }
   return total;
 }

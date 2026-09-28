@@ -23,11 +23,12 @@ import {
   reasoningText,
   runningMark,
   tint,
-  tokenSourceOf,
   visibleLength,
-  worstSubscriptionBasis,
-  worstTokenSource,
 } from './dashboard.js';
+import {
+  MEASURED_TOKEN_SOURCES, aggregateAttemptUsage, attemptInterval, attemptUsage, attemptWorkerMinutes, attemptsUnion,
+  stateAttempts,
+} from './metrics.js';
 
 function workflowPanelModel(row, { phaseIndex = null, agentIndex = null, nowMs = Date.now() } = {}) {
   const state = row.state;
@@ -123,54 +124,20 @@ function parsedMs(value) {
 }
 
 /**
- * Resolve the intervals that actually had a worker attached to this run.
- * Missing endpoints stay unknown; a running attempt ends at the projection
- * clock, never at the run's lifecycle finish (which can include idle time).
+ * The attempt intervals of this run and their union (metrics.js M3). A
+ * running attempt ends at the projection clock, never at the run's lifecycle
+ * finish (which can include idle time); a missing endpoint stays unknown.
  */
-function attemptIntervals(attempts, { nowMs = Date.now() } = {}) {
-  const out = [];
-  for (const attempt of (Array.isArray(attempts) ? attempts : [])) {
-    const start = parsedMs(attempt?.startedAt);
-    if (start == null) {
-      if (attempt && typeof attempt === 'object') out.push({ unknown: true, attempt });
-      continue;
-    }
-    let end = parsedMs(attempt?.finishedAt ?? attempt?.endedAt);
-    const open = end == null && attempt?.status === 'running';
-    if (open) end = Number.isFinite(nowMs) ? nowMs : Date.now();
-    if (end == null || end < start) {
-      out.push({ unknown: true, attempt });
-      continue;
-    }
-    out.push({ start, end, attempt, open });
-  }
-  return out;
-}
-
-/** Union interval facts for active minutes and the secondary wall span. */
-function unionIntervals(intervals) {
-  const unknown = (Array.isArray(intervals) ? intervals : []).some((entry) => entry?.unknown === true);
-  const list = (Array.isArray(intervals) ? intervals : [])
-    .filter((entry) => Number.isFinite(entry?.start) && Number.isFinite(entry?.end) && entry.end >= entry.start)
-    .sort((a, b) => a.start - b.start || a.end - b.end);
-  if (unknown || !list.length) return { activeMinutes: null, spanMinutes: null, startMs: null, endMs: null, open: false, unknown };
-  const merged = [];
-  for (const interval of list) {
-    const previous = merged.at(-1);
-    if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
-    else merged.push({ start: interval.start, end: interval.end });
-  }
-  const activeMs = merged.reduce((total, interval) => total + interval.end - interval.start, 0);
-  const startMs = list[0].start;
-  const endMs = list.at(-1).end;
-  const open = list.some((interval) => interval.open === true);
+function intervalUnion(attempts, { nowMs = Date.now(), terminal = true } = {}) {
+  const union = attemptsUnion(attempts, { now: nowMs, terminal, running: false });
   return {
-    activeMinutes: activeMs / 60_000,
-    spanMinutes: open ? null : (endMs - startMs) / 60_000,
-    startMs,
-    endMs,
-    open,
-    unknown: false,
+    activeMinutes: union.activeMinutes,
+    spanMinutes: union.open ? null : union.spanMinutes,
+    startMs: union.startMs,
+    endMs: union.endMs,
+    open: union.open,
+    unknown: union.unknown,
+    intervals: union.intervals,
   };
 }
 
@@ -210,8 +177,8 @@ function runDurationFacts(row, { nowMs = Date.now() } = {}) {
   const rollup = row?.minutes
     ? row
     : (row?.rollup ?? row?.report?.rollup ?? row?.report ?? row?.state?.rollup ?? row?.state ?? {});
-  const intervals = attemptIntervals(allRunAttempts(row), { nowMs });
-  const union = unionIntervals(intervals);
+  const union = intervalUnion(allRunAttempts(row), { nowMs });
+  const { intervals } = union;
   const activeMinutes = union.open ? union.activeMinutes : storedMinutes(rollup, 'active') ?? union.activeMinutes;
   const spanMinutes = !runIsTerminal(row) || union.open ? null : storedMinutes(rollup, 'span') ?? union.spanMinutes;
   // `spanMinutes` remains the proved terminal wall span for compatibility
@@ -232,8 +199,8 @@ function phaseAttempts(row, stage) {
 }
 
 function phaseDurationFacts(row, stage, { nowMs = Date.now() } = {}) {
-  const intervals = attemptIntervals(phaseAttempts(row, stage), { nowMs });
-  const union = unionIntervals(intervals);
+  const union = intervalUnion(phaseAttempts(row, stage), { nowMs });
+  const { intervals } = union;
   const phaseSources = [row?.minutes?.phases, row?.phases, row?.rollup?.phases, row?.report?.phases];
   const phaseRollup = phaseSources.find((source) => Array.isArray(source))
     ?.find((entry) => entry?.id === stage?.id || entry?.label === stage?.label)
@@ -271,10 +238,9 @@ function durationClockText(minutes) {
 }
 
 function attemptDurationMinutes(attempt, { nowMs = Date.now() } = {}) {
-  const intervals = attemptIntervals([attempt], { nowMs });
-  if (intervals.length) return (intervals[0].end - intervals[0].start) / 60_000;
-  const wallSec = finiteOrNull(attempt?.wallSec);
-  return wallSec != null && wallSec >= 0 ? wallSec / 60 : null;
+  const interval = attemptInterval(attempt, { nowMs });
+  if (!interval.unknown) return (interval.end - interval.start) / 60_000;
+  return attemptWorkerMinutes(attempt);
 }
 
 function attemptDurationText(attempt, options = {}) {
@@ -359,46 +325,15 @@ function planStripParts(row, { runId = null } = {}) {
  */
 function runEconomics(row, pools = [], nowMs = Date.now()) {
   // A run's economics cover every durable attempt, including optional scout
-  // and planner turns.  Rollups and result envelopes use this same set; the
-  // Run page must not silently omit their API/subscription usage.
-  const attempts = [
-    ...(row?.state?.preflight?.scout?.attempts ?? []),
-    ...(row?.state?.planner?.attempts ?? []),
-    ...(row?.state?.attempts ?? []),
-  ];
+  // and planner turns: the same set the rollup and every page aggregate.
+  const attempts = stateAttempts(row?.state).map(({ attempt }) => attempt);
   const byPool = new Map();
-  let apiKnownSubtotalUsd = null;
-  let subscriptionKnownSubtotalUsd = null;
-  let priced = 0;
-  let subscriptionPriced = 0;
-  let measuredAttempts = 0;
-  let tokenSource = null;
-  let subscriptionBasis = null;
-  let subscriptionDeltaPct = null;
-  let subscriptionWindow = null;
   for (const attempt of attempts) {
     const name = attempt?.pool ?? null;
-    const startedMs = Date.parse(attempt?.startedAt ?? '');
-    const finishedMs = Date.parse(attempt?.finishedAt ?? '');
-    const wall = finiteOrNull(attempt?.wallSec);
-    const minutes = wall != null ? wall / 60
-      : Number.isFinite(startedMs)
-        ? Math.max(0, (Number.isFinite(finishedMs) ? finishedMs : nowMs) - startedMs) / 60_000
-        : null;
+    const minutes = attemptWorkerMinutes(attempt, { nowMs });
     if (name && minutes != null) byPool.set(name, (byPool.get(name) ?? 0) + minutes);
-    const cost = finiteOrNull(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd);
-    const subscription = finiteOrNull(attempt?.usage?.subscription?.usd);
-    const deltaPct = finiteOrNull(attempt?.usage?.subscription?.deltaPct);
-    const source = tokenSourceOf(attempt?.usage?.tokenSource, cost);
-    const basis = attempt?.usage?.subscription?.basis ?? 'unknown:no-meter';
-    tokenSource = worstTokenSource(tokenSource, source);
-    subscriptionBasis = worstSubscriptionBasis(subscriptionBasis, basis);
-    if (deltaPct != null) subscriptionDeltaPct = (subscriptionDeltaPct ?? 0) + deltaPct;
-    subscriptionWindow ??= attempt?.usage?.subscription?.window ?? null;
-    if (cost != null) { apiKnownSubtotalUsd = (apiKnownSubtotalUsd ?? 0) + cost; priced += 1; }
-    if (subscription != null) { subscriptionKnownSubtotalUsd = (subscriptionKnownSubtotalUsd ?? 0) + subscription; subscriptionPriced += 1; }
-    if (cost != null && (source === 'provider-reported' || source === 'transcript-summed')) measuredAttempts += 1;
   }
+  const usage = aggregateAttemptUsage(attempts);
   const rows = [...byPool.entries()].map(([name, minutes]) => {
     const pool = (Array.isArray(pools) ? pools : []).find((entry) => entry?.name === name) ?? null;
     const rate = finiteOrNull(pool?.spend?.pacing?.ratePerMinute);
@@ -411,24 +346,25 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
       rateSource: pool?.spend?.pacing?.source ?? null,
     };
   }).sort((a, b) => b.minutes - a.minutes);
+  const windows = Object.entries(usage.subscriptionWindows);
   return {
     pools: rows,
-    apiEquivalentUsd: priced === attempts.length && attempts.length ? apiKnownSubtotalUsd : null,
-    apiUsd: priced === attempts.length && attempts.length ? apiKnownSubtotalUsd : null,
-    apiKnownSubtotalUsd,
-    subscriptionUsd: subscriptionPriced === attempts.length && attempts.length ? subscriptionKnownSubtotalUsd : null,
-    subscriptionKnownSubtotalUsd,
+    apiEquivalentUsd: usage.apiUsd,
+    apiUsd: usage.apiUsd,
+    apiKnownSubtotalUsd: usage.apiKnownSubtotalUsd,
+    subscriptionUsd: usage.subscriptionUsd,
+    subscriptionKnownSubtotalUsd: usage.subscriptionKnownSubtotalUsd,
     subscription: {
-      usd: subscriptionPriced === attempts.length && attempts.length ? subscriptionKnownSubtotalUsd : null,
-      deltaPct: subscriptionDeltaPct,
-      window: subscriptionWindow,
-      basis: subscriptionBasis ?? 'unknown:no-meter',
+      usd: usage.subscriptionUsd,
+      deltaPct: windows.length ? windows.reduce((sum, [, delta]) => sum + delta, 0) : null,
+      window: windows[0]?.[0] ?? null,
+      basis: usage.subscriptionBasis,
     },
-    tokenSource: tokenSource ?? 'unknown',
-    pricedAttempts: priced,
-    subscriptionPricedAttempts: subscriptionPriced,
-    measuredAttempts,
-    attempts: attempts.length,
+    tokenSource: usage.tokenSource,
+    pricedAttempts: usage.pricedAttempts,
+    subscriptionPricedAttempts: usage.subscriptionPricedAttempts,
+    measuredAttempts: usage.measuredAttempts,
+    attempts: usage.attempts,
   };
 }
 
@@ -732,7 +668,7 @@ function stepTally(row) {
 }
 
 const RUN_TERMINAL_ATTEMPTS = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'skipped']);
-const RUN_MEASURED_SOURCES = new Set(['provider-reported', 'transcript-summed']);
+const RUN_MEASURED_SOURCES = new Set(MEASURED_TOKEN_SOURCES);
 
 /** `6h02m` / `38m17s` / `30s`, the Run header's active/span clock. */
 function runClockText(minutes) {
@@ -812,14 +748,6 @@ function usageSource(attempt) {
   return String(attempt?.usage?.tokenSource ?? 'unknown');
 }
 
-function attemptApiAmount(attempt) {
-  return finiteOrNull(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd);
-}
-
-function attemptSubscriptionAmount(attempt) {
-  return finiteOrNull(attempt?.usage?.subscription?.usd);
-}
-
 function amountText(value, { approximate = false, lowerBound = false } = {}) {
   if (value == null) return '—';
   const rendered = formatMoney(value);
@@ -839,8 +767,7 @@ function runSpendFacts(row, { rollup = null } = {}) {
   let unmeasured = 0;
   let planMeter = 0;
   for (const attempt of attempts) {
-    const api = attemptApiAmount(attempt);
-    const sub = attemptSubscriptionAmount(attempt);
+    const { apiUsd: api, subscriptionUsd: sub } = attemptUsage(attempt);
     const status = String(attempt?.status ?? '').toLowerCase();
     const source = usageSource(attempt);
     const open = status === 'running';
@@ -1000,8 +927,6 @@ export {
   planProgress,
   planStripParts,
   runEconomics,
-  attemptIntervals,
-  unionIntervals,
   runDurationFacts,
   phaseDurationFacts,
   activeMinutesText,

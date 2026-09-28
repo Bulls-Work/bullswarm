@@ -18,15 +18,14 @@
 //       interval cannot be resolved makes the union unknown rather than
 //       quietly shorter. An attempt's interval ends at its recorded finish;
 //       an attempt still running ends at `now`; an attempt that recorded no
-//       finish ends at its start plus its measured wall seconds.
+//       finish ends at its start plus its measured wall seconds, and one that
+//       recorded no start began its wall seconds before its finish.
 //   M4. Worker minutes are the wall seconds each attempt measured, summed.
 //   M5. "Today" is the day a record finished; a record with no finish is
 //       placed on the day it started.
 //   M6. Old records (rollups written before per-attempt metrics, pre-v2
 //       pools, legacy runs, single-run log entries) reach these functions
 //       through the legacy reader (metrics-legacy.js), marked `legacy`.
-
-import { dayKey } from './day-key.js';
 
 // ------------------------------------------------------------------ numbers
 
@@ -145,11 +144,6 @@ export function attemptApiUsd(attempt) {
   );
 }
 
-/** The subscription amount one attempt recorded, or null. */
-export function attemptSubscriptionUsd(attempt) {
-  return finite(attempt?.usage?.subscription?.usd);
-}
-
 /**
  * One attempt's usage as the canonical fields every aggregate reads.
  * `canonical` says whether the attempt carries the v2 api/subscription shape.
@@ -172,13 +166,44 @@ export function attemptUsage(attempt) {
   };
 }
 
-/** M4. The wall minutes one attempt measured, or null. */
-export function attemptWorkerMinutes(attempt) {
+/**
+ * The wall seconds one attempt measured: `wallSec`, or the single-run
+ * ledger's `durationMs`. Null when neither was recorded.
+ */
+export function attemptWallSec(attempt) {
+  const durationMs = finite(attempt?.durationMs);
+  if (durationMs != null && durationMs >= 0) return durationMs / 1000;
   const wallSec = finite(attempt?.wallSec);
-  return wallSec != null && wallSec >= 0 ? wallSec / 60 : null;
+  return wallSec != null && wallSec >= 0 ? wallSec : null;
+}
+
+/**
+ * M4. The wall minutes one attempt measured, or null.
+ *
+ * A page showing a live run passes `nowMs`: an attempt that has not measured
+ * its wall seconds yet (still running, or an old record) then counts the
+ * length of its interval, open through `nowMs`.
+ */
+export function attemptWorkerMinutes(attempt, { nowMs = null } = {}) {
+  const wallSec = attemptWallSec(attempt);
+  if (wallSec != null) return wallSec / 60;
+  if (nowMs == null) return null;
+  const interval = attemptInterval(attempt, { nowMs });
+  return interval.unknown ? null : (interval.end - interval.start) / MINUTE_MS;
 }
 
 // ---------------------------------------------------- money over attempts
+
+/**
+ * M2 for a list of per-attempt amounts: the whole sum only when every amount
+ * is known, the subtotal of the known ones always (null when none is).
+ */
+export function coverageSum(values) {
+  const list = Array.isArray(values) ? values : [];
+  const known = list.map(finite).filter((value) => value != null);
+  const subtotal = known.length ? known.reduce((sum, value) => sum + value, 0) : null;
+  return { whole: list.length && known.length === list.length ? subtotal : null, subtotal, known: known.length, count: list.length };
+}
 
 function emptyUsageAggregate() {
   return {
@@ -364,15 +389,18 @@ export function attemptIsOpen(attempt) {
  */
 export function attemptInterval(attempt, { nowMs = Date.now(), running = false } = {}) {
   const unknown = { unknown: true, attempt };
-  const start = parseIso(attempt?.startedAt);
-  if (start == null) return unknown;
   const recordedEnd = parseIso(attempt?.finishedAt) ?? parseIso(attempt?.endedAt);
+  const wallSec = attemptWallSec(attempt);
+  // An old record may name its finish and its measured wall seconds but no
+  // start: the interval is still two measurements, never a guess.
+  const start = parseIso(attempt?.startedAt)
+    ?? (recordedEnd != null && wallSec != null && wallSec >= 0 ? recordedEnd - wallSec * 1000 : null);
+  if (start == null) return unknown;
   if (recordedEnd != null) {
     return recordedEnd >= start ? { start, end: recordedEnd, open: false, spanKnown: true, attempt } : unknown;
   }
   const now = parseIso(nowMs) ?? Date.now();
   if (attemptIsOpen(attempt)) return now >= start ? { start, end: now, open: true, spanKnown: false, attempt } : unknown;
-  const wallSec = finite(attempt?.wallSec);
   if (wallSec != null && wallSec >= 0) return { start, end: start + wallSec * 1000, open: false, spanKnown: false, attempt };
   if (running) return now >= start ? { start, end: now, open: true, spanKnown: false, attempt } : unknown;
   return unknown;
@@ -543,9 +571,13 @@ function metricEntry(metric, key) {
   return {
     key,
     legacy: false,
+    v2: true,
+    countsRecorded: true,
     attempts: 1,
     minutes,
     tokens: finite(metric.tokens),
+    apiUsd: finite(metric.apiUsd),
+    subscriptionUsd: finite(metric.subscriptionUsd),
     apiKnownSubtotalUsd: finite(metric.apiUsd),
     subscriptionKnownSubtotalUsd: finite(metric.subscriptionUsd),
     pricedAttempts: finite(metric.apiUsd) == null ? 0 : 1,
@@ -567,32 +599,42 @@ export function legacyMapEntry(value, key) {
     || Object.hasOwn(value, 'apiKnownSubtotalUsd')
     || Object.hasOwn(value, 'subscriptionUsd')
     || Object.hasOwn(value, 'subscriptionKnownSubtotalUsd')));
+  const countsRecorded = Boolean(value && Object.hasOwn(value, 'pricedAttempts'));
   const attempts = Math.max(0, Math.trunc(finite(value?.attempts) ?? 0));
-  const whole = finite(v2 ? value?.apiUsd : value?.costUsd);
-  const tokenSource = tokenSourceOf(value?.tokenSource, value?.costUsd);
-  const measured = v2
-    ? Math.max(0, Math.trunc(finite(value?.measuredAttempts) ?? 0))
-    : measuredAttemptCount(tokenSource, attempts);
+  const count = (field, whole) => (value && Object.hasOwn(value, field)
+    ? Math.max(0, Math.trunc(finite(value[field]) ?? 0))
+    // A pool written before 0.35.2 recorded one amount and no counts: its
+    // attempts are the ones that amount covers, all or none.
+    : whole == null ? 0 : attempts);
+  const apiUsd = finite(value?.apiUsd ?? value?.costUsd);
+  const subscriptionUsd = finite(value?.subscriptionUsd);
+  // An amount with no recorded source is the pre-basis bytes/4 estimate.
+  const tokenSource = tokenSourceOf(value?.tokenSource, apiUsd);
   return {
     key,
     legacy: true,
+    v2,
+    // Whether the coverage counts below were recorded or inferred.
+    countsRecorded,
     attempts,
     minutes: finite(value?.minutes),
     tokens: finite(value?.tokens),
-    apiKnownSubtotalUsd: finite(v2 ? value?.apiKnownSubtotalUsd : value?.costUsd) ?? (v2 ? whole : null),
-    subscriptionKnownSubtotalUsd: finite(v2 ? value?.subscriptionKnownSubtotalUsd : null),
-    // A pre-v2 pool recorded one amount and no counts: its attempts are the
-    // ones that amount covers, all or none.
-    pricedAttempts: v2
-      ? Math.max(0, Math.trunc(finite(value?.pricedAttempts) ?? 0))
-      : whole == null ? 0 : attempts,
-    subscriptionPricedAttempts: v2 ? Math.max(0, Math.trunc(finite(value?.subscriptionPricedAttempts) ?? 0)) : 0,
-    measuredAttempts: measured,
+    apiUsd,
+    apiKnownSubtotalUsd: finite(value?.apiKnownSubtotalUsd) ?? apiUsd,
+    subscriptionUsd,
+    subscriptionKnownSubtotalUsd: finite(value?.subscriptionKnownSubtotalUsd) ?? subscriptionUsd,
+    pricedAttempts: count('pricedAttempts', apiUsd),
+    subscriptionPricedAttempts: count('subscriptionPricedAttempts', subscriptionUsd),
+    measuredAttempts: value && Object.hasOwn(value, 'measuredAttempts')
+      ? Math.max(0, Math.trunc(finite(value.measuredAttempts) ?? 0))
+      : measuredAttemptCount(tokenSource, attempts),
     estimatedAttempts: tokenSource === 'estimated:utf8-bytes/4' ? attempts : 0,
     tokenSource,
     subscriptionBasis: subscriptionBasisOf(value?.subscriptionBasis),
     subscriptionWindows: value?.subscriptionWindows && typeof value.subscriptionWindows === 'object'
-      ? { ...value.subscriptionWindows } : {},
+      ? { ...value.subscriptionWindows }
+      : value?.subscriptionWindow && finite(value?.subscriptionDeltaPct) != null
+        ? { [value.subscriptionWindow]: finite(value.subscriptionDeltaPct) } : {},
   };
 }
 
@@ -610,8 +652,14 @@ const GROUP_FIELDS = { pool: 'pool', model: 'model', provider: 'provider' };
 export function recordEntries(record, { by = 'pool' } = {}) {
   if (!record || typeof record !== 'object') return [];
   const field = GROUP_FIELDS[by] ?? null;
-  if (Array.isArray(record.attemptMetrics)) {
-    return record.attemptMetrics
+  const metrics = Array.isArray(record.attemptMetrics) ? record.attemptMetrics
+    // A live run row carries its state rather than a rollup: its attempts are
+    // measured the same way.
+    : record.state && typeof record.state === 'object'
+      ? stateAttempts(record.state).map(({ attempt, role }) => attemptMetric(attempt, { role }))
+      : null;
+  if (metrics) {
+    return metrics
       .filter((metric) => metric && typeof metric === 'object')
       .map((metric) => metricEntry(metric, field ? (metric[field] ?? 'unknown') : null));
   }
@@ -656,6 +704,8 @@ export function sumEntries(entries) {
     subscriptionBasis: null,
     subscriptionWindows: {},
     legacy: false,
+    v2: false,
+    countsRecorded: true,
   };
   for (const entry of Array.isArray(entries) ? entries : []) {
     if (!entry) continue;
@@ -675,10 +725,15 @@ export function sumEntries(entries) {
       if (value != null) total.subscriptionWindows[window] = (total.subscriptionWindows[window] ?? 0) + value;
     }
     total.legacy ||= entry.legacy === true;
+    total.v2 ||= entry.v2 === true;
+    if (entry.countsRecorded === false) total.countsRecorded = false;
   }
-  total.apiUsd = total.attempts > 0 && total.pricedAttempts === total.attempts ? total.apiKnownSubtotalUsd : null;
-  total.subscriptionUsd = total.attempts > 0 && total.subscriptionPricedAttempts === total.attempts
-    ? total.subscriptionKnownSubtotalUsd : null;
+  // M2: a whole amount only when every entry had one.
+  const list = (Array.isArray(entries) ? entries : []).filter(Boolean);
+  const whole = (field) => (list.length && list.every((entry) => entry[field] != null)
+    ? list.reduce((sum, entry) => sum + entry[field], 0) : null);
+  total.apiUsd = whole('apiUsd');
+  total.subscriptionUsd = whole('subscriptionUsd');
   return total;
 }
 
@@ -698,10 +753,4 @@ export function recordWorkerMinutes(record, pool = null) {
 /** M5. The instant a record is placed at: its finish, else its start. */
 export function recordTimeMs(record) {
   return parseIso(record?.finishedAt) ?? parseIso(record?.startedAt);
-}
-
-/** M5. The local day a record belongs to. */
-export function recordDay(record) {
-  const ms = recordTimeMs(record);
-  return ms == null ? null : dayKey(ms);
 }

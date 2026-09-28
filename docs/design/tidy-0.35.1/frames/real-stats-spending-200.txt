@@ -4,7 +4,7 @@
 Spending · 7d · 30d · all  [By Pool] By Model
 
 ── Summary · 30d ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Totals 15 workflows · 2816.01 worker-minutes · ≥$299.87 · sub unknown (no plan price) · 3 active days
+Totals 15 workflows · 2816.02 worker-minutes · ≥$299.87 · sub unknown (no plan price) · 3 active days
 ── Spend per day · API-equivalent · pool ─────────────────────────────────────────────────────────│  ── Pool spend ───────────────────────────────────  ── Pool worker-minutes ─────────────────────────
 ~$200  ┤                                                                                          │  codex        ▓▒▒▒▒▒                 ≥$63.16 21.1%  codex        ▓▓▓▓▒▒                   35h12m 75%
        │                                                             ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│  claude-code  ▓▓▒▒▒▒                ≥$118.00 39.4%  claude-code  ▏▒▒▒▒▒                   3h34m 7.6%
