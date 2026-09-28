@@ -49,7 +49,7 @@ const LINE_SHOWN_CHARS = 200;
 // --- the program's control nodes ---------------------------------------------
 
 /** The run's gates and loops ({gates, loops}), or null for a v2 run or a v3 run with none. */
-function controlOf(state) {
+export function controlOf(state) {
   const program = state?.program;
   if (program?.schemaVersion !== PROGRAM_V3_SCHEMA_VERSION) return null;
   const gates = program.control?.gates ?? [];
@@ -64,7 +64,7 @@ function defaultRecord(node, type) {
 }
 
 /** Every control node's record, stored or (before the kernel's first pass) the initial one. */
-function controlRecords(state) {
+export function controlRecords(state) {
   const control = controlOf(state);
   if (!control) return [];
   const stored = new Map((state.controlNodes ?? []).map((record) => [record.id, record]));
@@ -117,7 +117,7 @@ function currentAttempt(state, stepId, { succeeded = true } = {}) {
  * the step's current attempt. True or false, or null when it cannot be read
  * (no current answer, no evidence recorded).
  */
-function readCondition(state, condition) {
+export function readCondition(state, condition) {
   if (!condition) return null;
   if (condition.evidence === 'passed') {
     const results = currentAttempt(state, condition.step)?.evidenceResults;
@@ -131,7 +131,7 @@ function readCondition(state, condition) {
 }
 
 /** The condition in words: `check.passed is true`, `check's evidence passed`. */
-function describeCondition(condition) {
+export function describeCondition(condition) {
   if (!condition) return 'no condition';
   if (condition.evidence === 'passed') return `${condition.step}'s evidence passed`;
   return `${condition.step}.${condition.field} is ${condition.equals === false ? 'false' : 'true'}`;
