@@ -132,6 +132,10 @@ test('the v3 validator names what is wrong', () => {
     [{ ...oneStepV3(), defaults: { lane: 'build', verifyRounds: 1 } }, /defaults\.verifyRounds is not allowed/],
     [{ ...oneStepV3(), gates: [{ id: 'count', dependsOn: [] }] }, /id "count" is used twice/],
     [{ ...oneStepV3(), loops: [{ id: 'again', steps: ['count'], until: { step: 'count', field: 'count' }, maxRounds: 2 }] }, /until\.field "count" must be a boolean in the answer schema of step count/],
+    // A condition reads a field every valid answer has: an object root that lists it in `required`.
+    [{ ...oneStepV3({ answer: { type: 'array', properties: { passed: { type: 'boolean' } } } }), loops: [{ id: 'again', steps: ['count'], until: { step: 'count', field: 'passed' }, maxRounds: 2 }] }, /until: the answer schema of step count must have type "object"/],
+    [{ ...oneStepV3({ answer: { type: 'object', properties: { passed: { type: 'boolean' } } } }), loops: [{ id: 'again', steps: ['count'], until: { step: 'count', field: 'passed' }, maxRounds: 2 }] }, /until\.field "passed" must be listed in the required fields of step count's answer schema/],
+    [{ ...oneStepV3({ answer: { type: 'object', required: ['n'], properties: { n: { type: 'integer' }, passed: { type: 'boolean' } } } }), gates: [{ id: 'hold', dependsOn: ['count'], when: { step: 'count', field: 'passed' } }] }, /when\.field "passed" must be listed in the required fields/],
     [{ ...oneStepV3(), loops: [{ id: 'again', steps: ['count'], until: { step: 'count', evidence: 'passed' }, maxRounds: 2 }] }, /step count declares no evidence/],
     [{ ...oneStepV3(), loops: [{ id: 'again', steps: ['count'], until: { step: 'count', evidence: 'passed' }, maxRounds: 6 }] }, /maxRounds must be a whole number from 1 to 5/],
     [{ ...section2Example(), loops: [{ id: 'polish', steps: ['critique', 'revise'], until: { step: 'merge', field: 'passed' }, maxRounds: 3 }] }, /until\.step must be one of the loop's steps/],

@@ -187,9 +187,16 @@ function readCondition(raw, at, issues, stepsById) {
     issues.push(`${at}.field must name a top-level field of step ${raw.step}'s answer`);
     return undefined;
   }
+  // The field must be in every valid answer: an object-rooted schema that
+  // lists it in `required`, so a condition never reads a missing value.
+  if (isObject(step.answer) && step.answer.type !== 'object') {
+    issues.push(`${at}: the answer schema of step ${raw.step} must have type "object"`);
+  }
   const property = isObject(step.answer?.properties) ? step.answer.properties[raw.field] : undefined;
   if (!isObject(property) || property.type !== 'boolean') {
     issues.push(`${at}.field "${raw.field}" must be a boolean in the answer schema of step ${raw.step}`);
+  } else if (!Array.isArray(step.answer.required) || !step.answer.required.includes(raw.field)) {
+    issues.push(`${at}.field "${raw.field}" must be listed in the required fields of step ${raw.step}'s answer schema`);
   }
   if (raw.equals !== undefined && typeof raw.equals !== 'boolean') issues.push(`${at}.equals must be true or false`);
   return { step: raw.step, field: raw.field, equals: raw.equals === false ? false : true };
