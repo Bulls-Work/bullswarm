@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addUsage, normalizeAttempt, reconcileSubscriptionLedger } from '../src/workflow/v2-runtime.js';
+import { normalizeAttempt } from '../src/workflow/v2-runtime.js';
+import { addUsage, reconcileSubscriptionLedger } from '../src/workflow/usage-ledger.js';
 
 const intervals = [
   { pool: 'codex', window: 'weekly', from: '2026-09-19T15:25:55.935Z', at: '2026-09-19T15:31:04.490Z', deltaPct: 1, resolutionPct: 1 },

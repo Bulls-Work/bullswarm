@@ -272,7 +272,7 @@ test('M5: History files a run on the day it finished, for its count as well as i
 
 test('the page models hold no private copy of the metric arithmetic', () => {
   const dir = new URL('../src/workflow/', import.meta.url);
-  const files = ['rollup.js', 'stats-model.js', 'budget-model.js', 'history.js', 'home-model.js', 'run-model.js', 'step-model.js', 'v2-runtime.js'];
+  const files = ['rollup.js', 'stats-model.js', 'budget-model.js', 'history.js', 'home-model.js', 'run-model.js', 'step-model.js', 'usage-ledger.js'];
   for (const file of files) {
     const text = readFileSync(new URL(file, dir), 'utf8');
     assert.match(text, /from '\.\/metrics\.js'/, `${file} reads its metrics through metrics.js`);
