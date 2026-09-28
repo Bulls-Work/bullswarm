@@ -719,7 +719,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     usage: resultUsage(state),
     finishedAt,
     // Anything short of a verified run with no unread guidance is handed back.
-    ...(status === 'completed' && verified && !unreadSteering.length ? {} : { handback: buildV2Handback(state, { unreadSteering, failureRule: flags.failureRule }) }),
+    // A v3 run is never verified: every step succeeding is all it reports.
+    ...(status === 'completed' && (verified || isProgramV3(state.program)) && !unreadSteering.length ? {} : { handback: buildV2Handback(state, { unreadSteering, failureRule: flags.failureRule }) }),
     ...(loop ? { verifyRounds: loop.verifyRounds, callerDecision: loop.callerDecision } : {}),
   };
   validateV2ResultEnvelope(result);
@@ -1110,6 +1111,12 @@ function reviewVerbs(envelope, token, actions) {
   return {};
 }
 
+// A path as one shell word: bare when it is plain, single-quoted otherwise.
+function shellWord(value) {
+  const text = String(value);
+  return /^[A-Za-z0-9_./-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
 function summaryHandback(envelope, handback, token, { failureRule = false, actions = [], stopped = null, v3 = false, routeBound = [] } = {}) {
   // A v3 step whose route left no pool fails the same way on every retry or
   // rerun until the pools or the route change: neither is offered for it.
@@ -1167,7 +1174,8 @@ function summaryHandback(envelope, handback, token, { failureRule = false, actio
       } : {}),
       ...(failureRule ? reviewVerbs(envelope, token, actions) : {}),
       takeOver: `do the unfinished work yourself; bullswarm workflow runs result ${token} --json names every step's output`,
-      restart: 'start a new run: bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>',
+      // A v3 run names its folder, so the line works from wherever the caller is.
+      restart: `start a new run: bullswarm workflow goal "<goal>" --cwd ${v3 && envelope.workspace?.cwd ? shellWord(envelope.workspace.cwd) : '<dir>'} --program <file.json>`,
     },
   };
 }
@@ -1387,7 +1395,8 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       bytes: normalizeBytes(fallback(action.bytes, attempt?.bytes)),
     };
   });
-  const handback = envelope.handback ?? legacyHandback(envelope);
+  // A completed v3 run with nothing handed back has nothing left to offer.
+  const handback = envelope.handback ?? (envelope.status === 'completed' && isProgramV3(state?.program) ? null : legacyHandback(envelope));
   // Marked runs only: the planner or scout whose stop on a limit ended this run.
   const stopped = flags.failureRule && envelope.status === 'partial' ? v2LimitStoppedDispatch(state) : null;
   const proof = summaryProof(actions);

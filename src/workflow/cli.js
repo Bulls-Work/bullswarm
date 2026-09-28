@@ -55,6 +55,7 @@ import { cmdReprice } from './reprice.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
 import { stepJsonModel } from './step-json.js';
+import { changeStepHint, rerunStepHint } from './step-change-hint.js';
 import { listAssignments } from '../lib/assignments.js';
 import { loadPoolLabels, resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 
@@ -1470,7 +1471,7 @@ async function wfPause(opts) {
   const payload = {
     action: 'pause', runId: run.runId, shortId: run.state.shortId ?? null, status: outcome.status, mode,
     already: outcome.already, appliedBy: outcome.appliedBy, running: outcome.status === 'pausing' ? running : [],
-    next: { resume: `bullswarm workflow resume ${id}`, export: `bullswarm workflow plan export ${id} --out plan.json` },
+    next: { resume: `bullswarm workflow resume ${id}`, ...(isProgramV3(run.state.program) ? { add: `bullswarm workflow add ${id} --steps part.json` } : { export: `bullswarm workflow plan export ${id} --out plan.json` }) },
   };
   if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return 0; }
   if (outcome.status === 'paused') console.log(`✓ workflow ${id} ${outcome.already ? 'was already' : 'is'} paused; nothing new starts until: ${payload.next.resume}`);
@@ -1478,7 +1479,7 @@ async function wfPause(opts) {
     console.log(`✓ pause requested for ${id}; nothing new starts. ${running.length} running step${running.length === 1 ? '' : 's'} ${mode === 'now' ? 'being stopped' : 'finish first'}${running.length ? ` (${running.join(', ')})` : ''}`);
     console.log(`  watch    bullswarm workflow watch ${id} --next`);
   } else console.log(`workflow ${id} reached ${outcome.status} before the pause took effect`);
-  console.log(`  revise   ${payload.next.export}, then bullswarm workflow plan revise ${id} --program plan.json`);
+  console.log(payload.next.add ? `  add      ${payload.next.add}` : `  revise   ${payload.next.export}, then bullswarm workflow plan revise ${id} --program plan.json`);
   return 0;
 }
 
@@ -1952,7 +1953,7 @@ export async function restartV2Step({
   if (!running) {
     const stepStatus = (state.actions ?? []).find((action) => action.id === stepId)?.status ?? 'unknown';
     return fail(1, `step ${stepId} is not running (${stepStatus}); restart stops a running attempt. `
-      + `To run it again: bullswarm workflow plan export ${id} --out plan.json, then bullswarm workflow plan revise ${id} --program plan.json --rerun ${stepId}`, base);
+      + `To run it again: ${rerunStepHint(state, id, stepId)}`, base);
   }
   if (!v2RunnerLiveness(state, { runDir: resolved.runDir }).alive) {
     return fail(1, `the kernel of ${id} is not running, so nothing can stop ${running.id}; `
@@ -1974,7 +1975,7 @@ export async function restartV2Step({
       const restart = allowed.length
         ? `restart it on a pool the route allows: bullswarm workflow step restart ${id} ${stepId} --pool ${allowed[0]} (allowed: ${allowed.join(', ')}), or without --pool; or `
         : '';
-      return fail(2, `step ${stepId}'s route does not allow pool ${pool} (${filter.summary}); ${restart}change the route: bullswarm workflow plan export ${id} --out plan.json, edit it, then bullswarm workflow plan revise ${id} --program plan.json`, base);
+      return fail(2, `step ${stepId}'s route does not allow pool ${pool} (${filter.summary}); ${restart}change the route: ${changeStepHint(state, id)}`, base);
     }
   }
   const request = requestStepRestart(resolved.runDir, { actionId: stepId, attemptId: running.id, pool, now });
@@ -2100,7 +2101,7 @@ export async function rerunV2Step({
     const route = definition.route ? JSON.parse(JSON.stringify(definition.route)) : {};
     const use = route.pools?.use ?? null;
     if (use && use.every((name) => avoided.includes(name))) {
-      return stepError(2, `step ${stepId} may only use ${use.join(', ')} (route.pools.use); avoiding ${use.length === 1 ? 'it' : 'them'} leaves nothing. Change its route: bullswarm workflow plan export ${id} --out plan.json, edit it, then bullswarm workflow plan revise ${id} --program plan.json`, base);
+      return stepError(2, `step ${stepId} may only use ${use.join(', ')} (route.pools.use); avoiding ${use.length === 1 ? 'it' : 'them'} leaves nothing. Change its route: ${changeStepHint(state, id)}`, base);
     }
     route.pools = { ...(route.pools ?? {}) };
     route.pools.avoid = [...new Set([...(route.pools.avoid ?? []), ...avoided])].sort();
