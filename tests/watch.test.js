@@ -4,7 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, realpathSync,
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { artifactBesideTask, attemptCapture, watchOnce, argvWithModel, runDelegate, BoundedCapture, providerErrorRecords } from '../src/lib/watch.js';
+import {
+  artifactBesideTask, attemptCapture, watchOnce, argvWithModel, runDelegate, BoundedCapture,
+} from '../src/lib/watch.js';
+import { providerErrorRecords } from '../src/lib/provider-errors.js';
 import { parseQuotaResetAt } from '../src/lib/quota.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 

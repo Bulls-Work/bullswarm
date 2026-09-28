@@ -22,7 +22,7 @@ import {
   GENERIC_QUOTA_SIGNATURES,
   ERROR_SHAPED_LINE,
 } from '../src/lib/quota.js';
-import { providerErrorRecords } from '../src/lib/watch.js';
+import { providerErrorRecords } from '../src/lib/provider-errors.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const connectorOf = (path) => JSON.parse(readFileSync(join(REPO, path), 'utf8'));
