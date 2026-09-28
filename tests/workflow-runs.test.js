@@ -37,7 +37,7 @@ import {
   generateShortId, isShortId, resolveRunId, listRuns, isOngoing,
   SHORT_ID_ALPHABET, SHORT_ID_LEN,
 } from '../src/workflow/short-id.js';
-import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from '../src/workflow/status.js';
+import { V2_TERMINAL_STATUSES, isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from '../src/workflow/status.js';
 import { deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import { deserializeV2ResultEnvelope } from '../src/workflow/v2-outcome.js';
 import { rollupRecord } from '../src/workflow/rollup.js';
@@ -814,4 +814,10 @@ test('the Runs table prints a real history row\u2019s active minutes, not its sp
   const old = day(stored).lines.filter((line) => line.includes('g6d6q2'));
   assert.match(old[0], /37h15m/);
   assert.doesNotMatch(old[0], /span/);
+});
+
+test('one terminal set: every v2 lifecycle end is terminal, and nothing else is', () => {
+  assert.deepEqual([...V2_TERMINAL_STATUSES].sort(), ['cancelled', 'completed', 'failed', 'partial']);
+  for (const status of V2_TERMINAL_STATUSES) assert.equal(isTerminalWorkflowStatus(status), true, status);
+  for (const status of ['running', 'waiting', 'paused', 'planning']) assert.equal(V2_TERMINAL_STATUSES.has(status), false, status);
 });

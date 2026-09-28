@@ -1,3 +1,4 @@
+import { V2_TERMINAL_STATUSES } from './status.js';
 import { clone } from '../lib/clone.js';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -22,7 +23,6 @@ const PLANNER_STATUSES = new Set(['pending', 'running', 'waiting', 'completed', 
 const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'removed']);
 const ATTEMPT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']);
 const LIFECYCLE_STATUSES = new Set(['interrupted', 'queued', 'planning', 'running', 'waiting', 'paused', 'ready-to-finalize', 'completed', 'partial', 'cancelled', 'failed']);
-const TERMINAL_LIFECYCLE = ['completed', 'partial', 'cancelled', 'failed'];
 const PREFLIGHT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'skipped']);
 const ACTION_STATE_FIELDS = new Set([
   'id', 'status', 'attempts', 'programRevision', 'workRevision', 'startedAt', 'finishedAt',
@@ -710,7 +710,7 @@ function validatePause(pause, lifecycle) {
   requiredString(pause.source, 'state.pause.source');
   timestamp(pause.pausedAt, 'state.pause.pausedAt');
   if (lifecycle.status === 'paused' && !pause.pausedAt) fail('state.lifecycle paused requires state.pause.pausedAt');
-  if (TERMINAL_LIFECYCLE.includes(lifecycle.status)) fail('state.pause must be null once the workflow is terminal');
+  if (V2_TERMINAL_STATUSES.has(lifecycle.status)) fail('state.pause must be null once the workflow is terminal');
 }
 
 // Optional: one record per processed revision request, applied or rejected.

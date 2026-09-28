@@ -19,6 +19,7 @@
 // The loop's own record never uses the keys `verify`, `repair`, `decision`,
 // `result` or `completion`: the state validator rejects those legacy names.
 
+import { V2_TERMINAL_STATUSES } from './status.js';
 import { clone } from '../lib/clone.js';
 import { formatMoney } from '../lib/usage-basis.js';
 import { FIX_ROUNDS_DEFAULT, VERIFY_ROUNDS_DEFAULT } from './action-validator.js';
@@ -871,8 +872,6 @@ function repairedReports(state, previous) {
 
 // --- Display ----------------------------------------------------------------
 
-const TERMINAL_LIFECYCLE = new Set(['completed', 'partial', 'cancelled', 'failed']);
-
 /**
  * The Run page phase name for a stage that is exactly one round's verify
  * steps (`verify · round 2 of 3 · 2 to re-check`) or one repair
@@ -906,7 +905,7 @@ export function loopStageLabel(state, stage) {
  */
 export function verifyRoundLabel(state) {
   const loop = loopOf(state);
-  if (!loop || TERMINAL_LIFECYCLE.has(state?.lifecycle?.status)) return null;
+  if (!loop || V2_TERMINAL_STATUSES.has(state?.lifecycle?.status)) return null;
   if (!loop.rounds.some((round) => round.repairActionId)) return null;
   const last = loop.rounds.at(-1);
   const toward = last.repairActionId ? last.round + 1 : last.round;
@@ -920,7 +919,7 @@ export function verifyRoundLabel(state) {
  */
 export function loopVerdictText(state) {
   const loop = loopOf(state);
-  if (!loop || !TERMINAL_LIFECYCLE.has(state?.lifecycle?.status)) return null;
+  if (!loop || !V2_TERMINAL_STATUSES.has(state?.lifecycle?.status)) return null;
   const requirements = Object.values(state?.ledger?.requirements ?? {}).filter((requirement) => requirement.mandatory);
   const verified = state.lifecycle.status === 'completed' && requirements.length > 0
     && requirements.every((requirement) => requirement.status === 'passed');

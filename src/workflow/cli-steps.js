@@ -17,6 +17,7 @@
 // or loop is finished, failed, blocked or waiting, then prints each one's
 // status, facts and checked answer. It changes nothing.
 
+import { V2_TERMINAL_STATUSES } from './status.js';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
@@ -35,8 +36,6 @@ import { acquireKernelLease } from './v2-process.js';
 import { reviseV2Program } from './run-control.js';
 import { deserializeV2DurableState, serializeV2DurableState } from './v2-state.js';
 import { formatDuration } from './watch-cli.js';
-
-const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 
 function readState(runDir) {
   return deserializeV2DurableState(readFileSync(join(runDir, 'state.json'), 'utf8'));
@@ -77,7 +76,7 @@ export async function continueV2Run({
   const id = state.shortId ?? state.runId;
   const refusal = continueRefusal(state, nodeId, rounds);
   if (refusal) return { code: /^--rounds/.test(refusal) ? 2 : 1, status: 'refused', why: refusal, ...base };
-  if (TERMINAL.has(state.lifecycle.status)) {
+  if (V2_TERMINAL_STATUSES.has(state.lifecycle.status)) {
     return { code: 1, status: 'refused', why: `the run is ${state.lifecycle.status}; start a new run or reopen it with bullswarm workflow resume ${id}`, ...base };
   }
   const intent = requestContinue(runDir, { nodeId, rounds, source: 'cli', now });
@@ -340,7 +339,7 @@ const STEP_SETTLED = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 're
 const NODE_SETTLED = new Set(['passed', 'waiting', 'blocked']);
 const UNSUCCESSFUL = new Set(['failed', 'blocked', 'cancelled', 'removed']);
 // A run in one of these states moves nothing by itself.
-const STOPPED = new Set([...TERMINAL, 'waiting', 'paused', 'interrupted']);
+const STOPPED = new Set([...V2_TERMINAL_STATUSES, 'waiting', 'paused', 'interrupted']);
 
 function currentAttempts(state, runtime) {
   return (state.attempts ?? [])

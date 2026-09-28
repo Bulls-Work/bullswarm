@@ -1,3 +1,4 @@
+import { V2_TERMINAL_STATUSES } from './status.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 import { reconcileActivity, scheduleReconcile } from './reconcile.js';
 import { spawnRetentionSweep } from '../lib/retention.js';
@@ -196,7 +197,6 @@ export function writeClipboard(text, { platform = process.platform, env = proces
   return { ok: false, tool: null, reason: tools.length ? `${tools.join(' and ')} failed` : 'no pbcopy, wl-copy or xclip on this machine' };
 }
 const SIDEBAR_WIDTH = 34;
-const V2_TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 /** A run directory that wrote one of these has finished; the index has it. */
 const FINISHED_MARKERS = Object.freeze(['rollup.json', 'result.json', 'report.json']);
 const stateStatus = (state) => state?.lifecycle?.status;
@@ -294,7 +294,7 @@ export function requestCancel(bullswarmDir, token, { source = 'api', requesterPi
   // A legacy run has no kernel to ask, so nothing is written and nothing is
   // claimed: the caller is told what it is and left alone.
   if (isLegacyRunState(state)) return { ...resolved, legacy: true, alreadyFinished: true };
-  if (V2_TERMINAL.has(state.lifecycle.status)) return { ...resolved, state, alreadyFinished: true };
+  if (V2_TERMINAL_STATUSES.has(state.lifecycle.status)) return { ...resolved, state, alreadyFinished: true };
   const requestedAt = new Date().toISOString();
   state.cancellation = {
     requested: true,

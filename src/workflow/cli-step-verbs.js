@@ -1,6 +1,7 @@
 // `bullswarm workflow step restart | rerun | accept`: the caller's answers to
 // one step that looks stale or failed.
 
+import { V2_TERMINAL_STATUSES } from './status.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRunId, isLegacyRunState, v2RunnerLiveness } from './short-id.js';
@@ -27,8 +28,6 @@ import { launchDetachedResume } from './cli-launch.js';
 // run's live kernel stops the step's running attempt and queues it again with
 // the stopped attempt's handoff block, on --pool when given.
 
-const TERMINAL_RUN_STATUSES = new Set(['completed', 'partial', 'cancelled', 'failed']);
-
 /**
  * Request a restart of one running step and wait up to waitMs for its kernel
  * to apply it. Resolves {code, status: restarted|refused|requested|error, ...};
@@ -49,7 +48,7 @@ export async function restartV2Step({
   const id = state.shortId ?? state.runId;
   const base = { runId: state.runId, shortId: state.shortId ?? null, step: stepId };
   const status = state.lifecycle?.status ?? 'unknown';
-  if (TERMINAL_RUN_STATUSES.has(status)) {
+  if (V2_TERMINAL_STATUSES.has(status)) {
     return fail(1, `run ${id} already finished (${status}); nothing is running. Retry its unfinished steps with: bullswarm workflow resume ${id}`, base);
   }
   if (!(state.program?.actions ?? []).some((action) => action.id === stepId)) {
