@@ -259,9 +259,22 @@ test('gate.waiting is emitted the moment the gate waits, while another branch st
   const surveyDone = events.find((event) => event.type === 'action.finished' && event.payload.actionId === 'survey').sequence;
   assert.ok(waitingAt < surveyDone, 'the gate waits before the other branch finishes');
   assert.equal(status(run, 'survey'), 'succeeded');
-  // --until trouble wakes on it.
+  // --until trouble wakes on it while the run is still running.
   assert.equal(watchTrouble({ type: 'gate.waiting' }), 'waiting');
   assert.equal(watchTrouble({ type: 'loop.out-of-rounds' }), 'waiting');
+  const running = structuredClone(run.state);
+  delete running.lifecycle.waitingFor;
+  running.lifecycle.status = 'running';
+  running.runner = { pid: process.pid, startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString() };
+  writeFileSync(join(run.runDir, 'state.json'), serializeV2DurableState(running));
+  let text = '';
+  const code = await runWorkflowWatch(f.bullswarmDir, run.shortId, {
+    until: 'trouble', afterSequence: 0, intervalMs: 10, stale: false, output: { write: (chunk) => { text += chunk; } },
+  });
+  assert.equal(code, 0);
+  assert.match(text, new RegExp(`gate approve waiting · Read the draft and decide · continue: bullswarm workflow continue ${run.shortId} approve`));
+  assert.match(text, new RegExp(`next: bullswarm workflow watch ${run.shortId} --until trouble --after \\d+`));
+  assert.doesNotMatch(text, /outcome: waiting/, 'woken by the event, not by the parked run');
 });
 
 test('a continue intent on disk is applied by the next kernel pass', async (t) => {
@@ -326,7 +339,7 @@ test('a loop out of rounds waits; continue --rounds gives it more; continue with
 test('an evidence-form until: a failed check reads "checked, not passed" and the next round starts', async (t) => {
   const f = fixture(t);
   const counter = join(f.root, 'check-count.txt');
-  const cmd = `node -e "const fs=require('fs');const p=${JSON.stringify(counter).replace(/"/g, '\\"')};const n=(fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0)+1;fs.writeFileSync(p,String(n));console.log('round '+n);process.exit(n>=2?0:1)"`;
+  const cmd = `"${process.execPath}" -e "const fs=require('fs');const p=${JSON.stringify(counter).replace(/"/g, '\\"')};const n=(fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0)+1;fs.writeFileSync(p,String(n));console.log('round '+n);process.exit(n>=2?0:1)"`;
   const program = loopProgram({ until: { step: 'check', evidence: 'passed' }, check: { answer: undefined, evidence: [{ type: 'command', cmd }] } });
   delete program.steps[1].answer;
   const seen = [];
@@ -400,6 +413,30 @@ test('workflow continue refuses what it cannot move, and applies a waiting node 
   out = call(token, 'approve');
   assert.equal(out.status, 1);
   assert.match(out.stderr, /gate approve is passed; only a waiting gate or an out-of-rounds loop can be continued/);
+});
+
+test('a parked run can be cancelled (finalized at once) or paused (it parks again on resume)', async (t) => {
+  const f = fixture(t);
+  const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
+  delete env.BULLSWARM_DEPTH;
+  const call = (...args) => spawnSync(process.execPath, [cli, 'workflow', ...args], { encoding: 'utf8', env });
+  const paused = await launch(f, gateProgram(), fakeDispatch());
+  let out = call('pause', paused.shortId, '--json');
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  let state = JSON.parse(readFileSync(join(paused.runDir, 'state.json'), 'utf8'));
+  assert.deepEqual([state.lifecycle.status, state.lifecycle.waitingFor], ['paused', undefined]);
+  rmSync(join(paused.runDir, 'pause.json'));
+  const again = await resume(f, paused.runId, fakeDispatch());
+  assert.deepEqual(again.waiting.map((entry) => entry.id), ['approve']);
+
+  const cancelled = await launch(f, gateProgram(), fakeDispatch());
+  out = call('cancel', cancelled.shortId, '--json');
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.equal(JSON.parse(out.stdout).finalized, true);
+  state = JSON.parse(readFileSync(join(cancelled.runDir, 'state.json'), 'utf8'));
+  assert.equal(state.lifecycle.status, 'cancelled');
+  assert.equal(state.lifecycle.waitingFor, undefined);
+  assert.equal(state.actions.find((action) => action.id === 'publish').status, 'cancelled');
 });
 
 // --- the caller's surfaces ------------------------------------------------------
