@@ -6,6 +6,7 @@ import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { PROGRAM_V3_SCHEMA_VERSION, validateStoredProgramV3 } from './program-v3.js';
 import { writeJsonAtomic } from '../lib/fsjson.js';
+import { VERIFY_LOOP_STOPS } from './verify-rounds.js';
 
 export const V2_GOAL_SCHEMA_VERSION = 'bullswarm.workflow.goal.v2';
 export const V2_STATE_SCHEMA_VERSION = 'bullswarm.workflow.state.v2';
@@ -80,7 +81,7 @@ const ATTEMPT_FIELDS = new Set([
   // and on every attempt recorded before measured usage capture existed.
   'session',
   // What the provider reported the moment the worker exited, written once and
-  // never changed (src/lib/watch.js `attemptCapture`). Absent on attempts
+  // never changed (src/lib/attempt-usage.js `captureAtExit`). Absent on attempts
   // recorded before 0.35.2 and on attempts whose worker never exited.
   'capture',
   // The soft time box written into this attempt's task (time-box.js), and the
@@ -128,7 +129,7 @@ const VERIFY_ROUND_FIELDS = new Set([
   'repairActionId', 'repairRequirements', 'repairOwnedFiles', 'repairUnrestricted', 'repairStartedAt',
   'repairFinishedAt', 'changedFiles',
 ]);
-const VERIFY_LOOP_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed', 'act-step']);
+const VERIFY_LOOP_STOP_SET = new Set(VERIFY_LOOP_STOPS);
 const ATTEMPT_SESSION_FIELDS = new Set([
   'pool', 'model', 'sessionId', 'generation', 'startedAt', 'lastUsedAt',
 ]);
@@ -1134,7 +1135,7 @@ function validateVerifyLoop(loop, state) {
   noUnknown(loop, VERIFY_LOOP_FIELDS, 'state.verifyLoop');
   if (!isProgramWorkflow(state)) fail('state.verifyLoop requires a program workflow');
   if (!Number.isInteger(loop.max) || loop.max < 1 || loop.max > 4) fail('state.verifyLoop.max must be 1 to 4');
-  if (loop.stoppedBy !== null && !VERIFY_LOOP_STOPS.has(loop.stoppedBy)) fail('state.verifyLoop.stoppedBy must be null|passed|rounds|revision|step-failed|act-step');
+  if (loop.stoppedBy !== null && !VERIFY_LOOP_STOP_SET.has(loop.stoppedBy)) fail('state.verifyLoop.stoppedBy must be null|passed|rounds|revision|step-failed|act-step');
   if (!Array.isArray(loop.rounds)) fail('state.verifyLoop.rounds must be an array');
   if (loop.rounds.length > 4) fail('state.verifyLoop.rounds must hold at most four rounds');
   const requirementIds = new Set(state.intent.requirements.map((requirement) => requirement.id));

@@ -6,7 +6,8 @@ import { basename, dirname, join } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
-import { preferredUsage, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { preferredUsage } from '../src/workflow/usage-preference.js';
 import { reopenV2RunForRetry, reviseV2Program } from '../src/workflow/run-control.js';
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { GATE_RETRY_HANDOFF_LINE, handoffBlock } from '../src/workflow/retry-handoff.js';
@@ -16,9 +17,12 @@ import { needsYouFacts } from '../src/workflow/needs-you.js';
 import { summarizeV2Result, v2LimitStoppedDispatch } from '../src/workflow/v2-outcome.js';
 import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
-import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
+import { STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { readGoalProject } from '../src/workflow/goal.js';
 import { readRollup, readRollupIndex, readRollups, rollupIndexPath } from '../src/workflow/rollup.js';
+
+// What a stage-2 launch wrote to features.json (E23); saved runs keep it.
+const STAGE2_RUN_FEATURES = Object.freeze({ deliverableGate: 1, proofLabels: 1 });
 
 const requirement = { id: 'report-correct', text: 'report.md exists and contains READY' };
 const programResponse = () => ({
@@ -983,7 +987,6 @@ test('the state schema accepts a capture only in its documented shape', async ()
   assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { guessedUsd: 1 }))), /guessedUsd/);
   assert.throws(() => deserializeV2DurableState(withCapture(captureBlock('x', { providerCostUsd: -1 }))), /must not be negative/);
 });
-
 
 // --- Stage 3: the failure rule's kernel side (marker, placement, route,
 // no free pool, retry facts, who reviewed). Fake dispatches drive the options

@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { applyEvidence } from '../src/workflow/ledger.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import {
-  createV2ResultEnvelope, deserializeV2ResultEnvelope, serializeV2ResultEnvelope, summarizeV2Result,
+  createV2ResultEnvelope, deserializeV2ResultEnvelope, summarizeV2Result, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
 import { runTimelineFacts } from '../src/workflow/run-model.js';
 import { deriveV2DependencyStages } from '../src/workflow/v2-presentation.js';
@@ -68,7 +68,7 @@ test('actionRoleLabel reads kind, then role, then the existing fallbacks', () =>
 test('the envelope and the summary rows carry role only for role steps', () => {
   const state = roleState();
   const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
   const byId = Object.fromEntries(result.actions.map((action) => [action.id, action]));
   assert.equal(byId['draft-note'].role, 'produce');
   assert.equal(byId['send-note'].role, 'act');
@@ -91,7 +91,7 @@ test('the envelope and the summary rows carry role only for role steps', () => {
 
   const bad = structuredClone(result);
   bad.actions[0].role = '';
-  assert.throws(() => serializeV2ResultEnvelope(bad), /actions\[0\]\.role must be a non-empty string/);
+  assert.throws(() => validateV2ResultEnvelope(bad), /actions\[0\]\.role must be a non-empty string/);
 });
 
 test('verifyRounds accepts act-step as a stop reason', () => {
@@ -102,8 +102,8 @@ test('verifyRounds accepts act-step as a stop reason', () => {
     verifyRounds: { max: 3, used: 1, stoppedBy: 'act-step', phases: [] },
     callerDecision: null,
   };
-  assert.throws(() => serializeV2ResultEnvelope({ ...withLoop, verifyRounds: { ...withLoop.verifyRounds, stoppedBy: 'acme' } }), /verifyRounds\.stoppedBy is invalid/);
-  assert.doesNotThrow(() => serializeV2ResultEnvelope(withLoop));
+  assert.throws(() => validateV2ResultEnvelope({ ...withLoop, verifyRounds: { ...withLoop.verifyRounds, stoppedBy: 'acme' } }), /verifyRounds\.stoppedBy is invalid/);
+  assert.doesNotThrow(() => validateV2ResultEnvelope(withLoop));
 });
 
 test('runs show prints "role act" beside a role step and nothing new beside a kind step', (t) => {

@@ -16,9 +16,11 @@ import { pauseV2Run, unpauseV2Run } from '../src/workflow/run-control.js';
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { handoffBlock } from '../src/workflow/retry-handoff.js';
 import { dispatchV2Action, requestStepRestart } from '../src/workflow/v2-dispatch.js';
-import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES, readRunFeatures } from '../src/workflow/run-features.js';
-import { formatV2ProofLabel, v2RetryPlan } from '../src/workflow/v2-outcome.js';
+import { STAGE3_RUN_FEATURES, readRunFeatures } from '../src/workflow/run-features.js';import { formatV2ProofLabel, v2RetryPlan } from '../src/workflow/v2-outcome.js';
 import { staleScore } from '../src/lib/stale.js';
+
+// What a stage-2 launch wrote to features.json (E23); saved runs keep it.
+const STAGE2_RUN_FEATURES = Object.freeze({ deliverableGate: 1, proofLabels: 1 });
 
 const REQUIREMENT = { id: 'deliver', text: 'Deliver the requested files and validate them.' };
 

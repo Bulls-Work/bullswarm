@@ -1566,11 +1566,6 @@ function validateResultCallerDecision(value) {
   });
 }
 
-export function serializeV2ResultEnvelope(result) {
-  validateV2ResultEnvelope(result);
-  return JSON.stringify(result);
-}
-
 export function deserializeV2ResultEnvelope(serialized) {
   if (typeof serialized !== 'string') throw new TypeError('Invalid V2 result envelope: serialized result must be a string');
   let result;

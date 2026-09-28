@@ -14,9 +14,17 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_STALE_THRESHOLDS, actionWrites, attemptStreamPath, createStaleProbe, createStreamFactsReader,
-  emptyStreamFacts, foldStreamRecord, ownedFilesChangedAt, staleScore, streamFacts,
+  emptyStreamFacts, foldStreamRecord, ownedFilesChangedAt, staleScore,
 } from '../src/lib/stale.js';
 import { EVIDENCE_HEARTBEAT_MS } from '../src/workflow/evidence-runner.js';
+
+// Stream facts for a complete list of records, folded the way the live reader
+// folds them one at a time.
+function streamFacts(records, thresholds = DEFAULT_STALE_THRESHOLDS) {
+  const facts = emptyStreamFacts();
+  for (const record of records ?? []) foldStreamRecord(facts, record, thresholds);
+  return facts;
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = join(ROOT, 'tests', 'fixtures', 'home-351', 'workflows');

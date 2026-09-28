@@ -60,14 +60,11 @@ const CAPTURE_TOKEN_FIELDS = [
  * reported counters; a stream with no counters is `unknown`, never an
  * estimate. The session id is the provider's own when the stream carries
  * one, else the id Bullswarm handed the CLI on its command line.
+ *
+ * Returned with it, when the provider reported counters, is the canonical
+ * usage envelope priced from them (the same record watchOnce ends with, minus
+ * the meter-side subscription block that needs the end snapshot).
  */
-export function attemptCapture(connector, exit = {}, options = {}) {
-  return captureAtExit(connector, exit, options).capture;
-}
-
-// The capture plus, when the provider reported counters, the canonical usage
-// envelope priced from them (the same record watchOnce ends with, minus the
-// meter-side subscription block that needs the end snapshot).
 export function captureAtExit(connector, exit = {}, {
   model = null, conversation = null, at = new Date().toISOString(),
 } = {}) {

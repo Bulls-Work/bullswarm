@@ -17,7 +17,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
 import { watchOnce } from '../src/lib/watch.js';
-import { attemptCapture } from '../src/lib/attempt-usage.js';
+import { captureAtExit } from '../src/lib/attempt-usage.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CAPTURE = join(REPO_ROOT, 'tests/fixtures/stream/grok-capture.jsonl');
@@ -66,11 +66,11 @@ test('grok input excludes cache reads and output includes reasoning, as observed
 
 test('the capture block carries what grok reported and its token total equals the provider total', () => {
   const connector = grok();
-  const capture = attemptCapture(connector, { exitCode: 0, signal: null, reportedUsage: decode(CAPTURE) }, {
+  const capture = captureAtExit(connector, { exitCode: 0, signal: null, reportedUsage: decode(CAPTURE) }, {
     model: 'grok-4.6',
     conversation: { sessionId: 'e234e1cf-0e09-410a-b3dd-b47698e29c62', resume: false },
     at: '2026-09-21T05:40:00.000Z',
-  });
+  }).capture;
   assert.deepEqual(capture, {
     capturedAt: '2026-09-21T05:40:00.000Z',
     source: 'event-stream',
@@ -97,7 +97,7 @@ test('the capture block carries what grok reported and its token total equals th
 });
 
 test('the older grok fixture decodes the same way', () => {
-  const capture = attemptCapture(grok(), { exitCode: 0, reportedUsage: decode(OLDER) }, { model: 'grok-4.6' });
+  const capture = captureAtExit(grok(), { exitCode: 0, reportedUsage: decode(OLDER) }, { model: 'grok-4.6' }).capture;
   assert.equal(capture.providerSessionId, '01a0bab7-596a-73d2-9a39-979da77755b8');
   assert.equal(capture.providerCostUsd, 0.03546948);
   assert.deepEqual(

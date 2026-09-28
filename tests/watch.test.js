@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { watchOnce } from '../src/lib/watch.js';
 import { runDelegate } from '../src/lib/run-delegate.js';
 import { artifactBesideTask } from '../src/lib/attempt-stream.js';
-import { attemptCapture } from '../src/lib/attempt-usage.js';
+import { captureAtExit } from '../src/lib/attempt-usage.js';
 import { argvWithModel } from '../src/lib/worker-argv.js';
 import { BoundedCapture } from '../src/lib/bounded-capture.js';
 import { providerErrorRecords } from '../src/lib/provider-errors.js';
@@ -1425,20 +1425,20 @@ test('a capture carries provider counters, provider cost and the provider sessio
 test('a capture names the session id Bullswarm handed the CLI only when the argv carried it', () => {
   const connector = { name: 'fixture', eventStream: { format: 'jsonl' }, conversation: { newArgs: ['--session-id', '{sessionId}'] } };
   const conversation = { sessionId: 'assigned-1', resume: false };
-  const handed = attemptCapture(connector, { exitCode: 1, signal: null, reportedUsage: null }, { conversation, at: '2026-09-21T00:00:00.000Z' });
+  const handed = captureAtExit(connector, { exitCode: 1, signal: null, reportedUsage: null }, { conversation, at: '2026-09-21T00:00:00.000Z' }).capture;
   assert.equal(handed.providerSessionId, 'assigned-1');
   assert.equal(handed.sessionSource, 'bullswarm-assigned');
   assert.equal(handed.exitCode, 1);
-  const notHanded = attemptCapture({ ...connector, conversation: { followUp: { cmd: ['x', '{sessionId}'] } } }, { exitCode: 0 }, { conversation });
+  const notHanded = captureAtExit({ ...connector, conversation: { followUp: { cmd: ['x', '{sessionId}'] } } }, { exitCode: 0 }, { conversation }).capture;
   assert.equal(notHanded.providerSessionId, null);
   assert.equal(notHanded.sessionSource, null);
   // A stream that reported only its session id reported no counters.
-  const idOnly = attemptCapture(connector, { exitCode: 0, reportedUsage: { sessionId: 'provider-1' } }, { conversation });
+  const idOnly = captureAtExit(connector, { exitCode: 0, reportedUsage: { sessionId: 'provider-1' } }, { conversation }).capture;
   assert.equal(idOnly.providerSessionId, 'provider-1');
   assert.equal(idOnly.tokenSource, 'unknown');
   assert.equal(idOnly.tokens, null);
   // A killed worker reports its signal and no exit code.
-  const killed = attemptCapture(connector, { exitCode: null, signal: 'SIGTERM' }, {});
+  const killed = captureAtExit(connector, { exitCode: null, signal: 'SIGTERM' }, {}).capture;
   assert.deepEqual([killed.exitCode, killed.signal, killed.source], [null, 'SIGTERM', 'event-stream']);
 });
 

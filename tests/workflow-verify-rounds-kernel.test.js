@@ -20,8 +20,10 @@ import { repairInheritedPaths } from '../src/workflow/verify-rounds.js';
 import { formatV2HandbackLines, summarizeV2Result } from '../src/workflow/v2-outcome.js';
 import { initialWatchMemory, notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 import { clearTimeBoxHistoryCache } from '../src/workflow/time-box.js';
-import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
-import { createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, queueRevisionRequest } from '../src/workflow/v2-revision.js';
+import { STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';import { createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, queueRevisionRequest } from '../src/workflow/v2-revision.js';
+
+// What a stage-2 launch wrote to features.json (E23); saved runs keep it.
+const STAGE2_RUN_FEATURES = Object.freeze({ deliverableGate: 1, proofLabels: 1 });
 
 const connector = (name) => ({
   name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
@@ -648,7 +650,6 @@ test('a repair of an ignored data path inherits that path and the rewrite counts
   assert.ok(attempt.changedFiles.includes('out/summary.json'));
   assert.deepEqual(loop.rounds[0].changedFiles, ['out/summary.json']);
 });
-
 
 // --- Stage 3, marked runs (D12, D13, D19, D33) ------------------------------
 

@@ -203,13 +203,6 @@ export function foldStreamText(facts, text, thresholds = DEFAULT_STALE_THRESHOLD
   return facts;
 }
 
-/** Stream facts for a complete list of records (tests, one-shot readers). */
-export function streamFacts(records, thresholds = DEFAULT_STALE_THRESHOLDS) {
-  const facts = emptyStreamFacts();
-  for (const record of records ?? []) foldStreamRecord(facts, record, thresholds);
-  return facts;
-}
-
 function statOrNull(path) {
   try { return statSync(path); } catch { return null; }
 }
@@ -365,7 +358,7 @@ export function actionWrites(action) {
  *   attempt           the durable attempt record (startedAt, lastActivityAt,
  *                     lastEventAt, routing.forecast.expectedMinutes, and the
  *                     running-checks note in `notes`)
- *   facts             streamFacts()/reader output, or null with no event stream
+ *   facts             the stream facts reader's output, or null with no event stream
  *   fileChangedAt     latest mtime of the step's owned files, or, when it owns
  *                     none, of the git-changed files in its workspace; null
  *                     when that check cannot be read

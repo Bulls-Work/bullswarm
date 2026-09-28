@@ -7,7 +7,7 @@ import { applyEvidence } from '../src/workflow/ledger.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import {
   V2_RETRYABLE_FAILURE_KINDS, consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope,
-  evaluateV2Progress, formatV2HandbackLines, serializeV2ResultEnvelope, summarizeV2Result, v2LimitStoppedDispatch, v2RetryPlan, validateV2ResultEnvelope,
+  evaluateV2Progress, formatV2HandbackLines, summarizeV2Result, v2LimitStoppedDispatch, v2RetryPlan, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
 import { evidenceFailureWhy } from '../src/workflow/evidence-runner.js';
 
@@ -67,7 +67,7 @@ test('kernel alone derives verified completion from fresh requirement evidence',
   assert.equal(result.status, 'completed');
   assert.equal(result.verified, true);
   assert.equal(result.requirements[0].status, 'passed');
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
 });
 
 test('result validation rejects malformed nested requirements, actions, gaps, and usage', () => {
@@ -81,10 +81,10 @@ test('result validation rejects malformed nested requirements, actions, gaps, an
   }, { requirements: { 'report-correct': { status: 'passed', evidence: ['report matches'], concerns: [] } } });
   const valid = createV2ResultEnvelope(state, { finishedAt: '2026-08-31T01:10:00Z' });
   const mutate = (fn) => { const value = structuredClone(valid); fn(value); return value; };
-  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.requirements[0] = {}; })), /requirements\[0\]\.id/);
-  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.actions[0].status = 'mystery'; })), /actions\[0\]\.status/);
-  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.usage.total = -1; })), /usage\.total/);
-  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => {
+  assert.throws(() => validateV2ResultEnvelope(mutate((value) => { value.requirements[0] = {}; })), /requirements\[0\]\.id/);
+  assert.throws(() => validateV2ResultEnvelope(mutate((value) => { value.actions[0].status = 'mystery'; })), /actions\[0\]\.status/);
+  assert.throws(() => validateV2ResultEnvelope(mutate((value) => { value.usage.total = -1; })), /usage\.total/);
+  assert.throws(() => validateV2ResultEnvelope(mutate((value) => {
     value.requirements[0].evidence[0].mechanicalFailure = { unexpected: [] };
   })), /mechanicalFailure\.unexpected is not allowed/);
 
@@ -95,10 +95,10 @@ test('result validation rejects malformed nested requirements, actions, gaps, an
   ];
   const partial = createV2ResultEnvelope(partialState, { plannerExhausted: true, finishedAt: '2026-08-31T01:10:00Z' });
   partial.gaps.actions[0].failure = { unexpected: [] };
-  assert.throws(() => serializeV2ResultEnvelope(partial), /failure\.unexpected is not allowed/);
+  assert.throws(() => validateV2ResultEnvelope(partial), /failure\.unexpected is not allowed/);
   partial.gaps.actions[0].failure = { kind: 'semantic' };
   partial.gaps = { schemaVersion: 'bullswarm.workflow.gaps.v2' };
-  assert.throws(() => serializeV2ResultEnvelope(partial), /gaps\.intentId/);
+  assert.throws(() => validateV2ResultEnvelope(partial), /gaps\.intentId/);
 });
 
 test('partial result preserves useful delivery and explicit unresolved evidence', () => {
@@ -164,7 +164,7 @@ test('result envelope carries the reasoning level of each action\'s last attempt
   assert.equal(result.actions[1].reasoning, null);
   assert.equal(result.actions[1].routeWhy, null);
   assert.equal(result.actions[1].routeCandidates, null);
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
 
   // Envelopes written before reasoning levels existed still deserialize.
   const legacy = structuredClone(result);
@@ -176,7 +176,7 @@ test('result envelope carries the reasoning level of each action\'s last attempt
   assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(preroute)).actions.map((action) => action.id), ['write-report', 'check-report']);
   const broken = structuredClone(result);
   broken.actions[0].reasoning = 'high';
-  assert.throws(() => serializeV2ResultEnvelope(broken), /actions\[0\]\.reasoning must be an object/);
+  assert.throws(() => validateV2ResultEnvelope(broken), /actions\[0\]\.reasoning must be an object/);
 });
 
 test('the result envelope carries each action\'s kind, and envelopes written before kinds still deserialize', () => {
@@ -196,7 +196,7 @@ test('the result envelope carries each action\'s kind, and envelopes written bef
   assert.equal(result.actions[0].kind, 'implement');
   // An action without a kind reports null rather than a guessed one.
   assert.equal(result.actions[1].kind, null);
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
 
   const legacy = structuredClone(result);
   for (const action of legacy.actions) delete action.kind;
@@ -206,7 +206,7 @@ test('the result envelope carries each action\'s kind, and envelopes written bef
   );
   const broken = structuredClone(result);
   broken.actions[0].kind = { name: 'implement' };
-  assert.throws(() => serializeV2ResultEnvelope(broken), /actions\[0\]\.kind must be a non-empty string/);
+  assert.throws(() => validateV2ResultEnvelope(broken), /actions\[0\]\.kind must be a non-empty string/);
 });
 
 test('result envelope carries last-attempt bytes and usage totals; missing values stay null', () => {
@@ -244,7 +244,7 @@ test('result envelope carries last-attempt bytes and usage totals; missing value
     taskFile: 300, authorPrompt: 80, kernel: 170, dependencyInputs: 50, output: 20,
   });
   assert.deepEqual(result.usage.bytes, { taskFiles: 600, dependencyInputs: 50, outputs: 80 });
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
 
   const empty = plannedState();
   empty.actions = [
@@ -300,7 +300,7 @@ test('evidenceResults: only steps that declare evidence carry the key; null when
   const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
   assert.equal(result.actions[0].evidenceResults, null);
   assert.equal(Object.hasOwn(result.actions[1], 'evidenceResults'), false, 'a step without evidence keeps the older shape');
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
 
   // The exact-field validator accepts results and refuses malformed ones.
   const withResults = structuredClone(result);
@@ -337,7 +337,7 @@ test('the envelope carries the latest attempt\'s evidenceResults', () => {
   });
   const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z' });
   assert.deepEqual(result.actions[0].evidenceResults, [passed]);
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
 });
 
 test('F17: a failed-evidence reason longer than the handback keeps its suffix; the middle is cut instead', () => {
@@ -460,7 +460,7 @@ test('an accepted step reports its acceptance, the reason names it, and the fiel
   assert.equal(Object.hasOwn(result.actions[1], 'acceptance'), false, 'a step nobody accepted keeps the older shape');
   assert.match(result.reason, / · 1 step accepted by choice$/);
   assert.equal(result.verified, false, 'a choice is not proof');
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
   const bad = (mutate) => { const value = structuredClone(result); mutate(value.actions[0].acceptance); return value; };
   assert.throws(() => validateV2ResultEnvelope(bad((value) => { value.revision = 3; })), /actions\[0\]\.acceptance\.revision is not allowed/);
   assert.throws(() => validateV2ResultEnvelope(bad((value) => { value.evidence = 'command'; })), /acceptance\.evidence must be choice/);
@@ -484,7 +484,7 @@ test('an accepted requirement reports who accepted it while its work revision ho
   assert.equal(result.requirements[0].status, 'failed', 'the requirement is still failing');
   assert.deepEqual(result.actions[1].acceptance.requirements, [{ id: 'widget-works', workRevision }]);
   assert.doesNotMatch(result.reason, /accepted by choice/, 'a requirement acceptance accepts no step');
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
   const extra = structuredClone(result);
   extra.requirements[0].accepted.revision = 4;
   assert.throws(() => validateV2ResultEnvelope(extra), /requirements\[0\]\.accepted\.revision is not allowed/);
@@ -537,7 +537,7 @@ test('a marked run hands back each failed step\'s retries and the rerun and acce
   const state = failed();
   const result = createV2ResultEnvelope(state, { finishedAt: '2026-09-24T01:10:00Z', features: STAGE3 });
   assert.equal(result.handback.unfinished[0].retries, 1);
-  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(result)), result);
   const summary = summarizeV2Result(result, state, { runDir: '/tmp/acme-run', features: STAGE3 });
   assert.equal(summary.handback.unfinished[0].retries, 1);
   assert.equal(summary.handback.options.rerun, 'bullswarm workflow step rerun evd234 build [--avoid <pool>] (runs it again with its last attempt\'s handoff)');

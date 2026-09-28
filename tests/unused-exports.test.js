@@ -35,19 +35,6 @@ const TEST_SEAMS = {
   'src/workflow/v2-state.js': ['createV2State'], // the tests' name for createV2DurableState
 };
 
-// Dead or test-only exports the 2026-09 dead-code pass left, because removing
-// each one edits a file or a test outside that pass. Delete the export (and a
-// test that only covers it), then its line here: the third test fails while a
-// line names something that no longer needs it.
-const NOT_YET_REMOVED = {
-  'src/lib/attempt-usage.js': ['attemptCapture'],
-  'src/lib/stale.js': ['streamFacts'],
-  'src/workflow/run-features.js': ['STAGE2_RUN_FEATURES'],
-  'src/workflow/v2-outcome.js': ['serializeV2ResultEnvelope'],
-  'src/workflow/v2-runtime.js': ['preferredUsage'],
-  'src/workflow/verify-rounds.js': ['VERIFY_LOOP_STOPS'],
-};
-
 const WORD = /[A-Za-z0-9_$]/;
 const REGEX_AFTER_WORDS = new Set(['return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void', 'throw', 'else', 'yield', 'await', 'instanceof', 'do']);
 
@@ -237,7 +224,7 @@ function productSources() {
 function allowed(key) {
   const [file, name] = key.split('#');
   if (ENTRY_POINTS.some((entry) => entry.file.test(file) && (entry.names === '*' || entry.names.includes(name)))) return true;
-  return Boolean(TEST_SEAMS[file]?.includes(name) || NOT_YET_REMOVED[file]?.includes(name));
+  return Boolean(TEST_SEAMS[file]?.includes(name));
 }
 
 const listed = (lists) => lists.flatMap((list) => Object.entries(list)
@@ -283,6 +270,6 @@ test('every src export has a user outside the tests, or is named on the allow-li
 
 test('every name on the allow-list still needs its line', () => {
   const unused = new Set(unusedExports(productSources()));
-  const stale = listed([TEST_SEAMS, NOT_YET_REMOVED]).filter((key) => !unused.has(key));
+  const stale = listed([TEST_SEAMS]).filter((key) => !unused.has(key));
   assert.deepEqual(stale, [], `remove these lines from tests/unused-exports.test.js:\n${stale.map((key) => `  ${key}`).join('\n')}`);
 });

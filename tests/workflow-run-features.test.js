@@ -4,8 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  RUN_FEATURES_FILE, STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES, readRunFeatures, runFeatureFlags, runFeaturesPath, writeRunFeatures,
+  RUN_FEATURES_FILE, STAGE3_RUN_FEATURES, readRunFeatures, runFeatureFlags, runFeaturesPath, writeRunFeatures,
 } from '../src/workflow/run-features.js';
+
+// What a stage-2 launch wrote to features.json (E23); saved runs keep it.
+const STAGE2_RUN_FEATURES = Object.freeze({ deliverableGate: 1, proofLabels: 1 });
 
 function runDir(t) {
   const dir = mkdtempSync(join(tmpdir(), 'acme-features-'));
@@ -41,7 +44,6 @@ test('the stored object comes back unchanged, with no defaults filled', (t) => {
 
 test('writeRunFeatures writes the stage-2 marker atomically as JSON', (t) => {
   const dir = runDir(t);
-  assert.deepEqual(STAGE2_RUN_FEATURES, { deliverableGate: 1, proofLabels: 1 });
   writeRunFeatures(dir, { ...STAGE2_RUN_FEATURES });
   assert.equal(runFeaturesPath(dir), join(dir, 'features.json'));
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1 });
@@ -57,7 +59,6 @@ test('runFeatureFlags reads the four marker shapes of the stage-3 compatibility 
   assert.deepEqual(runFeatureFlags({ deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' }), {
     deliverableGate: true, proofLabels: true, failureRule: true, reviewPlacement: 'caller',
   }, 'stage 3');
-  assert.deepEqual(runFeatureFlags(STAGE2_RUN_FEATURES), runFeatureFlags({ deliverableGate: 1, proofLabels: 1 }));
 });
 
 test('runFeatureFlags: a missing file reads as {}, unknown keys are ignored, and only exact values count', (t) => {

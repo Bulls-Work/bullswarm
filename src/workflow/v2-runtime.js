@@ -72,7 +72,6 @@ import { actStoppedDuringChecksWhy, clearEvidenceRunning, reconcileResume } from
 import { acceptCallerPlannerResponse } from './caller-planner.js';
 import { clearRejectedRerunIntent } from './run-control.js';
 import { earlierWorkFor } from './earlier-work.js';
-export { preferredUsage } from './usage-preference.js';
 
 const ACTIVE_RUNS = new Set();
 const DEFAULTS = Object.freeze({

@@ -11,9 +11,6 @@ import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
 
 export const RUN_FEATURES_FILE = 'features.json';
 
-// What a stage-2 launch writes (E23).
-export const STAGE2_RUN_FEATURES = Object.freeze({ deliverableGate: 1, proofLabels: 1 });
-
 // What a stage-3 launch writes (D28): stage 2's keys plus the failure rule and
 // caller-placed reviews. A missing key means the older rule.
 export const STAGE3_RUN_FEATURES = Object.freeze({
