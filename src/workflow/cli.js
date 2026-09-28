@@ -19,7 +19,7 @@ import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
 import { implicitV3Requirements, isProgramV3, programV3Facts, stepV3Facts } from './program-v3.js';
 import { parkedFailures, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
-import { wfContinue } from './cli-steps.js';
+import { wfAdd, wfContinue, wfWait } from './cli-steps.js';
 import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
@@ -175,6 +175,10 @@ export async function cmdWorkflow(args, {
       return wfStep(opts);
     case 'continue':
       return wfContinue(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume });
+    case 'add':
+      return wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => (programRoutes(actions) ? routePoolIssues(actions, configuredPools(), doc, undefined, state) : []) });
+    case 'wait':
+      return wfWait(opts, { bullswarmDir, helpText, flagErrors });
     default: {
       // Smart error: if the user typed a `runs` subcommand directly
       // under `workflow` (e.g. `workflow show jd3uki`), point them at
@@ -2496,7 +2500,7 @@ function workflowHelpPath(sub, opts) {
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
   if (sub === 'task') return opts.rest[0] === 'show' ? ['workflow', 'task', 'show'] : ['workflow', 'task'];
   if (sub === 'step') return ['restart', 'rerun', 'accept'].includes(opts.rest[0]) ? ['workflow', 'step', opts.rest[0]] : ['workflow', 'step'];
-  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice', 'continue'];
+  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice', 'continue', 'add', 'wait'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;
 }
 
@@ -2509,7 +2513,7 @@ function parseFlags(argv) {
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
     'out', 'rerun', 'base-revision', 'wait', 'width', 'height', 'until', 'pool',
-    'avoid', 'requirement', 'rounds',
+    'avoid', 'requirement', 'rounds', 'steps', 'from-answer', 'timeout',
   ]);
   // Repeatable value flags collect every value (step rerun --avoid, step
   // accept --requirement).

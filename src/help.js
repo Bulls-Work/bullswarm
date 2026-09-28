@@ -929,6 +929,8 @@ const workflowText = rich({
     { name: 'step rerun <runId> <step>', desc: 'run a failed or finished step again with its last attempt\'s handoff; --avoid keeps it off pools and stays in the step\'s route' },
     { name: 'step accept <runId> <step>', desc: 'accept a failed step, or a check\'s failing requirements, by your choice (--reason); dependents run; recorded as evidence "choice", never proof' },
     { name: 'continue <runId> <id>', desc: 'pass a v3 gate that waits for you, or give a loop out of rounds more rounds (--rounds); relaunches the kernel when none is running' },
+    { name: 'add <runId>', desc: 'append steps, gates or loops to a v3 run (--steps <file.json> or --from-answer <step>); never changes what the run has; reopens a finished run' },
+    { name: 'wait <runId> <id...>', desc: 'block until the named v3 steps, gates or loops finish, fail, block or wait; print their facts and checked answers' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
@@ -1706,6 +1708,63 @@ const workflowContinueText = rich({
   next: 'bullswarm workflow watch <runId> --until trouble to follow what runs next.',
 });
 
+const workflowAddText = rich({
+  usage: 'bullswarm workflow add <runId> (--steps <file.json> | --from-answer <step>) [--summary <text>] [--wait <seconds>] [--json]',
+  purpose: 'Append to a v3 run. The fragment is a JSON object {steps, gates?, loops?} written like the same '
+    + 'lists of a v3 program; its items may name the run\'s existing steps, gates and loops in dependsOn and '
+    + 'route.independentOf (a step it must be independent of has to run before it, so depend on it too). '
+    + 'Nothing the run has changes: an id the run already has, a new loop around an existing step, or any '
+    + 'change to an existing step is refused. A running run takes the addition at its next check; a parked '
+    + 'or finished run takes it here, reopens, and its kernel is relaunched. --from-answer reads a step\'s '
+    + 'current checked answer as the fragment (preview it with workflow wait first). Built-in defaults '
+    + 'apply to the added steps (lane analyze, retry 1): set lane, effort and retry on each step.',
+  args: [
+    { name: '<runId>', desc: 'shortId or runId of a v3 program run' },
+  ],
+  options: [
+    { flag: '--steps <file.json>', desc: 'the fragment to append' },
+    { flag: '--from-answer <step>', desc: 'append the fragment that step\'s checked answer holds' },
+    { flag: '--summary <text>', desc: 'the revision summary', default: '"add <ids>"' },
+    { flag: '--wait <seconds>', desc: 'how long to wait for a running kernel to apply the addition before reporting it queued', default: '120' },
+    { flag: '--json', desc: 'print {action: "workflow-add", status, steps, control, programRevision, appliedBy, relaunch, next}', default: 'human text' },
+  ],
+  safety: [
+    'append-only: refused (exit 2, run unchanged) when the fragment is invalid or would change an existing step, gate or loop; a v2 run is refused (exit 1) with the plan revise command',
+    'relaunches the run\'s kernel when none is running; the added steps dispatch real coding-agent CLI processes',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow add ab12cd --steps checks.json', note: 'append the steps in checks.json' },
+    { cmd: 'bullswarm workflow add ab12cd --from-answer plan', note: 'append the steps the plan step answered with' },
+  ],
+  next: 'bullswarm workflow wait <runId> <ids> to get the added steps\' facts and answers.',
+});
+
+const workflowWaitText = rich({
+  usage: 'bullswarm workflow wait <runId> <id...> [--timeout <seconds>] [--json]',
+  purpose: 'Block until every named step, gate or loop of a v3 run is settled: a step succeeded, failed, was '
+    + 'blocked or cancelled; a gate or loop passed, is waiting for you, or was blocked. Then print each one\'s '
+    + 'status and facts (pool, model, duration, evidence, deliverable, output file) and its checked answer. '
+    + 'Returns early when the run stops short of an id (it finished, parked, paused, or its kernel is not '
+    + 'running). Reads state.json by polling; changes nothing.',
+  args: [
+    { name: '<runId>', desc: 'shortId or runId of a v3 program run' },
+    { name: '<id...>', desc: 'step, gate or loop ids of the run' },
+  ],
+  options: [
+    { flag: '--timeout <seconds>', desc: 'stop waiting after this long', default: 'no limit' },
+    { flag: '--json', desc: 'print {action: "workflow-wait", status: settled|stopped|timeout, run, nodes: [{id, type, status, pool, model, durationSec, evidence, deliverable, answer, ...}]}', default: 'human text' },
+  ],
+  safety: [
+    'exit 0 when no named id failed or was blocked (each succeeded, passed, or waits for you); 1 when one failed, was blocked or cancelled, or the run stopped short of one; 2 on a timeout or an id the run does not have',
+    'read-only',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow wait ab12cd find', note: 'the facts and answer of step find' },
+    { cmd: 'bullswarm workflow wait ab12cd check-a check-b --timeout 1800 --json' },
+  ],
+  next: 'bullswarm workflow add <runId> --steps <file.json> to act on an answer, or bullswarm workflow continue <runId> <gate> to pass a waiting gate.',
+});
+
 // --- workflow runs ----------------------------------------------------------
 
 const workflowRunsListOptions = [
@@ -1989,6 +2048,8 @@ const HELP = {
     cancel: { _text: workflowCancelText },
     resume: { _text: workflowResumeText },
     continue: { _text: workflowContinueText },
+    add: { _text: workflowAddText },
+    wait: { _text: workflowWaitText },
     action: {
       _text: workflowActionText,
       show: { _text: workflowActionShowText },
