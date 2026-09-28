@@ -94,6 +94,27 @@
 - mod: routed Claude Code subagents run on lane `analyze` with one attempt: a
   build run must change a file, so a subagent that only answers would fail
   `not-produced`.
+- dashboard: a v3 run reads by its blocks. The Run page groups its steps by
+  their `phase` (plan boxes and timeline rules carry the phase name), draws each
+  gate and loop as a row of its own (`loop polish · passed in round 2 of 3 ·
+  check's evidence passed`, `gate approve · waiting for you · <note>` with its
+  `continue` command), tags each loop step's attempt with its round, and prints
+  each attempt's checked answer under it. A run parked at a gate or loop reads
+  `waiting at gate approve` with `next: bullswarm workflow continue <run>
+  <gate>` on Run, Runs and Home. A one-step run shows no plan boxes and no
+  phase frame. A v3 run or step never reads `verified` or `not verified`; the
+  Step page leads its result with the answer. `bullswarm workflow runs --json`
+  lists a parked run's `waitingFor`.
+- mod: the verdict note of `bullswarm run --answer-schema` carries the checked
+  answer (or the failed check); a launched workflow is pointed at `workflow
+  watch <run> --until trouble` instead of `--next`; the strip and prompt
+  context list a parked run as `waiting at gate <id>` with its continue
+  command; a `workflow watch` or `workflow wait` result gets a note naming a
+  waiting gate or loop, the loop's round and the checked answers.
+- stats: the totals line and Home's figures name single runs apart from
+  workflows (`1 run`, `3 runs · 5 workflows`); the overview carries
+  `oneStepRuns`, and a v3 rollup carries `programFormat: 3` and, for a
+  one-step run, `oneStep: true`.
 - stats: single runs count. Stats, Budget and History read the single runs the
   decision log still holds (older ones) and the one-step workflows new runs
   record, so totals from this version on include `bullswarm run` work that
