@@ -31,13 +31,14 @@ import { pickPool } from '../src/lib/route.js';
 
 const read = (path) => readFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)), 'utf8');
 
+// The skill's program.md is the v3 reference since 0.37.0 (no roles or
+// kinds); the v2 tables live in the repository's program reference.
 const TABLE_DOCS = [
-  'skill/references/program.md',
   'docs/reference/program.md',
   'skill/references/operations.md',
   'docs/guide/workflows.md',
 ];
-const PROGRAM_REFERENCES = ['skill/references/program.md', 'docs/reference/program.md'];
+const PROGRAM_REFERENCES = ['docs/reference/program.md'];
 const KIND_TABLE_DOCS = PROGRAM_REFERENCES;
 const ALIAS_DOCS = [...TABLE_DOCS, 'skill/SKILL.md', 'docs/guide/concepts.md', 'docs/reference/result.md'];
 
@@ -259,8 +260,6 @@ test('changing a role in an exported plan needs the written-back deliverable del
   assert.deepEqual([redone.lane, redone.effort, redone.deliverable], ['analyze', 'medium', { type: 'report' }]);
   const advice = [
     ['docs/reference/program.md', 'When you change `role` in an exported plan, delete the written-back `lane`, `effort` and `deliverable` too'],
-    ['skill/references/program.md', 'When you change `role` in an exported plan, delete the written-back `lane`, `effort` and `deliverable` too'],
-    ['skill/SKILL.md', 'after a `role` change delete the written-back `lane`, `effort` and `deliverable`'],
   ];
   for (const [path, sentence] of advice) {
     assert.ok(flat(path).includes(sentence), `${path}: ${sentence}`);
@@ -410,7 +409,6 @@ test('review steps and digests take no evidence, and the docs say where to put r
     assert.ok(section.includes('Put the commands a reviewer must run in its prompt, or add a separate `check` step with `evidence` and an empty `evidenceFor`.'), `${path}: what to do instead`);
     assert.match(flat(path), /\| `evidence` \| no \| [^\n]*refused on review and digest steps \|/, `${path}: field row`);
   }
-  assert.ok(flat('skill/SKILL.md').includes('A review step (non-empty `evidenceFor`) and a digest take no `evidence`: put the commands a reviewer must run in its prompt, or add a separate `check` step with `evidence` and an empty `evidenceFor`.'));
   assert.ok(flat('docs/guide/workflows.md').includes('A review step (one with `evidenceFor`) and a digest take no evidence'));
 });
 
@@ -461,7 +459,6 @@ test('the Evidence section follows the act and digest paragraphs in both program
     assert.doesNotMatch(flat(path), /Evidence never depends on a digest/, `${path}: digest rule names review steps`);
   }
   assert.ok(flat('docs/reference/program.md').includes('No review step depends on a digest.'));
-  assert.ok(flat('skill/SKILL.md').includes('No review step depends on a digest.'));
 });
 
 test('the operations handback list names unreadSteering once, before the failed-evidence paragraph', () => {
@@ -485,7 +482,8 @@ test('proof labels for a step without evidence read as stepProof computes them',
   assert.equal(formatV2ProofLabel(stepProof({ ...state('pending'), program: { actions: [def] } }, def, { atFinish: true, features })), 'unproven');
   // Runs without the proofLabels marker show no label on a step without evidence.
   assert.equal(stepProof(state('passed'), def, { features: {} }), null);
-  for (const path of ['skill/SKILL.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md', 'docs/design/redesign-mechanics-principles-options.md', 'CHANGELOG.md']) {
+  assert.ok(flat('skill/SKILL.md').includes('`finished · unproven`'));
+  for (const path of [...PROGRAM_REFERENCES, 'skill/references/operations.md', 'docs/design/redesign-mechanics-principles-options.md', 'CHANGELOG.md']) {
     const text = flat(path);
     assert.ok(text.includes('`review pending`'), `${path}: review pending`);
     assert.ok(text.includes('`finished · unproven`'), `${path}: unproven`);
@@ -560,14 +558,12 @@ test('the changelog describes what ships, without internal stage names', () => {
 test('the e2e gate advice names the 600-second cap', () => {
   assert.equal(EVIDENCE_MAX_TIMEOUT_SEC, 600);
   assert.throws(() => validate([{ ...step, id: 'gate', role: 'check', affects: [], evidence: [{ type: 'command', cmd: 'npm run e2e', timeoutSec: 601 }] }]), /timeoutSec must be an integer from 1 to 600/);
-  const skill = flat('skill/SKILL.md');
-  const gate = skill.slice(skill.indexOf('**Finish after integration.**'), skill.indexOf('**Evidence: checks Bullswarm runs.**'));
-  assert.ok(gate.includes('when the suite finishes within 10 minutes (`timeoutSec` is at most 600); otherwise split it into several items or keep the command in the gate\'s prompt'), 'skill gate paragraph');
-  for (const path of PROGRAM_REFERENCES) assert.ok(evidenceSection(path).includes('A suite that runs longer than 600 seconds cannot be one item'), path);
+  for (const path of [...PROGRAM_REFERENCES, 'skill/references/program.md']) assert.ok(evidenceSection(path).includes('A suite that runs longer than 600 seconds cannot be one item'), path);
 });
 
 test('every JSON example with evidence in the docs validates on a program step', () => {
-  const docs = ['skill/references/program.md', 'docs/reference/program.md', 'docs/guide/workflows.md', 'docs/design/redesign-mechanics-principles-options.md'];
+  // v2 examples; the skill's v3 examples are validated in workflow-v3-docs.test.js.
+  const docs = ['docs/reference/program.md', 'docs/guide/workflows.md', 'docs/design/redesign-mechanics-principles-options.md'];
   let checked = 0;
   for (const path of docs) {
     for (const [, body] of read(path).matchAll(/```json\n([\s\S]*?)```/g)) {
@@ -580,7 +576,7 @@ test('every JSON example with evidence in the docs validates on a program step',
       }
     }
   }
-  assert.equal(checked, 7, 'two evidence steps in each program example and the design doc fragment');
+  assert.equal(checked, 5, 'two evidence steps in the program example, two in the guide, and the design doc fragment');
 });
 
 test('the docs carry the fix round: no-record JSONL, $ref targets, on-disk schema messages, act-step stops, restored by-products, the check heartbeat', () => {
@@ -637,10 +633,12 @@ function blockOptions(lines) {
     .map((line) => [line.slice(4, 21).trim(), line.slice(21)]);
 }
 
-function needsYouState(candidates) {
+// The skill documents v3 runs since 0.37.0; the guide keeps the v2 block.
+const V3_PROGRAM = 'bullswarm.workflow.program.v3';
+function needsYouState(candidates, { v3 = false } = {}) {
   return {
     runId: 'wf-docs', shortId: '<shortId>',
-    program: { actions: [{ id: '<step>', kind: 'implement', dependsOn: [] }] },
+    program: { ...(v3 ? { schemaVersion: V3_PROGRAM } : {}), actions: [{ id: '<step>', kind: 'implement', dependsOn: [] }] },
     actions: [{ id: '<step>', status: 'failed' }],
     attempts: [{
       id: 'a1', actionId: '<step>', ordinal: 1, pool: '<pool>', model: 'model-a', routeCandidates: candidates,
@@ -653,21 +651,26 @@ test('the skill names the needs-you options renderNeedsYou prints, with the comm
   const skill = section('skill/SKILL.md', '### When a step needs you');
   const event = { type: 'action.finished', committedAt: '2026-09-24T01:06:00.000Z', payload: { actionId: '<step>', status: 'failed', failureKind: 'process', why: 'exit 1' } };
   const render = (candidates) => {
-    const facts = needsYouFacts(needsYouState(candidates), event, { features: STAGE3_RUN_FEATURES });
+    const facts = needsYouFacts(needsYouState(candidates, { v3: true }), event, { features: STAGE3_RUN_FEATURES });
     return blockOptions(renderNeedsYou(facts, { next: 'bullswarm workflow watch <shortId> --until trouble' }));
   };
   const elsewhere = render(['<pool>', 'pool-b']);
   const here = render(['<pool>']);
-  assert.deepEqual(elsewhere.map(([label]) => label), ['rerun elsewhere', 'change the step', 'then edit it', 'take over', 'accept anyway']);
+  assert.deepEqual(elsewhere.map(([label]) => label), ['rerun elsewhere', 'add steps', 'then wait', 'take over', 'accept anyway']);
   assert.equal(here[0][0], 'retry here');
   for (const [label, command] of [...elsewhere, here[0]]) {
-    assert.ok(skill.includes(`\`${label}\``), `the skill names the printed option \`${label}\``);
+    if (label !== 'then wait') assert.ok(skill.includes(`\`${label}\``), `the skill names the printed option \`${label}\``);
+    if (label === 'take over') continue; // the path is the run's own output file
     assert.ok(skill.includes(`\`${command}\``), `the skill gives the printed command for ${label}: ${command}`);
   }
-  // The review variant's extra check is named as printed.
-  assert.ok(skill.includes('`also judged by <check>:`'));
+  assert.ok(skill.includes('`then wait`'));
+  // A v3 block never offers to edit the step; a v2 block still does.
+  assert.ok(!skill.includes('change the step'));
+  const v2 = blockOptions(renderNeedsYou(needsYouFacts(needsYouState(['<pool>', 'pool-b']), event, { features: STAGE3_RUN_FEATURES })));
+  assert.deepEqual(v2.map(([label]) => label), ['rerun elsewhere', 'change the step', 'then edit it', 'take over', 'accept anyway']);
+  // The review variant's extra check (v2) is named as printed in the operations reference.
+  assert.ok(flat('skill/references/operations.md').includes('`also judged by'));
   assert.match(read('src/workflow/needs-you.js'), /`    also judged by \$\{other\.step\}:`/);
-  assert.ok(skill.includes('four options'));
 });
 
 test('the workflows guide shows the needs-you block exactly as renderNeedsYou prints it', () => {
@@ -694,10 +697,10 @@ test('the workflows guide shows the needs-you block exactly as renderNeedsYou pr
 // caller, with placeholder names: the facts needsYouFacts builds from the
 // step's finish event. `attempts: false` is a step no pool could take.
 const BACK_AT = '2026-09-25T14:00:00.000Z';
-function limitFacts({ stepId = '<step>', token = '<shortId>', failureKind = 'quota', why = '<the provider\'s limit notice>', attempts = true } = {}) {
+function limitFacts({ stepId = '<step>', token = '<shortId>', failureKind = 'quota', why = '<the provider\'s limit notice>', attempts = true, v3 = false } = {}) {
   const state = {
     runId: 'wf-docs', shortId: token,
-    program: { actions: [{ id: stepId, kind: 'implement', dependsOn: [] }] },
+    program: { ...(v3 ? { schemaVersion: V3_PROGRAM } : {}), actions: [{ id: stepId, kind: 'implement', dependsOn: [] }] },
     actions: [{ id: stepId, status: 'failed' }],
     attempts: attempts ? [{
       id: 'a1', actionId: stepId, ordinal: 1, pool: 'pool-a', model: 'model-a', routeCandidates: ['pool-a', 'pool-b'],
@@ -719,7 +722,7 @@ test('the skill says a usage limit or no free pool comes back to you, with the b
   const skill = section('skill/SKILL.md', '### A usage limit or no free pool');
   const whole = flat('skill/SKILL.md');
   // A usage limit: straight back to the caller, not retried, with its return time.
-  const lines = renderNeedsYou(limitFacts(), { next: 'bullswarm workflow watch <shortId> --until trouble' });
+  const lines = renderNeedsYou(limitFacts({ v3: true }), { next: 'bullswarm workflow watch <shortId> --until trouble' });
   assert.match(lines[0], / <step> needs you · out of quota · not retried$/);
   assert.ok(whole.includes('`✗ <step> needs you · out of quota …`'));
   assert.ok(skill.includes('The step comes straight back to you'));
@@ -728,15 +731,15 @@ test('the skill says a usage limit or no free pool comes back to you, with the b
   assert.ok(skill.includes('`back at <time>`'));
   // Every option the block prints is named, and the new ones give the printed command.
   const options = new Map(blockOptions(lines));
-  assert.deepEqual([...options.keys()], ['rerun elsewhere', 'wait for it', 'change the step', 'then edit it', 'take over', 'accept anyway']);
-  for (const label of ['rerun elsewhere', 'wait for it', 'accept anyway', 'change the step', 'take over']) {
+  assert.deepEqual([...options.keys()], ['rerun elsewhere', 'wait for it', 'add steps', 'then wait', 'take over', 'accept anyway']);
+  for (const label of ['rerun elsewhere', 'wait for it', 'accept anyway', 'add steps', 'take over']) {
     assert.ok(skill.includes(`\`${label}\``), `the section names \`${label}\``);
   }
   const placeholders = (command) => command.replace(BACK_AT, '<time>').replace('--avoid pool-a', '--avoid <pool>');
   for (const label of ['rerun elsewhere', 'wait for it', 'accept anyway']) {
     assert.ok(skill.includes(`\`${placeholders(options.get(label))}\``), `the section gives ${label}: ${options.get(label)}`);
   }
-  for (const label of ['change the step', 'then edit it']) assert.ok(whole.includes(`\`${options.get(label)}\``), label);
+  for (const label of ['add steps', 'then wait']) assert.ok(whole.includes(`\`${options.get(label)}\``), label);
   assert.ok(skill.includes('`bullswarm workflow cancel <shortId>`'));
   // The machine form carries the same time and command.
   const json = needsYouJson(limitFacts());
@@ -1068,6 +1071,7 @@ function handbackEnvelope({ accepted = false } = {}) {
 function optionCommands(key, text) {
   const bare = text.replace(/ \([^()]*\)$/, '');
   if (key === 'continue') return bare.split(', edit it, then ');
+  if (key === 'add') return bare.split(', then ');
   if (key === 'retry') return [bare.replace(/ after \S+$/, '')];
   if (key === 'takeOver') return [bare.match(/(bullswarm workflow runs result \S+ --json)/)[1]];
   if (key === 'restart') return [bare.replace(/^start a new run: /, '')];
@@ -1084,9 +1088,20 @@ test('the skill and the result reference list the handback options formatV2Handb
   const finish = section('skill/SKILL.md', '### When it finishes');
   const result = flat('docs/reference/result.md');
   const operations = flat('skill/references/operations.md');
+  // The skill documents a v3 run's options (0.37.0); the v2 ones stay in the references.
+  const v3Envelope = { ...handbackEnvelope(), requirements: [], workspace: { cwd: '/runs/acme' }, callerDecision: undefined };
+  const v3Options = summarizeV2Result(v3Envelope, { program: { schemaVersion: V3_PROGRAM }, actions: [] }, { runDir: '/runs/acme', features: STAGE3_RUN_FEATURES }).handback.options;
+  assert.deepEqual(Object.keys(v3Options), ['add', 'retry', 'rerun', 'accept', 'takeOver', 'restart']);
+  const v3Printed = { add: 'add', retry: 'retry', rerun: 'rerun', accept: 'accept', takeOver: 'take over', restart: 'restart' };
+  for (const [key, text] of Object.entries(v3Options)) {
+    assert.ok(finish.includes(`| \`${v3Printed[key]}\` |`), `the skill's your-call table has a \`${v3Printed[key]}\` row`);
+    for (const command of optionCommands(key, text)) {
+      const shown = command.replace('--cwd /runs/acme', '--cwd <dir>');
+      assert.ok(finish.includes(`\`${shown}\``), `the skill gives ${key}: ${shown}`);
+    }
+  }
+  assert.ok(!finish.includes('| `continue` |'), 'a v3 run offers add, never continue');
   Object.entries(options).forEach(([key, text], index) => {
-    assert.ok(finish.includes(`| \`${printed[index]}\` |`), `the skill's your-call tables have a \`${printed[index]}\` row`);
-    for (const command of optionCommands(key, text)) assert.ok(finish.includes(`\`${command}\``), `the skill gives ${key}: ${command}`);
     assert.ok(result.includes(`| \`${key}\` | ${printed[index]} |`), `result.md lists ${key}, printed as ${printed[index]}`);
     if (key !== 'retry') assert.ok(result.includes(`\`${text}\``), `result.md gives ${key} as printed: ${text}`);
     assert.ok(operations.includes(`\`${key}\``), `operations.md lists ${key}`);
@@ -1115,9 +1130,9 @@ test('an accept reads as the code prints it and the skill says it is a choice, n
   assert.equal(formatV2ProofLabel({ by: ['choice'] }), 'accepted by choice');
   const skill = flat('skill/SKILL.md');
   assert.ok(skill.includes('**An accept is a choice, never proof.**'));
-  assert.ok(skill.includes(`\`${line.trim()}\``));
   assert.ok(skill.includes('`N accepted by choice: <steps>`'));
   assert.ok(skill.includes('reads `accepted by choice`'));
+  // The requirement line is a v2 result's; the skill documents v3 runs.
   for (const path of ['docs/guide/workflows.md', 'skill/references/operations.md']) assert.ok(flat(path).includes(`\`${line.trim()}\``), path);
 });
 
@@ -1161,7 +1176,8 @@ test('docs do not overstate the failure rule: not-produced gets its gate retry, 
   assert.ok(!operations.includes('A run never waits: not for its caller, not for a paused pool'));
   // No step waits inside a run for a pool (owner decision, 2026-09-25).
   assert.ok(!operations.includes('A step may wait inside the run for a pool whose return time is known'));
-  assert.ok(operations.includes('A run never waits for its caller, for a silent worker, or for a pool to come back.'));
+  // A v3 run waits for its caller only at a gate or loop the caller declared (0.37.0).
+  assert.ok(operations.includes('A run never waits for a silent worker or for a pool to come back, and a v2 run never waits for its caller either; a v3 run waits for you only at a gate or a loop out of rounds you declared.'));
   assert.ok(operations.includes('retryable, retries?}'));
   // The same-pool process retry is never used after a sign-in failure.
   assert.match(read('src/workflow/v2-dispatch.js'), /soleCandidate && kind !== 'auth'\) next = \{ how: 'same-pool'/);
@@ -1257,6 +1273,8 @@ async function noPoolPlannerRun() {
 }
 
 test('the pages give the reason a planner or scout stopped by a usage limit finishes the run with', async () => {
+  // The dispatched planner and the scout are v2 flows: the skill (v3 since
+  // 0.37.0) leaves them to the operations reference and the guide.
   const planner = await limitStopRun({ after: 'revise' });
   assert.deepEqual(planner.seen, [{ id: 'workflow-planner', usageLimitsToCaller: true }], 'one planner dispatch, told to leave usage limits to the caller');
   assert.equal(planner.result.status, 'partial');
@@ -1282,7 +1300,7 @@ test('the pages give the reason a planner or scout stopped by a usage limit fini
   const cli = read('src/workflow/cli.js');
   assert.ok(cli.includes('console.log(`✓ reopened the ${outcome.previousStatus} run ${id}; running again: ${running.join(\', \')}`);'));
   assert.ok(cli.includes('console.log(`  note: ${dispatch.who} stopped with its pool back at ${dispatch.retryAfter}; run before then, it can fail the same way again`);'));
-  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md', 'CHANGELOG.md']) {
+  for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md', 'CHANGELOG.md']) {
     const page = flat(path);
     assert.ok(!page.includes('does not run the planner or the scout again') && !page.includes('does not run a stopped planner'), path);
     assert.ok(page.includes('runs the stopped planner or scout again') || page.includes('runs it again'), path);
@@ -1298,7 +1316,6 @@ test('the pages give the reason a planner or scout stopped by a usage limit fini
   // changelog give it with their own run placeholder.
   assert.ok(read('docs/guide/workflows.md').includes(`\`\`\`text\n${reason}\n\`\`\``));
   const withShort = named(planner.result.reason, '<shortId>');
-  assert.ok(flat('skill/SKILL.md').includes(`\`reason: ${withShort}\``));
   assert.ok(flat('docs/reference/cli.md').includes(`\`${withShort}\``));
   assert.ok(flat('CHANGELOG.md').includes(`\`${named(planner.result.reason, '<run>')}\``));
   assert.ok(flat('skill/references/operations.md').includes(`\`${reason}\``));
@@ -1311,7 +1328,7 @@ test('the pages give the reason a planner or scout stopped by a usage limit fini
   const plannerLine = renderWatchEvent(plannerNotable[0]).replace(/^\S+ /, '✗ ').replaceAll(BACK_AT, '<time>').replaceAll('pool-a', '<pool>');
   assert.equal(plannerLine, '✗ planner stopped · out of quota on <pool> · back at <time>');
   assert.equal(watchTrouble(plannerNotable[0], { program: true }), 'planner-limit');
-  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'CHANGELOG.md']) {
+  for (const path of ['docs/guide/workflows.md', 'CHANGELOG.md']) {
     assert.ok(flat(path).includes(`\`${plannerLine}\``), path);
   }
   const plannerGeneral = '`✗ planner stopped · <label> on <pool> · back at <time>`';
@@ -1358,7 +1375,7 @@ test('the pages give the reason a planner or scout stopped by a usage limit fini
   // No pool free for a reason that is not a usage limit.
   const noPool = await limitStopRun({ failureKind: 'unavailable' });
   assert.match(noPool.result.reason, /^the workflow planner stopped: no pool free: <why> · back at /);
-  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/result.md', 'CHANGELOG.md']) {
+  for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/result.md', 'CHANGELOG.md']) {
     assert.ok(flat(path).includes('`stopped: no pool free`'), path);
     assert.ok(flat(path).includes('no pool can run it at all'), path);
   }
@@ -1383,18 +1400,17 @@ test('the pages give the reason a planner or scout stopped by a usage limit fini
   // limit), never for the scout.
   assert.deepEqual(goneOn.resumed, { status: 'reopened', requeued: ['write-report'], dispatch: null });
   assert.equal(goneOn.summary.handback.options.retry.replaceAll(goneOn.shortId, '<id>').replaceAll(BACK_AT, '<time>'), 'bullswarm workflow resume <id> after <time> (reruns write-report)');
-  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md']) {
+  for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md']) {
     assert.ok(/resume`? does not run that scout again/.test(flat(path)), path);
   }
   // Where a page says what resume does, it runs the planner or scout again
   // only when that stop ended the run.
   assert.ok(flat('docs/reference/cli.md').includes('where a usage limit or no free pool stopped the dispatched planner or the scout and ended the run, it runs that planner or scout again first (`running again: the workflow planner`); run it after the `back at` time, or it can stop the same way. A scout the run went on without (one before your own program) is not run again.'));
   assert.ok(flat('skill/references/operations.md').includes('also a planner or scout whose stop on a usage limit or no free pool ended the run, which runs first'));
-  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md']) {
+  for (const path of ['docs/guide/workflows.md']) {
     assert.ok(flat(path).includes('or a usage limit or no free pool stopped the planner or scout and ended the run'), path);
   }
-  assert.ok(flat('skill/SKILL.md').includes('`retry` appears only when a step is retryable, or when a usage limit or no free pool stopped the planner or scout and ended the run.'));
-  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/guide/routing.md', 'docs/reference/cli.md', 'docs/reference/result.md', 'CHANGELOG.md']) {
+  for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md', 'docs/guide/routing.md', 'docs/reference/cli.md', 'docs/reference/result.md', 'CHANGELOG.md']) {
     assert.ok(flat(path).includes('`the preflight scout stopped on a usage limit: …`'), path);
   }
 });
@@ -1412,7 +1428,7 @@ test('the pages give the line the watch prints for a scout a usage limit stopped
   const line = lineFor(withProgram);
   assert.equal(line, '⚠ preflight scout stopped · out of quota on <pool> · back at <time> · the run continues without its report');
   assert.deepEqual(withProgram.seen.map((entry) => entry.id), ['preflight-scout', 'write-report'], 'the caller\'s program runs without the report');
-  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'CHANGELOG.md']) {
+  for (const path of ['docs/guide/workflows.md', 'CHANGELOG.md']) {
     assert.ok(flat(path).includes(`\`${line}\``), path);
   }
   // Before it, the scout attempt's own usage-limit line, ending `no retry left`.
@@ -1447,7 +1463,6 @@ test('the pages give the line the watch prints for a scout a usage limit stopped
   assert.ok(flat('CHANGELOG.md').includes('(the scout\'s also `runContinues`: whether the run goes on without its report)'));
   // Trouble lists in the watch pages and help name it.
   // A planner stopped the same way is trouble too (watchTrouble 'planner-limit').
-  assert.ok(flat('skill/SKILL.md').includes('a planner or scout that stopped on a usage limit'));
   assert.ok(flat('docs/guide/observing.md').includes('a planner or preflight scout that stopped on a usage limit'));
   assert.ok(flat('skill/references/operations.md').includes('a planner or preflight scout that stopped on a usage limit'));
   assert.ok(flat('docs/reference/cli.md').includes('a planner or scout stopped on a usage limit'));

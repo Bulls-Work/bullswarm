@@ -1,14 +1,96 @@
 # Bullswarm operations reference
 
 There are exactly two ways to start work: `bullswarm run` for one bounded
-outcome, and `bullswarm workflow goal` for a program you author. Decide the
-shape yourself — there is no preview or classifier command. Read this reference
-only after that decision, when the task needs direct commands, workflow
-operation, or recovery.
+outcome (a one-step workflow), and `bullswarm workflow goal --program` for a
+program you write. Decide the shape yourself — there is no preview or
+classifier command. Read this reference only after that decision, when the
+task needs direct commands, workflow operation, or recovery.
+
+New programs are v3 (steps, phases, gates and loops): the first section is how
+you operate a v3 run. Old v2 programs still run; the sections marked (v2)
+apply to them only: roles and kinds, the verify loop, the whole-plan revise,
+the scout and a dispatched planner.
 
 Unrecognized `--flags` are a usage error on every command: Bullswarm prints
 `unknown flag --name` plus that command's synopsis and exits 2, before
 self-initializing, routing, or spawning anything.
+
+## A v3 run: add, wait and continue
+
+A v3 run's steps, gates and loops are never edited. You steer it by adding to
+it, by reading what it answered, and by moving what waits for you.
+
+```bash
+bullswarm workflow add <shortId> --steps part.json [--summary '<why>'] [--wait <s>]   # append {steps, gates?, loops?}
+bullswarm workflow add <shortId> --from-answer <step>                                  # append the fragment a step answered
+bullswarm workflow wait <shortId> <id...> [--timeout <s>] [--json]                     # facts and answers of steps, gates, loops
+bullswarm workflow continue <shortId> <gate>                                           # pass a waiting gate
+bullswarm workflow continue <shortId> <loop> [--rounds <1-5>]                          # more rounds, or pass it as it stands
+bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]                        # run a step again with its handoff
+bullswarm workflow step accept <shortId> <step> --reason '<why>'                       # keep a failed step, as your choice
+```
+
+**add** appends a fragment: new steps, gates or loops whose ids the run does
+not have. They may depend on existing steps, gates and loops (a loop's steps
+only through the loop id); a new loop may not take in an existing step.
+Nothing the run has changes: the append-only check refuses any request that
+would. The fragment is checked by the same validator as a program, plus the
+route precheck against the pools you have, and a refusal changes nothing:
+
+```text
+✗ nothing added to jcefns (run unchanged)
+  - step check-first: its route is independent of find, whose work ran on provider grok, and every enabled pool that could run it (analyze/medium work) uses that provider; enable a pool of another provider or drop independentOf
+```
+
+A running kernel applies the addition at its next check (`add queued …` when it
+has not within `--wait`, default 120 s; watch prints `plan revised`); with no
+kernel the command applies it and relaunches one. A finished run reopens: its
+earlier result is archived, and a cancelled step runs again, except an outward
+step that may have acted (`not run again (act step, may have acted)`). A paused
+run stays paused. `--from-answer <step>` reads that step's current checked
+answer, which must itself be a fragment `{steps, gates?, loops?}`; read it with
+`wait` first.
+
+**wait** reads the run until every named id has settled: a step `succeeded`,
+`failed`, `blocked`, `cancelled` or `removed`; a gate or loop `passed`,
+`waiting` or `blocked`. It changes nothing. Exit 0 when none failed or was
+blocked, cancelled or removed; 1 when one was, or the run stopped short of them (it then names each
+gate or loop the run waits on, with its `continue` command); 2 on a timeout or
+an unknown id. `--json` gives per step `status`, `pool`, `model`,
+`durationSec`, `attempts`, `evidence`, `deliverable` (with `produced`),
+`outputFile`, `failure`, and `answer` (or `answerErrors`); per gate or loop
+`status`, `since`, `note`, `round`, `maxRounds` and the `next` command.
+
+**continue** writes a durable intent next to the run. A running kernel applies
+it; otherwise the command applies it, sets the run back to `running` and
+relaunches the kernel (`✓ gate approve passed in 98vx92; kernel relaunched`).
+Only a waiting gate or an out-of-rounds loop can be continued, and `--rounds`
+applies to a loop only.
+
+A watch prints gate and loop events on their own lines, and `--until trouble`
+wakes on the two that wait for you:
+
+```text
+⧖ gate <gate> waiting · <note> · continue: bullswarm workflow continue <shortId> <gate>
+✓ gate <gate> passed · continued by the caller
+↻ loop <loop> round 2 of 3 · check's evidence passed did not hold
+✓ loop <loop> passed in round 2 of 3 · check's evidence passed
+⧖ loop <loop> out of rounds (3 of 3) · check's evidence passed did not hold · continue: bullswarm workflow continue <shortId> <loop> --rounds <n>
+```
+
+When only waiting gates or loops are left, the kernel exits and the run is
+parked with status `waiting`: `goal --foreground`, `watch` and `runs` print
+`outcome: waiting`, one `waiting:` line per gate or loop, and the `next:`
+continue commands (plus `step rerun` and `step accept` for any step that
+failed on another branch).
+
+`plan revise` on a v3 run may only rerun steps. Anything else is refused with:
+`a v3 run's steps cannot be added, changed or removed with plan revise in this
+build; add steps, gates or loops with `bullswarm workflow add`, rerun one with
+`bullswarm workflow step rerun`, accept one with `bullswarm workflow step
+accept`, or cancel and start a new run`. A completed v3 run hands nothing back;
+a partial one hands back `add`, `retry`, `rerun`, `accept`, `take over` and a
+`restart` line that names the run's folder.
 
 ## Autonomous workflow execution
 
@@ -99,11 +181,11 @@ run's watch output ends with `outcome: <status> · verified|not verified`,
 finishes" below); under `--jsonl` the `finished` object carries `verified`,
 `reason` and `handback`.
 
-Manage a live run:
+Manage a live run (for a v3 run, add and continue are above):
 
 ```bash
 bullswarm workflow plan export <shortId> --out plan.json           # the live plan as an editable revision document
-bullswarm workflow plan revise <shortId> --program plan.json --json # replace the plan at any time (see below)
+bullswarm workflow plan revise <shortId> --program plan.json --json # v2: replace the plan at any time (see below)
 bullswarm workflow pause   <shortId> [--now]                       # start nothing new; --now also stops running agents
 bullswarm workflow resume  <shortId> [--foreground|--watch]        # lift a pause, continue an interrupted run, or retry a finished one
 bullswarm workflow steer   <shortId> --message '<guidance>'        # guidance for whoever plans the run
@@ -112,7 +194,7 @@ bullswarm workflow cancel  <shortId> --json                        # cooperative
 
 Resume keeps the run's durable planner mode, routing pins, and settings;
 `--program`, `--orchestrator`, `--scout`, and `--suggested-plan` are rejected
-there (change the plan with `plan revise`). Autonomous resume is
+there (add steps to a v3 run with `workflow add`; change a v2 plan with `plan revise`). Autonomous resume is
 V2-only. An old autonomous run ID fails before dispatch; there is no migration
 or fallback executor. `bullswarm workflow goal --resume <shortId>` and
 `bullswarm workflow tui --cancel <shortId>` remain as aliases.
@@ -120,12 +202,14 @@ or fallback executor. `bullswarm workflow goal --resume <shortId>` and
 Legacy authored-graph runs are listed as read-only rows marked `legacy`; driving
 commands fail closed with their short ID and retained run directory.
 
-## Program actions: role, kind, defaults, and advisories
+## Program actions (v2): role, kind, defaults, and advisories
 
-The program format itself — fields, roles, kinds, deliverables, requirement
-IDs, enforced rules
-and an example — is in [program.md](program.md). The same rules are also served
-live by the running kernel:
+This section is for v2 programs only; a v3 program has no roles, kinds,
+requirement IDs or `verifyRounds` (its fields are in [program.md](program.md)).
+
+The v2 program format — fields, roles, kinds, deliverables, requirement IDs,
+enforced rules and an example — is `docs/reference/program.md` in the
+repository. The running kernel serves the same rules:
 
 ```bash
 bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
@@ -210,7 +294,10 @@ them on the run, so `workflow runs show` lists them afterwards. `runs result`,
 `runs show`, and `workflow action show` print `kind` (or `role` for a step
 without one) next to lane and effort.
 
-## The time box and the verify loop
+## The time box, and the verify loop (v2)
+
+The time box applies to every step; the verify loop runs only in v2 runs (a v3
+run's checks are ordinary steps, and its loops are the ones you declare).
 
 Two kernel behaviours act on every program run, and both stay out of your way
 until a step is late or a check fails.
@@ -300,9 +387,11 @@ pools and cost (`$X`, `at least $X · N unmeasured`, or `—`); the fields are i
 evidence line you see in the stream: ordinary failing checks are the loop's job,
 and a hand-added fix step for one is the wrong move while rounds remain.
 
-## Revising a live plan
+## Revising a live plan (v2)
 
-`plan revise` replaces the plan of a caller-planned program run at any moment:
+On a v3 run, `plan revise` may only rerun steps; extend a v3 run with
+`workflow add` (see the first section). `plan revise` replaces the plan of a
+caller-planned v2 program run at any moment:
 while agents run, while it is paused, or after it finished. Start from the
 export so kept actions compare equal:
 
@@ -535,7 +624,8 @@ run that command as printed, and relaunch the exact `next:` watch line:
 |---|---|
 | Rerun elsewhere | Run `bullswarm workflow step rerun <id> <step> --avoid <last-pool>`; the pool stays excluded in the step's route |
 | Wait for it | Printed when a return time is known (after a usage limit, a rate limit that named a longer wait, or with no free pool): `after <time>: bullswarm workflow step rerun <id> <step>`. Run that rerun yourself once the `back at` time has passed |
-| Change the step | Run `bullswarm workflow plan export <id> --out plan.json`, edit the step, then `bullswarm workflow plan revise <id> --program plan.json` |
+| Add steps (v3) | Run `bullswarm workflow add <id> --steps part.json` with a new step, then `bullswarm workflow wait <id> <added ids>`; a v3 run's steps are never edited |
+| Change the step (v2) | Run `bullswarm workflow plan export <id> --out plan.json`, edit the step, then `bullswarm workflow plan revise <id> --program plan.json` |
 | Take over | Open the absolute `output:` path from the block and finish the work yourself |
 | Accept anyway | Run `bullswarm workflow step accept <id> <step> --reason "…"`; this records `choice`, never proof, and rerunning undoes it |
 
@@ -559,12 +649,14 @@ whole run instead, run `bullswarm workflow cancel <id>`.
 
 ## When a run finishes: the handback
 
-A run never waits for its caller, for a silent worker, or for a pool to come
-back. A step that no pool can run now comes back to you, with its return time
-when one is known, and the rest of the run goes on. The run finishes
-as soon as nothing more can happen on its own. The result
+A run never waits for a silent worker or for a pool to come back, and a v2
+run never waits for its caller either; a v3 run waits for you only at a gate or
+a loop out of rounds you declared. A step that no pool can run now comes back
+to you, with its return time when one is known, and the rest of the run goes
+on. The run finishes as soon as nothing more can happen on its own. The result
 carries a `handback` whenever it is not verified or has steering nobody acted
-on:
+on; a v3 run is never verified, so a completed v3 run with no unread steering
+carries none:
 
 - `handback.unfinished[]`: `{id, status, failureKind, why, retryAfter?,
   retryable, retries?}` for every step that did not succeed. `retryable` says
@@ -597,11 +689,13 @@ and result summaries include a `proof:` count line, which counts accepted
 steps apart (`N accepted by choice: <steps>`).
 
 `runs result --summary` adds `handback.options`, one command per choice:
-`continue`, `retry` when a step is retryable, `rerun` and `accept` when a run
+`add` on a v3 run, `continue` on a v2 run, `retry` when a step is retryable, `rerun` and `accept` when a run
 started by this version has a failed step, `rerunReview` and
 `acceptRequirement` (printed as `rerun` and `accept`, naming the check and
 `--requirement <id>`) when its review loop left a requirement failing, then
-`takeOver` and `restart`. An accepted requirement prints as `requirement <id>:
+`takeOver` and `restart` (on a v3 run it names the run's folder: `start a new
+run: bullswarm workflow goal "<goal>" --cwd <run folder> --program
+<file.json>`). An accepted requirement prints as `requirement <id>:
 failed · accepted by choice "<reason>"`. An open
 requirement keeps its `why` for as long as the 4 KB budget allows; concerns and
 per-step detail shrink first. The `workflow.finished` event carries
@@ -635,7 +729,7 @@ a usage limit or no free pool ended the run, which runs first); moves `result.js
 `result-before-resume-<n>.json`; writes `workflow.reopened` with `source:
 resume`; and relaunches the kernel. In new runs, gate failures such as
 `failed-evidence` and `not-produced` stay failed: use `step rerun`, `step
-accept`, or `plan revise`. Saved runs retain
+accept`, `workflow add` (v3), or `plan revise` (v2). Saved runs retain
 their original resume rules. With nothing retryable, resume prints
 `nothing to retry`, lists the steps that need you, starts nothing, and exits 1.
 

@@ -1,0 +1,293 @@
+# Workflow patterns
+
+Five workflows to copy, each written from the four blocks (steps, phases,
+gates, loops). Every program below passes `bullswarm workflow plan validate`
+exactly as printed here; each `validate:` block is the command's real output
+without its last line (the launch command). A fragment passed to `workflow
+add` follows the program it extends; the two were validated together as one
+program. Replace `/work/acme` with
+your absolute workspace path, and write your own prompts.
+
+Caller turns are estimates, not measurements.
+
+## 1. Find, then check each finding
+
+Use it for an audit or a review: one broad search, then one independent check
+per finding. The checks depend on what `find` answers, so you add them after
+it. About 3-4 caller turns.
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "find",
+      "prompt": "In /work/acme, read src/ and README.md (README.md says what each module must do). List every candidate bug. Give each a kebab-case id such as f1. Change no file.",
+      "answer": {
+        "type": "object", "required": ["findings"],
+        "properties": { "findings": { "type": "array", "items": {
+          "type": "object", "required": ["id", "file", "claim"],
+          "properties": { "id": { "type": "string" }, "file": { "type": "string" }, "claim": { "type": "string" } }
+        } } }
+      }
+    }
+  ]
+}
+```
+
+```text
+validate:
+✓ program v3 valid: 1 step, 0 gates, 0 loops (nothing launched)
+  find                     analyze/medium answer
+```
+
+1. Launch, then `bullswarm workflow wait <run> find`: it prints the findings.
+2. Write one check per finding into `checks.json` and add them. Each check
+   depends on `find` and runs on another provider than `find` did:
+
+```json
+{
+  "steps": [
+    {
+      "id": "check-f1", "dependsOn": ["find"], "route": { "independentOf": ["find"] },
+      "prompt": "In /work/acme, try to reproduce this claimed bug with a concrete input: src/parse.js drops the last field of a quoted line. Change no file.",
+      "answer": { "type": "object", "required": ["confirmed", "repro"], "properties": { "confirmed": { "type": "boolean" }, "repro": { "type": "string" } } }
+    },
+    {
+      "id": "check-f2", "dependsOn": ["find"], "route": { "independentOf": ["find"] },
+      "prompt": "In /work/acme, try to reproduce this claimed bug with a concrete input: src/sum.js counts an empty line as zero. Change no file.",
+      "answer": { "type": "object", "required": ["confirmed", "repro"], "properties": { "confirmed": { "type": "boolean" }, "repro": { "type": "string" } } }
+    }
+  ]
+}
+```
+
+```text
+validate (find and the checks as one program):
+✓ program v3 valid: 3 steps, 0 gates, 0 loops (nothing launched)
+  find                     analyze/medium answer
+  check-f1                 analyze/medium answer after find route: independent of find
+  check-f2                 analyze/medium answer after find route: independent of find
+```
+
+3. `bullswarm workflow add <run> --steps checks.json`, then `bullswarm
+   workflow wait <run> check-f1 check-f2`, and report the confirmed ones.
+
+`independentOf` needs a second provider. With one provider enabled, `workflow
+add` refuses the fragment and changes nothing (real output):
+
+```text
+✗ nothing added to jcefns (run unchanged)
+  - step check-first: its route is independent of find, whose work ran on provider grok, and every enabled pool that could run it (analyze/medium work) uses that provider; enable a pool of another provider or drop independentOf
+```
+
+## 2. Fix until a check passes
+
+Use it when a machine can say "done": tests, a linter, a build. Submit once
+and wait on the loop. About 2 caller turns.
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "fix", "lane": "build",
+      "prompt": "In /work/acme, `npm test` fails. Find the cause in src/ and fix it; keep the tests as they are. From round 2 on, the Previous round block lists what the last check saw: fix that."
+    },
+    {
+      "id": "check", "dependsOn": ["fix"],
+      "prompt": "In /work/acme, run `npm test` and list every failing test with its first error line. Change no file.",
+      "answer": { "type": "object", "required": ["problems"], "properties": { "problems": { "type": "array", "items": { "type": "string" } } } },
+      "evidence": [{ "type": "command", "cmd": "npm test", "timeoutSec": 300 }]
+    }
+  ],
+  "loops": [
+    { "id": "until-green", "steps": ["fix", "check"], "until": { "step": "check", "evidence": "passed" }, "maxRounds": 3 }
+  ]
+}
+```
+
+```text
+validate:
+✓ program v3 valid: 2 steps, 0 gates, 1 loop (nothing launched)
+  fix                      build/medium deliverable=files
+  check                    analyze/medium evidence=command answer after fix
+  loop until-green         steps fix, check · until check's evidence passed · at most 3 rounds
+```
+
+`fix` runs first in every round, so start the loop only when the check fails
+now: a `fix` that has nothing to change fails `not-produced` and blocks the
+loop. Inside the loop, a failed `npm test` does not fail `check`; it makes the
+condition false and starts the next round, whose `fix` sees the failures. After
+3 rounds the loop waits for you: `bullswarm workflow continue <run>
+until-green --rounds 2`, or take over.
+
+## 3. Draft, critique, approve, publish
+
+Use it for anything written for others: research in parallel, rewrite the
+draft until an independent critique passes, stop for your approval, then
+publish once. Submit once; you are woken at `approve`. About 2-3 caller turns.
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "defaults": { "lane": "analyze", "effort": "medium" },
+  "steps": [
+    { "id": "search-a", "phase": "research", "prompt": "In /work/acme, collect the claims sources/a.md makes about acme widgets.",
+      "answer": { "type": "object", "required": ["claims"], "properties": { "claims": { "type": "array", "items": { "type": "string" } } } } },
+    { "id": "search-b", "phase": "research", "prompt": "In /work/acme, collect the claims sources/b.md makes about acme widgets.",
+      "answer": { "type": "object", "required": ["claims"], "properties": { "claims": { "type": "array", "items": { "type": "string" } } } } },
+    { "id": "draft", "phase": "writing", "dependsOn": ["search-a", "search-b"], "lane": "build", "files": ["brief.md"],
+      "prompt": "In /work/acme, write brief.md from the claims your dependencies answered. From round 2 on, fix the problems the previous critique listed." },
+    { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "route": { "independentOf": ["draft"] },
+      "prompt": "In /work/acme, check every claim in brief.md against sources/. Answer passed true when every claim holds; list each problem otherwise.",
+      "answer": { "type": "object", "required": ["passed", "problems"], "properties": { "passed": { "type": "boolean" }, "problems": { "type": "array", "items": { "type": "string" } } } } },
+    { "id": "post", "phase": "publish", "dependsOn": ["approve"], "deliverable": "outward", "retry": 0,
+      "prompt": "Publish /work/acme/brief.md to the acme wiki, and list the page you created." }
+  ],
+  "loops": [{ "id": "polish", "steps": ["draft", "critique"], "until": { "step": "critique", "field": "passed" }, "maxRounds": 3 }],
+  "gates": [{ "id": "approve", "dependsOn": ["polish"], "note": "Read brief.md and decide whether to publish it" }]
+}
+```
+
+```text
+validate:
+✓ program v3 valid: 5 steps, 1 gate, 1 loop (nothing launched)
+  search-a                 analyze/medium answer
+  search-b                 analyze/medium answer
+  draft                    build/medium deliverable=files after search-a, search-b
+  critique                 analyze/medium answer after draft route: independent of draft
+  post                     analyze/medium role=act deliverable=outward after approve
+  gate approve             after polish · waits for you · Read brief.md and decide whether to publish it
+  loop polish              steps draft, critique · until critique.passed is true · at most 3 rounds
+```
+
+The writer comes first in the loop on purpose: the loop reads `critique.passed`
+only after every step of the round. A `revise` step after the critique would
+have nothing to change when the first critique passes, and fail. `post` has
+`retry: 0` and an `outward` deliverable, so it never runs twice. Read
+`brief.md` when the watch wakes you at `approve`, then `bullswarm workflow
+continue <run> approve`, or cancel the run.
+
+## 4. Parallel slices, then a check
+
+Use it for a change too large for one worker: a planning step answers the
+slices, you add one build step per slice and a check, and the slices run in
+parallel. About 4-5 caller turns.
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "plan", "effort": "high",
+      "prompt": "In /work/acme, plan how to add CSV export. Split the work into slices that touch different files. Change no file.",
+      "answer": {
+        "type": "object", "required": ["slices"],
+        "properties": { "slices": { "type": "array", "items": {
+          "type": "object", "required": ["id", "files", "task"],
+          "properties": { "id": { "type": "string" }, "files": { "type": "array", "items": { "type": "string" } }, "task": { "type": "string" } }
+        } } }
+      }
+    }
+  ],
+  "gates": [
+    { "id": "pick-slices", "dependsOn": ["plan"], "note": "Read the slices, add one build step per slice and a check, then continue" }
+  ]
+}
+```
+
+```text
+validate:
+✓ program v3 valid: 1 step, 1 gate, 0 loops (nothing launched)
+  plan                     analyze/high answer
+  gate pick-slices         after plan · waits for you · Read the slices, add one build step per slice and a check, then continue
+```
+
+When the watch wakes you at `pick-slices`, read the slices with `bullswarm
+workflow wait <run> plan`, add the steps, then `bullswarm workflow continue
+<run> pick-slices`:
+
+```json
+{
+  "steps": [
+    { "id": "slice-writer", "phase": "build", "dependsOn": ["pick-slices"], "lane": "build", "files": ["src/csv-writer.js", "tests/csv-writer.test.js"],
+      "prompt": "In /work/acme, add src/csv-writer.js (rows to CSV text, RFC 4180 quoting) with its tests in tests/csv-writer.test.js. Other workers edit other files at the same time: keep their edits." },
+    { "id": "slice-command", "phase": "build", "dependsOn": ["pick-slices"], "lane": "build", "files": ["src/cli.js", "tests/cli.test.js"],
+      "prompt": "In /work/acme, add an `export --csv <file>` command to src/cli.js that calls writeCsv from src/csv-writer.js, with tests in tests/cli.test.js. Other workers edit other files at the same time: keep their edits." },
+    { "id": "check", "phase": "check", "dependsOn": ["slice-writer", "slice-command"], "retry": 0,
+      "prompt": "In /work/acme, run `npm test` and report every failing test with its first error line. Change no file.",
+      "evidence": [{ "type": "command", "cmd": "npm test", "timeoutSec": 300 }] }
+  ]
+}
+```
+
+```text
+validate (plan and the added steps as one program):
+✓ program v3 valid: 4 steps, 1 gate, 0 loops (nothing launched)
+  plan                     analyze/high answer
+  slice-writer             build/medium deliverable=files after pick-slices
+  slice-command            build/medium deliverable=files after pick-slices
+  check                    analyze/medium deliverable=report evidence=command after slice-writer, slice-command
+  gate pick-slices         after plan · waits for you · Read the slices, add one build step per slice and a check, then continue
+```
+
+When `check` passes, you are done. When it fails, it comes back to you at once
+(`retry: 0`: rerunning the same tests would say the same). Add a fix loop
+(pattern 2) whose steps depend on the slices, not on the failed check, since a
+failed step blocks what depends on it.
+
+## 5. A non-code task: triage tickets
+
+Use it for any batch of judgments: classify in parallel, merge, and stop for
+you only when something is uncertain. Submit once; you are woken only if a
+ticket is uncertain. About 1-3 caller turns.
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "defaults": { "effort": "low" },
+  "steps": [
+    { "id": "classify-1", "phase": "classify", "prompt": "Read tickets 1-10 in /work/support/tickets.jsonl. Label each bug, question, feature or unsure.",
+      "answer": { "type": "object", "required": ["labels"], "properties": { "labels": { "type": "array", "items": { "type": "object", "required": ["ticket", "label"], "properties": { "ticket": { "type": "integer" }, "label": { "enum": ["bug", "question", "feature", "unsure"] } } } } } } },
+    { "id": "classify-2", "phase": "classify", "prompt": "Read tickets 11-20 in /work/support/tickets.jsonl. Label each bug, question, feature or unsure.",
+      "answer": { "type": "object", "required": ["labels"], "properties": { "labels": { "type": "array", "items": { "type": "object", "required": ["ticket", "label"], "properties": { "ticket": { "type": "integer" }, "label": { "enum": ["bug", "question", "feature", "unsure"] } } } } } } },
+    { "id": "merge", "dependsOn": ["classify-1", "classify-2"], "prompt": "Merge the labels your dependencies answered. List the tickets labelled unsure.",
+      "answer": { "type": "object", "required": ["uncertain", "hasUncertain"], "properties": { "uncertain": { "type": "array", "items": { "type": "integer" } }, "hasUncertain": { "type": "boolean" } } } },
+    { "id": "report", "phase": "report", "dependsOn": ["rule"], "lane": "build", "files": ["triage.md"],
+      "prompt": "In /work/support, write triage.md: one table of every ticket and its label, using the merge answer and any rulings in tickets-ruled.json." }
+  ],
+  "gates": [
+    { "id": "rule", "dependsOn": ["merge"], "when": { "step": "merge", "field": "hasUncertain" }, "note": "Rule on the uncertain tickets in tickets-ruled.json, then continue" }
+  ]
+}
+```
+
+```text
+validate:
+✓ program v3 valid: 4 steps, 1 gate, 0 loops (nothing launched)
+  classify-1               analyze/low answer
+  classify-2               analyze/low answer
+  merge                    analyze/low answer after classify-1, classify-2
+  report                   build/low deliverable=files after rule
+  gate rule                after merge · waits when merge.hasUncertain is true · Rule on the uncertain tickets in tickets-ruled.json, then continue
+```
+
+When `merge.hasUncertain` is false, the gate `rule` passes by itself and the
+report is written without you. For more tickets, add more `classify-<n>`
+steps; the only limit is `--concurrency` (default 4) on how many run at once.
+
+## Other shapes
+
+- **Everything up front, no gates:** a fully unattended run. Watch with
+  `--until trouble`; you are woken only by a failure or the end.
+- **One step at a time:** a program of one step, then `workflow wait` and
+  `workflow add` for each next step.
+- **A planner step:** a step whose `answer` is itself a fragment `{steps,
+  gates?, loops?}`; read it with `workflow wait`, then add it with `bullswarm
+  workflow add <run> --from-answer <step>`.
+- **A past run's shape:** `bullswarm workflow plan export <run> --out
+  old.json` writes the run's plan; its `program` object, saved as a file of its
+  own, validates and launches as a new program. After you rename a step,
+  delete its `purpose` (validate refuses one that no longer matches the id or
+  label).
