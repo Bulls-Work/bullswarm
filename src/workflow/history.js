@@ -12,11 +12,11 @@
 //   H1. The day boundary is the reader's own local zone, resolved at call
 //       time from Intl.DateTimeFormat().resolvedOptions().timeZone. No
 //       hard-coded zone, and no UTC "day" that puts a 6 pm run on tomorrow.
-//   H2. `runs` counts the runs a day STARTED; `finished` counts the runs it
-//       FINISHED. A run launched at 23:50 and delivered at 00:30 is one
-//       started run yesterday and one finished run today. Verified counts and
-//       spend attach to the day the run finished, because that is the day its
-//       record exists.
+//   H2. A run belongs to the day it FINISHED (metrics.js M5, the one "today"
+//       every page uses); a run with no finish belongs to the day it started.
+//       `runs` counts the runs a day holds that way, `finished` the ones among
+//       them that finished. A run launched at 23:50 and delivered at 00:30 is
+//       today's. Verified counts and spend attach to the finish day too.
 //   H3. Spend is never invented. `spendUsd` is the sum of the estimates the
 //       day's runs actually recorded; a day where no run recorded one is
 //       null, not 0.
@@ -229,9 +229,10 @@ export function historyDays(bullswarmDir, {
     // An unfinished row has no finish time by definition, whatever it carries.
     const finishedDay = record.unfinished === true ? null : dayKey(record.finishedAt);
     const startedDay = dayKey(record.startedAt);
-    if (startedDay) {
-      dayOf(startedDay).runs += 1;
-      if (!oldest || startedDay < oldest) oldest = startedDay;
+    const recordDay = finishedDay ?? startedDay;
+    if (recordDay) {
+      dayOf(recordDay).runs += 1;
+      if (!oldest || recordDay < oldest) oldest = recordDay;
     }
     if (finishedDay) {
       const day = dayOf(finishedDay);

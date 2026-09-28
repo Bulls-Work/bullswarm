@@ -144,26 +144,22 @@ test('H1: dayKey accepts an ISO string, epoch ms and a Date, and refuses anythin
 
 // --- H2/H3: the rows --------------------------------------------------
 
-test('H2: runs count the day that started them, finished counts the day that delivered them', () => {
+test('H2: a run belongs to the day it finished, for its count as well as its row (0.37.0: one "today")', () => {
   const h = home();
   try {
     // One run crosses midnight: started 23:50 on the 15th, finished 00:30 on
-    // the 16th, local time.
+    // the 16th, local time. It is the 16th's run, as on every other page.
     record(h.dir, { startedAt: localNoon(2026, 9, 15, 23), finishedAt: localNoon(2026, 9, 16, 0), verified: true, costUsd: 1.5 });
     record(h.dir, { startedAt: localNoon(2026, 9, 16, 9), finishedAt: localNoon(2026, 9, 16, 10), verified: false, costUsd: 0.5 });
 
     const rows = historyDays(h.dir, { days: 3, now: Date.parse(localNoon(2026, 9, 16, 20)) });
-    assert.deepEqual(rows.map((row) => row.date), ['2026-09-16', '2026-09-15']);
-    const [today, yesterday] = rows;
-    assert.equal(today.runs, 1, 'only one run started on the 16th');
+    assert.deepEqual(rows.map((row) => row.date), ['2026-09-16']);
+    const [today] = rows;
+    assert.equal(today.runs, 2, 'both runs belong to the day they finished');
     assert.equal(today.finished, 2, 'both runs finished on the 16th');
     assert.equal(today.verified, 1);
     assert.equal(today.verifiedShare, 0.5);
     assert.equal(today.spendUsd, 2);
-    assert.equal(yesterday.runs, 1, 'the crossing run started on the 15th');
-    assert.equal(yesterday.finished, 0);
-    assert.equal(yesterday.verifiedShare, null, 'no finished run that day → no share, not 0%');
-    assert.equal(yesterday.spendUsd, null, 'nothing finished that day → no spend, not $0');
   } finally { h.cleanup(); }
 });
 
