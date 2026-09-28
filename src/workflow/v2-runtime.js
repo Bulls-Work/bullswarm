@@ -1206,6 +1206,8 @@ async function runV2Kernel({
             // marked runs the failed pool's own reset after a usage limit or
             // a rate-limit wait the provider named. The run does not wait for it.
             ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}),
+            // No pool took the step: why, and what ruled each pool out.
+            ...(result.routeCandidates ? { route: { why: result.routeWhy ?? null, candidates: clone(result.routeCandidates) } } : {}),
           };
       persist();
       emit('action.finished', {

@@ -707,8 +707,9 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         ...(declaredEvidence(definition).length ? { evidenceResults: clone(attempt?.evidenceResults ?? null) } : {}),
         bytes: lastAttemptBytes(state, definition.id),
         usage: actionUsage,
-        routeWhy: attempt?.routeWhy ?? null,
-        routeCandidates: clone(attempt?.routeCandidates ?? null),
+        // A step no pool took has no attempt: its failure records the route.
+        routeWhy: runtime?.lastFailure?.route?.why ?? attempt?.routeWhy ?? null,
+        routeCandidates: clone(runtime?.lastFailure?.route?.candidates ?? attempt?.routeCandidates ?? null),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
         ...(runtime?.acceptance ? { acceptance: publicAcceptance(runtime.acceptance) } : {}),
         // Program v3: the step's checked answer (answers.js).

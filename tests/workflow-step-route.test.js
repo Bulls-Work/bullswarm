@@ -272,7 +272,12 @@ test('routeSummary text', () => {
   assert.equal(routeUnavailableWhy(filter, { lane: 'analyze', effort: 'medium' }),
     "no eligible pool under the step's route (independent of build-a (providers grok)): no enabled pool left has a model on the medium tier for analyze work");
   assert.equal(routeUnavailableWhy(filter, { lane: 'analyze', effort: 'medium', sharedProvider: true }),
-    "no eligible pool under the step's route (independent of build-a (providers grok)): every pool that could run it shares a provider with build-a (grok)");
+    "no eligible pool under the step's route (independent of build-a (providers grok)): every pool that could run it (analyze/medium work) shares a provider with build-a (grok); "
+    + 'no pool of another provider is enabled for analyze work; enable one or drop independentOf');
+  const others = [{ pool: 'acme', provider: 'codex', excluded: 'no model on the medium tier for analyze work (has none)', tiers: [] }];
+  assert.equal(routeUnavailableWhy(filter, { lane: 'analyze', effort: 'medium', sharedProvider: true, others }),
+    "no eligible pool under the step's route (independent of build-a (providers grok)): every pool that could run it (analyze/medium work) shares a provider with build-a (grok); "
+    + 'pools of other providers: acme (codex): no model on the medium tier for analyze work (has none); give one of them a medium-tier model, or drop independentOf');
 });
 
 test('inheritedRepairRoute: avoid unions, use intersections, never independentOf', () => {

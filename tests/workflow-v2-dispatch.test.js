@@ -3901,9 +3901,45 @@ test('route: a hard filter on prepare, the capable set and the no-eligible reaso
   });
   assert.equal(shared.result.failureKind, 'unavailable');
   assert.equal(shared.result.verdict.why,
-    'no eligible pool under the step\'s route (independent of write-a (providers codex)): every pool that could run it shares a provider with write-a (codex)');
+    'no eligible pool under the step\'s route (independent of write-a (providers codex)): every pool that could run it (build/low work) shares a provider with write-a (codex); '
+    + 'no pool of another provider is enabled for build work; enable one or drop independentOf');
   const independent = await markedDispatch([good], { pools: pools(), routeFilter: routed({ independentOf: ['write-a'] }, wrote) });
   assert.notEqual(independent.result.attempts[0].pool, 'codex');
+});
+
+// QA37 (0.37.0): an independentOf refusal that said "every pool that could
+// run it shares a provider" while a pool of another provider was capable one
+// tier up. The reason names the tier and those pools, and a step no pool
+// could take records why and what each pool was ruled out for.
+test('route: an independentOf refusal names the tier and the other providers\' pools that lack it; a no-pool step records routeWhy and routeCandidates', async () => {
+  const wrote = [{ id: 'write-a-1', actionId: 'write-a', ordinal: 1, status: 'succeeded', pool: 'codex', changedFileCount: 2 }];
+  const mediumOnly = connector('grok', {
+    strategyAssignments: {}, strategyConfiguredTiers: ['low', 'medium', 'high'], strategyModelTiers: { grok: { 'grok-4.7': ['medium'] } },
+  });
+  const pools = [connector('codex'), mediumOnly];
+  const step = { ...action, route: { independentOf: ['write-a'] } };
+  const state = {
+    program: { actions: [{ id: 'write-a', lane: 'build' }, step] },
+    actions: [{ id: 'write-a', supersededAttempts: 0 }, { id: 'do-work', supersededAttempts: 0 }],
+    attempts: wrote,
+  };
+  const { result } = await markedDispatch([good], { pools, routeFilter: resolveRouteFilter(state, step, pools) });
+  assert.equal(result.failureKind, 'unavailable');
+  const why = 'no eligible pool under the step\'s route (independent of write-a (providers codex)): every pool that could run it (build/low work) '
+    + 'shares a provider with write-a (codex); pools of other providers: grok (grok): no model on the low tier for build work (has medium); '
+    + 'raise the step\'s effort, give one of them a low-tier model, or drop independentOf';
+  assert.equal(result.verdict.why, why);
+  assert.equal(result.routeWhy, why);
+  assert.deepEqual(result.routeCandidates, [
+    { pool: 'codex', provider: 'codex', excluded: 'shares provider codex with write-a' },
+    { pool: 'grok', provider: 'grok', excluded: 'no model on the low tier for build work (has medium)' },
+  ]);
+  // A tier no pool has at all records each pool's reason too.
+  const none = await markedDispatch([good], { pools: [mediumOnly] });
+  assert.equal(none.result.failureKind, 'unavailable');
+  assert.deepEqual(none.result.routeCandidates, [
+    { pool: 'grok', provider: 'grok', excluded: 'no model on the low tier for build work (has medium)' },
+  ]);
 });
 
 test('route: pinSource reaches the attempt\'s route reason', async () => {

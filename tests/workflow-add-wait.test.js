@@ -739,3 +739,26 @@ test('add a step whose phase names a phase the run already has: the step joins t
   assert.equal(next.result.status, 'completed');
   assert.equal(statusOf(readState(run), 'review-again'), 'succeeded');
 });
+
+// QA37 (0.37.0): a step no pool took had null routeWhy and routeCandidates in
+// result.json, so the reason could not be read from the run's own record.
+test('a step whose route left no pool records routeWhy and each pool\'s reason in its failure and in result.json', async (t) => {
+  const f = fixture(t);
+  const program = {
+    schemaVersion: V3,
+    steps: [
+      { id: 'find', prompt: 'Find claims in the acme notes.', answer: findingsAnswer },
+      { id: 'check-f1', dependsOn: ['find'], route: { independentOf: ['find'] }, prompt: 'Check finding f1.', answer: confirmAnswer },
+    ],
+  };
+  const run = await launch(f, program, fakeDispatch(script, { pools: [connector('acme-pool')] }));
+  assert.equal(run.result.status, 'partial');
+  const check = readState(run).actions.find((action) => action.id === 'check-f1');
+  assert.match(check.lastFailure.route.why, /^no eligible pool under the step's route \(independent of find \(providers acme-pool\)\): every pool that could run it \(analyze\/medium work\) shares a provider with find/);
+  assert.deepEqual(check.lastFailure.route.candidates, [{ pool: 'acme-pool', provider: 'acme-pool', excluded: 'shares provider acme-pool with find' }]);
+  const result = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
+  const step = result.actions.find((action) => action.id === 'check-f1');
+  assert.equal(step.routeWhy, check.lastFailure.route.why);
+  assert.deepEqual(step.routeCandidates, check.lastFailure.route.candidates);
+  assert.equal(step.failure.message, check.lastFailure.message);
+});

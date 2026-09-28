@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './retry-handoff.js';
 import {
-  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isFree,
+  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isFree, modelFamilyOf,
 } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
 import {
@@ -2147,6 +2147,11 @@ export async function dispatchV2Action({
     promisedRecord = null;
   }
   let why = noPoolWhy({ capableCount: capable.length, held, failureKind, strictPool, lane, effort });
+  // A step no pool took records what ruled each enabled pool out, so its
+  // result says why without re-deriving the pick (QA37).
+  const ruledOut = last ? null : noPoolCandidates(allPools, action, effort, {
+    lane, strictPool, preferredModel, routeFilter, failedProbes, onLane, held, now: endAt, ignoreBurstGate: Boolean(limitsRule),
+  });
   if (!capable.length && routeFilter) {
     // §2.4: the route, not the tier or the pin, emptied the capable set.
     const unrouted = preparePools(allPools, action, effort, {
@@ -2157,7 +2162,9 @@ export async function dispatchV2Action({
       const withoutIndependence = { ...routeFilter, independentProviders: [] };
       const sharedProvider = (routeFilter.independentProviders ?? []).length > 0
         && unrouted.some((pool) => poolPassesRoute(pool, withoutIndependence));
-      why = routeUnavailableWhy(routeFilter, { lane, effort, sharedProvider });
+      const independent = new Set(routeFilter.independentProviders ?? []);
+      const others = (ruledOut ?? []).filter((entry) => !independent.has(entry.provider) && entry.inRoute && entry.onLane);
+      why = routeUnavailableWhy(routeFilter, { lane, effort, sharedProvider, others });
     }
   }
   return {
@@ -2173,7 +2180,43 @@ export async function dispatchV2Action({
     verdict: last
       ? noRetry ? { ...last, why: `${last.why ?? lastKind}${noRetry}` } : last
       : { ok: false, why, meta: { exitCode: null } },
+    ...(ruledOut ? { routeWhy: why, routeCandidates: ruledOut.map(({ pool, provider, excluded }) => ({ pool, provider, excluded })) } : {}),
   };
+}
+
+const STRATEGY_TIER_ORDER = ['low', 'medium', 'high'];
+
+/**
+ * What ruled each enabled pool out of a step no pool took:
+ * [{pool, provider, excluded, tiers, inRoute, onLane}], in pool order. The
+ * first reason that applies is named: the pin, the lane, a failed probe, the
+ * route's use/avoid lists, a provider the route is independent of, a spent
+ * window, the tier (with the tiers the pool has on this lane), then a hold
+ * (a usage limit, a draining window). `tiers`, `inRoute` and `onLane` let the
+ * route refusal name the other providers' pools.
+ */
+function noPoolCandidates(allPools, action, effort, {
+  lane, strictPool, preferredModel, routeFilter, failedProbes, onLane, held, now, ignoreBurstGate,
+}) {
+  const heldText = new Map(held.map((entry) => [entry.pool, entry.text]));
+  const withoutIndependence = routeFilter ? { ...routeFilter, independentProviders: [] } : null;
+  return allPools.filter((pool) => pool.enabled !== false).map((pool) => {
+    const provider = modelFamilyOf(pool);
+    const tiers = STRATEGY_TIER_ORDER.filter((tier) => preparePools([pool], action, tier, { preferredModel, now, ignoreBurstGate: true }).length);
+    const inRoute = !withoutIndependence || poolPassesRoute(pool, withoutIndependence);
+    const lanes = onLane(pool) && (pool.lanes ?? LANES).includes(lane);
+    const sharedWith = Object.entries(routeFilter?.independentOf ?? {}).filter(([, providers]) => providers.includes(provider)).map(([step]) => step);
+    let excluded;
+    if (strictPool && pool.name !== strictPool) excluded = `not the pinned pool ${strictPool}`;
+    else if (!lanes) excluded = `not on the ${lane} lane`;
+    else if (failedProbes.has(pool.name)) excluded = 'failed its probe';
+    else if (!inRoute) excluded = `outside the route (${routeFilter.summary})`;
+    else if (sharedWith.length) excluded = `shares provider ${provider} with ${sharedWith.join(', ')}`;
+    else if (!ignoreBurstGate && windowSpent(pool, now)) excluded = 'a usage window is at its limit';
+    else if (!tiers.includes(effort)) excluded = `no model on the ${effort} tier for ${lane} work (has ${tiers.length ? tiers.join(', ') : 'none'})`;
+    else excluded = heldText.get(pool.name) ?? 'capable, but no pick was made';
+    return { pool: pool.name, provider, excluded, tiers, inRoute, onLane: lanes };
+  });
 }
 
 export { classifyFailure as classifyV2DispatchFailure, preparePools as prepareV2DispatchPools, selectedModel as selectedV2DispatchModel, trackedStat as trackedDiffStatForTests };
