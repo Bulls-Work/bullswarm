@@ -6,8 +6,8 @@
 // run stays v3 and a v3 revision is checked by the v3 validator.
 //
 // `workflow plan revise` is refused on v3 runs in 0.37.0 (design section 5):
-// a revision may rerun or accept steps, never add, change or remove one. The
-// control nodes are never touched here, so no gate or loop can lose a step.
+// a revision may rerun or accept steps, never add, change or remove one, and
+// never change the run's gates or loops, so no gate or loop can lose a step.
 
 import { isProgramV3, storedProgramV3 } from './program-v3.js';
 
@@ -30,20 +30,28 @@ export function exportedProgramV3(state, liveActions) {
   };
 }
 
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+
+// The request's own gates and loops, normalised, or null when the request does
+// not validate with them (a missing or broken control reads as a change).
+function requestedControl(program, runtime) {
+  try { return storedProgramV3(program, runtime).control; } catch { return null; }
+}
+
 /**
  * The revised steps of a v3 run, checked by the v3 validator, or `issues`.
- * The request keeps the run's control nodes; any step added, changed or
- * removed is refused.
+ * Any step added, changed or removed is refused, and so is any change to the
+ * run's gates and loops (a request that drops or edits one).
  */
 export function desiredActionsV3(state, program, runtime) {
+  const control = state.program.control ?? { gates: [], loops: [] };
   let desired;
   try {
-    desired = storedProgramV3({ ...program, control: clone(state.program.control ?? { gates: [], loops: [] }) }, runtime).actions;
+    desired = storedProgramV3({ ...program, control: clone(control) }, runtime).actions;
   } catch (error) {
     return { issues: Array.isArray(error?.issues) ? error.issues : [error.message] };
   }
   const stored = state.program.actions;
-  const same = desired.length === stored.length
-    && desired.every((action, index) => JSON.stringify(action) === JSON.stringify(stored[index]));
-  return same ? { desired } : { issues: [V3_REVISE_REFUSED] };
+  const sameSteps = desired.length === stored.length && desired.every((action, index) => same(action, stored[index]));
+  return sameSteps && same(requestedControl(program, runtime), control) ? { desired } : { issues: [V3_REVISE_REFUSED] };
 }

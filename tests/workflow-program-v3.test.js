@@ -24,6 +24,7 @@ import {
   PROGRAM_V3_SCHEMA_VERSION, implicitV3Requirements, isProgramV3, normaliseProgramV3,
 } from '../src/workflow/program-v3.js';
 import { answerFileFor, answerInstruction, checkAnswer } from '../src/workflow/answers.js';
+import { V3_REVISE_REFUSED } from '../src/workflow/revision-v3.js';
 import { watchOnce } from '../src/lib/watch.js';
 import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
 import { oneStepV3, section2Example, v2V3Fixtures } from './fixtures/program-v3-fixtures.mjs';
@@ -574,5 +575,36 @@ test('plan validate reads a v3 program piped through /dev/stdin (the file is rea
   const payload = JSON.parse(validate.stdout);
   assert.equal(payload.program.schemaVersion, PROGRAM_V3_SCHEMA_VERSION);
   assert.deepEqual(payload.requirements, [{ id: 'goal', text: 'Count the markdown files', mandatory: false }], 'the v3 requirement, so the program was read as v3');
+});
+
+test('a v3 revision that changes only gates or loops is refused, never applied as a no-op', () => {
+  const state = acceptedV3State();
+  const at = '2026-09-28T08:00:00.000Z';
+  const step = state.actions.find((action) => action.id === 'search-a');
+  Object.assign(step, { status: 'succeeded', attempts: 1, startedAt: at, finishedAt: at });
+  state.attempts.push({
+    id: 'search-a-1', actionId: 'search-a', ordinal: 1, status: 'succeeded', pool: 'acme-pool', model: 'acme-model',
+    startedAt: at, finishedAt: at, taskFile: '/tmp/task.md', outputFile: '/tmp/out.md', failureKind: null, why: null, usage: null,
+  });
+  validateV2DurableState(state);
+  const exported = exportV2Plan(state);
+  // The unchanged export with a rerun is accepted: the control nodes match.
+  assert.equal(planV2Revision(state, { ...exported, rerun: ['search-a'] }).ok, true);
+  const edits = [
+    (control) => { control.loops[0].maxRounds = 5; },
+    (control) => { control.gates[0].note = 'Publish without reading'; },
+    (control) => { control.gates = []; },
+    (control) => { control.loops = []; },
+  ];
+  for (const edit of edits) {
+    const request = structuredClone({ ...exported, rerun: ['search-a'] });
+    edit(request.program.control);
+    const refused = planV2Revision(state, request);
+    assert.equal(refused.ok, false, `accepted a control edit: ${JSON.stringify(request.program.control)}`);
+    assert.deepEqual(refused.issues, [V3_REVISE_REFUSED]);
+  }
+  const dropped = structuredClone({ ...exported, rerun: ['search-a'] });
+  delete dropped.program.control;
+  assert.deepEqual(planV2Revision(state, dropped).issues, [V3_REVISE_REFUSED], 'a request without control would drop the gates and loops');
 });
 
