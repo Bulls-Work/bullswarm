@@ -3098,7 +3098,7 @@ test('failure rule: a process failure with 3 eligible pools is retried once on a
   assert.notEqual(result.attempts[0].pool, result.attempts[1].pool);
   assert.deepEqual(result.attempts[1].retryOf, { attempt: 'do-work-1', how: 'other-pool' });
   assert.equal(Object.hasOwn(result.attempts[0], 'retryOf'), false, 'the failed attempt carries no retry fact');
-  assert.deepEqual(result.attempts.map((attempt) => [attempt.status, attempt.willRetry]), [['interrupted', true], ['failed', false]]);
+  assert.deepEqual(result.attempts.map((attempt) => [attempt.status, attempt.willRetry]), [['failed', true], ['failed', false]]);
   // The fact is on the record before onAttempt('started') (D3).
   const started = lifecycle.filter((entry) => entry.stage === 'started').map((entry) => entry.record);
   assert.equal(Object.hasOwn(started[0], 'retryOf'), false);
@@ -3172,7 +3172,7 @@ test('failure rule: not-produced is retried on the same pool, forced, in a fresh
     assert.deepEqual(pickedPools(result), ['pool-a', 'pool-a']);
     const [first, second] = result.attempts;
     assert.equal(first.failureKind, 'not-produced');
-    assert.equal(first.status, 'interrupted');
+    assert.equal(first.status, 'failed');
     assert.deepEqual(second.retryOf, { attempt: 'write-work-1', how: 'same-pool' });
     assert.match(second.routeWhy, /^pinned to pool-a \(the same pool \(gate retry\)\)/);
     // A fresh session (D7): a new id, never a resumed conversation.
@@ -3555,7 +3555,7 @@ test('failure rule: a backoff whose pool\'s meter reads its window at the limit 
   const noRetry = ` · no retry: luna-1 at its 5-hour limit until ${new Date(until).toISOString()}`;
   assert.equal(result.verdict.why, `${transientVerdict().why}${noRetry}`);
   // The attempt promised the backoff; it is corrected once none could run.
-  assert.deepEqual(lifecycle.map((entry) => [entry.stage, entry.record.status]), [['started', 'running'], ['finished', 'interrupted'], ['corrected', 'failed']]);
+  assert.deepEqual(lifecycle.map((entry) => [entry.stage, entry.record.status]), [['started', 'running'], ['finished', 'failed'], ['corrected', 'failed']]);
   assert.equal(lifecycle.at(-1).record.why, `${transientVerdict().why}${noRetry}`);
   assert.deepEqual([result.attempts[0].status, result.attempts[0].willRetry], ['failed', false]);
 
@@ -3684,7 +3684,7 @@ test('failure rule: a promised other-pool retry whose pool reached its window li
   const why = `worker exited 1 · no retry: luna-1 already failed on this step; luna-2 at its 5-hour limit until ${new Date(until).toISOString()}`;
   assert.equal(result.verdict.why, why);
   assert.equal(result.retryAfter, new Date(until).toISOString());
-  assert.deepEqual(lifecycle.map((entry) => [entry.stage, entry.record.status]), [['started', 'running'], ['finished', 'interrupted'], ['corrected', 'failed']]);
+  assert.deepEqual(lifecycle.map((entry) => [entry.stage, entry.record.status]), [['started', 'running'], ['finished', 'failed'], ['corrected', 'failed']]);
   assert.equal(lifecycle.at(-1).record.why, why);
   assert.equal(result.attempts[0].why, why);
 });
@@ -4001,7 +4001,7 @@ test('failure rule: a promised retry that no pool can take is corrected, and the
   assert.equal(result.attempts.length, 1);
   assert.deepEqual([result.attempts[0].status, result.attempts[0].willRetry], ['failed', false]);
   const stages = lifecycle.map((entry) => [entry.stage, entry.record.status]);
-  assert.deepEqual(stages, [['started', 'running'], ['finished', 'interrupted'], ['corrected', 'failed']]);
+  assert.deepEqual(stages, [['started', 'running'], ['finished', 'failed'], ['corrected', 'failed']]);
   // luna-2 is off, so it is not a pool that could run the step.
   assert.equal(result.verdict.why, 'worker exited 1 · no retry: luna-1 already failed on this step');
   assert.equal(Object.hasOwn(result, 'retryAfter'), false);
@@ -4506,7 +4506,7 @@ test('usage limits to the caller: the one same-pool retry after a crash is not r
   assert.equal(marked.tasks.length, 1);
   assert.equal(marked.result.retryAfter, markedReset);
   assert.equal(marked.result.verdict.why, `worker exited 1 · no retry: luna-1 nearly spent (forecast 99.0%) until ${markedReset}`);
-  assert.deepEqual(marked.lifecycle.map((entry) => [entry.stage, entry.record.status]), [['started', 'running'], ['finished', 'interrupted'], ['corrected', 'failed']]);
+  assert.deepEqual(marked.lifecycle.map((entry) => [entry.stage, entry.record.status]), [['started', 'running'], ['finished', 'failed'], ['corrected', 'failed']]);
   assert.deepEqual(markedClock.slept, []);
 });
 

@@ -433,7 +433,7 @@ test('an answer that breaks its schema gets one same-pool correction worded for 
   assert.match(seen[1].task, /answer-count-attempt-2\.json/);
   assert.doesNotMatch(seen[1].task, /answer-count-attempt-1\.json/, 'the new attempt writes its own file');
   const attempts = run.state.attempts.filter((item) => item.actionId === 'count');
-  assert.equal(attempts[0].status, 'interrupted', 'an attempt the dispatcher retries reads interrupted, as today');
+  assert.equal(attempts[0].status, 'failed', 'an attempt the dispatcher retries reads failed in a run under the failure rule (QA37)');
   assert.equal(attempts[0].failureKind, 'schema');
   assert.equal(attempts[0].answer.ok, false);
   assert.deepEqual(attempts[0].answer.value, { count: 'one' });

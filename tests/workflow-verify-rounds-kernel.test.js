@@ -976,7 +976,7 @@ test('marked: an inherited check the repair fails makes it failed-evidence, one 
   const { run, events } = await runLoop(t, { work: { ...buggyBuild, 'repair-1': stillOne }, judge: workspaceJudge },
     { features: STAGE3_RUN_FEATURES, programDoc });
   const attempts = run.state.attempts.filter((attempt) => attempt.actionId === 'repair-1');
-  assert.deepEqual(attempts.map((attempt) => [attempt.status, attempt.failureKind]), [['interrupted', 'failed-evidence'], ['failed', 'failed-evidence']]);
+  assert.deepEqual(attempts.map((attempt) => [attempt.status, attempt.failureKind]), [['failed', 'failed-evidence'], ['failed', 'failed-evidence']]);
   assert.deepEqual(attempts[1].retryOf, { attempt: 'repair-1-1', how: 'same-pool' });
   assert.equal(attempts[1].pool, attempts[0].pool);
   const finished = events.findLast((event) => event.type === 'action.finished' && event.payload.actionId === 'repair-1').payload;

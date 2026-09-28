@@ -248,7 +248,10 @@ test('stage 3: a failing check is the step\'s one gate retry, forced onto the sa
   assert.equal(seen[0].retriesAlready, 0);
   const [first, second] = run.state.attempts;
   assert.equal(run.state.attempts.length, 2, 'exactly one retry, never a third attempt');
-  assert.deepEqual([first.status, first.failureKind], ['interrupted', 'failed-evidence']);
+  // QA37 (0.37.0): the retried attempt failed its check; in a run under the
+  // failure rule it reads failed (willRetry true), never interrupted. The
+  // stage-2 run above keeps its saved label.
+  assert.deepEqual([first.status, first.failureKind], ['failed', 'failed-evidence']);
   assert.deepEqual([second.status, second.failureKind], ['failed', 'failed-evidence']);
   assert.equal(second.pool, first.pool);
   assert.match(second.routeWhy, /^pinned to codex \(the same pool \(gate retry\)\)/);

@@ -1829,11 +1829,17 @@ export async function dispatchV2Action({
       : canCorrectSchema || canRetryThrottle || canRetryMechanically || canRetryEvidence;
     Object.assign(record, {
       finishedAt,
+      // An attempt the dispatcher retries failed; `willRetry` says a retry
+      // follows. Runs under the failure rule record it as failed (QA37: a
+      // retried check failure read "interrupted"); older runs keep the
+      // "interrupted" label they were written with. Nothing replays on the
+      // label: resume, handoff and retry counting read willRetry, retryOf
+      // and failureKind, and treat failed and interrupted alike.
       status: verdict.ok
         ? 'succeeded'
         : kind === 'cancelled'
           ? 'cancelled'
-          : willRecover
+          : willRecover && !failureRule
             ? 'interrupted'
             : 'failed',
       failureKind: kind,

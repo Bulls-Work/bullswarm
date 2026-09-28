@@ -1619,7 +1619,7 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     // A failed check, then one retry pinned to the same pool with the check's output attached.
     const [first, second] = attemptsOf('retry-once');
     assert.equal(attemptsOf('retry-once').length, 2);
-    assert.deepEqual([first.status, first.failureKind], ['interrupted', 'failed-evidence']);
+    assert.deepEqual([first.status, first.failureKind], ['failed', 'failed-evidence']);
     const events = readEvents(runDir);
     const attemptFinished = (attempt) => events.find((event) => event.type === 'attempt.finished' && event.payload.attemptId === attempt.id).payload;
     assert.equal(attemptFinished(first).willRetry, true);
@@ -1651,7 +1651,7 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
 
     // A check that fails twice: the step fails on the same pool and waits for the caller.
     const failing = attemptsOf('always-fails');
-    assert.deepEqual(failing.map((attempt) => [attempt.status, attempt.failureKind]), [['interrupted', 'failed-evidence'], ['failed', 'failed-evidence']]);
+    assert.deepEqual(failing.map((attempt) => [attempt.status, attempt.failureKind]), [['failed', 'failed-evidence'], ['failed', 'failed-evidence']]);
     assert.equal(failing[1].pool, failing[0].pool);
     assert.equal(state.actions.find((action) => action.id === 'always-fails').lastFailure.kind, 'failed-evidence');
 
@@ -1819,7 +1819,7 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
     // The gate failure: one retry forced onto the same pool with the failure
     // attached, then the caller, whose dependent is blocked.
     const gateAttempts = attemptsOf(first.state, 'gate');
-    assert.deepEqual(gateAttempts.map((attempt) => [attempt.status, attempt.failureKind]), [['interrupted', 'failed-evidence'], ['failed', 'failed-evidence']]);
+    assert.deepEqual(gateAttempts.map((attempt) => [attempt.status, attempt.failureKind]), [['failed', 'failed-evidence'], ['failed', 'failed-evidence']]);
     assert.equal(gateAttempts[1].pool, gateAttempts[0].pool);
     assert.deepEqual(gateAttempts[1].retryOf, { attempt: 'gate-1', how: 'same-pool' });
     assert.match(gateAttempts[1].routeWhy, /\(the same pool \(gate retry\)\)/);
