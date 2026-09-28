@@ -19,6 +19,7 @@
 // The loop's own record never uses the keys `verify`, `repair`, `decision`,
 // `result` or `completion`: the state validator rejects those legacy names.
 
+import { clone } from '../lib/clone.js';
 import { formatMoney } from '../lib/usage-basis.js';
 import { FIX_ROUNDS_DEFAULT, VERIFY_ROUNDS_DEFAULT } from './action-validator.js';
 import { isProgramWorkflow, removedActionIds } from './execution-policy.js';
@@ -44,8 +45,6 @@ const EFFORT_RANK = Object.freeze({ low: 1, medium: 2, high: 3 });
 const DISCOVERY_PREFIX = /^\s*discovery\s*:\s*/i;
 /** The status of a declared requirement that no evidence step covers. */
 export const NOT_JUDGED_STATUS = 'not judged · no evidence step covers it';
-
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
 /**
  * The loop record for a program's `verifyRounds`. With `countsFixes` (marked

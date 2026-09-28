@@ -2,6 +2,7 @@
 // Concurrent mutating actions require isolated workspaces; a shared workspace
 // can only safely attribute one mutating action at a time.
 
+import { clone } from '../lib/clone.js';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync, readlinkSync, readdirSync } from 'node:fs';
@@ -15,7 +16,6 @@ export class OwnershipValidationError extends TypeError {
 }
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
 // Shared safety rules for any relative path we accept: no absolute or Windows
 // paths, no NUL or backslash, no empty/./.. segments, and never a directory.

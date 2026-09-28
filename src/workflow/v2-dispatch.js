@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -57,10 +58,6 @@ export const FREE_STALL_P50_FACTOR = 1;
 export function workerSilenceTimeoutSec(env = process.env) {
   const raw = Number(env?.BULLSWARM_WORKER_SILENCE_SEC);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_WORKER_SILENCE_SEC;
-}
-
-function clone(value) {
-  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
 function recordedRung(decisionLog, poolName, effort) {

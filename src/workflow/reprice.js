@@ -6,6 +6,7 @@
 // atomically writes the changed state/result and then uses the same rollup
 // writer as the normal finish and `workflow reindex` paths.
 
+import { clone } from '../lib/clone.js';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -44,10 +45,6 @@ const SUBSCRIPTION_RANK = {
   'observed:meter-delta': 5,
   'observed:meter-ledger': 6,
 };
-
-function clone(value) {
-  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-}
 
 function finite(value) {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;

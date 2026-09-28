@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone.js';
 import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { scheduleV2Actions } from './v2-scheduler.js';
@@ -18,7 +19,6 @@ export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
 const TERMINAL_ACTION_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'removed']);
 const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', ...TERMINAL_ACTION_STATUSES]);
 const REQUIREMENT_STATUSES = new Set(['pending', 'passed', 'failed', 'blocked']);
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
 // Failure kinds a plain retry can fix: the work itself was never judged (no
 // pool, a spent pool, a crashed or silent worker, unreadable output). A step

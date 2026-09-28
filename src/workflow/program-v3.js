@@ -24,6 +24,7 @@
 // amended. A run stores it as state.program = {schemaVersion, revision,
 // actions: steps, control: {gates, loops}} (storedProgramV3).
 
+import { clone } from '../lib/clone.js';
 import {
   ACTION_PROGRAM_SCHEMA_VERSION, DEFAULT_EFFORT_BY_LANE, TIME_BOX_MAX_MINUTES, validateActionProgram,
 } from './action-validator.js';
@@ -69,7 +70,6 @@ class ProgramV3ValidationError extends Error {
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const present = (value) => Object.keys(value).filter((key) => value[key] !== undefined);
-const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 /** True for a v3 program, or a planner response that wraps one. */

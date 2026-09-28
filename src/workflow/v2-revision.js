@@ -24,6 +24,7 @@
 // on purpose: a live kernel's running actions hold references to their own
 // runtime records, and those must stay the records the new plan uses.
 
+import { clone } from '../lib/clone.js';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -55,7 +56,6 @@ export class V2RevisionError extends Error {
   }
 }
 
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const canonical = (value) => Array.isArray(value)
   ? value.map(canonical)

@@ -1,3 +1,5 @@
+import { clone } from '../lib/clone.js';
+
 export const LEDGER_SCHEMA_VERSION = 'bullswarm.workflow.ledger.v2';
 export const REQUIREMENT_STATUSES = Object.freeze({
   PENDING: 'pending',
@@ -8,10 +10,6 @@ export const REQUIREMENT_STATUSES = Object.freeze({
 export const REQUIREMENT_STATUS_VALUES = Object.freeze(Object.values(REQUIREMENT_STATUSES));
 
 const STATUS_SET = new Set(REQUIREMENT_STATUS_VALUES);
-
-function clone(value) {
-  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-}
 
 function fail(message) {
   throw new TypeError(`Invalid requirement ledger: ${message}`);

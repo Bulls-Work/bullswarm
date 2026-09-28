@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone.js';
 import { ACTION_PROGRAM_SCHEMA_VERSION, KIND_DEFAULTS, PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram } from './action-validator.js';
 import {
   DELIVERABLE_TYPES, EVIDENCE_TYPES, KIND_ROLES, ROLES, ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, ROLE_ROUTING,
@@ -21,7 +22,6 @@ import { isV3State } from './v3-phases.js';
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 
 const RESPONSE_FIELDS = new Set(['schemaVersion', 'kind', 'summary', 'program', 'reason']);
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 

@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone.js';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
@@ -203,7 +204,6 @@ export class V2StateValidationError extends TypeError {
   }
 }
 
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = (message) => { throw new V2StateValidationError(message); };
 

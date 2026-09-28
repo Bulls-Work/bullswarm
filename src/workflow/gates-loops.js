@@ -25,6 +25,7 @@
 // Loop rounds and gates are what the caller declared, never automatic
 // behaviour. v2 runs have no control nodes and none of this runs for them.
 
+import { clone } from '../lib/clone.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,7 +42,6 @@ export const CONTINUE_MAX_ROUNDS = 5;
 
 const UNSUCCESSFUL = new Set(['failed', 'blocked', 'cancelled', 'interrupted']);
 const SUCCESS = new Set(['succeeded', 'passed']);
-const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 const ANSWER_SHOWN_CHARS = 4000;
 const TAIL_SHOWN_LINES = 20;
 const LINE_SHOWN_CHARS = 200;

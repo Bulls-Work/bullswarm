@@ -1,5 +1,6 @@
 // Pure ready-set scheduling for generic V2 actions. This module selects work;
 // a runtime adapter remains responsible for dispatch and durable persistence.
+import { clone } from '../lib/clone.js';
 import { normalizeOwnedFiles } from './ownership.js';
 
 export class SchedulerValidationError extends TypeError {
@@ -23,7 +24,6 @@ const UNSUCCESSFUL = new Set(['failed', 'blocked', 'cancelled', 'interrupted']);
 // Only a running step holds a slot. `waiting` is kept for saved stage-3 runs,
 // whose steps could wait for a pool; it holds no slot.
 const ACTIVE = new Set(['running']);
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const object = (value, name) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new SchedulerValidationError(`${name} must be an object`);
   return value;
