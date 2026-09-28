@@ -55,7 +55,6 @@ export function argvOf(input: {
   cwd: string
   task: string
   timeoutSec: number
-  noCaller: boolean
 }): string[] {
   return [
     'bullswarm',
@@ -67,7 +66,6 @@ export function argvOf(input: {
     '--json',
     '--timeout',
     String(input.timeoutSec),
-    ...(input.noCaller ? ['--no-caller'] : []),
     '--prompt',
     input.task,
   ]

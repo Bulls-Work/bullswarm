@@ -21,7 +21,7 @@ For each new issue, oldest first, the watcher refreshes its clone, writes a task
 
 ```bash
 # the delegation the watcher makes for one new issue, one per pass
-bullswarm run --lane analyze --effort medium --no-caller --add-dir <dir>/repo --task-file <dir>/tasks/issue-<n>-triage.md --json
+bullswarm run --lane analyze --effort medium --add-dir <dir>/repo --task-file <dir>/tasks/issue-<n>-triage.md --json
 ```
 
 It reads the `ok` field of the verdict, never the exit code, and requires the report to end in a JSON block. From that it adds one label — `bug`, `enhancement`, `question`, `invalid` or `duplicate` — and posts a plain-words comment: a summary, whether the issue was reproduced and how, the affected files, and either a proposed fix or the one question the reporter must answer.
@@ -34,7 +34,7 @@ Only when the triage says `kind: "bug"`, `fixable: true` and `confidence >= 0.7`
 
 ```bash
 # the one fix attempt a qualifying bug gets, after its branch exists
-bullswarm run --lane build --effort high --no-caller --add-dir <dir>/repo --task-file <dir>/tasks/issue-<n>-fix.md --json
+bullswarm run --lane build --effort high --add-dir <dir>/repo --task-file <dir>/tasks/issue-<n>-fix.md --json
 ```
 
 Then it verifies the work itself, not on the delegate's word: the test command (default `npm test`) must exit 0 in the watcher's own clone, and the diff must be non-empty.

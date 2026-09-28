@@ -34,7 +34,7 @@ What it adds beyond the packaged skill and the MCP server:
 | `engine.create` | `$.bullswarm` (`pools`, `refresh`, `run`) for any other plugin |
 | `session.start` | registers `/bullswarm`, reads the meters, runs and in-flight ledger; re-reads every 2 min, every 20 s while work is in flight |
 | `prompt.context` | a context block naming every pool's surplus and every ongoing workflow run, re-sent only when a pool changes by a bucket or a run starts or ends |
-| `tool.call` on `Agent` | a general-purpose, Explore or Plan subagent runs on the pool with the most surplus via `bullswarm run --no-caller`; the tool result carries the verified output plus a routing note |
+| `tool.call` on `Agent` | a general-purpose, Explore or Plan subagent runs on the pool with the most surplus via `bullswarm run`; the tool result carries the verified output plus a routing note |
 | `tool.call` on `Bash` | a `bullswarm run` / `bullswarm workflow goal` result gets the verdict appended in the doctrine's words |
 | `command.run` `/bullswarm` | `pools`, `runs`, `pane`, `open <step> [run]`, `on`, `off`, `refresh`, `routed` |
 | `ui.render` `AbovePrompt` | the strip: one header line (run count, dispatches in flight, `route off` when routing is off) with `[w]`, which opens or closes the runs pane; then one row per ongoing workflow run (progress, the step each pool is running with elapsed/expected minutes, the goal) and one per standalone dispatch; a digit in front of a run row opens that run. Routing and refresh are `/bullswarm on`, `off` and `refresh`. The `strip` option picks `runs` (default), `full` (pool meter rows too) or `off`. Nothing is pinned under the prompt |

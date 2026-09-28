@@ -13,7 +13,7 @@ const TOOLS = [
   {
     name: 'bullswarm_run',
     description:
-      'Offload a task to the best available coding-agent pool, routed by quota pace and verified by content. Returns a verdict: ok=true means read outFile; keepOnClaude=true means do it in-session; ok=false means the why field names the failed gate.',
+      'Offload a task to the best available coding-agent pool as a one-step workflow, routed by quota pace and judged by facts. Returns a verdict: ok=true means read outFile; ok=false means the why field names the failure and failureKind its kind; runId names the recorded run.',
     inputSchema: {
       type: 'object',
       properties: {

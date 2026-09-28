@@ -361,7 +361,7 @@ function ensureClone(cfg, repo) {
 
 function dispatch(cfg, { lane, effort, taskFile }) {
   const args = [
-    'run', '--lane', lane, '--effort', effort, '--no-caller',
+    'run', '--lane', lane, '--effort', effort,
     '--add-dir', cfg.repoDir, '--task-file', taskFile, '--json',
   ];
   const startedAt = Date.now();
@@ -700,7 +700,7 @@ function pass(cfg, { dryRun }) {
       budget -= 1;
       process.stdout.write(`would triage #${w.issue.number} ${JSON.stringify(w.issue.title ?? '')} (${w.reason})\n`);
       process.stdout.write(`  would write ${join(cfg.tasksDir, `issue-${w.issue.number}-triage.md`)}\n`);
-      process.stdout.write(`  would run ${[cfg.bullswarm, 'run', '--lane', 'analyze', '--effort', 'medium', '--no-caller', '--add-dir', cfg.repoDir, '--task-file', join(cfg.tasksDir, `issue-${w.issue.number}-triage.md`), '--json'].join(' ')}\n`);
+      process.stdout.write(`  would run ${[cfg.bullswarm, 'run', '--lane', 'analyze', '--effort', 'medium', '--add-dir', cfg.repoDir, '--task-file', join(cfg.tasksDir, `issue-${w.issue.number}-triage.md`), '--json'].join(' ')}\n`);
       process.stdout.write(`  would then label and comment on ${repo}#${w.issue.number}, and open one fix PR only for a fixable bug at confidence >= 0.7\n`);
     }
     if (!work.length) process.stdout.write('would triage nothing: no new issue this pass\n');

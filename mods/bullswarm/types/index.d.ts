@@ -174,7 +174,6 @@ export type BullswarmPool = {
   meterError: string | null
   /** Epoch milliseconds at which a stale-meter hold may be retried. */
   meterHoldUntil: number | null
-  incumbentLane: readonly string[]
   quarantine: { until: number; reason: string; kind: string } | null
 }
 
@@ -184,15 +183,12 @@ export type BullswarmRunArgs = {
   cwd: string
   /** Wall-clock cap passed as `--timeout`, seconds. */
   timeoutSec?: number
-  /** Exclude the calling agent's own pool (`--no-caller`). */
-  noCaller?: boolean
 }
 
 export type BullswarmVerdict = {
   /** False when the output held no verdict document at all. */
   found: boolean
   ok: boolean
-  keepOnClaude: boolean
   why: string | null
   outFile: string | null
   pool: string | null

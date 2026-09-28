@@ -438,7 +438,6 @@ export function register(on: On, options: PluginOptions = {}) {
       cwd: args.cwd,
       task: args.task,
       timeoutSec: args.timeoutSec ?? RUN_TIMEOUT_SEC,
-      noCaller: args.noCaller ?? true,
     })
     const r = await h.run(argv, { timeoutMs: RUN_PROCESS_MS, cwd: args.cwd })
     return parseVerdict(r.stdout || r.stderr, r.exitCode)
@@ -609,7 +608,7 @@ export function register(on: On, options: PluginOptions = {}) {
 
     let verdict: BullswarmVerdict
     try {
-      verdict = await run(h, { lane: decision.lane, task: decision.task, cwd, noCaller: true })
+      verdict = await run(h, { lane: decision.lane, task: decision.task, cwd })
     } catch (error) {
       inflight -= 1
       settle(h)
@@ -625,12 +624,12 @@ export function register(on: On, options: PluginOptions = {}) {
       pool: verdict.pool,
       model: verdict.model,
       outFile: verdict.outFile,
-      ok: verdict.ok && !verdict.keepOnClaude,
+      ok: verdict.ok,
       why: verdict.why,
     })
     void refresh(h)
 
-    if (verdict.keepOnClaude || !verdict.ok || !verdict.outFile) {
+    if (!verdict.ok || !verdict.outFile) {
       $.ui.notice(e.tool_use_id, `bullswarm: ${verdict.why ?? 'no verdict'} → running in-session`)
       return next(e)
     }
@@ -731,7 +730,7 @@ export function register(on: On, options: PluginOptions = {}) {
         pool: verdict.pool,
         model: verdict.model,
         outFile: verdict.outFile,
-        ok: verdict.ok && !verdict.keepOnClaude,
+        ok: verdict.ok,
         why: verdict.why,
       })
     }

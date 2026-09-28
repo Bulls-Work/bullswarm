@@ -313,7 +313,7 @@ test('the triage dispatch argv is exactly the documented bullswarm run call', ()
   try {
     f.watch(['--once']);
     assert.deepEqual(f.bs()[0], [
-      'run', '--lane', 'analyze', '--effort', 'medium', '--no-caller',
+      'run', '--lane', 'analyze', '--effort', 'medium',
       '--add-dir', f.repoDir, '--task-file', join(f.tasks, 'issue-7-triage.md'), '--json',
     ]);
     assert.deepEqual(f.gh()[0], [
@@ -526,7 +526,7 @@ test('--dry-run prints the plan and posts, dispatches and writes nothing', () =>
     assert.ok(r.stdout.includes('would triage #7 "Crash when the config file is empty" (new)'));
     assert.ok(r.stdout.includes(`would write ${join(f.tasks, 'issue-7-triage.md')}`));
     assert.ok(r.stdout.includes(
-      `would run ${f.env.BULLSWARM_ISSUE_WATCHER_BULLSWARM} run --lane analyze --effort medium --no-caller `
+      `would run ${f.env.BULLSWARM_ISSUE_WATCHER_BULLSWARM} run --lane analyze --effort medium `
       + `--add-dir ${f.repoDir} --task-file ${join(f.tasks, 'issue-7-triage.md')} --json`,
     ));
     assert.ok(r.stdout.includes('would skip #1 (seen: pre-existing)'));
@@ -550,7 +550,7 @@ test('a clear fixable bug gets one build delegation, a verified commit, a push a
     // Two delegations: analyze then build, on the documented argv.
     assert.equal(f.bs().length, 2);
     assert.deepEqual(f.bs()[1], [
-      'run', '--lane', 'build', '--effort', 'high', '--no-caller',
+      'run', '--lane', 'build', '--effort', 'high',
       '--add-dir', f.repoDir, '--task-file', join(f.tasks, 'issue-7-fix.md'), '--json',
     ]);
     const fixTask = readFileSync(join(f.tasks, 'issue-7-fix.md'), 'utf8');

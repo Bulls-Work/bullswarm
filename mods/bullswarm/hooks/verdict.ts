@@ -50,7 +50,6 @@ export function parseVerdict(text: string, exitCode: number): BullswarmVerdict {
   return {
     found: doc !== null && typeof doc.ok === 'boolean',
     ok: doc?.ok === true,
-    keepOnClaude: doc?.keepOnClaude === true,
     why: str(doc?.why),
     outFile: str(doc?.outFile),
     pool: str(pick?.pool) ?? str(doc?.picked) ?? str(doc?.pool),
@@ -79,8 +78,6 @@ export function verdictContext(
       ? `bullswarm mod: workflow ${v.shortId} launched and detached. It never waits for you: run \`bullswarm workflow watch ${v.shortId} --next\` in the background and act on each event; \`/bullswarm\` shows the meters.`
       : null
   }
-  if (v.keepOnClaude)
-    return `bullswarm mod: verdict keepOnClaude — ${v.why ?? 'no eligible pool'}. Do the task yourself in this session.`
   if (v.ok && v.outFile)
     return `bullswarm mod: verdict ok from pool ${v.pool ?? '?'} (${v.model ?? '?'}); ${v.why ?? 'verified by content'}. Read ${v.outFile} and check its content before using it — a clean exit code is not proof.`
   if (!v.ok)
