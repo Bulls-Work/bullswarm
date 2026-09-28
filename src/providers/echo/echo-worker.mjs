@@ -4,13 +4,26 @@
 //   FAIL:quota  -> prints a provider usage limit naming its reset, exits 0
 //   FAIL:exit   -> prints a complete answer, exits 1 (exit-1-after-success)
 //   INTENT:     -> prints only an announcement, exits 0
+//   ANSWER_JSON:<json> -> also writes <json> to the answer file the task names
+//   TOUCH:<name> -> also writes <name> in the task's Workspace directory
 //   otherwise   -> echoes the task as a completed answer, exit 0
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const task = readFileSync(process.argv[2], 'utf8');
 const sleepMatch = task.match(/SLEEP_MS:(\d+)/);
 if (sleepMatch) await new Promise((resolve) => setTimeout(resolve, Number(sleepMatch[1])));
+
+// A typed answer (program v3): the JSON after the directive, written to the
+// file the answer paragraph names.
+const answerJson = task.match(/ANSWER_JSON:(\S+)/)?.[1];
+const answerFile = task.match(/single JSON value to this file: (\S+)/)?.[1];
+if (answerJson && answerFile) writeFileSync(answerFile, answerJson);
+// A build step's file, in the workspace the task names.
+const touch = task.match(/TOUCH:([\w.-]+)/)?.[1];
+const workspace = task.match(/^Workspace: (.+)$/m)?.[1];
+if (touch && workspace) writeFileSync(join(workspace, touch), `${touch}\n`);
 
 if (task.includes('FAIL:quota')) {
   // A usage limit is not a broken credential: it names when it resets.
