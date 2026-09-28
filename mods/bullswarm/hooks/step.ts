@@ -311,6 +311,10 @@ function resultRows(page: Raw, fallback: BullswarmStep | null, options: StepPane
     ? options.outputTail.split(/\r?\n/).slice(0, 3).map((line, index) => row(`output-${index}`, 'text', line))
     : [row('result-empty', 'text', fallback?.lastFailure ?? 'no report was written', 'dim')]
   const rows: StepPaneRow[] = []
+  // A v3 step's checked answer leads its result, as on the dashboard.
+  const answer = record(result.answer)
+  if (answer && nullable(answer.text))
+    rows.push(row('answer', 'text', clip(oneLine(answer.text), Math.max(20, options.width ?? 120)), answer.ok === false ? 'bad' : 'normal'))
   if (result.running === true) {
     rows.push(row('not-yet', 'text', 'not yet', 'dim'))
     const last = record(result.lastResponse)

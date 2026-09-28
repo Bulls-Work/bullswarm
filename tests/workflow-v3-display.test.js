@@ -23,6 +23,9 @@ import { runTableLines } from '../src/workflow/history-view.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 import { renderWorkflowOverviewPanel } from '../src/workflow/run-view.js';
 import { isOneStepRecord, runCountText } from '../src/workflow/run-counts.js';
+import { stepPageModel } from '../src/workflow/step-model.js';
+import { stepJsonModel } from '../src/workflow/step-json.js';
+import { shapeStep } from '../mods/bullswarm/hooks/step.ts';
 
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
@@ -260,4 +263,18 @@ test('workflow runs --json lists what a parked run waits at (the mod reads it)',
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('Step page (dashboard and mod pane): the checked answer leads the result; a v3 step claims no verification', () => {
+  const { state } = realRow(GATED);
+  const model = stepPageModel({ runId: state.runId, shortId: state.shortId, runDir: GATED, state }, { actionId: 'count', nowMs: NOW });
+  assert.equal(model.presentation.header.verdictText, 'answer checked');
+  assert.deepEqual(model.presentation.result.answer, { ok: true, text: 'answer {"lines":4,"short":true}' });
+  const write = stepPageModel({ runId: state.runId, shortId: state.shortId, runDir: GATED, state }, { actionId: 'write', nowMs: NOW });
+  assert.equal(write.presentation.header.verdictText, null, 'a step with no answer declared: no verdict words');
+  assert.equal(Object.hasOwn(write.presentation.result, 'answer'), false);
+  const pane = shapeStep({ step: stepJsonModel(model) }, { width: 100 });
+  const rows = JSON.stringify(pane);
+  assert.match(rows, /"key":"answer","kind":"text","text":"answer \{\\"lines\\":4,\\"short\\":true\}"/);
+  assert.doesNotMatch(rows, /not verified/);
 });

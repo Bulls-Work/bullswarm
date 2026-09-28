@@ -24,6 +24,8 @@ import { attemptInterval, coverageSum, unionIntervals } from './metrics.js';
 import { loadTemplates, ownsPoolName, providerDirs } from '../lib/providers.js';
 import { returnedEarlyItems, returnedEarlyText, timeBoxText } from './time-box.js';
 import { routeSummary } from './step-route.js';
+import { attemptAnswerFact } from './v3-display.js';
+import { isV3State } from './v3-phases.js';
 
 const START_STATUSES = new Set([
   'started', 'start', 'running', 'pending', 'in_progress', 'in-progress', 'queued',
@@ -1846,11 +1848,13 @@ function preludeRows(activity) {
 function stepPresentation({
   identity, verdict, action, selected, attempts, runDir, homeDir, activity, route,
   duration, meta, money, prompt, promptPath, outText, outFile, streamFile, diffFile,
-  diffText, resultPath, requirements, nowMs, follow,
+  diffText, resultPath, requirements, nowMs, follow, v3 = false, answer = null,
 } = {}) {
   const execution = verdict?.execution ?? {};
   const running = execution.status === 'running';
-  const verification = verificationSummary(requirements);
+  // A v3 step is judged by facts (its answer, evidence, deliverable), never
+  // by the run's implicit requirement: it has no verification verdict.
+  const verification = verificationSummary(v3 ? [] : requirements);
   const attemptText = attemptCountText(attempts, selected);
   const startMs = dateMs(selected?.startedAt ?? action?.startedAt);
   const finishMs = dateMs(selected?.finishedAt ?? selected?.endedAt);
@@ -1865,7 +1869,8 @@ function stepPresentation({
   const runningCommand = running
     ? presentedTurns.flatMap((turn) => turn.toolRows ?? []).findLast((tool) => tool?.inFlight && tool?.command)
     : null;
-  const verdictText = verification.total
+  const verdictText = v3 ? (answer ? (answer.ok ? 'answer checked' : 'answer check failed') : null)
+    : verification.total
     ? `${verification.complete ? 'verified by the workflow' : 'not verified'} (${verification.passed}/${verification.total} requirements)`
     : identity?.verified === true ? 'verified' : identity?.verified === false ? 'not verified' : null;
   // Rule 2: one clock, and the span appears only when it differs from the
@@ -1961,6 +1966,8 @@ function stepPresentation({
       },
       reportBytesText: stepBytesText(typeof outText === 'string' ? Buffer.byteLength(outText, 'utf8') : null),
       streamEvents: activity?.events?.length ?? 0,
+      // A step that declares an answer shows the attempt's checked answer.
+      ...(answer ? { answer } : {}),
     },
     task: {
       kind: textOrNull(action?.kind),
@@ -2322,6 +2329,8 @@ export function stepPageModel(input, {
   const diffPath = resolveExistingPath(diffCandidate, runDir);
   const diffText = safeReadText(diffPath);
   const presentation = stepPresentation({
+    v3: isV3State(state),
+    answer: attemptAnswerFact(state, selected),
     identity: {
       actionId: selectedActionId,
       shortId: textOrNull(row.shortId ?? state.shortId),

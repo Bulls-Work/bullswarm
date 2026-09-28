@@ -801,6 +801,13 @@ function resultLines(presentation, { width, phone, detail }) {
         ? `${paintLabelRow(line, 'failed').replace(result.failure, tint(result.failure, 'red'))}`
         : line));
   }
+  // The checked answer leads the report: it is what the step's pass rests on.
+  if (result.answer) {
+    const text = result.answer.text.replace(/^answer /, '');
+    lines.push(...labelRow('answer', text, { width, ...card }).slice(0, 3)
+      .map((line, index) => (index === 0 ? paintLabelRow(line, 'answer') : line))
+      .map((line) => (result.answer.ok ? line : line.replace('check failed', tint('check failed', 'red')))));
+  }
   lines.push(...reportRows(result.reportLines ?? [], { limit: 3, width }));
   if (!(result.reportLines ?? []).length) lines.push(fit(' no report was written for this step', width));
   const asks = result.asks ?? [];
