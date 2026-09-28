@@ -34,6 +34,7 @@ import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { poolLabel } from '../lib/pool-labels.js';
 import { routeSummary } from './step-route.js';
 import { parkedFailures, parkedWaitingFor, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
+import { isProgramV3 } from './program-v3.js';
 
 function jsonOut(obj, opts) {
   if (!(opts.json || opts.summary)) return;
@@ -301,7 +302,8 @@ function runsShow(idToken, opts) {
   for (const line of waitingOutcomeLines(resolved.shortId ?? runId, parkedWaitingFor(state) ?? [], parkedFailures(state)).slice(1)) console.log(`# ${line}`);
   console.log(`# started  ${state.lifecycle?.startedAt ?? '?'}`);
   console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
-  console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
+  // A v3 run has only its implicit requirement: it reports steps, never requirements.
+  if (!isProgramV3(state?.program)) console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
   console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded`);
   printV2ProgramRouting(state);
   // One line per attempt, so the pool, model and the reasoning level it
@@ -407,12 +409,13 @@ function runsResult(idToken, opts) {
   }
   console.log(`# workflow result  ${stable.runId}  (${stable.shortId ?? 'no shortId'})`);
   console.log(`# status  ${stable.status}  result ready`);
-  console.log(`# verified  ${stable.verified ? 'yes' : 'no'}`);
+  const v3 = isProgramV3(state?.program);
+  if (!v3) console.log(`# verified  ${stable.verified ? 'yes' : 'no'}`);
   console.log(`# outcome  ${stable.reason}`);
   const summary = summarizeV2Result(stable, state, { runDir });
   const proofLine = formatV2ProofLine(summary);
   if (proofLine) console.log(`# proof  ${proofLine.replace(/^proof: /, '')}`);
-  console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
+  if (!v3) console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
   if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
   for (const line of formatV2HandbackLines(summary)) console.log(line);
   // The stable envelope records outcomes, not routing. The durable state
