@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
-import { DASHBOARD_KEYS, activeDashboardRows, agentDetailLines, dashboardModel, dashboardRows, overviewSnapshot, readLicencePerDay, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
+import { DASHBOARD_KEYS, activeDashboardRows, agentDetailLines, dashboardModel, dashboardRows, overviewSnapshot, readLicencePerDay, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
 import { readRollups } from '../src/workflow/rollup.js';
 import { listTasks } from '../src/lib/tasks.js';
 import { stepClockText } from '../src/workflow/step-model.js';
@@ -186,8 +186,6 @@ test('dashboard renders ongoing run progress and details', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].legacy, false);
     assert.equal(rows[0].stepsTotal, 2);
-    assert.match(renderDashboard({ rows }), /abc234 · Audit every file autonomously/);
-    assert.match(renderDashboard({ rows }), /0\/1 workers/);
     assert.match(renderDetails(rows[0]), /audit-files · running/);
     assert.match(renderDetails(rows[0]), /goal:   Audit every file autonomously/);
     assert.match(renderDetails(rows[0]), /status: running/);
@@ -289,7 +287,7 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test('unified dashboard lists active before recent runs and renders a selected-run preview', () => {
+test('dashboard rows list active before recent runs', () => {
   const { home, cleanup } = fixture();
   try {
     addHistoricalRun(home);
@@ -297,27 +295,6 @@ test('unified dashboard lists active before recent runs and renders a selected-r
     const all = dashboardRows(home, { all: true });
     assert.equal(active.length, 1);
     assert.deepEqual(all.map((row) => row.shortId), ['abc234', 'def345']);
-
-    const desktop = renderDashboard({
-      rows: all, allRows: all, selected: 1, previewRow: all[1],
-      filter: 'all', width: 120, height: 30,
-    });
-    assert.match(desktop, /1 active · 0 waiting · 1 recent/);
-    assert.match(desktop, /def345 · Audit documentation freshness/);
-    assert.match(desktop, /0\/2 actions · 5m00s · finis/);
-    assert.match(desktop, /Workflow timeline/);
-
-    const mobile = renderDashboard({
-      rows: all, allRows: all, selected: 0, previewRow: all[0],
-      filter: 'all', width: 60, height: 24,
-    });
-    assert.match(mobile, /Runs · all/);
-    assert.match(mobile, /abc234 · Audit every file/);
-    assert.match(mobile, /def345 · Audit documentation/);
-    assert.doesNotMatch(mobile, /Workflow timeline/);
-    assert.match(mobile, /Enter open · \/ filter · a active\/all/);
-    const plain = mobile.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    assert.equal(Math.max(...plain.split('\n').map((line) => line.length)) <= 60, true);
   } finally { cleanup(); }
 });
 

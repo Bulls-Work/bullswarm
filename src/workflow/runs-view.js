@@ -1,99 +1,18 @@
 // The Runs page renderer.
 //
 // This module owns the Runs list and its history projection. The shell keeps
-// the legacy renderDashboard adapter and the shared layout/palette helpers;
-// Home supplies the same active-run block through activeRunLines.
+// the shared layout/palette helpers; Home supplies the same active-run block
+// through activeRunLines.
 
 import { dayKey } from './history.js';
 import { historyLines, runTableLayout, runTableLines } from './history-view.js';
-import { taskIdentity, verifyRoundLabel } from './home-model.js';
+import { taskIdentity } from './home-model.js';
 import { rule } from './dash-kit.js';
-import {
-  clamp,
-  dimText,
-  durationText,
-  moneyText,
-  meterAnsi,
-  pushView,
-  runEconomics,
-  selectLine,
-  stateFinishedAt,
-  stateStartedAt,
-  stateStatus,
-  statusIcon,
-  TERMINAL_ACTIONS,
-  workflowRunLabel,
-  workflowStatusIcon,
-} from './dashboard.js';
+import { dimText, meterAnsi, pushView, stateStatus, workflowRunLabel } from './dashboard.js';
 
 function isWaitingWorkflow(state) {
   const value = String(stateStatus(state) ?? '').toLowerCase();
   return value.includes('waiting') || value === 'paused';
-}
-
-function workflowConcernCount(row) {
-  const concerns = row?.state?.outcome?.concerns ?? row?.report?.concerns ?? [];
-  return Array.isArray(concerns) ? concerns.length : 0;
-}
-
-function dashboardRunLines(rows, selected, narrow, width) {
-  if (!rows.length) return [{ selected: false, lines: ['No workflows in this view.'] }];
-  return rows.map((row, index) => {
-    const state = row.state ?? {};
-    const selectedRow = index === selected;
-    const legacy = Boolean(row.legacy);
-    const durableStatus = legacy ? state.status : stateStatus(state);
-    const icon = legacy ? '·'
-      : row.ongoing ? statusIcon(durableStatus ?? 'running')
-        : workflowStatusIcon({ status: durableStatus });
-    const elapsed = legacy
-      ? durationText(state.startedAt, state.finishedAt)
-      : durationText(stateStartedAt(state) ?? row.report?.startedAt, stateFinishedAt(state) ?? row.report?.finishedAt);
-    const workerAttempts = legacy ? [] : (state.attempts ?? []).filter((attempt) =>
-      attempt.actionId !== state.orchestration?.actionId && attempt.actionId !== 'orchestrator');
-    const finished = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
-    // A legacy row claims no progress: 0.27.0 never reads its steps.
-    let progress = legacy ? 'legacy'
-      : workerAttempts.length
-        ? `${finished}/${workerAttempts.length} workers`
-        : `${row.stepsOk ?? 0}/${row.stepsTotal ?? 0} actions`;
-    const concerns = legacy ? 0 : workflowConcernCount(row);
-    // In its repair loop a run's phase is the round it is working toward.
-    const loop = legacy ? null : verifyRoundLabel(state);
-    const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : loop && !narrow ? loop : humanWorkflowStatus(durableStatus, row.ongoing);
-    const name = workflowRunLabel(row);
-    const phase = legacy ? 'legacy' : loop ?? humanPhaseName(row.phase ?? 'starting');
-    const economics = legacy ? null : runEconomics(row, [], Date.now());
-    const spend = economics ? moneyText(economics) : null;
-    const spendLabel = spend ?? (legacy ? null : 'cost unknown');
-    if (narrow) {
-      const inner = Math.max(1, width - 4);
-      return {
-        selected: selectedRow,
-        lines: [
-          selectLine(`${icon} ${row.shortId ?? '------'} · ${name}`, selectedRow, true, inner),
-          selectLine(`  ${progress} · ${elapsed}${spendLabel ? ` · ${spendLabel}` : ''}`, selectedRow, false, inner),
-          selectLine(`  ${phase} · ${status}`, selectedRow, false, inner),
-          '',
-        ],
-      };
-    }
-    return {
-      selected: selectedRow,
-      lines: [
-        selectLine(`${icon} ${row.shortId ?? '------'} · ${name}`, selectedRow, true, 44),
-        selectLine(`  ${progress} · ${elapsed} · ${status}${spendLabel ? ` · ${spendLabel}` : ''}`, selectedRow, false, 44),
-        '',
-      ],
-    };
-  });
-}
-
-function listWindow(groups, selected, height, narrow) {
-  const linesPerGroup = narrow ? 4 : 3;
-  const capacity = Math.max(1, Math.floor(height / linesPerGroup));
-  const start = clamp(selected - Math.floor(capacity / 2), 0, Math.max(0, groups.length - capacity));
-  return groups.slice(start, start + capacity).flatMap((group) => group.lines).slice(0, height);
 }
 
 // A selected row may already contain palette SGR resets.  Re-arm reverse
@@ -108,18 +27,6 @@ function inverseLine(value) {
     .replace(/\x1b\[(?:2|22)m/g, '')
     .replace(/\x1b\[(?:38;2;\d+;\d+;\d+|38;5;\d+|3[0-7]|9[0-7])m/g, (code) => (coloured++ === 0 ? code : ''));
   return `\x1b[7m${text.replace(/\x1b\[0m/g, '\x1b[0m\x1b[7m')}\x1b[27m\x1b[0m`;
-}
-
-function humanWorkflowStatus(status, ongoing) {
-  const value = String(status ?? '').replaceAll('_', ' ');
-  if (ongoing && (!value || value === 'running')) return 'running';
-  if (value === 'completed') return 'finished';
-  if (value === 'completed with concerns') return 'finished with concerns';
-  return value || (ongoing ? 'running' : 'finished');
-}
-
-function humanPhaseName(value) {
-  return String(value ?? 'starting').replaceAll('-', ' ').replaceAll(':', ' › ');
 }
 
 function filterDashboardRows(rows, filter, query) {
@@ -208,11 +115,6 @@ function runsPage(model, opts, body) {
 
 export {
   isWaitingWorkflow,
-  workflowConcernCount,
-  dashboardRunLines,
-  listWindow,
-  humanWorkflowStatus,
-  humanPhaseName,
   filterDashboardRows,
   daysWithTasks,
   runsPage,

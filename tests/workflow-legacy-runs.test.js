@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { isLegacyRunState, isLegacyRunDir, legacyRunLine, listRuns, isOngoing } from '../src/workflow/short-id.js';
-import { dashboardRows, dashboardJson, renderDashboard, renderDetails, requestCancel } from '../src/workflow/dashboard.js';
+import { dashboardRows, dashboardJson, renderDetails, requestCancel } from '../src/workflow/dashboard.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -289,11 +289,6 @@ test('the workflow home lists a legacy row and shows the one line in its detail 
     assert.equal(legacy.legacy, true);
     assert.equal(legacy.status, 'completed');
     assert.deepEqual(legacy.activeAgents, []);
-
-    const screen = renderDashboard({ rows, allRows: rows, selected: rows.indexOf(legacy), previewRow: legacy, filter: 'all', width: 120, height: 30 });
-    assert.match(screen, new RegExp(`${LEGACY_SHORT_ID} · smoke-two-step`));
-    assert.match(screen, /legacy/);
-    assert.match(screen.replace(/\s+/g, ' '), /legacy authored-graph run/);
 
     const detail = renderDetails(legacy, { interactive: false }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     assert.equal(detail.trim(), LEGACY_LINE(f.legacyDir));

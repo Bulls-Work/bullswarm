@@ -1,15 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  dashboardRunLines,
   daysWithTasks,
   filterDashboardRows,
-  humanPhaseName,
-  humanWorkflowStatus,
   isWaitingWorkflow,
-  listWindow,
   runsPage,
-  workflowConcernCount,
 } from '../src/workflow/runs-view.js';
 
 process.env.BULLSWARM_UNICODE = '1';
@@ -71,19 +66,6 @@ test('Runs filtering keeps active rows and searches durable and projected fields
   assert.deepEqual(filterDashboardRows([live, done], 'all', 'deploy'), [live]);
   assert.equal(isWaitingWorkflow({ lifecycle: { status: 'waiting_for_caller' } }), true);
   assert.equal(isWaitingWorkflow({ lifecycle: { status: 'completed' } }), false);
-});
-
-test('Runs list helpers preserve status, phase, concern and width behavior', () => {
-  const live = row({ concerns: [{ id: 'risk' }] });
-  const lines = dashboardRunLines([live], 0, true, 55)[0].lines;
-  assert.match(visible(lines[0]), /runs01 · audit the repository/);
-  assert.match(visible(lines[2]), /Implement ›\s+review/);
-  assert.equal(workflowConcernCount(live), 1);
-  assert.equal(humanWorkflowStatus('completed', false), 'finished');
-  assert.equal(humanWorkflowStatus('waiting_for_caller', false), 'waiting for caller');
-  assert.equal(humanPhaseName('Plan:run-workers'), 'Plan › run workers');
-  assert.ok(lines.every((line) => visible(line).length <= 55));
-  assert.deepEqual(listWindow([{ lines: ['one', 'two'] }, { lines: ['three', 'four'] }], 1, 3, true), ['three', 'four']);
 });
 
 test('Runs history merge adds each finished task once and renders its page regions', () => {

@@ -35,14 +35,7 @@ import { formatMoneyPair } from '../lib/usage-basis.js';
 import {
   homePage,
 } from './home-view.js';
-import {
-  dashboardRunLines,
-  daysWithTasks,
-  filterDashboardRows,
-  isWaitingWorkflow,
-  listWindow,
-  runsPage,
-} from './runs-view.js';
+import { daysWithTasks, filterDashboardRows, runsPage } from './runs-view.js';
 import {
   workflowPanelModel,
   planProgress,
@@ -66,9 +59,7 @@ import { stepPageModel } from './step-model.js';
 import { taskStepModel } from './task-step.js';
 import { renderStepPage, stepFooterText } from './step-view.js';
 import { withPoolLabels } from '../lib/pool-labels.js';
-import {
-  SUBSCRIPTION_BASIS_RANK, TOKEN_SOURCE_RANK, tokenSourceOf, worstSubscriptionBasis, worstTokenSource,
-} from './metrics.js';
+import { tokenSourceOf } from './metrics.js';
 
 const ESC = '\x1b[';
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -255,42 +246,6 @@ function keyPressed(name, key) {
   return DASHBOARD_KEYS[name].bindings?.includes(key) ?? false;
 }
 
-function navigationFooter({
-  list = false, depth = 0, narrow = false, filterEditing = false, mobileTimeline = true,
-  timelineSelection = null, dependencyGroups = false,
-} = {}) {
-  if (filterEditing) return 'Filter: {query}█ · Enter apply · Esc clear';
-  if (list) {
-    return narrow
-      ? `${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('cycleWorkflow')} · r refresh`
-      : `${keyHint('up')} · ${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('cycleWorkflow')} · r refresh · c stop`;
-  }
-  const extras = depth >= 4 ? ' · PgUp/PgDn scroll' : '';
-  const phaseNavigation = narrow && depth <= 2 && mobileTimeline;
-  const phaseToggle = narrow && depth <= 2
-    ? ` · t ${mobileTimeline ? 'phases' : 'timeline'}`
-    : '';
-  const movement = phaseNavigation ? '↑ previous phase · ↓ next phase' : `${keyHint('up')} · ${keyHint('down')}`;
-  const open = phaseNavigation ? `Enter ${timelineSelection === 0 ? 'planner' : 'agents'}` : keyHint('in');
-  return `${movement}${phaseToggle} · ${open} · ${keyHint('out')} · ${keyHint('cycleWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
-}
-
-function breadcrumbSegments(row, { depth = 0, phase = null, agent = null } = {}) {
-  const run = row ? `${row.shortId ?? row.runId ?? '------'} · ${workflowRunLabel(row)}` : null;
-  const segments = ['Workflows'];
-  if (run) segments.push(run);
-  if (depth >= 2 && phase) segments.push(phase.label ?? phase.name ?? String(phase));
-  if (depth >= 3 && agent) segments.push(agent.action?.id ?? agent.id ?? String(agent));
-  return segments;
-}
-
-function breadcrumbLine(segments, width) {
-  let parts = [...segments];
-  while (parts.length > 1 && ` ${parts.join(' › ')}`.length > width) parts.pop();
-  if (` ${parts.join(' › ')}`.length <= width) return ` ${parts.join(' › ')}`;
-  return truncate(` ${parts.join(' › ')}`, width);
-}
-
 function compactUsage(usage) {
   if (!usage) return 'usage pending';
   const tokens = usage.tokens ?? {};
@@ -456,73 +411,6 @@ export function activeDashboardRows(bullswarmDir) {
     }));
   }
   return rows.sort(byNewestStart);
-}
-
-export function renderDashboard({
-  rows, allRows = rows, selected = 0, message = null, width = 120, height = 36,
-  filter = 'active', query = '', filterEditing = false, spinnerFrame = 0,
-  previewRow = null,
-} = {}) {
-  width = Math.max(20, Number(width) || 120);
-  height = Math.max(12, Number(height) || 36);
-  rows = rows ?? [];
-  allRows = allRows ?? rows;
-  const narrow = width < 100;
-  const active = allRows.filter((row) => row.ongoing).length;
-  const waiting = allRows.filter((row) => isWaitingWorkflow(row.state)).length;
-  const historical = Math.max(0, allRows.length - active);
-  const selectedRow = previewRow ?? rows[selected] ?? null;
-  const summary = `${active} active · ${waiting} waiting · ${historical} recent`;
-  const header = [
-    breadcrumbLine(breadcrumbSegments(null), width),
-    truncate(` bullswarm workflows · ${summary}`, width),
-    selectedRow
-      ? truncate(` ${selectedRow.shortId ?? '------'} · ${workflowRunLabel(selectedRow)}`, width)
-      : truncate(` ${filter === 'active' ? 'Active workflows' : 'All workflows'}`, width),
-  ];
-  const footer = filterEditing
-    ? truncate(navigationFooter({ filterEditing }).replace('{query}', query), width)
-    : truncate(navigationFooter({ list: true, narrow }), width);
-  const messageLine = message
-    ? truncate(` ${message}`, width)
-    : truncate(` Runs · ${filter}${query ? ` · filter “${query}”` : ''} · workflow continues after dashboard exit`, width);
-  const bodyHeight = Math.max(6, height - header.length - 2);
-  const listLines = dashboardRunLines(rows, selected, narrow, width);
-
-  let body;
-  if (narrow) {
-    const body = renderPanel(
-      `Runs · ${filter}`,
-      listWindow(listLines, selected, bodyHeight - 2, true),
-      width,
-      bodyHeight,
-    );
-    return [`${ESC}2J${ESC}H`, ...header, ...body, messageLine, footer].join('\n');
-  }
-  const leftWidth = Math.min(SIDEBAR_WIDTH, Math.max(1, width - 3));
-  const rightWidth = Math.max(1, width - leftWidth);
-  const left = renderPanel(
-    `Runs · ${filter}`,
-    listWindow(listLines, selected, bodyHeight - 2, false),
-    leftWidth,
-    bodyHeight,
-  );
-  let right;
-  if (selectedRow?.legacy && rightWidth >= 3) {
-    right = renderPanel('Selected workflow', wrapLines([
-      legacyRunLine({ shortId: selectedRow.shortId, runId: selectedRow.runId, runDir: selectedRow.runDir }),
-    ], Math.max(1, rightWidth - 4)), rightWidth, bodyHeight);
-  } else if (selectedRow?.state && rightWidth >= 3) {
-    const model = workflowPanelModel(selectedRow);
-    right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
-  } else {
-    const hint = allRows.length && filter === 'active'
-      ? ['No active workflows.', '', 'Press a to browse recent runs.']
-      : ['No workflow runs yet.', '', 'Start one with:', 'bullswarm workflow goal "…"'];
-    right = renderPanel('Selected workflow', hint, rightWidth, bodyHeight);
-  }
-  body = joinPanels(left, right);
-  return [`${ESC}2J${ESC}H`, ...header, ...body, messageLine, footer].join('\n');
 }
 
 function workflowRunLabel(row) {

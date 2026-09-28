@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import {
   glyphs, spinnerGlyph, asciiGlyphsPreferred, SUBSTITUTED_GLYPHS,
 } from '../src/lib/glyphs.js';
-import { renderDashboard, renderWorkflowTui, dashboardRows } from '../src/workflow/dashboard.js';
+import { dashboardModel, renderDashboardPage, renderWorkflowTui, dashboardRows } from '../src/workflow/dashboard.js';
 import { renderWatchSnapshot, watchSnapshot, renderWatchEvent } from '../src/workflow/watch-cli.js';
 import { renderAnalysisProgress, renderStrategyDashboard } from '../src/strategy-dashboard.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
@@ -160,10 +160,7 @@ function renderEverything(home) {
   const rows = dashboardRows(home, { all: true });
   const out = [];
   for (const spinnerFrame of [0, 1, 4, 7, 9]) {
-    out.push(renderDashboard({
-      rows, allRows: rows, selected: 0, width: 120, height: 40, spinnerFrame,
-      previewRow: rows[0], filter: 'all',
-    }));
+    out.push(renderDashboardPage(dashboardModel(null, { runs: rows }), { page: 'runs', width: 120, height: 40, spinnerFrame }).lines.join('\n'));
     for (const row of rows) {
       out.push(renderWorkflowTui(row, { width: 120, height: 40, spinnerFrame }));
       out.push(renderWorkflowTui(row, { width: 120, height: 40, spinnerFrame, workflowVerbose: true }));
@@ -229,7 +226,7 @@ test('ascii mode renders the live views without a single substituted glyph', () 
     const leaked = SUBSTITUTED_GLYPHS.filter((glyph) => text.includes(glyph));
     assert.deepEqual(leaked, [], `these glyphs still reach an ascii terminal: ${leaked.join(' ')}`);
     // The frames really were drawn, so the assertion above is not vacuous.
-    assert.match(text, /Workflows/);
+    assert.match(text, /aaa111/);
     assert.ok(
       glyphs({ BULLSWARM_ASCII: '1' }).spinner.some((frame) => text.includes(frame)),
       'an ascii spinner frame must appear in the live frames',
