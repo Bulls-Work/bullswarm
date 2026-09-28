@@ -742,8 +742,9 @@ test('the skill says a usage limit or no free pool comes back to you, with the b
   const json = needsYouJson(limitFacts());
   assert.equal(json.backAt, BACK_AT);
   assert.equal(json.options.waitForIt, `after ${BACK_AT}: bullswarm workflow step rerun <shortId> <step>`);
-  // No pool free: the why names each pool's reason, as the dispatcher words it.
-  const dispatch = read('src/workflow/v2-dispatch.js');
+  // No pool free: the why names each pool's reason, as the dispatcher words it
+  // (the no-pool wording lives in no-pool-why.js, shared with --dry-run).
+  const dispatch = `${read('src/workflow/v2-dispatch.js')}\n${read('src/workflow/no-pool-why.js')}`;
   for (const words of ["'no pool with quota to spare'", "'no pool free'", '· no retry: ']) {
     assert.ok(dispatch.includes(words), `the dispatcher writes ${words}`);
   }
@@ -985,7 +986,8 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
   assert.deepEqual(windowSpent({ meterSnapshot: { seven_day: { utilization: 100, resets_at: resetsAt } } }, Date.parse('2026-09-25T00:00:00Z')), { window: 'weekly', resetsAt });
   assert.equal(windowSpent({ meterSnapshot: { seven_day: { utilization: 100, resets_at: resetsAt } } }, Date.parse('2026-09-29T00:00:00Z')), null);
   assert.equal(windowSpent({ meterSnapshot: { monthly: { utilization: 100, resets_at: resetsAt } } }, Date.parse('2026-09-25T00:00:00Z')).window, 'monthly');
-  assert.ok(read('src/workflow/v2-dispatch.js').includes('`at its ${spent.window} limit`'));
+  assert.ok(read('src/workflow/no-pool-why.js').includes('`at its ${spent.window} limit`'));
+  assert.ok(read('src/workflow/v2-dispatch.js').includes('spentWindowPart(pool, endAt)'));
   for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/guide/routing.md']) {
     assert.ok(flat(path).includes('at its weekly limit until <time>'), `${path}: weekly limit`);
   }
