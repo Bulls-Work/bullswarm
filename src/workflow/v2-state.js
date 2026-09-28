@@ -112,6 +112,8 @@ const ATTEMPT_FIELDS = new Set([
 const ATTEMPT_ANSWER_FIELDS = new Set(['file', 'ok', 'value', 'errors']);
 const ACTION_ANSWER_FIELDS = new Set(['attemptId', 'value']);
 const WAITING_FOR_FIELDS = new Set(['id', 'type', 'since', 'note']);
+const CONTROL_NODE_FIELDS = new Set(['id', 'type', 'status', 'at', 'round', 'maxRounds', 'reason']);
+const CONTROL_NODE_STATUSES = new Set(['pending', 'waiting', 'passed', 'blocked']);
 const ANSWER_ERRORS_MAX = 100;
 const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried']);
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
@@ -612,6 +614,38 @@ function validateWaitingFor(lifecycle) {
     timestamp(entry.since, `${at}.since`);
     if (entry.since === null) fail(`${at}.since is required`);
     if (entry.note !== undefined) nullableString(entry.note, `${at}.note`);
+  }
+}
+
+// Program v3 (gates-loops.js): each gate's and loop's status, round and
+// rounds, written by the kernel's control pass. Optional: absent until the
+// first pass, and on every v2 state.
+function validateControlNodes(state) {
+  const list = state.controlNodes;
+  if (list === undefined) return;
+  if (state.program.schemaVersion !== PROGRAM_V3_SCHEMA_VERSION) fail('state.controlNodes needs a v3 program');
+  if (!Array.isArray(list)) fail('state.controlNodes must be an array');
+  const nodes = new Map([
+    ...(state.program.control?.gates ?? []).map((gate) => [gate.id, 'gate']),
+    ...(state.program.control?.loops ?? []).map((loop) => [loop.id, 'loop']),
+  ]);
+  const seen = new Set();
+  for (const [index, entry] of list.entries()) {
+    const at = `state.controlNodes[${index}]`;
+    object(entry, at);
+    noUnknown(entry, CONTROL_NODE_FIELDS, at);
+    if (entry.type !== 'gate' && entry.type !== 'loop') fail(`${at}.type must be gate|loop`);
+    if (typeof entry.id !== 'string' || nodes.get(entry.id) !== entry.type) fail(`${at}.id must name a gate or loop of the program`);
+    if (seen.has(entry.id)) fail(`${at}.id ${entry.id} is listed twice`);
+    seen.add(entry.id);
+    if (!CONTROL_NODE_STATUSES.has(entry.status)) fail(`${at}.status must be pending|waiting|passed|blocked`);
+    timestamp(entry.at, `${at}.at`);
+    if (entry.reason !== undefined) requiredString(entry.reason, `${at}.reason`);
+    if (entry.type === 'loop') {
+      positiveInteger(entry.round, `${at}.round`);
+      positiveInteger(entry.maxRounds, `${at}.maxRounds`);
+      if (entry.round > entry.maxRounds) fail(`${at}.round must not exceed maxRounds`);
+    } else if (entry.round !== undefined || entry.maxRounds !== undefined) fail(`${at} is a gate and has no rounds`);
   }
 }
 
@@ -1335,7 +1369,7 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner', 'advisories', 'pause', 'revisions', 'verifyLoop']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner', 'advisories', 'pause', 'revisions', 'verifyLoop', 'controlNodes']), 'state');
   // Optional: written by a live kernel so readers can tell a running run from
   // one whose process died. Absent on a state no kernel has owned yet.
   if (state.runner !== undefined && state.runner !== null) {
@@ -1363,6 +1397,7 @@ function validateState(state) {
   validateActionStates(state.actions, state.program, live);
   validateProgram(state.program, { ...state, ledger });
   validateWaitingForProgram(state);
+  validateControlNodes(state);
   validateAttempts(state.attempts, state.program);
   validateAttemptConsistency(state.actions, state.attempts);
   if (!Array.isArray(state.steering)) fail('state.steering must be an array');
