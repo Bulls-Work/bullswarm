@@ -157,7 +157,7 @@ validate:
   search-b                 analyze/medium answer
   draft                    build/medium deliverable=files after search-a, search-b
   critique                 analyze/medium answer after draft route: independent of draft
-  post                     analyze/medium role=act deliverable=outward after approve
+  post                     analyze/medium deliverable=outward after approve
   gate approve             after polish · waits for you · Read brief.md and decide whether to publish it
   loop polish              steps draft, critique · until critique.passed is true · at most 3 rounds
 ```

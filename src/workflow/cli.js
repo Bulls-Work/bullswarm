@@ -17,7 +17,7 @@ import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
-import { implicitV3Requirements, isProgramV3, programV3Facts, stepV3Facts } from './program-v3.js';
+import { implicitV3Requirements, isProgramV3, programV3Facts, stepV3Facts, v3IssueWording } from './program-v3.js';
 import {
   controlSummaryLines, parkedFailures, programControl, v3LaunchInstruction, waitingDocument, waitingOutcomeLines,
 } from './gates-loops.js';
@@ -924,7 +924,9 @@ async function wfGoal(opts) {
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
     // The same lines `plan validate` prints, at the moment the program is
     // actually launched. The kernel also stores them on the run state.
-    printAdvisories(programAdvisories(previewed.program, { requirements: isProgramV3(previewed.program) ? null : doc.intent.requirements }));
+    const launchV3 = isProgramV3(previewed.program);
+    printAdvisories(programAdvisories(previewed.program, { requirements: launchV3 ? null : doc.intent.requirements })
+      .map((item) => (launchV3 ? { ...item, message: v3IssueWording(item.message) } : item)));
     if (setsVerifyRounds(previewed.program)) {
       console.error(VERIFY_ROUNDS_NOTE);
       opts.verifyRoundsMeaning = 'fix cycles';
@@ -1065,8 +1067,10 @@ async function planValidate(opts) {
       summary: accepted.summary,
       actions: accepted.program.actions.map((action) => ({
         id: action.id,
-        ...(action.kind ? { kind: action.kind } : {}),
-        ...(action.role ? { role: action.role } : {}),
+        // A v3 program declares no kind or role; the stored role (act, for an
+        // outward deliverable) is derived, and its deliverable already says it.
+        ...(action.kind && !programV3 ? { kind: action.kind } : {}),
+        ...(action.role && !programV3 ? { role: action.role } : {}),
         ...(action.deliverable ? { deliverable: action.deliverable } : {}),
         ...(action.evidence ? { evidence: action.evidence } : {}),
         lane: action.lane, effort: action.effort,
@@ -1080,7 +1084,8 @@ async function planValidate(opts) {
     },
     // Advice about the accepted program. Present (possibly empty) on every
     // valid program so a caller can read it without probing for the key.
-    advisories: programAdvisories(accepted.program, { requirements: programV3 ? null : doc.intent.requirements }),
+    advisories: programAdvisories(accepted.program, { requirements: programV3 ? null : doc.intent.requirements })
+      .map((item) => (programV3 ? { ...item, message: v3IssueWording(item.message) } : item)),
     ...(setsVerifyRounds(accepted.program) ? { verifyRoundsMeaning: 'fix cycles' } : {}),
     next: { launch: next.launch },
   };

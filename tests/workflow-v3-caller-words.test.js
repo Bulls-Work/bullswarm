@@ -199,6 +199,50 @@ test('plan validate prints a launch line with the program file the caller named'
   assert.ok(relative.stdout.includes(`--program ${join(realpathSync(f.root), 'my-plan.json')} --json`), relative.stdout);
 });
 
+test('plan validate on a v3 program speaks of steps: no v2 role or kind words, in the lines, the JSON, the advisories or the issues', (t) => {
+  const f = fixture(t);
+  const file = join(f.root, 'plan.json');
+  const validate = (program, json = false) => {
+    writeFileSync(file, JSON.stringify(program));
+    return run(f.bullswarmDir, ['workflow', 'plan', 'validate', 'Ship the acme notes', '--cwd', f.workspace, '--program', file, ...(json ? ['--json'] : [])]);
+  };
+  const V2_WORDS = /\brole\b|role=|\bkind\b|kind=|\bact steps?\b|\bactions?\b|evidenceFor|check step/;
+  const valid = {
+    schemaVersion: V3,
+    steps: [
+      { id: 'notes', prompt: 'Write the acme notes.', lane: 'build', effort: 'high', files: ['NOTES.md'] },
+      { id: 'index', prompt: 'Write the acme index.', lane: 'build', effort: 'high' },
+      { id: 'links', prompt: 'Write the acme links.', lane: 'build', effort: 'high' },
+      { id: 'post', dependsOn: ['notes'], prompt: 'Post the acme notes.', deliverable: 'outward' },
+    ],
+  };
+  const human = validate(valid);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /post {20} analyze\/medium deliverable=outward after notes/);
+  assert.match(human.stdout, /advisory: all-writers-high — all 3 build\/chore steps run at high effort/);
+  assert.doesNotMatch(human.stdout, V2_WORDS, human.stdout);
+  const json = JSON.parse(validate(valid, true).stdout);
+  for (const step of json.program.actions) {
+    assert.equal(Object.hasOwn(step, 'role'), false, `${step.id} has no role`);
+    assert.equal(Object.hasOwn(step, 'kind'), false, `${step.id} has no kind`);
+  }
+  assert.doesNotMatch(json.advisories.map((item) => item.message).join('\n'), V2_WORDS);
+
+  const refused = validate({
+    schemaVersion: V3,
+    steps: [
+      { id: 'post', prompt: 'Post the acme notes.', lane: 'build', deliverable: 'outward' },
+      { id: 'tidy', prompt: 'Tidy the acme notes.', lane: 'chore', effort: 'high' },
+      { id: 'look', prompt: 'Look at the acme notes.', evidence: [{ type: 'review' }] },
+    ],
+  });
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /steps\[0\] a outward deliverable is for analyze steps; build and chore steps deliver files, data or media/);
+  assert.match(refused.stderr, /steps\[1\] chore steps are deterministic mechanical work and must use low effort/);
+  assert.match(refused.stderr, /steps\[2\]\.evidence\[0\]\.type must be command or schema; a check is an ordinary step with an answer and\/or evidence/);
+  assert.doesNotMatch(refused.stderr, V2_WORDS, refused.stderr);
+});
+
 // --- a build step outside a git repository is checked for a change -----------
 
 function echoHome(root) {

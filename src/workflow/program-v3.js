@@ -201,12 +201,24 @@ function readCondition(raw, at, issues, stepsById) {
   return { step: raw.step, field: raw.field, equals: raw.equals === false ? false : true };
 }
 
-// v2 issues speak of actions[i] and ownedFiles; a v3 author wrote steps[i]
-// and files.
-const v3Wording = (issue) => String(issue)
-  .replace(/^actions\[(\d+)\]/, 'steps[$1]')
-  .replace(/\.ownedFiles\b/g, '.files')
-  .replace(/ ownedFiles\b/g, ' files');
+// v2 issues speak of actions[i], ownedFiles, roles and check steps with
+// evidenceFor; a v3 author wrote steps[i] and files, and declared no role.
+// An act-role issue is dropped: the outward-deliverable issue beside it
+// already says the same in v3 words.
+const ACT_LANE = / act steps use lane analyze; they do not write workspace files$/;
+
+/** One v2 issue or advisory message in v3 words, or null when it only repeats another. */
+export function v3IssueWording(issue) {
+  const text = String(issue);
+  if (ACT_LANE.test(text)) return null;
+  return text
+    .replace(/^actions\[(\d+)\]/, 'steps[$1]')
+    .replace(/\.ownedFiles\b/g, '.files')
+    .replace(/ ownedFiles\b/g, ' files')
+    .replace(/ chore actions are /, ' chore steps are ')
+    .replace(/ build\/chore actions run /, ' build/chore steps run ')
+    .replace(/; review evidence is a check step with evidenceFor, and a choice is recorded by the caller$/, '; a check is an ordinary step with an answer and/or evidence');
+}
 
 /**
  * Validate a v3 program (authored or stored) and return its normalised form
@@ -387,7 +399,7 @@ export function normaliseProgramV3(input, runtime = {}) {
         requirements: Array.isArray(runtime.requirements) ? runtime.requirements : [{ id: requirementId, mandatory: false }],
       });
     } catch (error) {
-      issues.push(...(Array.isArray(error?.issues) ? error.issues : [error.message]).map(v3Wording));
+      issues.push(...(Array.isArray(error?.issues) ? error.issues : [error.message]).map(v3IssueWording).filter(Boolean));
     }
   }
 
