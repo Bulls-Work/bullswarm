@@ -47,6 +47,7 @@ import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
 import { STAGE3_RUN_FEATURES, isProgramV3Run, readRunFeatures, repairLoopApplies, runFeatureFlags, withProgramFormat, writeRunFeatures } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { dependencyAnswerField, settleStepAnswer, stepAnswerHooks } from './answers.js';
+import { clearWaitingFor, continuePending, evidenceIsCondition, kernelControlPass, previousRoundBlock, schedulerView } from './gates-loops.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
@@ -537,6 +538,7 @@ export async function pauseV2Run({ bullswarmDir, runId, mode = 'drain', source =
       const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
       if (state.lifecycle.status !== 'paused') {
         state.pause = { requestedAt: request.requestedAt, mode: request.mode, source, pausedAt: now() };
+        clearWaitingFor(state); // a parked v3 run parks again when it resumes
         state.lifecycle.status = 'paused';
         appendEvent(runDir, state, 'workflow.paused', { mode: request.mode, source, requeued: [], kernel: false });
         writeRunState(runDir, state);
@@ -1249,6 +1251,8 @@ export function buildProgramWorkTask(state, action, targetDir, runDir = null, { 
   const brief = repairBrief(state, action.id, {
     handoff: (attempt, format) => durableAttemptHandoff(attempt, runDir, format),
   });
+  // A loop step from round 2 on carries the previous round (gates-loops.js).
+  const round = previousRoundBlock(state, action);
   const readOnly = action.lane === 'analyze' || state.intent.constraints?.workspaceMutation === 'forbidden';
   // Kind-only steps (no role, no deliverable) keep the brief byte-identical.
   const deliverableLine = action.role == null && action.deliverable == null
@@ -1280,6 +1284,7 @@ export function buildProgramWorkTask(state, action, targetDir, runDir = null, { 
     ...evidenceLines,
     '', targetDir === state.intent.cwd ? action.prompt : action.prompt.split(state.intent.cwd).join(targetDir),
     ...(brief ? ['', brief] : []),
+    ...(round ? ['', round] : []),
     '',
     'Output transport: your complete final response is captured as this action\'s durable output artifact. Do not overwrite kernel-owned task/output files. Include delivered files or findings, validation results, unfinished work, and precise requests for the integrator. Read-only reports belong in the final response itself.',
   ].join('\n');
@@ -1573,6 +1578,7 @@ function reconcileResume(state, at, runDir) {
       attempt.why = 'runner stopped before the preflight reached a durable terminal state';
     }
   }
+  clearWaitingFor(state); // a parked v3 run (gates-loops.js) runs again
   if (!TERMINAL.has(state.lifecycle.status)) state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
   return [...toCaller].map(([actionId, why]) => ({ actionId, why }));
 }
@@ -1663,7 +1669,8 @@ async function runV2Kernel({
       };
     }
     const processAlive = dependencies.isProcessAlive ?? isProcessAlive;
-    if (!state.planner.awaiting && state.runner?.pid !== process.pid && processAlive(state.runner?.pid)
+    // A run parked at a gate or loop (gates-loops.js) has no kernel, like one awaiting its planner.
+    if (!state.planner.awaiting && state.lifecycle.status !== 'waiting' && state.runner?.pid !== process.pid && processAlive(state.runner?.pid)
       && v2RunnerLiveness(state, { processAlive }).alive) {
       throw new Error(`run ${id} already has an active kernel (pid ${state.runner.pid}); watch it or cancel it before resuming`);
     }
@@ -2384,6 +2391,8 @@ async function runV2Kernel({
       evidence: review ? { writerPools: features.reviewPlacement === 'caller' ? [] : writerPools } : null,
       maxMechanicalRetries: action.retry ?? config.maxMechanicalRetries,
       evidenceRetryAvailable,
+      // A loop's evidence-form `until` step: failed checks read "not passed".
+      evidenceAsCondition: evidenceIsCondition(state, action),
       // Stage 3 (§2.1): one automatic retry per step, counted from stored
       // `retryOf` facts so a kernel resume neither refunds nor spends it.
       failureRule: features.failureRule,
@@ -2840,6 +2849,7 @@ async function runV2Kernel({
       if (pause ? !state.pause || state.pause.mode !== pauseMode(pause.mode) : Boolean(state.pause && !state.pause.pausedAt)) return true;
       if (programExecution && pendingRevisionRequests(state, runDir).length) return true;
       if (programExecution && readStepRestarts(runDir).some((entry) => !entry.appliedAt)) return true;
+      if (programExecution && continuePending(runDir)) return true;
       if (callerPlanner && peekSteering(state, runDir).some((entry) => !announcedSteeringIds().has(entry.id))) return true;
     } catch { /* the next poll retries */ }
     return false;
@@ -3253,7 +3263,8 @@ async function runV2Kernel({
         continue;
       }
       if (state.program.actions.length) {
-        const blockedSchedule = scheduleV2Actions(state.program.actions, state.actions, schedulingOptions);
+        const graph = schedulerView(state);
+        const blockedSchedule = scheduleV2Actions(graph.actions, graph.states, schedulingOptions);
         for (const blocked of blockedSchedule.blocked) {
           const runtime = actionState(state, blocked.id);
           if (runtime && !['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted'].includes(runtime.status)) {
@@ -3266,6 +3277,11 @@ async function runV2Kernel({
           }
         }
       }
+      // Program v3: gates and loops move, and a run where only waiting gates
+      // or loops are left parks as waiting (gates-loops.js).
+      const control = kernelControlPass(state, { runDir, at: now(), emit, features, active: activeTasks.size, schedulingOptions });
+      if (control?.changed) { persist(); continue; }
+      if (control?.waiting) return { runId: id, shortId: state.shortId, runDir, state: clone(state), result: null, waiting: control.waiting };
       const pendingSteering = peekSteering(state, runDir);
       // A caller can revise the live plan at any time, so steering never halts
       // its run: it is announced once (a --next watcher wakes on it) and stays
@@ -3321,7 +3337,8 @@ async function runV2Kernel({
         }
         continue;
       }
-      const schedule = scheduleV2Actions(state.program.actions, state.actions, schedulingOptions);
+      const graph = schedulerView(state);
+      const schedule = scheduleV2Actions(graph.actions, graph.states, schedulingOptions);
       const selected = schedule.selected;
       if (!selected.length) {
         if (activeTasks.size) { await waitForProgress(); continue; }

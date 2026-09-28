@@ -903,6 +903,10 @@ export async function dispatchV2Action({
   // already failed with failed-evidence, so the one evidence retry survives a
   // kernel restart. The checks themselves are read from `action.evidence`.
   evidenceRetryAvailable = true,
+  // Program v3 (gates-loops.js): this step's evidence is its loop's `until`
+  // condition, so a failed check is recorded "checked, not passed" and the
+  // attempt succeeds; a check that could not run still fails it.
+  evidenceAsCondition = false,
   // `(event) => void` for each evidence item's started / running / finished.
   onEvidence = null,
   // The step runs in an isolated copy of its own (E5): the private-copy scope.
@@ -1624,6 +1628,12 @@ export async function dispatchV2Action({
         : null;
       if (evidenceRun.stopped) {
         verdict = { ...verdict, ok: false, cancelled: true, why: 'evidence stopped', evidenceResults: results };
+      } else if (evidenceRun.failed && evidenceAsCondition && !evidenceRun.checkFault) {
+        const why = `checked, not passed: ${evidenceRun.why ?? evidenceFailureWhy(results)}`;
+        verdict = {
+          ...verdict, ok: true, why, evidenceResults: results,
+          notes: [...(Array.isArray(verdict.notes) ? verdict.notes : []), { at: new Date(now()).toISOString(), kind: 'checked-not-passed', text: why }],
+        };
       } else if (evidenceRun.failed) {
         verdict = {
           ...verdict, ok: false, failureKind: 'failed-evidence',

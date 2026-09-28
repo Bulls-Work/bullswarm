@@ -9,6 +9,7 @@ import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vo
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { resultAnswerField, resultAnswerIssue } from './answers.js';
+import { schedulerView } from './gates-loops.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -595,9 +596,11 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
   if (state.cancellation.requested) return { status: 'cancelled', terminal: true, reason: state.cancellation.reason ?? 'workflow cancellation requested' };
   const requirements = Object.values(state.ledger.requirements);
   const unresolvedMandatory = requirements.filter((requirement) => requirement.mandatory && requirement.status !== 'passed');
+  // A v3 run's gates and loops are nodes in the graph (gates-loops.js).
+  const graph = schedulerView(state);
   const schedule = scheduleV2Actions(
-    state.program.actions,
-    state.actions,
+    graph.actions,
+    graph.states,
     v2SchedulingOptions(state),
   );
   const runtimeStates = stateByAction(state);
