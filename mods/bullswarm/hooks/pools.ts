@@ -165,7 +165,7 @@ export function contextText(
     ...lines,
     ...(runLines.length
       ? [
-          'Ongoing bullswarm workflow runs (`bullswarm workflow watch <shortId> --next` follows one; `/bullswarm runs` shows progress):',
+          'Ongoing bullswarm workflow runs (`bullswarm workflow watch <shortId> --until trouble` wakes you when one waits at a gate, runs a loop out of rounds or has a step that needs you; `/bullswarm runs` shows progress):',
           ...runLines.map(l => `- ${l}`),
         ]
       : []),

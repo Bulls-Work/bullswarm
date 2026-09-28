@@ -8,7 +8,9 @@
 //   5r8jyi — `bullswarm run --answer-schema`: one step, answer {"words":13}.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readEvents } from '../src/workflow/events.js';
@@ -241,4 +243,21 @@ test('Stats and Home count one-step runs as runs, apart from workflows', () => {
   const stats = renderDashboardPage(model, { page: 'stats', width: 200, height: 120, nowMs: NOW }).lines.map(visible).join('\n');
   assert.match(stats, /\b1 run\b/);
   assert.doesNotMatch(stats, /1 workflow\b/);
+});
+
+test('workflow runs --json lists what a parked run waits at (the mod reads it)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-v3-runs-'));
+  try {
+    cpSync(GATED, join(dir, 'workflows', 'wf-mulitifp-c82a30'), { recursive: true });
+    const bin = fileURLToPath(new URL('../bin/bullswarm.js', import.meta.url));
+    const out = spawnSync(process.execPath, [bin, 'workflow', 'runs', '--json'], {
+      env: { ...process.env, BULLSWARM_HOME: dir, BULLSWARM_DEPTH: '' }, encoding: 'utf8',
+    });
+    assert.equal(out.status, 0, out.stderr);
+    const [run] = JSON.parse(out.stdout).runs;
+    assert.equal(run.status, 'waiting');
+    assert.deepEqual(run.waitingFor.map((node) => [node.type, node.id]), [['gate', 'approve']]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

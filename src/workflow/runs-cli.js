@@ -576,6 +576,8 @@ function summarize(r) {
     status: r.state.lifecycle?.status ?? null, startedAt: runStartedAt(r), finishedAt: r.state.lifecycle?.finishedAt ?? null,
     ongoing: r.ongoing, actionsSucceeded: r.state.actions?.filter((action) => action.status === 'succeeded').length ?? 0,
     actionsTotal: r.state.actions?.length ?? 0,
+    // A v3 run parked at a gate or loop lists what it waits at (none: no key).
+    ...(parkedWaitingFor(r.state) ? { waitingFor: parkedWaitingFor(r.state) } : {}),
   };
 }
 

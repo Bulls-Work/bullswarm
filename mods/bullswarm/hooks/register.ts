@@ -36,7 +36,7 @@ import {
 } from './runs'
 import { strip } from './strip'
 import type { StepMode } from './step'
-import { parseVerdict, verdictContext } from './verdict'
+import { parseVerdict, verdictContext, watchContext } from './verdict'
 
 const COMMAND = 'bullswarm'
 const PANE_ID = 'bullswarm'
@@ -428,7 +428,8 @@ export function register(on: On, options: PluginOptions = {}) {
     const next = contextSignature(
       pools,
       autoRoute,
-      runs.map(r => r.shortId),
+      // A run that parks at a gate re-sends the block, so the model sees it wait.
+      runs.map(r => `${r.shortId}:${r.status}`),
     )
     if (next !== signature) {
       signature = next
@@ -698,7 +699,7 @@ export function register(on: On, options: PluginOptions = {}) {
         ? (e as { command: string }).command
         : ''
     const match =
-      /^(?:\s*[A-Z_][A-Z0-9_]*=\S*\s+)*(?:rtk\s+\S+\s+)?(?:\S*\/)?bullswarm\s+(run|workflow\s+goal)\b/m.exec(
+      /^(?:\s*[A-Z_][A-Z0-9_]*=\S*\s+)*(?:rtk\s+\S+\s+)?(?:\S*\/)?bullswarm\s+(run|workflow\s+goal|workflow\s+(?:watch|wait))\b/m.exec(
         command,
       )
     if (!match) return next(e)
@@ -712,6 +713,7 @@ export function register(on: On, options: PluginOptions = {}) {
     }
     if (answered.deny !== undefined || answered.isError) return result
 
+    const watching = /^workflow\s+(?:watch|wait)/.test(match[1]!)
     const verb = match[1]!.startsWith('run') ? 'run' : 'workflow goal'
     // Bash's record: the verdict document is its stdout.
     const record = answered.result as { stdout?: unknown; stderr?: unknown } | string | undefined
@@ -723,6 +725,12 @@ export function register(on: On, options: PluginOptions = {}) {
           : typeof record?.stderr === 'string'
             ? record.stderr
             : ''
+    // A watch or wait prints lines, not a verdict: its note names where a
+    // v3 run waits, its loop's round and the answers it shows.
+    if (watching) {
+      const note = watchContext(text)
+      return note ? ({ ...result, context: [...(answered.context ?? []), note] } as typeof result) : result
+    }
     const verdict = parseVerdict(text, 0)
     const note = verdictContext(verb, verdict)
 
@@ -787,7 +795,7 @@ export function register(on: On, options: PluginOptions = {}) {
       return {
         text: withDisplayNames(lines.length
           ? [`${runs.length} ongoing run(s), ${assignments.length} step(s) in flight:`, ...lines,
-             'bullswarm workflow watch <shortId> --next follows a run; bullswarm workflow runs result <shortId> --json --summary reads its result'].join('\n')
+             'bullswarm workflow watch <shortId> --until trouble wakes you when a run needs you; bullswarm workflow runs result <shortId> --json --summary reads its result'].join('\n')
           : 'no ongoing workflow runs and nothing in flight', names),
       }
     }

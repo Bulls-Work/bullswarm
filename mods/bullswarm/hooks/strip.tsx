@@ -5,7 +5,7 @@ import type { ElementTable, RenderElement } from 'claude-code'
 
 import type { BullswarmAssignment, BullswarmPool, BullswarmRun } from '../types'
 import { poolRows } from './pool-rows'
-import { looseOf, stepsOf, timingOf } from './runs'
+import { looseOf, runStatusText, stepsOf, timingOf } from './runs'
 
 export type StripUi = Pick<
   ElementTable<'terminal' | 'desktop'>,
@@ -100,6 +100,8 @@ export function strip(
           .join(', ')
         const running = steps.length > 1 ? `${named}, and ${String(steps.length - 1)} more` : named
         const finished = run.status !== 'running'
+        // A parked v3 run waits for the caller at a gate or loop.
+        const waiting = (run.waitingFor ?? []).length > 0
         const selected = model.selectedShortId === run.shortId && model.paneOpen
 
         return (
@@ -108,7 +110,7 @@ export function strip(
               key={`open-${run.shortId}`}
               plain
               hotkey={i < 9 ? String(i + 1) : undefined}
-              label={`${finished ? '◼' : '▶'} ${run.shortId}`}
+              label={`${waiting ? '⧖' : finished ? '◼' : '▶'} ${run.shortId}`}
               onPress={() => actions.open(run.shortId)}
             />
             <Text wrap="truncate-end">
@@ -117,7 +119,7 @@ export function strip(
                 {'  '}
                 {done}
               </Text>
-              {finished ? <Text color="yellow">  {run.status}</Text> : null}
+              {finished ? <Text color="yellow">  {runStatusText(run)}</Text> : null}
               <Text color="cyan">{running ? `  ${running}` : ''}</Text>
               <Text dimColor>  {run.goal}</Text>
             </Text>

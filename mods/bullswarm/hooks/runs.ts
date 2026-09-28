@@ -83,7 +83,24 @@ export function parseRuns(stdout: string): BullswarmRun[] {
       startedAt: str(r.startedAt),
       actionsSucceeded: num(r.actionsSucceeded) ?? 0,
       actionsTotal: num(r.actionsTotal) ?? 0,
+      waitingFor: Array.isArray(r.waitingFor)
+        ? (r.waitingFor as Raw[])
+            .filter(n => typeof n?.id === 'string')
+            .map(n => ({ id: n.id as string, type: str(n.type) ?? 'gate', note: str(n.note) }))
+        : [],
     }))
+}
+
+/** `waiting at gate approve`, or the run's own status word. */
+export function runStatusText(run: BullswarmRun): string {
+  if (!run.waitingFor?.length) return run.status
+  return `waiting at ${run.waitingFor.map(n => `${n.type} ${n.id}`).join(', ')}`
+}
+
+/** The commands that move a parked run's gates and loops. */
+export function continueCommands(run: BullswarmRun): string[] {
+  return (run.waitingFor ?? []).map(n =>
+    `bullswarm workflow continue ${run.shortId} ${n.id}${n.type === 'loop' ? ' --rounds <n>' : ''}`)
 }
 
 /** Reads `bullswarm assignments --json` (the in-flight ledger). */
@@ -164,7 +181,8 @@ export function runLine(
     .join(', ')
   const progress = `${run.actionsSucceeded}/${run.actionsTotal} done`
   const age = ageOf(run.startedAt, nowMs)
-  return `${run.shortId} (${run.status}${age ? `, ${age}` : ''}): ${progress}${steps ? `; running ${steps}` : ''} — ${run.goal.slice(0, 80)}${run.goal.length > 80 ? '…' : ''}`
+  const next = continueCommands(run)
+  return `${run.shortId} (${runStatusText(run)}${age ? `, ${age}` : ''}): ${progress}${steps ? `; running ${steps}` : ''}${next.length ? `; continue: ${next.join(' or ')}` : ''} — ${run.goal.slice(0, 80)}${run.goal.length > 80 ? '…' : ''}`
 }
 
 const activityOf = (v: unknown): string | null => {

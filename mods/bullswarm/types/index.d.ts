@@ -32,6 +32,8 @@ export type BullswarmRun = {
   startedAt: string | null
   actionsSucceeded: number
   actionsTotal: number
+  /** The gates and loops a parked v3 run waits at; empty otherwise. */
+  waitingFor: { id: string; type: string; note: string | null }[]
 }
 
 /** One action of a run as `bullswarm workflow runs show --json` reports it. */
@@ -198,6 +200,14 @@ export type BullswarmVerdict = {
   wallSec: number | null
   inputTokens: number | null
   outputTokens: number | null
+  /** A run's checked answer (`--answer-schema`), null when none. */
+  answer: unknown
+  /** The answer check: true, false, or null when the run declared no answer. */
+  answerOk: boolean | null
+  answerErrors: string[]
+  /** A parked goal's waiting gates and loops, and the commands that move them. */
+  waitingFor: { id: string; type: string; note: string | null }[]
+  next: string[]
   exitCode: number
   raw: string
 }
