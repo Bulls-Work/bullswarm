@@ -271,7 +271,7 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
   }
   // A v3 run parked at a gate or an out-of-rounds loop (gates-loops.js).
   if (!result.result && result.waiting) {
-    const document = waitingDocument(result);
+    const document = waitingDocument({ runId: result.runId, shortId: result.shortId, waitingFor: result.waiting });
     if (opts.json) console.log(JSON.stringify(document, null, 2));
     else if (!opts.quiet) console.log(waitingOutcomeLines(result.shortId ?? result.runId, result.waiting).join('\n'));
     return 0;

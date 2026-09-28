@@ -522,4 +522,12 @@ test('workflow goal --foreground launches a program with a gate, parks it and pr
   assert.match(goal.stdout, /outcome: waiting/);
   assert.match(goal.stdout, /waiting: gate approve · Read the draft and decide/);
   assert.match(goal.stdout, /next: bullswarm workflow continue \S+ approve/);
+  // --json (what the detached kernel prints): the waiting document.
+  const second = spawnSync(process.execPath, [cli, 'workflow', 'goal', 'Deliver the initech brief', '--cwd', workspace, '--program', plan, '--foreground', '--json'], { encoding: 'utf8', env, cwd: workspace, timeout: 60_000 });
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  const document = JSON.parse(second.stdout);
+  assert.equal(document.action, 'workflow-waiting');
+  assert.equal(document.status, 'waiting');
+  assert.deepEqual(document.waitingFor.map((entry) => [entry.id, entry.type, entry.note]), [['approve', 'gate', 'Read the draft and decide']]);
+  assert.deepEqual(document.next, [`bullswarm workflow continue ${document.shortId} approve`]);
 });
