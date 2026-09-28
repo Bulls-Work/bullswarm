@@ -9,8 +9,8 @@
 import { formatMoneyPair } from '../lib/usage-basis.js';
 import { poolLabel, withPoolLabels } from '../lib/pool-labels.js';
 
-// keepOnClaude is gone (0.37.0); `structured` is the answer check, carried as answerCheck.
-const DROPPED = ['keepOnClaude', 'structured'];
+// `structured` is the answer check, carried as answerCheck.
+const DROPPED = ['structured'];
 
 function answerFacts(attempt) {
   const recorded = attempt?.answer;

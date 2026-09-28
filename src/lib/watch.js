@@ -1701,7 +1701,6 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     ...(outputTruncated ? { outputTruncated: true, outputSource } : {}),
     ...(notes.length ? { notes } : {}),
     ok: verdict.ok,
-    keepOnClaude: false,
     pick: { pool: connector.name, model: selectedModel, command: connector.spawn.cmd },
     contentUsableDespiteExit: usableDespite,
     ...(structured ? { structured } : {}),
