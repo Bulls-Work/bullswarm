@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { runStepProgram, runStepRequest } from '../src/lib/run-step.js';
+import { runStepGoal, runStepProgram, runStepRequest } from '../src/lib/run-step.js';
 import { normaliseProgramV3 } from '../src/workflow/program-v3.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -61,11 +61,13 @@ test('run-step: the flags become a one-step v3 program the v3 validator accepts'
     schemaVersion: 'bullswarm.workflow.program.v3',
     steps: [{
       id: 'task', label: 'Fix the acme parser', prompt: 'Fix the acme parser',
-      lane: 'build', effort: 'high', reasoning: 'low', retry: 0,
+      lane: 'build', effort: 'high', retry: 0,
       route: { pools: { avoid: ['grok', 'codex'] }, providers: { use: ['acme'], avoid: ['initech'] } },
     }],
   });
   assert.equal(normaliseProgramV3(program).steps.length, 1);
+  // --reasoning is the run-wide level, on the goal's worker routing (source "run").
+  assert.deepEqual(runStepGoal(parsed.request).config.workerRouting, { reasoning: 'low' });
 });
 
 test('run-step: the default retry is 1, the lane default effort applies, and an answer schema is the step answer', () => {
@@ -133,7 +135,7 @@ test('run: the run is a one-step v3 workflow under workflows/<id>/ and the verdi
   assert.equal(core.decisionLog.some((entry) => entry.kind === 'run'), false);
   assert.deepEqual(core.incumbents, { analyze: 'acme' });
   // The run is listed with the workflows.
-  const runs = bullswarm(f, ['workflow', 'runs', '--json']);
+  const runs = bullswarm(f, ['workflow', 'runs', '--all', '--json']);
   assert.equal(runs.status, 0, runs.stderr);
   assert.ok(JSON.stringify(JSON.parse(runs.stdout)).includes(verdict.runId), runs.stdout);
 });

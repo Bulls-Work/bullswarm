@@ -2187,4 +2187,4 @@ export async function dispatchV2Action({
   };
 }
 
-export { classifyFailure as classifyV2DispatchFailure, preparePools as prepareV2DispatchPools, trackedStat as trackedDiffStatForTests };
+export { classifyFailure as classifyV2DispatchFailure, preparePools as prepareV2DispatchPools, selectedModel as selectedV2DispatchModel, trackedStat as trackedDiffStatForTests };

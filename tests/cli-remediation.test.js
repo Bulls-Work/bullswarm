@@ -46,17 +46,19 @@ function verdict(result) {
 test('top-level run accepts prompt, positional, and task-file task forms', () => {
   const f = sandbox();
   try {
-    const prompt = verdict(run(f.home, ['run', '--lane', 'chore', '--prompt', 'PROMPT_TASK', '--json']));
-    const positional = verdict(run(f.home, ['run', '--lane', 'chore', 'POSITIONAL_TASK', '--json']));
+    // A run is a one-step workflow (0.37.0): the task is the step's prompt,
+    // inside the kernel's step brief.
+    const prompt = verdict(run(f.home, ['run', '--lane', 'analyze', '--prompt', 'PROMPT_TASK', '--json']));
+    const positional = verdict(run(f.home, ['run', '--lane', 'analyze', 'POSITIONAL_TASK', '--json']));
     const taskPath = join(f.home, 'task.md');
     writeFileSync(taskPath, 'FILE_TASK');
-    const file = verdict(run(f.home, ['run', '--lane', 'chore', '--task-file', taskPath, '--json']));
+    const file = verdict(run(f.home, ['run', '--lane', 'analyze', '--task-file', taskPath, '--json']));
     assert.equal(prompt.ok, true);
-    assert.equal(readFileSync(prompt.taskFile, 'utf8'), 'PROMPT_TASK');
+    assert.match(readFileSync(prompt.taskFile, 'utf8'), /\nPROMPT_TASK\n/);
     assert.equal(positional.ok, true);
-    assert.equal(readFileSync(positional.taskFile, 'utf8'), 'POSITIONAL_TASK');
+    assert.match(readFileSync(positional.taskFile, 'utf8'), /\nPOSITIONAL_TASK\n/);
     assert.equal(file.ok, true);
-    assert.equal(readFileSync(file.taskFile, 'utf8'), 'FILE_TASK');
+    assert.match(readFileSync(file.taskFile, 'utf8'), /\nFILE_TASK\n/);
   } finally { f.cleanup(); }
 });
 
@@ -98,13 +100,14 @@ test('top-level run heartbeat keeps JSON stdout clean and emits aggregate stderr
     connector.spawn.cmd = ['node', worker, '{taskFile}'];
     writeFileSync(connectorPath, JSON.stringify(connector));
 
-    const result = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '1', 'TASK', '--json']);
+    const result = run(f.home, ['run', '--lane', 'analyze', '--heartbeat', '1', 'TASK', '--json']);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).ok, true);
     // Timer callbacks can fire a fraction before or after the exact wall-clock
-    // boundary on a loaded machine. Assert the stable heartbeat structure and
-    // aggregate counters without coupling the test to sub-second scheduling.
-    assert.match(result.stderr, /^bullswarm run · active \d+s · 0 events · 0 B · activity \d+s ago\n$/);
+    // boundary on a loaded machine, and the kernel's own work around the
+    // worker adds ticks. Assert the stable heartbeat structure and aggregate
+    // counters without coupling the test to sub-second scheduling.
+    assert.match(result.stderr, /^(bullswarm run · active \d+s · 0 events · \d+ B · activity \d+s ago\n)+$/);
   } finally { f.cleanup(); }
 });
 
@@ -258,7 +261,7 @@ test('run --dry-run --json previews the real command with the resolved reasoning
   const f = reasoningSandbox();
   try {
     const preview = verdict(run(f.home, [
-      'run', '--lane', 'chore', '--reasoning', 'max', '--dry-run', '--json', 'PREVIEW_TASK',
+      'run', '--lane', 'analyze', '--effort', 'low', '--reasoning', 'max', '--dry-run', '--json', 'PREVIEW_TASK',
     ]));
     assert.equal(preview.dryRun, true);
     assert.equal(preview.pick.pool, 'local-agent');
@@ -279,7 +282,7 @@ test('run --dry-run --json previews the real command with the resolved reasoning
     // after the task-file argument is identical (the two runs get their own
     // task-file stamps, so those are compared by position, not by value).
     const live = verdict(run(f.home, [
-      'run', '--lane', 'chore', '--reasoning', 'max', '--json', 'LIVE_TASK',
+      'run', '--lane', 'analyze', '--effort', 'low', '--reasoning', 'max', '--json', 'LIVE_TASK',
     ]));
     assert.equal(live.ok, true);
     const observed = JSON.parse(
@@ -296,7 +299,7 @@ test('run reports the resolved reasoning level in its verdict and its decision l
   const f = reasoningSandbox();
   try {
     // Nothing asked: the connector's own default for the chore tier (low).
-    const fromConnector = verdict(run(f.home, ['run', '--lane', 'chore', '--json', 'TASK']));
+    const fromConnector = verdict(run(f.home, ['run', '--lane', 'analyze', '--effort', 'low', '--json', 'TASK']));
     assert.deepEqual(fromConnector.reasoning, {
       requested: 'medium', applied: 'medium', source: 'connector', clamped: false,
     });
@@ -312,7 +315,7 @@ test('run reports the resolved reasoning level in its verdict and its decision l
 
     // `default` means "append nothing and let the CLI's own config decide".
     const silent = verdict(run(f.home, [
-      'run', '--lane', 'chore', '--reasoning', 'default', '--json', 'TASK',
+      'run', '--lane', 'analyze', '--effort', 'low', '--reasoning', 'default', '--json', 'TASK',
     ]));
     assert.deepEqual(silent.reasoning, {
       requested: 'default', applied: null, source: 'run', clamped: false,
@@ -332,7 +335,7 @@ test('a pool whose connector declares no reasoning is dispatched without a flag'
     delete connector.reasoning;
     writeFileSync(connectorPath, JSON.stringify(connector));
     const result = verdict(run(f.home, [
-      'run', '--lane', 'chore', '--reasoning', 'high', '--json', 'TASK',
+      'run', '--lane', 'analyze', '--effort', 'low', '--reasoning', 'high', '--json', 'TASK',
     ]));
     assert.deepEqual(result.reasoning, {
       requested: 'high', applied: null, source: 'unsupported', clamped: false,

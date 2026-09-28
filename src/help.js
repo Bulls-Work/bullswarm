@@ -339,9 +339,9 @@ const integrateRetireLegacyText = rich({
 
 const runText = rich({
   usage: 'bullswarm run --lane <analyze|build|chore> --add-dir <dir> (--task-file <file> | --prompt <text> | <task text...>) [options]',
-  purpose: 'Dispatch one bounded task to the best-available delegate pool (or keep it on the '
-    + 'calling agent when nothing suitable is eligible), then verify the saved output before '
-    + 'reporting a verdict.',
+  purpose: 'Run one bounded task as a one-step workflow: the kernel routes it to the pool with '
+    + 'the most quota headroom, judges it by facts (exit, deliverable, and the typed answer when '
+    + '--answer-schema is given), records it under workflows/<id>/, and prints the verdict.',
   args: [
     { name: '<task text...>', desc: 'the task prompt, as trailing words; mutually exclusive with --prompt and --task-file' },
   ],
@@ -352,22 +352,29 @@ const runText = rich({
     { flag: '--prompt <text>', desc: 'pass the task text inline as one flag value' },
     { flag: '--effort <high|medium|low>', desc: 'override the effort tier used for model-tier routing', default: 'derived from --lane (analyze→medium, build→medium, chore→low)' },
     { flag: '--reasoning <low|medium|high|xhigh|max|default>', desc: "run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing and lets the delegate CLI's own configuration decide", default: 'strategy reasoning setting for the effort tier, else the connector default' },
+    { flag: '--answer-schema <file>', desc: 'a JSON schema for a typed answer: the worker writes its answer as JSON to a file Bullswarm names, and the verdict carries `answer` and `answerCheck`; a mismatch is failure kind schema', default: 'none — no typed answer' },
+    { flag: '--no-retry', desc: 'one attempt only; without it the step gets its one automatic retry (a usage limit is never retried)', default: 'off — one retry' },
+    { flag: '--avoid-pool <pool,...>', desc: 'never route this task to these pools' },
+    { flag: '--use-provider <provider,...>', desc: 'route only to pools of these providers' },
+    { flag: '--avoid-provider <provider,...>', desc: 'never route to pools of these providers' },
     { flag: '--timeout <seconds>', desc: 'hard wall-clock kill timer for the delegate process', default: 'none — the delegate is allowed to run to completion' },
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
-    { flag: '--dry-run', desc: 'print the routing decision, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
-    { flag: '--no-caller', desc: 'exclude the calling agent from routing, so the task must go to a delegate pool or fail', default: 'off — the caller competes for the lane like any other pool' },
+    { flag: '--dry-run', desc: 'print the kernel\'s routing pick, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, recording a run, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
+    { flag: '--no-caller', desc: 'accepted and ignored for one release: the calling agent is never a pool of its own run', default: 'removed in 0.37.0; a notice is printed' },
     { flag: '--json', desc: 'print the machine-readable verdict document', default: 'human-readable summary line' },
   ],
   safety: [
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
-    'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion; --dry-run writes neither',
-    'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of the run and releases it when the attempt ends; --dry-run registers nothing',
-    'one attempt only: a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
+    'records the run under ~/.bullswarm/workflows/<id>/ (see bullswarm workflow runs --all) and each attempt in the decision log; --dry-run writes neither',
+    'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of each attempt and releases it when the attempt ends; --dry-run registers nothing',
+    'a build or chore run must change a file (else failure kind not-produced), as every workflow step must',
+    'one automatic retry (a process failure on another pool, a failed answer check on the same pool) unless --no-retry; a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },
     { cmd: 'bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"', note: 'shows the exact argv, including the clamped reasoning flag, without dispatching' },
     { cmd: 'bullswarm run --lane build --add-dir . --dry-run "Refactor the loader"', note: 'prints a `forecast:` line — inflight count, projected 5h percent before and after this assignment, its expected minutes, the measured burn rate, and the basis of that estimate' },
+    { cmd: 'bullswarm run --lane analyze --add-dir . --answer-schema count.schema.json --json "Count the TODO comments in src/"', note: 'the verdict carries the checked answer' },
   ],
   next: 'bullswarm health to re-judge saved outputs, or bullswarm pools to check routing/quota state before the next run.',
 });

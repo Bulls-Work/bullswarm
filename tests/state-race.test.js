@@ -42,10 +42,12 @@ function readState(home) {
 
 /** Resolves once the delegate's task file exists, i.e. the worker is running. */
 async function waitForWorker(home, timeoutMs = 20_000) {
-  const runs = join(home, 'runs');
+  // A run is a one-step workflow (0.37.0): its task file is in workflows/<id>/.
+  const runs = join(home, 'workflows');
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(runs) && readdirSync(runs).some((f) => f.startsWith('task-'))) return true;
+    if (existsSync(runs) && readdirSync(runs).some((dir) => dir.startsWith('wf-')
+      && existsSync(join(runs, dir, 'task-task-attempt-1.md')))) return true;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error('the delegate worker never started');
@@ -57,7 +59,7 @@ test('an operator write during a long run survives the run (D5)', async () => {
     // A 3-second worker: long enough to write state.json out of band while the
     // run is genuinely in flight.
     const run = spawn(process.execPath, [
-      BIN, 'run', '--lane', 'chore', '--no-caller', '--json',
+      BIN, 'run', '--lane', 'analyze', '--json',
       '--prompt', 'SLEEP_MS:3000 report the race',
     ], { env: { ...process.env, BULLSWARM_HOME: f.home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -88,6 +90,6 @@ test('an operator write during a long run survives the run (D5)', async () => {
     assert.equal(state.decisionLog.length, 1, 'the run still recorded its own decision');
     assert.equal(state.decisionLog[0].picked, 'echo');
     assert.equal(state.decisionLog[0].ok, true);
-    assert.equal(state.incumbents.chore, 'echo', 'and its incumbency write landed');
+    assert.deepEqual(state.incumbents, {}, 'incumbency is gone: a run neither reads nor writes it (0.37.0)');
   } finally { f.cleanup(); }
 });

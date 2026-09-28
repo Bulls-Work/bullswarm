@@ -136,7 +136,7 @@ function runEcho(home, argv) {
 test('run: a spent usage window with its reset named is quota, pauses nothing and writes a named refusal marker', () => {
   const home = echoHome();
   try {
-    const result = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--json', '--prompt', 'FAIL:quota']);
+    const result = runEcho(home, ['run', '--lane', 'build', '--json', '--prompt', 'FAIL:quota']);
     assert.equal(result.status, 1, result.stderr);
     const verdict = JSON.parse(result.stdout);
     assert.equal(verdict.failureKind, 'quota', verdict.why);
@@ -154,7 +154,7 @@ test('run: a spent usage window with its reset named is quota, pauses nothing an
     assert.equal(state.pools.echo.quarantine, undefined, 'not paused');
     assert.equal(state.pools.echo.bench, undefined, 'not benched');
     // The named marker keeps the pool out until its reset.
-    const next = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    const next = runEcho(home, ['run', '--lane', 'build', '--dry-run', '--json', '--prompt', 'hi']);
     assert.equal(next.status, 1, next.stderr);
     assert.equal(JSON.parse(next.stdout).pick, undefined);
   } finally {
@@ -181,18 +181,18 @@ test('run: a usage limit that names no reset, on a pool with no meter reader, is
     writeFileSync(join(home, 'connectors', 'limited.json'), JSON.stringify({
       ...echo, name: 'limited', spawn: { cmd: [process.execPath, worker, '{taskFile}'] },
     }));
-    const limited = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--json', '--prompt', 'LIMIT']);
+    const limited = runEcho(home, ['run', '--lane', 'build', '--json', '--prompt', 'LIMIT']);
     assert.equal(limited.status, 1, limited.stderr);
     const verdict = JSON.parse(limited.stdout);
     assert.equal(verdict.pick.pool, 'limited');
     assert.equal(verdict.failureKind, 'quota', verdict.why);
-    assert.equal(verdict.retryAfter, undefined, 'no reset was named');
+    assert.equal(verdict.retryAfter, null, 'no reset was named');
     assert.equal(verdict.why, 'usage window spent: provider said "You\'ve hit your usage limit" · no reset named · meter not read');
     const marker = JSON.parse(readFileSync(join(home, 'meters', 'limited.json'), 'utf8'));
     assert.equal(marker.quota_refusal.reset_source, 'guessed');
     assert.equal(marker.seven_day.utilization, 100);
     // The next routing still offers the pool: the guessed marker is not a wall.
-    const next = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    const next = runEcho(home, ['run', '--lane', 'build', '--dry-run', '--json', '--prompt', 'hi']);
     assert.equal(next.status, 0, next.stdout);
     assert.equal(JSON.parse(next.stdout).pick.pool, 'limited');
     // `pools` names the refusal without calling the pool blocked.
@@ -216,13 +216,13 @@ test('run: a pool with its weekly window spent until a later reset is not picked
       seven_day: { utilization: weekly, resets_at: at(72) },
     });
     writeFileSync(join(home, 'meters', 'echo.json'), reading(100));
-    const spent = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    const spent = runEcho(home, ['run', '--lane', 'build', '--dry-run', '--json', '--prompt', 'hi']);
     assert.equal(spent.status, 1, spent.stderr);
     const refused = JSON.parse(spent.stdout);
     assert.equal(refused.ok, false);
     assert.equal(refused.pick, undefined, refused.why);
     writeFileSync(join(home, 'meters', 'echo.json'), reading(99));
-    const open = runEcho(home, ['run', '--lane', 'build', '--no-caller', '--dry-run', '--json', '--prompt', 'hi']);
+    const open = runEcho(home, ['run', '--lane', 'build', '--dry-run', '--json', '--prompt', 'hi']);
     assert.equal(open.status, 0, open.stderr);
     assert.equal(JSON.parse(open.stdout).pick.pool, 'echo');
   } finally {

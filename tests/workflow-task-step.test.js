@@ -12,6 +12,7 @@ import {
   taskStepModel,
 } from '../src/workflow/task-step.js';
 import { renderStepPage } from '../src/workflow/step-view.js';
+import { stepPageModel } from '../src/workflow/step-model.js';
 import { runDashboard } from '../src/workflow/dashboard.js';
 import { shapeStep } from '../mods/bullswarm/hooks/step.ts';
 
@@ -326,7 +327,7 @@ test('real snapshot task records without a stream pointer stay honest', () => {
   assert.match(plain(body.lines.join('\n')), /no event stream path recorded/);
 });
 
-test('a fake-provider run persists stream-<id>.jsonl beside the task file and the Step page renders its turns', () => {
+test('a fake-provider run persists its stream beside the task file and the Step page renders its turns', () => {
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-task-step-fake-'));
   try {
     mkdirSync(join(home, 'connectors'), { recursive: true });
@@ -381,7 +382,7 @@ test('a fake-provider run persists stream-<id>.jsonl beside the task file and th
       decisionLog: [],
       config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
     }, null, 2)}\n`);
-    const result = spawnSync(process.execPath, [BIN, 'run', '--lane', 'build', '--json', '--no-caller', '--add-dir', REPO, '--prompt', 'persist the event stream'], {
+    const result = spawnSync(process.execPath, [BIN, 'run', '--lane', 'analyze', '--json', '--add-dir', REPO, '--prompt', 'persist the event stream'], {
       env: {
         ...process.env,
         BULLSWARM_HOME: home,
@@ -392,24 +393,20 @@ test('a fake-provider run persists stream-<id>.jsonl beside the task file and th
       timeout: 60_000,
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
-    const entry = state.decisionLog.at(-1);
-    assert.equal(entry.kind, 'run');
-    assert.equal(entry.ok, true);
-    assert.match(entry.taskFile, /\/runs\/task-/);
-    assert.match(entry.streamFile, /\/runs\/stream-/);
-    assert.equal(
-      entry.streamFile.replace(/stream-/, 'task-').replace(/\.jsonl$/, '.md'),
-      entry.taskFile,
-    );
-    assert.equal(existsSync(entry.streamFile), true, 'the stream file exists next to the task file');
-    const rows = readFileSync(entry.streamFile, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    // A run is a one-step workflow (0.37.0): its attempt, task file and stream
+    // are in workflows/<id>/, and its Step page is the workflow step's.
+    const verdict = JSON.parse(result.stdout);
+    const runDir = join(home, 'workflows', verdict.runId);
+    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    const [attempt] = state.attempts;
+    assert.equal(attempt.taskFile, join(runDir, 'task-task-attempt-1.md'));
+    assert.equal(existsSync(attempt.streamFile), true, 'the stream file exists next to the task file');
+    assert.ok(attempt.streamFile.startsWith(runDir));
+    const rows = readFileSync(attempt.streamFile, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
     assert.ok(rows.some((row) => row.kind === 'response'), 'the fake provider recorded response turns');
-    assert.ok(readdirSync(join(home, 'runs')).includes(basename(entry.streamFile)));
 
-    const model = taskStepModel(entry, { runsDir: join(home, 'runs'), nowMs: NOW });
-    assert.equal(model.activity.available, true);
-    assert.ok(model.activity.turns.length >= 1);
+    const row = { runId: state.runId, shortId: state.shortId, state, status: 'completed' };
+    const model = stepPageModel({ row, assignments: [], pools: [] }, { actionId: 'task', nowMs: Date.now() });
     const body = bodyFor();
     renderStepPage(model, { width: 120, stepView: 'overview' }, body);
     const text = plain(body.lines.join('\n'));

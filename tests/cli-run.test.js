@@ -51,7 +51,7 @@ test('run --dry-run leaves state.json byte-identical even with a stale auto-appl
   try {
     const before = stateBytes(f.dir);
     const result = bullswarm(f.dir, [
-      'run', '--lane', 'build', '--dry-run', '--json', '--no-caller', '--prompt', 'hi',
+      'run', '--lane', 'build', '--dry-run', '--json', '--prompt', 'hi',
     ]);
     assert.equal(result.status, 0, result.stderr);
     const verdict = JSON.parse(result.stdout);
@@ -121,11 +121,12 @@ test('run names the tier allow-list, not capabilities, when it emptied the candi
   try {
     const result = bullswarm(f.dir, [
       'run', '--lane', 'build', '--effort', 'medium',
-      '--dry-run', '--json', '--no-caller', '--prompt', 'hi',
+      '--dry-run', '--json', '--prompt', 'hi',
     ]);
     const verdict = JSON.parse(result.stdout);
     assert.equal(verdict.ok, false);
-    assert.equal(verdict.why, 'no pool has a model allowed for the medium tier');
+    // The kernel's pick (0.37.0): its preparation drops the pool, and says why.
+    assert.equal(verdict.why, 'no eligible pool: no enabled pool has a model on the medium tier for build work');
     assert.doesNotMatch(verdict.why, /capabilit/, 'the connector declares every capability the lane asked for');
   } finally { f.cleanup(); }
 });
@@ -140,7 +141,7 @@ test('run still routes when the tier allow-list names a model the pool can run',
   try {
     const result = bullswarm(f.dir, [
       'run', '--lane', 'build', '--effort', 'medium',
-      '--dry-run', '--json', '--no-caller', '--prompt', 'hi',
+      '--dry-run', '--json', '--prompt', 'hi',
     ]);
     assert.equal(result.status, 0, result.stderr);
     const verdict = JSON.parse(result.stdout);
@@ -149,54 +150,56 @@ test('run still routes when the tier allow-list names a model the pool can run',
   } finally { f.cleanup(); }
 });
 
-test('run records a task ledger entry with project and lifecycle fields', () => {
+// A run is a one-step workflow (0.37.0): it is recorded under workflows/<id>/
+// with its rollup and project, and its one decision-log entry is the
+// workflow attempt's; there is no separate task entry.
+test('run records the run under workflows/<id>/ and the attempt in the decision log', () => {
   const f = home({ config: { testFixturesMigrated: true } });
   try {
     const result = bullswarm(f.dir, [
-      'run', '--lane', 'build', '--json', '--no-caller', '--add-dir', REPO, '--prompt', 'ledger shape',
+      'run', '--lane', 'analyze', '--json', '--add-dir', REPO, '--prompt', 'ledger shape',
     ]);
     assert.equal(result.status, 0, result.stderr);
+    const verdict = JSON.parse(result.stdout);
+    const runDir = join(f.dir, 'workflows', verdict.runId);
     const state = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
-    const entry = state.decisionLog.at(-1);
-    assert.equal(entry.kind, 'run');
-    assert.equal(entry.source, 'run');
-    assert.equal(entry.lane, 'build');
-    assert.equal(entry.pool, 'echo');
+    assert.equal(state.decisionLog.length, 1);
+    const entry = state.decisionLog[0];
+    assert.equal(entry.source, 'workflow-v2');
+    assert.equal(entry.actionId, 'task');
+    assert.equal(entry.lane, 'analyze');
+    assert.equal(entry.picked, 'echo');
     assert.equal(entry.model, 'echo-local');
-    assert.equal(entry.project, 'bullswarm');
-    assert.equal(entry.cwd, REPO);
     assert.equal(entry.ok, true);
-    assert.equal(entry.reason, null);
-    assert.match(entry.taskFile, /\/runs\/task-/);
-    assert.match(entry.outFile, /\/runs\/out-/);
-    assert.match(entry.streamFile, /\/runs\/stream-/);
-    assert.equal(
-      entry.streamFile.replace(/stream-/, 'task-').replace(/\.jsonl$/, '.md'),
-      entry.taskFile,
-      'stream file uses the same id suffix as the task file',
-    );
-    assert.match(entry.startedAt, /^2026-|^20\d\d-/);
-    assert.match(entry.endedAt, /^2026-|^20\d\d-/);
-    assert.ok(entry.endedAt >= entry.startedAt);
-    assert.equal(typeof entry.durationMs, 'number');
-    assert.match(entry.id, /^[0-9a-f-]{20,}$/);
+    assert.equal(entry.outFile, verdict.outFile);
+    assert.ok(verdict.outFile.startsWith(runDir));
+    assert.match(verdict.taskFile, /\/task-task-attempt-1\.md$/);
+    const rollup = JSON.parse(readFileSync(join(runDir, 'rollup.json'), 'utf8'));
+    assert.equal(rollup.runId, verdict.runId);
+    assert.equal(JSON.parse(readFileSync(join(runDir, 'project.json'), 'utf8')).name, 'bullswarm');
+    const runState = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    const [attempt] = runState.attempts;
+    assert.equal(attempt.pool, 'echo');
+    assert.ok(attempt.finishedAt >= attempt.startedAt);
   } finally { f.cleanup(); }
 });
 
-test('run records a short failure reason in the task ledger', () => {
+test('run records a failure with its kind and reason', () => {
   const f = home({ config: { testFixturesMigrated: true } });
   try {
     const result = bullswarm(f.dir, [
-      'run', '--lane', 'build', '--json', '--no-caller', '--prompt', 'FAIL:auth',
+      'run', '--lane', 'analyze', '--json', '--prompt', 'FAIL:auth',
     ]);
     assert.equal(result.status, 1);
+    const verdict = JSON.parse(result.stdout);
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.failureKind, 'auth', verdict.why);
+    assert.match(verdict.why, /auth/i);
     const state = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
     const entry = state.decisionLog.at(-1);
-    assert.equal(entry.kind, 'run');
+    assert.equal(entry.source, 'workflow-v2');
     assert.equal(entry.ok, false);
-    assert.equal(typeof entry.reason, 'string');
-    assert.ok(entry.reason.length <= 160);
-    assert.match(entry.reason, /auth/i);
+    assert.equal(entry.failureKind, 'auth');
   } finally { f.cleanup(); }
 });
 

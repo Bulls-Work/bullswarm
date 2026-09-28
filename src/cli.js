@@ -1,94 +1,32 @@
 // bullswarm CLI — verbs: setup (wizard), run, health, pools.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
-import {
-  expiringSoonView, fiveHourElapsedPct, formatResetsIn, pickPool,
-} from './lib/route.js';
-import { argvWithModel, watchOnce } from './lib/watch.js';
-import {
-  isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
-} from './lib/reasoning.js';
-import {
-  loadState, updateState, assertDepthAllowed, childDepthEnv,
-} from './lib/state.js';
-import { buildPools, buildPoolsLive, loadConnectors } from './lib/config.js';
+import { expiringSoonView, fiveHourElapsedPct, formatResetsIn } from './lib/route.js';
+import { loadState, assertDepthAllowed } from './lib/state.js';
+import { buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
-import { refusalResetKnown, windowSpent } from './meters/framework.js';
+import { refusalResetKnown } from './meters/framework.js';
 import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { runUpdate } from './lib/update.js';
 import { cmdWorkflow } from './workflow/cli.js';
-import { scheduleReconcile } from './workflow/reconcile.js';
-import { DEFAULT_EFFORT_BY_LANE } from './workflow/action-validator.js';
-import {
-  applyStrategyRecommendations, cmdStrategy, maybeRefreshStrategy,
-} from './strategy-cli.js';
+import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { cmdProvider } from './provider-cli.js';
 import { helpForArgs, usageLine } from './help.js';
 import { flagNames, unknownFlagExit } from './lib/cli-flags.js';
-import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
-import { createRunHeartbeat } from './lib/run-heartbeat.js';
-import { projectName } from './lib/project.js';
-import {
-  describeAssignment, expectedMinutesFromSpendModel, listAssignments,
-  registerAssignment, releaseAssignment, updateAssignment, withLedger,
-} from './lib/assignments.js';
-import { attachForecast, forecastRecord, inflightPenaltyFrom } from './lib/forecast.js';
-import { probeFreeModel, shouldProbeFreeModel } from './lib/probe.js';
-import * as usageBasis from './lib/usage-basis.js';
+import { describeAssignment, listAssignments } from './lib/assignments.js';
+import { attachForecast } from './lib/forecast.js';
 import {
   clearPoolLabel, poolLabel, poolLabelEntries, resolvePoolId, setPoolLabel, withPoolLabels,
 } from './lib/pool-labels.js';
-
-// The subscription worker owns the canonical formatter. Keep a tiny
-// compatibility fallback for this action's pre-integration checkout so the
-// CLI can still print a clearly-basis-labelled pair while that module is being
-// integrated.
-const formatMoney = usageBasis.formatMoney ?? ((value) => {
-  if (value == null || value === '' || typeof value === 'boolean') return '-';
-  const number = Number(value);
-  if (!Number.isFinite(number)) return '-';
-  if (number >= 0.10) {
-    return `$${number.toLocaleString('en-US', {
-      useGrouping: false, minimumFractionDigits: 2, maximumFractionDigits: 2,
-    })}`;
-  }
-  if (number === 0) return '$0.000';
-  return `$${Number(number.toPrecision(3))}`;
-});
-const formatMoneyPair = usageBasis.formatMoneyPair ?? ((usage = {}) => {
-  const api = usage.api ?? { usd: usage.cost?.estimatedUsd ?? null, basis: usage.cost?.basis ?? null };
-  const subscription = usage.subscription ?? null;
-  const apiUsd = Number(api.usd);
-  const apiText = Number.isFinite(apiUsd)
-    ? (usage.tokenSource === 'provider-reported' ? `${formatMoney(apiUsd, usage.tokens)} api`
-      : usage.tokenSource === 'transcript-summed' ? `≈ ${formatMoney(apiUsd, usage.tokens)} api summed`
-        : usage.tokenSource === 'estimated:utf8-bytes/4' ? `~ ${formatMoney(apiUsd, usage.tokens)} api estimated`
-          : '· api unknown')
-    : '· api unknown';
-  if (!subscription) return `${apiText} · sub unknown`;
-  const usd = Number(subscription.usd);
-  const basis = String(subscription.basis ?? 'unknown:no-cost');
-  if (!Number.isFinite(usd)) {
-    const reason = basis === 'unknown:no-price'
-      ? (String(subscription.pool ?? '').toLowerCase() === 'codex'
-        ? 'declare a price: bullswarm strategy set-subscription codex --monthly-usd <amount>'
-        : 'no plan price')
-      : basis === 'unknown:no-meter' ? 'no meter/calibration'
-        : basis === 'unknown:below-resolution' ? 'below meter resolution'
-          : basis === 'observed:meter-ledger' || basis === 'observed:meter-delta'
-            ? `${basis}; no plan price` : 'no API cost';
-    const pct = subscription.deltaPct == null ? '' : `${subscription.deltaPct}% ${subscription.window === 'weekly' ? 'wk' : subscription.window ?? ''} `;
-    return `${apiText} · ${pct}sub unknown (${reason})`.replace(/\s+/g, ' ').trim();
-  }
-  const glyph = basis === 'observed:meter-delta' || basis === 'observed:meter-ledger'
-    ? '' : basis === 'calibrated:usd-per-pct' ? '≈ ' : '~ ';
-  const pct = subscription.deltaPct == null ? '' : `${subscription.deltaPct}% ${subscription.window === 'weekly' ? 'wk' : subscription.window ?? ''} `;
-  return `${apiText} · ${pct}${glyph}${formatMoney(usd, usage.tokens)} sub`.replace(/\s+/g, ' ').trim();
-});
+import { NO_CALLER_NOTICE, runStepProgram, runStepRequest } from './lib/run-step.js';
+import { normaliseProgramV3 } from './workflow/program-v3.js';
+import { previewStepPick } from './workflow/pick-preview.js';
+import { runOneStep } from './workflow/run-one-step.js';
+import { runVerdictJson, runVerdictLines } from './workflow/run-verdict.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -101,7 +39,7 @@ export const BULLSWARM_DIR = getBullswarmDir();
 
 const BOOLEAN_FLAGS = new Set([
   'overview',
-  'json', 'force', 'no-caller', 'yes', 'setup', 'strategy', 'integrate', 'dry-run',
+  'json', 'force', 'no-caller', 'no-retry', 'yes', 'setup', 'strategy', 'integrate', 'dry-run',
   'wizard', 'check',
 ]);
 
@@ -331,444 +269,52 @@ function cmdAssignments(opts) {
 }
 
 // --- run --------------------------------------------------------------------
+// A one-step v3 workflow (0.37.0): src/lib/run-step.js reads the flags,
+// src/workflow/run-one-step.js runs the kernel, run-verdict.js prints.
 
 async function cmdRun(opts) {
-  const now = Date.now();
-  // The lane picks the routing table, so a missing or misspelled one is a
-  // usage error here, not `FAIL unknown lane undefined` from the router two
-  // dozen lines later (which exited 1 and read like a routing outage).
-  const LANES = ['analyze', 'build', 'chore'];
-  const lane = opts.lane;
-  if (lane === undefined || lane === true) {
-    console.error(`--lane is required (${LANES.join('|')})`);
+  const parsed = runStepRequest(opts);
+  if (parsed.error) {
+    console.error(parsed.error);
     return 2;
   }
-  if (!LANES.includes(lane)) {
-    console.error(`--lane must be ${LANES.join(', ')} (got "${lane}")`);
+  const { request } = parsed;
+  if (!existsSync(request.targetDir) || !statSync(request.targetDir).isDirectory()) {
+    console.error(`--add-dir is not an existing directory: ${request.targetDir}`);
     return 2;
   }
-  const heartbeatSec = opts.heartbeat == null || opts.heartbeat === true ? null : Number(opts.heartbeat);
-  if (opts.heartbeat === true || (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
-    console.error('--heartbeat must be a number of seconds greater than or equal to 1');
-    return 2;
-  }
-  const effortTier = opts.effort ?? (DEFAULT_EFFORT_BY_LANE[lane] ?? null);
-  if (effortTier && !['high', 'medium', 'low'].includes(effortTier)) {
-    console.error('--effort must be high, medium, or low');
-    return 2;
-  }
-  // The run-wide reasoning override. Validated here so a typo is a usage
-  // error, never a silently-ignored preference that the record then claims.
-  if (opts.reasoning === true) {
-    console.error('usage: --reasoning requires a value');
-    return 2;
-  }
-  if (opts.reasoning != null && !isReasoningLevel(opts.reasoning)) {
-    console.error(`--reasoning must be one of ${[...REASONING_LEVELS, REASONING_DEFAULT].join(', ')}`);
-    return 2;
-  }
-  const targetDir = resolve(opts['add-dir'] ?? process.cwd());
-
-  // Validate task input before routing so malformed invocations never fall
-  // through to the caller-session path.
-  if (opts['task-file'] === true || opts.prompt === true ||
-      (opts['task-file'] != null && typeof opts['task-file'] !== 'string') ||
-      (opts.prompt != null && typeof opts.prompt !== 'string')) {
-    console.error('usage: --prompt and --task-file require a value');
-    return 2;
-  }
-  if (opts['task-file'] && opts.prompt != null) {
-    console.error('usage: choose one of --prompt, --task-file, or trailing task text');
-    return 2;
-  }
-  if (opts['task-file'] && opts.rest.length) {
-    console.error('usage: choose one of --task-file or trailing task text');
-    return 2;
-  }
-  if (opts.prompt != null && opts.rest.length) {
-    console.error('usage: choose one of --prompt or trailing task text');
-    return 2;
-  }
-  const taskText = opts['task-file']
-    ? readFileSync(opts['task-file'], 'utf8')
-    : opts.prompt ?? opts.rest.join(' ');
-  if (!taskText.trim()) {
-    console.error('empty task: pass --task-file, --prompt, or the task as arguments');
-    return 2;
-  }
-
+  if (request.noCaller) console.error(NO_CALLER_NOTICE);
+  const home = getBullswarmDir();
   // Recursion guard FIRST — core-owned, env handshake.
-  let state = loadState(getBullswarmDir());
+  const state = loadState(home);
   try {
     assertDepthAllowed(state);
   } catch (err) {
-    const verdict = { ok: false, keepOnClaude: true, why: err.message };
-    console.log(JSON.stringify(verdict, null, 2));
+    emitRun({ ok: false, failureKind: 'depth', why: err.message }, opts);
     return 1;
   }
-
-  // A preview is a pure read (D3): `--dry-run` must not refresh strategy,
-  // because the refresh downloads a datapack and writes the recommendations it
-  // derives back into state.json. Decided here, before the refresh, not 50
-  // lines later at the dispatch fork.
-  const dryRun = opts['dry-run'] === true;
-
-  // Only an explicitly approved strategy policy may change assignments.
-  // Once approved, refresh capability-aware recommendations on its TTL.
-  if (!dryRun) {
-    await maybeRefreshStrategy(getBullswarmDir());
-    state = loadState(getBullswarmDir());
-  }
-
-  const { pools } = await buildPoolsLive(getBullswarmDir(), now, {
-    packaged: true,
-    getReadings: getAllMeterReadings,
-  });
-  for (const p of pools) {
-    p.incumbent = state.incumbents?.[lane] === p.name;
-  }
-  // Route on the forecast, not on the reading: what every Bullswarm process
-  // has in flight right now, and how fast each pool burns its windows. Read
-  // before the eligible-pool copies are made so the fields survive the spread.
-  attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
-  // The duration this assignment is booked for — the same number the ledger
-  // will publish for it (F3), so routing and every other process agree.
-  const expected = await expectedMinutesFromSpendModel(
-    { lane, effort: effortTier },
-    { decisionLog: state.decisionLog ?? [] },
-  );
-
-  // A pool with a metered window at its limit (framework.js windowSpent: its
-  // 5-hour, weekly or monthly window at 100% until that window resets) is
-  // excluded from dispatch entirely this run.
-  const gated = pools.filter((p) => windowSpent(p, now));
-  const ungatedPools = gated.length ? pools.filter((p) => !gated.includes(p)) : pools;
-  const assignment = state.strategy?.assignments?.[effortTier] ?? null;
-  const candidatePools = ungatedPools.map((pool) => ({
-    ...pool,
-    modelPolicy: resolveDispatchModel(pool.connector ?? pool, effortTier, {
-      assignment,
-      excludedModels: [
-        ...(state.strategy?.excludedModels ?? []),
-        ...disabledModelsForPool(state.strategy, pool.name),
-      ],
-      allowedModels: selectedModelsForTier(state.strategy, pool.name, effortTier),
-    }),
-  }));
-  // No eligibility pre-filter here (D7): pickPool() drops model-blocked pools
-  // itself (route.js:294) and needs to see them to say WHICH stage emptied the
-  // candidate list. Filtering first left the CLI reporting the capability
-  // wording for a tier allow-list that named no model on any pool.
-
-  const routeOptions = () => ({
-    callerEligible: opts['no-caller'] !== true,
-    callerName: state.config.callerName ?? 'claude-code',
-    now,
-    preferredPool: state.strategy?.assignments?.[effortTier]?.pool ?? null,
-    effortTier,
-    candidateMinutes: expected.expectedMinutes,
-    inflightPenaltyPct: inflightPenaltyFrom(state),
-  });
-  const failedProbes = [];
-  const failedProbePools = new Set();
-  let route = pickPool(lane, candidatePools, routeOptions());
-  // A probe is a dispatch preflight, not part of a dry-run preview. On a real
-  // run, only a concrete free model selected by strategy is probed. A failed
-  // probe is removed from this pick, so routing can fall through to another
-  // free rung or to a metered pool without inventing a replacement model.
-  while (!dryRun && route.pick) {
-    const poolView = route.pick.connector ?? { name: route.pick.pool };
-    const connector = poolView.connector ?? poolView;
-    const selectedModel = poolView.modelPolicy?.model
-      ?? (assignment?.pool === connector.name ? assignment.model : null);
-    if (!shouldProbeFreeModel(poolView, selectedModel)) break;
-    const probe = await probeFreeModel({
-      pool: poolView,
-      model: selectedModel,
-      home: getBullswarmDir(),
-      now,
-    });
-    if (probe.ok) break;
-    const reason = `probe: ${probe.reason}`;
-    failedProbes.push(`${reason} on ${connector.name}`);
-    failedProbePools.add(connector.name);
-    const remainingPools = candidatePools.filter((candidate) => !failedProbePools.has(candidate.name));
-    route = pickPool(lane, remainingPools, routeOptions());
-  }
-  if (failedProbes.length) route.why = `${failedProbes.join(' · ')} · ${route.why}`;
-  if (gated.length && route.pick) {
-    const gatedName = (pool) => {
-      const { window } = windowSpent(pool, now);
-      return window === '5-hour' ? pool.name : `${pool.name} at its ${window} limit`;
-    };
-    route.why += ` (burst-gated: ${gated.map(gatedName).join(', ')})`;
-  }
-
-  if (!route.pick && route.keepOnClaude) {
-    // A preview never writes: the decision log records dispatches, not what
-    // an operator merely asked to see.
-    if (!dryRun) {
-      updateState(getBullswarmDir(), (fresh) => {
-        logDecision(fresh, {
-          lane, picked: null, keepOnClaude: true, ok: null, why: route.why,
-          forecast: forecastRecord(route, null),
-        });
-      });
-    }
-    emit({
-      ok: true, keepOnClaude: true, ...(dryRun ? { dryRun: true } : {}),
-      why: route.why, routeWhy: route.why, routeCandidates: route.candidates,
-      pick: { pool: null, command: null },
-      forecast: forecastRecord(route, null), candidates: route.candidates,
-    }, opts);
-    return 0;
-  }
-  if (!route.pick) {
-    emit({ ok: false, keepOnClaude: false, why: route.why, routeWhy: route.why, routeCandidates: route.candidates }, opts);
-    return 1;
-  }
-
-  // pick.connector is the pool VIEW (config.js buildPools entry); the real
-  // connector spec lives one level down.
-  const poolView = route.pick.connector ?? { name: route.pick.pool };
-  const connector = poolView.connector ?? poolView;
-  const selectedModel = poolView.modelPolicy?.model
-    ?? (assignment?.pool === connector.name ? assignment.model : null);
-  const runtimeConnector = {
-    ...connector,
-    subscription: poolView.subscription ?? connector.subscription ?? null,
-  };
-
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const runDir = join(getBullswarmDir(), 'runs');
-  mkdirSync(runDir, { recursive: true });
-  const paths = {
-    taskFile: join(runDir, `task-${stamp}.md`),
-    outFile: join(runDir, `out-${stamp}.md`),
-    streamFile: join(runDir, `stream-${stamp}.jsonl`),
-    stdoutFile: join(runDir, `stdout-${stamp}.log`),
-  };
-
-  // One resolution per attempt, from the connector that will actually be
-  // spawned, the effort tier that picked the model, and the live strategy.
-  const reasoning = resolveReasoningLevel({
-    connector: runtimeConnector,
-    tier: effortTier,
-    model: selectedModel,
-    strategy: state.strategy ?? null,
-    runOverride: opts.reasoning ?? null,
-  });
-
-  if (dryRun) {
-    // Preview through argvWithModel — the same builder runDelegate uses — so
-    // the printed command can never drift from the one that would be spawned.
-    // The forecast is reported exactly as a real dispatch would route on it;
-    // F1 keeps the preview a pure read — no ledger entry, no decision log.
-    emit({
-      ok: true,
-      dryRun: true,
-      keepOnClaude: false,
-      why: route.why,
-      routeWhy: route.why,
-      routeCandidates: route.candidates,
-      forecast: forecastRecord(route, connector.name),
-      candidates: route.candidates,
-      pick: {
-        pool: connector.name,
-        model: selectedModel,
-        command: argvWithModel(
-          runtimeConnector,
-          { taskFile: paths.taskFile, cwd: targetDir },
-          selectedModel,
-          null,
-          reasoning,
-        ),
-      },
-      reasoning,
-    }, opts);
-    return 0;
-  }
-
-  const heartbeat = createRunHeartbeat({ intervalSec: heartbeatSec });
-  heartbeat.start();
-  const startedAt = new Date().toISOString();
-  const project = projectName(targetDir);
-  // Registered the moment the pool is picked, before the worker exists, so no
-  // other process sees this pool as idle while the CLI is still spawning. The
-  // expectation is the one routing already booked this assignment for (F3).
-  const ledgerEntry = withLedger(() => registerAssignment(getBullswarmDir(), {
-    pool: connector.name,
-    model: selectedModel ?? connector.model ?? null,
-    lane: lane ?? null,
-    effort: effortTier ?? null,
-    source: 'run',
-    project,
-    cwd: targetDir,
-    taskFile: paths.taskFile,
-    outFile: paths.outFile,
-    streamFile: paths.streamFile,
-    startedAt,
-    ...expected,
-  }));
   let verdict;
-  try {
-    verdict = await watchOnce(runtimeConnector, taskText, targetDir, paths, {
-      // Long-running coding agents are allowed to finish by default. `--timeout`
-      // remains an explicit operator escape hatch; connector metadata no longer
-      // imposes a hidden wall-clock kill timer.
-      timeoutSec: opts.timeout == null ? null : Number(opts.timeout),
-      env: childDepthEnv(process.env),
-      model: selectedModel,
-      reasoning,
-      // The home whose meter and refusal marker the verdict reads and writes
-      // for this pool.
-      bullswarmDir: getBullswarmDir(),
-      poolName: connector.name,
-      // One attempt: a spent usage window is `quota` for the caller.
-      usageLimitsToCaller: true,
-      // A task that finished without measured usage is priced by a detached
-      // reconciler pass once its record and the provider's log are written.
-      onUsageFinalized: ({ usage, transcriptReader }) => {
-        if (transcriptReader && (usage?.tokenSource === 'unknown' || usage?.tokenSource === 'estimated:utf8-bytes/4')) {
-          scheduleReconcile({ bullswarmDir: getBullswarmDir(), trigger: 'watch', throttleMs: 0, delayMs: 30_000 });
-        }
-      },
-      runId: null,
-      attemptId: ledgerEntry?.id ?? `run-${stamp}`,
-      startedAt,
-      subscription: runtimeConnector.subscription ?? null,
-      onActivity: (event) => heartbeat.activity(event),
-      onAgentEvent: () => heartbeat.event(),
-      onSpawn: (pid) => {
-        if (ledgerEntry) withLedger(() => updateAssignment(getBullswarmDir(), ledgerEntry.id, { workerPid: pid }));
-      },
+  if (request.dryRun) {
+    // A preview is a pure read (D3): no strategy refresh, no ledger entry, no
+    // decision log, no run folder.
+    const { pools } = await buildPoolsLive(home, Date.now(), { getReadings: getAllMeterReadings });
+    const [action] = normaliseProgramV3(runStepProgram(request)).steps;
+    verdict = await previewStepPick({
+      action, pools, bullswarmDir: home, coreState: state, targetDir: request.targetDir, runReasoning: request.reasoning,
     });
-  } finally {
-    heartbeat.stop();
-    if (ledgerEntry) withLedger(() => releaseAssignment(getBullswarmDir(), ledgerEntry.id));
+  } else {
+    // Only an explicitly approved strategy policy may change assignments.
+    await maybeRefreshStrategy(home);
+    const { pools } = await buildPoolsLive(home, Date.now(), { getReadings: getAllMeterReadings });
+    verdict = await runOneStep({ bullswarmDir: home, request, pools });
   }
-  const endedAt = new Date().toISOString();
-  const startedMs = Date.parse(startedAt);
-  const endedMs = Date.parse(endedAt);
-  const durationMs = Number.isFinite(startedMs) && Number.isFinite(endedMs) && endedMs >= startedMs
-    ? endedMs - startedMs : null;
-  verdict.routeWhy = route.why;
-  verdict.routeCandidates = route.candidates;
-
-  // Everything this run changed about shared state, applied at once to a FRESH
-  // load under the lock (S5). `state` above is the routing snapshot and is now
-  // minutes old: saving it would silently undo whatever an operator did while
-  // the worker ran (D5).
-  // A failure is recorded in the decision log and nowhere else: no pool is
-  // paused or benched for it (state.js S1).
-  updateState(getBullswarmDir(), (fresh) => {
-    // Persist incumbency on success.
-    if (verdict.ok) {
-      fresh.incumbents ??= {};
-      fresh.incumbents[lane] = connector.name;
-    }
-    logDecision(fresh, {
-      kind: 'run',
-      source: 'run',
-      id: ledgerEntry?.id ?? null,
-      lane,
-      pool: connector.name,
-      picked: connector.name,
-      keepOnClaude: false,
-      ok: verdict.ok,
-      why: verdict.why,
-      routeWhy: route.why,
-      routeCandidates: route.candidates,
-      reason: verdict.ok ? null : shortReason(verdict.why),
-      wallSec: verdict.meta?.wallSec,
-      model: selectedModel ?? connector.model ?? null,
-      reasoning,
-      usage: verdict.meta?.usage ?? null,
-      taskFile: paths.taskFile,
-      outFile: paths.outFile,
-      streamFile: paths.streamFile,
-      project,
-      cwd: targetDir,
-      startedAt,
-      endedAt,
-      durationMs,
-      // The forecast this pick was made on — the numbers pickPool compared, so a
-      // later reader can replay the decision instead of re-deriving it. The full
-      // candidate list stays out of the log: 500 entries of it would bloat the
-      // state file the spend model has to read on every dispatch.
-      forecast: forecastRecord(route, connector.name),
-    });
-  });
-
-  verdict.reasoning = reasoning;
-  emit(verdict, opts);
+  emitRun(verdict, opts);
   return verdict.ok ? 0 : 1;
 }
 
-function logDecision(state, d) {
-  state.decisionLog ??= [];
-  state.decisionLog.push({ ts: new Date().toISOString(), ...d });
-  if (state.decisionLog.length > 500) {
-    state.decisionLog = state.decisionLog.slice(-500);
-  }
-}
-
-function shortReason(value, limit = 160) {
-  if (value == null) return null;
-  const line = String(value).split(/\r?\n/, 1)[0].replace(/\s+/g, ' ').trim();
-  if (!line) return null;
-  if (line.length <= limit) return line;
-  const head = line.slice(0, limit - 1);
-  const space = head.lastIndexOf(' ');
-  return `${(space > limit / 2 ? head.slice(0, space) : head).replace(/[\s,;:—-]+$/, '')}…`;
-}
-
-function emit(verdict, opts) {
-  if (opts.json) {
-    const pick = verdict.pick?.pool
-      ? { ...verdict.pick, poolLabel: poolLabel(verdict.pick.pool, getBullswarmDir()) }
-      : verdict.pick;
-    console.log(JSON.stringify({ ...verdict, ...(pick ? { pick } : {}) }, null, 2));
-  }
-  else {
-    const line = [
-      verdict.ok ? 'OK' : 'FAIL',
-      verdict.keepOnClaude ? '(keep-on-caller)' : '',
-      verdict.pick?.pool ? `[${verdict.pick.pool}]` : '',
-      verdict.why ?? '',
-    ].filter(Boolean).join(' ');
-    console.log(withPoolLabels(line, getBullswarmDir()));
-    if (verdict.routeWhy && verdict.routeWhy !== verdict.why) {
-      console.log(withPoolLabels(`route: ${verdict.routeWhy}`, getBullswarmDir()));
-    }
-    if (Array.isArray(verdict.pick?.command) && verdict.dryRun) {
-      console.log(`command: ${verdict.pick.command.join(' ')}`);
-    }
-    // The forecast the pick was made on, so a preview explains itself without
-    // --json: what the pool is already carrying, where its 5h window is headed
-    // once this assignment runs, and what that estimate is based on.
-    if (verdict.forecast && verdict.dryRun) {
-      const f = verdict.forecast;
-      console.log(
-        `forecast: inflight=${f.inflight} `
-        + `5h ${f.projectedFiveHourPct ?? '?'}%->${f.forecastFiveHourPct ?? '?'}% `
-        + `expected=${f.expectedMinutes == null ? 'unknown' : `${f.expectedMinutes}m`} `
-        + `rate=${f.ratePerMinute == null ? 'unmeasured' : `${f.ratePerMinute}%/min`} `
-        + `basis=${f.estimateSource ?? 'none'}`,
-      );
-    }
-    if (verdict.reasoning?.applied) {
-      const clamped = verdict.reasoning.clamped ? ', clamped' : '';
-      console.log(`reasoning: ${verdict.reasoning.applied} (${verdict.reasoning.source}${clamped})`);
-    }
-    if (verdict.outFile) console.log(`output: ${verdict.outFile}`);
-    const usage = verdict.meta?.usage;
-    if (usage) {
-      const t = usage.tokens ?? {};
-      console.log(`usage: read=${t.standardRead ?? '?'} cache-read=${t.cacheRead ?? '?'} cache-write=${t.cacheWrite ?? '?'} output=${t.output ?? '?'} reasoning=${t.reasoning ?? '?'} tokens (${usage.tokenSource})`);
-      console.log(`cost: ${formatMoneyPair(usage)}`);
-    }
-  }
+function emitRun(verdict, opts) {
+  if (opts.json) console.log(runVerdictJson(verdict, getBullswarmDir()));
+  else for (const line of runVerdictLines(verdict, getBullswarmDir())) console.log(line);
 }
 
 // --- health -----------------------------------------------------------------
