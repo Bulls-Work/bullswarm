@@ -31,8 +31,8 @@
 //       event stream has no provider events to separate, so its own transport
 //       is the channel and the shape gate (quota.js Q2) decides what counts.
 
-import { spawn, execFileSync } from 'node:child_process';
-import { writeFileSync, readFileSync, realpathSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { writeFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { judgeContent } from './verify.js';
@@ -55,9 +55,7 @@ import {
 } from './provider-errors.js';
 import { MAX_CAPTURED_STREAM_BYTES, BoundedCapture } from './bounded-capture.js';
 import { followUpArgv, argvWithModel, workerEnv } from './worker-argv.js';
-
-export const FOLLOW_UP_PROMPT = 'Your previous turn ended without a final report. Write it now: what you changed per file, the test summary lines, contract deviations, shared-file requests.';
-const TRUNCATED_OUTPUT_MAX = 500;
+import { FOLLOW_UP_PROMPT, derivedReport, outputIsTruncated, extractOutput } from './worker-report.js';
 
 // The usage/subscription workers land their modules independently of this
 // wiring action. Resolve them lazily so the watcher remains usable in a
@@ -313,96 +311,6 @@ function toolOrCommandEvent(event) {
   const kind = `${event?.kind ?? ''} ${event?.providerType ?? ''}`
     .toLowerCase().replace(/[_-]/g, ' ');
   return /\btool\b|\bcommand\b|\bfunction\b|\bshell\b/.test(kind);
-}
-
-function streamTextFor(obs, paths) {
-  const file = obs?.streamFile ?? paths?.streamFile ?? null;
-  if (file && existsSync(file)) {
-    try { return readFileSync(file, 'utf8'); } catch { /* use captured transport below */ }
-  }
-  return [obs?.eventOutput, obs?.stdout, obs?.stderr].filter(Boolean).join('\n');
-}
-
-function decodedStreamLines(text) {
-  const lines = [];
-  for (const line of String(text ?? '').split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    lines.push(line);
-    try {
-      const row = JSON.parse(line);
-      for (const value of [
-        row?.summary,
-        row?.text,
-        row?.result,
-        row?.message,
-        row?.command,
-        row?.item?.text,
-        row?.item?.command,
-        row?.content,
-      ]) {
-        if (typeof value === 'string') lines.push(...value.split(/\r?\n/));
-      }
-    } catch { /* plain transport line */ }
-  }
-  return lines;
-}
-
-function testSummaryFromStream(text) {
-  const lines = decodedStreamLines(text);
-  const blocks = [];
-  let current = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^#\s+tests\b/i.test(trimmed)) {
-      if (current.length) blocks.push(current);
-      current = [trimmed];
-      continue;
-    }
-    if (current.length && /^#\s+(?:pass|fail)\b/i.test(trimmed)) {
-      current.push(trimmed);
-      continue;
-    }
-    if (current.length && trimmed && !/^#\s+(?:skip|skipped|todo)\b/i.test(trimmed)) {
-      blocks.push(current);
-      current = [];
-    }
-  }
-  if (current.length) blocks.push(current);
-  return blocks.at(-1)?.join('\n') ?? '';
-}
-
-function gitSummary(targetDir, command) {
-  try {
-    return execFileSync('git', command, {
-      cwd: resolve(targetDir),
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5000,
-    }).trim();
-  } catch { return ''; }
-}
-
-function derivedReport(targetDir, obs, paths) {
-  const status = gitSummary(targetDir, ['status', '--short']);
-  const diffStat = gitSummary(targetDir, ['diff', '--stat']);
-  const tests = testSummaryFromStream(streamTextFor(obs, paths));
-  return [
-    'Derived report: the worker ended without a final report, so Bullswarm reconstructed the durable workspace evidence.',
-    '',
-    'Workspace status:',
-    status || '(no status output)',
-    '',
-    'Diff stat:',
-    diffStat || '(no diff stat output)',
-    '',
-    'Test summary:',
-    tests || '(no # tests/# pass/# fail block found in the captured stream)',
-  ].join('\n');
-}
-
-function outputIsTruncated(output, eventTimeline) {
-  if (typeof output !== 'string' || output.trim().length >= TRUNCATED_OUTPUT_MAX) return false;
-  return Number(eventTimeline?.lastToolSequence ?? 0) > Number(eventTimeline?.lastResponseSequence ?? 0);
 }
 
 /**
@@ -749,33 +657,6 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       });
     });
   });
-}
-
-function extractOutput(connector, obs) {
-  switch (connector.outputExtraction?.strategy ?? 'stdout') {
-    case 'event-stream':
-      return obs.eventOutput || obs.stdout || obs.stderr || '';
-    case 'stdout':
-      return obs.stdout || obs.stderr || '';
-    case 'stdout-tail':
-      return (obs.stdout || '').split('\n').slice(-80).join('\n') || obs.stderr;
-    case 'file': {
-      // Connectors that write their full transcript to a file (e.g.
-      // a long-running agent that streams to a log) declare a glob/path
-      // in outputExtraction.field. We read it directly, sidestepping
-      // the spawn-pipe buffer limit (~64 KB on macOS). The field is
-      // treated as a literal path; if missing, fall back to stdout.
-      const field = connector.outputExtraction?.field;
-      if (!field) return obs.stdout || obs.stderr || '';
-      try {
-        return readFileSync(field, 'utf8');
-      } catch {
-        return obs.stdout || obs.stderr || '';
-      }
-    }
-    default:
-      return obs.stdout || obs.stderr || '';
-  }
 }
 
 /**

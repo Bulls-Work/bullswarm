@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { watchOnce, FOLLOW_UP_PROMPT } from '../src/lib/watch.js';
+import { watchOnce } from '../src/lib/watch.js';
+import { FOLLOW_UP_PROMPT } from '../src/lib/worker-report.js';
 
 function context() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-watch-follow-up-'));
