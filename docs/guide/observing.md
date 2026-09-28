@@ -260,7 +260,9 @@ A real run on grok, parked at its gate, on the Run page at 120 columns:
 - **A loop row** heads the phase of its first step and reads `round N of max`
   while it runs, `passed in round N of max · <condition>` when its condition
   held, or `out of rounds (N of max) · <condition> did not hold` with its
-  `continue … --rounds <1-5>` command when it waits for you. Each attempt of a
+  `continue … --rounds <1-5>` command when it waits for you. A loop you
+  continued without more rounds reads `→ continued by the caller after N of
+  max rounds (condition not met)`: it never passed. Each attempt of a
   loop step says its round (`write · round 2`).
 - **A gate row** heads the phase of the steps behind it and reads `waits after
   <steps>`, `waiting for you · <note>` with its `continue` command, `passed ·

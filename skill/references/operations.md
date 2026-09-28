@@ -76,6 +76,7 @@ wakes on the two that wait for you:
 ↻ loop <loop> round 2 of 3 · check's evidence passed did not hold
 ✓ loop <loop> passed in round 2 of 3 · check's evidence passed
 ⧖ loop <loop> out of rounds (3 of 3) · check's evidence passed did not hold · continue: bullswarm workflow continue <shortId> <loop> --rounds <n>
+→ loop <loop> continued by the caller after 3 of 3 rounds (condition not met)
 ```
 
 When only waiting gates or loops are left, the kernel exits and the run is

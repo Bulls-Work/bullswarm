@@ -5,7 +5,7 @@
 // Pure: reads state and events, returns plain facts and text.
 
 import { glyphs } from '../lib/glyphs.js';
-import { CONTINUE_MAX_ROUNDS, controlRecords, describeCondition, parkedWaitingFor, readCondition } from './gates-loops.js';
+import { CONTINUED_MARK, CONTINUE_MAX_ROUNDS, controlRecords, describeCondition, parkedWaitingFor, readCondition } from './gates-loops.js';
 import { declaredControl, isV3State } from './v3-phases.js';
 
 const ANSWER_CHARS = 160;
@@ -54,7 +54,7 @@ function loopFacts(state, loop, record, token) {
   switch (record?.status) {
     case 'passed':
       return record.reason === 'continued' || holds !== true
-        ? { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · passed after round ${round} of ${of} · continued by the caller` }
+        ? { glyph: CONTINUED_MARK, role: 'passed', text: `loop ${loop.id} · continued by the caller after ${round} of ${of} rounds (condition not met)` }
         : { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · passed in round ${round} of ${of} · ${until}` };
     case 'waiting':
       return {

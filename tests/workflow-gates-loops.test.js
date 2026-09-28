@@ -19,7 +19,7 @@ import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { scheduleV2Actions } from '../src/workflow/v2-scheduler.js';
 import { runWorkflowWatch, watchSnapshot, watchTrouble } from '../src/workflow/watch-cli.js';
 import {
-  applyContinueOffline, previousRoundBlock, readContinueIntents, requestContinue, schedulerView,
+  applyContinueOffline, controlWatchEvent, previousRoundBlock, readContinueIntents, renderControlEvent, requestContinue, schedulerView,
   waitingDocument, waitingOutcomeLines,
 } from '../src/workflow/gates-loops.js';
 import { acceptV2Step, rerunV2Step } from '../src/workflow/cli-step-verbs.js';
@@ -747,4 +747,37 @@ test('workflow wait on a gate names each loop before it with its verdict and rou
   assert.deepEqual(named.loops, []);
   const first = await waitV3Nodes({ bullswarmDir: f.bullswarmDir, token: run.shortId, ids: ['fix'], pollMs: 10 });
   assert.deepEqual(first.loops, []);
+});
+
+// QA37 (0.37.0): a loop the caller continued after it ran out of rounds read
+// as passed everywhere ("✓ loop polish passed"), and result.json had no loop
+// entry. It now reads as continued with its condition not met.
+test('a loop continued after its rounds ran out reads as continued-unmet: continue line, watch line, result loops, reason and proof line', async (t) => {
+  const f = fixture(t);
+  const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
+  delete env.BULLSWARM_DEPTH;
+  const never = fakeDispatch((id) => (id === 'check' ? { answer: { passed: false } } : {}));
+  const run = await launch(f, loopProgram({ maxRounds: 2 }), never);
+  assert.deepEqual(run.waiting.map((entry) => entry.id), ['polish']);
+  const result = await continueV2Run({ bullswarmDir: f.bullswarmDir, token: run.shortId, nodeId: 'polish', waitMs: 0, relaunch: async (runId) => ({ action: 'goal-resumed', runId }) });
+  assert.equal(result.status, 'applied');
+  assert.equal(result.line, '→ loop polish continued by the caller after 2 of 2 rounds (condition not met)');
+  const passed = readEvents(run.runDir).find((event) => event.type === 'loop.passed');
+  assert.equal(renderControlEvent(controlWatchEvent(passed, { token: run.shortId })), '→ loop polish continued by the caller after 2 of 2 rounds (condition not met)');
+  const done = await resume(f, run.runId, never);
+  assert.equal(done.result.status, 'completed');
+  const saved = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
+  assert.deepEqual(saved.loops, [{ id: 'polish', outcome: 'continued-unmet', rounds: 2, maxRounds: 2 }]);
+  assert.match(saved.reason, / · loop polish continued by the caller after 2 of 2 rounds \(condition not met\)$/);
+  const summary = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId, '--summary'], { encoding: 'utf8', env }).stdout);
+  assert.deepEqual(summary.loops, saved.loops);
+  const human = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId], { encoding: 'utf8', env });
+  assert.match(human.stdout, /^# proof .*loop polish continued after 2 of 2 rounds \(condition not met\)$/m);
+
+  // A loop whose condition held reads as passed.
+  const g = fixture(t);
+  const second = fakeDispatch((id, turn) => (id === 'check' ? { answer: { passed: turn >= 2 } } : {}));
+  const ok = await launch(g, loopProgram({ maxRounds: 3 }), second);
+  assert.equal(ok.result.status, 'completed');
+  assert.deepEqual(JSON.parse(readFileSync(join(ok.runDir, 'result.json'), 'utf8')).loops, [{ id: 'polish', outcome: 'passed', rounds: 2, maxRounds: 3 }]);
 });

@@ -48,6 +48,35 @@ const LINE_SHOWN_CHARS = 200;
 
 // --- the program's control nodes ---------------------------------------------
 
+/**
+ * How a loop ended, from its record: `passed` (its condition held),
+ * `continued-unmet` (the caller continued it after its rounds ran out, so its
+ * condition never held), `out-of-rounds` (waiting on the caller), `blocked`,
+ * or `pending` (not finished).
+ */
+export function loopOutcome(record) {
+  if (record?.status === 'passed') return record.reason === 'continued' ? 'continued-unmet' : 'passed';
+  if (record?.status === 'waiting') return 'out-of-rounds';
+  if (record?.status === 'blocked') return 'blocked';
+  return 'pending';
+}
+
+/** Each declared loop's outcome, `[{id, outcome, rounds, maxRounds}]`; [] for a run with none. */
+export function loopOutcomes(state) {
+  return controlRecords(state).filter((record) => record.type === 'loop').map((record) => ({
+    id: record.id, outcome: loopOutcome(record), rounds: record.round ?? 1, maxRounds: record.maxRounds,
+  }));
+}
+
+// The mark of a loop the caller continued: an arrow, like the other arrows
+// the views print (glyphs.js leaves the four arrows to every font).
+export const CONTINUED_MARK = '→';
+
+/** The words for a loop the caller continued: it never passed (QA37). */
+export function continuedLoopText(id, rounds, maxRounds, { by = true } = {}) {
+  return `loop ${id} continued${by ? ' by the caller' : ''} after ${rounds} of ${maxRounds} rounds (condition not met)`;
+}
+
 /** The run's gates and loops ({gates, loops}), or null for a v2 run or a v3 run with none. */
 export function controlOf(state) {
   const program = state?.program;
@@ -614,7 +643,7 @@ export function renderControlEvent(event) {
       return `${g.retry} loop ${event.loopId} round ${event.round} of ${event.of} · ${event.condition ?? 'its condition'} did not hold`;
     case 'loop.passed':
       return event.reason === 'continued'
-        ? `${g.ok} loop ${event.loopId} passed after round ${event.round} · continued by the caller`
+        ? `${CONTINUED_MARK} ${continuedLoopText(event.loopId, event.round, event.of)}`
         : `${g.ok} loop ${event.loopId} passed in round ${event.round} of ${event.of} · ${event.condition ?? 'its condition'}`;
     case 'loop.out-of-rounds':
       return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${event.condition ?? 'its condition'} did not hold · continue: bullswarm workflow continue ${event.token} ${event.loopId} --rounds <n>`;

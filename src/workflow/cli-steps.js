@@ -24,7 +24,7 @@ import { writeJsonAtomic } from '../lib/fsjson.js';
 import { glyphs } from '../lib/glyphs.js';
 import { usageLine } from '../help.js';
 import {
-  CONTINUE_MAX_ROUNDS, applyContinueOffline, continueRefusal, parkedWaitingFor, readContinueIntents, requestContinue,
+  CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, loopOutcome, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, fragmentShapeIssues } from './revision-v3.js';
@@ -110,6 +110,8 @@ export async function continueV2Run({
     if (Date.now() >= deadline) return { code: 0, status: 'queued', appliedBy: null, ...base };
     await new Promise((done) => setTimeout(done, pollMs));
   }
+  const line = continuedLine(bullswarmDir, { ...result, runId: state.runId });
+  if (line) result.line = line;
   if (result.status === 'applied' && result.appliedBy === 'offline' && result.lifecycle === 'running' && typeof relaunch === 'function') {
     try { result.relaunch = await relaunch(state.runId); }
     catch (err) { return { code: 1, status: 'applied', why: `continue applied but the kernel did not relaunch: ${err.message}`, ...result }; }
@@ -120,6 +122,16 @@ export async function continueV2Run({
 function describe(result, type) {
   if (result.rounds != null) return `loop ${result.node} gets ${result.rounds} more round${result.rounds === 1 ? '' : 's'}`;
   return `${type ?? 'node'} ${result.node} passed`;
+}
+
+// A loop continued with no more rounds never met its condition: the line
+// says so rather than "passed" (QA37).
+function continuedLine(bullswarmDir, result) {
+  if (result.status !== 'applied' || result.rounds != null) return null;
+  let record = null;
+  try { record = (readState(resolveRunId(bullswarmDir, result.runId).runDir).controlNodes ?? []).find((entry) => entry.id === result.node) ?? null; } catch { record = null; }
+  if (record?.type !== 'loop' || loopOutcome(record) !== 'continued-unmet') return null;
+  return `${CONTINUED_MARK} ${continuedLoopText(record.id, record.round, record.maxRounds)}`;
 }
 
 /** `bullswarm workflow continue <runId> <gate-or-loop> [--rounds N] [--wait s] [--json]`. */
@@ -153,9 +165,9 @@ export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, lau
   if (result.status === 'queued') {
     console.log(`✓ continue ${nodeId} queued for ${id}; its running kernel applies it at its next check`);
   } else if (result.appliedBy === 'kernel') {
-    console.log(`✓ ${describe(result, type)} in ${id} (applied by its running kernel)`);
+    console.log(result.line ? `${result.line} · ${id} (applied by its running kernel)` : `✓ ${describe(result, type)} in ${id} (applied by its running kernel)`);
   } else {
-    console.log(`✓ ${describe(result, type)} in ${id}${result.relaunch ? '; kernel relaunched' : ''}`);
+    console.log(result.line ? `${result.line} · ${id}${result.relaunch ? '; kernel relaunched' : ''}` : `✓ ${describe(result, type)} in ${id}${result.relaunch ? '; kernel relaunched' : ''}`);
     if (result.why) console.error(`✗ ${result.why}`);
   }
   console.log(`  watch    bullswarm workflow watch ${id} --until trouble`);
@@ -492,6 +504,9 @@ export async function waitV3Nodes({
 
 function factLine(fact) {
   const g = glyphs();
+  if (fact.type === 'loop' && fact.status === 'passed' && fact.reason === 'continued') {
+    return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds)}`];
+  }
   if (fact.type !== 'step') {
     const mark = fact.status === 'passed' ? g.ok : fact.status === 'waiting' ? g.waiting : fact.status === 'blocked' ? g.blocked : g.pending;
     const round = fact.type === 'loop' ? ` · round ${fact.round} of ${fact.maxRounds}` : '';

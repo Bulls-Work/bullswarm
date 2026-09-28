@@ -10,7 +10,7 @@ import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vo
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { resultAnswerField, resultAnswerIssue, summaryAnswerField } from './answers.js';
-import { schedulerView } from './gates-loops.js';
+import { continuedLoopText, loopOutcomes, schedulerView } from './gates-loops.js';
 import { isRouteUnavailable } from './step-route.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
@@ -665,6 +665,11 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
   const flags = envelopeFlags(state, features);
   const loop = program ? verifyLoopResult(state, { readText, token: state.shortId ?? state.runId, failureRule: flags.failureRule === true }) : null;
   const acceptedSteps = state.actions.filter(stepAccepted).length;
+  // A v3 run's loops and how each ended; a loop the caller continued after
+  // its rounds ran out is named in the reason, since it never passed (QA37).
+  const loops = isProgramV3(state.program) ? loopOutcomes(state) : [];
+  const unmet = loops.filter((loop) => loop.outcome === 'continued-unmet')
+    .map((loop) => ` · ${continuedLoopText(loop.id, loop.rounds, loop.maxRounds)}`).join('');
   const result = {
     schemaVersion: V2_RESULT_SCHEMA_VERSION,
     runId: state.runId,
@@ -674,7 +679,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     status,
     verified,
     ...(program ? { executionMode: 'program', ...(workspace ? { workspace: clone(workspace) } : {}) } : {}),
-    reason: `${progress.reason}${acceptedSteps ? ` · ${acceptedSteps} step${acceptedSteps === 1 ? '' : 's'} accepted by choice` : ''}`,
+    reason: `${progress.reason}${acceptedSteps ? ` · ${acceptedSteps} step${acceptedSteps === 1 ? '' : 's'} accepted by choice` : ''}${unmet}`,
+    ...(loops.length ? { loops } : {}),
     requirements: state.intent.requirements.map((intentRequirement) => {
       const requirement = state.ledger.requirements[intentRequirement.id];
       const accepted = requirementAcceptance(state, requirement);
@@ -1388,6 +1394,10 @@ export function formatV2ProofLine(summary) {
     const more = proof.unproven - names.length;
     parts.push(`${proof.unproven} finished · unproven${names.length ? `: ${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : ''}`);
   }
+  // A loop the caller continued is no proof of its condition (QA37).
+  for (const loop of summary.loops ?? []) {
+    if (loop.outcome === 'continued-unmet') parts.push(continuedLoopText(loop.id, loop.rounds, loop.maxRounds, { by: false }));
+  }
   return parts.length ? `proof: ${parts.join(' · ')}` : null;
 }
 
@@ -1467,6 +1477,8 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
     })),
     actions,
     ...(proof ? { proof } : {}),
+    // A result saved before loops were recorded reads them from the state.
+    ...(summaryLoops(envelope, state).length ? { loops: summaryLoops(envelope, state) } : {}),
     concerns: {
       count: concerns.length,
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
@@ -1489,10 +1501,30 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
   }, { failureRule: flags.failureRule });
 }
 
+function summaryLoops(envelope, state) {
+  if (Array.isArray(envelope.loops)) return clone(envelope.loops);
+  return isProgramV3(state?.program) ? loopOutcomes(state) : [];
+}
+
+const LOOP_OUTCOMES = new Set(['passed', 'continued-unmet', 'out-of-rounds', 'blocked', 'pending']);
+
+function validateResultLoops(loops) {
+  if (!Array.isArray(loops)) resultFail('loops must be an array');
+  loops.forEach((entry, index) => {
+    const name = `loops[${index}]`;
+    resultObject(entry, name);
+    exactFields(entry, new Set(['id', 'outcome', 'rounds', 'maxRounds']), name);
+    resultString(entry.id, `${name}.id`);
+    if (!LOOP_OUTCOMES.has(entry.outcome)) resultFail(`${name}.outcome is invalid`);
+    for (const key of ['rounds', 'maxRounds']) if (!Number.isInteger(entry[key]) || entry[key] < 1) resultFail(`${name}.${key} must be a positive integer`);
+  });
+}
+
 export function validateV2ResultEnvelope(result) {
   resultObject(result, 'result');
-  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt', 'executionMode', 'workspace', 'handback', 'verifyRounds', 'callerDecision']);
+  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'loops', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt', 'executionMode', 'workspace', 'handback', 'verifyRounds', 'callerDecision']);
   exactFields(result, allowed, 'result');
+  if (result.loops !== undefined) validateResultLoops(result.loops);
   if (result.schemaVersion !== V2_RESULT_SCHEMA_VERSION) resultFail(`schemaVersion must be ${V2_RESULT_SCHEMA_VERSION}`);
   if (!['completed', 'partial', 'cancelled'].includes(result.status)) resultFail('status is invalid');
   if (result.executionMode !== undefined && result.executionMode !== 'program') resultFail('executionMode must be program when present');
