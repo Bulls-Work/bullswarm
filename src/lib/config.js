@@ -134,9 +134,6 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       free: selected.free,
       freeModel: selected.model ?? null,
       freeTiers: freeTiersFor(conn, state, name),
-      incumbentLane: Object.entries(state.incumbents ?? {})
-        .filter(([, v]) => v === name)
-        .map(([k]) => k),
       // meter fields filled below
       meterSource: 'none',
       usedPct: null,

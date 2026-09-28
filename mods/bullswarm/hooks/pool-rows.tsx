@@ -78,8 +78,8 @@ const BAR_WIDTH = 10
 
 /**
  * One row per enabled pool: display name, used-quota bar, used/elapsed,
- * signed pace in the state's color, the actions running there, the lane
- * it is incumbent for. Shared by the strip and the pane.
+ * signed pace in the state's color, the actions running there. Shared by
+ * the strip and the pane.
  */
 export function poolRows(
   ui: RowsUi,
@@ -96,7 +96,6 @@ export function poolRows(
       const used = p.usedPct === null ? '  —' : `${String(Math.round(p.usedPct)).padStart(3)}%`
       const elapsed = p.elapsedPct === null ? '' : `/${String(Math.round(p.elapsedPct)).padStart(2)}%`
       const busy = assignments.filter(a => a.pool === p.name)
-      const lane = p.incumbentLane.length ? `  ← ${p.incumbentLane.join('/')}` : ''
       const running = busy.length ? `  ${busy.map(a => a.actionId ?? a.lane).join(', ')}` : ''
       return (
         <Box key={p.name} flexDirection="row">
@@ -110,7 +109,6 @@ export function poolRows(
               {p.quarantine ? 'quarantined' : paceText(p)}
             </Text>
             {running ? <Text color="cyan">{running}</Text> : null}
-            <Text dimColor>{lane}</Text>
           </Text>
         </Box>
       )

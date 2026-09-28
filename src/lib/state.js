@@ -362,8 +362,9 @@ export function migratePoolNameHome(bullswarmDir) {
 export const DEFAULT_STATE = {
   version: 1,
   pools: {},        // name -> {enabled, meter:{type,windowStart?,usedPct?,declaredBy}}
-  incumbents: {},   // lane -> poolName
-  decisionLog: [],  // {ts, lane, picked, keepOnClaude, ok, why, wallSec}
+  // `incumbents` (lane -> pool) is gone in 0.37.0: routing never reads it and
+  // nothing writes it. An old home keeps the key, still migrated below.
+  decisionLog: [],  // {ts, lane, picked, ok, why, wallSec, ...}
   config: {
     depthLimit: 2,
     callerName: 'claude-code',

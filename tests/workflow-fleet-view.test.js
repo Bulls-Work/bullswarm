@@ -6,7 +6,6 @@ const pools = [
   {
     name: 'command-code', enabled: true, usedPct: 79.4, elapsedPct: 75.3,
     pacingWindow: 'monthly', paceResetsAt: '2026-09-19T12:00:00.000Z',
-    incumbentLane: ['high'],
   },
   { name: 'codex', enabled: true, usedPct: 32, elapsedPct: 27, pacingWindow: 'weekly' },
 ];
@@ -42,7 +41,9 @@ test('Fleet groups rungs by provider with meter/reset blurbs', () => {
   });
   const text = result.lines.join('\n');
   assert.match(result.lines[0], /^ by lane  by provider   \[ edit \] read-only here · edit opens bullswarm setup$/);
-  assert.match(text, /command-code · monthly window · 79% used of 75% elapsed · resets 3d0h · incumbent for high/);
+  // Incumbency is gone (0.37.0): no "incumbent for" label.
+  assert.match(text, /command-code · monthly window · 79% used of 75% elapsed · resets 3d0h$/m);
+  assert.doesNotMatch(text, /incumbent/);
   assert.match(text, /high            claude-opus-4-1 · high/);
   assert.match(text, /medium          claude-sonnet-4-5/);
   assert.match(text, /codex · weekly window · 32% used of 27% elapsed/);

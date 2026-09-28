@@ -215,12 +215,12 @@ test('updateState always writes a FRESH load, so a stale copy cannot undo a conc
     // What an operator does meanwhile (`strategy set-provider beta off --yes`).
     updateState(dir, (fresh) => { fresh.pools.beta.enabled = false; });
     // The run's own change, applied the new way.
-    stale.incumbents.build = 'beta';
-    updateState(dir, (fresh) => { fresh.incumbents.build = 'beta'; });
+    stale.decisionLog.push({ picked: 'beta' });
+    updateState(dir, (fresh) => { fresh.decisionLog.push({ picked: 'beta' }); });
 
     const final = loadState(dir);
     assert.equal(final.pools.beta.enabled, false, 'the operator write survived');
-    assert.equal(final.incumbents.build, 'beta', 'the run write landed too');
+    assert.deepEqual(final.decisionLog, [{ picked: 'beta' }], 'the run write landed too');
   } finally { cleanup(); }
 });
 
@@ -286,8 +286,8 @@ test('a lock left behind by a dead process is taken over after the stale timeout
     assert.equal(STATE_LOCK_STALE_MS, 30_000, 'documented takeover window');
     acquireStateLock(dir); // never released: the holder "crashed"
     // staleMs: 0 treats it as already stale rather than sleeping 30 s here.
-    updateState(dir, (s) => { s.incumbents.chore = 'grok'; }, { staleMs: 0, waitMs: 1000, pollMs: 10 });
-    assert.equal(loadState(dir).incumbents.chore, 'grok');
+    updateState(dir, (s) => { s.config.callerName = 'grok'; }, { staleMs: 0, waitMs: 1000, pollMs: 10 });
+    assert.equal(loadState(dir).config.callerName, 'grok');
     assert.equal(existsSync(stateLockPath(dir)), false);
   } finally { cleanup(); }
 });

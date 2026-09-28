@@ -59,7 +59,6 @@ const commandCode = (over = {}) => ({
   elapsedPct: 75.3,
   pace: -4.1,
   pacingWindow: 'monthly',
-  incumbentLane: ['high'],
   quarantine: null,
   meterSnapshot: SNAPSHOT,
   ...over,
@@ -72,7 +71,6 @@ const codex = (over = {}) => ({
   elapsedPct: 27,
   pace: 5,
   pacingWindow: 'weekly',
-  incumbentLane: [],
   quarantine: null,
   meterSnapshot: CODEX_SNAPSHOT,
   ...over,
@@ -295,7 +293,8 @@ test('loadUsage builds the pools, the ledger and the flattened rungs', async () 
     assert.deepEqual(usage.pools.map((p) => p.name), ['alpha', 'beta']);
     const alpha = usage.pools.find((p) => p.name === 'alpha');
     assert.equal(alpha.meterSnapshot.captured_at, SNAPSHOT.captured_at);
-    assert.equal(alpha.incumbentLane.includes('high'), true);
+    // Incumbency is gone (0.37.0): an old home's `incumbents` is not read.
+    assert.equal(Object.hasOwn(alpha, 'incumbentLane'), false);
 
     assert.equal(usage.assignments.length, 1);
     assert.equal(usage.assignments[0].actionId, 'build-app');

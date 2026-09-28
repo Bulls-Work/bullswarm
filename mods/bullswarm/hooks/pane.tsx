@@ -647,7 +647,7 @@ function poolsPageRows(
   const poolBlurb = (p: BullswarmPool) => {
     const meter = p.usedPct !== null && p.elapsedPct !== null ? `${String(Math.round(p.usedPct))}% used of ${String(Math.round(p.elapsedPct))}% elapsed` : 'no meter'
     const window = p.pacingWindow === 'monthly' ? 'monthly' : p.pacingWindow === 'weekly' ? 'weekly' : p.pacingWindow ?? ''
-    return [window ? `${window} window` : '', meter, p.quarantine ? 'quarantined' : '', p.incumbentLane.length ? `incumbent for ${p.incumbentLane.join('/')}` : '']
+    return [window ? `${window} window` : '', meter, p.quarantine ? 'quarantined' : '']
       .filter(Boolean)
       .join(' · ')
   }

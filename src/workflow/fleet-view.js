@@ -124,14 +124,10 @@ function poolBlurb(pool, nowMs) {
   const elapsed = pool?.elapsedPct == null ? null : `${numberText(pool.elapsedPct)}% elapsed`;
   const resetAt = pool?.paceResetsAt ?? pool?.resetsAt ?? null;
   const reset = resetAt ? `resets ${untilText(resetAt, nowMs)}` : null;
-  const lanes = Array.isArray(pool?.incumbentLane) && pool.incumbentLane.length
-    ? `incumbent for ${pool.incumbentLane.join('/')}`
-    : null;
   return [
     window,
     used && elapsed ? `${used} of ${elapsed}` : (used || elapsed || 'no meter'),
     reset,
-    lanes,
   ].filter(Boolean).join(' · ');
 }
 

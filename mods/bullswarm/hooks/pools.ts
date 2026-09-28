@@ -36,9 +36,6 @@ export function parsePools(stdout: string): BullswarmPool[] {
         meterSource: str(p.meterSource),
         meterError: str(p.meterError),
         meterHoldUntil: num(p.meterHoldUntil),
-        incumbentLane: Array.isArray(p.incumbentLane)
-          ? p.incumbentLane.filter((l): l is string => typeof l === 'string')
-          : [],
         quarantine:
           q && typeof q === 'object'
             ? {
@@ -145,10 +142,7 @@ export function poolLine(p: BullswarmPool): string {
   if (p.quarantine)
     return `${p.name}: quarantined until ${hhmm(p.quarantine.until)} (${p.quarantine.kind})`
   if (p.pace === null) return `${p.name}: enabled, no provider meter`
-  const lane = p.incumbentLane.length
-    ? `, incumbent for ${p.incumbentLane.join('/')}`
-    : ''
-  return `${p.name}: ${p.usedPct}% used, ${Math.round(p.elapsedPct ?? 0)}% of ${p.pacingWindow ?? 'window'} elapsed, ${state} ${paceText(p)}${lane}`
+  return `${p.name}: ${p.usedPct}% used, ${Math.round(p.elapsedPct ?? 0)}% of ${p.pacingWindow ?? 'window'} elapsed, ${state} ${paceText(p)}`
 }
 
 /**
