@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.36.0 — Usage limits go back to the caller; each account bills itself
+
 - known issues in this release: a limit marker whose reset was guessed still
   counts as a 100% reading in the spend forecast, so it can rank a pool lower
   for up to 5 hours (it never keeps the pool out); the Claude Code mod's pool
