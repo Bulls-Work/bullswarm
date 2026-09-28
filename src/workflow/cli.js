@@ -1003,13 +1003,15 @@ function planContract(opts) {
 async function planValidate(opts) {
   if (opts.help) { console.log(helpText(['workflow', 'plan', 'validate'])); return 0; }
   if (!opts.program) { console.error(`usage: ${usageLine(['workflow', 'plan', 'validate'])}`); return 2; }
-  let programV3 = false;
-  try { programV3 = isProgramV3(readJsonFile(opts.program, 'program file')); } catch { /* reported by loadCallerProgram below */ }
+  // Read once: a program from /dev/stdin or a pipe cannot be read twice.
+  let response = null, loadError = null;
+  try { response = loadCallerProgram(opts); } catch (err) { loadError = err; }
+  const programV3 = isProgramV3(response);
   const built = planningGoalDocument(opts, ['workflow', 'plan', 'validate'], { allowProgram: true, programV3 });
   if (built.exit !== undefined) return built.exit;
   const { goal, doc } = built;
   let accepted;
-  try { accepted = previewValidateInitialProgram(doc, loadCallerProgram(opts)); }
+  try { if (loadError) throw loadError; accepted = previewValidateInitialProgram(doc, response); }
   catch (err) {
     if (err instanceof V2PlannerValidationError) return refuseProgramInvalid(goal, opts, err.issues, { message: 'program invalid against the contract (nothing launched)' });
     console.error(`✗ ${err.message}`);

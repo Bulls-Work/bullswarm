@@ -556,3 +556,23 @@ test('a v3 run exports as v3; a revision may rerun or accept its steps, never ad
     assert.ok(refused.issues.some((issue) => /plan revise|schemaVersion/.test(issue)), JSON.stringify(refused.issues));
   }
 });
+
+// --- review fixes (wave A review) --------------------------------------------
+
+test('plan validate reads a v3 program piped through /dev/stdin (the file is read once)', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-v3-stdin-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const workspace = join(root, 'repo');
+  mkdirSync(home); mkdirSync(workspace);
+  const env = { ...process.env, BULLSWARM_HOME: home };
+  delete env.BULLSWARM_DEPTH;
+  const validate = spawnSync(process.execPath, [cli, 'workflow', 'plan', 'validate', 'Count the markdown files', '--program', '/dev/stdin', '--cwd', workspace, '--json'], {
+    encoding: 'utf8', env, input: JSON.stringify(oneStepV3()),
+  });
+  assert.equal(validate.status, 0, validate.stderr + validate.stdout);
+  const payload = JSON.parse(validate.stdout);
+  assert.equal(payload.program.schemaVersion, PROGRAM_V3_SCHEMA_VERSION);
+  assert.deepEqual(payload.requirements, [{ id: 'goal', text: 'Count the markdown files', mandatory: false }], 'the v3 requirement, so the program was read as v3');
+});
+
