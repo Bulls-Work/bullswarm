@@ -634,14 +634,16 @@ function goalArg(goal) {
 }
 
 // The commands a caller can run next when it has a goal but no accepted program.
-function goalNextCommands(goal, cwd, { isolation = false } = {}) {
+function goalNextCommands(goal, cwd, { isolation = false, program } = {}) {
   const q = goalArg(goal);
   const c = shellArg(cwd);
   const workspaceFlag = isolation === true ? ' --isolation' : '';
+  // The program file the caller named, absolute so the line works from any folder.
+  const p = typeof program === 'string' && program !== '-' && !program.startsWith('/dev/') ? shellArg(resolve(program)) : 'plan.json';
   return {
     contract: `bullswarm workflow plan contract ${q} --cwd ${c}${workspaceFlag} --json`,
-    validate: `bullswarm workflow plan validate ${q} --program plan.json --cwd ${c}${workspaceFlag} --json`,
-    launch: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --program plan.json --json`,
+    validate: `bullswarm workflow plan validate ${q} --program ${p} --cwd ${c}${workspaceFlag} --json`,
+    launch: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --program ${p} --json`,
     scout: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --scout`,
     orchestrator: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --orchestrator auto`,
   };

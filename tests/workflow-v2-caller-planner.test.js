@@ -1097,7 +1097,7 @@ test('CLI: plan validate accepts a good program without creating a run', () => {
     assert.equal(doc.action, 'plan-valid');
     assert.deepEqual(doc.program.actions.map((a) => a.id), ['create-done', 'check-create-done']);
     assert.deepEqual(doc.program.actions[1].evidenceFor, ['requirement-1']);
-    assert.match(doc.next.launch, /--program plan\.json --json$/);
+    assert.ok(doc.next.launch.endsWith(`--program ${programPath} --json`), doc.next.launch);
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'validation must not create a run');
 
     const human = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath]);

@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
@@ -196,7 +196,7 @@ test('plan validate prints a launch line with the program file the caller named'
   // A relative path is printed absolute, so the line works from any folder.
   const relative = run(f.bullswarmDir, ['workflow', 'plan', 'validate', 'Count the acme lines', '--cwd', f.workspace, '--program', 'my-plan.json'], { cwd: f.root });
   assert.equal(relative.status, 0, relative.stderr);
-  assert.ok(relative.stdout.includes(`--program ${file} --json`), relative.stdout);
+  assert.ok(relative.stdout.includes(`--program ${join(realpathSync(f.root), 'my-plan.json')} --json`), relative.stdout);
 });
 
 // --- a build step outside a git repository is checked for a change -----------
