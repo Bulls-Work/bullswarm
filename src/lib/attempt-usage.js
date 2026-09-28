@@ -8,21 +8,6 @@ import * as usageLib from './usage.js';
 import { meterHistoryIntervals } from '../meters/registry.js';
 import { loadProviders, transcriptReaderFor } from './providers.js';
 
-// The usage/subscription workers land their modules independently of this
-// wiring action. Resolve them lazily so the watcher remains usable in a
-// partially integrated checkout (and so focused tests can inject the exact
-// seams they exercise). Once present, these are the contract modules, not
-// alternate implementations.
-let accountingModulesPromise = null;
-
-export async function accountingModules() {
-  accountingModulesPromise ??= Promise.all([
-    import('./quota-snapshot.js').catch(() => null),
-    import('./subscription-cost.js').catch(() => null),
-  ]).then(([quota, subscription]) => ({ quota, subscription }));
-  return accountingModulesPromise;
-}
-
 export function finiteNonNegative(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);

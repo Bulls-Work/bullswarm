@@ -46,7 +46,7 @@ import { relayedQuotaNotice, matchLikelyAuthFailure } from './provider-errors.js
 import { followUpArgv } from './worker-argv.js';
 import { FOLLOW_UP_PROMPT, derivedReport, outputIsTruncated, extractOutput } from './worker-report.js';
 import {
-  accountingModules, finiteNonNegative, usageApiUsd, usageSessionId, decoderUsageForEstimate, captureAtExit,
+  finiteNonNegative, usageApiUsd, usageSessionId, decoderUsageForEstimate, captureAtExit,
   safeSnapshot, snapshotsFor, cursorFor, ledgerWindow, attemptLedgerIntervals, fallbackSubscription,
   resolveTranscriptReader,
 } from './attempt-usage.js';
@@ -57,6 +57,20 @@ function selectedModelFor(connector, opts, observed) {
     const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
     return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
   })();
+}
+
+// The usage/subscription workers land their modules independently of this
+// wiring action. Resolve them lazily so the watcher remains usable in a
+// partially integrated checkout (and so focused tests can inject the exact
+// seams they exercise). Once present, these are the contract modules, not
+// alternate implementations.
+let accountingModulesPromise = null;
+async function accountingModules() {
+  accountingModulesPromise ??= Promise.all([
+    import('./quota-snapshot.js').catch(() => null),
+    import('./subscription-cost.js').catch(() => null),
+  ]).then(([quota, subscription]) => ({ quota, subscription }));
+  return accountingModulesPromise;
 }
 
 /**
