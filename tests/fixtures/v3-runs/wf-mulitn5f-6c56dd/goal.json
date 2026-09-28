@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "bullswarm.workflow.goal.v2",
+  "intentId": "intent-70ba430d3d3cf032",
+  "intent": {
+    "goal": "Count the words in README.md. Change no file.",
+    "cwd": "/private/tmp/we-proj",
+    "requirements": [
+      {
+        "id": "goal",
+        "text": "Count the words in README.md. Change no file.",
+        "mandatory": false
+      }
+    ]
+  },
+  "config": {
+    "settings": {
+      "executionMode": "program",
+      "workspaceMode": "shared",
+      "scout": false,
+      "plannerMode": "caller",
+      "concurrency": 1
+    },
+    "plannerRouting": null,
+    "workerRouting": null
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "bullswarm.workflow.rollup.v1",
+  "runId": "wf-mulitn5f-6c56dd",
+  "shortId": "5r8jyi",
+  "project": "we-proj",
+  "goal": "Count the words in README.md. Change no file.",
+  "cwd": "/private/tmp/we-proj",
+  "startedAt": "2026-09-28T17:28:06.027Z",
+  "finishedAt": "2026-09-28T17:28:43.544Z",
+  "status": "completed",
+  "verified": false,
+  "requirements": {
+    "passed": 0,
+    "total": 1
+  },
+  "steps": {
+    "done": 1,
+    "total": 1
+  },
+  "minutes": {
+    "active": 0.62,
+    "span": 0.62,
+    "wall": 0.62,
+    "agent": 0.62
+  },
+  "phases": [
+    {
+      "id": "r1-level-1",
+      "label": "Phase 1 · task",
+      "revision": 1,
+      "actionIds": [
+        "task"
+      ],
+      "startedAt": "2026-09-28T17:28:06.054Z",
+      "completedAt": "2026-09-28T17:28:43.542Z",
+      "name": "Phase 1 · task",
+      "minutes": {
+        "active": 0.62,
+        "span": 0.62
+      }
+    }
+  ],
+  "pools": {
+    "grok": {
+      "attempts": 1,
+      "minutes": 0.62,
+      "tokens": 267971,
+      "cacheRead": 222464,
+      "cacheWrite": 0,
+      "reasoning": 994,
+      "apiUsd": 0.208498,
+      "apiKnownSubtotalUsd": 0.208498,
+      "subscriptionUsd": null,
+      "subscriptionKnownSubtotalUsd": null,
+      "measuredAttempts": 1,
+      "pricedAttempts": 1,
+      "subscriptionPricedAttempts": 0,
+      "tokenSource": "provider-reported",
+      "subscriptionBasis": "unknown:no-price",
+      "subscriptionDeltaPct": 0,
+      "subscriptionWindow": "weekly",
+      "subscriptionWindows": {
+        "weekly": 0
+      },
+      "costUsd": 0.208498
+    }
+  },
+  "models": {
+    "grok-4.7": {
+      "attempts": 1,
+      "minutes": 0.62
+    }
+  },
+  "attemptMetrics": [
+    {
+      "role": "worker",
+      "actionId": "task",
+      "retry": 0,
+      "pool": "grok",
+      "model": "grok-4.7",
+      "provider": "grok",
+      "outcome": "succeeded",
+      "startedAt": "2026-09-28T17:28:06.105Z",
+      "finishedAt": "2026-09-28T17:28:43.535Z",
+      "wallSec": 37.4,
+      "tokens": 267971,
+      "cacheRead": 222464,
+      "cacheWrite": 0,
+      "reasoning": 994,
+      "tokenSource": "provider-reported",
+      "apiUsd": 0.208498,
+      "subscriptionUsd": null,
+      "subscriptionBasis": "unknown:no-price",
+      "subscriptionDeltaPct": 0,
+      "subscriptionWindow": "weekly"
+    }
+  ],
+  "usage": {
+    "attempts": 1,
+    "minutes": 0.62,
+    "tokens": 267971,
+    "cacheRead": 222464,
+    "cacheWrite": 0,
+    "reasoning": 994,
+    "apiUsd": 0.208498,
+    "apiKnownSubtotalUsd": 0.208498,
+    "subscriptionUsd": null,
+    "subscriptionKnownSubtotalUsd": null,
+    "measuredAttempts": 1,
+    "pricedAttempts": 1,
+    "subscriptionPricedAttempts": 0,
+    "tokenSource": "provider-reported",
+    "subscriptionBasis": "unknown:no-price",
+    "subscriptionDeltaPct": 0,
+    "subscriptionWindow": "weekly",
+    "subscriptionWindows": {
+      "weekly": 0
+    },
+    "total": 267971,
+    "byPool": {
+      "grok": 267971
+    }
+  },
+  "legacy": false
+}

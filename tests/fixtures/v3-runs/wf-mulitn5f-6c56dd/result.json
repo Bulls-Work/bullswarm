@@ -1,0 +1,154 @@
+{
+  "schemaVersion": "bullswarm.workflow.result.v2",
+  "runId": "wf-mulitn5f-6c56dd",
+  "shortId": "5r8jyi",
+  "intentId": "intent-70ba430d3d3cf032",
+  "goal": "Count the words in README.md. Change no file.",
+  "status": "completed",
+  "verified": false,
+  "executionMode": "program",
+  "workspace": {
+    "cwd": "/private/tmp/we-proj",
+    "changedFiles": [],
+    "baselineChangedFiles": [],
+    "warnings": []
+  },
+  "reason": "all 1 step succeeded",
+  "requirements": [
+    {
+      "id": "goal",
+      "text": "Count the words in README.md. Change no file.",
+      "mandatory": false,
+      "status": "pending",
+      "workRevision": "initial",
+      "evidence": []
+    }
+  ],
+  "actions": [
+    {
+      "id": "task",
+      "purpose": "Count the words in README.md. Change no file.",
+      "status": "succeeded",
+      "outputFile": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/out-task-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "high",
+        "applied": "high",
+        "source": "connector",
+        "clamped": false
+      },
+      "kind": null,
+      "bytes": {
+        "taskFile": 2415,
+        "authorPrompt": 45,
+        "kernel": 2370,
+        "dependencyInputs": 0,
+        "output": 681
+      },
+      "usage": {
+        "attempts": 1,
+        "minutes": 0.62,
+        "tokens": 267971,
+        "cacheRead": 222464,
+        "cacheWrite": 0,
+        "reasoning": 994,
+        "apiUsd": 0.208498,
+        "apiKnownSubtotalUsd": 0.208498,
+        "subscriptionUsd": null,
+        "subscriptionKnownSubtotalUsd": null,
+        "measuredAttempts": 1,
+        "pricedAttempts": 1,
+        "subscriptionPricedAttempts": 0,
+        "tokenSource": "provider-reported",
+        "subscriptionBasis": "unknown:no-price",
+        "subscriptionDeltaPct": 0,
+        "subscriptionWindow": "weekly",
+        "subscriptionWindows": {
+          "weekly": 0
+        }
+      },
+      "routeWhy": "most-behind capable pool (surplus 12.4, 1 in flight)",
+      "routeCandidates": [
+        {
+          "pool": "grok",
+          "effectiveSurplus": 12.4,
+          "urgencyState": null,
+          "forecastPacingPct": null
+        }
+      ],
+      "failure": null,
+      "answer": {
+        "attemptId": "task-1",
+        "value": {
+          "words": 13
+        }
+      }
+    }
+  ],
+  "gaps": {
+    "schemaVersion": "bullswarm.workflow.gaps.v2",
+    "intentId": "intent-70ba430d3d3cf032",
+    "programRevision": 1,
+    "requirements": [],
+    "actions": [],
+    "summary": "No unresolved requirements."
+  },
+  "usage": {
+    "total": 267971,
+    "byPool": {
+      "grok": 267971
+    },
+    "bytes": {
+      "taskFiles": 2415,
+      "dependencyInputs": 0,
+      "outputs": 681
+    },
+    "totals": {
+      "attempts": 1,
+      "minutes": 0.62,
+      "tokens": 267971,
+      "cacheRead": 222464,
+      "cacheWrite": 0,
+      "reasoning": 994,
+      "apiUsd": 0.208498,
+      "apiKnownSubtotalUsd": 0.208498,
+      "subscriptionUsd": null,
+      "subscriptionKnownSubtotalUsd": null,
+      "measuredAttempts": 1,
+      "pricedAttempts": 1,
+      "subscriptionPricedAttempts": 0,
+      "tokenSource": "provider-reported",
+      "subscriptionBasis": "unknown:no-price",
+      "subscriptionDeltaPct": 0,
+      "subscriptionWindow": "weekly",
+      "subscriptionWindows": {
+        "weekly": 0
+      }
+    },
+    "steps": {
+      "task": {
+        "attempts": 1,
+        "minutes": 0.62,
+        "tokens": 267971,
+        "cacheRead": 222464,
+        "cacheWrite": 0,
+        "reasoning": 994,
+        "apiUsd": 0.208498,
+        "apiKnownSubtotalUsd": 0.208498,
+        "subscriptionUsd": null,
+        "subscriptionKnownSubtotalUsd": null,
+        "measuredAttempts": 1,
+        "pricedAttempts": 1,
+        "subscriptionPricedAttempts": 0,
+        "tokenSource": "provider-reported",
+        "subscriptionBasis": "unknown:no-price",
+        "subscriptionDeltaPct": 0,
+        "subscriptionWindow": "weekly",
+        "subscriptionWindows": {
+          "weekly": 0
+        }
+      }
+    }
+  },
+  "finishedAt": "2026-09-28T17:28:43.544Z"
+}

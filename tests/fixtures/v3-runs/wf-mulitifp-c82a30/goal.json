@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "bullswarm.workflow.goal.v2",
+  "intentId": "intent-97a52875b46b4f7a",
+  "intent": {
+    "goal": "Write a two-line note, then wait for approval",
+    "cwd": "/private/tmp/we-proj",
+    "requirements": [
+      {
+        "id": "goal",
+        "text": "Write a two-line note, then wait for approval",
+        "mandatory": false
+      }
+    ]
+  },
+  "config": {
+    "settings": {
+      "scout": false,
+      "executionMode": "program",
+      "workspaceMode": "shared",
+      "plannerMode": "caller"
+    },
+    "plannerRouting": null,
+    "workerRouting": null
+  }
+}

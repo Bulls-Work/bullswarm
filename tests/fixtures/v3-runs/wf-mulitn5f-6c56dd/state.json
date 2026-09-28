@@ -1,0 +1,514 @@
+{
+  "schemaVersion": "bullswarm.workflow.state.v2",
+  "runId": "wf-mulitn5f-6c56dd",
+  "shortId": "5r8jyi",
+  "intentId": "intent-70ba430d3d3cf032",
+  "intent": {
+    "goal": "Count the words in README.md. Change no file.",
+    "cwd": "/private/tmp/we-proj",
+    "requirements": [
+      {
+        "id": "goal",
+        "text": "Count the words in README.md. Change no file.",
+        "mandatory": false
+      }
+    ]
+  },
+  "config": {
+    "settings": {
+      "executionMode": "program",
+      "workspaceMode": "shared",
+      "scout": false,
+      "plannerMode": "caller",
+      "concurrency": 1
+    },
+    "plannerRouting": null,
+    "workerRouting": null
+  },
+  "lifecycle": {
+    "status": "completed",
+    "startedAt": "2026-09-28T17:28:06.027Z",
+    "finishedAt": "2026-09-28T17:28:43.544Z",
+    "resultFile": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/result.json"
+  },
+  "preflight": {
+    "scout": {
+      "status": "skipped",
+      "startedAt": null,
+      "finishedAt": null,
+      "outputFile": null,
+      "attempts": [],
+      "lastFailure": null
+    }
+  },
+  "planner": {
+    "status": "completed",
+    "turns": 1,
+    "lastDecision": {
+      "kind": "program",
+      "summary": "bullswarm run: one step."
+    },
+    "session": null,
+    "attempts": [],
+    "awaiting": null
+  },
+  "program": {
+    "schemaVersion": "bullswarm.workflow.program.v3",
+    "revision": 1,
+    "actions": [
+      {
+        "id": "task",
+        "label": "Count the words in README.md. Change no file.",
+        "purpose": "Count the words in README.md. Change no file.",
+        "prompt": "Count the words in README.md. Change no file.",
+        "dependsOn": [],
+        "lane": "analyze",
+        "effort": "medium",
+        "retry": 1,
+        "files": [],
+        "ownedFiles": [],
+        "affects": [],
+        "answer": {
+          "type": "object",
+          "required": [
+            "words"
+          ],
+          "properties": {
+            "words": {
+              "type": "integer"
+            }
+          }
+        },
+        "evidenceFor": [],
+        "inputs": [],
+        "produces": []
+      }
+    ],
+    "control": {
+      "gates": [],
+      "loops": []
+    }
+  },
+  "presentation": {
+    "stages": [
+      {
+        "id": "r1-level-1",
+        "label": "Phase 1 · task",
+        "revision": 1,
+        "actionIds": [
+          "task"
+        ],
+        "startedAt": "2026-09-28T17:28:06.054Z",
+        "completedAt": "2026-09-28T17:28:43.542Z"
+      }
+    ]
+  },
+  "actions": [
+    {
+      "id": "task",
+      "status": "succeeded",
+      "attempts": 1,
+      "programRevision": 1,
+      "workRevision": "initial",
+      "startedAt": "2026-09-28T17:28:06.056Z",
+      "finishedAt": "2026-09-28T17:28:43.540Z",
+      "outputFile": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/out-task-attempt-1.md",
+      "artifactIds": [],
+      "lastFailure": null,
+      "answer": {
+        "attemptId": "task-1",
+        "value": {
+          "words": 13
+        }
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "id": "task-1",
+      "actionId": "task",
+      "ordinal": 1,
+      "status": "succeeded",
+      "pool": "grok",
+      "model": "grok-4.7",
+      "startedAt": "2026-09-28T17:28:06.105Z",
+      "finishedAt": "2026-09-28T17:28:43.535Z",
+      "taskFile": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/task-task-attempt-1.md",
+      "outputFile": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/out-task-attempt-1.md",
+      "failureKind": null,
+      "why": "structured output validated",
+      "usage": {
+        "model": "grok-4.7",
+        "sessionId": "6435b64a-718e-4332-9f66-bbc50c8e1731",
+        "tokens": {
+          "standardRead": 43944,
+          "cacheRead": 222464,
+          "cacheWrite5m": null,
+          "cacheWrite1h": null,
+          "cacheWrite": 0,
+          "output": 569,
+          "reasoning": 994,
+          "totalKnown": 267971
+        },
+        "tokenSource": "provider-reported",
+        "api": {
+          "usd": 0.208498,
+          "breakdown": {
+            "standardReadUsd": 0.087888,
+            "cacheReadUsd": 0.111232,
+            "cacheWrite5mUsd": null,
+            "cacheWrite1hUsd": null,
+            "cacheWriteUsd": null,
+            "outputUsd": 0.003414,
+            "reasoningUsd": 0.005964
+          },
+          "pricedFields": [
+            "standardRead",
+            "cacheRead",
+            "output",
+            "reasoning"
+          ],
+          "unpricedFields": [
+            "cacheWrite"
+          ],
+          "rateCard": {
+            "source": "https://docs.x.ai/docs/models",
+            "updatedAt": "2026-09-23"
+          },
+          "basis": "rate-card:complete"
+        },
+        "subscription": {
+          "pool": "grok",
+          "window": "weekly",
+          "deltaPct": 0,
+          "usd": null,
+          "monthlyPriceUsd": null,
+          "windowDays": 7,
+          "basis": "unknown:no-price",
+          "snapshots": {
+            "start": {
+              "at": "2026-09-28T17:27:51.499Z",
+              "usedPct": 34,
+              "resetsAt": "2026-10-02T06:29:14.153Z",
+              "source": "cache"
+            },
+            "end": {
+              "at": "2026-09-28T17:27:51.499Z",
+              "usedPct": 34,
+              "resetsAt": "2026-10-02T06:29:14.153Z",
+              "source": "cache"
+            }
+          },
+          "attribution": {
+            "startCursor": {
+              "at": "2026-09-28T17:27:51.499Z",
+              "window": "weekly",
+              "index": 0,
+              "source": "live",
+              "providerAt": "2026-09-28T17:27:51.499Z"
+            },
+            "endCursor": {
+              "at": "2026-09-28T17:27:51.499Z",
+              "window": "weekly",
+              "index": 0,
+              "source": "live",
+              "providerAt": "2026-09-28T17:27:51.499Z"
+            },
+            "historyCursor": {
+              "start": {
+                "at": "2026-09-28T17:27:51.499Z",
+                "window": "weekly",
+                "index": 0,
+                "source": "live",
+                "providerAt": "2026-09-28T17:27:51.499Z"
+              },
+              "end": {
+                "at": "2026-09-28T17:27:51.499Z",
+                "window": "weekly",
+                "index": 0,
+                "source": "live",
+                "providerAt": "2026-09-28T17:27:51.499Z"
+              }
+            },
+            "attemptId": "task-1",
+            "runId": "wf-mulitn5f-6c56dd",
+            "window": "weekly",
+            "intervals": [],
+            "ledgerRows": [],
+            "deltaPct": 0,
+            "conservedDeltaPct": null,
+            "resolutionPct": null,
+            "basis": "unknown:no-price"
+          }
+        },
+        "pricing": {
+          "inputUsdPerMillion": 2,
+          "cacheReadUsdPerMillion": 0.5,
+          "outputUsdPerMillion": 6,
+          "longContext": {
+            "thresholdTokens": 200000,
+            "inputUsdPerMillion": 4,
+            "cacheReadUsdPerMillion": 1,
+            "outputUsdPerMillion": 12
+          },
+          "source": "https://docs.x.ai/docs/models",
+          "updatedAt": "2026-09-23"
+        },
+        "costSource": "local-rate-card",
+        "pricedFields": [
+          "standardRead",
+          "cacheRead",
+          "output",
+          "reasoning"
+        ],
+        "cost": {
+          "estimatedUsd": 0.208498,
+          "breakdown": {
+            "standardReadUsd": 0.087888,
+            "cacheReadUsd": 0.111232,
+            "cacheWrite5mUsd": null,
+            "cacheWrite1hUsd": null,
+            "cacheWriteUsd": null,
+            "outputUsd": 0.003414,
+            "reasoningUsd": 0.005964
+          },
+          "basis": "rate-card:complete"
+        },
+        "normalizedQuota": {
+          "estimatedPercent": 0,
+          "window": "weekly",
+          "includedValueUsd": null,
+          "basis": "unknown:no-price",
+          "deltaPct": 0
+        }
+      },
+      "session": {
+        "pool": "grok",
+        "model": "grok-4.7",
+        "sessionId": "6435b64a-718e-4332-9f66-bbc50c8e1731",
+        "generation": 1,
+        "startedAt": "2026-09-28T17:28:06.105Z",
+        "lastUsedAt": "2026-09-28T17:28:43.535Z"
+      },
+      "wallSec": 37.4,
+      "routing": {
+        "reason": "most-behind capable pool (surplus 12.4, 1 in flight)",
+        "candidates": [
+          {
+            "pool": "grok",
+            "model": null,
+            "modelPolicy": "connector-default",
+            "pace": 15.4,
+            "effectiveSurplus": 12.4,
+            "inflight": 1,
+            "costRank": 2,
+            "fiveHourUsedPct": null,
+            "projectedFiveHourPct": null,
+            "forecastFiveHourPct": null,
+            "fiveHourElapsedPct": null,
+            "projectedWeeklyPct": null,
+            "pacingWindow": "weekly",
+            "projectedPacingPct": null,
+            "ratePerMinute": null,
+            "estimateSource": "penalty",
+            "nearFiveHourLimit": false,
+            "nearFiveHourPenalty": false,
+            "forecastGated": false,
+            "forecastOverLimit": false,
+            "paceResetsInMinutes": 5101.1,
+            "expiringSoon": false,
+            "urgency": null,
+            "forecastPacingPct": null,
+            "urgencyState": null,
+            "free": false,
+            "freeModel": "grok-4.7"
+          }
+        ],
+        "effort": "medium",
+        "lane": "analyze",
+        "fiveHourUsedPct": null,
+        "forecast": {
+          "inflight": 1,
+          "projectedFiveHourPct": null,
+          "forecastFiveHourPct": null,
+          "ratePerMinute": null,
+          "estimateSource": "penalty",
+          "expectedMinutes": 5
+        }
+      },
+      "routeWhy": "most-behind capable pool (surplus 12.4, 1 in flight)",
+      "routeCandidates": [
+        {
+          "pool": "grok",
+          "effectiveSurplus": 12.4,
+          "urgencyState": null,
+          "forecastPacingPct": null
+        }
+      ],
+      "reasoning": {
+        "requested": "high",
+        "applied": "high",
+        "source": "connector",
+        "clamped": false
+      },
+      "continued": false,
+      "bytes": {
+        "taskFile": 2415,
+        "authorPrompt": 45,
+        "kernel": 2370,
+        "dependencyInputs": 0,
+        "output": 681
+      },
+      "timeBox": {
+        "minutes": 20,
+        "wrapUpMinutes": 14,
+        "source": "fallback",
+        "n": null,
+        "medianMinutes": null,
+        "startClock": "01:28:06"
+      },
+      "lastActivityAt": "2026-09-28T17:28:41.803Z",
+      "outputBytesObserved": 231684,
+      "outputSamples": [
+        [
+          1790616486584,
+          13356
+        ],
+        [
+          1790616491741,
+          171943
+        ],
+        [
+          1790616497705,
+          185494
+        ],
+        [
+          1790616503604,
+          201662
+        ],
+        [
+          1790616512820,
+          217612
+        ],
+        [
+          1790616519451,
+          231684
+        ]
+      ],
+      "lastEventAt": "2026-09-28T17:28:41.803Z",
+      "lastAgentEvent": {
+        "id": "event-225",
+        "at": "2026-09-28T17:28:41.803Z",
+        "source": "stdout",
+        "providerType": "end",
+        "kind": "result",
+        "status": "completed",
+        "summary": null,
+        "summaryMode": "replace",
+        "eventId": "34532559-fb5d-4bfc-a2e7-bb88c14ee48f",
+        "usage": {
+          "input": 43944,
+          "cacheRead": 222464,
+          "cacheWrite": 0,
+          "output": 1563,
+          "reasoning": 994,
+          "costUsd": 0.07088932
+        }
+      },
+      "capture": {
+        "capturedAt": "2026-09-28T17:28:43.477Z",
+        "source": "event-stream",
+        "providerSessionId": "6435b64a-718e-4332-9f66-bbc50c8e1731",
+        "sessionSource": "provider-stream",
+        "model": "grok-4.7",
+        "tokens": {
+          "standardRead": 43944,
+          "cacheRead": 222464,
+          "cacheWrite5m": null,
+          "cacheWrite1h": null,
+          "cacheWrite": 0,
+          "output": 569,
+          "reasoning": 994,
+          "totalKnown": 267971
+        },
+        "tokenSource": "provider-reported",
+        "providerCostUsd": 0.07088932,
+        "exitCode": 0,
+        "signal": null
+      },
+      "answer": {
+        "file": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/answer-task-attempt-1.json",
+        "ok": true,
+        "value": {
+          "words": 13
+        },
+        "errors": []
+      },
+      "outputBytes": 681,
+      "streamFile": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/stream-task-attempt-1.jsonl",
+      "diffFile": "/private/tmp/we-home/workflows/wf-mulitn5f-6c56dd/diff-task-attempt-1.txt",
+      "changedFileCount": 0,
+      "changedFiles": [],
+      "lastResponse": null
+    }
+  ],
+  "steering": [],
+  "budget": {
+    "agents": 1,
+    "seconds": 37.4,
+    "expansions": 0
+  },
+  "cancellation": {
+    "requested": false,
+    "requestedAt": null,
+    "reason": null
+  },
+  "advisories": [],
+  "usage": {
+    "total": 267971,
+    "byPool": {
+      "grok": 267971
+    },
+    "apiUsd": 0.208498,
+    "apiKnownSubtotalUsd": 0.208498,
+    "subscriptionUsd": null,
+    "subscriptionKnownSubtotalUsd": null,
+    "measuredAttempts": 1,
+    "pricedAttempts": 1,
+    "subscriptionPricedAttempts": 0,
+    "attempts": 1,
+    "apiMissingAttempts": 0,
+    "subscriptionMissingAttempts": 1,
+    "subscriptionLedgerByPool": {},
+    "tokenSource": "provider-reported",
+    "subscriptionBasis": "unknown:no-price"
+  },
+  "events": {
+    "sequence": 9,
+    "last": {
+      "sequence": 9,
+      "type": "workflow.finished",
+      "committedAt": "2026-09-28T17:28:43.564Z"
+    }
+  },
+  "ledger": {
+    "schemaVersion": "bullswarm.workflow.ledger.v2",
+    "workRevision": "initial",
+    "requirements": {
+      "goal": {
+        "id": "goal",
+        "mandatory": false,
+        "workRevision": "initial",
+        "status": "pending",
+        "evidence": []
+      }
+    },
+    "evidence": []
+  },
+  "runner": {
+    "pid": 20226,
+    "startedAt": "2026-09-28T17:28:06.027Z",
+    "lastHeartbeatAt": "2026-09-28T17:28:43.564Z"
+  },
+  "pause": null
+}
