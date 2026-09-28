@@ -24,7 +24,7 @@ import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { answerSummaryOf } from './answers.js';
 import {
-  controlTrouble, controlWatchEvent, parkedFailures, parkedWaitingFor, renderControlEvent, waitingOutcomeLines, waitingWatchLine,
+  controlTrouble, controlWatchEvent, isLoopVerdict, parkedFailures, parkedWaitingFor, renderControlEvent, waitingOutcomeLines, waitingWatchLine,
 } from './gates-loops.js';
 
 // The needs-you facts ride on the notable under a symbol: the JSONL object
@@ -1142,7 +1142,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   // 'outcome' follows until the run's outcome; 'trouble' also ends on the
   // first trouble line (failed, rejected, scout stopped, planner stopped,
   // paused, stalled, stale, steering).
-  // Either prints only trouble lines and the outcome, with no attach line.
+  // Either prints only trouble lines, finished loops and the outcome, with no
+  // attach line.
   until = null,
   // The stale-score probe (see src/lib/stale.js); false turns it off.
   stale = null,
@@ -1268,9 +1269,9 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         memory = collected.memory;
         for (const event of collected.notable) {
           const trouble = watchTrouble(event, { program: isProgramWorkflow(state) });
-          // --until prints only what needs the caller: trouble, then the
-          // outcome.
-          if (untilMode && trouble == null) continue;
+          // --until prints only what needs the caller: trouble, each loop
+          // that finished (it does not wake), then the outcome.
+          if (untilMode && trouble == null && !isLoopVerdict(event)) continue;
           emitLine(event);
           notablePrinted += 1;
           if (trouble != null) troublePrinted += 1;

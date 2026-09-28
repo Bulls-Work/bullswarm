@@ -139,7 +139,8 @@ exits. It prints no attach line and no routine lines. It prints only trouble:
 failed or blocked steps, a last verify round that left a requirement failing,
 rejected plan revisions and planning attempts, a planner or preflight scout
 that stopped on a usage limit, pause requests and pause stops, stalled workers, stale
-steps, and steering received. It exits on the first trouble line
+steps, and steering received, plus one line per v3 loop that finished (its
+verdict and round; not a wake-up). It exits on the first trouble line
 while the run goes on (exit 0). It also exits on the outcome: finished, paused,
 waiting, or interrupted, with the usual exit codes. Each exit is one wake: read
 it in one tool call, act, and start the printed

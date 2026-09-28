@@ -1232,7 +1232,7 @@ bullswarm workflow watch ab12cd --until trouble
 | `--heartbeat <seconds>` | print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1 | off in event mode, `60` with `--classic` |
 | `--stall-after <seconds>` | report a running agent as silent after this many seconds without activity; must be >= 1 | `300` |
 | `--next` | print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status | off (follows until terminal or pause) |
-| `--until <outcome\|trouble>` | print only trouble and outcome lines; `trouble` exits for a needs-you block (a usage limit or no free pool is one), a review needing you, a rejected revision, a planner or scout stopped on a usage limit, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
+| `--until <outcome\|trouble>` | print only trouble and outcome lines, plus one line per v3 loop that finished (not a wake-up); `trouble` exits for a needs-you block (a usage limit or no free pool is one), a review needing you, a rejected revision, a planner or scout stopped on a usage limit, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
 | `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall does not fire again | report every agent silent past `--stall-after` at attach |
 | `--jsonl` | emit one JSON object per line instead of human text; every object carries `sequence`; the `next:` relaunch line is not printed | off (human text) |

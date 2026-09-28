@@ -23,7 +23,7 @@ import {
 } from '../src/workflow/gates-loops.js';
 import { acceptV2Step, rerunV2Step } from '../src/workflow/cli.js';
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
-import { continueV2Run } from '../src/workflow/cli-steps.js';
+import { continueV2Run, waitV3Nodes } from '../src/workflow/cli-steps.js';
 import { deserializeV2DurableState, serializeV2DurableState } from '../src/workflow/v2-state.js';
 import { v2V3Fixtures } from './fixtures/program-v3-fixtures.mjs';
 
@@ -663,4 +663,87 @@ test('a parked run with no failed step prints and documents exactly what it did 
     'outcome: waiting', 'waiting: gate approve · Read the draft and decide', 'next: bullswarm workflow continue acme01 approve',
   ]);
   assert.deepEqual(Object.keys(waitingDocument({ runId: 'wf-acme', shortId: 'acme01', waitingFor })), ['action', 'runId', 'shortId', 'status', 'waitingFor', 'next']);
+});
+
+// --- a wake-up carries the loops that finished since the last one -----------
+
+const loopThenGate = () => {
+  const program = loopProgram();
+  program.steps = program.steps.filter((step) => step.id !== 'ship');
+  program.steps.push({ id: 'ship', dependsOn: ['approve'], prompt: 'Ship the acme widget.' });
+  program.gates = [{ id: 'approve', dependsOn: ['polish'], note: 'Read the check and decide' }];
+  return program;
+};
+
+// The parked run as a live one, so a watch wakes on the gate event itself.
+function asRunning(run) {
+  const running = structuredClone(run.state);
+  delete running.lifecycle.waitingFor;
+  running.lifecycle.status = 'running';
+  running.runner = { pid: process.pid, startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString() };
+  writeFileSync(join(run.runDir, 'state.json'), serializeV2DurableState(running));
+}
+
+async function watchText(f, run, opts) {
+  let text = '';
+  const code = await runWorkflowWatch(f.bullswarmDir, run.shortId, {
+    intervalMs: 10, stale: false, ...opts, output: { write: (chunk) => { text += chunk; } },
+  });
+  return { code, text };
+}
+
+test('--until trouble woken at a gate also prints each loop that finished since the last wake: name, verdict, round of max', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, loopThenGate(), fakeDispatch((id, turn) => (id === 'check' ? { answer: { passed: turn >= 2 } } : {})));
+  assert.deepEqual(run.waiting.map((entry) => entry.id), ['approve']);
+  asRunning(run);
+  const { code, text } = await watchText(f, run, { until: 'trouble', afterSequence: 0 });
+  assert.equal(code, 0);
+  const lines = text.trim().split('\n');
+  const loopAt = lines.findIndex((line) => /✓ loop polish passed in round 2 of 3/.test(line));
+  const gateAt = lines.findIndex((line) => /gate approve waiting/.test(line));
+  assert.ok(loopAt >= 0, text);
+  assert.ok(gateAt > loopAt, `the loop line comes before the gate line\n${text}`);
+  assert.equal(lines.filter((line) => /loop polish/.test(line)).length, 1, 'one line per finished loop; its rounds are not wake-ups');
+  assert.match(lines.at(-1), new RegExp(`next: bullswarm workflow watch ${run.shortId} --until trouble --after \\d+`));
+
+  // Since the last wake: a watch resumed after the loop finished does not repeat it.
+  const passedAt = eventsOf(run, 'loop.passed')[0].sequence;
+  const later = await watchText(f, run, { until: 'trouble', afterSequence: passedAt });
+  assert.doesNotMatch(later.text, /loop polish/);
+  assert.match(later.text, /gate approve waiting/);
+
+  // The same line in --jsonl, and --until outcome keeps it too.
+  const jsonl = await watchText(f, run, { until: 'trouble', afterSequence: 0, jsonl: true });
+  const loopLine = jsonl.text.trim().split('\n').map((line) => JSON.parse(line)).find((line) => line.type === 'loop.passed');
+  assert.deepEqual([loopLine.loopId, loopLine.round, loopLine.of], ['polish', 2, 3]);
+});
+
+test('a blocked loop names its round of max, in the event and on the wake line', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, loopThenGate(), fakeDispatch((id) => (id === 'fix' ? { fail: 'provider' } : {})));
+  const blocked = eventsOf(run, 'loop.blocked')[0].payload;
+  assert.deepEqual([blocked.loopId, blocked.round, blocked.of], ['polish', 1, 3]);
+  const { text } = await watchText(f, run, { until: 'trouble', afterSequence: 0 });
+  assert.match(text, /loop polish blocked in round 1 of 3 · fix failed/);
+});
+
+test('workflow wait on a gate names each loop before it with its verdict and round of max', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, loopThenGate(), fakeDispatch((id, turn) => (id === 'check' ? { answer: { passed: turn >= 2 } } : {})));
+  const result = await waitV3Nodes({ bullswarmDir: f.bullswarmDir, token: run.shortId, ids: ['approve'], pollMs: 10 });
+  assert.deepEqual([result.code, result.status], [0, 'settled']);
+  assert.deepEqual(result.loops.map((loop) => [loop.id, loop.status, loop.round, loop.maxRounds]), [['polish', 'passed', 2, 3]]);
+  const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
+  delete env.BULLSWARM_DEPTH;
+  const human = spawnSync(process.execPath, [cli, 'workflow', 'wait', run.shortId, 'approve'], { encoding: 'utf8', env });
+  assert.equal(human.status, 0, human.stdout + human.stderr);
+  const lines = human.stdout.trim().split('\n');
+  assert.match(lines[0], /^✓ loop polish passed · round 2 of 3$/);
+  assert.match(lines[1], /gate approve waiting/);
+  // A named loop is not listed twice, and a step behind nothing lists none.
+  const named = await waitV3Nodes({ bullswarmDir: f.bullswarmDir, token: run.shortId, ids: ['polish', 'approve'], pollMs: 10 });
+  assert.deepEqual(named.loops, []);
+  const first = await waitV3Nodes({ bullswarmDir: f.bullswarmDir, token: run.shortId, ids: ['fix'], pollMs: 10 });
+  assert.deepEqual(first.loops, []);
 });

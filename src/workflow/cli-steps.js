@@ -422,6 +422,34 @@ export function waitFacts(state, ids) {
 const settled = (fact) => (fact.type === 'step' ? STEP_SETTLED : NODE_SETTLED).has(fact.status);
 
 /**
+ * The loops the named ids wait behind (through dependsOn, and a loop through
+ * its steps) that have finished or stopped, each with its verdict and round:
+ * what a watch woken at a gate prints, so a wait on the gate says it too.
+ * A named loop is left out; it is among the nodes already.
+ */
+export function loopsBefore(state, ids) {
+  const control = state.program.control ?? {};
+  const loops = new Map((control.loops ?? []).map((loop) => [loop.id, loop]));
+  const depends = new Map([
+    ...state.program.actions.map((action) => [action.id, action.dependsOn ?? []]),
+    ...(control.gates ?? []).map((gate) => [gate.id, gate.dependsOn ?? []]),
+    ...(control.loops ?? []).map((loop) => [loop.id, loop.steps ?? []]),
+  ]);
+  const seen = new Set();
+  const found = [];
+  const visit = (id) => {
+    for (const dep of depends.get(id) ?? []) {
+      if (seen.has(dep)) continue;
+      seen.add(dep);
+      visit(dep);
+      if (loops.has(dep) && !ids.includes(dep)) found.push(dep);
+    }
+  };
+  for (const id of ids) visit(id);
+  return found.map((id) => nodeFacts(state, id)).filter((fact) => NODE_SETTLED.has(fact.status));
+}
+
+/**
  * Poll the run until every named id is settled, the run stops moving them,
  * or the timeout passes. Resolves {code, status: settled|stopped|timeout|
  * error, run, nodes}. Exit code: 0 when none failed or was blocked, 1 when
@@ -445,6 +473,7 @@ export async function waitV3Nodes({
         return { code: 2, status: 'error', why: `run ${state.shortId ?? state.runId} has no step, gate or loop ${facts.unknown.join(', ')} (it has ${known.join(', ') || 'none'})`, ...base };
       }
       const failed = facts.nodes.some((fact) => UNSUCCESSFUL.has(fact.status));
+      base.loops = loopsBefore(state, ids);
       if (facts.nodes.every(settled)) return { code: failed ? 1 : 0, status: 'settled', ...base, nodes: facts.nodes };
       const alive = liveness(state, { runDir: resolved.runDir });
       const stopped = STOPPED.has(state.lifecycle.status) || (alive.checked && !alive.alive);
@@ -504,7 +533,7 @@ export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
   if (opts.json) { console.log(JSON.stringify({ action: 'workflow-wait', ...payload }, null, 2)); return code; }
   if (result.status === 'error') { console.error(`✗ ${result.why}`); return code; }
   const id = result.shortId ?? result.runId ?? token;
-  for (const fact of result.nodes ?? []) for (const line of factLine(fact)) console.log(line);
+  for (const fact of [...(result.loops ?? []), ...(result.nodes ?? [])]) for (const line of factLine(fact)) console.log(line);
   if (result.status === 'timeout') console.log(`${glyphs().waiting} timed out after ${timeoutSec}s; the run is ${result.run ?? 'unreadable'}. Wait again: bullswarm workflow wait ${id} ${ids.join(' ')}`);
   if (result.status === 'stopped') {
     console.log(`${glyphs().stopped} ${result.why}; not every id finished. See bullswarm workflow runs show ${id}`);

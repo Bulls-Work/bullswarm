@@ -231,7 +231,7 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
   if (failed) {
     if (record.status === 'blocked') return false;
     settle(record, 'blocked', at, `${failed[0]} ${failed[1]}`);
-    emit('loop.blocked', { loopId: loop.id, round: record.round, why: record.reason });
+    emit('loop.blocked', { loopId: loop.id, round: record.round, of: record.maxRounds, why: record.reason });
     return true;
   }
   if (!body.every(([, status]) => status === 'succeeded')) {
@@ -257,7 +257,7 @@ function nextRound(state, loop, record, { at, emit, rerun }) {
   const round = record.round + 1;
   if (!rerun(loop, round)) {
     settle(record, 'blocked', at, 'its next round could not start');
-    emit('loop.blocked', { loopId: loop.id, round: record.round, why: record.reason });
+    emit('loop.blocked', { loopId: loop.id, round: record.round, of: record.maxRounds, why: record.reason });
     return true;
   }
   record.round = round;
@@ -591,6 +591,15 @@ export function controlTrouble(event) {
   return event?.type === 'gate.waiting' || event?.type === 'loop.out-of-rounds' ? 'waiting' : null;
 }
 
+/**
+ * A loop that finished (passed or blocked). An `--until` watch prints it
+ * without waking, so the wake that follows (a gate, the end) carries each
+ * loop's verdict and round and the caller needs no extra `workflow wait`.
+ */
+export function isLoopVerdict(event) {
+  return event?.type === 'loop.passed' || event?.type === 'loop.blocked';
+}
+
 /** A gate or loop event as one human line, or null. */
 export function renderControlEvent(event) {
   const g = glyphs();
@@ -610,7 +619,7 @@ export function renderControlEvent(event) {
     case 'loop.out-of-rounds':
       return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${event.condition ?? 'its condition'} did not hold · continue: bullswarm workflow continue ${event.token} ${event.loopId} --rounds <n>`;
     case 'loop.blocked':
-      return `${g.blocked} loop ${event.loopId} blocked in round ${event.round} · ${event.why ?? 'a step did not succeed'}`;
+      return `${g.blocked} loop ${event.loopId} blocked in round ${event.round}${event.of != null ? ` of ${event.of}` : ''} · ${event.why ?? 'a step did not succeed'}`;
     case 'loop.continued':
       return `${g.started} loop ${event.loopId} continued · ${event.rounds} more round${event.rounds === 1 ? '' : 's'} (now ${event.of})`;
     case 'control.continue_refused':

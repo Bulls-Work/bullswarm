@@ -644,7 +644,10 @@ bullswarm workflow watch ab12cd --until outcome
 
 `--until` prints no attach line and no routine lines: no finished steps, no
 completed stages, no retries that recovered. It prints only trouble, then the
-outcome. Trouble is a step that failed or was blocked, a check that rejected a
+outcome. In a v3 run it also prints one line per loop that finished since the
+last wake (`✓ loop polish passed in round 2 of 3`, or `blocked in round 1 of
+3`), without waking, so a wake at a gate already says how the loop before it
+ended. Trouble is a step that failed or was blocked, a check that rejected a
 requirement, a rejected plan revision or planning attempt, a planner or
 preflight scout that stopped on a usage limit, a pause request or pause stop, a worker the
 kernel stopped as stalled, a step that looks stale, or steering left for the
@@ -760,7 +763,7 @@ Exit 0 while the run continues or when it delivered; exit 1 when it ended withou
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `--until outcome\|trouble` | print only trouble lines and the outcome; `trouble` also exits at the first trouble line | off (follows until terminal or paused) |
+| `--until outcome\|trouble` | print only trouble lines, each v3 loop that finished, and the outcome; `trouble` also exits at the first trouble line | off (follows until terminal or paused) |
 | `--next` | print no attach line; exit after the first notable event | off (follows until terminal or paused) |
 | `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the high-water mark |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall is not repeated | report every silent agent at attach |
