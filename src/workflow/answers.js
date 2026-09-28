@@ -190,6 +190,22 @@ export function settleStepAnswer(state, runtime, action, result, firstOrdinal = 
 }
 
 /**
+ * What a dependent step is told about one dependency's answer, beside its
+ * output file in the task's dependency artifacts: `{answer: {attemptId, file}}`
+ * naming the checked answer file of a dependency that declares an answer
+ * (`{answer: null}` when it has no checked answer), and `{}` for a dependency
+ * that declares none, so v2 tasks keep their bytes. The file, not the value:
+ * the task stays small and the worker reads what it needs.
+ */
+export function dependencyAnswerField(state, declared, runtime) {
+  if (declared?.answer === undefined) return {};
+  const current = runtime?.answer;
+  if (!current) return { answer: null };
+  const file = state.attempts.find((attempt) => attempt.id === current.attemptId)?.answer?.file ?? null;
+  return { answer: { attemptId: current.attemptId, file } };
+}
+
+/**
  * The result envelope's `answer` for one step: present only on a step that
  * declares an answer (so v2 and answer-less envelopes keep their shape), the
  * step's current checked answer `{attemptId, value}`, or null when no attempt

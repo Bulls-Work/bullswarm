@@ -637,3 +637,26 @@ test('an answer above the size cap is refused: nothing large is stored on the at
   assert.ok(statSync(join(run.runDir, 'state.json')).size < ANSWER_MAX_BYTES, 'state.json does not carry the answer');
 });
 
+test('a dependent step is handed its dependency\'s checked answer file beside its output file', async (t) => {
+  const f = v3Fixture(t);
+  const seen = [];
+  const program = {
+    schemaVersion: PROGRAM_V3_SCHEMA_VERSION,
+    steps: [
+      oneStepV3().steps[0],
+      { id: 'report', dependsOn: ['count'], prompt: 'Report the count.' },
+      { id: 'note', dependsOn: ['report'], prompt: 'Write a note about the report.' },
+    ],
+  };
+  const run = await launchV3(f, program, answeringDispatch({ answers: [{ count: 1 }], replies: ['Counted.', 'Reported.', 'Noted.'], seen }));
+  assert.equal(run.result.status, 'completed', run.result.reason);
+  const artifactsOf = (task) => JSON.parse(/Dependency artifacts:\n(.*)/.exec(task)[1]);
+  const [countDep] = artifactsOf(seen[1].task);
+  assert.equal(countDep.actionId, 'count');
+  assert.deepEqual(countDep.answer, { attemptId: 'count-1', file: join(run.runDir, 'answer-count-attempt-1.json') });
+  assert.deepEqual(JSON.parse(readFileSync(countDep.answer.file, 'utf8')), { count: 1 });
+  const [reportDep] = artifactsOf(seen[2].task);
+  assert.equal(reportDep.actionId, 'report');
+  assert.equal(Object.hasOwn(reportDep, 'answer'), false, 'a dependency that declares no answer adds no key');
+});
+

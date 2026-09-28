@@ -46,7 +46,7 @@ import { evidenceBriefLines, evidenceItemTimeoutSec, rewriteEvidenceCwd } from '
 import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
 import { STAGE3_RUN_FEATURES, isProgramV3Run, readRunFeatures, repairLoopApplies, runFeatureFlags, withProgramFormat, writeRunFeatures } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
-import { settleStepAnswer, stepAnswerHooks } from './answers.js';
+import { dependencyAnswerField, settleStepAnswer, stepAnswerHooks } from './answers.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
@@ -1079,7 +1079,7 @@ function dependencyArtifacts(state, action) {
   return action.dependsOn.map((id) => {
     const runtime = actionState(state, id);
     const declared = definition(state, id);
-    const entry = { actionId: id, outputFile: runtime?.outputFile ?? null, artifactIds: clone(runtime?.artifactIds ?? []) };
+    const entry = { actionId: id, outputFile: runtime?.outputFile ?? null, artifactIds: clone(runtime?.artifactIds ?? []), ...dependencyAnswerField(state, declared, runtime) };
     // A digest already condensed other actions' outputs. Name those sources
     // (one level is enough) so a consumer handed the digest can still drill
     // down to a raw artifact when the condensation is not sufficient.
