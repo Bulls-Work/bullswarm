@@ -18,6 +18,7 @@ import { applyV2PlannerResponse, validateV2PlannerResponse } from '../src/workfl
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { readEvents } from '../src/workflow/events.js';
+import { applyV2Revision, exportV2Plan, planV2Revision } from '../src/workflow/v2-revision.js';
 import { STAGE3_RUN_FEATURES, readRunFeatures, repairLoopApplies } from '../src/workflow/run-features.js';
 import {
   PROGRAM_V3_SCHEMA_VERSION, implicitV3Requirements, isProgramV3, normaliseProgramV3,
@@ -514,4 +515,44 @@ test('plan validate accepts a v3 program with gates and loops; goal refuses to l
   assert.match(goal.stdout + goal.stderr, /gates and loops arrive in the next build/);
   assert.equal(existsSync(join(home, 'workflows')) && execFileSync('ls', [join(home, 'workflows')], { encoding: 'utf8' }).trim().length > 0, false, 'nothing launched');
   assert.equal(dirname(programFile), root);
+});
+
+// --- revisions of a v3 run (step rerun and step accept use this path) --------
+
+test('a v3 run exports as v3; a revision may rerun or accept its steps, never add, change or remove one', async (t) => {
+  const f = v3Fixture(t);
+  const run = await launchV3(f, oneStepV3(), answeringDispatch({ answers: [{ count: 1 }] }));
+  assert.equal(run.result.status, 'completed', run.result.reason);
+  const state = structuredClone(run.state);
+  const exported = exportV2Plan(state);
+  assert.equal(exported.program.schemaVersion, PROGRAM_V3_SCHEMA_VERSION);
+  assert.deepEqual(exported.program.actions, state.program.actions);
+  assert.deepEqual(exported.program.control, { gates: [], loops: [] });
+
+  const unchanged = planV2Revision(state, { ...exported });
+  assert.equal(unchanged.ok, false);
+  assert.match(unchanged.issues[0], /changes nothing/);
+
+  const rerun = planV2Revision(state, { ...exported, rerun: ['count'] });
+  assert.equal(rerun.ok, true, JSON.stringify(rerun.issues));
+  assert.deepEqual(rerun.changes.rerun, ['count']);
+  applyV2Revision(state, rerun, { request: { id: 'rev-v3rerun-000001', source: 'step-rerun', summary: 'step rerun count' }, at: new Date().toISOString() });
+  const runtime = state.actions.find((item) => item.id === 'count');
+  assert.equal(runtime.status, 'pending');
+  assert.equal(runtime.answer, undefined, 'a rerun clears the superseded answer');
+  assert.equal(state.program.schemaVersion, PROGRAM_V3_SCHEMA_VERSION);
+  assert.deepEqual(state.program.control, { gates: [], loops: [] });
+  validateV2DurableState(state);
+
+  const fresh = structuredClone(run.state);
+  const edits = [
+    { ...exported, program: { ...exported.program, actions: [{ ...exported.program.actions[0], prompt: 'Count again.' }] } },
+    { ...exported, program: { ...exported.program, actions: [...exported.program.actions, { ...exported.program.actions[0], id: 'more', purpose: 'more' }] } },
+    { ...exported, program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: exported.program.actions } },
+  ];
+  for (const request of edits) {
+    const refused = planV2Revision(fresh, request);
+    assert.equal(refused.ok, false);
+    assert.ok(refused.issues.some((issue) => /plan revise|schemaVersion/.test(issue)), JSON.stringify(refused.issues));
+  }
 });

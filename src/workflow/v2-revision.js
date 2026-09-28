@@ -36,6 +36,7 @@ import { deriveV2LiveStages } from './v2-presentation.js';
 import * as v2State from './v2-state.js';
 import { v2LiveProgramRuntime, validateV2DurableState } from './v2-state.js';
 import { revisedVerifyRounds } from './verify-rounds.js';
+import { desiredActionsV3, exportedProgramV3, isV3Revision } from './revision-v3.js';
 
 export const V2_REVISION_SCHEMA_VERSION = 'bullswarm.workflow.revision.v1';
 const PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
@@ -325,7 +326,11 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
     issues.push(`the plan changed since revision ${request.baseRevision} (the run is now at revision ${state.program.revision}); export it again and reapply your edits`);
   }
   let desired = [];
-  try {
+  if (isV3Revision(state)) {
+    const v3 = desiredActionsV3(state, request.program, v2LiveProgramRuntime(state));
+    if (v3.issues) issues.push(...v3.issues);
+    else desired = v3.desired;
+  } else try {
     desired = validateActionProgram(request.program, v2LiveProgramRuntime(state)).actions;
   } catch (error) {
     issues.push(...(Array.isArray(error?.issues) ? error.issues : [error.message]));
@@ -430,6 +435,8 @@ export function applyV2Revision(state, planned, { request, at }) {
     });
     // Rerunning a step undoes an accept (D23); the history stays in state.revisions.
     delete runtime.acceptance;
+    // A v3 step's current answer belongs to the superseded attempts.
+    delete runtime.answer;
     if (redefined.has(id)) runtime.programRevision = revision;
   }
   for (const entry of planned.acceptances ?? []) {
@@ -532,15 +539,16 @@ export function revisionEventPayload(record) {
  */
 export function exportV2Plan(state, { pendingSteering = [] } = {}) {
   const removed = removedActionIds(state);
+  const live = state.program.actions.filter((action) => !removed.has(action.id));
   return {
     schemaVersion: V2_REVISION_SCHEMA_VERSION,
     baseRevision: state.program.revision,
     summary: '',
     rerun: [],
     steeringIds: pendingSteering.map((entry) => entry.id),
-    program: {
+    program: isV3Revision(state) ? exportedProgramV3(state, live) : {
       schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,
-      actions: state.program.actions.filter((action) => !removed.has(action.id)).map(clone),
+      actions: live.map(clone),
     },
   };
 }
