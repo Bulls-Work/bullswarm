@@ -92,8 +92,9 @@ export function deriveV2DependencyStages(actions, revision) {
 // revision left alone keeps its id, and a changed level gets a new one, so a
 // watcher reports each distinct level once.
 function liveStageGroups(state) {
-  // A v3 run's stages are its declared phases (v3-phases.js).
-  if (isV3State(state)) return v3Stages(state);
+  // A v3 run's stages are its declared phases (v3-phases.js), stored in the
+  // stage record's own fields: the phase is in the label.
+  if (isV3State(state)) return v3Stages(state).map(({ id, label, revision, actionIds }) => ({ id, label, revision, actionIds }));
   const removed = new Set((state.actions ?? []).filter((action) => action.status === 'removed').map((action) => action.id));
   const live = (state.program?.actions ?? []).filter((action) => !removed.has(action.id));
   return deriveV2DependencyStages(live, 1).map((stage, index) => ({

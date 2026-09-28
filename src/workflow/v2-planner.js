@@ -16,6 +16,7 @@ import { extractScoutUnitIds } from './goal.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { REASONING_LEVELS } from '../lib/reasoning.js';
 import { PROGRAM_V3_SCHEMA_VERSION, isProgramV3, programV3AcceptanceIssues, storedProgramV3 } from './program-v3.js';
+import { isV3State } from './v3-phases.js';
 
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 
@@ -694,7 +695,8 @@ export function applyV2PlannerResponse(state, response, options = {}) {
     outputFile: null, artifactIds: [], lastFailure: null,
   });
   // A revised program is one live graph; appended actions regroup its levels.
-  if (isLiveProgram(next)) next.presentation.stages = deriveV2LiveStages(next, { revision, at: new Date().toISOString() });
+  // A v3 program's stages are its phases from the first revision on.
+  if (isLiveProgram(next) || isV3State(next)) next.presentation.stages = deriveV2LiveStages(next, { revision, at: new Date().toISOString() });
   else next.presentation.stages.push(...(isProgramWorkflow(next) ? deriveV2DependencyStages : deriveV2PresentationStages)(accepted.program.actions, revision));
   next.lifecycle.status = 'running';
   return next;
