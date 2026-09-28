@@ -6,6 +6,7 @@ import { DELIVERABLE_TYPES, RETRY_FACTS, evidenceResultsIssues } from './step-vo
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { PROGRAM_V3_SCHEMA_VERSION, validateStoredProgramV3 } from './program-v3.js';
+import { writeJsonAtomic } from '../lib/fsjson.js';
 
 export const V2_GOAL_SCHEMA_VERSION = 'bullswarm.workflow.goal.v2';
 export const V2_STATE_SCHEMA_VERSION = 'bullswarm.workflow.state.v2';
@@ -1498,3 +1499,15 @@ export function assertV2Resume(goalDocument, state, { runId, shortId } = {}) {
 }
 
 export const createV2State = createV2DurableState;
+
+// The run's durable state file, and its checked atomic write.
+export function statePath(runDir) { return join(runDir, 'state.json'); }
+
+export function writeRunState(runDir, state) {
+  serializeV2DurableState(state);
+  writeJsonAtomic(statePath(runDir), state);
+}
+
+// A step's runtime record and its current definition in the program.
+export function actionState(state, id) { return state.actions.find((entry) => entry.id === id); }
+export function actionDefinition(state, id) { return state.program.actions.find((entry) => entry.id === id); }

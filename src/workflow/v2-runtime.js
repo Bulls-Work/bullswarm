@@ -19,9 +19,11 @@ import { applyEvidence, invalidateRequirements } from './ledger.js';
 import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
 import { scheduleV2Actions } from './v2-scheduler.js';
 import {
-  assertV2Resume, createV2DurableState, deserializeV2DurableState,
-  serializeV2DurableState, validateV2GoalDocument, v2PlannerMode,
+  actionDefinition, actionState, assertV2Resume, createV2DurableState, deserializeV2DurableState,
+  serializeV2DurableState, statePath, validateV2GoalDocument, v2PlannerMode, writeRunState,
 } from './v2-state.js';
+import { V2_TERMINAL_STATUSES } from './status.js';
+import { clone } from '../lib/clone.js';
 import {
   applyV2PlannerResponse, buildPlannerPreflight, buildV2PlannerPrompt,
   createV2PlannerContext, createV2PlannerRequest, readPlannerCandidate, plannerCorrectionRequest,
@@ -69,7 +71,6 @@ import {
 } from './metrics.js';
 export { preferredUsage } from './usage-preference.js';
 
-const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const ACTIVE_RUNS = new Set();
 const DEFAULTS = Object.freeze({
   concurrency: 4,
@@ -215,7 +216,7 @@ export function readCallerPlannerRequest({ bullswarmDir, runId, refresh = true }
   if (!existsSync(path)) throw new Error(`run ${runId} has no durable state`);
   const state = withV2Cancellation(deserializeV2DurableState(readFileSync(path, 'utf8')), runDir);
   const awaiting = state.planner.awaiting;
-  if (!awaiting || TERMINAL.has(state.lifecycle.status)) return { state, runDir, awaiting: null, request: null, refreshed: false, pendingSteering: [] };
+  if (!awaiting || V2_TERMINAL_STATUSES.has(state.lifecycle.status)) return { state, runDir, awaiting: null, request: null, refreshed: false, pendingSteering: [] };
   let request = null;
   try { request = JSON.parse(readFileSync(awaiting.requestPath, 'utf8')); } catch { request = null; }
   const pendingSteering = peekSteering(state, runDir);
@@ -241,7 +242,7 @@ function submitCallerPlannerResponseLocked({ bullswarmDir, runId, response, onEv
   if (!existsSync(path)) throw new Error(`run ${runId} has no durable state`);
   const state = withV2Cancellation(deserializeV2DurableState(readFileSync(path, 'utf8')), runDir);
   if (v2PlannerMode(state) !== 'caller') throw new Error(`run ${runId} uses a dispatched Workflow Planner; only caller-planner runs accept submitted programs`);
-  if (TERMINAL.has(state.lifecycle.status)) throw new Error(`run ${runId} is already terminal (${state.lifecycle.status})`);
+  if (V2_TERMINAL_STATUSES.has(state.lifecycle.status)) throw new Error(`run ${runId} is already terminal (${state.lifecycle.status})`);
   if (!state.planner.awaiting) throw new Error(`run ${runId} is not waiting for a planner submission (planner status ${state.planner.status}, workflow ${state.lifecycle.status})`);
   const cancellationFile = join(runDir, 'cancellation.json');
   if (existsSync(cancellationFile)) state.cancellation = JSON.parse(readFileSync(cancellationFile, 'utf8'));
@@ -321,11 +322,6 @@ function tryRunLease(runDir) {
   try { return acquireKernelLease(runDir); } catch { return null; }
 }
 
-function writeRunState(runDir, state) {
-  serializeV2DurableState(state);
-  writeJsonAtomic(statePath(runDir), state);
-}
-
 function readRunStateLoose(runDir) {
   try { return JSON.parse(readFileSync(statePath(runDir), 'utf8')); } catch { return null; }
 }
@@ -333,7 +329,7 @@ function readRunStateLoose(runDir) {
 // An act step whose current attempt a cancellation stopped: its worker had
 // started, so it may have acted (D32).
 function actStoppedAfterStart(state, runtime) {
-  if (roleOf(definition(state, runtime.id)) !== 'act') return false;
+  if (roleOf(actionDefinition(state, runtime.id)) !== 'act') return false;
   const last = state.attempts.findLast((attempt) => attempt.actionId === runtime.id && attempt.ordinal > (runtime.supersededAttempts ?? 0));
   return last?.status === 'cancelled';
 }
@@ -348,7 +344,7 @@ function commitRevisionUnderLease(runDir, request, { now }) {
   const at = now();
   const token = state.shortId ?? state.runId;
   const cancelFile = join(runDir, 'cancellation.json');
-  if (!TERMINAL.has(state.lifecycle.status) && existsSync(cancelFile) && JSON.parse(readFileSync(cancelFile, 'utf8'))?.requested) {
+  if (!V2_TERMINAL_STATUSES.has(state.lifecycle.status) && existsSync(cancelFile) && JSON.parse(readFileSync(cancelFile, 'utf8'))?.requested) {
     return { status: 'rejected', record: { issues: [`the run has a pending cancellation; finalize it with bullswarm workflow cancel ${token} before revising`] }, state, reopened: null };
   }
   const features = runFeatureFlags(readRunFeatures(runDir));
@@ -365,7 +361,7 @@ function commitRevisionUnderLease(runDir, request, { now }) {
   const committed = commitV2Revision(state, planned, { request, runDir, at });
   applyRevisionLoopBudget(state, request, hadActions, features);
   let reopened = null;
-  if (TERMINAL.has(previousStatus)) {
+  if (V2_TERMINAL_STATUSES.has(previousStatus)) {
     // A caller's plan replaces what a planner or scout stopped on a limit
     // would have given: `workflow resume` no longer runs either again.
     delete state.planner.limitStop;
@@ -441,7 +437,7 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
   if (!lease) return { status: 'live' };
   try {
     const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
-    if (!TERMINAL.has(state.lifecycle.status)) return { status: 'not-finished', state };
+    if (!V2_TERMINAL_STATUSES.has(state.lifecycle.status)) return { status: 'not-finished', state };
     const plan = v2RetryPlan(state);
     const steps = isProgramWorkflow(state) ? plan.rerun : [];
     const stopped = state.lifecycle.status === 'partial' && runFeatureFlags(readRunFeatures(runDir)).failureRule
@@ -533,7 +529,7 @@ export async function reviseV2Program({ bullswarmDir, runId, request, waitMs = 1
 export async function pauseV2Run({ bullswarmDir, runId, mode = 'drain', source = 'cli', waitMs = 0, pollMs = 250, now = () => new Date().toISOString() } = {}) {
   const runDir = runDirFor(bullswarmDir, runId);
   const current = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
-  if (TERMINAL.has(current.lifecycle.status)) throw new Error(`run ${runId} is already terminal (${current.lifecycle.status})`);
+  if (V2_TERMINAL_STATUSES.has(current.lifecycle.status)) throw new Error(`run ${runId} is already terminal (${current.lifecycle.status})`);
   if (current.lifecycle.status === 'paused') return { status: 'paused', already: true, state: current, appliedBy: null };
   const request = { requested: true, requestedAt: now(), mode: mode === 'now' ? 'now' : 'drain', source };
   writeJsonAtomic(join(runDir, PAUSE_FILE), request);
@@ -555,7 +551,7 @@ export async function pauseV2Run({ bullswarmDir, runId, mode = 'drain', source =
   for (;;) {
     const state = readRunStateLoose(runDir);
     if (state?.lifecycle?.status === 'paused') return { status: 'paused', already: false, state, appliedBy: 'kernel' };
-    if (TERMINAL.has(state?.lifecycle?.status)) return { status: state.lifecycle.status, already: false, state, appliedBy: 'kernel' };
+    if (V2_TERMINAL_STATUSES.has(state?.lifecycle?.status)) return { status: state.lifecycle.status, already: false, state, appliedBy: 'kernel' };
     if (Date.now() >= deadline) return { status: 'pausing', already: false, state, appliedBy: 'kernel' };
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
@@ -580,7 +576,6 @@ export function unpauseV2Run({ bullswarmDir, runId, source = 'cli' } = {}) {
     return { status: 'unpaused', kernelAlive: false, state, source };
   } finally { lease.release(); }
 }
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
 function settings(state) { return { ...DEFAULTS, ...(state.config.settings ?? {}) }; }
 
@@ -612,7 +607,6 @@ function limitStopReason(who, { failureKind, retryAfter = null, why = null } = {
     + `, plan it yourself with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run`;
 }
 
-function statePath(runDir) { return join(runDir, 'state.json'); }
 function goalPath(runDir) { return join(runDir, 'goal.json'); }
 
 // When the step's current definition began: the last applied revision that
@@ -635,7 +629,7 @@ function definitionStartedAt(state, actionId) {
 // before its snapshot. An isolated dispatch starts from a fresh copy of the
 // main tree, so only integrated (succeeded) work is on its disk.
 function earlierWorkFor(state, actionId, { isolated = false } = {}) {
-  const hasPaths = (definition(state, actionId)?.deliverable?.paths?.length ?? 0) > 0;
+  const hasPaths = (actionDefinition(state, actionId)?.deliverable?.paths?.length ?? 0) > 0;
   const since = definitionStartedAt(state, actionId);
   let produced = false;
   let unknown = false;
@@ -999,8 +993,6 @@ export function reconcileSubscriptionLedger(state) {
   return totals;
 }
 
-function actionState(state, id) { return state.actions.find((entry) => entry.id === id); }
-function definition(state, id) { return state.program.actions.find((entry) => entry.id === id); }
 
 function initializeNewActions(state) {
   const known = new Set(state.actions.map((action) => action.id));
@@ -1016,7 +1008,7 @@ function initializeNewActions(state) {
 function dependencyArtifacts(state, action) {
   return action.dependsOn.map((id) => {
     const runtime = actionState(state, id);
-    const declared = definition(state, id);
+    const declared = actionDefinition(state, id);
     const entry = { actionId: id, outputFile: runtime?.outputFile ?? null, artifactIds: clone(runtime?.artifactIds ?? []), ...dependencyAnswerField(state, declared, runtime) };
     // A digest already condensed other actions' outputs. Name those sources
     // (one level is enough) so a consumer handed the digest can still drill
@@ -1458,7 +1450,7 @@ function reconcileResume(state, at, runDir) {
   for (const attempt of state.attempts) if (attempt.status === 'running') {
     const checking = evidenceRunning(attempt);
     clearEvidenceRunning(attempt);
-    const declared = definition(state, attempt.actionId);
+    const declared = actionDefinition(state, attempt.actionId);
     if (checking && roleOf(declared) === 'act') {
       Object.assign(attempt, {
         status: 'failed', finishedAt: at, failureKind: 'failed-evidence',
@@ -1490,7 +1482,7 @@ function reconcileResume(state, at, runDir) {
       Object.assign(action, { status: 'failed', finishedAt: at, lastFailure: { kind: 'failed-evidence', message: toCaller.get(action.id) } });
       continue;
     }
-    const declared = definition(state, action.id);
+    const declared = actionDefinition(state, action.id);
     const completedAttempt = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded');
     if (!completedAttempt && declared?.affects?.length) {
       const stillFresh = declared.affects.some((id) => state.ledger.requirements[id]?.status === 'passed');
@@ -1515,7 +1507,7 @@ function reconcileResume(state, at, runDir) {
     }
   }
   clearWaitingFor(state); // a parked v3 run (gates-loops.js) runs again
-  if (!TERMINAL.has(state.lifecycle.status)) state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
+  if (!V2_TERMINAL_STATUSES.has(state.lifecycle.status)) state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
   return [...toCaller].map(([actionId, why]) => ({ actionId, why }));
 }
 
@@ -1582,7 +1574,7 @@ async function runV2Kernel({
       if (published.runId !== id || published.shortId !== state.shortId || published.intentId !== state.intentId) {
         throw new Error(`stable V2 result for ${id} does not match its durable state`);
       }
-      if (!TERMINAL.has(state.lifecycle.status)) {
+      if (!V2_TERMINAL_STATUSES.has(state.lifecycle.status)) {
         state.lifecycle.status = published.status;
         state.lifecycle.finishedAt = published.finishedAt;
         state.lifecycle.resultFile = durableResultPath;
@@ -1597,7 +1589,7 @@ async function runV2Kernel({
         return { runId: id, shortId: state.shortId, runDir, state: clone(state), result: published };
       }
     }
-    if (TERMINAL.has(state.lifecycle.status)) {
+    if (V2_TERMINAL_STATUSES.has(state.lifecycle.status)) {
       if (!existsSync(durableResultPath)) throw new Error(`terminal V2 run ${id} is missing its stable result envelope`);
       return {
         runId: id, shortId: state.shortId, runDir, state: clone(state),
@@ -2259,7 +2251,7 @@ async function runV2Kernel({
     const writerPools = review
       ? [...new Set(state.attempts
         .filter((attempt) => attempt.status === 'succeeded'
-          && (definition(state, attempt.actionId)?.affects ?? [])
+          && (actionDefinition(state, attempt.actionId)?.affects ?? [])
             .some((id) => action.evidenceFor.includes(id)))
         .map((attempt) => attempt.pool)
         .filter(Boolean))]
@@ -3288,14 +3280,14 @@ async function runV2Kernel({
       persist();
       if (programExecution) {
         for (const actionId of selected) {
-          const task = runActionSafely(definition(state, actionId)).finally(() => {
+          const task = runActionSafely(actionDefinition(state, actionId)).finally(() => {
             activeTasks.delete(actionId);
           });
           activeTasks.set(actionId, task);
         }
         await waitForProgress();
       } else {
-        await Promise.all(selected.map((actionId) => runActionSafely(definition(state, actionId))));
+        await Promise.all(selected.map((actionId) => runActionSafely(actionDefinition(state, actionId))));
       }
     }
   } finally {
@@ -3334,7 +3326,7 @@ function markKernelStopped(runDir, lease, error) {
     lease.assertOwner();
     if (!existsSync(statePath(runDir))) return;
     const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
-    if (TERMINAL.has(state.lifecycle.status) || ['interrupted', 'paused'].includes(state.lifecycle.status)) return;
+    if (V2_TERMINAL_STATUSES.has(state.lifecycle.status) || ['interrupted', 'paused'].includes(state.lifecycle.status)) return;
     const message = String(error?.message ?? error).split(/\r?\n/, 1)[0].slice(0, 500) || 'unknown error';
     const at = new Date().toISOString();
     state.lifecycle.status = 'interrupted';

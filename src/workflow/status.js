@@ -21,3 +21,6 @@ export function isDeliveredWorkflowStatus(status) {
   // Keep replaying pre-qualification runs as delivered.
   return status === 'completed' || status === 'completed_with_concerns';
 }
+
+// The V2 kernel's own terminal lifecycle statuses.
+export const V2_TERMINAL_STATUSES = new Set(['completed', 'partial', 'cancelled', 'failed']);
