@@ -1,7 +1,7 @@
 // Per-attempt persisted event stream (JSONL) or plain stdout tail.
 //
 // Caps are core defaults; a connector may override them in eventStream.capture.
-// Byte budgets use Buffer.byteLength — BoundedCapture in watch.js counts
+// Byte budgets use Buffer.byteLength — BoundedCapture (bounded-capture.js) counts
 // characters, which is the wrong unit for these files.
 
 import { appendFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';

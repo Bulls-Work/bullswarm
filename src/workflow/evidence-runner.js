@@ -17,7 +17,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BoundedCapture } from '../lib/watch.js';
+import { BoundedCapture } from '../lib/bounded-capture.js';
 import { clipUtf8 } from '../lib/attempt-stream.js';
 
 export const EVIDENCE_MAX_ITEMS = 5;
