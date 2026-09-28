@@ -1438,10 +1438,15 @@ const workflowTuiText = rich({
 
 const workflowWatchText = rich({
   usage: 'bullswarm workflow watch <runId> [--until outcome|trouble] [--classic] [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next [--after <sequence>] [--since <iso-timestamp>]] [--jsonl] [--once] [--verbose]',
-  purpose: "Follow one V2 run by printing one attach line, then one line per notable event "
+  purpose: "Follow one run (v2 or v3) by printing one attach line, then one line per notable event "
     + '(action finished/failed/blocked/cancelled, evidence, stage completion, stall/recovery, planning, '
-    + 'cancellation) and staying silent while work is merely in progress. Plain `workflow watch <runId>` '
-    + 'follows until the outcome (a terminal status, a caller-planner wait, or an operator pause). '
+    + 'cancellation, and in a v3 run its gate and loop lines) and staying silent while work is merely in '
+    + 'progress. A v3 gate that starts waiting prints `⧖ gate <id> waiting · <note> · continue: bullswarm '
+    + 'workflow continue <shortId> <id>`, and a loop out of rounds prints `⧖ loop <id> out of rounds (<n> of '
+    + '<n>) · <condition> did not hold · continue: bullswarm workflow continue <shortId> <id> --rounds <n>`. '
+    + 'Plain `workflow watch <runId>` follows until the outcome (a terminal status, a v3 run parked `waiting` '
+    + 'at a gate or loop, a caller-planner wait, or an operator pause); a parked run prints `outcome: '
+    + 'waiting`, a `waiting:` line for each gate or loop, and the `continue` commands as `next:`. '
     + 'A usage-limit failure always '
     + 'prints, verbose or not: an `⚠ ... usage limit on <pool>` line, with `back at <time>` in it when the '
     + 'watch knows when the pool is back. In a run started by this version it ends `back to you` and a '
@@ -1468,15 +1473,17 @@ const workflowWatchText = rich({
     + 'file change while commands continue, the same command repeated, wall time over 3x the expected '
     + 'minutes) prints one `⚠ <step> looks stale: <reasons>` line; nothing is stopped, the caller decides '
     + '(`workflow step restart`). `--until outcome` prints only trouble lines (needs you, failed, rejected, '
-    + 'scout stopped, planner stopped, paused, stalled, stale, steering) and the outcome, and exits at the outcome; '
+    + 'scout stopped, planner stopped, paused, stalled, stale, steering, a gate waiting, a loop out of rounds) '
+    + 'and the outcome, and exits at the outcome; '
     + '`--until trouble` also exits at the first trouble line with a `next:` relaunch line. In a program '
     + 'run a failed step prints one needs-you block (what failed, each try, and your options: step rerun, '
-    + 'plan revise, take over, step accept); blocked dependents are listed inside the needs-you block as '
+    + 'change the step (v2: plan revise; v3: add steps with workflow add), take over, step accept); blocked '
+    + 'dependents are listed inside the needs-you block as '
     + '"waiting on this" and are not trouble of their own. Distinct from the full-screen tui and the '
     + 'machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
-    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale or steering line (a usage limit or no free pool is a needs-you block), or at a planner or preflight scout stopped on a usage limit; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
+    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale or steering line (a usage limit or no free pool is a needs-you block), at a gate waiting or a loop out of rounds in a v3 run, or at a planner or preflight scout stopped on a usage limit; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
     { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; V2 runs only; cannot combine with --next', default: 'off (event mode)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
     { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off in event mode, 60 with --classic' },

@@ -430,19 +430,34 @@ test('workflow goal help says a usage limit stops the dispatched planner or the 
 
 test('watch --until lists needs you as trouble (a usage limit is one), and blocked dependents inside the block', () => {
   const watch = helpText(['workflow', 'watch']);
-  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), or at a planner or preflight scout stopped on a usage limit;/);
+  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), at a gate waiting or a loop out of rounds in a v3 run, or at a planner or preflight scout stopped on a usage limit;/);
   assert.match(watch, /blocked dependents are listed inside the needs-you block/);
   // A marked run's scout stopped by a usage limit has its own line, and the
   // usage-limit line names no pause: nothing pauses a pool.
   const flatWatch = watch.replace(/\s+/g, ' ');
   assert.ok(flatWatch.includes('`⚠ preflight scout stopped · <label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run has your program'));
-  assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped, paused, stalled, stale, steering)'));
+  assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped, paused, stalled, stale, steering, a gate waiting, a loop out of rounds)'));
   assert.ok(flatWatch.includes('A dispatched planner stopped the same way prints `✗ planner stopped · <label> on <pool> · back at <time>` and the run finishes; any other planner failure still prints `× planning attempt rejected · <why>`.'));
   assert.ok(flatWatch.includes('and the block carries `back at <time>` and a `wait for it` rerun when the reset is known'));
   assert.ok(!flatWatch.includes('not paused') && !flatWatch.includes('paused until <deadline>'));
   // No step waits for a pool, so there is no waiting line to wake on or replay at attach.
   assert.doesNotMatch(watch, /waiting \(more than 30 min\)/);
   assert.doesNotMatch(watch, /already waiting/);
+});
+
+test('watch --help covers v3 runs: gate and loop lines, their wake-ups, the waiting outcome and workflow add', () => {
+  const watch = helpText(['workflow', 'watch']);
+  const flat = watch.replace(/\s+/g, ' ');
+  assert.doesNotMatch(watch, /Follow one V2 run/);
+  assert.ok(flat.includes('Follow one run (v2 or v3)'));
+  assert.ok(flat.includes('`⧖ gate <id> waiting · <note> · continue: bullswarm workflow continue <shortId> <id>`'));
+  assert.ok(flat.includes('`⧖ loop <id> out of rounds (<n> of <n>) · <condition> did not hold · continue: bullswarm workflow continue <shortId> <id> --rounds <n>`'));
+  assert.ok(flat.includes('a v3 run parked `waiting` at a gate or loop'));
+  assert.ok(flat.includes('`outcome: waiting`'));
+  // --until trouble wakes on a waiting gate and a loop out of rounds.
+  assert.match(flat, /--until outcome\|trouble [^|]*a gate waiting or a loop out of rounds/);
+  // A v3 run's needs-you block offers add steps, not plan revise.
+  assert.ok(flat.includes('your options: step rerun, change the step (v2: plan revise; v3: add steps with workflow add), take over, step accept'));
 });
 
 test('goal and plan validate --help name program.v3, and a gate or a loop out of rounds stops a run for you', () => {
