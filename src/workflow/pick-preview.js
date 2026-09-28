@@ -9,7 +9,7 @@
 
 import { join } from 'node:path';
 
-import { argvWithModel } from '../lib/watch.js';
+import { argvWithModel } from '../lib/worker-argv.js';
 import { expiringSoonView, pickPool } from '../lib/route.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
 import { expectedMinutesFromSpendModel } from '../lib/assignments.js';

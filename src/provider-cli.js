@@ -29,7 +29,8 @@ import {
   loadProviders, loadTemplates, ownsPoolName, providerDirs, providerFor,
   providersConfigPath, readProvidersConfig,
 } from './lib/providers.js';
-import { argvWithModel, watchOnce } from './lib/watch.js';
+import { watchOnce } from './lib/watch.js';
+import { argvWithModel } from './lib/worker-argv.js';
 import { atomicWriteFileSync } from './lib/fsjson.js';
 import { loadState } from './lib/state.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';

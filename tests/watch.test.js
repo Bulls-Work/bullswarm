@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, realpathSync,
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { artifactBesideTask, attemptCapture, watchOnce, argvWithModel, runDelegate } from '../src/lib/watch.js';
+import { artifactBesideTask, attemptCapture, watchOnce, runDelegate } from '../src/lib/watch.js';
+import { argvWithModel } from '../src/lib/worker-argv.js';
 import { BoundedCapture } from '../src/lib/bounded-capture.js';
 import { providerErrorRecords } from '../src/lib/provider-errors.js';
 import { parseQuotaResetAt } from '../src/lib/quota.js';

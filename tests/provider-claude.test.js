@@ -25,7 +25,8 @@ import { discoverConnectorModels } from '../src/lib/strategy.js';
 import { readUsage as readCodexUsage } from '../src/providers/codex/provider.mjs';
 import { readUsage as readGrokUsage } from '../src/providers/grok/provider.mjs';
 import { loadProviders, REPO_ROOT } from '../src/lib/providers.js';
-import { watchOnce, workerEnv } from '../src/lib/watch.js';
+import { watchOnce } from '../src/lib/watch.js';
+import { workerEnv } from '../src/lib/worker-argv.js';
 import { childDepthEnv } from '../src/lib/state.js';
 
 const FIRST_CLASS = join(REPO_ROOT, 'src', 'providers');

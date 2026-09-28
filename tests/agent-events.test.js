@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
 import { createAttemptStreamSink } from '../src/lib/attempt-stream.js';
-import { argvWithModel } from '../src/lib/watch.js';
+import { argvWithModel } from '../src/lib/worker-argv.js';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 // A first-class template ships in src/providers/, a contrib one in providers/contrib/.
