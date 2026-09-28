@@ -887,7 +887,7 @@ function summaryBand(body, model, opts) {
   const keys = overview?.keys ?? null;
   if (!keys) return;
   const projects = model.stats?.projects ?? null;
-  const verified = (overview.breakdown?.projects ?? []).reduce((sum, row) => sum + (row.verified ?? 0), 0);
+  const verified = keys.verifiedRuns ?? (overview.breakdown?.projects ?? []).reduce((sum, row) => sum + (row.verified ?? 0), 0);
   const runs = keys.workflows ?? 0;
   // The period's spend through the shared money rule: the strict total when
   // every attempt was priced, else the recorded subtotal named with its

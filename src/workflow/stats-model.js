@@ -982,6 +982,11 @@ function heatCells(records, now) {
   };
 }
 
+/** A v2 workflow (not a v3 run, not a one-step run): what Home's verified share is of. */
+function isVerifiableWorkflow(record) {
+  return !isV3Record(record) && !isOneStepRecord(record);
+}
+
 function keyValues(records) {
   const pools = finishRows(buildRows(records, 'pool'), { rankBy: 'attempts' });
   const models = finishRows(buildRows(records, 'model'), { rankBy: 'attempts' });
@@ -1000,8 +1005,10 @@ function keyValues(records) {
     workflows: records.length,
     // Of those, the one-step runs (`bullswarm run`): the totals line names them apart.
     oneStepRuns: records.filter(isOneStepRecord).length,
-    // The v2 runs, the only ones a verification verdict applies to.
-    verifiableRuns: records.filter((record) => !isV3Record(record)).length,
+    // The v2 workflows, the only ones a verification verdict applies to: a
+    // one-step run is counted apart from workflows, so it is left out of both.
+    verifiableRuns: records.filter(isVerifiableWorkflow).length,
+    verifiedRuns: records.filter((record) => isVerifiableWorkflow(record) && record?.verified === true).length,
     activeDays: days.size,
     favouritePool: top(pools, 'attempts'),
     busiestProject: top(projects, 'runs'),

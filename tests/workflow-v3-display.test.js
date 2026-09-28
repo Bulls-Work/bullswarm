@@ -257,6 +257,22 @@ test('Stats and Home count one-step runs as runs, apart from workflows', () => {
   assert.doesNotMatch(stats, /1 workflow\b/);
 });
 
+test('Home: the verified share is of the v2 workflows it sits beside, never of one-step runs', () => {
+  const single = JSON.parse(readFileSync(join(SINGLE, 'rollup.json'), 'utf8'));
+  const v2 = (extra) => {
+    const record = { ...single, programFormat: 2, ...extra };
+    delete record.oneStep;
+    return record;
+  };
+  // A single run from before 0.37 (a v2 record of kind task) and one verified v2 workflow.
+  const task = v2({ runId: 'wf-legacy-task', shortId: 'task01', kind: 'task', source: 'run', verified: false });
+  const flow = v2({ runId: 'wf-v2-flow', shortId: 'v2flow', steps: { done: 3, total: 3 }, verified: true });
+  assert.equal(isOneStepRecord(task), true);
+  const model = dashboardModel(null, { rollups: [task, flow], nowMs: NOW, usage: { pools: [], assignments: [] }, days: [] });
+  const home = renderDashboardPage(model, { page: 'home', width: 200, height: 200, nowMs: NOW }).lines.map(visible).join('\n');
+  assert.match(home, /Runs: 1 · workflows 1 · verified 1 \(100%\)/, 'one verified workflow out of one');
+});
+
 test('workflow runs --json lists what a parked run waits at (the mod reads it)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-v3-runs-'));
   try {
