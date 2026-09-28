@@ -7,6 +7,7 @@ import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions }
 import { aggregateAttemptUsage } from './rollup.js';
 import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
+import { isProgramV3 } from './program-v3.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -310,7 +311,9 @@ function buildV2Handback(state, { unreadSteering = [], failureRule = false } = {
   }).filter(Boolean);
   const unresolvedRequirements = state.intent.requirements.map((intentRequirement) => {
     const requirement = state.ledger.requirements[intentRequirement.id];
-    if (requirement.status === 'passed') return null;
+    // A v3 run's implicit requirement is not mandatory and no step judges
+    // it: v3 reports facts per step, never a requirement gap.
+    if (requirement.status === 'passed' || (isProgramV3(state.program) && !requirement.mandatory)) return null;
     const latest = currentEvidence(state.ledger, requirement).at(-1);
     return {
       id: requirement.id,
@@ -348,6 +351,7 @@ function succeededProgramReason(state, count) {
   const loop = state.verifyLoop;
   const rounds = loop && loop.max > 1 && loop.rounds.some((round) => round.closedAt && round.failed.length)
     ? ` after verify rounds ${loop.rounds.length}/${loop.max}` : '';
+  if (isProgramV3(state.program)) return steps;
   if (hasPassingRequirementEvidence(state)) return `${steps} and every mandatory requirement passed its check`;
   const checked = new Set(state.program.actions.flatMap((action) => action.evidenceFor ?? []));
   if (!checked.size) return `${steps}, but no step checked the requirements, so the result is not verified`;

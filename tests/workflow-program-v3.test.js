@@ -300,6 +300,7 @@ test('the repair loop never runs for a v3 run: features.json says programFormat 
     dependencies: { refreshPools: async () => null, dispatchV2Action: scriptedDispatch() },
   });
   assert.equal(run.result.status, 'completed', run.result.reason);
+  assert.equal(run.result.reason, 'all 1 step succeeded', 'facts per step, never "not verified"');
   assert.deepEqual(readRunFeatures(run.runDir), { ...STAGE3_RUN_FEATURES, programFormat: 3 });
   assert.equal(run.state.verifyLoop, undefined, 'no repair-loop record on a v3 run');
   assert.equal(run.state.program.schemaVersion, PROGRAM_V3_SCHEMA_VERSION);
