@@ -6,6 +6,7 @@ lists every field. The kernel you run prints the same format, the rules it
 keeps and an example that validates:
 
 ```bash
+bullswarm workflow plan contract            # the goal is optional
 bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
 ```
 

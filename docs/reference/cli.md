@@ -895,7 +895,11 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 
 Print everything a caller planner needs to author a valid initial program: requirement IDs, read-only constraints, planning rules, generic action fields, validation, the response envelope, and one worked example.
 
+The goal is optional for the v3 contract: `bullswarm workflow plan contract` alone prints it with `goal: null` and `'<goal>'` in the validate and launch lines. `--v2` needs the goal, because its requirement IDs come from the goal text.
+
 ```bash
+# The v3 format; no goal needed.
+bullswarm workflow plan contract
 # Derive requirement IDs from numbered clauses and print the contract as JSON.
 bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json
 ```

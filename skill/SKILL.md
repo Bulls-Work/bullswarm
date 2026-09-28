@@ -149,8 +149,8 @@ new work in v3.
 ### Validate, then launch
 
 Keep the goal in a file and pass it as `"$(cat goal.txt)"` to both commands,
-so validate and launch get identical text. `plan contract` prints the format
-with an example that validates.
+so validate and launch get identical text. `bullswarm workflow plan contract`
+(no goal needed) prints the format with an example that validates.
 
 ```bash
 bullswarm workflow plan validate "$(cat goal.txt)" --cwd=<abs-dir> --program=<abs-dir>/plan.json

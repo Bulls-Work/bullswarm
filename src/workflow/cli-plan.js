@@ -109,14 +109,29 @@ function planningGoalDocument(opts, path, { allowProgram = false, programV3 = fa
   return { goal, doc };
 }
 
+// The goal a bare `plan contract` describes: the v3 format does not depend on
+// the goal, so the contract prints with goal null and '<goal>' in its commands.
+const PLACEHOLDER_GOAL = '<goal>';
+
 function planContract(opts) {
   if (opts.help) { console.log(helpText(['workflow', 'plan', 'contract'])); return 0; }
-  const built = planningGoalDocument(opts, ['workflow', 'plan', 'contract'], { programV3: opts.v2 !== true });
+  const bare = !opts.rest.join(' ').trim();
+  // A v2 contract numbers requirements from the goal text, so it needs one.
+  if (bare && opts.v2 === true) {
+    console.error('✗ --v2 needs the goal: its requirement IDs come from the goal text');
+    console.error(`usage: ${usageLine(['workflow', 'plan', 'contract'])}`);
+    return 2;
+  }
+  const built = planningGoalDocument(bare ? { ...opts, rest: [PLACEHOLDER_GOAL] } : opts, ['workflow', 'plan', 'contract'], { programV3: opts.v2 !== true });
   if (built.exit !== undefined) return built.exit;
   const { goal, doc } = built;
   const next = goalNextCommands(goal, doc.intent.cwd, opts);
   // v3 by default (contract-v3.js); --v2 prints the contract of old programs.
-  if (opts.v2 !== true) { console.log(JSON.stringify(buildV3Contract({ goal, cwd: doc.intent.cwd, next, workerReasoning: doc.config.workerRouting?.reasoning ?? null }), null, 2)); return 0; }
+  if (opts.v2 !== true) {
+    const contract = buildV3Contract({ goal: bare ? null : goal, cwd: doc.intent.cwd, next, workerReasoning: doc.config.workerRouting?.reasoning ?? null });
+    console.log(JSON.stringify(contract, null, 2));
+    return 0;
+  }
   const contract = buildV2PlannerContract(doc, { launchCommand: next.launch });
   // Advice, never a rule, and only when it applies: a goal that collapsed to a
   // single requirement gets one verdict for the whole thing, and any gap

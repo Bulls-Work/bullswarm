@@ -218,6 +218,23 @@ test('plan contract prints the v3 contract; --v2 prints the old one', (t) => {
   assert.equal(JSON.parse(old.stdout).program.schemaVersion, 'bullswarm.workflow.program.v2');
 });
 
+// QA37 (0.37.0): SKILL.md tells callers to run `plan contract` bare, which
+// exited 2 with a usage line. The v3 contract needs no goal.
+test('plan contract with no goal prints the v3 contract with goal null and placeholder next commands; --v2 still needs one', (t) => {
+  const f = fixture(t);
+  const out = run(f.bullswarmDir, ['workflow', 'plan', 'contract', '--cwd', f.workspace]);
+  assert.equal(out.status, 0, out.stderr);
+  const contract = JSON.parse(out.stdout);
+  assert.equal(contract.schemaVersion, 'bullswarm.workflow.contract.v3');
+  assert.equal(contract.goal, null);
+  assert.equal(normaliseProgramV3(contract.example).steps.length, contract.example.steps.length);
+  assert.match(contract.next.validate, /^bullswarm workflow plan validate '<goal>' --program plan\.json --cwd /);
+  assert.equal(existsSync(join(f.bullswarmDir, 'workflows')), false, 'contract must not create a run');
+  const old = run(f.bullswarmDir, ['workflow', 'plan', 'contract', '--cwd', f.workspace, '--v2']);
+  assert.equal(old.status, 2);
+  assert.match(old.stderr, /--v2 needs the goal/);
+});
+
 test('plan validate prints a launch line with the program file the caller named', (t) => {
   const f = fixture(t);
   const file = join(f.root, 'my-plan.json');

@@ -1175,14 +1175,14 @@ const workflowResumeText = rich({
 });
 
 const workflowPlanContractText = rich({
-  usage: 'bullswarm workflow plan contract "<goal>" [--cwd <dir>] [--json] [--v2]',
+  usage: 'bullswarm workflow plan contract ["<goal>"] [--cwd <dir>] [--json] [--v2]',
   purpose: 'Print everything you need to write a v3 program (bullswarm.workflow.program.v3) for a goal: the '
     + 'step, gate and loop fields, the one condition form a gate\'s when and a loop\'s until use, the '
     + 'evidence checks Bullswarm runs after a step, the rules the kernel keeps (a step passes by facts; one '
     + 'retry, then you; a usage limit comes to you at once), one worked example that validates, and the '
     + 'validate and launch commands. --v2 prints the old contract instead (requirement IDs, roles and kinds, '
     + 'the v2 action fields), for a v2 program; old programs still run.',
-  args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal; with --v2, numbering clauses 1. 2. 3. yields one requirement per clause' }],
+  args: [{ name: '"<goal>"', desc: 'optional for the v3 contract (without it the contract prints goal null and <goal> in its commands); the goal text exactly as it will be passed to workflow goal; --v2 needs it: numbering clauses 1. 2. 3. yields one requirement per clause' }],
   options: [
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in', default: 'current directory' },
     { flag: '--v2', desc: 'print the contract of a v2 program (bullswarm.workflow.program.v2) instead', default: 'off (the v3 contract)' },
@@ -1202,7 +1202,10 @@ const workflowPlanContractText = rich({
     'read-only — derives the contract from the goal text and local state; nothing is launched, dispatched, or written',
     'rejects launch-only and dispatched-planner flags (--program, --planner dispatched, --orchestrator*) so the contract cannot silently describe a different run',
   ],
-  examples: [{ cmd: 'bullswarm workflow plan contract "Fix the parser and update the docs" --cwd . --json' }],
+  examples: [
+    { cmd: 'bullswarm workflow plan contract', note: 'the v3 format, no goal needed' },
+    { cmd: 'bullswarm workflow plan contract "Fix the parser and update the docs" --cwd . --json' },
+  ],
   next: 'write plan.json, check it with bullswarm workflow plan validate "<same goal>" --cwd <dir> --program plan.json, then launch it with bullswarm workflow goal "<same goal>" --cwd <dir> --program plan.json',
 });
 

@@ -12,7 +12,8 @@ After this page you can author a `plan.json` that `bullswarm workflow plan valid
 Validate a file against the running kernel before launch. Exit 2 lists the `issues`; fix the file yourself. Exit 0 prints each step, gate and loop and the launch line.
 
 ```bash
-# The v3 format, its rules and an example that validates, as JSON.
+# The v3 format, its rules and an example that validates, as JSON (the goal is optional).
+bullswarm workflow plan contract
 bullswarm workflow plan contract "Make the acme tests pass" --cwd /abs/path/to/acme --json
 
 # The v2 contract: requirement IDs derived from the goal, rules, schema, example.
