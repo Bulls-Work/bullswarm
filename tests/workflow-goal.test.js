@@ -10,7 +10,7 @@ import {
   extractGoalRequirements, extractScoutUnitIds, goalProjectPath, readGoalProject,
   recordGoalProject, scoutPrompt,
 } from '../src/workflow/goal.js';
-import { shouldAutoWatchGoal } from '../src/workflow/cli.js';
+import { shouldAutoWatchGoal } from '../src/workflow/cli-goal.js';
 import { extractV2GoalConstraints } from '../src/workflow/cli-goal-document.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
