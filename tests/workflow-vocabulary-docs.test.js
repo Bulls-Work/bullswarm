@@ -543,10 +543,18 @@ test('the evidenceResults example in the result reference is a real runner resul
   }
 });
 
+// The newest changelog section with entries: `## Unreleased` while it has
+// some, else the release it was just dated into, so a release commit (which
+// leaves `## Unreleased` empty) still checks the text that ships.
+function latestChangelogSection(text) {
+  const sections = text.split(/\n(?=## )/).filter((part) => part.startsWith('## '));
+  return sections.find((part) => /^- /m.test(part)) ?? '';
+}
+
 test('the changelog describes what ships, without internal stage names', () => {
-  const text = read('CHANGELOG.md');
-  const unreleased = text.slice(text.indexOf('## Unreleased'), text.indexOf('\n## ', text.indexOf('## Unreleased') + 5));
-  assert.doesNotMatch(unreleased, /\bstage[ -]?[0-9]\b/i);
+  const latest = latestChangelogSection(read('CHANGELOG.md'));
+  assert.ok(latest.length > 1000, 'the newest changelog section is read');
+  assert.doesNotMatch(latest, /\bstage[ -]?[0-9]\b/i);
 });
 
 test('the e2e gate advice names the 600-second cap', () => {
@@ -928,7 +936,6 @@ test('no skill page, guide, reference or help text describes a step that waits f
     'printed only when each of them has a known return time', 'when every one is known', 'resuming before then fails it again at once',
     'while a return time is known', 'moves the step by itself',
   ];
-  const unreleased = (text) => text.slice(text.indexOf('## Unreleased'), text.indexOf('\n## ', text.indexOf('## Unreleased') + 1));
   const pages = [
     'skill/SKILL.md', 'skill/references/operations.md', 'skill/references/program.md', 'docs/reference/program.md',
     'docs/guide/workflows.md', 'docs/guide/observing.md', 'docs/guide/routing.md', 'docs/reference/cli.md',
@@ -938,9 +945,9 @@ test('no skill page, guide, reference or help text describes a step that waits f
     const text = flat(path);
     for (const phrase of stale) assert.ok(!text.includes(phrase), `${path}: ${phrase}`);
   }
-  const changelog = unreleased(read('CHANGELOG.md')).replace(/\s+/g, ' ');
-  assert.ok(changelog.length > 1000, 'the Unreleased section is read');
-  for (const phrase of stale) assert.ok(!changelog.includes(phrase), `CHANGELOG Unreleased: ${phrase}`);
+  const changelog = latestChangelogSection(read('CHANGELOG.md')).replace(/\s+/g, ' ');
+  assert.ok(changelog.length > 1000, 'the newest changelog section is read');
+  for (const phrase of stale) assert.ok(!changelog.includes(phrase), `CHANGELOG newest section: ${phrase}`);
   // The contract a planner reads, and the resume note, say the same.
   const contract = v2PlannerContractRules({ executionMode: 'program', plannerMode: 'caller' }).join(' ');
   for (const phrase of [...stale, 'A pool out of quota makes the step wait']) assert.ok(!contract.includes(phrase), `planner contract: ${phrase}`);

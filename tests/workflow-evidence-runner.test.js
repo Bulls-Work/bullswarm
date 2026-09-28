@@ -182,10 +182,10 @@ test('signal deaths the runner did not send are failures that name the signal', 
   const { runDir, outFile } = runFiles(t);
   const cwd = tempDir(t);
   const node = JSON.stringify(process.execPath);
-  const abort = await runStepEvidence([cmd(`${node} -e "process.abort()"`)], stepOptions(cwd, runDir, outFile, { env: { ...process.env, NODE_OPTIONS: '' } }));
+  const abort = await runStepEvidence([cmd(`exec ${node} -e "process.abort()"`)], stepOptions(cwd, runDir, outFile, { env: { ...process.env, NODE_OPTIONS: '' } }));
   assert.deepEqual(pick(abort.results[0], ['status', 'exit', 'signal', 'why']), { status: 'failed', exit: null, signal: 'SIGABRT', why: 'killed by SIGABRT' });
   assert.equal(abort.stopped, false);
-  const segv = await runStepEvidence([cmd(`${node} -e "process.kill(process.pid,'SIGSEGV')"`)], stepOptions(cwd, runDir, outFile));
+  const segv = await runStepEvidence([cmd(`exec ${node} -e "process.kill(process.pid,'SIGSEGV')"`)], stepOptions(cwd, runDir, outFile));
   assert.deepEqual(pick(segv.results[0], ['status', 'exit', 'signal', 'why']), { status: 'failed', exit: null, signal: 'SIGSEGV', why: 'killed by SIGSEGV' });
 
   const term = await runStepEvidence([cmd('sleep 10')], stepOptions(cwd, runDir, outFile, {

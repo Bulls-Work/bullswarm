@@ -2703,7 +2703,7 @@ test('evidence: a stop during a check records it stopped and cancelled, never fa
 
 test('evidence: a check that aborts on its own is a failed check, never a stop (E16)', { timeout: 30_000 }, async () => {
   await withEvidence('bs-ev-abort-', {
-    action: reportStep([{ type: 'command', cmd: `"${process.execPath}" -e "process.abort()"` }]),
+    action: reportStep([{ type: 'command', cmd: `exec "${process.execPath}" -e "process.abort()"` }]),
     watches: [answer('done\n')],
     plain: true,
     shouldCancel: () => false,
