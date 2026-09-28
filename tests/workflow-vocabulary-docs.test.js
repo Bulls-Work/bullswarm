@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -960,7 +960,9 @@ test('no skill page, guide, reference or help text describes a step that waits f
   // The contract a planner reads, and the resume note, say the same.
   const contract = v2PlannerContractRules({ executionMode: 'program', plannerMode: 'caller' }).join(' ');
   for (const phrase of [...stale, 'A pool out of quota makes the step wait']) assert.ok(!contract.includes(phrase), `planner contract: ${phrase}`);
-  assert.ok(!read('src/workflow/cli.js').includes('waited on a pool'));
+  for (const file of readdirSync(fileURLToPath(new URL('../src/workflow/', import.meta.url))).filter((name) => /^cli.*\.js$/.test(name))) {
+    assert.ok(!read(`src/workflow/${file}`).includes('waited on a pool'), file);
+  }
   const watch = helpText(['workflow', 'watch']);
   for (const phrase of stale) assert.ok(!watch.includes(phrase), `workflow watch --help: ${phrase}`);
   assert.ok(watch.includes('it ends `back to you` and a needs-you block follows'));
@@ -1301,8 +1303,8 @@ test('the pages give the reason a planner or scout stopped by a usage limit fini
   assert.equal(named(planner.summary.handback.options.retry, '<shortId>'), 'bullswarm workflow resume <shortId> after <time> (reruns the workflow planner)');
   assert.ok(flat('docs/guide/workflows.md').includes('`bullswarm workflow resume <shortId> after <time> (reruns the workflow planner)`'));
   assert.ok(flat('CHANGELOG.md').includes('`bullswarm workflow resume <run> after <time> (reruns the workflow planner)`'));
-  // What resume prints (cli.js reopenFinishedRun), as the pages quote it.
-  const cli = read('src/workflow/cli.js');
+  // What resume prints (cli-run-verbs.js wfResume), as the pages quote it.
+  const cli = read('src/workflow/cli-run-verbs.js');
   assert.ok(cli.includes('console.log(`✓ reopened the ${outcome.previousStatus} run ${id}; running again: ${running.join(\', \')}`);'));
   assert.ok(cli.includes('console.log(`  note: ${dispatch.who} stopped with its pool back at ${dispatch.retryAfter}; run before then, it can fail the same way again`);'));
   for (const path of ['skill/references/operations.md', 'docs/guide/workflows.md', 'docs/reference/cli.md', 'CHANGELOG.md']) {
