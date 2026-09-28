@@ -5,6 +5,7 @@
 // characters, which is the wrong unit for these files.
 
 import { appendFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
 // Chosen because none existed: the 180-char pane clip and the 32 MiB live
 // capture cap are the wrong units for a durable per-attempt file.
@@ -240,4 +241,35 @@ export function createAttemptStreamSink({
       return stdoutFile || null;
     },
   };
+}
+
+/**
+ * Sibling of a `task-<id>.md` file. Workflow attempts and single tasks share
+ * this name: `stream-<id>.jsonl`, `out-<id>.md`, `stdout-<id>.log`. A task
+ * file that does not use the `task-` prefix returns null so a test that
+ * writes a bare `task.md` does not grow extra capture files.
+ */
+export function artifactBesideTask(taskFile, kind, ext) {
+  if (typeof taskFile !== 'string' || !taskFile) return null;
+  const name = basename(taskFile);
+  const trimmed = name.startsWith('task-') ? name.slice(5).replace(/\.[^.]+$/, '') : '';
+  return trimmed ? join(dirname(taskFile), `${kind}-${trimmed}${ext}`) : null;
+}
+
+// The attempt's stream sink: the one the caller passed, else one for the
+// stream or stdout file it named (JSONL for an event-stream connector, the
+// stdout tail otherwise); null when it named neither.
+export function resolveAttemptStream(connector, opts = {}) {
+  if (opts.attemptStream) return opts.attemptStream;
+  const streamFile = opts.streamFile ?? null;
+  const stdoutFile = opts.stdoutFile ?? null;
+  if (!streamFile && !stdoutFile) return null;
+  const { capBytes, responseBytes } = captureLimits(connector.eventStream);
+  const jsonl = connector.eventStream?.format === 'jsonl';
+  return createAttemptStreamSink({
+    streamFile: jsonl ? streamFile : null,
+    stdoutFile: jsonl ? null : (stdoutFile ?? streamFile),
+    capBytes,
+    responseBytes,
+  });
 }

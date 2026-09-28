@@ -34,11 +34,11 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { judgeContent } from './verify.js';
 import * as usageLib from './usage.js';
 import { createAgentEventDecoder } from './agent-events.js';
-import { captureLimits, createAttemptStreamSink } from './attempt-stream.js';
+import { artifactBesideTask, resolveAttemptStream } from './attempt-stream.js';
 import { decideUsageLimit, findQuotaFailure } from './quota.js';
 import { spawnRetentionSweep } from './retention.js';
 import { findUpstreamAuthFailure } from './auth-signatures.js';
@@ -68,34 +68,6 @@ function toolOrCommandEvent(event) {
   const kind = `${event?.kind ?? ''} ${event?.providerType ?? ''}`
     .toLowerCase().replace(/[_-]/g, ' ');
   return /\btool\b|\bcommand\b|\bfunction\b|\bshell\b/.test(kind);
-}
-
-/**
- * Sibling of a `task-<id>.md` file. Workflow attempts and single tasks share
- * this name: `stream-<id>.jsonl`, `out-<id>.md`, `stdout-<id>.log`. A task
- * file that does not use the `task-` prefix returns null so a test that
- * writes a bare `task.md` does not grow extra capture files.
- */
-export function artifactBesideTask(taskFile, kind, ext) {
-  if (typeof taskFile !== 'string' || !taskFile) return null;
-  const name = basename(taskFile);
-  const trimmed = name.startsWith('task-') ? name.slice(5).replace(/\.[^.]+$/, '') : '';
-  return trimmed ? join(dirname(taskFile), `${kind}-${trimmed}${ext}`) : null;
-}
-
-function resolveAttemptStream(connector, opts = {}) {
-  if (opts.attemptStream) return opts.attemptStream;
-  const streamFile = opts.streamFile ?? null;
-  const stdoutFile = opts.stdoutFile ?? null;
-  if (!streamFile && !stdoutFile) return null;
-  const { capBytes, responseBytes } = captureLimits(connector.eventStream);
-  const jsonl = connector.eventStream?.format === 'jsonl';
-  return createAttemptStreamSink({
-    streamFile: jsonl ? streamFile : null,
-    stdoutFile: jsonl ? null : (stdoutFile ?? streamFile),
-    capBytes,
-    responseBytes,
-  });
 }
 
 /**

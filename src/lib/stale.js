@@ -29,7 +29,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { isAbsolute, join } from 'node:path';
-import { artifactBesideTask } from './watch.js';
+import { artifactBesideTask } from './attempt-stream.js';
 
 export const DEFAULT_STALE_THRESHOLDS = Object.freeze({
   quietSec: 600,

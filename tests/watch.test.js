@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, realpathSync,
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { artifactBesideTask, watchOnce, runDelegate } from '../src/lib/watch.js';
+import { watchOnce, runDelegate } from '../src/lib/watch.js';
+import { artifactBesideTask } from '../src/lib/attempt-stream.js';
 import { attemptCapture } from '../src/lib/attempt-usage.js';
 import { argvWithModel } from '../src/lib/worker-argv.js';
 import { BoundedCapture } from '../src/lib/bounded-capture.js';
