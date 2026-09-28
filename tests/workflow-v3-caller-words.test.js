@@ -118,7 +118,7 @@ test('a partial v3 run still hands back its options, and its restart line names 
   assert.ok(formatV2HandbackLines(summary).includes('your call:'));
 });
 
-test('a v3 step with a checked answer is proven by its answer, on its finished line and in the proof line', async (t) => {
+test('a v3 step whose answer passed its schema reads answer checked and is not counted as proven', async (t) => {
   const f = fixture(t);
   const program = {
     schemaVersion: V3,
@@ -131,13 +131,20 @@ test('a v3 step with a checked answer is proven by its answer, on its finished l
   const done = await launch(f, program, fakeDispatch(() => ({ answer: { lines: 3, short: true } })));
   assert.equal(done.result.status, 'completed', done.result.reason);
   const proofOf = (id) => readEvents(done.runDir).find((event) => event.type === 'action.finished' && event.payload.actionId === id).payload.proof;
+  // A checked answer is a well-formed claim, not proof (P2): only evidence
+  // Bullswarm runs itself proves a step.
   assert.deepEqual(proofOf('count').by, ['answer']);
-  assert.equal(formatV2ProofLabel(proofOf('count')), 'proven by answer');
-  assert.equal(formatV2ProofLabel(proofOf('test')), 'proven by command, answer');
+  assert.equal(formatV2ProofLabel(proofOf('count')), 'answer checked');
+  assert.equal(formatV2ProofLabel(proofOf('test')), 'proven by command · answer checked');
   assert.equal(formatV2ProofLabel(proofOf('note')), 'unproven');
-  assert.equal(formatV2ProofLine(summarizeV2Result(done.result, done.state)), 'proof: 2 steps proven (command 1, answer 2) · 1 finished · unproven: note');
+  const summary = summarizeV2Result(done.result, done.state);
+  assert.equal(summary.proof.proven, 1);
+  assert.equal(summary.proof.byType.answer, undefined);
+  assert.equal(summary.proof.answerChecked, 1);
+  assert.deepEqual(summary.proof.answerCheckedSteps, ['count']);
+  assert.equal(formatV2ProofLine(summary), 'proof: 1 step proven (command 1) · 1 answer checked: count · 1 finished · unproven: note');
   const watch = run(f.bullswarmDir, ['workflow', 'watch', done.shortId, '--until', 'outcome']);
-  assert.match(watch.stdout, /^proof: 2 steps proven \(command 1, answer 2\) · 1 finished · unproven: note$/m);
+  assert.match(watch.stdout, /^proof: 1 step proven \(command 1\) · 1 answer checked: count · 1 finished · unproven: note$/m);
 });
 
 // --- refusals on a v3 run never point to plan revise --------------------------

@@ -225,7 +225,7 @@ by dependency level):
 ● watching m39i62 · running · 1 running, 2 waiting · +4s
 ✓ fix finished · unproven · 41s
 ✓ Phase 1 · fix completed · 1/1
-✓ check finished · proven by command, answer · 56s
+✓ check finished · proven by command · answer checked · 56s
   answer {"problems":[]}
 ✓ Phase 2 · check completed · 1/1
 ✓ loop until-green passed in round 1 of 3 · check's evidence passed
@@ -243,7 +243,7 @@ and, after `workflow continue m39i62 ship`, the rest of the run:
 ✓ Phase 3 · notes completed · 1/1
 outcome: completed
 reason: all 3 steps succeeded
-proof: 1 step proven (command 1, answer 1) · 2 finished · unproven: fix, notes
+proof: 1 step proven (command 1) · 2 finished · unproven: fix, notes
 next: bullswarm workflow runs result m39i62 --json --summary
 ```
 
@@ -356,9 +356,9 @@ of what the stopped attempt did.
 `outcome:` is `completed`, `partial` or `cancelled`, and `reason:` says why in
 one line. A completed v3 run hands nothing back: every step succeeded. The
 proof line says what backs each step: `proven by command` or `proven by
-schema` (a check passed), `proven by answer` (its answer passed its schema),
-`finished · unproven` (neither declared), and
-`accepted by choice`. When you report the outcome, quote the run's proof line
+schema` (a check Bullswarm ran passed), `answer checked` (its answer passed
+its schema: a well-formed claim, not proof, so it is not counted as proven),
+`finished · unproven` (neither), and `accepted by choice`. When you report the outcome, quote the run's proof line
 as printed (`proof: …` at the end of watch, `# proof` in `runs result`)
 instead of paraphrasing it. Then read the real outputs and answers
 (`bullswarm workflow runs result <shortId> --json` names every step's output)

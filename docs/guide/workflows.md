@@ -557,7 +557,7 @@ On a finished v3 run, the text form prints each step's checked answer:
 # workflow result  wf-mulitn5f-6c56dd  (5r8jyi)
 # status  completed  result ready
 # outcome  all 1 step succeeded
-# proof  1 step proven (answer 1)
+# proof  1 answer checked: task
 # answer  task  {"words":13}
 # actions  1
   task                     analyze/medium  succeeded

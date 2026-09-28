@@ -1259,9 +1259,12 @@ export function formatV2HandbackLines(summary) {
 // 3's `choice` (D34) is not a proof type: an accepted step's label is
 // `['choice']` alone, and the summary counts it apart, never as proven.
 export const PROOF_TYPES = Object.freeze(['command', 'schema', 'review']);
-// A v3 step's checked answer (its answer schema, checked by Bullswarm) backs
-// it too. Kept apart so a run with no answer reads exactly as before.
-const ANSWER_PROOF = 'answer';
+// A v3 step's answer that passed its schema is marked too, but it is not a
+// proof type (P2, facts over claims): a well-formed answer is still the
+// worker's claim. The label reads `answer checked` and the summary counts such
+// steps apart, never as proven. Kept apart so a run with no answer reads
+// exactly as before.
+const ANSWER_CHECKED = 'answer';
 
 function isReviewStep(definition) {
   return Array.isArray(definition?.evidenceFor) && definition.evidenceFor.length > 0;
@@ -1295,7 +1298,7 @@ export function stepProof(state, definition, { atFinish = false, features } = {}
   const answered = definition.answer !== undefined && attempt?.answer?.ok === true;
   const by = [
     ...PROOF_TYPES.filter((type) => type !== 'review' && passed.has(type)),
-    ...(answered ? [ANSWER_PROOF] : []),
+    ...(answered ? [ANSWER_CHECKED] : []),
     ...(reviewed ? ['review'] : []),
   ];
   let reviewPending = false;
@@ -1310,14 +1313,19 @@ export function stepProof(state, definition, { atFinish = false, features } = {}
 }
 
 /** The words after `finished` on a step's line: `proven by command, schema`,
- * `review pending`, or `unproven`. */
+ * `answer checked`, `review pending`, or `unproven`. */
 export function formatV2ProofLabel(proof) {
   if (!proof) return null;
   const by = proof.by ?? [];
   if (by.includes('choice')) return 'accepted by choice';
-  if (by.length) return `proven by ${by.join(', ')}${proof.reviewPending ? ' · review pending' : ''}`;
-  return proof.reviewPending ? 'review pending' : 'unproven';
+  const proven = by.filter((type) => PROOF_TYPES.includes(type));
+  const checked = by.includes(ANSWER_CHECKED) ? 'answer checked' : null;
+  const pending = proof.reviewPending ? 'review pending' : null;
+  if (proven.length) return [`proven by ${proven.join(', ')}`, checked, pending].filter(Boolean).join(' · ');
+  return [checked, pending].filter(Boolean).join(' · ') || 'unproven';
 }
+
+const provenRow = (row) => row.proof.some((type) => PROOF_TYPES.includes(type));
 
 // The summary's top-level proof (§2.8): how many labelled rows are proven,
 // by which type, and which are not. Steps accepted by choice (D34) are counted
@@ -1327,15 +1335,16 @@ function summaryProof(rows) {
   const labelled = rows.filter((row) => Array.isArray(row.proof));
   if (!labelled.length) return null;
   const byType = Object.fromEntries(PROOF_TYPES.map((type) => [type, labelled.filter((row) => row.proof.includes(type)).length]));
-  const answered = labelled.filter((row) => row.proof.includes(ANSWER_PROOF)).length;
-  if (answered) byType[ANSWER_PROOF] = answered;
   const acceptedRows = labelled.filter((row) => row.proof.includes('choice'));
+  // Backed only by an answer that passed its schema: a well-formed claim.
+  const checkedRows = labelled.filter((row) => !provenRow(row) && row.proof.includes(ANSWER_CHECKED));
   const unprovenRows = labelled.filter((row) => !row.proof.length);
   return {
-    proven: labelled.length - unprovenRows.length - acceptedRows.length,
+    proven: labelled.filter(provenRow).length,
     byType: acceptedRows.length ? { ...byType, choice: acceptedRows.length } : byType,
     unproven: unprovenRows.length,
     unprovenSteps: unprovenRows.slice(0, 4).map((row) => row.id),
+    ...(checkedRows.length ? { answerChecked: checkedRows.length, answerCheckedSteps: checkedRows.slice(0, 4).map((row) => row.id) } : {}),
     ...(acceptedRows.length ? { accepted: acceptedRows.length, acceptedSteps: acceptedRows.slice(0, 4).map((row) => row.id) } : {}),
   };
 }
@@ -1351,6 +1360,11 @@ export function formatV2ProofLine(summary) {
   if (proof.proven > 0) {
     const types = Object.entries(proof.byType ?? {}).filter(([type, count]) => type !== 'choice' && count > 0).map(([type, count]) => `${type} ${count}`);
     parts.push(`${proof.proven} step${proof.proven === 1 ? '' : 's'} proven${types.length ? ` (${types.join(', ')})` : ''}`);
+  }
+  if (proof.answerChecked > 0) {
+    const names = proof.answerCheckedSteps ?? [];
+    const more = proof.answerChecked - names.length;
+    parts.push(`${proof.answerChecked} answer checked${names.length ? `: ${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : ''}`);
   }
   if (proof.accepted > 0) {
     const names = proof.acceptedSteps ?? [];

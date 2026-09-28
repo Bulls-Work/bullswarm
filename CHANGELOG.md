@@ -26,7 +26,11 @@
   text of `runs result` on a v3 run prints `# answer  <step>  <json>` for each
   step that declares one (and no `# gaps` line), and `runs result --json
   --summary` carries it as the step's `answer` (`answerBytes` in its place when
-  the answer's JSON is over 1 KiB; the full result holds it).
+  the answer's JSON is over 1 KiB; the full result holds it). A finished step
+  whose answer passed its schema reads `answer checked`, not proven: a
+  well-formed answer is the worker's claim, and only a command or schema check
+  Bullswarm runs itself proves a step (the proof line counts such steps apart,
+  `N answer checked: <steps>`).
 - workflow: new verbs for v3 runs. `bullswarm workflow add <run> --steps
   part.json` (or `--from-answer <step>`) appends steps, gates and loops without
   changing anything the run has, and reopens a finished run. `bullswarm

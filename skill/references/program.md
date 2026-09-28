@@ -172,9 +172,9 @@ several items, or have the step run it and answer with the result.
 Each check's result is in `bullswarm workflow runs result <id> --json` under
 `actions[].evidenceResults` (`status`, `exit`, `tail`, `why`), and per attempt
 in `bullswarm workflow action show <id> <step>`. A finished step reads `proven
-by command` or `proven by schema` when its checks passed, `proven by answer`
-when its answer passed its schema, and `finished · unproven` when it declares
-neither.
+by command` or `proven by schema` when its checks passed, `answer checked`
+when only its answer passed its schema (a well-formed claim, not proof: it is
+not counted as proven), and `finished · unproven` when it has neither.
 
 ## Routing and independence
 
