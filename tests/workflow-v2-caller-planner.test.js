@@ -15,9 +15,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument, deserializeV2DurableState } from '../src/workflow/v2-state.js';
+import { runV2AutonomousWorkflow, reviseV2Program } from '../src/workflow/v2-runtime.js';
 import {
-  runV2AutonomousWorkflow, submitCallerPlannerResponse, acceptCallerPlannerResponse, readCallerPlannerRequest, reviseV2Program,
-} from '../src/workflow/v2-runtime.js';
+  submitCallerPlannerResponse, acceptCallerPlannerResponse, readCallerPlannerRequest,
+} from '../src/workflow/caller-planner.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
 import { rerunV2Step } from '../src/workflow/cli.js';

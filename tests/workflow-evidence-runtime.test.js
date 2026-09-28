@@ -11,9 +11,8 @@ import { basename, join } from 'node:path';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
-import {
-  acceptCallerPlannerResponse, pauseV2Run, runV2AutonomousWorkflow, unpauseV2Run,
-} from '../src/workflow/v2-runtime.js';
+import { pauseV2Run, runV2AutonomousWorkflow, unpauseV2Run } from '../src/workflow/v2-runtime.js';
+import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { handoffBlock } from '../src/workflow/retry-handoff.js';
 import { dispatchV2Action, requestStepRestart } from '../src/workflow/v2-dispatch.js';
 import { STAGE2_RUN_FEATURES, STAGE3_RUN_FEATURES, readRunFeatures } from '../src/workflow/run-features.js';

@@ -8,7 +8,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
-import { acceptCallerPlannerResponse, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { buildProgramWorkTask } from '../src/workflow/step-prompts.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { CHECKER_PATH } from '../src/workflow/evidence-runner.js';

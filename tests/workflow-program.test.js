@@ -5,7 +5,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
-import { acceptCallerPlannerResponse, runV2AutonomousWorkflow, submitCallerPlannerResponse } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { acceptCallerPlannerResponse, submitCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { deserializeV2ResultEnvelope } from '../src/workflow/v2-outcome.js';
 import { readEvents } from '../src/workflow/events.js';
 import { requestCancel } from '../src/workflow/dashboard.js';

@@ -27,9 +27,9 @@ import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
 import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import {
-  runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest,
-  pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run,
+  runV2AutonomousWorkflow, pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run,
 } from './v2-runtime.js';
+import { submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './caller-planner.js';
 import { formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import {
   clearStepRestart, prepareV2DispatchPools, readStepRestarts, requestStepRestart, workerSilenceTimeoutSec,
