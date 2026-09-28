@@ -869,12 +869,13 @@ function recentDurationText(record) {
  * `Workflows: 5 · verified 2 (40%)`, with the one-step runs named apart:
  * `Runs: 3 · workflows 5 · verified 2 (40%)`, or `Runs: 3` alone.
  */
-function runsFigure(total, oneStep, verified) {
+function runsFigure(total, oneStep, verified, verifiable = total) {
   const single = Math.max(0, Math.min(total, Number(oneStep) || 0));
   const count = (value) => tint(String(value), 'orange');
-  // Only a workflow can be verified, so the share is of the workflows.
-  const share = total - single ? shareText(verified / (total - single)) : null;
-  const verdict = ` · verified ${count(verified)}${share ? ` (${share})` : ''}`;
+  // Only a v2 workflow can be verified, so the share is of those; with none
+  // in the period the figure says nothing about verification.
+  const share = verifiable ? shareText(verified / verifiable) : null;
+  const verdict = verifiable ? ` · verified ${count(verified)}${share ? ` (${share})` : ''}` : '';
   if (!single) return `Workflows: ${strong(count(total))}${verdict}`;
   if (single === total) return `Runs: ${strong(count(total))}`;
   return `Runs: ${strong(count(single))} · workflows ${count(total - single)}${verdict}`;
@@ -912,7 +913,7 @@ function summaryBand(body, model, opts) {
   const named = (row) => (row?.name ? String(row.name) : blank());
   const figures = [
     [
-      runsFigure(runs, keys.oneStepRuns ?? 0, verified),
+      runsFigure(runs, keys.oneStepRuns ?? 0, verified, keys.verifiableRuns ?? runs),
       `Busiest project: ${tint(named(keys.busiestProject), 'orange')}${keys.busiestProject ? ` (${keys.busiestProject.runs})` : ''}`,
     ],
     [

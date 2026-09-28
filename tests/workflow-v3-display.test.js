@@ -245,6 +245,11 @@ test('Stats and Home count one-step runs as runs, apart from workflows', () => {
   const model = dashboardModel(null, { rollups: [single], nowMs: NOW, usage: { pools: [], assignments: [] }, days: [] });
   const home = renderDashboardPage(model, { page: 'home', width: 200, height: 200, nowMs: NOW }).lines.map(visible).join('\n');
   assert.match(home, /Runs: 1\b/);
+  const gatedRollup = { ...single, runId: 'wf-v3-flow', shortId: 'v3flow', oneStep: undefined, steps: { done: 3, total: 4 } };
+  delete gatedRollup.oneStep;
+  const mixed = dashboardModel(null, { rollups: [single, gatedRollup], nowMs: NOW, usage: { pools: [], assignments: [] }, days: [] });
+  const mixedHome = renderDashboardPage(mixed, { page: 'home', width: 200, height: 200, nowMs: NOW }).lines.map(visible).join('\n');
+  assert.match(mixedHome, /Runs: 1 · workflows 1(?! · verified)/, 'no verification figure for v3 workflows');
   assert.doesNotMatch(home, /Workflows: 1/);
   const stats = renderDashboardPage(model, { page: 'stats', width: 200, height: 120, nowMs: NOW }).lines.map(visible).join('\n');
   assert.match(stats, /\b1 run\b/);

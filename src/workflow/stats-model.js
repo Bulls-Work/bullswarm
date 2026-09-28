@@ -1000,6 +1000,8 @@ function keyValues(records) {
     workflows: records.length,
     // Of those, the one-step runs (`bullswarm run`): the totals line names them apart.
     oneStepRuns: records.filter(isOneStepRecord).length,
+    // The v2 runs, the only ones a verification verdict applies to.
+    verifiableRuns: records.filter((record) => !isV3Record(record)).length,
     activeDays: days.size,
     favouritePool: top(pools, 'attempts'),
     busiestProject: top(projects, 'runs'),
