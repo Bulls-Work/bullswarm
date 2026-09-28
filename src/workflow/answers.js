@@ -219,6 +219,36 @@ export function resultAnswerField(definition, runtime) {
   return { answer: current ? { attemptId: current.attemptId, value: JSON.parse(JSON.stringify(current.value)) } : null };
 }
 
+/** The largest answer (its JSON, in bytes) the result summary and text print in full. */
+export const SUMMARY_ANSWER_BYTES = 1024;
+
+/**
+ * A result action's answer as `runs result --summary` carries it: the value
+ * when its JSON is at most SUMMARY_ANSWER_BYTES, `answerBytes` when it is
+ * larger (the full result holds it), null when the step declared an answer
+ * but none was checked, and nothing when it declared none.
+ */
+export function summaryAnswerField(answer) {
+  if (answer === undefined) return {};
+  if (answer === null) return { answer: null };
+  const bytes = Buffer.byteLength(JSON.stringify(answer.value), 'utf8');
+  return bytes <= SUMMARY_ANSWER_BYTES ? { answer: answer.value } : { answerBytes: bytes };
+}
+
+/** One `# answer  <step>  <json>` line per result action that declared an answer. */
+export function resultAnswerLines(actions, token) {
+  const lines = [];
+  for (const action of actions ?? []) {
+    if (action?.answer === undefined) continue;
+    if (action.answer === null) { lines.push(`# answer  ${action.id}  none checked`); continue; }
+    const text = JSON.stringify(action.answer.value);
+    lines.push(Buffer.byteLength(text, 'utf8') <= SUMMARY_ANSWER_BYTES
+      ? `# answer  ${action.id}  ${text}`
+      : `# answer  ${action.id}  ${Buffer.byteLength(text, 'utf8')} bytes; read it with bullswarm workflow runs result ${token} --json`);
+  }
+  return lines;
+}
+
 /** The issue with a result action's `answer`, or null when it is well formed. */
 export function resultAnswerIssue(value, name) {
   if (value === undefined || value === null) return null;

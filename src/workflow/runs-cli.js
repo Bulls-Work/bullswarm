@@ -35,6 +35,7 @@ import { poolLabel } from '../lib/pool-labels.js';
 import { routeSummary } from './step-route.js';
 import { parkedFailures, parkedWaitingFor, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
+import { resultAnswerLines } from './answers.js';
 
 function jsonOut(obj, opts) {
   if (!(opts.json || opts.summary)) return;
@@ -416,7 +417,9 @@ function runsResult(idToken, opts) {
   const proofLine = formatV2ProofLine(summary);
   if (proofLine) console.log(`# proof  ${proofLine.replace(/^proof: /, '')}`);
   if (!v3) console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
-  if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
+  // A v3 run reports facts per step, not requirements: its steps' answers instead of gaps.
+  if (!v3 && stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
+  if (v3) for (const line of resultAnswerLines(stable.actions, resolved.shortId ?? runId)) console.log(line);
   for (const line of formatV2HandbackLines(summary)) console.log(line);
   // The stable envelope records outcomes, not routing. The durable state
   // next to it holds the accepted program, so the routing each action ran

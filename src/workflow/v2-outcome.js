@@ -8,7 +8,7 @@ import { aggregateAttemptUsage } from './rollup.js';
 import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
-import { resultAnswerField, resultAnswerIssue } from './answers.js';
+import { resultAnswerField, resultAnswerIssue, summaryAnswerField } from './answers.js';
 import { schedulerView } from './gates-loops.js';
 import { isRouteUnavailable } from './step-route.js';
 
@@ -952,7 +952,7 @@ function fitResultSummary(summary, { failureRule = false } = {}) {
     if (level === 'named') return named;
     if (level === 'full') return dropNullFields(named);
     if (level === 'routing') return dropNullFields({ ...named, bytes: null });
-    if (level === 'status') return dropNullFields({ id: named.id, status: named.status, outFile: named.outFile ?? null, accepted: named.accepted ?? null });
+    if (level === 'status') return dropNullFields({ id: named.id, status: named.status, outFile: named.outFile ?? null, accepted: named.accepted ?? null, answer: named.answer ?? null, answerBytes: named.answerBytes ?? null });
     return { id: named.id, status: named.status };
   });
   const requirementsAt = (limit, actionsLevel) => summary.requirements.map(({ accepted, ...requirement }) => ({
@@ -1393,6 +1393,8 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       wallSec: fallback(action.wallSec, attempt?.wallSec),
       outFile: fallback(action.outFile, fallback(action.outputFile, attempt?.outputFile)),
       bytes: normalizeBytes(fallback(action.bytes, attempt?.bytes)),
+      // A v3 step's checked answer (only on a step that declared one).
+      ...summaryAnswerField(action.answer),
     };
   });
   // A completed v3 run with nothing handed back has nothing left to offer.

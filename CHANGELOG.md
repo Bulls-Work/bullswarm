@@ -22,7 +22,11 @@
 - workflow: `answer` asks a step to write JSON to a file Bullswarm names; the
   file (at most 256 KiB), not the reply, is checked against the schema (a
   mismatch is failure kind `schema`), handed to the steps that depend on it,
-  read by conditions and printed by `watch`, `wait` and `runs result`.
+  read by conditions and printed by `watch`, `wait` and `runs result`. The
+  text of `runs result` on a v3 run prints `# answer  <step>  <json>` for each
+  step that declares one (and no `# gaps` line), and `runs result --json
+  --summary` carries it as the step's `answer` (`answerBytes` in its place when
+  the answer's JSON is over 1 KiB; the full result holds it).
 - workflow: new verbs for v3 runs. `bullswarm workflow add <run> --steps
   part.json` (or `--from-answer <step>`) appends steps, gates and loops without
   changing anything the run has, and reopens a finished run. `bullswarm
