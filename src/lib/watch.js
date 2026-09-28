@@ -1517,6 +1517,12 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // workflow/answers.js) does not need a reply: a valid, fresh answer file is
   // usable output on its own.
   const readsFile = typeof opts.outputValidator === 'function' && opts.outputValidator.readsFile === true;
+  // A v3 step with no answer declared passes an accept-all validator
+  // (workflow/answers.js): it checks nothing, so no verdict may say an answer
+  // was validated, and whether the content is usable after a non-zero exit
+  // is the content judge's call, as for a step with no validator.
+  const noAnswer = typeof opts.outputValidator === 'function' && opts.outputValidator.checksNoAnswer === true;
+  const passedWhy = noAnswer ? 'exited 0 · no answer declared' : 'structured output validated';
   const canInspectRecoveredOutput = Boolean(
     obs.providerFailureType
       && obs.exitCode === 0
@@ -1587,7 +1593,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     if (recoveredOutputUsable) {
       structured = recoveredStructured;
       verdict = typeof opts.outputValidator === 'function'
-        ? { ok: true, why: 'structured output validated' }
+        ? { ok: true, why: passedWhy }
         : { ok: true, why: 'verified' };
     } else {
       verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
@@ -1608,11 +1614,11 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         ...(checked.value !== undefined ? { value: checked.value } : {}),
       };
       verdict = checked.ok && obs.exitCode === 0
-        ? { ok: true, why: 'structured output validated' }
+        ? { ok: true, why: passedWhy }
         : {
             ok: false,
             why: checked.ok
-              ? 'structured output validated but process exited non-zero'
+              ? noAnswer ? 'process exited non-zero · no answer declared' : 'structured output validated but process exited non-zero'
               : `structured output invalid: ${structured.errors.join('; ') || 'validator rejected it'}`,
             failureKind: checked.ok ? 'process' : 'schema',
           };
@@ -1661,9 +1667,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     });
   }
 
+  // Usable despite the exit: a declared answer that validated, else (no
+  // validator, or no answer declared) content the judge passes.
   const usableDespite =
     !verdict.ok &&
-    typeof opts.outputValidator !== 'function' &&
     !obs.spawnError &&
     !obs.timedOut &&
     !obs.stalled &&
@@ -1671,10 +1678,12 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     !upstreamAuth &&
     !quotaFailure &&
     obs.exitCode !== 0 &&
-    judgeContent(output, {
-      expectWork: true,
-      acceptVerifyJson: opts.acceptVerifyJson === true,
-    }).verdict === 'pass';
+    (typeof opts.outputValidator === 'function' && !noAnswer
+      ? structured?.ok === true
+      : judgeContent(output, {
+          expectWork: true,
+          acceptVerifyJson: opts.acceptVerifyJson === true,
+        }).verdict === 'pass');
 
   const notes = verdict.ok && recoveredOutputUsable
     ? [{

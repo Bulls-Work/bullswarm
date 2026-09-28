@@ -265,3 +265,14 @@ test('run --heartbeat prints kernel progress on stderr and keeps stdout one JSON
   assert.equal(JSON.parse(result.stdout).ok, true);
   assert.match(result.stderr, /^bullswarm run · active \d+s · \d+ events? · \d+ B · activity \d+s ago$/m);
 });
+
+test('run: complete content after a non-zero exit is reported usable, and no answer is claimed', (t) => {
+  const f = fixture(t);
+  const result = bullswarm(f, ['run', '--lane', 'analyze', '--no-retry', '--json', '--add-dir', f.repo, '--prompt', 'FAIL:exit']);
+  assert.equal(result.status, 1, result.stderr);
+  const verdict = JSON.parse(result.stdout);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.contentUsableDespiteExit, true);
+  assert.doesNotMatch(verdict.why, /structured output validated/);
+  assert.match(readFileSync(verdict.outFile, 'utf8'), /Refactor complete/);
+});

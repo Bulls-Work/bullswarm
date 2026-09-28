@@ -116,6 +116,8 @@ function answerCorrectionTask(verdict, { originalTask }) {
 
 // The verdict is exit, deliverable and evidence; the reply is not judged.
 const acceptAll = () => ({ ok: true, errors: [] });
+// It checks no answer, so watchOnce never words its pass as a validated one.
+acceptAll.checksNoAnswer = true;
 
 /**
  * The dispatch hooks for one v3 step. `attempt()` returns the attempt record

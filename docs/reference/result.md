@@ -31,7 +31,7 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `pick.command` | argv template (`spawn.cmd`). On `--dry-run` this is the resolved argv including the clamped reasoning flag |
 | `outFile` | `~/.bullswarm/workflows/<id>/out-task-attempt-<n>.md` (or under `$BULLSWARM_HOME`) — the extracted reply. Always read this when `ok` is true |
 | `taskFile` | the prompt file the worker was given |
-| `contentUsableDespiteExit` | `true` when `ok` is false, the process exited non-zero, and the content judge still passed. Do not discard that `outFile` |
+| `contentUsableDespiteExit` | `true` when `ok` is false, the process exited non-zero, and the content judge still passed (with `--answer-schema`: the answer still passed its schema). Do not discard that `outFile` |
 | `failureKind` | `null` on success; on failure: `quota`, `throttle`, `auth`, `provider`, `process`, `schema`, `stalled`, `not-produced`, `unavailable`, `depth` (the recursion guard refused the run) |
 | `retryAfter` | on a usage limit whose reset is known: that reset, as an ISO time. It is known when the provider's line named it, or when the pool's own meter reads 95% or more on a window still running (that window's reset). Absent otherwise. Nothing is stored about the pool: the next pick reads its meters again |
 | `cancelled` | `true` when a workflow cancellation stopped the worker |
