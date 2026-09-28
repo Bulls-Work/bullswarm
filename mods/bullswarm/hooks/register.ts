@@ -52,7 +52,11 @@ const BUSY_REFRESH_MS = 20_000
 const STEP_REFRESH_MS = 4_000
 const STEP_TICK_MS = 1_000
 const POOLS_TIMEOUT_MS = 30_000
-/** `bullswarm run --timeout`, seconds: under the 10-minute cap on `$.process.run`. */
+/**
+ * `bullswarm run --timeout`, seconds: under the 10-minute cap on `$.process.run`.
+ * The process budget holds one attempt, which is why the run gets `--no-retry`
+ * (route.ts argvOf).
+ */
 const RUN_TIMEOUT_SEC = 540
 const RUN_PROCESS_MS = 585_000
 /** Rows asked of the overview frame, so the timeline is never windowed. */

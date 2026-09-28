@@ -11,11 +11,16 @@ export type AgentArgs = {
   model?: unknown
 }
 
-/** Which bullswarm lane a subagent type maps to; null keeps it in-session. */
+/**
+ * Which bullswarm lane a subagent type maps to; a missing entry keeps it
+ * in-session. General subagents go to analyze: a build run must change a
+ * file (run-step.js), so a subagent that only answers would fail
+ * `not-produced` there, and a routed subagent's value is its answer.
+ */
 const LANE_OF: Record<string, BullswarmLane> = {
-  '': 'build',
-  'general-purpose': 'build',
-  claude: 'build',
+  '': 'analyze',
+  'general-purpose': 'analyze',
+  claude: 'analyze',
   Explore: 'analyze',
   Plan: 'analyze',
 }
@@ -49,7 +54,11 @@ export function decide(args: AgentArgs, pools: readonly BullswarmPool[]): RouteD
   return { route: true, lane, task: args.prompt }
 }
 
-/** The argv `$.process.run` spawns; no shell, the task inline. */
+/**
+ * The argv `$.process.run` spawns; no shell, the task inline. `--no-retry`:
+ * the mod's process budget holds one attempt, and a failed run already
+ * falls back to running the subagent in-session.
+ */
 export function argvOf(input: {
   lane: BullswarmLane
   cwd: string
@@ -64,6 +73,7 @@ export function argvOf(input: {
     '--add-dir',
     input.cwd,
     '--json',
+    '--no-retry',
     '--timeout',
     String(input.timeoutSec),
     '--prompt',

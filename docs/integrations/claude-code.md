@@ -60,7 +60,7 @@ and install actions.
 
 ### What it changes in the interface
 
-- An `Agent` call — general-purpose, Explore or Plan — runs on the pool with the most surplus instead of in-session, and comes back with the verified output plus a routing note.
+- An `Agent` call — general-purpose, Explore or Plan — runs read-only (lane analyze, one attempt) on the pool with the most surplus instead of in-session, and comes back with the verified output plus a routing note.
 - A `Bash` call whose result is a `bullswarm run` or `bullswarm workflow goal` gets the verdict appended in the doctrine's words, so Claude reads the gate, not the exit code.
 - A strip above the prompt: one header line with the run count, dispatches in flight, `route off` when routing is off, and `[w]` to open the runs pane; then one row per ongoing run and per standalone dispatch, each with a digit that opens it.
 - A context block naming every pool's surplus and every ongoing run, re-sent only when a pool moves a bucket or a run starts or ends.
