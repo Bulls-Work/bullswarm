@@ -418,7 +418,7 @@ test('an answer that breaks its schema gets one same-pool correction worded for 
   assert.match(seen[1].task, /answer-count-attempt-2\.json/);
   assert.doesNotMatch(seen[1].task, /answer-count-attempt-1\.json/, 'the new attempt writes its own file');
   const attempts = run.state.attempts.filter((item) => item.actionId === 'count');
-  assert.equal(attempts[0].status, 'failed');
+  assert.equal(attempts[0].status, 'interrupted', 'an attempt the dispatcher retries reads interrupted, as today');
   assert.equal(attempts[0].failureKind, 'schema');
   assert.equal(attempts[0].answer.ok, false);
   assert.deepEqual(attempts[0].answer.value, { count: 'one' });
@@ -467,10 +467,12 @@ test('a valid fresh answer file counts as usable output when the stream errors w
   const recovered = await watchOnce(streamed, 'Count.', dir, paths, { outputValidator: fileValidator });
   assert.equal(recovered.ok, true, recovered.why);
   assert.equal(recovered.notes?.[0]?.kind, 'recovered-stream-error');
-  rmSync(answerFile);
-  const textOnly = await watchOnce(streamed, 'Count.', dir, paths, { outputValidator: () => ({ ok: true, errors: [] }) });
-  assert.equal(textOnly.ok, false, 'a text validator still needs a reply');
-  assert.equal(textOnly.failureKind, 'provider');
+  // No valid answer file: the stream error stands.
+  const noAnswer = () => ({ ok: false, errors: ['file missing'] });
+  noAnswer.readsFile = true;
+  const failed = await watchOnce(streamed, 'Count.', dir, paths, { outputValidator: noAnswer });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.failureKind, 'provider');
 });
 
 // --- the CLI -----------------------------------------------------------------
@@ -482,7 +484,10 @@ test('plan validate accepts a v3 program with gates and loops; goal refuses to l
   const workspace = join(root, 'repo');
   mkdirSync(home); mkdirSync(workspace);
   const programFile = join(root, 'plan.json');
-  writeFileSync(programFile, JSON.stringify(section2Example()));
+  // No route: an empty home has no pool a route could name.
+  const example = section2Example();
+  delete example.steps.find((step) => step.id === 'critique').route;
+  writeFileSync(programFile, JSON.stringify(example));
   const env = { ...process.env, BULLSWARM_HOME: home };
   delete env.BULLSWARM_DEPTH;
   const validate = spawnSync(process.execPath, [cli, 'workflow', 'plan', 'validate', 'Research and publish the brief', '--program', programFile, '--cwd', workspace, '--json'], { encoding: 'utf8', env });

@@ -17,6 +17,7 @@ import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
+import { implicitV3Requirements, isProgramV3, programV3Facts, programV3HasControl, stepV3Facts } from './program-v3.js';
 import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
@@ -275,7 +276,7 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
   else if (!opts.quiet) {
     console.log(`workflow ${result.shortId ?? result.runId} ${result.result.status}; result: bullswarm workflow runs result ${result.shortId ?? result.runId} --json`);
     if (result.result.executionMode === 'program') {
-      console.log(`verification: ${result.result.verified ? 'all mandatory requirements have passing evidence' : 'not independently verified; inspect action outputs and evidence'}`);
+      if (!isProgramV3(result.state?.program)) console.log(`verification: ${result.result.verified ? 'all mandatory requirements have passing evidence' : 'not independently verified; inspect action outputs and evidence'}`);
       console.log(`workspace: ${result.result.workspace?.cwd ?? doc.intent.cwd}`);
     }
     console.log(`reason: ${result.result.reason}`);
@@ -524,7 +525,7 @@ function buildNewGoalDocument(goal, opts, planning) {
   // the scout runs unless --no-scout.
   const scout = callerPlanner ? (planning.programSupplied ? opts.scout === true : true) : !opts.noScout;
   return createV2GoalDocument({
-    goal, cwd: resolve(opts.cwd ?? process.cwd()), requirements: compactV2Requirements(goal),
+    goal, cwd: resolve(opts.cwd ?? process.cwd()), requirements: planning.programV3 ? implicitV3Requirements(goal) : compactV2Requirements(goal),
     constraints: extractV2GoalConstraints(goal),
     settings: {
       ...goalSettings(opts), scout,
@@ -859,7 +860,7 @@ async function wfGoal(opts) {
     if (planning.programRequired) return refuseProgramRequired(goal, opts);
     try {
       initialPlannerResponse = loadCallerProgram(opts);
-      doc = buildNewGoalDocument(goal, opts, planning);
+      doc = buildNewGoalDocument(goal, opts, { ...planning, programV3: isProgramV3(initialPlannerResponse) });
     } catch (err) {
       if (err instanceof V2PlannerValidationError) return refuseProgramInvalid(goal, opts, err.issues);
       console.error(`✗ invalid goal options: ${err.message}`);
@@ -892,9 +893,10 @@ async function wfGoal(opts) {
       ...routePoolIssues(previewed.program.actions, pools, doc),
     ];
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
+    if (programV3HasControl(previewed.program)) return refuseProgramInvalid(doc.intent.goal, opts, ['gates and loops arrive in the next build'], { message: 'this build runs v3 steps only (nothing ran)' });
     // The same lines `plan validate` prints, at the moment the program is
     // actually launched. The kernel also stores them on the run state.
-    printAdvisories(programAdvisories(previewed.program, { requirements: doc.intent.requirements }));
+    printAdvisories(programAdvisories(previewed.program, { requirements: isProgramV3(previewed.program) ? null : doc.intent.requirements }));
     if (setsVerifyRounds(previewed.program)) {
       console.error(VERIFY_ROUNDS_NOTE);
       opts.verifyRoundsMeaning = 'fix cycles';
@@ -959,13 +961,13 @@ async function wfPlan(rest) {
 
 // Build the goal document a planning command describes, with the same cwd
 // guard a launch applies. Returns { doc } or { exit } after printing.
-function planningGoalDocument(opts, path, { allowProgram = false } = {}) {
+function planningGoalDocument(opts, path, { allowProgram = false, programV3 = false } = {}) {
   const goal = opts.rest.join(' ').trim();
   if (!goal) { console.error(`usage: ${usageLine(path)}`); return { exit: 2 }; }
   const flagError = contractFlagError(opts, { allowProgram });
   if (flagError) { console.error(`✗ ${flagError}`); return { exit: 2 }; }
   let doc;
-  try { doc = buildNewGoalDocument(goal, opts, { mode: 'caller', programSupplied: true }); }
+  try { doc = buildNewGoalDocument(goal, opts, { mode: 'caller', programSupplied: true, programV3 }); }
   catch (err) { console.error(`✗ invalid goal options: ${err.message}`); return { exit: 2 }; }
   if (!existsSync(doc.intent.cwd) || !statSync(doc.intent.cwd).isDirectory()) {
     console.error(`✗ goal cwd is not an existing directory: ${doc.intent.cwd}`);
@@ -1001,7 +1003,9 @@ function planContract(opts) {
 async function planValidate(opts) {
   if (opts.help) { console.log(helpText(['workflow', 'plan', 'validate'])); return 0; }
   if (!opts.program) { console.error(`usage: ${usageLine(['workflow', 'plan', 'validate'])}`); return 2; }
-  const built = planningGoalDocument(opts, ['workflow', 'plan', 'validate'], { allowProgram: true });
+  let programV3 = false;
+  try { programV3 = isProgramV3(readJsonFile(opts.program, 'program file')); } catch { /* reported by loadCallerProgram below */ }
+  const built = planningGoalDocument(opts, ['workflow', 'plan', 'validate'], { allowProgram: true, programV3 });
   if (built.exit !== undefined) return built.exit;
   const { goal, doc } = built;
   let accepted;
@@ -1038,11 +1042,13 @@ async function planValidate(opts) {
         ...(action.route ? { route: action.route } : {}),
         dependsOn: action.dependsOn,
         affects: action.affects, evidenceFor: action.evidenceFor, ownedFiles: action.ownedFiles,
+        ...stepV3Facts(action),
       })),
+      ...programV3Facts(accepted.program),
     },
     // Advice about the accepted program. Present (possibly empty) on every
     // valid program so a caller can read it without probing for the key.
-    advisories: programAdvisories(accepted.program, { requirements: doc.intent.requirements }),
+    advisories: programAdvisories(accepted.program, { requirements: programV3 ? null : doc.intent.requirements }),
     ...(setsVerifyRounds(accepted.program) ? { verifyRoundsMeaning: 'fix cycles' } : {}),
     next: { launch: next.launch },
   };
