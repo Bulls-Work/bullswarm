@@ -174,7 +174,7 @@ detaches and returns `shortId`; report it.
 
 | Mode | Wakes you on | Command |
 |---|---|---|
-| Wake-ups only (the default choice) | a gate waiting, a loop out of rounds, a step that needs you (after its retry, or at once for a usage limit), a pause, a stale step, steering, the end | `bullswarm workflow watch <shortId> --until trouble` |
+| Wake-ups only (the default choice) | a gate waiting, a loop out of rounds, a step that needs you (after its retry, or at once for a usage limit), a pause, a stale step, steering, the end; each loop that finished since the last wake is printed too, without waking | `bullswarm workflow watch <shortId> --until trouble` |
 | Every step | each finished step with its answer, loop rounds, plus every wake-up | `bullswarm workflow watch <shortId>` (or `--next` for one step at a time) |
 | Named steps | only the steps, gates or loops you name | `bullswarm workflow wait <shortId> <id...>` |
 
@@ -183,17 +183,29 @@ read the output in one tool call, act, and start the printed `next:` line
 again. Between wakes do nothing about the run: do not poll, do not read files
 in the run directory, and do not send the user a status reply per step.
 
-A gate wake-up (real output):
+A gate wake-up after a loop (real output of the fix-until-green loop above,
+run on grok with a gate `ship` and a `notes` step after it). The loop's line
+comes with the wake, so you need no `workflow wait` to learn how it ended:
 
 ```text
-⧖ gate approve waiting · Read the count and decide whether to write NOTE.md · continue: bullswarm workflow continue 98vx92 approve
+✓ loop until-green passed in round 1 of 3 · check's evidence passed
+⧖ gate ship waiting · Read the fix and decide whether to write CHANGES.md · continue: bullswarm workflow continue m39i62 ship
 outcome: waiting
-waiting: gate approve · Read the count and decide whether to write NOTE.md
-next: bullswarm workflow continue 98vx92 approve
+waiting: gate ship · Read the fix and decide whether to write CHANGES.md
+next: bullswarm workflow continue m39i62 ship
 ```
 
 `workflow wait` returns each named step's facts and checked answer (exit 0
-when none failed, 1 when one failed or the run stopped short, 2 on a timeout):
+when none failed, 1 when one failed or the run stopped short, 2 on a timeout),
+after a line for each loop the named ids wait behind:
+
+```text
+✓ loop until-green passed · round 1 of 3
+⧖ gate ship waiting · Read the fix and decide whether to write CHANGES.md
+  continue bullswarm workflow continue m39i62 ship
+```
+
+A step with an answer prints it under its facts:
 
 ```text
 ✓ count succeeded · grok · grok-4.7 · 34s
@@ -203,25 +215,36 @@ when none failed, 1 when one failed or the run stopped short, 2 on a timeout):
       "lines": 3,
       "short": true
     }
-⧖ gate approve waiting · Read the count and decide whether to write NOTE.md
-  continue bullswarm workflow continue 98vx92 approve
 ```
 
-A watch of every step prints each finished step with its answer, and each
-loop round (real output of the fix-until-green loop above):
+A watch of every step prints each finished step with its answer and proof,
+each phase, and each loop (the same run; steps without a `phase` are grouped
+by dependency level):
 
 ```text
-● watching gvbn9s · running · 1 running, 1 waiting · +3s
-✓ fix finished · unproven · 5m03s
+● watching m39i62 · running · 1 running, 2 waiting · +4s
+✓ fix finished · unproven · 41s
 ✓ Phase 1 · fix completed · 1/1
-✓ check finished · proven by command · 43s
+✓ check finished · proven by command, answer · 56s
   answer {"problems":[]}
 ✓ Phase 2 · check completed · 1/1
 ✓ loop until-green passed in round 1 of 3 · check's evidence passed
+⧖ gate ship waiting · Read the fix and decide whether to write CHANGES.md · continue: bullswarm workflow continue m39i62 ship
+outcome: waiting
+waiting: gate ship · Read the fix and decide whether to write CHANGES.md
+next: bullswarm workflow continue m39i62 ship
+```
+
+and, after `workflow continue m39i62 ship`, the rest of the run:
+
+```text
+● watching m39i62 · running · 1 running, 0 waiting · +2m01s
+✓ notes finished · unproven · 53s
+✓ Phase 3 · notes completed · 1/1
 outcome: completed
-reason: all 2 steps succeeded
-proof: 1 step proven (command 1) · 1 finished · unproven: fix
-next: bullswarm workflow runs result gvbn9s --json --summary
+reason: all 3 steps succeeded
+proof: 1 step proven (command 1, answer 1) · 2 finished · unproven: fix, notes
+next: bullswarm workflow runs result m39i62 --json --summary
 ```
 
 ### Gates and loops that wait for you
@@ -233,8 +256,8 @@ rounds, and without `--rounds` it passes as it stands. Before you continue you
 may add steps. The command relaunches the kernel when none is running:
 
 ```text
-✓ gate approve passed in 98vx92; kernel relaunched
-  watch    bullswarm workflow watch 98vx92 --until trouble
+✓ gate ship passed in m39i62; kernel relaunched
+  watch    bullswarm workflow watch m39i62 --until trouble
 ```
 
 ### When a step needs you
