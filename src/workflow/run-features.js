@@ -53,3 +53,25 @@ export function readRunFeatures(runDir) {
 export function writeRunFeatures(runDir, features) {
   writeJsonAtomic(runFeaturesPath(runDir), features);
 }
+
+// 0.37.0: a run launched with a program v3 also carries `programFormat: 3`,
+// written at launch like every other key. Its steps pass by facts only
+// (exit, deliverable, evidence, answer), and the repair loop never runs for
+// it; saved and v2 runs have no such key and keep their rules.
+const PROGRAM_FORMAT_V3 = 3;
+
+/** The marker a launch writes: `features` plus `programFormat: 3` for a v3 program. */
+export function withProgramFormat(features, { v3 = false } = {}) {
+  return v3 ? { ...features, programFormat: PROGRAM_FORMAT_V3 } : { ...features };
+}
+
+/** True for a run marked `programFormat: 3`. */
+export function isProgramV3Run(features) {
+  return features !== null && typeof features === 'object' && !Array.isArray(features)
+    && features.programFormat === PROGRAM_FORMAT_V3;
+}
+
+/** False for a v3 run: the kernel's repair loop is v2 behaviour only. */
+export function repairLoopApplies(features) {
+  return !isProgramV3Run(features);
+}

@@ -44,7 +44,8 @@ import { resolveRouteFilter, workAttempts } from './step-route.js';
 import { modelFamilyOf } from '../lib/route.js';
 import { evidenceBriefLines, evidenceItemTimeoutSec, rewriteEvidenceCwd } from './evidence-runner.js';
 import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
-import { STAGE3_RUN_FEATURES, readRunFeatures, runFeatureFlags, writeRunFeatures } from './run-features.js';
+import { STAGE3_RUN_FEATURES, isProgramV3Run, readRunFeatures, repairLoopApplies, runFeatureFlags, withProgramFormat, writeRunFeatures } from './run-features.js';
+import { isProgramV3 } from './program-v3.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
@@ -128,7 +129,7 @@ export function acceptCallerPlannerResponse(state, response, { boundary, runDir,
 // counts fix cycles (0-3, default 1); otherwise total review rounds (1-3,
 // default 3). A saved run without the record keeps its old behaviour.
 function ensureVerifyLoop(state, response, features = null) {
-  if (!isProgramWorkflow(state) || state.verifyLoop || response?.kind !== 'program') return;
+  if (!isProgramWorkflow(state) || state.verifyLoop || response?.kind !== 'program' || isProgramV3(response.program)) return;
   const program = response.program ?? {};
   state.verifyLoop = createVerifyLoop(program.verifyRounds ?? program.defaults?.verifyRounds, { countsFixes: features?.failureRule === true });
 }
@@ -1687,7 +1688,7 @@ async function runV2Kernel({
     // knows; a resumed run keeps the file it was started with, never
     // rewritten. `dependencies.runFeatures` lets a test launch a run the way
     // an earlier stage did (a saved-run twin).
-    writeRunFeatures(runDir, { ...(dependencies.runFeatures ?? STAGE3_RUN_FEATURES) });
+    writeRunFeatures(runDir, withProgramFormat(dependencies.runFeatures ?? STAGE3_RUN_FEATURES, { v3: isProgramV3(initialPlannerResponse) }));
     state = createV2DurableState(goalDocument, { runId: id, shortId: nextShortId(bullswarmDir) });
   }
   // Read once. Missing or unreadable is `{}`: the legacy lane rule stays off
@@ -1701,6 +1702,7 @@ async function runV2Kernel({
   // `reviewPlacement` (reviews run where the caller routes them). Stage 2's
   // proof labels keep reading `runFeatures`.
   const features = runFeatureFlags(runFeatures);
+  const programV3 = isProgramV3Run(runFeatures); // 0.37.0: pass/fail by facts, no repair loop
   // Marked runs: a planner or scout dispatch that ended on a usage limit, a
   // rate limit that did not clear, or no free pool. The run stops there and
   // goes to the caller (limitStopReason).
@@ -2931,6 +2933,7 @@ async function runV2Kernel({
   // the route of the steps they stand for (D19); in a marked run a files
   // repair also runs their evidence (D33).
   const advanceVerifyLoop = (options = {}) => {
+    if (!repairLoopApplies(runFeatures)) return false;
     const added = advanceVerifyLoopStep(options);
     if (!added && features.failureRule) wakeLateFailures();
     return added;
