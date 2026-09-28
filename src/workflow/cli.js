@@ -372,7 +372,7 @@ async function waitForRunState(runId, { attempts = 400 } = {}) {
 
 function goalObserveCommands(token, { callerPlanner = false, v3 = false } = {}) {
   return {
-    watch: `bullswarm workflow watch ${token}`,
+    watch: `bullswarm workflow watch ${token}${v3 ? ' --until trouble' : ''}`,
     summary: `bullswarm workflow runs show ${token}`,
     result: `bullswarm workflow runs result ${token} --json`,
     dashboard: `bullswarm workflow tui ${token}`,
@@ -495,7 +495,7 @@ function goalLaunchInstructions(observe, v3 = null) {
       command: observe.inspect,
     },
     watch: {
-      purpose: 'Follow low-noise semantic progress until the workflow is terminal.',
+      purpose: observe.add ? 'Stay quiet until you are needed: a gate waits, a loop runs out of rounds, a step needs you, or the run ends.' : 'Follow low-noise semantic progress until the workflow is terminal.',
       command: observe.watch,
     },
     humanTui: {
@@ -503,7 +503,7 @@ function goalLaunchInstructions(observe, v3 = null) {
       command: observe.dashboard,
     },
     result: {
-      purpose: 'After it finishes, obtain the stable result: verification, and a handback of anything left with your options (continue, retry, take over, restart).',
+      purpose: observe.add ? 'After it finishes, obtain the stable result: each step\'s facts and checked answer, and a handback of anything left with your options.' : 'After it finishes, obtain the stable result: verification, and a handback of anything left with your options (continue, retry, take over, restart).',
       command: observe.result,
     },
     cancel: {
