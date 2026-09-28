@@ -18,8 +18,6 @@ import {
   taskToday,
   todayDateLabel,
   todayLicenceRows,
-  todayMinutesNumberText,
-  todayMinutesText,
   todayRows,
 } from '../src/workflow/home-model.js';
 import { readJsonSafe } from '../src/lib/fsjson.js';
@@ -42,8 +40,6 @@ test('Home model keeps task identity, dates, durations and nullable figures hone
   const finished = { id: 'task-1', pool: 'codex', endedAt: TODAY, durationMs: 90_000 };
   assert.equal(taskToday(finished, NOW, { finished: true }), true);
   assert.equal(taskIdentity(finished), 'id:task-1');
-  assert.equal(todayMinutesText(1.25), '1.3m');
-  assert.equal(todayMinutesNumberText(1.25), '1.3');
   assert.equal(measuredTaskMinutes(finished), 1.5);
   assert.equal(measuredTaskMinutes({ durationMs: 'not measured' }), null);
   assert.equal(cardDurationText({ active: 355, span: 415 }), '5h55m active of 6h55m');

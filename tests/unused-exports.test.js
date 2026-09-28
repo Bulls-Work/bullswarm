@@ -42,7 +42,6 @@ const TEST_SEAMS = {
 const NOT_YET_REMOVED = {
   'src/lib/attempt-usage.js': ['attemptCapture'],
   'src/lib/stale.js': ['streamFacts'],
-  'src/workflow/home-model.js': ['todayMinutesText', 'todayMinutesNumberText'],
   'src/workflow/run-features.js': ['STAGE2_RUN_FEATURES'],
   'src/workflow/run-model.js': ['attemptRoutingText', 'planMoreParts', 'planPhaseActionParts', 'planStageActions', 'planStageBoxText', 'planStageHeader', 'stepTally'],
   'src/workflow/v2-outcome.js': ['serializeV2ResultEnvelope'],

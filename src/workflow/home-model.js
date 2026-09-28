@@ -44,16 +44,6 @@ function isToday(value, nowMs, today = dayKey(nowMs)) {
   return dayKey(at) === today;
 }
 
-function todayMinutesText(value) {
-  const minutes = finiteOrNull(value);
-  return minutes == null ? null : `${minutes.toFixed(1)}m`;
-}
-
-function todayMinutesNumberText(value) {
-  const minutes = finiteOrNull(value);
-  return minutes == null ? null : minutes.toFixed(1);
-}
-
 /** Return the first non-empty line from a list of human-authored labels. */
 function firstMeaningfulLine(...values) {
   for (const value of values) {
@@ -702,8 +692,6 @@ function recordCostInfo(record) {
 export {
   taskToday,
   taskIdentity,
-  todayMinutesText,
-  todayMinutesNumberText,
   measuredTaskMinutes,
   todayDateLabel,
   todayRows,
