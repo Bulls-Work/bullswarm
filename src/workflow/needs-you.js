@@ -11,6 +11,7 @@ import { glyphs } from '../lib/glyphs.js';
 import { countRetries, declaredEvidence, NEEDS_YOU_LABELS, roleOf } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { formatDuration } from './watch-cli.js';
+import { isProgramV3 } from './program-v3.js';
 
 const LINE_CHARS = 160;
 const LIST_CAP = 5;
@@ -122,6 +123,11 @@ export function changeStepCommands(token) {
   return [`bullswarm workflow plan export ${token} --out plan.json`, `bullswarm workflow plan revise ${token} --program plan.json`];
 }
 
+/** A v3 run's steps are never edited: new work is appended, then waited on (0.37.0). */
+export function addStepCommands(token) {
+  return [`bullswarm workflow add ${token} --steps part.json`, `bullswarm workflow wait ${token} <added ids>`];
+}
+
 // "Elsewhere" is decided over every current-definition attempt: a gate retry
 // is pinned to its pool and a process retry leaves out the pool it tried, so
 // the last attempt's list alone hides the pools the step could run on (F19).
@@ -132,11 +138,12 @@ function rerunOption(token, stepId, pool, attempts) {
     : { retryHere: `bullswarm workflow step rerun ${token} ${stepId}` };
 }
 
-function optionsFor({ token, stepId, pool, attempts, output }) {
+function optionsFor({ token, stepId, pool, attempts, output, v3 = false }) {
   const [exportPlan, revisePlan] = changeStepCommands(token);
+  const [add, wait] = addStepCommands(token);
   return {
     ...rerunOption(token, stepId, pool, attempts),
-    changeStep: `${exportPlan}, edit it, then ${revisePlan}`,
+    ...(v3 ? { addSteps: `${add}, then ${wait}` } : { changeStep: `${exportPlan}, edit it, then ${revisePlan}` }),
     takeOver: output,
     acceptAnyway: `bullswarm workflow step accept ${token} ${stepId} --reason "…"`,
   };
@@ -237,7 +244,7 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
     ...neighbours(state, stepId),
     ...(backAt ? { backAt } : {}),
     options: {
-      ...optionsFor({ token: id, stepId, pool, attempts, output: takeOverText(last, runtime?.outputFile) }),
+      ...optionsFor({ token: id, stepId, pool, attempts, output: takeOverText(last, runtime?.outputFile), v3: isProgramV3(state?.program) }),
       ...(backAt ? { waitForIt: `after ${backAt}: bullswarm workflow step rerun ${id} ${stepId}` } : {}),
     },
   };
@@ -414,8 +421,14 @@ export function renderNeedsYou(facts, { terminal = false, next = null } = {}) {
   lines.push('  your call:');
   if (rerunLine(options)) lines.push(rerunLine(options));
   if (options.waitForIt) lines.push(option('wait for it', options.waitForIt));
-  lines.push(option('change the step', exportPlan));
-  lines.push(option('  then edit it', revisePlan));
+  if (options.addSteps) {
+    const [add, wait] = addStepCommands(facts.token ?? '?');
+    lines.push(option('add steps', add));
+    lines.push(option('  then wait', wait));
+  } else {
+    lines.push(option('change the step', exportPlan));
+    lines.push(option('  then edit it', revisePlan));
+  }
   lines.push(option('take over', options.takeOver));
   lines.push(option('accept anyway', options.acceptAnyway));
   for (const other of options.otherChecks ?? []) {

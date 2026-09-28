@@ -19,6 +19,9 @@ import { exportV2Plan, planV2Revision } from '../src/workflow/v2-revision.js';
 import { v2LiveProgramRuntime } from '../src/workflow/v2-state.js';
 import { addV3Steps, waitV3Nodes } from '../src/workflow/cli-steps.js';
 import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
+import { v3LaunchInstruction } from '../src/workflow/gates-loops.js';
+import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
+import { readEvents } from '../src/workflow/events.js';
 import { v2V3Fixtures } from './fixtures/program-v3-fixtures.mjs';
 
 const cli = resolve('bin/bullswarm.js');
@@ -433,4 +436,116 @@ test('watch prints a finished v3 step\'s answer on one line under it, cut to 120
   await runWorkflowWatch(f.bullswarmDir, run.shortId, { afterSequence: 0, jsonl: true, intervalMs: 10, stale: false, output: { write: (chunk) => { jsonl += chunk; } } });
   const finished = jsonl.trim().split('\n').map((line) => JSON.parse(line)).find((line) => line.type === 'action.finished' && line.actionId === 'find');
   assert.ok(finished.answer.startsWith('{"findings":'));
+});
+
+// --- what a v3 run hands back ---------------------------------------------------
+
+const cliEnv = (f) => {
+  const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
+  delete env.BULLSWARM_DEPTH;
+  return env;
+};
+
+test('a failed v3 step\'s needs-you block and the run\'s result point to workflow add and wait, never to plan export or revise', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, findProgram(), fakeDispatch((id) => (id === 'find' ? { fail: 'provider' } : {})));
+  assert.equal(run.result.status, 'partial');
+  const token = run.shortId;
+  // The block a live watch prints (a finished run's watch leaves out `your call:`, the handback follows).
+  const failed = readEvents(run.runDir).find((event) => event.type === 'action.finished' && event.payload.status === 'failed');
+  const facts = needsYouFacts(run.state, failed, { token, runDir: run.runDir });
+  const text = renderNeedsYou(facts).join('\n');
+  assert.match(text, /find needs you/);
+  assert.equal(needsYouJson(facts).options.addSteps, `bullswarm workflow add ${token} --steps part.json, then bullswarm workflow wait ${token} <added ids>`);
+  assert.equal(Object.hasOwn(needsYouJson(facts).options, 'changeStep'), false);
+  assert.ok(text.includes(`add steps        bullswarm workflow add ${token} --steps part.json`), text);
+  assert.ok(text.includes(`  then wait      bullswarm workflow wait ${token} <added ids>`), text);
+  assert.ok(text.includes(`bullswarm workflow step rerun ${token} find`), text);
+  assert.doesNotMatch(text, /plan export|plan revise/);
+
+  const human = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', token], { encoding: 'utf8', env: cliEnv(f) });
+  assert.equal(human.status, 1, human.stdout + human.stderr);
+  assert.ok(human.stdout.includes(`  add       bullswarm workflow add ${token} --steps part.json, then bullswarm workflow wait ${token} <added ids>`), human.stdout);
+  assert.doesNotMatch(human.stdout, /plan export|plan revise/);
+  assert.doesNotMatch(human.stdout, /# requirements|# verified/);
+  const summary = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', token, '--summary'], { encoding: 'utf8', env: cliEnv(f) }).stdout);
+  assert.equal(Object.hasOwn(summary.handback.options, 'continue'), false);
+  assert.match(summary.handback.options.add, /^bullswarm workflow add /);
+  const shown = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'show', token], { encoding: 'utf8', env: cliEnv(f) });
+  assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+  assert.doesNotMatch(shown.stdout, /# requirements/);
+  assert.match(shown.stdout, /# actions {2}0\/2 succeeded/);
+});
+
+test('plan validate lists a v3 program\'s gates and loops', (t) => {
+  const f = fixture(t);
+  const plan = join(f.root, 'plan.json');
+  writeFileSync(plan, JSON.stringify({
+    schemaVersion: V3,
+    steps: [
+      { id: 'fix', prompt: 'Fix the acme widget.' },
+      { id: 'check', dependsOn: ['fix'], prompt: 'Check it.', answer: { type: 'object', required: ['passed'], properties: { passed: { type: 'boolean' } } } },
+      { id: 'ship', dependsOn: ['approve'], prompt: 'Ship it.' },
+    ],
+    loops: [{ id: 'polish', steps: ['fix', 'check'], until: { step: 'check', field: 'passed' }, maxRounds: 3 }],
+    gates: [{ id: 'approve', dependsOn: ['polish'], note: 'Read the widget' }],
+  }));
+  const out = spawnSync(process.execPath, [cli, 'workflow', 'plan', 'validate', 'Ship the acme widget', '--program', plan, '--cwd', f.workspace], { encoding: 'utf8', env: cliEnv(f) });
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /✓ program v3 valid: 3 steps, 1 gate, 1 loop \(nothing launched\)/);
+  assert.match(out.stdout, /  check +analyze\/medium answer after fix\n/);
+  assert.match(out.stdout, /  gate approve +after polish · waits for you · Read the widget/);
+  assert.match(out.stdout, /  loop polish +steps fix, check · until check\.passed is true · at most 3 rounds/);
+  assert.doesNotMatch(out.stdout, /affects|requirement/);
+});
+
+test('a detached v3 launch says where the run stops for you and points to workflow add', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-add-launch-'));
+  const home = join(root, 'home');
+  const workspace = join(root, 'acme');
+  mkdirSync(join(home, 'connectors'), { recursive: true });
+  mkdirSync(workspace);
+  const echo = JSON.parse(readFileSync(new URL('../src/providers/echo/connector.json', import.meta.url), 'utf8'));
+  writeFileSync(join(home, 'connectors', 'echo.json'), JSON.stringify(echo));
+  writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, pools: { echo: { enabled: true } }, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } }));
+  execFileSync('git', ['init', '-q', workspace]);
+  writeFileSync(join(workspace, 'README.md'), 'acme\n');
+  execFileSync('git', ['-C', workspace, 'add', '.']);
+  execFileSync('git', ['-C', workspace, '-c', 'user.name=Acme Dev', '-c', 'user.email=dev@example.com', 'commit', '-qm', 'seed']);
+  const plan = join(root, 'plan.json');
+  writeFileSync(plan, JSON.stringify({
+    schemaVersion: V3,
+    steps: [{ id: 'draft', prompt: 'Draft the acme brief.' }, { id: 'post', dependsOn: ['approve'], prompt: 'Post it.' }],
+    gates: [{ id: 'approve', dependsOn: ['draft'] }],
+  }));
+  const env = { ...process.env, BULLSWARM_HOME: home, BULLSWARM_DEPTH: '0', BULLSWARM_NO_PACKAGED_PROVIDERS: '1' };
+  const out = spawnSync(process.execPath, [cli, 'workflow', 'goal', 'Post the acme brief', '--cwd', workspace, '--program', plan, '--json'], { encoding: 'utf8', env, cwd: workspace, timeout: 60_000 });
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  const launched = JSON.parse(out.stdout);
+  // Let the detached kernel park before the folder goes away.
+  const statePath = join(home, 'workflows', launched.runId, 'state.json');
+  for (let i = 0; i < 300; i += 1) {
+    try { if (['waiting', 'completed', 'partial', 'failed'].includes(JSON.parse(readFileSync(statePath, 'utf8')).lifecycle.status)) break; } catch { /* mid-write */ }
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const token = launched.shortId ?? launched.runId;
+  assert.equal(launched.observe.add, `bullswarm workflow add ${token} --steps part.json`);
+  assert.equal(Object.hasOwn(launched.observe, 'plan'), false);
+  assert.equal(launched.instructions.callerPlanner.command, `bullswarm workflow add ${token} --steps part.json`);
+  assert.match(launched.instructions.callerPlanner.purpose, new RegExp(`The run stops for you at gate approve: watch --until trouble wakes you there, and bullswarm workflow continue ${token} <id> moves it on`));
+  assert.doesNotMatch(launched.instructions.callerPlanner.purpose, /never waits/);
+});
+
+test('a v3 run with no gate or loop says it never stops for you; a completed v3 run\'s result prints no requirement or verified line', async (t) => {
+  const plain = v3LaunchInstruction({ gates: [], loops: [] }, 'acme01');
+  assert.match(plain.purpose, /It declares no gate or loop, so it never stops for you/);
+  const both = v3LaunchInstruction({ gates: [{ id: 'approve', when: { step: 'merge', field: 'hasUncertain', equals: true } }], loops: [{ id: 'polish', maxRounds: 3 }] }, 'acme01');
+  assert.match(both.purpose, /stops for you at gate approve \(unless its condition does not hold\), loop polish if its 3 rounds run out/);
+  const f = fixture(t);
+  const run = await launch(f, { schemaVersion: V3, steps: [{ id: 'draft', prompt: 'Draft the acme brief.' }] }, fakeDispatch());
+  assert.equal(run.result.status, 'completed');
+  const human = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId], { encoding: 'utf8', env: cliEnv(f) });
+  assert.equal(human.status, 0, human.stdout + human.stderr);
+  assert.doesNotMatch(human.stdout, /# requirements|# verified|plan export|plan revise/);
 });

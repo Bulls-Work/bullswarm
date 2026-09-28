@@ -1109,7 +1109,7 @@ function reviewVerbs(envelope, token, actions) {
   return {};
 }
 
-function summaryHandback(envelope, handback, token, { failureRule = false, actions = [], stopped = null } = {}) {
+function summaryHandback(envelope, handback, token, { failureRule = false, actions = [], stopped = null, v3 = false } = {}) {
   const retryable = handback.unfinished.filter((entry) => entry.retryable);
   const waits = retryable.map((entry) => Date.parse(entry.retryAfter ?? '')).filter(Number.isFinite);
   // Named only when every step to retry is waiting on a spent pool: resume
@@ -1142,9 +1142,12 @@ function summaryHandback(envelope, handback, token, { failureRule = false, actio
     unreadSteering: handback.unreadSteering.map((entry) => ({ id: entry.id, message: firstLine(entry.message, 160) ?? '' })),
     // Every option the caller has, as a command. Which one to take is theirs.
     options: {
-      ...(envelope.executionMode === 'program'
-        ? { continue: `bullswarm workflow plan export ${token} --out plan.json, edit it, then bullswarm workflow plan revise ${token} --program plan.json (--rerun <step ids> runs finished steps again)` }
-        : {}),
+      // A v3 run's steps are never edited: new work is appended, then waited on.
+      ...(envelope.executionMode === 'program' && v3
+        ? { add: `bullswarm workflow add ${token} --steps part.json, then bullswarm workflow wait ${token} <added ids> (appends steps, gates or loops and reopens the run)` }
+        : envelope.executionMode === 'program'
+          ? { continue: `bullswarm workflow plan export ${token} --out plan.json, edit it, then bullswarm workflow plan revise ${token} --program plan.json (--rerun <step ids> runs finished steps again)` }
+          : {}),
       ...(rerunIds.length
         ? { retry: `bullswarm workflow resume ${token}${retryAfter ? ` after ${retryAfter}` : ''} (reruns ${rerunIds.slice(0, 4).join(', ')}${rerunIds.length > 4 ? ` and ${rerunIds.length - 4} more` : ''})` }
         : {}),
@@ -1226,7 +1229,7 @@ export function formatV2HandbackLines(summary) {
   }
   if (open.length > shown) lines.push(`  … and ${open.length - shown} more open requirement(s)`);
   for (const entry of handback.unreadSteering) lines.push(`  steering not acted on: ${entry.message}`);
-  const labels = { continue: 'continue', retry: 'retry', rerun: 'rerun', accept: 'accept', rerunReview: 'rerun', acceptRequirement: 'accept', takeOver: 'take over', restart: 'restart' };
+  const labels = { continue: 'continue', add: 'add', retry: 'retry', rerun: 'rerun', accept: 'accept', rerunReview: 'rerun', acceptRequirement: 'accept', takeOver: 'take over', restart: 'restart' };
   const options = Object.entries(handback.options ?? {});
   if (options.length) {
     lines.push('your call:');
@@ -1412,7 +1415,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
     },
     usage: clone(envelope.usage),
-    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule, actions, stopped }) } : {}),
+    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule, actions, stopped, v3: isProgramV3(state?.program) }) } : {}),
     // The loop's rounds once one ran, and the caller's block when there is one.
     ...(envelope.verifyRounds?.used > 0 ? { verifyRounds: clone(envelope.verifyRounds) } : {}),
     ...(envelope.callerDecision ? { callerDecision: clone(envelope.callerDecision) } : {}),

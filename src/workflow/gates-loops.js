@@ -675,3 +675,40 @@ export function previousRoundBlock(state, action) {
   lines.push('Use this to make this round succeed where the last one did not.');
   return lines.join('\n');
 }
+
+// --- launch and validate wording for a v3 program ------------------------------
+
+/** A v3 program's gates and loops, from its authored ({gates, loops}) or stored ({control}) form. */
+export function programControl(program) {
+  const inner = program?.program && typeof program.program === 'object' ? program.program : program;
+  if (inner?.schemaVersion !== PROGRAM_V3_SCHEMA_VERSION) return null;
+  return { gates: inner.control?.gates ?? inner.gates ?? [], loops: inner.control?.loops ?? inner.loops ?? [] };
+}
+
+/**
+ * The launch instruction of a caller-planned v3 run: work is added with
+ * `workflow add`, and the run says where it stops for the caller (its gates,
+ * a loop out of rounds) instead of "never waits".
+ */
+export function v3LaunchInstruction(control, token) {
+  const gates = (control?.gates ?? []).map((gate) => `gate ${gate.id}${gate.when ? ' (unless its condition does not hold)' : ''}`);
+  const loops = (control?.loops ?? []).map((loop) => `loop ${loop.id} if its ${loop.maxRounds} round${loop.maxRounds === 1 ? '' : 's'} run out`);
+  const add = 'Add steps, gates or loops at any time with workflow add (nothing the run has changes), and read any step\'s facts and answer with workflow wait.';
+  const stops = [...gates, ...loops];
+  const purpose = stops.length
+    ? `${add} The run stops for you at ${stops.join(', ')}: watch --until trouble wakes you there, and bullswarm workflow continue ${token} <id> moves it on. When it finishes, its result hands back whatever is left.`
+    : `${add} It declares no gate or loop, so it never stops for you; when it finishes, its result hands back whatever is left.`;
+  return { purpose, command: `bullswarm workflow add ${token} --steps part.json` };
+}
+
+/** The lines `plan validate` prints for a v3 program's gates and loops. */
+export function controlSummaryLines(control) {
+  const lines = [];
+  for (const gate of control?.gates ?? []) {
+    lines.push(`  gate ${gate.id.padEnd(19)} after ${gate.dependsOn.join(', ') || '(nothing)'}${gate.when ? ` · waits when ${describeCondition(gate.when)}` : ' · waits for you'}${gate.note ? ` · ${gate.note}` : ''}`);
+  }
+  for (const loop of control?.loops ?? []) {
+    lines.push(`  loop ${loop.id.padEnd(19)} steps ${loop.steps.join(', ')} · until ${describeCondition(loop.until)} · at most ${loop.maxRounds} round${loop.maxRounds === 1 ? '' : 's'}`);
+  }
+  return lines;
+}

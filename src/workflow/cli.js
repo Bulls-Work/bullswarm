@@ -18,7 +18,9 @@ import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
 import { implicitV3Requirements, isProgramV3, programV3Facts, stepV3Facts } from './program-v3.js';
-import { parkedFailures, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
+import {
+  controlSummaryLines, parkedFailures, programControl, v3LaunchInstruction, waitingDocument, waitingOutcomeLines,
+} from './gates-loops.js';
 import { wfAdd, wfContinue, wfWait } from './cli-steps.js';
 import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
@@ -366,7 +368,7 @@ async function waitForRunState(runId, { attempts = 400 } = {}) {
   return state;
 }
 
-function goalObserveCommands(token, { callerPlanner = false } = {}) {
+function goalObserveCommands(token, { callerPlanner = false, v3 = false } = {}) {
   return {
     watch: `bullswarm workflow watch ${token}`,
     summary: `bullswarm workflow runs show ${token}`,
@@ -376,7 +378,8 @@ function goalObserveCommands(token, { callerPlanner = false } = {}) {
     events: `bullswarm workflow events --json ${token} --after 0`,
     steer: `bullswarm workflow steer ${token} --message "<guidance>"`,
     cancel: `bullswarm workflow cancel ${token} --json`,
-    ...(callerPlanner ? { plan: `bullswarm workflow plan export ${token} --out plan.json` } : {}),
+    ...(callerPlanner && v3 ? { add: `bullswarm workflow add ${token} --steps part.json` } : {}),
+    ...(callerPlanner && !v3 ? { plan: `bullswarm workflow plan export ${token} --out plan.json` } : {}),
   };
 }
 
@@ -399,16 +402,17 @@ async function launchDetachedResume(doc, runId, opts) {
   const state = await waitForKernelTakeover(runId, child.pid);
   assertDetachedChildLaunched(spawned, runId);
   const token = state?.shortId ?? runId;
+  const control = programControl(state?.program);
   const launch = {
     action: 'goal-resumed',
     runId,
     shortId: state?.shortId ?? null,
     status: state?.lifecycle?.status ?? 'resuming',
     pid: child.pid,
-    observe: goalObserveCommands(token, { callerPlanner: v2PlannerMode(doc) === 'caller' }),
+    observe: goalObserveCommands(token, { callerPlanner: v2PlannerMode(doc) === 'caller', v3: Boolean(control) }),
     logs: { stdout: stdoutPath, stderr: stderrPath },
   };
-  launch.instructions = goalLaunchInstructions(launch.observe);
+  launch.instructions = goalLaunchInstructions(launch.observe, control && { control, token });
   return launch;
 }
 
@@ -445,6 +449,7 @@ async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null } =
   assertDetachedChildLaunched(spawned, runId);
   const callerPlanner = v2PlannerMode(doc) === 'caller';
   const token = state?.shortId ?? runId;
+  const control = programControl(initialPlannerResponse);
   const launch = {
     action: 'goal-launched',
     runId,
@@ -461,11 +466,11 @@ async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null } =
       worker: doc.config?.workerRouting?.reasoning ?? null,
       planner: doc.config?.plannerRouting?.reasoning ?? null,
     },
-    observe: goalObserveCommands(token, { callerPlanner }),
+    observe: goalObserveCommands(token, { callerPlanner, v3: Boolean(control) }),
     logs: { stdout: stdoutPath, stderr: stderrPath },
     ...(opts.verifyRoundsMeaning ? { verifyRoundsMeaning: opts.verifyRoundsMeaning } : {}),
   };
-  launch.instructions = goalLaunchInstructions(launch.observe);
+  launch.instructions = goalLaunchInstructions(launch.observe, control && { control, token });
   if (!opts.silentLaunch && opts.json) console.log(JSON.stringify(launch, null, 2));
   else if (!opts.silentLaunch) {
     printGoalLaunchInstructions(launch);
@@ -473,8 +478,10 @@ async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null } =
   return launch;
 }
 
-function goalLaunchInstructions(observe) {
+function goalLaunchInstructions(observe, v3 = null) {
   return {
+    // A v3 run: work is added, and the run says where it stops (gates-loops.js).
+    ...(observe.add ? { callerPlanner: v3LaunchInstruction(v3?.control, v3?.token) } : {}),
     ...(observe.plan ? {
       callerPlanner: {
         purpose: 'Change the running plan at any time: export it, edit it, then plan revise. The run never waits for you; when it finishes, its result hands back whatever is left.',
@@ -1071,8 +1078,13 @@ async function planValidate(opts) {
   };
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
   else {
-    console.log(`✓ program valid against the contract: ${payload.program.actions.length} action${payload.program.actions.length === 1 ? '' : 's'} for ${payload.requirements.length} requirement${payload.requirements.length === 1 ? '' : 's'} (nothing launched)`);
-    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.role ? ` role=${action.role}` : ''}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}${action.route ? ` route: ${routeSummary(action.route)}` : ''}`);
+    const control = programControl(accepted.program);
+    const count = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    console.log(control
+      ? `✓ program v3 valid: ${count(payload.program.actions.length, 'step')}, ${count(control.gates.length, 'gate')}, ${count(control.loops.length, 'loop')} (nothing launched)`
+      : `✓ program valid against the contract: ${count(payload.program.actions.length, 'action')} for ${count(payload.requirements.length, 'requirement')} (nothing launched)`);
+    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.role ? ` role=${action.role}` : ''}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${control ? `${action.answer ? ' answer' : ''}${action.dependsOn.length ? ` after ${action.dependsOn.join(', ')}` : ''}` : action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}${action.route ? ` route: ${routeSummary(action.route)}` : ''}`);
+    for (const line of controlSummaryLines(control)) console.log(line);
     printAdvisories(payload.advisories, { stream: console.log });
     if (payload.verifyRoundsMeaning) console.log(VERIFY_ROUNDS_NOTE);
     console.log(`  launch   ${next.launch}`);
