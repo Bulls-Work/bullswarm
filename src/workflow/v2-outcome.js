@@ -559,7 +559,7 @@ export function consolidateV2Gaps(state) {
         evidence: currentEvidence(state.ledger, requirement),
       };
     })
-    .filter((requirement) => requirement.status !== 'passed');
+    .filter((requirement) => requirement.status !== 'passed' && (requirement.mandatory || !isProgramV3(state.program)));
   const actions = state.program.actions
     .map((definition) => {
       const runtime = actionStates.get(definition.id);
@@ -1382,7 +1382,8 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
     finishedAt: envelope.finishedAt,
     goal: firstLine(envelope.goal, 120),
     goalBytes: Buffer.byteLength(String(envelope.goal ?? ''), 'utf8'),
-    requirements: envelope.requirements.map((requirement) => ({
+    // A v3 run's implicit requirement is no gap to hand back (v3 reports facts per step).
+    requirements: envelope.requirements.filter((requirement) => requirement.mandatory || !isProgramV3(state?.program)).map((requirement) => ({
       id: requirement.id,
       status: requirement.status,
       mandatory: requirement.mandatory,
