@@ -17,6 +17,14 @@ export function isV3State(state) {
   return state?.program?.schemaVersion === PROGRAM_V3_SCHEMA_VERSION;
 }
 
+/**
+ * True for a run record (a dashboard row with its state, or a rollup) of a
+ * v3 run: rollups say so with `programFormat: 3`.
+ */
+export function isV3Record(record) {
+  return isV3State(record?.state) || record?.programFormat === 3;
+}
+
 /** The run's gates and loops as declared ({gates, loops}; empty lists for none). */
 export function declaredControl(state) {
   return { gates: state?.program?.control?.gates ?? [], loops: state?.program?.control?.loops ?? [] };

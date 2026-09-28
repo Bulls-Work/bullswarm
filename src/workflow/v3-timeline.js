@@ -32,7 +32,9 @@ export function v3TimelineFacts(model, stages) {
 
 /** One gate or loop row, and the command under a waiting one: [{text, at}]. */
 export function controlRowLines(row, width) {
-  const clock = row.at ? clockText(row.at) : '     ';
+  // A loop row heads its rounds, so it carries no clock of its own: the
+  // time it passed would sit above the earlier rounds' clocks.
+  const clock = row.at && row.type !== 'loop' ? clockText(row.at) : '     ';
   const glyph = ROLE_COLOUR[row.role] ? tint(row.glyph, ROLE_COLOUR[row.role]) : dim(row.glyph);
   const lines = [{ text: cut(` ${dim(clock)}  ${glyph} ${row.text}`, width), at: row.at }];
   if (row.command) lines.push({ text: cut(`        ${dim('continue:')} ${row.command}`, width), at: row.at });

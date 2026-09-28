@@ -479,7 +479,10 @@ test('the period selector redraws the band for Last 30 days and All time', () =>
     // The band's own figures follow the period the model was built over.
     const overview = model.stats?.overview;
     assert.ok(overview, `${period}: the model carries no overview`);
-    assert.match(lines.join('\n'), new RegExp(`Workflows: ${overview.keys.workflows}\\b`), `${period}: the runs count is not the period's`);
+    // Single runs are named apart from workflows since 0.37.0.
+    const { workflows, oneStepRuns } = overview.keys;
+    const figure = oneStepRuns ? `Runs: ${oneStepRuns} · workflows ${workflows - oneStepRuns}\\b` : `Workflows: ${workflows}\\b`;
+    assert.match(lines.join('\n'), new RegExp(figure), `${period}: the runs count is not the period's`);
   }
 });
 

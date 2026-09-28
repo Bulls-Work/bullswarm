@@ -34,6 +34,7 @@ import {
   addNullable as add, finite, groupEntries, parseIso, recordEntries, recordTimeMs, recordTotals,
   recordWorkerMinutes, round, sumEntries, sumRecords,
 } from './metrics.js';
+import { isOneStepRecord } from './run-counts.js';
 
 /** The period toggle, in the order the toggle shows them. */
 export const PERIODS = Object.freeze(['7d', '30d', 'all']);
@@ -996,6 +997,8 @@ function keyValues(records) {
   };
   return {
     workflows: records.length,
+    // Of those, the one-step runs (`bullswarm run`): the totals line names them apart.
+    oneStepRuns: records.filter(isOneStepRecord).length,
     activeDays: days.size,
     favouritePool: top(pools, 'attempts'),
     busiestProject: top(projects, 'runs'),

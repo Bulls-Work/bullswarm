@@ -871,6 +871,8 @@ function workflowLiveLines(model, width, spinnerFrame, nowMs = Date.now()) {
     if (stream) lines.push(`   ${stream}`);
     lines.push('');
   }
+  const waiting = lines.length ? null : waitingFacts(state);
+  if (waiting) lines.push(`${glyphs().waiting} No live agents · ${waiting.label}`);
   if (!lines.length) {
     const liveness = model.row?.liveness ?? v2RunnerLiveness(state, { runDir: model.row?.runDir });
     lines.push(stateFinishedAt(state)
@@ -890,6 +892,8 @@ function workflowNextLines(model, width) {
   if (stateFinishedAt(state)) return [truncate(`${glyphs().ok} Workflow ${state.lifecycle.status === 'completed' ? 'complete' : state.lifecycle.status} - result is ready`, width)];
   const running = state.attempts.filter((attempt) => attempt.status === 'running');
   if (running.length) return [truncate(`${glyphs().pending} Waiting for ${running.length} worker${running.length === 1 ? '' : 's'}`, width)];
+  const waiting = waitingFacts(state);
+  if (waiting) return waiting.commands.map((command) => truncate(`${glyphs().waiting} ${command}`, width));
   if (state.planner.status === 'running') return [`${glyphs().pending} Workflow Planner is creating the next bounded program`];
   if (state.planner.awaiting) {
     const token = state.shortId ?? state.runId;

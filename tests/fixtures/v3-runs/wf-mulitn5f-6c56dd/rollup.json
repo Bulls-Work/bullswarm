@@ -121,5 +121,7 @@
       "grok": 267971
     }
   },
-  "legacy": false
+  "legacy": false,
+  "programFormat": 3,
+  "oneStep": true
 }

@@ -18,6 +18,9 @@ import { projectV2DependencyStages } from '../src/workflow/v2-presentation.js';
 import { workflowPanelModel } from '../src/workflow/run-model.js';
 import { runPage, workflowTimelineLines } from '../src/workflow/run-view.js';
 import { runTableLines } from '../src/workflow/history-view.js';
+import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
+import { renderWorkflowOverviewPanel } from '../src/workflow/run-view.js';
+import { isOneStepRecord, runCountText } from '../src/workflow/run-counts.js';
 
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
@@ -197,4 +200,45 @@ test('Runs table: a waiting run reads waiting with the command that continues it
   const text = out.lines.map(visible).join('\n');
   assert.match(text, /⧖ 2fne62/);
   assert.match(text, /waiting at gate approve · bullswarm workflow continue 2fne62 approve/);
+});
+
+test('overview panel (the mod pane): Live and Next name the gate and the continue command', () => {
+  const row = realRow(GATED);
+  const panel = renderWorkflowOverviewPanel(workflowPanelModel(row, { nowMs: NOW }), 100, 34, 0, 0, null, NOW).map(visible).join('\n');
+  assert.match(panel, /⧖ No live agents · waiting at gate approve/);
+  assert.match(panel, /⧖ bullswarm workflow continue 2fne62 approve/);
+  assert.doesNotMatch(panel, /Starting the next dependency-ready actions|Waiting for the next dispatch/);
+});
+
+test('Home: a waiting card and running row name the gate and command; a v3 card claims no verdict', () => {
+  const gated = { ...realRow(GATED), ongoing: true };
+  const single = JSON.parse(readFileSync(join(SINGLE, 'rollup.json'), 'utf8'));
+  const model = dashboardModel(null, {
+    runs: [gated], rollups: [single], nowMs: NOW, usage: { pools: [], assignments: [] }, days: [],
+  });
+  const text = renderDashboardPage(model, { page: 'home', width: 200, height: 200, nowMs: NOW }).lines.map(visible).join('\n');
+  assert.match(text, /we-proj · waiting at gate approve · bullswarm workflow continue 2fne62 approve/);
+  assert.match(text, /⧖ 1\.2fne62 .*waiting at gate approve/);
+  assert.match(text, /next: bullswarm workflow continue 2fne62 approve/);
+  assert.match(text, /│ we-proj · completed +│/, 'the one-step run card has no verdict slot');
+  assert.doesNotMatch(text, /not verified/);
+});
+
+test('Stats and Home count one-step runs as runs, apart from workflows', () => {
+  assert.equal(runCountText(3, 0), '3 workflows');
+  assert.equal(runCountText(1, 1), '1 run');
+  assert.equal(runCountText(8, 3), '3 runs · 5 workflows');
+  const single = JSON.parse(readFileSync(join(SINGLE, 'rollup.json'), 'utf8'));
+  assert.equal(single.oneStep, true);
+  assert.equal(single.programFormat, 3);
+  assert.equal(isOneStepRecord(single), true);
+  assert.equal(isOneStepRecord({ kind: 'task', source: 'run' }), true, 'a legacy single run');
+  assert.equal(isOneStepRecord({ runId: 'wf-x', steps: { done: 1, total: 1 } }), false, 'a v2 workflow of one step stays a workflow');
+  const model = dashboardModel(null, { rollups: [single], nowMs: NOW, usage: { pools: [], assignments: [] }, days: [] });
+  const home = renderDashboardPage(model, { page: 'home', width: 200, height: 200, nowMs: NOW }).lines.map(visible).join('\n');
+  assert.match(home, /Runs: 1\b/);
+  assert.doesNotMatch(home, /Workflows: 1/);
+  const stats = renderDashboardPage(model, { page: 'stats', width: 200, height: 120, nowMs: NOW }).lines.map(visible).join('\n');
+  assert.match(stats, /\b1 run\b/);
+  assert.doesNotMatch(stats, /1 workflow\b/);
 });

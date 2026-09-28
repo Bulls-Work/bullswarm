@@ -37,6 +37,7 @@ import {
   parseIso, poolAndModelMaps, round, stateAttempts,
 } from './metrics.js';
 import { readLegacyTaskRecords } from './metrics-legacy.js';
+import { isOneStepRun, isV3State } from './v3-phases.js';
 
 export const ROLLUP_SCHEMA_VERSION = 'bullswarm.workflow.rollup.v1';
 
@@ -184,6 +185,9 @@ export function rollupRecord(state, result, { project = null, cwd, now = Date.no
       byPool: usage.byPool,
     },
     legacy: false,
+    // A v3 run says so, and a one-step run (`bullswarm run`) says that too;
+    // a v2 rollup keeps its exact keys.
+    ...(isV3State(state) ? { programFormat: 3, ...(isOneStepRun(state) ? { oneStep: true } : {}) } : {}),
   };
 }
 

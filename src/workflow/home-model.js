@@ -26,6 +26,8 @@ import { verifyRoundLabel } from './verify-rounds.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { readCalibration } from '../lib/subscription-cost.js';
 import { apiMoney, apiMoneyText, formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
+import { waitingFacts } from './v3-display.js';
+import { isV3Record } from './v3-phases.js';
 
 function taskToday(task, nowMs, { finished = false } = {}) {
   const at = finished ? (task?.endedAt ?? task?.finishedAt) : (task?.startedAt ?? task?.endedAt ?? task?.finishedAt);
@@ -385,6 +387,7 @@ function todayTopRuns(model, nowMs = Date.now(), { limit = 3 } = {}) {
     const page = runPageFacts(record, nowMs);
     const minutes = page?.minutes ?? runMinutesInfo(record, nowMs);
     const steps = page?.steps ?? runStepCounts(record);
+    const waiting = waitingFacts(recordState(record));
     return {
       record,
       id: runIdentity(record),
@@ -392,8 +395,10 @@ function todayTopRuns(model, nowMs = Date.now(), { limit = 3 } = {}) {
       project: runProject(record),
       // While a run is in its repair loop the card says which round it is
       // working toward (`verify round 2/3`) in place of `running`.
-      status: verifyRoundLabel(recordState(record)) ?? runStatus(record),
-      verdict: runVerdict(record),
+      status: waiting?.label ?? verifyRoundLabel(recordState(record)) ?? runStatus(record),
+      // A v3 run reports facts per step, never a verification verdict.
+      verdict: isV3Record(record) ? null : runVerdict(record),
+      next: waiting?.commands[0] ?? null,
       minutes,
       steps,
       money: recordMoneyPair(record),

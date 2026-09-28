@@ -17,6 +17,7 @@ import {
   spendFootnote,
 } from './stat-kit.js';
 import { apiMoney, formatMoneyPair } from '../lib/usage-basis.js';
+import { runCountText } from './run-counts.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const TABS = Object.freeze([
@@ -536,7 +537,7 @@ function summaryItems(overview, outcomes, poolTable, projectTable) {
   const money = apiMoney(keys);
   const activeDays = finite(keys.activeDays);
   const totals = [
-    workflows == null ? null : countText(workflows, 'workflow'),
+    workflows == null ? null : runCountText(workflows, finite(keys.oneStepRuns) ?? 0),
     workerMinutes == null ? null : `${workerMinutes} worker-minutes`,
     money == null && finite(keys.subscriptionUsd) == null ? null : `${moneyText({ ...keys, apiUsd: money?.partial ? null : money?.usd })}`,
     activeDays == null ? null : `${activeDays} active days`,

@@ -63,6 +63,7 @@ import { taskAttempt } from './metrics-legacy.js';
 import { apiMoney, formatMoney } from '../lib/usage-basis.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { taskKey } from '../lib/tasks.js';
+import { waitingFacts } from './v3-display.js';
 
 const BUDGET_WEEK_POOLS = 4;
 // From this width up the Today band and the period band are each two halves
@@ -131,7 +132,9 @@ function cardLines(card, width, { task = false } = {}) {
   const goal = cut(String(card.name ?? 'run'), Math.max(1, inner - 3));
   const project = cut(String(card.project ?? blank()), Math.max(1, inner - 9));
   const status = cardStatusText(card.status);
-  const verdict = String(card.verdict ?? '—');
+  // A v3 card has no verdict slot (null); a waiting one names its command.
+  const verdict = card.verdict === null ? '' : ` · ${String(card.verdict ?? '—')}`;
+  const next = card.next ? ` · ${card.next}` : '';
   const duration = cardDurationText(card.minutes) ?? blank();
   const steps = card.steps?.done != null && card.steps?.total != null
     ? `${card.steps.done}/${card.steps.total}` : '—';
@@ -142,7 +145,7 @@ function cardLines(card, width, { task = false } = {}) {
   const api = cardMoneySlot(money.apiSlotText ?? money.apiText);
   const subscription = cardMoneySlot(money.subscriptionText);
   const content = [
-    task ? ` ${project} · task · ${status}` : ` ${project} · ${status} · ${verdict}`,
+    task ? ` ${project} · task · ${status}` : ` ${project} · ${status}${verdict}${next}`,
     ` ${duration} · steps ${steps}`,
     ` API ${api} · subscription ${subscription}`,
   ];
@@ -862,6 +865,21 @@ function recentDurationText(record) {
   return span == null || span < 0 ? blank() : `span ${minutesText(span)}`;
 }
 
+/**
+ * `Workflows: 5 · verified 2 (40%)`, with the one-step runs named apart:
+ * `Runs: 3 · workflows 5 · verified 2 (40%)`, or `Runs: 3` alone.
+ */
+function runsFigure(total, oneStep, verified) {
+  const single = Math.max(0, Math.min(total, Number(oneStep) || 0));
+  const count = (value) => tint(String(value), 'orange');
+  // Only a workflow can be verified, so the share is of the workflows.
+  const share = total - single ? shareText(verified / (total - single)) : null;
+  const verdict = ` · verified ${count(verified)}${share ? ` (${share})` : ''}`;
+  if (!single) return `Workflows: ${strong(count(total))}${verdict}`;
+  if (single === total) return `Runs: ${strong(count(total))}`;
+  return `Runs: ${strong(count(single))} · workflows ${count(total - single)}${verdict}`;
+}
+
 function summaryBand(body, model, opts) {
   const { width, narrow } = opts;
   const overview = model.stats?.overview ?? null;
@@ -891,11 +909,10 @@ function summaryBand(body, model, opts) {
   const wholeApi = wholePair.split(' · ')[0];
   const apiPart = spentFacts ? honestApiTotalText(spentFacts, { whole: wholeApi }) : wholeApi;
   const money = [apiPart, ...wholePair.split(' · ').slice(1)].join(' · ');
-  const share = runs ? shareText(verified / runs) : null;
   const named = (row) => (row?.name ? String(row.name) : blank());
   const figures = [
     [
-      `Workflows: ${strong(tint(String(runs), 'orange'))} · verified ${tint(String(verified), 'orange')}${share ? ` (${share})` : ''}`,
+      runsFigure(runs, keys.oneStepRuns ?? 0, verified),
       `Busiest project: ${tint(named(keys.busiestProject), 'orange')}${keys.busiestProject ? ` (${keys.busiestProject.runs})` : ''}`,
     ],
     [
@@ -970,14 +987,17 @@ function activeRunLines(model, opts, body, title = 'running') {
   model.runs.forEach((run, index) => {
     const progress = planProgress(run, { assignments: model.assignments, nowMs });
     const elapsed = ageText(stateStartedAt(run.state), nowMs);
+    // A v3 run parked at a gate or loop says where, and the command that moves it.
+    const waiting = waitingFacts(run.state);
     const right = [
+      waiting?.label,
       // In its repair loop a run reads `verify round 2/3` before its phase.
       verifyRoundLabel(run.state),
       progress.phases ? `phase ${progress.phase}/${progress.phases}` : null,
       `${progress.done}/${progress.total}`,
       elapsed || null,
     ].filter(Boolean).join(' · ');
-    const label = ` ${tint(glyphs().ongoing, 'cyan')} ${index < 9 ? `${index + 1}.` : ''}${run.shortId ?? run.runId}`;
+    const label = ` ${waiting ? tint(glyphs().waiting, 'amber') : tint(glyphs().ongoing, 'cyan')} ${index < 9 ? `${index + 1}.` : ''}${run.shortId ?? run.runId}`;
     const titleText = `  ${cut(workflowRunLabel(run), Math.max(8, width - visibleLength(label) - visibleLength(right) - 4))}`;
     const head = `${label}${strong('')}${titleText}`;
     body.parts([
@@ -1035,6 +1055,7 @@ function activeRunLines(model, opts, body, title = 'running') {
       parts.push({ text: cost });
       body.parts(parts);
     }
+    for (const command of waiting?.commands ?? []) body.push(cut(`   ${dimText('next:', 5)} ${command}`, width));
   });
   for (const task of tasks) {
     const label = `${glyphs().inflight} ${task?.lane ?? 'lane unavailable'} · ${taskPoolModelText(task)}`;
