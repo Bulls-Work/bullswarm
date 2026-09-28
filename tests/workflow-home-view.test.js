@@ -19,7 +19,8 @@ import {
 } from '../src/workflow/home-view.js';
 import { todayLicenceRows, todayRows } from '../src/workflow/home-model.js';
 import { readRollupIndex, readRollups } from '../src/workflow/rollup.js';
-import { reopenV2RunForRetry, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reopenV2RunForRetry } from '../src/workflow/run-control.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 import { runPage } from '../src/workflow/run-view.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';

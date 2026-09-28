@@ -8,7 +8,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
-import { reopenV2RunForRetry, reviseV2Program, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reopenV2RunForRetry, reviseV2Program } from '../src/workflow/run-control.js';
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';

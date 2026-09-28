@@ -26,9 +26,8 @@ import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
 import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
-import {
-  runV2AutonomousWorkflow, pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run,
-} from './v2-runtime.js';
+import { runV2AutonomousWorkflow } from './v2-runtime.js';
+import { pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run } from './run-control.js';
 import { submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './caller-planner.js';
 import { formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import {

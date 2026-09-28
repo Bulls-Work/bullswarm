@@ -6,9 +6,8 @@ import { basename, dirname, join } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
-import {
-  preferredUsage, reopenV2RunForRetry, reviseV2Program, runV2AutonomousWorkflow,
-} from '../src/workflow/v2-runtime.js';
+import { preferredUsage, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reopenV2RunForRetry, reviseV2Program } from '../src/workflow/run-control.js';
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { GATE_RETRY_HANDOFF_LINE, handoffBlock } from '../src/workflow/retry-handoff.js';
 import { normalizeAttempt, recordAttemptCapture } from '../src/workflow/attempt-record.js';

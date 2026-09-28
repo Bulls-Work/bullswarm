@@ -16,7 +16,8 @@ import {
 } from '../src/workflow/watch-cli.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
-import { reopenV2RunForRetry, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reopenV2RunForRetry } from '../src/workflow/run-control.js';
 import { createStaleProbe } from '../src/lib/stale.js';
 import { glyphs } from '../src/lib/glyphs.js';
 

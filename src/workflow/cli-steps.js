@@ -32,7 +32,7 @@ import { isLegacyRunDir, resolveRunId, v2RunnerLiveness } from './short-id.js';
 import { createRevisionRequest, exportV2Plan, planV2Revision } from './v2-revision.js';
 import { workspacePathIssues } from './v2-planner.js';
 import { acquireKernelLease } from './v2-process.js';
-import { reviseV2Program } from './v2-runtime.js';
+import { reviseV2Program } from './run-control.js';
 import { deserializeV2DurableState, serializeV2DurableState } from './v2-state.js';
 import { formatDuration } from './watch-cli.js';
 

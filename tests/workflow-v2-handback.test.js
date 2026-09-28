@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
-import { reopenV2RunForRetry, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reopenV2RunForRetry } from '../src/workflow/run-control.js';
 import { readRollupIndex } from '../src/workflow/rollup.js';
 import {
   formatV2HandbackLines, summarizeV2Result, v2RetryPlan, validateV2ResultEnvelope,

@@ -13,7 +13,8 @@ import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { readRollupIndex } from '../src/workflow/rollup.js';
 import { createV2GoalDocument, deserializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
-import { pauseV2Run, reviseV2Program, runV2AutonomousWorkflow, unpauseV2Run } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { pauseV2Run, reviseV2Program, unpauseV2Run } from '../src/workflow/run-control.js';
 import {
   createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, queueRevisionRequest, V2RevisionError,
 } from '../src/workflow/v2-revision.js';

@@ -14,7 +14,8 @@ import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/nee
 import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
-import { reopenV2RunForRetry, reviseV2Program, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reopenV2RunForRetry, reviseV2Program } from '../src/workflow/run-control.js';
 import { createRevisionRequest } from '../src/workflow/v2-revision.js';
 import { THROTTLE_BACKOFF_MS, THROTTLE_MAX_WAIT_MS } from '../src/lib/quota.js';
 import { STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';

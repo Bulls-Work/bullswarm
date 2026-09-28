@@ -15,7 +15,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument, deserializeV2DurableState } from '../src/workflow/v2-state.js';
-import { runV2AutonomousWorkflow, reviseV2Program } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reviseV2Program } from '../src/workflow/run-control.js';
 import {
   submitCallerPlannerResponse, acceptCallerPlannerResponse, readCallerPlannerRequest,
 } from '../src/workflow/caller-planner.js';
