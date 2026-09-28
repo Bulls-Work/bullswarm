@@ -201,9 +201,10 @@ test('overviewModel: today\'s tiles count the runs that finished today', () => {
   assert.equal(model.today.finished, 2);
   assert.equal(model.today.verified, 1);
   assert.equal(model.today.verifiedShare, 0.5);
-  // Only wf-today recorded an estimate; wf-nocost recorded none and must not
-  // drag the tile toward a fake zero.
-  assert.equal(model.today.apiEquivalentUsd, 0.25);
+  // Only wf-today recorded an estimate; wf-nocost recorded none, so today has
+  // no whole amount (never a fake zero) and the priced subtotal is named.
+  assert.equal(model.today.apiEquivalentUsd, null);
+  assert.equal(model.today.apiKnownSubtotalUsd, 0.25);
   assert.equal(model.today.pricedRuns, 1);
   assertNoNaN(model);
 });
@@ -447,7 +448,10 @@ test('trendModel: 7d buckets by day and the segments sum to the bucket', () => {
 test('trendModel: a spend bucket with no recorded estimate is null, not zero (S1)', () => {
   const model = trendModel(indexOf(corpus()), { metric: 'spend', period: '7d', now: NOW });
   const byDay = new Map(model.buckets.map((bucket) => [bucket.label, bucket]));
-  assert.equal(byDay.get('2026-09-16').value, 0.25);
+  // wf-nocost finished that day too, unpriced: the day has no whole value,
+  // only its priced subtotal.
+  assert.equal(byDay.get('2026-09-16').value, null);
+  assert.equal(byDay.get('2026-09-16').apiKnownSubtotalUsd, 0.25);
   // Three days back only the legacy run finished, and it recorded nothing.
   assert.equal(byDay.get('2026-09-13').value, null);
   assert.equal(byDay.get('2026-09-13').runs, 1, 'the run happened; only its money is unknown');
@@ -455,8 +459,8 @@ test('trendModel: a spend bucket with no recorded estimate is null, not zero (S1
   // A day with no runs at all is also null, never $0.
   assert.equal(byDay.get('2026-09-14').value, null);
   assert.equal(byDay.get('2026-09-14').runs, 0);
-  assert.equal(model.total, 0.4);
-  assert.ok(model.nulls.every((path) => path !== 'total'));
+  assert.equal(model.total, null, 'an unpriced attempt in the period leaves no whole total');
+  assert.equal(model.apiKnownSubtotalUsd, 0.4);
 });
 
 test('trendModel: a period with no data at all has no buckets and no totals', () => {
@@ -609,7 +613,8 @@ test('projectsModel: a run with no recorded project lands under "unknown", label
 
   const bullswarm = model.rows.find((row) => row.name === 'bullswarm');
   assert.equal(bullswarm.runs, 3);
-  assert.equal(bullswarm.apiEquivalentUsd, 0.3);
+  assert.equal(bullswarm.apiEquivalentUsd, null, 'wf-nocost priced nothing');
+  assert.equal(bullswarm.apiKnownSubtotalUsd, 0.3);
   assert.equal(bullswarm.okShare, 0.6667, 'wf-nocost failed: two of three delivered');
   assert.equal(model.mostUsed, 'bullswarm');
   assertNoNaN(model);
@@ -814,9 +819,10 @@ test('trendModel: a partly-priced v2 period has no strict total, only a named su
 });
 
 test('trendModel: a legacy run that measured nothing never nulls a v2 period total', () => {
-  // The legacy record prices no attempt at all; the guard is about v2 buckets,
-  // so the measured days still sum. This is the 0.35.0 behaviour, kept.
-  const model = trendModel(indexOf(corpus()), { metric: 'spend', period: '7d', now: NOW });
+  // The legacy record recorded no attempt at all, so it adds no attempt to
+  // price and the measured days still sum. (wf-nocost has an unpriced attempt
+  // and is left out here.)
+  const model = trendModel(indexOf(corpus().filter((entry) => entry.runId !== 'wf-nocost')), { metric: 'spend', period: '7d', now: NOW });
   assert.equal(model.total, 0.4);
   const legacyDay = model.buckets.find((bucket) => bucket.label === '2026-09-13');
   assert.equal(legacyDay.value, null);

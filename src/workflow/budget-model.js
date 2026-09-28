@@ -30,7 +30,7 @@ import { poolWindows } from './usage-view.js';
 import { localTimeZone } from './day-key.js';
 import {
   addNullable as add, finite, measuredAttemptCount as measuredAttempts, parseIso, recordEntries,
-  recordTimeMs, recordWorkerMinutes, round, sumEntries, tokenSourceOf, worstTokenSource,
+  recordTimeMs, recordWorkerMinutes, round, sumEntries,
 } from './metrics.js';
 
 const MINUTE_MS = 60_000;
@@ -159,30 +159,6 @@ function poolEntries(record, pool = null) {
 /** Worker-minutes a record spent, on one pool or across all of them. */
 function workerMinutesOf(record, pool = null) {
   return recordWorkerMinutes(record, pool);
-}
-
-/**
- * A record's money on one pool (or all) with the coverage that produced it.
- *
- * `strict` sums each pool's whole amount where the pool had one; `known` is
- * the sum over the attempts that were priced. The counts travel with them so
- * a surface can read a partial total as the lower bound it is.
- */
-function apiMoneyOf(record, pool = null) {
-  let strict = null;
-  const entries = poolEntries(record, pool);
-  const byPool = new Map();
-  for (const entry of entries) byPool.set(entry.key, [...(byPool.get(entry.key) ?? []), entry]);
-  for (const grouped of byPool.values()) strict = add(strict, sumEntries(grouped).apiUsd);
-  const total = sumEntries(entries);
-  return {
-    strict,
-    known: total.apiKnownSubtotalUsd,
-    attempts: total.attempts,
-    priced: total.pricedAttempts,
-    measured: total.measuredAttempts,
-    tokenSource: entries.length ? total.tokenSource : null,
-  };
 }
 
 // ------------------------------------------------------------------- pacing
@@ -433,32 +409,25 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
   // Money and the share bar are measured over different windows, and each
   // says which: money over the page's period (so it lines up with the
   // pro-rated subscription figure), the share over the meter's own window.
-  let apiEquivalentUsd = null;
-  let apiKnownSubtotalUsd = null;
-  let tokenSource = null;
+  // Money is one sum over this pool's attempts in the period (metrics.js):
+  // a whole amount only when every attempt was priced, the subtotal always.
   let periodMinutes = null;
   let runsOnPool = 0;
-  let attempts = 0;
-  let pricedAttempts = 0;
-  let measured = 0;
+  const entries = [];
   const perRunMinutes = [];
   for (const record of records) {
-    const minutes = workerMinutesOf(record, name);
-    const money = apiMoneyOf(record, name);
-    const cost = money.strict;
-    const source = tokenSourceOf(money.tokenSource, cost ?? money.known);
-    if (money.tokenSource != null) {
-      runsOnPool += 1;
-      attempts += money.attempts;
-      pricedAttempts += money.priced;
-      measured += measuredAttempts(source, money.attempts);
-      tokenSource = worstTokenSource(tokenSource, source);
-    }
+    const own = poolEntries(record, name);
+    if (!own.length) continue;
+    runsOnPool += 1;
+    entries.push(...own);
+    const minutes = sumEntries(own).minutes;
     if (minutes != null) { periodMinutes = add(periodMinutes, minutes); perRunMinutes.push(minutes); }
-    apiEquivalentUsd = add(apiEquivalentUsd, cost);
-    apiKnownSubtotalUsd = add(apiKnownSubtotalUsd, money.known);
   }
-  tokenSource ??= 'unknown';
+  const money = sumEntries(entries);
+  const apiEquivalentUsd = money.apiUsd;
+  const apiKnownSubtotalUsd = money.apiKnownSubtotalUsd;
+  const tokenSource = money.tokenSource ?? 'unknown';
+  const { attempts, pricedAttempts, measuredAttempts: measured } = money;
 
   const meterRange = licenceWindowRange(pool, at);
   const shareRange = meterRange ?? { ...range, window: pacingWindowOf(pool), source: `the page's ${range.period} period (the pool reports no reset time)`, stale: false };
@@ -577,7 +546,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     attempts,
     pricedAttempts,
     measuredAttempts: measured,
-    estimatedAttempts: tokenSource === 'estimated:utf8-bytes/4' ? Math.max(0, attempts - measured) : 0,
+    estimatedAttempts: money.estimatedAttempts,
     fits,
     fitsBasis: fits == null
       ? (rateNote
@@ -608,6 +577,9 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     windows,
     enabled: pool?.enabled !== false,
   };
+  // The attempt entries travel with the row, out of its JSON shape, so the
+  // page total is one sum over every attempt.
+  Object.defineProperty(row, '_entries', { value: entries, enumerable: false });
   row.nulls = nullPaths({
     usedPct: row.usedPct,
     elapsedPct: row.elapsedPct,
@@ -669,16 +641,17 @@ export function budgetModel(pools, {
     priced: [],
     unpriced: [],
   };
+  const money = sumEntries(rows.flatMap((row) => row._entries ?? []));
+  totals.apiEquivalentUsd = money.apiUsd;
+  totals.apiKnownSubtotalUsd = money.apiKnownSubtotalUsd;
+  totals.tokenSource = money.tokenSource;
+  totals.attempts = money.attempts;
+  totals.pricedAttempts = money.pricedAttempts;
+  totals.measuredAttempts = money.measuredAttempts;
+  totals.estimatedAttempts = money.estimatedAttempts;
   for (const row of rows) {
-    totals.apiEquivalentUsd = add(totals.apiEquivalentUsd, row.apiEquivalentUsd);
-    totals.apiKnownSubtotalUsd = add(totals.apiKnownSubtotalUsd, row.apiKnownSubtotalUsd);
-    totals.tokenSource = worstTokenSource(totals.tokenSource, row.tokenSource);
     totals.workflowMinutes = add(totals.workflowMinutes, row.share.workflowMinutes);
     totals.runs += row.runs;
-    totals.attempts += row.attempts;
-    totals.pricedAttempts += row.pricedAttempts;
-    totals.measuredAttempts += row.measuredAttempts;
-    totals.estimatedAttempts += row.estimatedAttempts;
     // B1. The subscription total sums pools with a resolved monthly price and
     // names the ones that did not, so a partial total is never read as a whole
     // one.
@@ -761,8 +734,9 @@ export function biggestRuns(rollups, { pool = null, period = 'week', now = Date.
 
   const entries = [];
   for (const record of selectRecords(toRecords(rollups), range)) {
-    const money = apiMoneyOf(record, name);
-    if (name != null && money.tokenSource == null) continue;
+    const own = poolEntries(record, name);
+    if (name != null && !own.length) continue;
+    const money = sumEntries(own);
     const tokenSource = money.tokenSource;
     entries.push({
       runId: record.runId ?? null,
@@ -772,9 +746,9 @@ export function biggestRuns(rollups, { pool = null, period = 'week', now = Date.
       status: record.status ?? null,
       verified: record.verified === true,
       finishedAt: record.finishedAt ?? null,
-      workerMinutes: round(workerMinutesOf(record, name), 2),
+      workerMinutes: round(money.minutes, 2),
       wallMinutes: finite(record?.minutes?.wall),
-      apiEquivalentUsd: round(money.strict, 6),
+      apiEquivalentUsd: round(money.apiUsd, 6),
       tokenSource: tokenSource ?? 'unknown',
       apiEquivalentBasis: tokenSource === 'provider-reported'
         ? 'provider-reported'

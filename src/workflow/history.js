@@ -48,7 +48,7 @@ import { legacyRollupRecord, readLegacyRunFacts, readRollups, rollupRecord } fro
 import { isLegacyRunState, isOngoing } from './short-id.js';
 import { readGoalProject } from './goal.js';
 import { dayKey } from './day-key.js';
-import { addNullable, groupEntries, recordEntries, sumEntries } from './metrics.js';
+import { sumRecords } from './metrics.js';
 
 export { dayKey };
 
@@ -86,13 +86,10 @@ function taskHistoryRow(task) {
   };
 }
 
-// Each pool's whole amount, summed over the pools that had one.
+// H3. The estimates a run's attempts recorded, summed (metrics.js): the
+// priced attempts' subtotal, null when none was priced.
 function recordSpendUsd(record) {
-  let total = null;
-  for (const entries of groupEntries(recordEntries(record, { by: 'pool' })).values()) {
-    total = addNullable(total, sumEntries(entries).apiUsd);
-  }
-  return total;
+  return sumRecords([record]).apiKnownSubtotalUsd;
 }
 
 // Minutes between a recorded start and an instant, or null when either is

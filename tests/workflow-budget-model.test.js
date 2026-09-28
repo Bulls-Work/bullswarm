@@ -178,7 +178,10 @@ test('poolBudget: the row carries the meter, the money and the fit', () => {
   assert.equal(row.resetSource, 'provider');
   assert.deepEqual(row.credits, { used: 66.41, limit: 70, unit: 'credits', remaining: 3.59 });
   // 0.25 + null + 0.05 over the week; wf-old is 20 days back and outside it.
-  assert.equal(row.apiEquivalentUsd, 0.3);
+  // One attempt went unpriced, so there is no whole amount (0.37.0: one money
+  // rule for every page), and the priced subtotal travels beside it.
+  assert.equal(row.apiEquivalentUsd, null);
+  assert.equal(row.apiKnownSubtotalUsd, 0.3);
   assert.equal(row.runs, 3);
   assertNoNaN(row);
 });
@@ -427,7 +430,7 @@ test('poolBudget: subscription is null unless a price was declared (B1)', () => 
   const undeclared = poolBudget(metered(), { rollups, now: NOW });
   assert.equal(undeclared.subscription, null);
   assert.ok(undeclared.nulls.includes('subscription'));
-  assert.equal(undeclared.apiEquivalentUsd, 0.3, 'the recorded estimate is unaffected by a missing price');
+  assert.equal(undeclared.apiKnownSubtotalUsd, 0.3, 'the recorded estimate is unaffected by a missing price');
 
   // Declared through the state's subscriptions map.
   const declared = poolBudget(metered(), {
@@ -441,7 +444,7 @@ test('poolBudget: subscription is null unless a price was declared (B1)', () => 
   assert.equal(declared.subscription.windowUsd, 45.99589322);
   assert.ok(declared.subscription.basis);
   // B1: the two kinds of money stay separate.
-  assert.equal(declared.apiEquivalentUsd, 0.3);
+  assert.equal(declared.apiKnownSubtotalUsd, 0.3);
 });
 
 test('poolBudget: an includedValueUsd with no monthly price is not a price', () => {
@@ -531,8 +534,8 @@ test('poolBudget: the money window follows the period, the share follows the met
   const rollups = indexOf(corpus());
   const week = poolBudget(metered(), { rollups, period: 'week', now: NOW });
   const month = poolBudget(metered(), { rollups, period: 'month', now: NOW });
-  assert.equal(week.apiEquivalentUsd, 0.3);
-  assert.equal(month.apiEquivalentUsd, 10.29, 'the 30-day window reaches wf-old at $9.99');
+  assert.equal(week.apiKnownSubtotalUsd, 0.3);
+  assert.equal(month.apiKnownSubtotalUsd, 10.29, 'the 30-day window reaches wf-old at $9.99');
   // The share is measured over the meter's window either way, so it does not
   // move when the reader changes the page's period.
   assert.equal(week.share.workflows, month.share.workflows);
@@ -546,7 +549,9 @@ test('budgetModel: one row per pool, with totals that name what is missing', () 
   assert.deepEqual(model.rows.map((row) => row.name), ['claude-code', 'codex', 'unmetered-pool']);
   assert.equal(model.totals.pools, 3);
   assert.equal(model.totals.metered, 2);
-  assert.equal(model.totals.apiEquivalentUsd, 0.3);
+  // wf-nocost's attempt was never priced, so the page has no whole amount.
+  assert.equal(model.totals.apiEquivalentUsd, null);
+  assert.equal(model.totals.apiKnownSubtotalUsd, 0.3);
   // B1: nothing declared a price, so the subscription total is null, not 0.
   assert.equal(model.totals.subscriptionUsd, null);
   assert.deepEqual(model.totals.priced, []);
@@ -596,9 +601,11 @@ test('biggestRuns: ranked by worker-minutes and by recorded estimate, each label
 
   // B5: a run that recorded no estimate is absent from the money list rather
   // than sorted in at $0, and the count of them is reported.
-  assert.deepEqual(model.byApiEquivalentUsd.map((entry) => entry.runId), ['wf-big', 'wf-small']);
-  assert.equal(model.pricedRuns, 2);
-  assert.equal(model.unpricedRuns, 2, 'wf-nocost and wf-legacy recorded none');
+  // wf-small priced its claude-code attempt and not its codex one: it has no
+  // whole amount to rank by.
+  assert.deepEqual(model.byApiEquivalentUsd.map((entry) => entry.runId), ['wf-big']);
+  assert.equal(model.pricedRuns, 1);
+  assert.equal(model.unpricedRuns, 3, 'wf-nocost and wf-legacy recorded none, wf-small only part');
   assert.match(model.byApiEquivalentUsdBasis, /API-equivalent estimate/);
   assertNoNaN(model);
 });

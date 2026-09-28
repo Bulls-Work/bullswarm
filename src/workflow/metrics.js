@@ -742,6 +742,25 @@ export function recordTotals(record) {
   return sumEntries(recordEntries(record, { by: 'record' }));
 }
 
+/**
+ * A set of records summed over all their attempts, the one sum a period, a
+ * day or a table total is. A run that recorded no attempts (a legacy run)
+ * adds no attempts and no money, and makes the set's usage basis unknown.
+ * `pricedRuns` counts the records whose own whole amount is known.
+ */
+export function sumRecords(records) {
+  const list = (Array.isArray(records) ? records : []).filter((record) => record && typeof record === 'object');
+  const perRecord = list.map((record) => recordEntries(record, { by: 'record' }));
+  const total = sumEntries(perRecord.flat());
+  if (perRecord.some((entries) => entries.length === 0)) {
+    total.tokenSource = worstTokenSource(total.tokenSource, 'unknown');
+    total.subscriptionBasis = worstSubscriptionBasis(total.subscriptionBasis, 'unknown:no-meter');
+  }
+  total.runs = list.length;
+  total.pricedRuns = perRecord.filter((entries) => sumEntries(entries).apiUsd != null).length;
+  return total;
+}
+
 /** M4. The worker minutes a record spent, on one pool or across all of them. */
 export function recordWorkerMinutes(record, pool = null) {
   const entries = recordEntries(record, { by: 'pool' });
