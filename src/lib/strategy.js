@@ -416,7 +416,7 @@ export function applyRecommendedReasoning(strategy, levels = {}) {
       result.cleared.push({ pool, tier, level: mark.level, model: mark.model });
     }
   }
-  for (const [pool, tiers] of Object.entries(levels ?? {})) {
+  for (const pool of Object.keys(levels ?? {})) {
     for (const tier of STRATEGY_TIERS) {
       const level = wanted(pool, tier);
       if (!level) continue;

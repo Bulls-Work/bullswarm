@@ -182,7 +182,6 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   let outputSource = null;
   if (outputTruncated) {
     const sessionId = obs.reportedUsage?.sessionId ?? opts.conversation?.sessionId ?? null;
-    const followUp = connector.conversation?.followUp;
     const followUpCommand = followUpArgv(connector, {
       taskFile: paths.taskFile,
       cwd: resolve(targetDir),

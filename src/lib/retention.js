@@ -27,7 +27,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import {
   closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readdirSync, realpathSync, rmSync, rmdirSync, statSync, unlinkSync, writeSync,
+  readdirSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

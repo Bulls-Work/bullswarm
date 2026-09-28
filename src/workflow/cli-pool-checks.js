@@ -11,8 +11,8 @@ import { loadPoolLabels } from '../lib/pool-labels.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 
 // A pinned pool with no model on a step's tier fails that step within a second
-// as "no eligible pool". Say so before anything launches. Pool pauses are not
-// counted here: they end, and the run reports them if they still matter.
+// as "no eligible pool". Say so before anything launches. A spent meter window
+// is not counted here: it resets, and the pick at dispatch reads it live.
 export function pinnedPoolIssues(doc, program, pools) {
   const routing = doc.config?.workerRouting ?? {};
   const strictPool = routing.strictPool ?? routing.pool ?? null;

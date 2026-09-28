@@ -29,7 +29,7 @@ import { periodRange } from './stats-model.js';
 import { poolWindows } from './usage-view.js';
 import { localTimeZone } from './day-key.js';
 import {
-  addNullable as add, finite, measuredAttemptCount as measuredAttempts, parseIso, pricedMeasuredAttemptCount,
+  addNullable as add, finite, parseIso, pricedMeasuredAttemptCount,
   recordEntries, recordTimeMs, recordWorkerMinutes, round, sumEntries,
 } from './metrics.js';
 

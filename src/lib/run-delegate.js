@@ -35,7 +35,6 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     taskFile,
     cwd: resolve(targetDir),
   }, opts.model, opts.conversation, opts.reasoning ?? null);
-  const usePwdMode = connector.spawn.cwdMode === 'pwd';
   // realpath: getcwd() resolves symlinks (macOS /var -> /private/var), so an
   // unresolved PWD would disagree with cwd and defeat wrong-repo detection.
   const resolvedDir = realpathSync(resolve(targetDir));

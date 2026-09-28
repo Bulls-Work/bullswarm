@@ -4,7 +4,7 @@
 
 import { STRATEGY_TIERS } from '../lib/strategy.js';
 import { METER_COLORS, untilText } from './usage-view.js';
-import { columns, compactRow, cut, tabsRow } from './dash-kit.js';
+import { compactRow, cut, tabsRow } from './dash-kit.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const RESET = '\x1b[0m';
