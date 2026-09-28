@@ -10,10 +10,15 @@ export class SchedulerValidationError extends TypeError {
 }
 
 // `removed` is an action a plan revision dropped: never scheduled, and no live
-// action depends on it.
-const STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'removed']);
+// action depends on it. `passed` is a v3 gate or loop its dependents may
+// follow (gates-loops.js).
+const STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'passed', 'failed', 'blocked', 'cancelled', 'interrupted', 'removed']);
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const SUCCESS = 'succeeded';
+const succeeded = (status) => status === SUCCESS || status === 'passed';
+// A v3 gate or loop (gates-loops.js) is a node in the graph that is never
+// dispatched: it holds or releases its dependents, and is listed nowhere.
+const isControlNode = (action) => action.type === 'gate' || action.type === 'loop';
 const UNSUCCESSFUL = new Set(['failed', 'blocked', 'cancelled', 'interrupted']);
 // Only a running step holds a slot. `waiting` is kept for saved stage-3 runs,
 // whose steps could wait for a pool; it holds no slot.
@@ -113,7 +118,7 @@ function prepare(input, states, options) {
   const status = normalizeStates(states, new Set(byId.keys()));
   const active = actions.filter((action) => ACTIVE.has(status.get(action.id)));
   if (active.length > concurrency) throw new SchedulerValidationError('active actions exceed concurrency');
-  for (const action of active) if (action.dependsOn.some((dependency) => status.get(dependency) !== SUCCESS)) {
+  for (const action of active) if (action.dependsOn.some((dependency) => !succeeded(status.get(dependency)))) {
     throw new SchedulerValidationError(`active action "${action.id}" has an unfinished dependency`);
   }
   const activeMutators = active.filter(writes);
@@ -163,9 +168,10 @@ export function scheduleV2Actions(input, states, options = {}) {
   const ready = [], waiting = [], blocked = [];
   for (const action of actions) {
     if (status.get(action.id) !== 'pending' && status.get(action.id) !== 'ready') continue;
+    if (isControlNode(action)) continue;
     const dependencies = action.dependsOn.map((id) => outcome(id));
     if (dependencies.some((value) => UNSUCCESSFUL.has(value))) blocked.push({ id: action.id, reason: 'failed dependency' });
-    else if (dependencies.some((value) => value !== SUCCESS)) waiting.push({ id: action.id, reason: 'pending dependency' });
+    else if (dependencies.some((value) => !succeeded(value))) waiting.push({ id: action.id, reason: 'pending dependency' });
     else ready.push(action);
   }
   const selected = [];
