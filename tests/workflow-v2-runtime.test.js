@@ -1264,7 +1264,14 @@ test('marked: a step no pool can take now goes to the caller with each pool\'s r
   const why = `no pool with quota to spare: luna-1 at its 5-hour limit until ${soon}; luna-2 at its 5-hour limit until ${later}`;
   const write = run.state.actions.find((action) => action.id === 'write');
   assert.equal(write.status, 'failed');
-  assert.deepEqual(write.lastFailure, { kind: 'quota', message: why, retryAfter: soon });
+  // A step no pool took records what ruled each pool out (QA37).
+  assert.deepEqual(write.lastFailure, {
+    kind: 'quota', message: why, retryAfter: soon,
+    route: { why, candidates: [
+      { pool: 'luna-1', provider: 'luna-1', excluded: `luna-1 at its 5-hour limit until ${soon}` },
+      { pool: 'luna-2', provider: 'luna-2', excluded: `luna-2 at its 5-hour limit until ${later}` },
+    ] },
+  });
   assert.equal(run.state.actions.find((action) => action.id === 'notes').status, 'succeeded');
   assert.deepEqual(slept, [], 'no wait');
   assert.deepEqual(eventsOfType(run.runDir, 'action.waiting'), []);

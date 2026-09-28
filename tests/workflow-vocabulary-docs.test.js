@@ -1185,7 +1185,7 @@ test('docs do not overstate the failure rule: not-produced gets its gate retry, 
   assert.ok(!operations.includes('A step may wait inside the run for a pool whose return time is known'));
   // A v3 run waits for its caller only at a gate or loop the caller declared (0.37.0).
   assert.ok(operations.includes('A run never waits for a silent worker or for a pool to come back, and a v2 run never waits for its caller either; a v3 run waits for you only at a gate or a loop out of rounds you declared.'));
-  assert.ok(operations.includes('retryable, retries?}'));
+  assert.ok(operations.includes('retryable, noPool?, retries?}'));
   // The same-pool process retry is never used after a sign-in failure.
   assert.match(read('src/workflow/v2-dispatch.js'), /soleCandidate && kind !== 'auth'\) next = \{ how: 'same-pool'/);
   const changelog = flat('CHANGELOG.md');
