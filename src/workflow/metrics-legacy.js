@@ -22,12 +22,44 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { finishedRow, isRunEntry, taskKey } from '../lib/tasks.js';
-import { aggregateAttemptUsage, attemptMetric, attemptsUnion, attemptWorkerMinutes, round } from './metrics.js';
+import {
+  aggregateAttemptUsage, attemptApiUsd, attemptMetric, attemptsUnion, attemptWorkerMinutes, finiteNonNegative, round,
+} from './metrics.js';
 
 function statusOf(ok) {
   if (ok === true) return 'completed';
   if (ok === false) return 'failed';
   return null;
+}
+
+/**
+ * A single-run task row as the one attempt it was. Pure.
+ *
+ * `row` is the task row (`finishedRow` or a `listTasks` row); `entry` is the
+ * raw log entry when there is one, so its own measured fields (`durationMs`)
+ * stay readable. An older row names its amount beside the usage
+ * (`apiEquivalentUsd`, read from `apiUsd` or `costUsd` by the task row)
+ * rather than inside it; that amount is the attempt's when the usage names
+ * none. Nothing else is filled in.
+ */
+export function taskAttempt(row, entry = row) {
+  const usage = row?.usage && typeof row.usage === 'object' ? row.usage : null;
+  const rowAmount = attemptApiUsd({ usage }) == null ? finiteNonNegative(row?.apiEquivalentUsd) : null;
+  return {
+    ...entry,
+    pool: row?.pool ?? null,
+    model: row?.model ?? null,
+    startedAt: row?.startedAt ?? null,
+    finishedAt: row?.endedAt ?? row?.finishedAt ?? null,
+    status: row?.ok === true ? 'succeeded' : row?.ok === false ? 'failed' : null,
+    ...(rowAmount == null ? {} : {
+      usage: {
+        ...(usage ?? {}),
+        api: { ...(usage?.api ?? {}), usd: rowAmount },
+        tokenSource: usage?.tokenSource ?? row?.tokenSource ?? null,
+      },
+    }),
+  };
 }
 
 /**
@@ -40,13 +72,7 @@ function statusOf(ok) {
 export function legacyTaskRecord(entry, { home = null } = {}) {
   const row = finishedRow(entry, home, { withText: false });
   const finishedAt = row.endedAt;
-  const attempt = {
-    ...entry,
-    pool: row.pool,
-    startedAt: row.startedAt,
-    finishedAt,
-    status: entry?.ok === true ? 'succeeded' : entry?.ok === false ? 'failed' : null,
-  };
+  const attempt = taskAttempt(row, entry);
   const pool = row.pool ?? 'unknown';
   const model = row.model ?? 'unknown';
   const union = attemptsUnion([attempt], { terminal: true, running: false });

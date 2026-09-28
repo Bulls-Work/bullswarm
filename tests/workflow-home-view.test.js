@@ -15,6 +15,7 @@ import {
   medianRunText,
   recentDurationText,
   stepBarText,
+  taskCardModel,
 } from '../src/workflow/home-view.js';
 import { todayLicenceRows, todayRows } from '../src/workflow/home-model.js';
 import { readRollupIndex, readRollups } from '../src/workflow/rollup.js';
@@ -107,6 +108,32 @@ test('Home cards use the shared h/m/s clock and only name a differing span', () 
   }, 200).map(visible).join('\n');
   assert.match(sameClock, /58m37s · steps 9\/9/);
   assert.doesNotMatch(sameClock, /active of|span /);
+});
+
+test('a single task card prices the task from its one attempt (metrics.js), usage or row amount', () => {
+  const measured = taskCardModel({
+    id: 'task-priced', pool: 'grok', model: 'grok-4.7', project: 'acme', ok: true,
+    startedAt: '2026-09-28T06:05:56.000Z', endedAt: '2026-09-28T06:22:17.000Z',
+    usage: {
+      tokenSource: 'provider-reported',
+      api: { usd: 3.789156 },
+      subscription: { window: 'weekly', deltaPct: 2, usd: 0.138, basis: 'observed:meter-ledger' },
+    },
+  });
+  const lines = cardLines(measured, 90, { task: true }).map(visible).join('\n');
+  assert.match(lines, /API \$3\.79 · subscription 2% wk \$0\.14 sub/);
+
+  // An older row names its amount beside the usage rather than inside it.
+  const rowAmount = taskCardModel({
+    id: 'task-row-amount', pool: 'codex', project: 'initech', ok: true,
+    startedAt: '2026-09-28T06:05:56.000Z', endedAt: '2026-09-28T06:15:56.000Z',
+    apiEquivalentUsd: 1.25, tokenSource: 'provider-reported',
+  });
+  assert.match(cardLines(rowAmount, 90, { task: true }).map(visible).join('\n'), /API \$1\.25 · /);
+
+  // A task that recorded no amount stays unknown, never zero.
+  const unpriced = taskCardModel({ id: 'task-unpriced', pool: 'codex', ok: true, endedAt: '2026-09-28T06:15:56.000Z' });
+  assert.match(cardLines(unpriced, 90, { task: true }).map(visible).join('\n'), /API — · /);
 });
 
 test('Home view registers today actions and renders the empty page through the extracted page', () => {

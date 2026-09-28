@@ -58,7 +58,8 @@ import {
   workflowRunLabel,
   wrapLines,
 } from './dashboard.js';
-import { tokenSourceOf } from './metrics.js';
+import { attemptMetric, tokenSourceOf } from './metrics.js';
+import { taskAttempt } from './metrics-legacy.js';
 import { apiMoney, formatMoney } from '../lib/usage-basis.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { taskKey } from '../lib/tasks.js';
@@ -155,9 +156,9 @@ function cardLines(card, width, { task = false } = {}) {
 
 function taskCardModel(task) {
   const minutes = measuredTaskMinutes(task);
+  // The task is one attempt; its money is summed like any run's (metrics.js).
   const record = {
-    usage: task?.usage ?? null,
-    apiEquivalentUsd: task?.apiUsd ?? task?.costUsd ?? null,
+    attemptMetrics: [attemptMetric(taskAttempt(task), { role: 'worker' })],
     tokenSource: task?.tokenSource ?? null,
   };
   return {
