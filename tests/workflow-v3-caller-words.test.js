@@ -15,7 +15,8 @@ import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { implicitV3Requirements, normaliseProgramV3 } from '../src/workflow/program-v3.js';
-import { formatV2HandbackLines, summarizeV2Result } from '../src/workflow/v2-outcome.js';
+import { formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, summarizeV2Result } from '../src/workflow/v2-outcome.js';
+import { readEvents } from '../src/workflow/events.js';
 import { rerunV2Step, restartV2Step } from '../src/workflow/cli.js';
 import { changeStepHint } from '../src/workflow/step-change-hint.js';
 import { helpText } from '../src/help.js';
@@ -115,6 +116,28 @@ test('a partial v3 run still hands back its options, and its restart line names 
   const summary = summarizeV2Result(partial.result, partial.state);
   assert.equal(summary.handback.options.restart, `start a new run: bullswarm workflow goal "<goal>" --cwd ${f.workspace} --program <file.json>`);
   assert.ok(formatV2HandbackLines(summary).includes('your call:'));
+});
+
+test('a v3 step with a checked answer is proven by its answer, on its finished line and in the proof line', async (t) => {
+  const f = fixture(t);
+  const program = {
+    schemaVersion: V3,
+    steps: [
+      { id: 'count', prompt: 'Count the acme lines.', answer: countAnswer },
+      { id: 'test', prompt: 'Test the acme notes.', answer: countAnswer, evidence: [{ type: 'command', cmd: 'true' }] },
+      { id: 'note', prompt: 'Note the acme lines.' },
+    ],
+  };
+  const done = await launch(f, program, fakeDispatch(() => ({ answer: { lines: 3, short: true } })));
+  assert.equal(done.result.status, 'completed', done.result.reason);
+  const proofOf = (id) => readEvents(done.runDir).find((event) => event.type === 'action.finished' && event.payload.actionId === id).payload.proof;
+  assert.deepEqual(proofOf('count').by, ['answer']);
+  assert.equal(formatV2ProofLabel(proofOf('count')), 'proven by answer');
+  assert.equal(formatV2ProofLabel(proofOf('test')), 'proven by command, answer');
+  assert.equal(formatV2ProofLabel(proofOf('note')), 'unproven');
+  assert.equal(formatV2ProofLine(summarizeV2Result(done.result, done.state)), 'proof: 2 steps proven (command 1, answer 2) · 1 finished · unproven: note');
+  const watch = run(f.bullswarmDir, ['workflow', 'watch', done.shortId, '--until', 'outcome']);
+  assert.match(watch.stdout, /^proof: 2 steps proven \(command 1, answer 2\) · 1 finished · unproven: note$/m);
 });
 
 // --- refusals on a v3 run never point to plan revise --------------------------

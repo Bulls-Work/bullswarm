@@ -1259,6 +1259,9 @@ export function formatV2HandbackLines(summary) {
 // 3's `choice` (D34) is not a proof type: an accepted step's label is
 // `['choice']` alone, and the summary counts it apart, never as proven.
 export const PROOF_TYPES = Object.freeze(['command', 'schema', 'review']);
+// A v3 step's checked answer (its answer schema, checked by Bullswarm) backs
+// it too. Kept apart so a run with no answer reads exactly as before.
+const ANSWER_PROOF = 'answer';
 
 function isReviewStep(definition) {
   return Array.isArray(definition?.evidenceFor) && definition.evidenceFor.length > 0;
@@ -1289,7 +1292,12 @@ export function stepProof(state, definition, { atFinish = false, features } = {}
   const affects = Array.isArray(definition.affects) ? definition.affects : [];
   const requirements = state?.ledger?.requirements ?? {};
   const reviewed = affects.length > 0 && affects.every((id) => requirements[id]?.status === 'passed');
-  const by = PROOF_TYPES.filter((type) => (type === 'review' ? reviewed : passed.has(type)));
+  const answered = definition.answer !== undefined && attempt?.answer?.ok === true;
+  const by = [
+    ...PROOF_TYPES.filter((type) => type !== 'review' && passed.has(type)),
+    ...(answered ? [ANSWER_PROOF] : []),
+    ...(reviewed ? ['review'] : []),
+  ];
   let reviewPending = false;
   if (atFinish && affects.length && !reviewed) {
     const statusOf = new Map((state?.actions ?? []).map((action) => [action.id, action.status]));
@@ -1319,6 +1327,8 @@ function summaryProof(rows) {
   const labelled = rows.filter((row) => Array.isArray(row.proof));
   if (!labelled.length) return null;
   const byType = Object.fromEntries(PROOF_TYPES.map((type) => [type, labelled.filter((row) => row.proof.includes(type)).length]));
+  const answered = labelled.filter((row) => row.proof.includes(ANSWER_PROOF)).length;
+  if (answered) byType[ANSWER_PROOF] = answered;
   const acceptedRows = labelled.filter((row) => row.proof.includes('choice'));
   const unprovenRows = labelled.filter((row) => !row.proof.length);
   return {

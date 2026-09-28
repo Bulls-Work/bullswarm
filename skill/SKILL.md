@@ -333,7 +333,8 @@ of what the stopped attempt did.
 `outcome:` is `completed`, `partial` or `cancelled`, and `reason:` says why in
 one line. A completed v3 run hands nothing back: every step succeeded. The
 proof line says what backs each step: `proven by command` or `proven by
-schema` (a check passed), `finished · unproven` (no check declared), and
+schema` (a check passed), `proven by answer` (its answer passed its schema),
+`finished · unproven` (neither declared), and
 `accepted by choice`. When you report the outcome, quote the run's proof line
 as printed (`proof: …` at the end of watch, `# proof` in `runs result`)
 instead of paraphrasing it. Then read the real outputs and answers
