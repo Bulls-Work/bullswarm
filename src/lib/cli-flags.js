@@ -165,6 +165,7 @@ const TABLE = {
   'workflow step restart': ['pool', 'wait', 'json'],
   'workflow step rerun': ['avoid', 'wait', 'json'],
   'workflow step accept': ['reason', 'requirement', 'wait', 'json'],
+  'workflow continue': ['rounds', 'wait', 'json'],
   'workflow reindex': ['json', 'force'],
   'workflow reprice': ['apply', 'dry-run', 'since', 'pool', 'all', 'json', 'incremental', 'trigger', 'transcript-home', 'delay-ms'],
 

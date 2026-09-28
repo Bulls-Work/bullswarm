@@ -928,6 +928,7 @@ const workflowText = rich({
     { name: 'step restart <runId> <step>', desc: 'stop a running step and run it again with its handoff, optionally on another pool; nothing restarts on its own' },
     { name: 'step rerun <runId> <step>', desc: 'run a failed or finished step again with its last attempt\'s handoff; --avoid keeps it off pools and stays in the step\'s route' },
     { name: 'step accept <runId> <step>', desc: 'accept a failed step, or a check\'s failing requirements, by your choice (--reason); dependents run; recorded as evidence "choice", never proof' },
+    { name: 'continue <runId> <id>', desc: 'pass a v3 gate that waits for you, or give a loop out of rounds more rounds (--rounds); relaunches the kernel when none is running' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
@@ -940,7 +941,7 @@ const workflowText = rich({
     'goal dispatches real coding-agent CLI processes and writes durable state under '
       + '~/.bullswarm/workflows/<runId>/',
     'capabilities, tui, watch, events, action show, and task show are read-only; cancel, steer, step restart, step rerun, '
-      + 'step accept, plan submit, and runs delete are the exceptions — see their own --help',
+      + 'step accept, continue, plan submit, and runs delete are the exceptions — see their own --help',
     'legacy authored-graph runs are read-only; driving commands fail closed before dispatch',
     'plan contract, plan validate, plan show, and plan export are read-only; plan submit and plan revise write the accepted program into the run and relaunch its kernel when none is running',
     'pause writes a pause request the kernel honors within about a second; resume lifts it',
@@ -1676,6 +1677,35 @@ const workflowStepAcceptText = rich({
   next: 'bullswarm workflow watch <runId> --until trouble to follow the dependents that now run.',
 });
 
+const workflowContinueText = rich({
+  usage: 'bullswarm workflow continue <runId> <gate-or-loop> [--rounds <n>] [--wait <seconds>] [--json]',
+  purpose: 'Move a v3 run past a gate or loop that waits for you. A gate waits once its dependencies '
+    + 'succeeded (or passes by itself when its `when` condition does not hold); continue passes it and '
+    + 'the steps behind it run. A loop waits when its rounds ran out and its `until` condition still does '
+    + 'not hold; continue --rounds <n> gives it n more rounds, and continue without --rounds passes it as '
+    + 'it stands. A run where only waiting gates or loops are left parks as waiting: goal, watch and runs '
+    + 'print this command for each one. With a live kernel the request is applied at its next check; with '
+    + 'none, it is applied here, the run goes back to running, and its kernel is relaunched in the background.',
+  args: [
+    { name: '<runId>', desc: 'shortId or runId of a v3 program run' },
+    { name: '<gate-or-loop>', desc: 'the id of a waiting gate, or of a loop out of rounds' },
+  ],
+  options: [
+    { flag: '--rounds <n>', desc: 'for a loop out of rounds: run it n more rounds (1 to 5)', default: 'none: the loop passes as it stands' },
+    { flag: '--wait <seconds>', desc: 'how long to wait for a running kernel to apply the request before reporting it queued', default: '120' },
+    { flag: '--json', desc: 'print {action: "workflow-continue", status, node, rounds, appliedBy, relaunch}', default: 'human text' },
+  ],
+  safety: [
+    'writes a continue request next to the run; refused (exit 1, nothing written) for a gate or loop that is not waiting, and (exit 2) for --rounds on a gate',
+    'relaunches the run\'s kernel when none is running; the steps behind the gate or the next rounds dispatch real coding-agent CLI processes',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow continue ab12cd approve', note: 'pass the gate approve' },
+    { cmd: 'bullswarm workflow continue ab12cd polish --rounds 2', note: 'two more rounds of the loop polish' },
+  ],
+  next: 'bullswarm workflow watch <runId> --until trouble to follow what runs next.',
+});
+
 // --- workflow runs ----------------------------------------------------------
 
 const workflowRunsListOptions = [
@@ -1958,6 +1988,7 @@ const HELP = {
     steer: { _text: workflowSteerText },
     cancel: { _text: workflowCancelText },
     resume: { _text: workflowResumeText },
+    continue: { _text: workflowContinueText },
     action: {
       _text: workflowActionText,
       show: { _text: workflowActionShowText },

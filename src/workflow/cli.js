@@ -17,7 +17,9 @@ import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
-import { implicitV3Requirements, isProgramV3, programV3Facts, programV3HasControl, stepV3Facts } from './program-v3.js';
+import { implicitV3Requirements, isProgramV3, programV3Facts, stepV3Facts } from './program-v3.js';
+import { waitingDocument, waitingOutcomeLines } from './gates-loops.js';
+import { wfContinue } from './cli-steps.js';
 import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
@@ -171,6 +173,8 @@ export async function cmdWorkflow(args, {
       return wfTask(opts, bullswarmDir);
     case 'step':
       return wfStep(opts);
+    case 'continue':
+      return wfContinue(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume });
     default: {
       // Smart error: if the user typed a `runs` subcommand directly
       // under `workflow` (e.g. `workflow show jd3uki`), point them at
@@ -264,6 +268,13 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
     if (opts.json) console.log(JSON.stringify(interrupted, null, 2));
     else if (!opts.quiet) console.log(`workflow ${result.shortId ?? result.runId} interrupted; edits retained. Resume with: ${interrupted.next}`);
     return 130;
+  }
+  // A v3 run parked at a gate or an out-of-rounds loop (gates-loops.js).
+  if (!result.result && result.waiting) {
+    const document = waitingDocument(result);
+    if (opts.json) console.log(JSON.stringify(document, null, 2));
+    else if (!opts.quiet) console.log(waitingOutcomeLines(result.shortId ?? result.runId, result.waiting).join('\n'));
+    return 0;
   }
   if (!result.result && result.paused) {
     const token = result.shortId ?? result.runId;
@@ -893,7 +904,6 @@ async function wfGoal(opts) {
       ...routePoolIssues(previewed.program.actions, pools, doc),
     ];
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
-    if (programV3HasControl(previewed.program)) return refuseProgramInvalid(doc.intent.goal, opts, ['gates and loops arrive in the next build'], { message: 'this build runs v3 steps only (nothing ran)' });
     // The same lines `plan validate` prints, at the moment the program is
     // actually launched. The kernel also stores them on the run state.
     printAdvisories(programAdvisories(previewed.program, { requirements: isProgramV3(previewed.program) ? null : doc.intent.requirements }));
@@ -1484,7 +1494,7 @@ async function wfCancel(opts) {
   // pause, has no kernel alive to honor the request; finalize it here. The
   // kernel reads the cancellation at the top of its loop and records the
   // cancelled result without dispatching.
-  if (requested.planner?.awaiting || requested.lifecycle?.status === 'paused') {
+  if (requested.planner?.awaiting || ['paused', 'waiting'].includes(requested.lifecycle?.status)) {
     let finished;
     try {
       const doc = JSON.parse(readFileSync(join(resolvedRun.runDir, 'goal.json'), 'utf8'));
@@ -1499,7 +1509,7 @@ async function wfCancel(opts) {
       result: `bullswarm workflow runs result ${id} --json`,
     };
     if (opts.json) console.log(JSON.stringify(payload, null, 2));
-    else console.log(`✓ workflow ${id} was paused for its caller planner; cancelled and finalized (${payload.status}); result: ${payload.result}`);
+    else console.log(`✓ workflow ${id} ${state.lifecycle?.status === 'waiting' ? 'was waiting at a gate or loop' : 'was paused for its caller planner'}; cancelled and finalized (${payload.status}); result: ${payload.result}`);
     return 0;
   }
   const payload = {
@@ -2485,7 +2495,7 @@ function workflowHelpPath(sub, opts) {
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
   if (sub === 'task') return opts.rest[0] === 'show' ? ['workflow', 'task', 'show'] : ['workflow', 'task'];
   if (sub === 'step') return ['restart', 'rerun', 'accept'].includes(opts.rest[0]) ? ['workflow', 'step', opts.rest[0]] : ['workflow', 'step'];
-  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice'];
+  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice', 'continue'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;
 }
 
@@ -2498,7 +2508,7 @@ function parseFlags(argv) {
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
     'out', 'rerun', 'base-revision', 'wait', 'width', 'height', 'until', 'pool',
-    'avoid', 'requirement',
+    'avoid', 'requirement', 'rounds',
   ]);
   // Repeatable value flags collect every value (step rerun --avoid, step
   // accept --requirement).

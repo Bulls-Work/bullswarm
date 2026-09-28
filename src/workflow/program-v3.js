@@ -78,12 +78,6 @@ export function isProgramV3(value) {
     || (isObject(value.program) && value.program.schemaVersion === PROGRAM_V3_SCHEMA_VERSION));
 }
 
-/** True when a v3 program (authored or stored) declares a gate or a loop. */
-export function programV3HasControl(program) {
-  const count = (list) => (Array.isArray(list) ? list.length : 0);
-  return count(program?.gates) + count(program?.loops) + count(program?.control?.gates) + count(program?.control?.loops) > 0;
-}
-
 /** The requirement list of a v3 goal: one implicit, non-mandatory requirement. */
 export function implicitV3Requirements(goal) {
   return [{ id: IMPLICIT_REQUIREMENT_ID, text: String(goal).trim(), mandatory: false }];
