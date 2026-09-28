@@ -285,8 +285,15 @@ function planStripParts(row, { runId = null } = {}) {
   const parts = [];
   // A v3 phase can hold steps that run one after the other (a loop's steps):
   // a step that depends on an earlier one in its group is joined by the
-  // sequence separator, not set beside it as a parallel one.
-  const dependsOn = new Map((row?.state?.program?.actions ?? []).map((action) => [action.id, action.dependsOn ?? []]));
+  // sequence separator, not set beside it as a parallel one. A step may wait
+  // on a gate or a loop, which is no step: the walk goes through it to what
+  // it waits on (a gate's dependsOn, a loop's steps).
+  const program = row?.state?.program ?? {};
+  const dependsOn = new Map([
+    ...(program.control?.gates ?? []).map((gate) => [gate.id, gate.dependsOn ?? []]),
+    ...(program.control?.loops ?? []).map((loop) => [loop.id, loop.steps ?? []]),
+    ...(program.actions ?? []).map((action) => [action.id, action.dependsOn ?? []]),
+  ]);
   const follows = (id, earlier, seen = new Set()) => (dependsOn.get(id) ?? []).some((dep) => {
     if (seen.has(dep)) return false;
     seen.add(dep);

@@ -205,6 +205,20 @@ test('the Home strip joins steps that run one after the other with the sequence 
   assert.equal(text(parallel), '✓──✓ ✓──○');
 });
 
+test('the Home strip draws a step behind a gate or a loop in the same phase in sequence, not in parallel', () => {
+  const text = (value) => planStripParts(value).map((part) => part.text).join('');
+  // post waits on the gate `approve`, which waits on the loop `polish`
+  // (write, check); moved into the writing phase it still runs after them.
+  const gated = realRow(GATED);
+  gated.state.program.actions.find((action) => action.id === 'post').phase = 'writing';
+  assert.equal(text(gated), '✓──✓──✓──○');
+  // A step that names the loop itself, in the loop's phase, also follows it.
+  const looped = realRow(GATED);
+  looped.state.program.actions.find((action) => action.id === 'post').phase = 'writing';
+  looped.state.program.actions.find((action) => action.id === 'post').dependsOn = ['polish'];
+  assert.equal(text(looped), '✓──✓──✓──○');
+});
+
 test('Run page of a waiting run: the header says where it waits and the next command', () => {
   for (const width of [200, 120, 55]) {
     const text = runPageText(realRow(GATED), width);
