@@ -206,6 +206,8 @@ test('Runs table: a waiting run reads waiting with the command that continues it
   const text = out.lines.map(visible).join('\n');
   assert.match(text, /⧖ 2fne62/);
   assert.match(text, /waiting at gate approve · bullswarm workflow continue 2fne62 approve/);
+  const phone = runTableLines([record], { width: 55, ansi: false, nowMs: NOW }).lines.map(visible);
+  assert.ok(phone.includes('   bullswarm workflow continue 2fne62 approve'), `a phone keeps the whole command: ${phone.join(' | ')}`);
 });
 
 test('overview panel (the mod pane): Live and Next name the gate and the continue command', () => {

@@ -665,8 +665,16 @@ export function runTableLines(records, {
     // resolve through the same row action without lighting unused columns.
     addRegion(regions, lines, 2, Math.max(1, visible(line).length - 1), row.action);
     if (row.waiting) {
+      // The command is what the row is read for: a narrow table gives it a
+      // row of its own rather than cutting it.
       const indent = ' '.repeat(3 + layout.id + 2);
-      lines.push(fit(`${indent}${tint(row.waiting.label, 'amber', ansi)} · ${row.waiting.commands.join(' · ')}`, cols, ansi));
+      const whole = `${row.waiting.label} · ${row.waiting.commands.join(' · ')}`;
+      if (indent.length + visible(whole).length <= cols) {
+        lines.push(fit(`${indent}${tint(row.waiting.label, 'amber', ansi)} · ${row.waiting.commands.join(' · ')}`, cols, ansi));
+      } else {
+        lines.push(fit(`   ${tint(row.waiting.label, 'amber', ansi)}`, cols, ansi));
+        for (const command of row.waiting.commands) lines.push(fit(`   ${command}`, cols, ansi));
+      }
     }
   }
   return { lines, regions, rows, layout };
