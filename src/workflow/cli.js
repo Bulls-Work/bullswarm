@@ -18,7 +18,7 @@ import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
 import { implicitV3Requirements, isProgramV3, programV3Facts, stepV3Facts } from './program-v3.js';
-import { waitingDocument, waitingOutcomeLines } from './gates-loops.js';
+import { parkedFailures, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
 import { wfContinue } from './cli-steps.js';
 import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
@@ -271,9 +271,10 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
   }
   // A v3 run parked at a gate or an out-of-rounds loop (gates-loops.js).
   if (!result.result && result.waiting) {
-    const document = waitingDocument({ runId: result.runId, shortId: result.shortId, waitingFor: result.waiting });
+    const failed = parkedFailures(result.state);
+    const document = waitingDocument({ runId: result.runId, shortId: result.shortId, waitingFor: result.waiting, failed });
     if (opts.json) console.log(JSON.stringify(document, null, 2));
-    else if (!opts.quiet) console.log(waitingOutcomeLines(result.shortId ?? result.runId, result.waiting).join('\n'));
+    else if (!opts.quiet) console.log(waitingOutcomeLines(result.shortId ?? result.runId, result.waiting, failed).join('\n'));
     return 0;
   }
   if (!result.result && result.paused) {

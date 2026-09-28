@@ -19,6 +19,7 @@ import { scheduleV2Actions } from '../src/workflow/v2-scheduler.js';
 import { runWorkflowWatch, watchSnapshot, watchTrouble } from '../src/workflow/watch-cli.js';
 import {
   applyContinueOffline, previousRoundBlock, readContinueIntents, requestContinue, schedulerView,
+  waitingDocument, waitingOutcomeLines,
 } from '../src/workflow/gates-loops.js';
 import { acceptV2Step, rerunV2Step } from '../src/workflow/cli.js';
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
@@ -602,3 +603,64 @@ test('a rerun before a gate that already passed leaves the steps behind it as th
   assert.deepEqual(rerun.changes.invalidated, []);
 });
 
+// --- a parked run with a failed step ------------------------------------------------
+
+const siblingProgram = () => {
+  const program = gateProgram();
+  program.steps.push({ id: 'survey', prompt: 'Survey the initech archive.' });
+  program.steps.push({ id: 'tally', dependsOn: ['survey'], prompt: 'Tally the initech archive.' });
+  return program;
+};
+
+test('a run parked at a gate while a sibling step failed names the failure and how to recover it', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, siblingProgram(), fakeDispatch((id) => (id === 'survey' ? { fail: 'provider' } : {})));
+  assert.deepEqual(run.waiting?.map((entry) => entry.id), ['approve']);
+  assert.equal(status(run, 'survey'), 'failed');
+  assert.equal(status(run, 'tally'), 'blocked');
+  const token = run.shortId;
+  const rerunLine = `bullswarm workflow step rerun ${token} survey`;
+  const acceptLine = `bullswarm workflow step accept ${token} survey --reason "…"`;
+  const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
+  delete env.BULLSWARM_DEPTH;
+
+  const human = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', token], { encoding: 'utf8', env });
+  assert.equal(human.status, 0, human.stdout + human.stderr);
+  assert.match(human.stdout, /waiting: gate approve · Read the draft and decide/);
+  assert.match(human.stdout, /failed: step survey · /);
+  assert.match(human.stdout, /blocked: step tally · /);
+  assert.ok(human.stdout.includes(rerunLine), human.stdout);
+  assert.ok(human.stdout.includes(acceptLine), human.stdout);
+
+  const json = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', token, '--json'], { encoding: 'utf8', env });
+  assert.equal(json.status, 0, json.stdout + json.stderr);
+  const document = JSON.parse(json.stdout);
+  assert.equal(document.status, 'waiting');
+  assert.deepEqual(document.failed.map((entry) => [entry.id, entry.status]), [['survey', 'failed'], ['tally', 'blocked']]);
+  assert.ok(document.next.includes(`bullswarm workflow continue ${token} approve`));
+  assert.ok(document.next.includes(rerunLine), JSON.stringify(document.next));
+  assert.ok(document.next.includes(acceptLine), JSON.stringify(document.next));
+
+  const shown = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'show', token], { encoding: 'utf8', env });
+  assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+  assert.match(shown.stdout, /# failed: step survey · /);
+
+  let text = '';
+  await runWorkflowWatch(f.bullswarmDir, token, { intervalMs: 10, stale: false, output: { write: (chunk) => { text += chunk; } } });
+  assert.match(text, /failed: step survey · /);
+  assert.ok(text.includes(rerunLine), text);
+  let jsonl = '';
+  await runWorkflowWatch(f.bullswarmDir, token, { jsonl: true, intervalMs: 10, stale: false, output: { write: (chunk) => { jsonl += chunk; } } });
+  const last = JSON.parse(jsonl.trim().split('\n').at(-1));
+  assert.equal(last.type, 'waiting');
+  assert.deepEqual(last.failed.map((entry) => entry.id), ['survey', 'tally']);
+  assert.ok(last.next.includes(rerunLine), JSON.stringify(last.next));
+});
+
+test('a parked run with no failed step prints and documents exactly what it did before', () => {
+  const waitingFor = [{ id: 'approve', type: 'gate', since: null, note: 'Read the draft and decide' }];
+  assert.deepEqual(waitingOutcomeLines('acme01', waitingFor), [
+    'outcome: waiting', 'waiting: gate approve · Read the draft and decide', 'next: bullswarm workflow continue acme01 approve',
+  ]);
+  assert.deepEqual(Object.keys(waitingDocument({ runId: 'wf-acme', shortId: 'acme01', waitingFor })), ['action', 'runId', 'shortId', 'status', 'waitingFor', 'next']);
+});

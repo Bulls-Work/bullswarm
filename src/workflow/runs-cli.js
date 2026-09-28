@@ -33,7 +33,7 @@ import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { poolLabel } from '../lib/pool-labels.js';
 import { routeSummary } from './step-route.js';
-import { parkedWaitingFor, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
+import { parkedFailures, parkedWaitingFor, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
 
 function jsonOut(obj, opts) {
   if (!(opts.json || opts.summary)) return;
@@ -298,7 +298,7 @@ function runsShow(idToken, opts) {
   console.log(`# status  ${stopped ? 'interrupted' : state.lifecycle?.status ?? 'unknown'}  ${ongoing ? '(ongoing)' : terminal ? '(terminal)' : '(stopped)'}`);
   if (stopped) console.log(`# kernel  ${liveness.reason}; continue with bullswarm workflow resume ${resolved.shortId ?? runId}`);
   // A v3 run parked at a gate or loop (gates-loops.js).
-  for (const line of waitingOutcomeLines(resolved.shortId ?? runId, parkedWaitingFor(state) ?? []).slice(1)) console.log(`# ${line}`);
+  for (const line of waitingOutcomeLines(resolved.shortId ?? runId, parkedWaitingFor(state) ?? [], parkedFailures(state)).slice(1)) console.log(`# ${line}`);
   console.log(`# started  ${state.lifecycle?.startedAt ?? '?'}`);
   console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
   console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
@@ -367,8 +367,9 @@ function runsResult(idToken, opts) {
     // A v3 run parked at a gate or loop has no result yet (gates-loops.js).
     const waitingFor = parkedWaitingFor(state);
     if (waitingFor) {
-      if (opts.json || opts.summary) jsonOut(waitingDocument({ runId, shortId: resolved.shortId, waitingFor }), opts);
-      else console.log(waitingOutcomeLines(resolved.shortId ?? runId, waitingFor).join('\n'));
+      const failed = parkedFailures(state);
+      if (opts.json || opts.summary) jsonOut(waitingDocument({ runId, shortId: resolved.shortId, waitingFor, failed }), opts);
+      else console.log(waitingOutcomeLines(resolved.shortId ?? runId, waitingFor, failed).join('\n'));
       return 0;
     }
     if (state.planner?.awaiting) {

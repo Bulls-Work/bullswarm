@@ -505,27 +505,59 @@ export function applyContinueOffline(state, intent, { runDir, at, features = nul
 // --- the caller's view ---------------------------------------------------------
 
 /** The commands that move each waiting node. */
-export function continueCommands(token, waitingFor) {
+function continueCommands(token, waitingFor) {
   return (waitingFor ?? []).map((entry) => (entry.type === 'loop'
     ? `bullswarm workflow continue ${token} ${entry.id} --rounds <1-${CONTINUE_MAX_ROUNDS}>   (more rounds; without --rounds the loop passes as it stands)`
     : `bullswarm workflow continue ${token} ${entry.id}`));
 }
 
+/**
+ * The steps of a parked run that failed or are blocked, [{id, status, why}]:
+ * a run parks at a gate or loop while an unrelated branch has failed, and the
+ * caller has to see that failure too.
+ */
+export function parkedFailures(state) {
+  if (!parkedWaitingFor(state)) return [];
+  return (state.actions ?? []).filter((action) => action.status === 'failed' || action.status === 'blocked').map((action) => ({
+    id: action.id, status: action.status,
+    why: action.lastFailure?.message ?? action.lastFailure?.kind ?? null,
+  }));
+}
+
+// The commands that recover each failed step (a blocked one follows its failure).
+function recoverCommands(token, failed) {
+  return (failed ?? []).filter((entry) => entry.status === 'failed').flatMap((entry) => [
+    `bullswarm workflow step rerun ${token} ${entry.id}`,
+    `bullswarm workflow step accept ${token} ${entry.id} --reason "…"`,
+  ]);
+}
+
 /** The lines `goal`, `watch` and `runs` print for a parked run. */
-export function waitingOutcomeLines(token, waitingFor) {
+export function waitingOutcomeLines(token, waitingFor, failed = []) {
   const lines = ['outcome: waiting'];
   for (const entry of waitingFor ?? []) lines.push(`waiting: ${entry.type} ${entry.id}${entry.note ? ` · ${entry.note}` : ''}`);
-  const commands = continueCommands(token, waitingFor);
+  for (const entry of failed ?? []) lines.push(`${entry.status}: step ${entry.id}${entry.why ? ` · ${entry.why}` : ''}`);
+  const commands = [...continueCommands(token, waitingFor), ...recoverCommands(token, failed)];
   commands.forEach((command, index) => lines.push(`${index === 0 ? 'next:' : '  or:'} ${command}`));
   return lines;
 }
 
-/** The JSON document for a parked run. */
-export function waitingDocument({ runId, shortId, waitingFor }) {
+/** The JSON document for a parked run; `failed` only when a step failed or is blocked. */
+export function waitingDocument({ runId, shortId, waitingFor, failed = [] }) {
   const token = shortId ?? runId;
   return {
     action: 'workflow-waiting', runId, shortId: shortId ?? null, status: 'waiting',
-    waitingFor: clone(waitingFor ?? []), next: continueCommands(token, waitingFor),
+    waitingFor: clone(waitingFor ?? []),
+    ...(failed?.length ? { failed: clone(failed) } : {}),
+    next: [...continueCommands(token, waitingFor), ...recoverCommands(token, failed)],
+  };
+}
+
+/** The watch --jsonl line for a parked run. */
+export function waitingWatchLine(token, waitingFor, failed = []) {
+  return {
+    type: 'waiting', waitingFor, ...(failed?.length ? { failed: clone(failed) } : {}),
+    next: [...continueCommands(token, waitingFor), ...recoverCommands(token, failed)],
   };
 }
 
