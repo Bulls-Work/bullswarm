@@ -536,7 +536,7 @@ export function applyContinueOffline(state, intent, { runDir, at, features = nul
 /** The commands that move each waiting node. */
 function continueCommands(token, waitingFor) {
   return (waitingFor ?? []).map((entry) => (entry.type === 'loop'
-    ? `bullswarm workflow continue ${token} ${entry.id} --rounds <1-${CONTINUE_MAX_ROUNDS}>   (more rounds; without --rounds the loop passes as it stands)`
+    ? `bullswarm workflow continue ${token} ${entry.id} --rounds <1-${CONTINUE_MAX_ROUNDS}>   (more rounds; without --rounds it ends continued, condition not met)`
     : `bullswarm workflow continue ${token} ${entry.id}`));
 }
 

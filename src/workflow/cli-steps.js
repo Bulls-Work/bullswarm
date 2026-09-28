@@ -2,8 +2,8 @@
 // `workflow continue`, `workflow add` and `workflow wait`.
 //
 // `workflow continue <run> <gate-or-loop> [--rounds N]` passes a waiting gate,
-// or gives an out-of-rounds loop N more rounds (without --rounds the loop
-// passes as it stands). It writes a durable intent next to the run. A live
+// or gives an out-of-rounds loop N more rounds (without --rounds the steps
+// behind the loop run, and it is recorded as continued, condition not met). It writes a durable intent next to the run. A live
 // kernel applies it on its next pass; with no live kernel this command applies
 // it under the run's lease, sets the lifecycle back to running itself, and
 // relaunches the kernel detached, as `plan revise` does.

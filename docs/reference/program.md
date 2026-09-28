@@ -74,7 +74,7 @@ When its dependencies succeeded, a gate waits for `bullswarm workflow continue <
 | `until` | yes | a condition on one of the loop's steps: true ends the loop |
 | `maxRounds` | yes | 1-5 |
 
-Every step of the loop runs in every round, and the condition is read when the round is over: put the deciding step last, and give every writer work each round (a build or chore step that changes no file fails `not-produced`). From round 2 on, each step's task carries a `Previous round` block with the last round's answers and evidence. When the rounds run out, the loop waits like a gate: `bullswarm workflow continue <run> <loop> --rounds <1-5>` gives it more, and without `--rounds` it passes as it stands. A step in the loop that fails (after its retry) blocks the loop.
+Every step of the loop runs in every round, and the condition is read when the round is over: put the deciding step last, and give every writer work each round (a build or chore step that changes no file fails `not-produced`). From round 2 on, each step's task carries a `Previous round` block with the last round's answers and evidence. When the rounds run out, the loop waits like a gate: `bullswarm workflow continue <run> <loop> --rounds <1-5>` gives it more; without `--rounds` the steps behind it run, and the loop reads `continued by the caller after N of N rounds (condition not met)` and is recorded as `continued-unmet` in `result.json`, never as passed. A step in the loop that fails (after its retry) blocks the loop.
 
 ### The condition form
 

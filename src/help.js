@@ -1728,7 +1728,7 @@ const workflowContinueText = rich({
     { name: '<gate-or-loop>', desc: 'the id of a waiting gate, or of a loop out of rounds' },
   ],
   options: [
-    { flag: '--rounds <n>', desc: 'for a loop out of rounds: run it n more rounds (1 to 5)', default: 'none: the loop passes as it stands' },
+    { flag: '--rounds <n>', desc: 'for a loop out of rounds: run it n more rounds (1 to 5)', default: 'none: the steps behind the loop run, and it is recorded as continued, condition not met' },
     { flag: '--wait <seconds>', desc: 'how long to wait for a running kernel to apply the request before reporting it queued', default: '120' },
     { flag: '--json', desc: 'print {action: "workflow-continue", status, node, rounds, appliedBy, relaunch}', default: 'human text' },
   ],

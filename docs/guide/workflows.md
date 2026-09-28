@@ -164,7 +164,7 @@ What moves a waiting run:
 | You want | Command |
 | --- | --- |
 | pass a waiting gate | `bullswarm workflow continue <run> <gate>` |
-| give a loop out of rounds more rounds | `bullswarm workflow continue <run> <loop> --rounds <1-5>` (without `--rounds` the loop passes as it stands) |
+| give a loop out of rounds more rounds | `bullswarm workflow continue <run> <loop> --rounds <1-5>` (without `--rounds` the steps behind it run, and the loop is recorded as `continued-unmet`) |
 | add work that depends on an answer | `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when the step's answer is itself a fragment `{steps, gates?, loops?}`), then `bullswarm workflow wait <run> <added ids>` |
 
 A v3 run's steps, gates and loops are never edited: `plan revise` on a v3 run

@@ -71,10 +71,14 @@ test('watch and wait output: waiting at a gate, the loop round, and the answers 
     "⧖ loop polish out of rounds (3 of 3) · check's evidence passed did not hold · continue: bullswarm workflow continue 2fne62 polish --rounds <n>",
     'outcome: waiting',
     "waiting: loop polish · out of rounds (3 of 3); check's evidence passed did not hold",
-    'next: bullswarm workflow continue 2fne62 polish --rounds <1-5>   (more rounds; without --rounds the loop passes as it stands)',
+    'next: bullswarm workflow continue 2fne62 polish --rounds <1-5>   (more rounds; without --rounds it ends continued, condition not met)',
   ].join('\n'));
   assert.match(outOfRounds, /loop polish is out of rounds \(3 of 3\)/);
   assert.match(outOfRounds, /--rounds/);
+  assert.match(outOfRounds, /without --rounds it ends continued with its condition not met, which is no pass/);
+  // QA37: a loop the caller continued is named as such, never as passed.
+  const continued = watchContext('→ loop polish continued by the caller after 3 of 3 rounds (condition not met)');
+  assert.match(continued, /The loop polish continued by the caller after 3 of 3 rounds \(condition not met\)\./);
   assert.equal(watchContext('✓ count finished · unproven · 35s'), null, 'nothing v3 to say about a plain step line');
 });
 

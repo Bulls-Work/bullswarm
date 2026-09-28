@@ -170,12 +170,12 @@ export function watchContext(text: string): string | null {
       ),
     )
     for (const m of waiting.filter(w => w[1] === 'loop'))
-      parts.push(`The loop ${m[2]!} is ${(m[3] ?? 'out of rounds').replace(/;.*$/, '')}: --rounds gives it more, and without --rounds it passes as it stands.`)
+      parts.push(`The loop ${m[2]!} is ${(m[3] ?? 'out of rounds').replace(/;.*$/, '')}: --rounds gives it more; without --rounds it ends continued with its condition not met, which is no pass.`)
   }
   const loop = [...lines]
     .reverse()
     .map(l => {
-      const m = /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+)/.exec(l)
+      const m = /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+|continued by the caller after \d+ of \d+ rounds \(condition not met\))/.exec(l)
       if (m) return m
       // wait's fact line: `✓ loop fix passed · round 2 of 3`.
       const fact = /loop (\S+) (passed|blocked) · round (\d+ of \d+)/.exec(l)

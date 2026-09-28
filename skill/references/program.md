@@ -83,7 +83,8 @@ give every writer work each round (a build or chore step that changes no file
 fails `not-produced`). From round 2 on, each step's task carries a `Previous
 round` block with what the loop's steps answered and their evidence. When the
 rounds run out, the loop waits like a gate: `workflow continue <run> <loop>
---rounds <1-5>` gives it more, and without `--rounds` it passes as it stands.
+--rounds <1-5>` gives it more; without `--rounds` the steps behind it run, and
+the loop is recorded as `continued-unmet` (condition not met), never passed.
 A step in the loop that fails (after its retry) blocks the loop.
 
 ## The condition form
