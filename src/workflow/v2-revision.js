@@ -574,3 +574,15 @@ export function exportV2Plan(state, { pendingSteering = [] } = {}) {
     },
   };
 }
+
+// What a committed revision's acceptances look like on the event log (§2.8):
+// one `step.accepted` per accepted step or check, after the revision commits.
+export function acceptedEventPayloads(planned) {
+  return (planned?.acceptances ?? []).map((entry) => ({
+    actionId: entry.step,
+    reason: entry.reason,
+    // Only what this accept added: earlier acceptances on the check keep theirs (F21).
+    requirements: Array.isArray(entry.accepted) ? [...entry.accepted]
+      : (Array.isArray(entry.requirements) ? entry.requirements.map((item) => item.id) : null),
+  }));
+}

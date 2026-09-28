@@ -5,7 +5,7 @@ import { writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent, readEvents } from './events.js';
 import {
   commitV2Revision, exportV2Plan, pendingRevisionRequests, planV2Revision, queueRevisionRequest,
-  rejectedRevisionRecord, removeStaleReceipts, revisionEventPayload,
+  rejectedRevisionRecord, removeStaleReceipts, revisionEventPayload, acceptedEventPayloads,
 } from './v2-revision.js';
 import { ACTION_PROGRAM_SCHEMA_VERSION } from './action-validator.js';
 import {
@@ -129,18 +129,6 @@ export function acceptCallerPlannerResponse(state, response, { boundary, runDir,
   });
   onEvent?.(event);
   return { state: next, accepted };
-}
-
-// What a committed revision's acceptances look like on the event log (§2.8):
-// one `step.accepted` per accepted step or check, after the revision commits.
-function acceptedEventPayloads(planned) {
-  return (planned?.acceptances ?? []).map((entry) => ({
-    actionId: entry.step,
-    reason: entry.reason,
-    // Only what this accept added: earlier acceptances on the check keep theirs (F21).
-    requirements: Array.isArray(entry.accepted) ? [...entry.accepted]
-      : (Array.isArray(entry.requirements) ? entry.requirements.map((item) => item.id) : null),
-  }));
 }
 
 // D20: a `step rerun` writes its applied restart intent before it submits the
