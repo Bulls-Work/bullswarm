@@ -16,7 +16,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
-import { attemptCapture, watchOnce } from '../src/lib/watch.js';
+import { watchOnce } from '../src/lib/watch.js';
+import { attemptCapture } from '../src/lib/attempt-usage.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CAPTURE = join(REPO_ROOT, 'tests/fixtures/stream/grok-capture.jsonl');
