@@ -183,6 +183,8 @@ test('step restart and step rerun refusals on a v3 run point to step rerun and w
 
 // --- plan contract describes v3; plan validate names the program file --------
 
+const V2_WORDS = /\brole\b|role=|\bkind\b|kind=|\bact steps?\b|\bactions?\b|evidenceFor|check step/;
+
 test('plan contract prints the v3 contract; --v2 prints the old one', (t) => {
   const f = fixture(t);
   const out = run(f.bullswarmDir, ['workflow', 'plan', 'contract', 'Audit the acme notes', '--cwd', f.workspace, '--json']);
@@ -222,6 +224,19 @@ test('plan validate prints a launch line with the program file the caller named'
   assert.ok(relative.stdout.includes(`--program ${join(realpathSync(f.root), 'my-plan.json')} --json`), relative.stdout);
 });
 
+test('a v3 step with files and an outward deliverable or lane analyze is refused in step words, blamed once', () => {
+  const issuesOf = (step) => {
+    try { normaliseProgramV3({ schemaVersion: V3, steps: [{ id: 'post', prompt: 'Post the acme notes.', ...step }] }); }
+    catch (error) { return error.issues; }
+    assert.fail('the program was accepted');
+  };
+  const outward = issuesOf({ deliverable: 'outward', files: ['NOTES.md'] });
+  assert.deepEqual(outward, ['steps[0] an outward step must have empty files; it does not write workspace files']);
+  const analyze = issuesOf({ lane: 'analyze', files: ['NOTES.md'] });
+  assert.deepEqual(analyze, ['steps[0] analyze steps must have empty files; use lane build or chore for a step that writes files']);
+  for (const issue of [...outward, ...analyze]) assert.doesNotMatch(issue, V2_WORDS, issue);
+});
+
 test('plan validate on a v3 program speaks of steps: no v2 role or kind words, in the lines, the JSON, the advisories or the issues', (t) => {
   const f = fixture(t);
   const file = join(f.root, 'plan.json');
@@ -229,7 +244,6 @@ test('plan validate on a v3 program speaks of steps: no v2 role or kind words, i
     writeFileSync(file, JSON.stringify(program));
     return run(f.bullswarmDir, ['workflow', 'plan', 'validate', 'Ship the acme notes', '--cwd', f.workspace, '--program', file, ...(json ? ['--json'] : [])]);
   };
-  const V2_WORDS = /\brole\b|role=|\bkind\b|kind=|\bact steps?\b|\bactions?\b|evidenceFor|check step/;
   const valid = {
     schemaVersion: V3,
     steps: [
@@ -257,11 +271,14 @@ test('plan validate on a v3 program speaks of steps: no v2 role or kind words, i
       { id: 'post', prompt: 'Post the acme notes.', lane: 'build', deliverable: 'outward' },
       { id: 'tidy', prompt: 'Tidy the acme notes.', lane: 'chore', effort: 'high' },
       { id: 'look', prompt: 'Look at the acme notes.', evidence: [{ type: 'review' }] },
+      { id: 'send', prompt: 'Send the acme notes.', deliverable: 'outward', files: ['OUT.md'] },
     ],
   });
   assert.equal(refused.status, 2);
   assert.match(refused.stderr, /steps\[0\] a outward deliverable is for analyze steps; build and chore steps deliver files, data or media/);
   assert.match(refused.stderr, /steps\[1\] chore steps are deterministic mechanical work and must use low effort/);
+  assert.match(refused.stderr, /steps\[3\] an outward step must have empty files; it does not write workspace files/);
+  assert.doesNotMatch(refused.stderr, /steps\[3\] analyze/);
   assert.match(refused.stderr, /steps\[2\]\.evidence\[0\]\.type must be command or schema; a check is an ordinary step with an answer and\/or evidence/);
   assert.doesNotMatch(refused.stderr, V2_WORDS, refused.stderr);
 });

@@ -206,12 +206,27 @@ function readCondition(raw, at, issues, stepsById) {
 // An act-role issue is dropped: the outward-deliverable issue beside it
 // already says the same in v3 words.
 const ACT_LANE = / act steps use lane analyze; they do not write workspace files$/;
+// An outward step with files trips both the act rule and the analyze-lane
+// rule (its lane is derived); the author set no lane, so only the first speaks.
+const ACT_FILES = /^actions\[(\d+)\] act steps must have empty ownedFiles and evidenceFor$/;
+const ANALYZE_FILES = /^actions\[(\d+)\] analyze actions must not own workspace files; use build or chore for mutations$/;
+
+/** v2 validation issues in v3 words, each step blamed once. */
+export function v3IssuesWording(issues) {
+  const outwardWithFiles = new Set(issues.map((issue) => ACT_FILES.exec(String(issue))?.[1]).filter(Boolean));
+  return issues
+    .filter((issue) => !outwardWithFiles.has(ANALYZE_FILES.exec(String(issue))?.[1]))
+    .map(v3IssueWording)
+    .filter(Boolean);
+}
 
 /** One v2 issue or advisory message in v3 words, or null when it only repeats another. */
 export function v3IssueWording(issue) {
   const text = String(issue);
   if (ACT_LANE.test(text)) return null;
   return text
+    .replace(/ act steps must have empty ownedFiles and evidenceFor$/, ' an outward step must have empty files; it does not write workspace files')
+    .replace(/ analyze actions must not own workspace files; use build or chore for mutations$/, ' analyze steps must have empty files; use lane build or chore for a step that writes files')
     .replace(/^actions\[(\d+)\]/, 'steps[$1]')
     .replace(/\.ownedFiles\b/g, '.files')
     .replace(/ ownedFiles\b/g, ' files')
@@ -399,7 +414,7 @@ export function normaliseProgramV3(input, runtime = {}) {
         requirements: Array.isArray(runtime.requirements) ? runtime.requirements : [{ id: requirementId, mandatory: false }],
       });
     } catch (error) {
-      issues.push(...(Array.isArray(error?.issues) ? error.issues : [error.message]).map(v3IssueWording).filter(Boolean));
+      issues.push(...v3IssuesWording(Array.isArray(error?.issues) ? error.issues : [error.message]));
     }
   }
 
