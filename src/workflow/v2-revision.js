@@ -36,7 +36,7 @@ import { deriveV2LiveStages } from './v2-presentation.js';
 import * as v2State from './v2-state.js';
 import { v2LiveProgramRuntime, validateV2DurableState } from './v2-state.js';
 import { revisedVerifyRounds } from './verify-rounds.js';
-import { desiredActionsV3, exportedProgramV3, isV3Revision } from './revision-v3.js';
+import { appendedActionsV3, desiredActionsV3, exportedProgramV3, isV3Revision } from './revision-v3.js';
 import { controlReachEdges } from './gates-loops.js';
 
 export const V2_REVISION_SCHEMA_VERSION = 'bullswarm.workflow.revision.v1';
@@ -118,6 +118,8 @@ export function createRevisionRequest(body, { source = 'cli', now = () => new Da
     rerun: [...(body.rerun ?? [])],
     steeringIds: [...(body.steeringIds ?? [])],
     ...(Array.isArray(body.accept) && body.accept.length ? { accept: clone(body.accept) } : {}),
+    // `workflow add` (v3): an append-only revision.
+    ...(body.append === true ? { append: true } : {}),
   };
 }
 
@@ -327,10 +329,16 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
     issues.push(`the plan changed since revision ${request.baseRevision} (the run is now at revision ${state.program.revision}); export it again and reapply your edits`);
   }
   let desired = [];
-  if (isV3Revision(state)) {
-    const v3 = desiredActionsV3(state, request.program, v2LiveProgramRuntime(state));
+  let appended = null;
+  if (request.append === true && !isV3Revision(state)) {
+    issues.push('workflow add appends to a v3 run; change a v2 run\'s plan with bullswarm workflow plan export, then plan revise');
+  } else if (isV3Revision(state)) {
+    const v3 = request.append === true
+      ? appendedActionsV3(state, request.program, v2LiveProgramRuntime(state))
+      : desiredActionsV3(state, request.program, v2LiveProgramRuntime(state));
     if (v3.issues) issues.push(...v3.issues);
     else desired = v3.desired;
+    if (request.append === true && !v3.issues) appended = v3;
   } else try {
     desired = validateActionProgram(request.program, v2LiveProgramRuntime(state)).actions;
   } catch (error) {
@@ -397,7 +405,8 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
   const countsFixes = features?.failureRule === true || features?.failureRule === 1;
   const roundsChange = revisedVerifyRounds(state, request.program, { countsFixes }) !== null;
   // An accept-only revision is a change.
-  if (![...added, ...amended, ...restored, ...removed, ...rerun, ...accepted].length && !steeringIds.length && !roundsChange) {
+  const addedControl = appended?.addedControl ?? [];
+  if (![...added, ...amended, ...restored, ...removed, ...rerun, ...accepted, ...addedControl].length && !steeringIds.length && !roundsChange) {
     return { ok: false, issues: ['the revision changes nothing: every action matches the live plan and no finished step is named in rerun'] };
   }
   return {
@@ -405,7 +414,12 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
     issues: [],
     desired,
     // `accepted` only when used, so a record without it still loads in older builds.
-    changes: { added, amended, restored, removed, rerun, invalidated, ...(accepted.length ? { accepted } : {}) },
+    changes: {
+      added, amended, restored, removed, rerun, invalidated, ...(accepted.length ? { accepted } : {}),
+      // The gates and loops a `workflow add` appended; absent otherwise.
+      ...(addedControl.length ? { addedControl } : {}),
+    },
+    ...(appended ? { control: appended.control } : {}),
     ...(acceptances.length ? { acceptances } : {}),
     affected: [...new Set([...removed, ...amended, ...rerun, ...invalidated])],
     steeringIds,
@@ -426,6 +440,8 @@ export function applyV2Revision(state, planned, { request, at }) {
 
   state.program.actions = state.program.actions.map((action) => (redefined.has(action.id) ? clone(desired.get(action.id)) : action));
   for (const id of added) state.program.actions.push(clone(desired.get(id)));
+  // `workflow add` on a v3 run: the gates and loops it appended.
+  if (planned.control) state.program.control = clone(planned.control);
   state.program.revision = revision;
 
   const runtimeById = new Map(state.actions.map((action) => [action.id, action]));

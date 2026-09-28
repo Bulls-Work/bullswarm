@@ -42,10 +42,11 @@ const REVISION_RECORD_FIELDS = new Set([
   'id', 'status', 'source', 'queuedAt', 'processedAt', 'summary', 'baseRevision',
   'programRevision', 'changes', 'steeringIds', 'issues',
 ]);
-const REVISION_CHANGE_FIELDS = new Set(['added', 'amended', 'restored', 'removed', 'rerun', 'invalidated', 'accepted']);
+const REVISION_CHANGE_FIELDS = new Set(['added', 'amended', 'restored', 'removed', 'rerun', 'invalidated', 'accepted', 'addedControl']);
 // Change lists a revision record may leave out: `accepted` (stage 3) is absent
-// from every record written before it existed.
-const OPTIONAL_REVISION_CHANGE_FIELDS = new Set(['accepted']);
+// from every record written before it existed, and `addedControl` (the gates
+// and loops a v3 `workflow add` appended) from every other record.
+const OPTIONAL_REVISION_CHANGE_FIELDS = new Set(['accepted', 'addedControl']);
 const RETRY_FACT_SET = new Set(RETRY_FACTS);
 const ATTEMPT_FIELDS = new Set([
   'id', 'actionId', 'ordinal', 'status', 'pool', 'model', 'startedAt',
@@ -807,6 +808,7 @@ function validateRevisions(revisions, program) {
         const list = entry.changes[field];
         if (!Array.isArray(list) || list.some((id) => typeof id !== 'string' || !ID_RE.test(id))) fail(`${at}.changes.${field} must be an array of action ids`);
       }
+      if (entry.changes.addedControl !== undefined && program.schemaVersion !== PROGRAM_V3_SCHEMA_VERSION) fail(`${at}.changes.addedControl needs a v3 program`);
       if (entry.issues !== null) fail(`${at}.issues must be null for an applied revision`);
     } else {
       if (entry.programRevision !== null || entry.changes !== null) fail(`${at} was rejected and cannot carry a program revision or changes`);
