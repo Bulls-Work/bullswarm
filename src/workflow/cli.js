@@ -7,8 +7,6 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { buildPools, buildPoolsLive } from '../lib/config.js';
-import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns, cmdReindex } from './runs-cli.js';
 import { newRunId, resolveRunId, listRuns, isLegacyRunState, isProcessAlive, v2RunnerLiveness } from './short-id.js';
 import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
@@ -33,7 +31,7 @@ import {
   clearStepRestart, prepareV2DispatchPools, readStepRestarts, requestStepRestart, workerSilenceTimeoutSec,
 } from './v2-dispatch.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
-import { poolPassesRoute, resolveRouteFilter, routeIssuesForPools, routeSummary } from './step-route.js';
+import { poolPassesRoute, resolveRouteFilter, routeSummary } from './step-route.js';
 import {
   createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, REVISION_CHANGE_KINDS, V2RevisionError,
 } from './v2-revision.js';
@@ -43,7 +41,6 @@ import {
   buildV2PlannerContract, normalizeCallerPlannerResponse, validateV2PlannerResponse,
   V2PlannerValidationError, v2RoleCatalog, workspacePathIssues,
 } from './v2-planner.js';
-import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { peekSteering, queueSteering } from './steering.js';
@@ -59,6 +56,7 @@ import { listAssignments } from '../lib/assignments.js';
 import { loadPoolLabels, resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 import { workflowHelpPath, parseFlags, flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, legacyRunRefusal, loadV2RunState } from './cli-run-lookup.js';
+import { pinnedPoolIssues, programRoutes, routePoolIssues, configuredPools, livePoolNames } from './cli-pool-checks.js';
 
 function isHomeSnapshot(dir) {
   try {
@@ -692,54 +690,6 @@ function previewValidateInitialProgram(doc, response) {
   const preview = createV2DurableState(doc, { runId: 'wf-preview-000000', shortId: 'previe' });
   // The callers run workspacePathIssues next to their pinned-pool check.
   return validateV2PlannerResponse(response, preview, { boundary: 'initial', requiredScoutUnits: [], workspacePaths: false });
-}
-
-// A pinned pool with no model on a step's tier fails that step within a second
-// as "no eligible pool". Say so before anything launches. Pool pauses are not
-// counted here: they end, and the run reports them if they still matter.
-function pinnedPoolIssues(doc, program, pools) {
-  const routing = doc.config?.workerRouting ?? {};
-  const strictPool = routing.strictPool ?? routing.pool ?? null;
-  if (!strictPool || !Array.isArray(pools) || !pools.length) return [];
-  const issues = [];
-  program.actions.forEach((action, index) => {
-    const effort = action.effort ?? 'medium';
-    const capable = prepareV2DispatchPools(pools, action, effort, {
-      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool,
-    });
-    if (!capable.length) {
-      issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
-    }
-  });
-  return issues;
-}
-
-// Stage 3 §2.4: the route checks that need the configured pool list (unknown
-// pool or provider names, a label instead of an id, nothing capable left, the
-// run pin outside the route). Only programs that route a step pay for them.
-function programRoutes(actions) {
-  return (actions ?? []).some((action) => action?.route && typeof action.route === 'object');
-}
-
-// `state` (a running run) lets the pin check see which steps already did work;
-// `recordedWork` (workflow add) lets every independentOf check see it.
-function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR()), state = null, { recordedWork = false } = {}) {
-  if (!programRoutes(actions) || !Array.isArray(pools)) return [];
-  const routing = doc?.config?.workerRouting ?? {};
-  const preferredModel = routing.model ?? routing.preferredModel ?? null;
-  return routeIssuesForPools({ actions }, pools, {
-    runPin: routing.strictPool ?? routing.pool ?? null,
-    preparePools: (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options }),
-    labels,
-    state,
-    recordedWork,
-  });
-}
-
-// The configured pools without a live meter refresh: enough for the route
-// checks, which ignore the metered-window gates.
-function configuredPools() {
-  try { return buildPools(BULLSWARM_DIR(), Date.now()).pools; } catch { return null; }
 }
 
 // D35: a program that sets verifyRounds is told that it now counts fix cycles.
@@ -2481,18 +2431,5 @@ function wfTask(opts, home) {
   } catch (err) {
     console.error(`✗ ${err.message}`);
     return 1;
-  }
-}
-
-async function livePoolNames() {
-  try {
-    await maybeRefreshStrategy(BULLSWARM_DIR());
-    const { pools } = await buildPoolsLive(BULLSWARM_DIR(), Date.now(), {
-      getReadings: getAllMeterReadings,
-    });
-    return { names: pools.map((p) => p.name), pools };
-  } catch (err) {
-    const { pools } = buildPools(BULLSWARM_DIR(), Date.now());
-    return { names: pools.map((p) => p.name), pools, meterWarning: err.message };
   }
 }
