@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+- 0.37.0 in one line: a step is a run, and a workflow composes steps, phases,
+  gates and loops. `bullswarm run` is a one-step workflow; `bullswarm workflow
+  goal --program` runs a program you write. New programs are
+  `bullswarm.workflow.program.v3`; v2 programs and saved runs still run and
+  replay as before.
+- workflow: program v3 has four blocks. `steps` (the work: `id`, `prompt`,
+  `dependsOn`, and optional `phase`, `label`, `lane`, `effort`, `reasoning`,
+  `route`, `answer`, `evidence`, `deliverable`, `files`, `retry` 0 or 1,
+  `timeBox`), `phase` (a label that groups steps and changes nothing else),
+  `gates` (`{id, dependsOn, when?, note?}`: the steps behind it wait for
+  `bullswarm workflow continue <run> <gate>`, or only when its condition
+  holds) and `loops` (`{id, steps, until, maxRounds}` 1-5: the steps run again
+  until the condition holds). There is one condition form:
+  `{step, field, equals?}` on a required boolean of the step's answer, or
+  `{step, evidence: "passed"}`. A check is an ordinary step with an `answer`
+  schema and/or `evidence`; roles, kinds, requirement IDs, `evidenceFor` and
+  `verifyRounds` belong to v2 programs and are refused in v3.
+- workflow: `answer` asks a step to write JSON to a file Bullswarm names; the
+  file (at most 256 KiB), not the reply, is checked against the schema (a
+  mismatch is failure kind `schema`), handed to the steps that depend on it,
+  read by conditions and printed by `watch`, `wait` and `runs result`.
+- workflow: new verbs for v3 runs. `bullswarm workflow add <run> --steps
+  part.json` (or `--from-answer <step>`) appends steps, gates and loops without
+  changing anything the run has, and reopens a finished run. `bullswarm
+  workflow wait <run> <id...>` reads until the named steps, gates or loops
+  settle and prints their facts and answers (exit 0, 1 when one failed or the
+  run stopped short, 2 on a timeout or unknown id). `bullswarm workflow
+  continue <run> <gate|loop> [--rounds <1-5>]` passes a waiting gate or gives
+  a loop more rounds. A run with only waiting gates or loops left is parked
+  with status `waiting`; `watch --until trouble` wakes on it and prints the
+  `continue` command.
+- workflow: a v3 run's steps are never edited. `plan revise` on a v3 run
+  accepts only reruns and otherwise refuses with "a v3 run's steps cannot be
+  added, changed or removed with plan revise in this build; add steps, gates
+  or loops with `bullswarm workflow add` …". The needs-you block and the
+  refusals on a v3 run offer `add steps` / `then wait` (`bullswarm workflow add
+  <run> --steps part.json`, then `bullswarm workflow wait <run> <added ids>`)
+  where a v2 run offers `change the step`.
+- workflow: a completed v3 run hands nothing back and prints no `your call:`
+  (a v3 run is never "verified": every step succeeding is what it reports). A
+  partial v3 run's `restart` line names the run's folder: `start a new run:
+  bullswarm workflow goal "<goal>" --cwd <run folder> --program <file.json>`.
+- workflow: `bullswarm workflow plan contract` prints the v3 contract
+  (`bullswarm.workflow.contract.v3`: fields, rules and an example that
+  validates); `--v2` prints the contract of old programs. `plan validate`'s
+  launch line names the absolute path of the program file you gave it.
+- workflow: a v3 build or chore step in a folder that is not a git repository
+  is now checked for a change: Bullswarm lists the folder before and after the
+  worker (up to 5,000 files and 64 MiB, `.git` and `node_modules` skipped), and
+  a step that changed nothing fails `not-produced`. In a larger folder the
+  change stays unchecked, as before; name the step's `files` there.
+- workflow: `bullswarm workflow goal --program` launches print `watch
+  --until trouble` for a v3 run, since a gate or loop can stop it for you.
 - run: `bullswarm run` is a one-step workflow. Its flags become a one-step
   program that the workflow kernel runs in the foreground, with no scout and no
   planner, and the run is recorded under `workflows/<id>/` with its rollup, so
@@ -27,11 +80,45 @@
   `route` takes. `--dry-run` prints the kernel's own first pick for the step.
 - run: keep-on-caller and incumbency are gone. The calling agent is never a
   pool of its own run, so `keepOnClaude` is no longer in the verdict;
-  `--no-caller` is accepted with a one-line notice for this release. A run at
+  `--no-caller` is accepted with a one-line notice for this release and
+  will be removed. A run at
   the recursion depth limit is a plain refusal: `ok: false`, failure kind
   `depth`. Every step is routed by one rule, so nothing reads or writes
   `incumbents` in `state.json`, and the fleet view and the Claude Code mod no
   longer show "incumbent for".
+- run: `--timeout <seconds>` kills the worker as before and the verdict reads
+  `timeout after <N>s` with failure kind `interrupted` (a process failure), so
+  it gets the one automatic retry on another pool; `--no-retry` gives one
+  attempt. A new failure kind was not added: `interrupted` already has the
+  right retry, and one more kind would change every failure table for one flag.
+- mod: routed Claude Code subagents run on lane `analyze` with one attempt: a
+  build run must change a file, so a subagent that only answers would fail
+  `not-produced`.
+- stats: single runs count. Stats, Budget and History read the single runs the
+  decision log still holds (older ones) and the one-step workflows new runs
+  record, so totals from this version on include `bullswarm run` work that
+  earlier versions left out.
+- stats: one definition of each number on every page. A run belongs to the
+  day it finished (History counted it on its start day). A money total exists
+  only when every attempt in the scope was priced, and the priced subtotal
+  always travels beside it; Budget's `apiEquivalentUsd` is the pool's whole
+  amount for the period instead of a sum of per-pool amounts, and History's
+  day spend is the priced subtotal, equal to the Stats trend for that day.
+  Worker minutes and usage come from one per-attempt record, so Stats numbers
+  move only by rounding (up to 0.01 worker-minutes).
+- removed: keep-on-caller (`keepOnClaude` in the verdict), incumbency (the
+  `incumbents` state and the "incumbent for" lines), and the rule that a run
+  never waits for its caller: a v3 run waits at the gates and loops you
+  declare, and nowhere else.
+- upgrade: nothing to migrate. v2 programs (`bullswarm.workflow.program.v2`)
+  still validate and run, `plan contract --v2` prints their contract, and runs
+  saved by earlier versions keep their rules when resumed or viewed. Write new
+  programs as v3 (`skill/references/patterns.md` has five that validate as
+  printed). Scripts that parsed `keepOnClaude` from a `run` verdict, or passed
+  `--no-caller`, should drop them; scripts that read a `run` verdict gain
+  `runId`, `shortId`, `answer`, `answerCheck` and `attempts`. A `build` or
+  `chore` run that changes nothing now fails `not-produced`, in or outside a
+  git repository: ask questions on `--lane analyze`.
 
 ## 0.36.0 — Usage limits go back to the caller; each account bills itself
 
