@@ -70,7 +70,10 @@ function watch(run, options) {
   const promise = runWorkflowWatch(run.home, SHORT, {
     intervalMs: 50, ...options, output: { write: (text) => { output += text; } },
   });
-  return { promise, get lines() { return output.split('\n').filter(Boolean); } };
+  // `raw` is every line; `lines` leaves out the one start line `--until`
+  // prints (`watching <run> until <mode> · <n> steps`), asserted on its own.
+  const raw = () => output.split('\n').filter(Boolean);
+  return { promise, get raw() { return raw(); }, get lines() { return raw().filter((line) => !/^watching \S+ until (trouble|outcome) · \d+ steps?$/.test(line)); } };
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -85,7 +88,7 @@ test('--until trouble prints only the stale line, then the relaunch and restart 
   const watcher = watch(run, { until: 'trouble', now: () => nowMs });
   assert.equal(await watcher.promise, 0);
   const at = new Date(nowMs).toISOString();
-  assert.deepEqual(watcher.lines, [
+  assert.deepEqual(watcher.raw, [
     `watching ${SHORT} until trouble · ${run.state.program.actions.length} steps`,
     '⚠ verify looks stale: quiet 12m with no command running',
     `next: bullswarm workflow watch ${SHORT} --until trouble --after 33 --since ${at}`,
