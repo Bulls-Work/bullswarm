@@ -221,6 +221,75 @@ dashboard and leaves the run going; only `c` stops it, and that asks the kernel
 for a cooperative stop at its next safe checkpoint.
 :::
 
+## v3 runs: phases, gates, loops and answers
+
+A run from a v3 program reads by its own blocks. Its steps group under the
+`phase` each one declares; a gate and a loop each get a row of their own; every
+attempt of a step that declares an `answer` shows that answer under its row; and
+a run that stops for you says where, with the command that moves it. A **phase**
+is the label a step declares (`"phase": "writing"`). A **gate** is a point where
+the run stops until you run `bullswarm workflow continue`. A **loop** reruns its
+steps until its condition holds, for at most `maxRounds` rounds.
+
+A real run on grok, parked at its gate, on the Run page at 120 columns:
+
+```text
+ ⧖ 2fne62 · waiting at gate approve · 3 of 4 steps done · 1 waiting (post)                                  3m44s active
+ Write a two-line note, then wait for approval
+ next: bullswarm workflow continue 2fne62 approve
+── ✓ Phase 1 · research · count ────────────────────────────────────────────────────────────── 01:28 → 01:28 · 35s · 1/1
+ 01:28  ✓ count · grok · grok-4.7 · reasoning high · tier medium                                                     35s
+        answer {"lines":4,"short":true}
+── ✓ Phase 2 · writing · write · check ───────────────────────────────────────────────────── 01:28 → 01:31 · 3m09s · 2/2
+        ✓ loop polish · passed in round 2 of 3 · check's evidence passed
+ 01:28  ✓ write · round 1 · grok · grok-4.7 · reasoning high · tier medium                                           51s
+ 01:29  ✓ check · round 1 · grok · grok-4.7 · reasoning high · tier medium             39s · returned early · 1 not done
+        answer {"lines":1,"passed":false}
+ 01:30  ✓ write · round 2 · grok · grok-4.7 · reasoning high · tier medium                                           47s
+ 01:30  ✓ check · round 2 · grok · grok-4.7 · reasoning high · tier medium                                           52s
+        answer {"lines":2,"passed":true}
+── ○ Phase 3 · publish · post ────────────────────────────────────────────────────────────────────────── — → — · — · 0/1
+ 01:31  ⧖ gate approve · waiting for you · Read NOTE.md and decide whether to write DONE.md
+        continue: bullswarm workflow continue 2fne62 approve
+```
+
+- **Phases.** The plan boxes and the timeline rules carry the phase name
+  (`[✓ 1 research] → [✓ 2 writing 2/2] → [○ 3 publish]`). Steps with no phase
+  group by dependency level, as a v2 run's do; a step behind a gate or a loop
+  sits one level after it.
+- **A loop row** heads the phase of its first step and reads `round N of max`
+  while it runs, `passed in round N of max · <condition>` when its condition
+  held, or `out of rounds (N of max) · <condition> did not hold` with its
+  `continue … --rounds <1-5>` command when it waits for you. Each attempt of a
+  loop step says its round (`write · round 2`).
+- **A gate row** heads the phase of the steps behind it and reads `waits after
+  <steps>`, `waiting for you · <note>` with its `continue` command, `passed ·
+  continued by the caller`, or `skipped · <condition> does not hold` when its
+  `when` condition did not hold.
+- **Answers.** `answer {…}` is the checked answer (it matched the step's schema);
+  `answer check failed · <why>` is red. The Step page leads its result with the
+  same answer, and its header reads `answer checked` or `answer check failed`. A
+  v3 step or run never reads `verified` or `not verified`: it reports facts.
+- **Waiting runs** stay in the `active` block of Runs and in Home's running list,
+  with the command under them:
+
+```text
+ ⧖ 2fne62    we-proj   Write a two-line note, then wait for approval                      3/4 steps    4m   $1.16  01:28
+             waiting at gate approve · bullswarm workflow continue 2fne62 approve
+```
+
+- **A one-step run** (`bullswarm run`, or a v3 program of one step and no gate
+  or loop) has no plan boxes and no phase rule: its timeline is the goal and the
+  attempt rows, with the answer under them.
+- **Counts.** Stats' totals line and Home's figures name one-step runs apart from
+  workflows: `1 run`, `3 runs · 5 workflows`, or `Workflows: 5 · verified 2 (40%)`
+  when there are no one-step runs.
+
+The Claude mod's pane draws the same timeline. Its strip and prompt context list
+a parked run as `2fne62 (waiting at gate approve, 12m): 3/4 done; continue:
+bullswarm workflow continue 2fne62 approve`, and a `bullswarm workflow watch` or
+`workflow wait` result gets a note naming the gate or loop and its command.
+
 ## Single `bullswarm run` tasks on the Runs page
 
 A single task dispatched with `bullswarm run` is not a workflow, but it spends
