@@ -12,7 +12,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { restartV2Step } from '../src/workflow/cli.js';
+import { restartV2Step } from '../src/workflow/cli-step-verbs.js';
 import { appendEvent } from '../src/workflow/events.js';
 import {
   appliedStepRestart, clearStepRestart, markStepRestartApplied, readStepRestarts, requestStepRestart,

@@ -17,7 +17,7 @@ import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { reviseV2Program } from '../src/workflow/run-control.js';
 import { dispatchV2Action, readStepRestarts, requestStepRestart, stepRestartPath } from '../src/workflow/v2-dispatch.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput, queueRevisionRequest } from '../src/workflow/v2-revision.js';
-import { acceptV2Step, rerunV2Step, restartV2Step, stepReopenedLines } from '../src/workflow/cli.js';
+import { acceptV2Step, rerunV2Step, restartV2Step, stepReopenedLines } from '../src/workflow/cli-step-verbs.js';
 import { notableWatchEvents, renderWatchEvent } from '../src/workflow/watch-cli.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');

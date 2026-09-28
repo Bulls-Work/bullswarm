@@ -17,7 +17,7 @@ import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { implicitV3Requirements, normaliseProgramV3 } from '../src/workflow/program-v3.js';
 import { formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, summarizeV2Result } from '../src/workflow/v2-outcome.js';
 import { readEvents } from '../src/workflow/events.js';
-import { rerunV2Step, restartV2Step } from '../src/workflow/cli.js';
+import { rerunV2Step, restartV2Step } from '../src/workflow/cli-step-verbs.js';
 import { changeStepHint } from '../src/workflow/step-change-hint.js';
 import { helpText } from '../src/help.js';
 

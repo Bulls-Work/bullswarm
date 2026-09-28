@@ -22,7 +22,7 @@ import {
 } from '../src/workflow/caller-planner.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
-import { rerunV2Step } from '../src/workflow/cli.js';
+import { rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { queueSteering } from '../src/workflow/steering.js';

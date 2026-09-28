@@ -22,7 +22,7 @@ import {
   applyContinueOffline, previousRoundBlock, readContinueIntents, requestContinue, schedulerView,
   waitingDocument, waitingOutcomeLines,
 } from '../src/workflow/gates-loops.js';
-import { acceptV2Step, rerunV2Step } from '../src/workflow/cli.js';
+import { acceptV2Step, rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
 import { continueV2Run, waitV3Nodes } from '../src/workflow/cli-steps.js';
 import { deserializeV2DurableState, serializeV2DurableState } from '../src/workflow/v2-state.js';

@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { rerunV2Step } from '../src/workflow/cli.js';
+import { rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { createV2DurableState, createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { appliedStepRestart, readStepRestarts, requestStepRestart } from '../src/workflow/v2-dispatch.js';
