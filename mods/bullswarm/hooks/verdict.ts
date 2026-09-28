@@ -138,13 +138,29 @@ function waitingSentence(
 export function watchContext(text: string): string | null {
   const lines = text.split(/\r?\n/)
   const parts: string[] = []
+  // Where the run waits: watch's `waiting: gate approve · note`, a stopped
+  // wait's `  waiting  gate approve · note`, or wait's own fact line
+  // `⧖ gate approve waiting · note` / `⧖ loop fix waiting · round 3 of 3 · …`.
   const waiting = lines
-    .map(l => /^waiting: (gate|loop) (\S+)(?: · (.*))?$/.exec(l.trim()))
+    .map(l => {
+      const listed = /^waiting(?::\s*|\s+)(gate|loop) (\S+)(?: · (.*))?$/.exec(l.trim())
+      if (listed) return listed
+      const fact = /^\S+ (gate|loop) (\S+) waiting(?: · (.*?))?(?: · continue: .*)?$/.exec(l.trim())
+      if (!fact) return null
+      const rounds = fact[1] === 'loop' ? /round (\d+) of (\d+)/.exec(fact[3] ?? '') : null
+      if (rounds) fact[3] = `out of rounds (${rounds[1]!} of ${rounds[2]!})`
+      return fact
+    })
     .filter((m): m is RegExpExecArray => m !== null)
+    .filter((m, i, all) => all.findIndex(o => o[1] === m[1] && o[2] === m[2]) === i)
   const token = /bullswarm workflow continue (\S+) /.exec(text)?.[1] ?? null
-  const next = lines
-    .map(l => /^(?:next|  or):\s+(bullswarm workflow continue .*?)(?:\s{2,}\(.*)?$/.exec(l)?.[1] ?? null)
-    .filter((c): c is string => c !== null)
+  const next = [
+    ...new Set(
+      lines
+        .map(l => /^(?:next:|  or:|\s*continue)\s+(bullswarm workflow continue .*?)(?:\s{2,}\(.*)?$/.exec(l)?.[1] ?? null)
+        .filter((c): c is string => c !== null),
+    ),
+  ]
   if (waiting.length && token) {
     parts.push(
       waitingSentence(
@@ -158,7 +174,14 @@ export function watchContext(text: string): string | null {
   }
   const loop = [...lines]
     .reverse()
-    .map(l => /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+)/.exec(l))
+    .map(l => {
+      const m = /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+)/.exec(l)
+      if (m) return m
+      // wait's fact line: `✓ loop fix passed · round 2 of 3`.
+      const fact = /loop (\S+) (passed|blocked) · round (\d+ of \d+)/.exec(l)
+      if (fact) fact[2] = `${fact[2]!} in round ${fact[3]!}`
+      return fact
+    })
     .find((m): m is RegExpExecArray => m !== null)
   if (loop && !waiting.some(w => w[1] === 'loop' && w[2] === loop[1]))
     parts.push(`The loop ${loop[1]!} ${loop[2]!.startsWith('round') ? `is in ${loop[2]!}` : loop[2]!}.`)

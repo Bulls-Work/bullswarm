@@ -107,8 +107,10 @@ slices, and a non-code triage.
   `not-produced` (rewrite the draft from the critique; do not put a revise
   step after a critique that may pass the first time). From round 2 on, each
   step's task carries a `Previous round` block with the last round's answers
-  and evidence. Inside a loop, a failed check on the step `until` names reads
-  as "not passed" instead of failing the step.
+  and evidence. When a loop's `until` is the evidence form (`{"step": "check",
+  "evidence": "passed"}`), a failed check on that step reads as "not passed"
+  and the loop goes on. With the field form, a failed check fails the step as
+  it would outside a loop.
 - **Gates stop only what is behind them.** Other branches keep running. When
   only waiting gates or loops are left, the run parks with status `waiting`.
 - **Independent checks.** `route.independentOf` names steps this step depends
@@ -163,7 +165,10 @@ bullswarm workflow plan validate "$(cat goal.txt)" --cwd=<abs-dir> --program=<ab
 ```
 
 Exit 2 lists the `issues`: fix them and validate again. Exit 0 prints the
-launch line; run it. The launch detaches and returns `shortId`; report it.
+launch line; run it. A goal over 120 characters, or with a line break, shows
+as `"<goal>"` in that line (`launch   bullswarm workflow goal "<goal>" --cwd
+…`): put `"$(cat goal.txt)"` in its place before you run it. The launch
+detaches and returns `shortId`; report it.
 
 ## 4. Watch: choose how close
 
