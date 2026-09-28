@@ -30,14 +30,43 @@ export function v3TimelineFacts(model, stages) {
   };
 }
 
-/** One gate or loop row, and the command under a waiting one: [{text, at}]. */
+// Words wrapped to `room` columns; a word longer than the room is cut.
+function wrapWords(text, room) {
+  const lines = [];
+  let line = '';
+  for (const word of String(text).split(' ')) {
+    const next = line ? `${line} ${word}` : word;
+    if (visibleLength(next) <= room || !line) line = next;
+    else { lines.push(line); line = word; }
+  }
+  if (line) lines.push(line);
+  return lines.map((entry) => cut(entry, room));
+}
+
+/**
+ * One gate or loop row, and the command under a waiting one: [{text, at}].
+ * A narrow page wraps them rather than cutting: the command is what the row
+ * is read for.
+ */
 export function controlRowLines(row, width) {
   // A loop row heads its rounds, so it carries no clock of its own: the
   // time it passed would sit above the earlier rounds' clocks.
   const clock = row.at && row.type !== 'loop' ? clockText(row.at) : '     ';
   const glyph = ROLE_COLOUR[row.role] ? tint(row.glyph, ROLE_COLOUR[row.role]) : dim(row.glyph);
-  const lines = [{ text: cut(` ${dim(clock)}  ${glyph} ${row.text}`, width), at: row.at }];
-  if (row.command) lines.push({ text: cut(`        ${dim('continue:')} ${row.command}`, width), at: row.at });
+  const indent = '        ';
+  const room = Math.max(10, width - indent.length);
+  // The first row also carries the clock and the glyph: two more columns.
+  const lines = wrapWords(row.text, room - 2).map((text, index) => ({
+    text: index ? `${indent}${text}` : ` ${dim(clock)}  ${glyph} ${text}`, at: row.at,
+  }));
+  if (row.command) {
+    const label = 'continue:';
+    const whole = `${label} ${row.command}`;
+    const parts = visibleLength(whole) <= room ? [whole] : [label, ...wrapWords(row.command, room)];
+    for (const part of parts) {
+      lines.push({ text: `${indent}${part.startsWith(label) ? `${dim(label)}${part.slice(label.length)}` : part}`, at: row.at });
+    }
+  }
   return lines;
 }
 

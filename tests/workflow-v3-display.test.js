@@ -184,6 +184,7 @@ test('Run page of a waiting run: the header says where it waits and the next com
     assert.match(text.split('\n')[0], /2fne62 · waiting at gate approve/, `${width}: header`);
     assert.match(text, /bullswarm workflow continue 2fne62 approve/, `${width}: command`);
     assert.doesNotMatch(text, /Kernel not running|resume it/, `${width}: a parked run is not a dead kernel`);
+    if (width >= 100) assert.match(text, /\[✓ 1 research\] → \[✓ 2 writing 2\/2\] → \[○ 3 publish\]/, `${width}: the plan boxes name the phases`);
   }
 });
 

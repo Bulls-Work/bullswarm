@@ -454,6 +454,8 @@ const WRITER_COUNT_WORDS = Object.freeze([
  * box; a level of two or three steps is a group like any other.
  */
 function planStageName(stage, index) {
+  // A v3 phase is named by its declared label, whatever its size.
+  if (stage?.phase) return stage.phase;
   const actions = stage?.actions ?? [];
   if (actions.length > 1) {
     return `${WRITER_COUNT_WORDS[actions.length] ?? actions.length} writers`;
