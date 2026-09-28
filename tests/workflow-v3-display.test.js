@@ -178,6 +178,22 @@ test('Run timeline: phases by name, the loop and gate rows, rounds and answers',
   assert.ok(phone.some((line) => line.includes('gate approve')), 'the phone keeps the gate row');
 });
 
+test('a narrow timeline keeps the pool beside the round tag: the tier goes first', () => {
+  const row = realRow(GATED);
+  for (const width of [55, 45, 40]) {
+    const phone = workflowTimelineLines(workflowPanelModel(row, { nowMs: NOW }), width, 0, { goalPreview: false, nowMs: NOW, phone: true })
+      .lines.map((line) => visible(line.text));
+    const rounds = phone.filter((line) => /✓ (write|check) · round \d/.test(line));
+    assert.equal(rounds.length, 4, `${width}: the four loop attempts`);
+    for (const line of rounds) {
+      assert.ok(line.length <= width, `${width}: fits\n${line}`);
+      assert.match(line, /· round \d · grok\b/, `${width}: the pool stays\n${line}`);
+    }
+    // A row without a round tag keeps its tier as before.
+    assert.ok(phone.some((line) => /✓ count · grok · tier medium/.test(line)), `${width}: count keeps its tier`);
+  }
+});
+
 test('Run page of a waiting run: the header says where it waits and the next command', () => {
   for (const width of [200, 120, 55]) {
     const text = runPageText(realRow(GATED), width);

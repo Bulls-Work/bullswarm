@@ -692,9 +692,13 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
       const left = phone
         ? (() => {
           const prefix = ` ${clock}  ${glyph} `;
-          const suffix = ` · ${routing}`;
-          const available = Math.max(1, safeWidth - visibleLength(prefix) - visibleLength(suffix) - visibleLength(duration) - 1);
-          return `${prefix}${truncate(`${attempt.actionId}${roundTag(v3, attempt)} · ${pool}${runningText}`, available)}${suffix}`;
+          const round = roundTag(v3, attempt);
+          const name = `${attempt.actionId}${round} · ${pool}${runningText}`;
+          const room = (tail) => Math.max(1, safeWidth - visibleLength(prefix) - visibleLength(tail) - visibleLength(duration) - 1);
+          // A round tag outranks the tier: when both do not fit, the tier
+          // goes before the pool name is cut.
+          const suffix = round && visibleLength(name) > room(` · ${routing}`) ? '' : ` · ${routing}`;
+          return `${prefix}${truncate(name, room(suffix))}${suffix}`;
         })()
         : ` ${clock}  ${glyph} ${attempt.actionId}${roundTag(v3, attempt)} · ${pool} · ${modelName}${reasoning ? ` · reasoning ${reasoning}` : ''} · ${routing}${runningText}`;
       // A succeeded attempt whose report listed `## Not done` items says so
