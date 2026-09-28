@@ -17,12 +17,36 @@ import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
 import { resolveRouteFilter, routeUnavailableWhy } from './step-route.js';
+import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
+
+/**
+ * Why no pool was picked, as dispatchV2Action says it for a marked step that
+ * cannot start (no-pool-why.js): a capable pool at a spent window or nearly
+ * spent first, then the route, then a missing tier model.
+ */
+function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, routerWhy }) {
+  const capable = prepareV2DispatchPools(pools, action, effort, { now, routeFilter, ignoreBurstGate: true })
+    .filter((pool) => (pool.lanes ?? [lane]).includes(lane));
+  const held = [];
+  for (const pool of capable) {
+    const parts = [spentWindowPart(pool, now), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
+    if (parts.length) held.push(heldEntry(pool.name, parts));
+  }
+  const failureKind = noPoolFailureKind(capable.length, held);
+  if (held.length) return { why: noPoolWhy({ capableCount: capable.length, held, failureKind, lane, effort }), failureKind };
+  if (!capable.length && routeFilter
+    && prepareV2DispatchPools(pools, action, effort, { now, ignoreBurstGate: true }).length) {
+    return { why: routeUnavailableWhy(routeFilter, { lane, effort }), failureKind };
+  }
+  return { why: capable.length ? routerWhy : noPoolWhy({ capableCount: 0, held, failureKind, lane, effort }), failureKind };
+}
 
 /**
  * `action` is a normalised v3 step (program-v3.js). `coreState` is the loaded
  * state.json (decision log, strategy, config); `runReasoning` the run-wide level. Returns the preview document:
  * `{ ok, why, routeWhy, routeCandidates, candidates, forecast, pick, reasoning }`,
- * with no `pick` when no pool can take the step now.
+ * with no `pick` and a `failureKind` (quota or unavailable) when no pool can
+ * take the step now.
  */
 export async function previewStepPick({ action, pools, bullswarmDir, coreState, targetDir, runReasoning = null, now = Date.now() }) {
   const lane = action.lane ?? 'chore';
@@ -38,10 +62,15 @@ export async function previewStepPick({ action, pools, bullswarmDir, coreState, 
   // The kernel keeps a draining pool off a marked step unless the caller named it.
   const named = routeFilter?.usePools?.length === 1 ? routeFilter.usePools[0] : null;
   const viewed = attachForecast(prepared.map((pool) => ({ ...pool })), bullswarmDir, { now, decisionLog });
-  const draining = new Set(viewed
-    .filter((pool) => pool.name !== named
-      && expiringSoonView(pool, { now, candidateMinutes: expected.expectedMinutes, inflightPenaltyPct }).state === 'draining')
-    .map((pool) => pool.name));
+  // As the kernel's drainingAt: pool name -> { until, forecast }.
+  const draining = new Map();
+  for (const pool of viewed) {
+    if (pool.name === named) continue;
+    const view = expiringSoonView(pool, { now, candidateMinutes: expected.expectedMinutes, inflightPenaltyPct });
+    if (view.state !== 'draining') continue;
+    const until = Date.parse(pool.paceResetsAt ?? '');
+    draining.set(pool.name, { until: Number.isFinite(until) ? until : null, forecast: view.forecast });
+  }
   const routingPools = prepared.filter((pool) => !draining.has(pool.name));
   attachForecast(routingPools, bullswarmDir, { now, decisionLog });
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])?.strategyAssignments?.[effort] ?? null;
@@ -56,14 +85,8 @@ export async function previewStepPick({ action, pools, bullswarmDir, coreState, 
     routeNote: routeFilter?.summary || null,
   });
   if (!route.pick) {
-    let why = route.why;
-    if (!prepared.length) {
-      const unrouted = routeFilter ? prepareV2DispatchPools(pools, action, effort, { now }) : [];
-      why = unrouted.length
-        ? routeUnavailableWhy(routeFilter, { lane, effort })
-        : `no eligible pool: no enabled pool has a model on the ${effort} tier for ${lane} work`;
-    }
-    return { ok: false, dryRun: true, why, routeWhy: route.why, routeCandidates: route.candidates, candidates: route.candidates };
+    const { why, failureKind } = noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, routerWhy: route.why });
+    return { ok: false, dryRun: true, why, failureKind, routeWhy: route.why, routeCandidates: route.candidates, candidates: route.candidates };
   }
   const pool = route.pick.connector;
   const connector = pool.connector ?? pool;

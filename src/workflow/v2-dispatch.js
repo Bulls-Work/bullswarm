@@ -24,6 +24,7 @@ import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { declaredDeliverable, declaredEvidence, failureClassOf, roleOf } from './step-vocabulary.js';
 import { poolPassesRoute, routeUnavailableWhy } from './step-route.js';
+import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
 import {
   evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope,
   restoreChangedOutOfScope, runStepEvidence,
@@ -2104,22 +2105,15 @@ export async function dispatchV2Action({
       if (lastReset == null) parts.push(['out of quota', null, true]);
       else if (lastReset > endAt) parts.push(['out of quota', lastReset, true]);
     }
-    const spent = windowSpent(pool, endAt);
-    if (spent) parts.push([`at its ${spent.window} limit`, toMs(spent.resetsAt), true]);
-    if (draining.has(pool.name)) {
-      const view = draining.get(pool.name);
-      parts.push([`nearly spent (forecast ${Number(view.forecast).toFixed(1)}%)`, view.until, true]);
-    }
+    const spent = spentWindowPart(pool, endAt);
+    if (spent) parts.push(spent);
+    if (draining.has(pool.name)) parts.push(drainingPart(draining.get(pool.name)));
     if (!parts.length) {
       // A pool the step left after a process failure cannot take its retry.
       if (failureRule && leftAfterProcessFailure.has(pool.name)) held.push({ pool: pool.name, text: `${pool.name} already failed on this step`, limit: false, back: null });
       continue;
     }
-    const timed = parts.filter(([, ms]) => ms != null);
-    const [reason, back, limit] = timed.length
-      ? timed.reduce((latest, part) => (part[1] > latest[1] ? part : latest))
-      : parts[0];
-    held.push({ pool: pool.name, text: back != null ? `${pool.name} ${reason} until ${new Date(back).toISOString()}` : `${pool.name} ${reason}`, limit, back });
+    held.push(heldEntry(pool.name, parts));
   }
   // No capable pool can take the step now: the earliest known return among
   // them (a pool whose return is unknown is skipped).
@@ -2132,8 +2126,7 @@ export async function dispatchV2Action({
   const retryAfter = returnAt == null ? null : new Date(returnAt).toISOString();
   // No attempt: a usage limit on every capable pool reads as quota.
   const failureKind = last ? (blocked?.limit ? 'quota' : lastKind)
-    : limitsRule && held.length && held.length === capable.length && held.every((entry) => entry.limit) ? 'quota'
-      : 'unavailable';
+    : limitsRule ? noPoolFailureKind(capable.length, held) : 'unavailable';
   // A promised retry, or a backoff, that no pool could take keeps the
   // attempt's failure and says why nothing ran after it.
   let noRetry = null;
@@ -2151,13 +2144,7 @@ export async function dispatchV2Action({
     onAttempt?.('corrected', clone(promisedRecord));
     promisedRecord = null;
   }
-  let why = !capable.length
-    ? strictPool
-      ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)`
-      : `no eligible pool: no enabled pool has a model on the ${effort} tier for ${lane} work`
-    : held.length
-      ? `${failureKind === 'quota' ? 'no pool with quota to spare' : 'no pool free'}: ${held.map((entry) => entry.text).join('; ')}`
-      : 'no eligible pool';
+  let why = noPoolWhy({ capableCount: capable.length, held, failureKind, strictPool, lane, effort });
   if (!capable.length && routeFilter) {
     // §2.4: the route, not the tier or the pin, emptied the capable set.
     const unrouted = preparePools(allPools, action, effort, {
