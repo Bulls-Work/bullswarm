@@ -21,6 +21,7 @@ import {
   submitCallerPlannerResponse, acceptCallerPlannerResponse, readCallerPlannerRequest,
 } from '../src/workflow/caller-planner.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { removeSettled, waitForExit } from './fixtures/settled-cleanup.mjs';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
 import { rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
@@ -427,7 +428,9 @@ function cliFixture() {
     version: 1, pools, incumbents: {}, decisionLog: [],
     config: { depthLimit: 2, callerName: 'claude-code', worktreeIsolation: 'off' },
   }, null, 2)}\n`);
-  return { root, home, target, cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
+  // A detached kernel still writes after its run is terminal (the rollup index,
+  // its lease): cleanup waits for the kernels the home names to exit.
+  return { root, home, target, cleanup: () => removeSettled(root, { homes: [home] }) };
 }
 
 function cli(f, args) {
@@ -1908,6 +1911,9 @@ async function finishedState(f, runId) {
     try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* not yet */ }
   }
   assert.ok(state?.lifecycle?.resultFile, 'the relaunched kernel finishes the run');
+  // The kernel still writes after the result (the rollup index at the home's
+  // top level, then its lease): the test's cleanup waits for it to exit.
+  assert.ok(await waitForExit([state.runner?.pid]), `the relaunched kernel (pid ${state.runner?.pid}) exits`);
   return state;
 }
 
