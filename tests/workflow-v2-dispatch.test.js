@@ -11,7 +11,8 @@ import {
 } from '../src/workflow/v2-dispatch.js';
 import { countRetries } from '../src/workflow/step-vocabulary.js';
 import { resolveRouteFilter } from '../src/workflow/step-route.js';
-import { handoffBlock, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { handoffBlock } from '../src/workflow/retry-handoff.js';
 import { readEvents } from '../src/workflow/events.js';
 import { runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { loadState, saveState } from '../src/lib/state.js';

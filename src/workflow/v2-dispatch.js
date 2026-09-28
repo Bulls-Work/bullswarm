@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { handoffBlock } from './v2-runtime.js';
+import { handoffBlock } from './retry-handoff.js';
 import {
   LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isFree,
 } from '../lib/route.js';
