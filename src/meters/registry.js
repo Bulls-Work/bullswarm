@@ -758,22 +758,6 @@ function historyDayKeyFor(value) {
 }
 
 /**
- * Read one pool's history for a local calendar day. This is deliberately a
- * thin filter over readMeterHistory, so missing files, torn JSONL lines and
- * undated entries have exactly the same tolerant behavior as the base reader.
- *
- * @param {string} pool
- * @param {string|number|Date} day YYYY-MM-DD, an epoch instant, or a Date
- * @param {{dir?: string, sinceMs?: number|null, untilMs?: number|null}} [opts]
- */
-export function readMeterHistoryByDay(pool, day, opts = {}) {
-  if (day && typeof day === 'object' && !(day instanceof Date)) {
-    return readMeterHistory(pool, day);
-  }
-  return readMeterHistory(pool, { ...opts, day });
-}
-
-/**
  * Group a pool's retained readings by local day. The returned object only has
  * days present in the capped log; it never fabricates older empty days.
  */

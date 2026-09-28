@@ -380,10 +380,6 @@ export function monotonicIntervalDelta(previous, current) {
   };
 }
 
-// Names used by callers that describe the same operation in ledger terms.
-export const meterIntervalDelta = monotonicIntervalDelta;
-export const monotonicDelta = monotonicIntervalDelta;
-
 /**
  * Forecast one window: where utilization lands once the work already running
  * (and, optionally, the assignment being routed) finishes at the measured

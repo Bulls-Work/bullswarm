@@ -13,7 +13,7 @@ import {
   pacingWindowFor, normalizePacingWindow, rollResetForward, declaredResetPacing,
   MeterCache, FRESH_MS,
 } from '../src/meters/framework.js';
-import { readMeterHistoryByDay, readMeterHistoryDays, meterHistoryPath } from '../src/meters/registry.js';
+import { readMeterHistory, readMeterHistoryDays, meterHistoryPath } from '../src/meters/registry.js';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,7 +33,7 @@ test('meter history can be read by local day and survives a truncated line', () 
       JSON.stringify({ captured_at: '2026-08-21T12:00:00Z', five_hour: { utilization: 3 } }),
     ].join('\n'));
     assert.deepEqual(
-      readMeterHistoryByDay('pool', '2026-08-21', { dir: join(dir, 'meters') })
+      readMeterHistory('pool', { dir: join(dir, 'meters'), day: '2026-08-21' })
         .map((entry) => entry.five_hour.utilization),
       [3],
     );

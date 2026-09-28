@@ -42,8 +42,6 @@ const TEST_SEAMS = {
 const NOT_YET_REMOVED = {
   'src/lib/attempt-usage.js': ['attemptCapture'],
   'src/lib/stale.js': ['streamFacts'],
-  'src/meters/framework.js': ['meterIntervalDelta', 'monotonicDelta'],
-  'src/meters/registry.js': ['readMeterHistoryByDay'],
   'src/workflow/dashboard.js': ['renderDashboard'],
   'src/workflow/home-model.js': ['todayMinutesText', 'todayMinutesNumberText'],
   'src/workflow/run-features.js': ['STAGE2_RUN_FEATURES'],
