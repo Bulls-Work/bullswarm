@@ -140,6 +140,48 @@
   day spend is the priced subtotal, equal to the Stats trend for that day.
   Worker minutes and usage come from one per-attempt record, so Stats numbers
   move only by rounding (up to 0.01 worker-minutes).
+- fixed (candidate QA): `workflow add` with a step whose `phase` names a
+  phase the run already has failed `presentation is missing program action
+  <step>`; the step now joins that phase.
+- fixed (candidate QA): a step whose route left no pool said `every pool that
+  could run it shares a provider` when a pool of another provider could run
+  it one tier up. The reason now names the step's lane and tier and each other
+  provider's pool with what ruled it out (`claude-code (claude-code): no model
+  on the low tier for analyze work (has high)`), and the step records
+  `routeWhy` and `routeCandidates` (`{pool, provider, excluded}`) in its
+  failure and in `result.json`, which were null before.
+- fixed (candidate QA): the result summary named at most four steps in
+  `answerCheckedSteps` beside a larger `answerChecked` count; it now names
+  every one (and every `acceptedSteps` entry). A v3 step whose route left no
+  pool reads `retryable: false` with `noPool: true` in `handback.unfinished`,
+  since resume fails it the same way until a pool passes its route at its
+  tier.
+- fixed (candidate QA): `bullswarm workflow plan contract` with no goal
+  printed a usage error; the v3 contract now prints with `goal: null` and
+  `'<goal>'` in its commands. `--v2` still needs the goal.
+- fixed (candidate QA): a loop you continued after it ran out of rounds read
+  as passed (`✓ loop polish passed`). It now reads `→ loop polish continued by
+  the caller after 3 of 3 rounds (condition not met)` in `workflow continue`,
+  watch, wait and the Run page; `result.json` records `loops: [{id, outcome,
+  rounds, maxRounds}]` (`outcome` is `passed`, `continued-unmet`,
+  `out-of-rounds`, `blocked` or `pending`), names a continued loop at the end
+  of `reason`, and the summary and proof line carry it.
+- fixed (candidate QA): `watch --until trouble|outcome` printed nothing until
+  a wake; it now prints one start line, `watching <run> until trouble · <n>
+  steps`.
+- fixed (candidate QA): in a run under the failure rule, an attempt that
+  failed and was retried is recorded as `failed` (its `attempt.finished`
+  event says `willRetry: true`), not `interrupted`. Earlier runs keep their
+  label.
+- skill: the run-or-workflow choice comes first. One worker that can hold the
+  whole input and make one deliverable (a 40-ticket triage, a research brief,
+  one feature) is one `bullswarm run`, with `--answer-schema` for a checkable
+  answer; do not split an input into chunks unless one worker cannot hold it.
+  A loop's critique asks only for what the sources can show, rounds are capped
+  at 2 unless a round is cheap, and a watch runs in the foreground when the
+  caller's harness cannot wake it when a background process ends. Pattern 5
+  (triage) is one run, or one classify step with a gate for uncertain
+  tickets.
 - removed: keep-on-caller (`keepOnClaude` in the verdict), incumbency (the
   `incumbents` state and the "incumbent for" lines), and the rule that a run
   never waits for its caller: a v3 run waits at the gates and loops you

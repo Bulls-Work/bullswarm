@@ -117,8 +117,25 @@ test('every v3 program in the public docs validates, and the validate output sho
   assert.equal(quoted, 2);
 });
 
-test('the skill stays shorter than the 0.36 skill (32.6K)', () => {
-  assert.ok(statSync(join(repo, 'skill/SKILL.md')).size < 32_600);
+test('the skill stays shorter than the 0.36 skill (32.6K), and no longer than the 0.37.0 candidate QA37 graded (25,132 bytes)', () => {
+  const size = statSync(join(repo, 'skill/SKILL.md')).size;
+  assert.ok(size < 32_600);
+  assert.ok(size <= 25_132, `SKILL.md is ${size} bytes`);
+});
+
+// QA37: callers built a workflow for work one run holds (a 40-ticket triage,
+// a research brief) and did worse on turns, time and triage accuracy.
+test('the skill puts the run-or-workflow choice first, with the chunking rule, the loop rules and a foreground watch', () => {
+  const skill = read('skill/SKILL.md').replace(/\s+/g, ' ');
+  const choose = skill.slice(skill.indexOf('## 1. Choose the shape'), skill.indexOf('## 2. One step'));
+  assert.match(choose, /One worker can hold the whole input and make one deliverable/);
+  assert.match(choose, /Do not split an input into chunks unless one worker cannot hold it/);
+  assert.match(choose, /--answer-schema/);
+  assert.match(skill, /A critique asks only for what the sources can show/);
+  assert.match(skill, /Cap `maxRounds` at 2 unless a round is cheap/);
+  assert.match(skill, /run the watch in the foreground: it blocks until the wake/);
+  assert.match(skill, /Never end your turn while a run you own is still running/);
+  assert.match(skill, /`bullswarm workflow plan contract` \(no goal needed\)/);
 });
 
 test('the skill leads with v3 and mentions v2 only as old programs', () => {

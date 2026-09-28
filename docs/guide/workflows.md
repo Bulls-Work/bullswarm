@@ -9,9 +9,9 @@ After this page you can tell when a workflow beats a single run, write the progr
 
 ## When a workflow beats a single run
 
-`bullswarm run` sends one bounded outcome to one agent: a review, a localized fix, a study with one deliverable.
+`bullswarm run` sends one bounded outcome to one agent: a review, a localized fix, a study with one deliverable. When one worker can hold the whole input and make one deliverable (triage a file of 40 tickets, a research brief, one feature), use a run, with `--answer-schema` when you need a checkable answer. Do not split an input into chunks unless one worker cannot hold it: chunks lose judgement across items. In a 0.37.0 comparison, a 40-ticket triage split into four chunks scored 31-32 of 40 on priority, and one run scored 34 of 40 in fewer caller turns and less time.
 
-Reach for a workflow instead when the work splits into parallel territories, when shared files need an integration step after the writers finish, or when acceptance must be judged by someone other than the author.
+Reach for a workflow instead when the work splits into parallel territories, when shared files need an integration step after the writers finish, when acceptance must be judged by someone other than the author, or when you need a gate or a loop. Keep a loop's critique to what the sources can show (a claim that something is missing cannot cite a line), cap its rounds at 2 unless a round is cheap, and decide before launch what you do when it runs out: continuing it is recorded as `continued-unmet`.
 
 | Shape of the work | Entry point |
 | --- | --- |

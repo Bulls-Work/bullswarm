@@ -10,6 +10,13 @@ your absolute workspace path, and write your own prompts.
 
 Caller turns are estimates, not measurements.
 
+Check first whether you need a workflow at all. When one worker can hold the
+whole input and make one deliverable (a file of 40 tickets, a research brief,
+one feature), one `bullswarm run` with `--answer-schema` is faster, takes
+fewer turns, and keeps judgement across items that chunks lose. Use these
+patterns for parallel territories, integration, an independent check, or a
+gate or loop you need.
+
 ## 1. Find, then check each finding
 
 Use it for an audit or a review: one broad search, then one independent check
@@ -140,12 +147,12 @@ publish once. Submit once; you are woken at `approve`. About 2-3 caller turns.
     { "id": "draft", "phase": "writing", "dependsOn": ["search-a", "search-b"], "lane": "build", "files": ["brief.md"],
       "prompt": "In /work/acme, write brief.md from the claims your dependencies answered. From round 2 on, fix the problems the previous critique listed." },
     { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "route": { "independentOf": ["draft"] },
-      "prompt": "In /work/acme, check every claim in brief.md against sources/. Answer passed true when every claim holds; list each problem otherwise.",
+      "prompt": "In /work/acme, check every claim in brief.md against sources/. List only problems a line of sources/ shows (quote it); a claim that something is missing from sources/ is not a problem. Answer passed true when you list none.",
       "answer": { "type": "object", "required": ["passed", "problems"], "properties": { "passed": { "type": "boolean" }, "problems": { "type": "array", "items": { "type": "string" } } } } },
     { "id": "post", "phase": "publish", "dependsOn": ["approve"], "deliverable": "outward", "retry": 0,
       "prompt": "Publish /work/acme/brief.md to the acme wiki, and list the page you created." }
   ],
-  "loops": [{ "id": "polish", "steps": ["draft", "critique"], "until": { "step": "critique", "field": "passed" }, "maxRounds": 3 }],
+  "loops": [{ "id": "polish", "steps": ["draft", "critique"], "until": { "step": "critique", "field": "passed" }, "maxRounds": 2 }],
   "gates": [{ "id": "approve", "dependsOn": ["polish"], "note": "Read brief.md and decide whether to publish it" }]
 }
 ```
@@ -159,7 +166,7 @@ validate:
   critique                 analyze/medium answer after draft route: independent of draft
   post                     analyze/medium deliverable=outward after approve
   gate approve             after polish · waits for you · Read brief.md and decide whether to publish it
-  loop polish              steps draft, critique · until critique.passed is true · at most 3 rounds
+  loop polish              steps draft, critique · until critique.passed is true · at most 2 rounds
 ```
 
 The writer comes first in the loop on purpose: the loop reads `critique.passed`
@@ -168,6 +175,14 @@ have nothing to change when the first critique passes, and fail. `post` has
 `retry: 0` and an `outward` deliverable, so it never runs twice. Read
 `brief.md` when the watch wakes you at `approve`, then `bullswarm workflow
 continue <run> approve`, or cancel the run.
+
+The critique asks only for what the sources can show: a critique that wants a
+citation for "the sources do not say X" can never pass. Two rounds are
+enough when each is a full rewrite and review. Decide before launch what you
+do if `polish` runs out of rounds: take over the last draft, or `bullswarm
+workflow continue <run> polish`, which the run records as `continued-unmet`
+(`→ loop polish continued by the caller after 2 of 2 rounds (condition not
+met)`), never as passed.
 
 ## 4. Parallel slices, then a check
 
@@ -239,43 +254,48 @@ failed step blocks what depends on it.
 
 ## 5. A non-code task: triage tickets
 
-Use it for any batch of judgments: classify in parallel, merge, and stop for
-you only when something is uncertain. Submit once; you are woken only if a
-ticket is uncertain. About 1-3 caller turns.
+Most triage is one `bullswarm run`: one worker reads every ticket and answers
+with the whole table, checked against your schema. Priority is a comparison
+across tickets, so keep them in one worker; split into chunks only when one
+worker cannot hold them all (a 40-ticket triage split four ways scored 31-32
+of 40 on priority, one run 34 of 40, in fewer turns). About 1-2 caller turns:
+
+```bash
+bullswarm run --lane=analyze --add-dir=/work/support --task-file=/work/support/task.md --answer-schema=/work/support/triage.schema.json --json
+```
+
+Use a workflow only when you want to rule on the uncertain tickets before the
+report is written: one step classifies every ticket, a gate stops for you only
+when that step found one it could not label. Submit once. About 1-3 caller
+turns.
 
 ```json
 {
   "schemaVersion": "bullswarm.workflow.program.v3",
-  "defaults": { "effort": "low" },
   "steps": [
-    { "id": "classify-1", "phase": "classify", "prompt": "Read tickets 1-10 in /work/support/tickets.jsonl. Label each bug, question, feature or unsure.",
-      "answer": { "type": "object", "required": ["labels"], "properties": { "labels": { "type": "array", "items": { "type": "object", "required": ["ticket", "label"], "properties": { "ticket": { "type": "integer" }, "label": { "enum": ["bug", "question", "feature", "unsure"] } } } } } } },
-    { "id": "classify-2", "phase": "classify", "prompt": "Read tickets 11-20 in /work/support/tickets.jsonl. Label each bug, question, feature or unsure.",
-      "answer": { "type": "object", "required": ["labels"], "properties": { "labels": { "type": "array", "items": { "type": "object", "required": ["ticket", "label"], "properties": { "ticket": { "type": "integer" }, "label": { "enum": ["bug", "question", "feature", "unsure"] } } } } } } },
-    { "id": "merge", "dependsOn": ["classify-1", "classify-2"], "prompt": "Merge the labels your dependencies answered. List the tickets labelled unsure.",
-      "answer": { "type": "object", "required": ["uncertain", "hasUncertain"], "properties": { "uncertain": { "type": "array", "items": { "type": "integer" } }, "hasUncertain": { "type": "boolean" } } } },
-    { "id": "report", "phase": "report", "dependsOn": ["rule"], "lane": "build", "files": ["triage.md"],
-      "prompt": "In /work/support, write triage.md: one table of every ticket and its label, using the merge answer and any rulings in tickets-ruled.json." }
+    { "id": "classify", "prompt": "Read every ticket in /work/support/tickets.jsonl. Label each bug, question, feature or unsure, and list the unsure ones.",
+      "answer": { "type": "object", "required": ["labels", "uncertain", "hasUncertain"], "properties": {
+        "labels": { "type": "array", "items": { "type": "object", "required": ["ticket", "label"], "properties": { "ticket": { "type": "integer" }, "label": { "enum": ["bug", "question", "feature", "unsure"] } } } },
+        "uncertain": { "type": "array", "items": { "type": "integer" } }, "hasUncertain": { "type": "boolean" } } } },
+    { "id": "report", "dependsOn": ["rule"], "lane": "build", "files": ["triage.md"],
+      "prompt": "In /work/support, write triage.md: one table of every ticket and its label, using the classify answer and any rulings in tickets-ruled.json." }
   ],
   "gates": [
-    { "id": "rule", "dependsOn": ["merge"], "when": { "step": "merge", "field": "hasUncertain" }, "note": "Rule on the uncertain tickets in tickets-ruled.json, then continue" }
+    { "id": "rule", "dependsOn": ["classify"], "when": { "step": "classify", "field": "hasUncertain" }, "note": "Rule on the uncertain tickets in tickets-ruled.json, then continue" }
   ]
 }
 ```
 
 ```text
 validate:
-✓ program v3 valid: 4 steps, 1 gate, 0 loops (nothing launched)
-  classify-1               analyze/low answer
-  classify-2               analyze/low answer
-  merge                    analyze/low answer after classify-1, classify-2
-  report                   build/low deliverable=files after rule
-  gate rule                after merge · waits when merge.hasUncertain is true · Rule on the uncertain tickets in tickets-ruled.json, then continue
+✓ program v3 valid: 2 steps, 1 gate, 0 loops (nothing launched)
+  classify                 analyze/medium answer
+  report                   build/medium deliverable=files after rule
+  gate rule                after classify · waits when classify.hasUncertain is true · Rule on the uncertain tickets in tickets-ruled.json, then continue
 ```
 
-When `merge.hasUncertain` is false, the gate `rule` passes by itself and the
-report is written without you. For more tickets, add more `classify-<n>`
-steps; the only limit is `--concurrency` (default 4) on how many run at once.
+When `classify.hasUncertain` is false, the gate `rule` passes by itself and
+the report is written without you.
 
 ## Other shapes
 

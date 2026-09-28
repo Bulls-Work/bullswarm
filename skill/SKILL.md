@@ -19,13 +19,17 @@ work directly unless it explicitly requires nested delegation.
 
 ## 1. Choose the shape
 
-- **One bounded outcome** (a review, a localized fix, a study with one
-  deliverable): `bullswarm run`.
-- **Anything more** (parallel parts, a check by another agent, a loop until
-  something passes, a point where you or the user decide): a workflow,
-  `bullswarm workflow goal --program`.
+Decide first, from the request itself (there is no classifier command):
 
-Decide from the request itself; there is no classifier command.
+- **One worker can hold the whole input and make one deliverable** (triage a
+  file of 40 tickets, a research brief, one feature, a review): `bullswarm
+  run`, with `--answer-schema` when you need a checkable answer. Do not split
+  an input into chunks unless one worker cannot hold it: chunks lose
+  judgement across items (a 40-ticket triage split four ways scored 31-32/40
+  on priority; one run scored 34/40, in fewer turns and less time).
+- **A workflow** (`bullswarm workflow goal --program`) only for parallel
+  territories, integrating several parts, a check by another agent, or a gate
+  or loop you need.
 
 ## 2. One step: `bullswarm run`
 
@@ -41,9 +45,8 @@ changes. Use `--task-file` for long text. Options you will use:
   mismatch is failure kind `schema`).
 - `--no-retry`: one attempt. Without it the step gets its one automatic retry.
 - `--avoid-pool`, `--use-provider`, `--avoid-provider`: where it may run.
-- `--timeout <seconds>`: the worker is killed after that long; the verdict
-  reads `timeout after <N>s` with failure kind `interrupted`, and the one retry
-  runs unless `--no-retry`.
+- `--timeout <seconds>`: kill the worker after that long (`timeout after
+  <N>s`, failure kind `interrupted`; the retry still runs).
 
 Read the verdict. `ok: true` means read `outFile` (and `answer`) and check the
 content before you use it. `ok: false` means inspect and report the failure;
@@ -73,10 +76,10 @@ steps, 1 gate, 1 loop):
     { "id": "search-a", "phase": "research", "prompt": "In /work/acme, collect the claims sources/a.md makes about widgets.", "answer": { "type": "object", "required": ["claims"], "properties": { "claims": { "type": "array", "items": { "type": "string" } } } } },
     { "id": "search-b", "phase": "research", "prompt": "In /work/acme, collect the claims sources/b.md makes about widgets.", "answer": { "type": "object", "required": ["claims"], "properties": { "claims": { "type": "array", "items": { "type": "string" } } } } },
     { "id": "draft", "phase": "writing", "dependsOn": ["search-a", "search-b"], "lane": "build", "files": ["brief.md"], "prompt": "In /work/acme, write brief.md from the claims your dependencies answered. From round 2 on, fix the problems the previous critique listed." },
-    { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "route": { "independentOf": ["draft"] }, "prompt": "In /work/acme, check every claim in brief.md against sources/. Answer passed true when every claim holds; list each problem otherwise.", "answer": { "type": "object", "required": ["passed", "problems"], "properties": { "passed": { "type": "boolean" }, "problems": { "type": "array", "items": { "type": "string" } } } } },
+    { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "route": { "independentOf": ["draft"] }, "prompt": "In /work/acme, check every claim in brief.md against sources/. List only problems a line of sources/ shows. Answer passed true when you list none.", "answer": { "type": "object", "required": ["passed", "problems"], "properties": { "passed": { "type": "boolean" }, "problems": { "type": "array", "items": { "type": "string" } } } } },
     { "id": "post", "phase": "publish", "dependsOn": ["approve"], "deliverable": "outward", "retry": 0, "prompt": "Publish /work/acme/brief.md to the acme wiki, and list the page you created." }
   ],
-  "loops": [{ "id": "polish", "steps": ["draft", "critique"], "until": { "step": "critique", "field": "passed" }, "maxRounds": 3 }],
+  "loops": [{ "id": "polish", "steps": ["draft", "critique"], "until": { "step": "critique", "field": "passed" }, "maxRounds": 2 }],
   "gates": [{ "id": "approve", "dependsOn": ["polish"], "note": "Read brief.md and decide whether to publish it" }]
 }
 ```
@@ -84,7 +87,7 @@ steps, 1 gate, 1 loop):
 [program.md](references/program.md) lists every field.
 [patterns.md](references/patterns.md) has five workflows to copy: find then
 check each finding, fix until a check passes, draft to publish, parallel
-slices, and a non-code triage.
+slices, and a triage (usually one run).
 
 ### Writing the program
 
@@ -111,6 +114,10 @@ slices, and a non-code triage.
   "evidence": "passed"}`), a failed check on that step reads as "not passed"
   and the loop goes on. With the field form, a failed check fails the step as
   it would outside a loop.
+- **A critique asks only for what the sources can show.** A claim that
+  something is missing cannot cite a line, so a critique that demands one
+  never passes. Cap `maxRounds` at 2 unless a round is cheap, and decide up
+  front what you do when it runs out (continuing it is recorded as unmet).
 - **Gates stop only what is behind them.** Other branches keep running. When
   only waiting gates or loops are left, the run parks with status `waiting`.
 - **Independent checks.** `route.independentOf` names steps this step depends
@@ -118,7 +125,8 @@ slices, and a non-code triage.
   independent of `find` also depends on `find`. It needs a second provider:
   with only one enabled, validate and `workflow add` refuse it (`every enabled
   pool that could run it … uses that provider; enable a pool of another
-  provider or drop independentOf`).
+  provider or drop independentOf`). The other provider needs a model on the
+  step's tier: a no-pool refusal names each pool's reason.
 - **Shared folder.** All workers share one tree. Name each writer's exact
   files in `files` (steps whose files overlap run one after the other) and tell
   it to keep other workers' edits.
@@ -178,10 +186,13 @@ detaches and returns `shortId`; report it.
 | Every step | each finished step with its answer, loop rounds, plus every wake-up | `bullswarm workflow watch <shortId>` (or `--next` for one step at a time) |
 | Named steps | only the steps, gates or loops you name | `bullswarm workflow wait <shortId> <id...>` |
 
-Start one watch in the background right after launch. Each exit is one wake:
-read the output in one tool call, act, and start the printed `next:` line
-again. Between wakes do nothing about the run: do not poll, do not read files
-in the run directory, and do not send the user a status reply per step.
+Start one watch right after launch; it prints `watching <shortId> until
+trouble · <n> steps` and then nothing until a wake. Each exit is one wake:
+read the output, act, and start the printed `next:` line again. If your
+harness cannot wake you when a background process ends (a subagent's turn
+ends when it replies), run the watch in the foreground: it blocks until the
+wake. Never end your turn while a run you own is still running. Between wakes
+do not poll, read the run directory, or send per-step status replies.
 
 A gate wake-up after a loop (real output of the fix-until-green loop above,
 run on grok with a gate `ship` and a `notes` step after it). The loop's line
@@ -205,55 +216,19 @@ after a line for each loop the named ids wait behind:
   continue bullswarm workflow continue m39i62 ship
 ```
 
-A step with an answer prints it under its facts:
-
-```text
-✓ count succeeded · grok · grok-4.7 · 34s
-  output   /private/tmp/v37e/home/workflows/wf-mulgxa1n-332acc/out-count-attempt-1.md
-  answer
-    {
-      "lines": 3,
-      "short": true
-    }
-```
-
-A watch of every step prints each finished step with its answer and proof,
-each phase, and each loop (the same run; steps without a `phase` are grouped
-by dependency level):
-
-```text
-● watching m39i62 · running · 1 running, 2 waiting · +4s
-✓ fix finished · unproven · 41s
-✓ Phase 1 · fix completed · 1/1
-✓ check finished · proven by command · answer checked · 56s
-  answer {"problems":[]}
-✓ Phase 2 · check completed · 1/1
-✓ loop until-green passed in round 1 of 3 · check's evidence passed
-⧖ gate ship waiting · Read the fix and decide whether to write CHANGES.md · continue: bullswarm workflow continue m39i62 ship
-outcome: waiting
-waiting: gate ship · Read the fix and decide whether to write CHANGES.md
-next: bullswarm workflow continue m39i62 ship
-```
-
-and, after `workflow continue m39i62 ship`, the rest of the run:
-
-```text
-● watching m39i62 · running · 1 running, 0 waiting · +2m01s
-✓ notes finished · unproven · 53s
-✓ Phase 3 · notes completed · 1/1
-outcome: completed
-reason: all 3 steps succeeded
-proof: 1 step proven (command 1) · 2 finished · unproven: fix, notes
-next: bullswarm workflow runs result m39i62 --json --summary
-```
+A watch of every step also prints each finished step with its answer and
+proof (`✓ check finished · proven by command · answer checked · 56s`, then
+`answer {…}`) and each phase (steps without a `phase` group by dependency
+level).
 
 ### Gates and loops that wait for you
 
 `bullswarm workflow continue <shortId> <gate>` passes a waiting gate, and the
 steps behind it start. A loop out of rounds waits the same way:
 `bullswarm workflow continue <shortId> <loop> --rounds <1-5>` gives it more
-rounds, and without `--rounds` it passes as it stands. Before you continue you
-may add steps. The command relaunches the kernel when none is running:
+rounds; without `--rounds` the steps behind it run, and it reads `→ loop <loop>
+continued by the caller after N of N rounds (condition not met)`, never
+passed. Before you continue you may add steps. The command relaunches the kernel when none is running:
 
 ```text
 ✓ gate ship passed in m39i62; kernel relaunched
@@ -404,8 +379,10 @@ next by adding to it:
 - `bullswarm workflow add <shortId> --steps part.json` appends a fragment
   `{steps, gates?, loops?}`. New steps may depend on existing steps, gates and
   loops, finished or not (on a loop's steps only through the loop's id).
-  Nothing the run has changes, and a finished run reopens. `--from-answer <step>` adds the fragment a step answered (read it
-  with `wait` first). Real output:
+  Nothing the run has changes, and a finished run reopens. Added steps do not
+  take the program's `defaults`: set `lane` and `effort` on each.
+  `--from-answer <step>` adds the fragment a step answered (read it with
+  `wait` first). Real output:
 
   ```text
   ✓ added to jcefns · revision 2 (applied directly; kernel relaunched)

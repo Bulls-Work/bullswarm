@@ -624,8 +624,13 @@ When a step comes back to you the watch prints a needs-you block. With `--jsonl`
 
 ## Watch until trouble
 
-An agent that starts a run should start one background watch for that run and
-do nothing more about it until the watch exits:
+An agent that starts a run should start one watch for that run and do nothing
+more about it until the watch exits. Run it in the background when your
+harness wakes you when a background process ends; otherwise (a subagent whose
+turn ends when it replies) run it in the foreground, where it blocks until the
+wake. Never end your turn while a run you own is still running. The watch
+prints one start line (`watching ab12cd until trouble · 4 steps`) and then
+nothing until a wake:
 
 ```bash
 # silent while work goes well; exits on the first trouble or at the outcome
@@ -635,7 +640,7 @@ bullswarm workflow watch ab12cd --until trouble
 bullswarm workflow watch ab12cd --until outcome
 ```
 
-`--until` prints no attach line and no routine lines: no finished steps, no
+`--until` prints its start line, then no attach line and no routine lines: no finished steps, no
 completed stages, no retries that recovered. It prints only trouble, then the
 outcome. In a v3 run it also prints one line per loop that finished since the
 last wake (`✓ loop polish passed in round 2 of 3`, or `blocked in round 1 of

@@ -120,7 +120,7 @@ deprecated alias for `--orchestrator <pool> --orchestrator-strict`.
 Observe and consume:
 
 ```bash
-bullswarm workflow watch <shortId> --until trouble                     # the standard: one background watch per run
+bullswarm workflow watch <shortId> --until trouble                     # the standard: one watch per run (foreground if nothing wakes you)
 bullswarm workflow watch <shortId> --until trouble --after <sequence> --since <iso-timestamp>
 bullswarm workflow watch <shortId> --until outcome                     # trouble lines print; only the outcome ends it
 bullswarm workflow watch <shortId> --next
