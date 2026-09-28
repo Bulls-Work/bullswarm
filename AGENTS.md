@@ -30,6 +30,15 @@ step, the dispatched planner or the preflight scout alike; the
 needs-you block with `step rerun --avoid` and `step accept`; the per-step
 `route`; `verifyRounds` counts fixes (default 1); reviews are placed only by
 route. Runs started earlier keep their rules (`features.json`).
+0.37.0 (program v3, the generic model) has landed: a step is a run, and a
+workflow composes steps, phases, gates and loops. `bullswarm run` is a
+one-step workflow. New programs are `bullswarm.workflow.program.v3`: a step
+passes by facts (clean exit, deliverable produced, evidence passed, answer
+matching its schema), a gate waits for `workflow continue`, a loop reruns its
+steps until one condition holds (at most 5 rounds), and new work is added
+with `workflow add`, never by editing the run's steps. v3 reports facts per
+step and has no requirement IDs, `evidenceFor` or `verifyRounds`. v2 programs
+and saved runs keep running and replaying as before.
 
 ## Non-negotiable doctrine
 
@@ -82,12 +91,17 @@ route. Runs started earlier keep their rules (`features.json`).
 7. New goal workflows are caller-planned programs in a shared workspace.
    `bullswarm workflow goal --program` executes the graph; `--orchestrator`
    explicitly delegates planning. File territories are advisory scheduling
-   hints. A failed check gets one fix step and one re-review
-   (`defaults.verifyRounds`, default 1, 0-3), then the caller, who takes over
-   through the watcher's needs-you block: rerun elsewhere, change the step,
-   take over, or accept anyway. `verified` separately records requirement
-   evidence. `--isolation` opts into strict per-worker worktrees. Saved V2
-   runs preserve their original semantics (`features.json`).
+   hints. In a v3 program (the format for new work) a check is an ordinary
+   step, and fixing until it passes is a loop the caller declares (`loops`,
+   `until` one condition, `maxRounds` 1-5); a loop out of rounds or a gate
+   waits for the caller (`workflow continue`), and a failed step goes to the
+   caller through the watcher's needs-you block: rerun elsewhere, add steps
+   (`workflow add`), take over, or accept anyway. v3 validate refuses
+   `defaults.verifyRounds`. In a v2 program a failed check gets one fix step
+   and one re-review (`defaults.verifyRounds`, default 1, 0-3), then the
+   caller, and `verified` separately records requirement evidence.
+   `--isolation` opts into strict per-worker worktrees. Saved V2 runs
+   preserve their original semantics (`features.json`).
 8. Historical authored-graph runs remain visible as read-only `legacy` rows.
    Their executor was removed in 0.27.0; driving commands fail closed before
    dispatch and historical run directories remain untouched.
