@@ -24,6 +24,7 @@ import {
 } from '../src/workflow/program-v3.js';
 import { answerFileFor, answerInstruction, checkAnswer } from '../src/workflow/answers.js';
 import { watchOnce } from '../src/lib/watch.js';
+import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
 import { oneStepV3, section2Example, v2V3Fixtures } from './fixtures/program-v3-fixtures.mjs';
 
 const cli = resolve('bin/bullswarm.js');
@@ -410,6 +411,11 @@ test('a v3 step with an answer: the brief names answer-<attempt>.json and the ch
   assert.deepEqual(attempt.answer, { file: answerFile, ok: true, value: { count: 1 }, errors: [] });
   assert.deepEqual(run.state.actions.find((item) => item.id === 'count').answer, { attemptId: 'count-1', value: { count: 1 } });
   assert.deepEqual(run.result.actions[0].answer, { attemptId: 'count-1', value: { count: 1 } }, 'the result carries the checked answer');
+  // watch reports the outcome without a verified verdict for a v3 run.
+  let watched = '';
+  assert.equal(await runWorkflowWatch(f.bullswarmDir, run.state.shortId, { once: true, classic: true, output: { write: (text) => { watched += text; } } }), 0);
+  assert.match(watched, /^outcome: completed$/m, watched);
+  assert.doesNotMatch(watched, /verified/);
   // An empty reply beside a valid answer is a note, never the verdict.
   assert.ok(attempt.notes?.some((note) => note.kind === 'no-output'), JSON.stringify(attempt.notes));
 });

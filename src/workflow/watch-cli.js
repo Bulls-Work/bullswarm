@@ -21,6 +21,7 @@ import { createStaleProbe } from '../lib/stale.js';
 import { declaredEvidence, NEEDS_YOU_LABELS } from './step-vocabulary.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
+import { isProgramV3 } from './program-v3.js';
 
 // The needs-you facts ride on the notable under a symbol: the JSONL object
 // carries only needsYouJson's fields, and the human block renders from these.
@@ -144,6 +145,8 @@ export function watchSnapshot(runDir, state, now = new Date()) {
     cancellationRequested,
     executionMode: state.config?.settings?.executionMode ?? 'verified',
     evidencePassed: hasPassingRequirementEvidence(state),
+    // Program v3 reports step facts, never a verified verdict (v2 snapshots keep their shape).
+    ...(isProgramV3(state.program) ? { programV3: true } : {}),
     terminal, timing: terminal ? timingBreakdown(state) : null,
     ...(kernelStderrTail.length ? { kernelStderrTail } : {}),
   };
@@ -198,7 +201,7 @@ export function renderWatchSnapshot(snapshot, {
     if (snapshot.runningCount !== undefined) {
       const state = snapshot.terminal
         ? snapshot.status === 'completed'
-          ? snapshot.executionMode === 'program' && !snapshot.evidencePassed ? 'program complete; not independently verified; result ready' : 'workflow complete; result ready'
+          ? snapshot.executionMode === 'program' && !snapshot.evidencePassed && !snapshot.programV3 ? 'program complete; not independently verified; result ready' : 'workflow complete; result ready'
           : `workflow ended ${snapshot.status}; result ready`
         : snapshot.awaitingPlanner
           ? `waiting for the caller planner (${snapshot.awaitingPlanner.boundary} boundary, turn ${snapshot.awaitingPlanner.turn})`
@@ -1310,7 +1313,9 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           });
         } else if (!jsonl && snapshot.terminal) {
           const rounds = summary?.callerDecision && summary.verifyRounds?.max > 1 ? ` · verify rounds ${summary.callerDecision.verifyRounds}` : '';
-          output.write(`outcome: ${snapshot.status}${summary ? ` · ${summary.verified ? 'verified' : 'not verified'}${rounds}` : ''}\n`);
+          // A v3 run reports its steps' facts, never a verified verdict.
+          const verdict = summary && !isProgramV3(state?.program) ? ` · ${summary.verified ? 'verified' : 'not verified'}${rounds}` : '';
+          output.write(`outcome: ${snapshot.status}${verdict}\n`);
           if (summary?.reason) output.write(`reason: ${summary.reason}\n`);
           const proofLine = formatV2ProofLine(summary);
           if (proofLine) output.write(`${proofLine}\n`);
