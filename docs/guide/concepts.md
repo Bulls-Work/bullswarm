@@ -41,7 +41,7 @@ Every pool has a **pacing window** — weekly or monthly, declared by its connec
 
 ## Verdict
 
-A run ends with one **verdict** object. `ok` says whether the saved output passed the verify gate, `why` names the gate that decided it, and `keepOnClaude: true` means nothing ran because the router kept the task on the calling agent. `contentUsableDespiteExit: true` is the case where the process exited non-zero but the content still passed — read it before re-running. [Run one task](/guide/run) walks through every field.
+A run ends with one **verdict** object. A run is a one-step workflow, so `runId` and `shortId` name its record under `workflows/<id>/`. `ok` says whether the step passed by its facts (the exit, its deliverable, and its typed answer when `--answer-schema` gave one), and `why` and `failureKind` say what decided it. `contentUsableDespiteExit: true` is the case where the process exited non-zero but the content still passed — read it before re-running. [Run one task](/guide/run) walks through every field.
 
 ## Limits and failed pools
 

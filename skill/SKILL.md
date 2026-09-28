@@ -29,9 +29,11 @@ bullswarm run --lane=analyze --add-dir=<abs-dir> --prompt='<task>' --json
 ```
 
 Lanes: `build` edits, `chore` mechanical edits, `analyze` read-only. Use
-`--task-file` for long text. Read the result: `keepOnClaude: true` means do it
-yourself; `ok: true` means read `outFile` and check its content before using
-it; `ok: false` means inspect and report the failure. A clean exit code is not
+`--task-file` for long text. A run is a one-step workflow: `runId` names it
+(`bullswarm workflow runs show <shortId>`). Read the result: `ok: true` means
+read `outFile` and check its content before using it; `ok: false` means
+inspect and report the failure (`failureKind` names it). With
+`--answer-schema <file>` the result carries the checked JSON `answer`. A clean exit code is not
 proof of success. Do not run `doctor` unless dispatch reports a readiness
 problem.
 

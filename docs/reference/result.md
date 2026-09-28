@@ -20,32 +20,30 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 
 | Field | Meaning |
 |---|---|
-| `ok` | `true` when the content judge passed **and** the process exited 0. `false` on a failed judge, a non-zero exit, spawn failure, timeout, stall, quota, or auth |
-| `keepOnClaude` | `true` when routing kept the task on the calling agent instead of spawning a delegate. `ok` is then `true` and `pick.pool` is `null` |
-| `why` | one-line reason. Success is `verified`. A non-zero exit with passing content is `verified content but non-zero exit` |
-| `pick.pool` | pool that ran, or `null` when kept on the caller |
+| `ok` | `true` when the run's one step passed by its facts: the exit, its deliverable (a build or chore run must change a file), and its answer when `--answer-schema` gave one. `false` otherwise |
+| `why` | one-line reason from the run's record: `all 1 step succeeded`, or the step's failure |
+| `runId`, `shortId` | the run's record under `workflows/<id>/`; a run is a one-step workflow (`bullswarm workflow runs show <shortId>`) |
+| `answer` | with `--answer-schema`: the JSON the worker wrote (kept even when it breaks the schema); `null` otherwise |
+| `answerCheck` | with `--answer-schema`: `{ ok, errors, file }`; `null` otherwise |
+| `attempts` | how many attempts the step made (one retry by default, none with `--no-retry`) |
+| `pick.pool` | pool that ran the last attempt, or `null` when none could take it |
 | `pick.model` | model id sent to the CLI |
 | `pick.command` | argv template (`spawn.cmd`). On `--dry-run` this is the resolved argv including the clamped reasoning flag |
-| `outFile` | `~/.bullswarm/runs/out-<stamp>.md` (or `$BULLSWARM_HOME/runs/...`) — the extracted answer. Always read this when `ok` is true |
+| `outFile` | `~/.bullswarm/workflows/<id>/out-task-attempt-<n>.md` (or under `$BULLSWARM_HOME`) — the extracted reply. Always read this when `ok` is true |
 | `taskFile` | the prompt file the worker was given |
 | `contentUsableDespiteExit` | `true` when `ok` is false, the process exited non-zero, and the content judge still passed. Do not discard that `outFile` |
-| `failureKind` | present on failure: `quota`, `throttle`, `auth`, `provider`, `process`, `schema`, `stalled` |
+| `failureKind` | `null` on success; on failure: `quota`, `throttle`, `auth`, `provider`, `process`, `schema`, `stalled`, `not-produced`, `unavailable`, `depth` (the recursion guard refused the run) |
 | `retryAfter` | on a usage limit whose reset is known: that reset, as an ISO time. It is known when the provider's line named it, or when the pool's own meter reads 95% or more on a window still running (that window's reset). Absent otherwise. Nothing is stored about the pool: the next pick reads its meters again |
 | `cancelled` | `true` when a workflow cancellation stopped the worker |
 | `dryRun` | `true` on `--dry-run`. Nothing was spawned, logged, or registered in the assignment ledger |
 | `forecast` | the numbers routing compared: `inflight`, `projectedFiveHourPct`, `forecastFiveHourPct`, `expectedMinutes`, `ratePerMinute`, `estimateSource` |
-| `candidates` | routing candidate rows (dry-run and keep-on-caller include this) |
+| `candidates` | routing candidate rows (dry-run includes this) |
 | `reasoning` | `{ requested, applied, source, clamped }` — the level this attempt actually ran at |
 | `meta.exitCode`, `meta.signal`, `meta.timedOut`, `meta.stalled`, `meta.cancelled` | process observation |
 | `meta.wallSec`, `meta.outBytes` | duration and extracted output size |
 | `meta.usage` | complete v2 attempt usage: provider-reported, transcript-summed, estimated, or unknown exclusive token classes; `api.usd` is the local dated rate-card calculation and `subscription.usd` is the separately measured or calibrated quota-window amount |
-| `structured` | only when an output validator ran (workflow evidence): `{ ok, errors, value? }` |
 
-`--dry-run` prints `ok`, `dryRun: true`, `keepOnClaude`, `why`, `forecast`, `candidates`, `pick` (resolved argv including the clamped reasoning flag), and `reasoning`. It omits `outFile`, `taskFile`, `contentUsableDespiteExit`, `meta`, and the failure fields, because nothing was spawned. `--dry-run` with no eligible pool and `keepOnClaude: true` still exits 0. `--dry-run` that cannot pick and cannot keep the task sets `ok: false` and exits 1.
-
-::: warning
-`ok: true` with `keepOnClaude: true` means the caller should do the work itself. It is not a completed delegate. The skill documents this as `keepOnClaude: true`.
-:::
+`--dry-run` prints `ok`, `dryRun: true`, `why`, `forecast`, `candidates`, `pick` (the kernel's first pick, with the resolved argv including the clamped reasoning flag), and `reasoning`. It omits `runId`, `outFile`, `taskFile`, `meta`, and the failure fields, because nothing was spawned or recorded. `--dry-run` that finds no pool for the step sets `ok: false` and exits 1.
 
 ## workflow runs result --json
 

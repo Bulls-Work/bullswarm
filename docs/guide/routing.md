@@ -36,7 +36,7 @@ Routing runs the same six checks every time, in this order. Each one is a filter
 3. **5-hour last mile** — a pool at or above the near-limit line gets a soft ordering penalty only when another eligible pool is behind pace.
 4. **Free models** — while any surviving pool's model for this effort tier costs nothing, only those are selectable.
 5. **Expiring-soon urgency** — while any pool's week or month is about to reset with quota left, only those are selectable.
-6. **Preference inside the survivors** — an explicit tier assignment, then incumbency, then the highest effective surplus.
+6. **Preference inside the survivors** — an explicit tier assignment, then the highest effective surplus.
 
 The rest of this page is those six steps in detail.
 
@@ -153,13 +153,13 @@ A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) i
 
 Work already dispatched is charged against a pool before the next pick: each pool's effective surplus is its pace minus what its in-flight agents and the candidate are expected to spend. When the pacing window has a measured rate, each timed in-flight record is charged at `rate × remaining minutes` with no floor. A pool with no measured rate uses the flat `config.inflightPenaltyPct` tie-breaker in `~/.bullswarm/state.json` (default 3; `0` turns it off); a measured pool uses that value only for an in-flight record whose remaining duration is unknown. A busier pool therefore yields to a quieter one at similar pace.
 
-## Assignments and incumbency
+## Assignments
 
-Two preferences apply only among pools that survived the steps above. An explicit effort-tier assignment (`bullswarm strategy assign <tier> --pool <p> --model <m>`) wins if that pool is selectable — it is a preference, never a bypass of eligibility or the gates. Only `assign` makes one: `strategy apply` and `setup --yes --strategy` set each pool's model per tier and pin nothing, so an unpinned tier is picked by surplus at every dispatch. Otherwise the pool that last succeeded in that lane keeps it, unless a challenger beats its effective surplus by 10 points and is no more expensive; an incumbent at −20 surplus or worse forfeits that protection, and one carrying more in-flight work than the challenger loses it too.
+One preference applies only among pools that survived the steps above. An explicit effort-tier assignment (`bullswarm strategy assign <tier> --pool <p> --model <m>`) wins if that pool is selectable — it is a preference, never a bypass of eligibility or the gates. Only `assign` makes one: `strategy apply` and `setup --yes --strategy` set each pool's model per tier and pin nothing, so an unpinned tier is picked by surplus at every dispatch. There is no incumbency: since 0.37.0 a single run is a one-step workflow and every step is routed by the same rule.
 
 ## The caller
 
-The agent CLI that invoked Bullswarm competes as a pool like any other, and `keepOnClaude: true` in a verdict means it won or nothing else was eligible. It is never protected: it has to win on merit. `--no-caller` removes it from the field, so the task must go to a delegate or fail.
+The agent CLI that invoked Bullswarm is never a pool of its own run: every run and every workflow step goes to a delegate pool or fails. `--no-caller` is accepted for one release and ignored.
 
 ## When a pool runs out
 

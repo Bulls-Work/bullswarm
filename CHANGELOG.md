@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- run: `bullswarm run` is a one-step workflow. Its flags become a one-step
+  program that the workflow kernel runs in the foreground, with no scout and no
+  planner, and the run is recorded under `workflows/<id>/` with its rollup, so
+  `bullswarm workflow runs --all` and `workflow runs show <shortId>` list it
+  with the other runs. It no longer writes a separate task entry to the
+  decision log: the step's attempt writes the one entry, as every workflow
+  step does. The verdict keeps `ok`, `why`, `failureKind`, `retryAfter`,
+  `pick` and `outFile`, and adds `runId`, `shortId`, `answer`, `answerCheck`
+  and `attempts`; `why` is the run's own fact line (`all 1 step succeeded`, or
+  the step's failure).
+- run: a run gets the step's one automatic retry (a crash on another pool
+  that can run it, a failed answer check on the same pool with the errors
+  attached). `--no-retry` gives one attempt, as before. A usage limit is
+  still never retried.
+- run: a run passes by facts, as every workflow step does: the exit, its
+  deliverable and, with the new `--answer-schema <file>`, a JSON answer the
+  worker writes to a file Bullswarm names and Bullswarm checks against the
+  schema (a mismatch is failure kind `schema`). A `build` or `chore` run must
+  change a file, else it fails `not-produced`; ask a question on
+  `--lane analyze`.
+- run: new routing flags `--avoid-pool`, `--use-provider` and
+  `--avoid-provider` (comma-separated), the same filters a workflow step's
+  `route` takes. `--dry-run` prints the kernel's own first pick for the step.
+- run: keep-on-caller and incumbency are gone. The calling agent is never a
+  pool of its own run, so `keepOnClaude` is no longer in the verdict;
+  `--no-caller` is accepted with a one-line notice for this release. A run at
+  the recursion depth limit is a plain refusal: `ok: false`, failure kind
+  `depth`. Every step is routed by one rule, so nothing reads or writes
+  `incumbents` in `state.json`, and the fleet view and the Claude Code mod no
+  longer show "incumbent for".
+
 ## 0.36.0 — Usage limits go back to the caller; each account bills itself
 
 - known issues in this release: a limit marker whose reset was guessed still

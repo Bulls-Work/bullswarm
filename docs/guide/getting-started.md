@@ -83,17 +83,20 @@ The command prints exactly one verdict document when the delegate finishes, trim
 ```json
 {
   "ok": true,
-  "why": "verified",
-  "keepOnClaude": false,
+  "why": "all 1 step succeeded",
+  "failureKind": null,
+  "runId": "wf-mulcn6cq-5b736a",
+  "shortId": "u2rxms",
   "pick": {
     "pool": "grok",
     "model": "grok-4.6",
     "command": ["grok", "-p", "{taskFile}"]
   },
-  "contentUsableDespiteExit": false,
-  "meta": { "pool": "grok", "exitCode": 0, "wallSec": 148.5 },
-  "outFile": "~/.bullswarm/runs/out-1789546447796-qkr32.md",
-  "taskFile": "~/.bullswarm/runs/task-1789546447796-qkr32.md"
+  "outFile": "~/.bullswarm/workflows/wf-mulcn6cq-5b736a/out-task-attempt-1.md",
+  "answer": null,
+  "answerCheck": null,
+  "taskFile": "~/.bullswarm/workflows/wf-mulcn6cq-5b736a/task-task-attempt-1.md",
+  "meta": { "pool": "grok", "exitCode": 0, "wallSec": 148.5 }
 }
 ```
 
@@ -101,9 +104,10 @@ The command prints exactly one verdict document when the delegate finishes, trim
 
 | Field | Meaning |
 |---|---|
-| `ok` | Whether the saved output passed the verify gate. `true` means the content was judged real work. |
-| `why` | The gate that decided it: `verified`, or the reason it failed, such as `announcement without substance`. |
-| `keepOnClaude` | `true` means the router kept the task on the calling agent and nothing ran. |
+| `ok` | Whether the step passed by its facts: the exit, its deliverable, and its typed answer when `--answer-schema` gave one. |
+| `why` | What decided it; on a failure `failureKind` names the kind (`quota`, `auth`, `schema`, `not-produced`, ...). |
+| `runId`, `shortId` | The run's record: a run is a one-step workflow, listed by `bullswarm workflow runs --all`. |
+| `answer`, `answerCheck` | With `--answer-schema`: the JSON answer the worker wrote and whether it matched the schema. |
 | `pick` | The pool and model that ran it, and the argv template that was spawned (`{taskFile}` is filled with the task file path). |
 | `contentUsableDespiteExit` | `true` when the process exited non-zero but its content still passed; read the output before re-running. |
 | `outFile` | The saved delegate output; `taskFile` is the prompt that produced it. |

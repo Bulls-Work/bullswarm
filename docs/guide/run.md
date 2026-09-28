@@ -30,8 +30,13 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 | `--reasoning <low\|medium\|high\|xhigh\|max\|default>` | Run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing. | the strategy reasoning setting for the effort tier, else the connector default |
 | `--timeout <seconds>` | Hard wall-clock kill timer for the delegate process. | none — the delegate may run to completion |
 | `--heartbeat <seconds>` | Print one compact progress heartbeat to stderr per interval, without streaming delegate output. | off |
-| `--dry-run` | Print the routing decision, the forecast, and the exact command that would be spawned, without spawning or registering anything. | off (dispatches for real) |
-| `--no-caller` | Exclude the calling agent from routing, so the task must go to a delegate pool or fail. | off — the caller competes for the lane |
+| `--answer-schema <file>` | A JSON schema for a typed answer: the worker writes JSON to a file Bullswarm names; the verdict carries `answer` and `answerCheck`. A mismatch is failure kind `schema`. | none |
+| `--no-retry` | One attempt only. Without it the step gets its one automatic retry; a usage limit is never retried. | off — one retry |
+| `--avoid-pool <pool,...>` | Never route this task to these pools. | — |
+| `--use-provider <provider,...>` | Route only to pools of these providers. | — |
+| `--avoid-provider <provider,...>` | Never route to pools of these providers. | — |
+| `--dry-run` | Print the kernel's routing pick, the forecast, and the exact command that would be spawned, without spawning, recording a run or registering anything. | off (dispatches for real) |
+| `--no-caller` | Accepted and ignored for one release: the calling agent is never a pool of its own run. | removed in 0.37.0 |
 | `--json` | Print the machine-readable verdict document. | human-readable summary line |
 
 The task itself is also accepted as trailing words: `bullswarm run --lane analyze "list every TODO in src/"`.
@@ -71,9 +76,10 @@ reasoning: high (connector)
 
 | Verdict | What it means | What to do |
 |---|---|---|
-| `keepOnClaude: true` | Nothing ran; routing kept the task on the calling agent. | Do the task in this session, or add `--no-caller` to force a delegate pool. |
-| `ok: true`, `keepOnClaude: false` | The output passed the verify gate. | Read `outFile`; the work is done. |
-| `ok: false` | `why` names the gate that failed. | Read `outFile` before re-running — the delegate may still have written something usable. |
+| `ok: true` | The step passed by its facts. | Read `outFile` (and `answer`, with `--answer-schema`); check it before using it. |
+| `ok: false` | `why` says what failed and `failureKind` its kind. | Read `outFile` before re-running — the delegate may still have written something usable. |
+| `failureKind: "not-produced"` | A build or chore run changed no file. | Ask for the change, or run it on `--lane analyze` if it is a question. |
+| `failureKind: "quota"` | A usage limit; `retryAfter` says when, when it is known. | Run it again later, or `--avoid-pool` that pool. |
 | `contentUsableDespiteExit: true` | The process exited non-zero, but the content still verified. | Read `outFile` first; re-run only if it is incomplete. |
 
 ```bash
@@ -84,7 +90,7 @@ bullswarm run --lane analyze --add-dir . --prompt "Summarize the verify gate"
 The human line is `OK`/`FAIL`, the pool, and `why`; with `--json` you also get `pick`, `meta` (exit code, wall time, token and cost usage, the reasoning level actually applied), and the file paths. A `why` of `announcement without substance` means the delegate promised work instead of doing it — ask for a checkable shape next time.
 
 ::: tip
-`keepOnClaude: true` is not an error. It means no delegate was eligible or worth spending, so the task is yours to do in this session. Add `--no-caller` to force it to a delegate pool instead.
+A run is a one-step workflow: `runId` names it, and `bullswarm workflow runs show <shortId>` shows its step, attempts and files.
 :::
 
 ## Re-judge saved outputs

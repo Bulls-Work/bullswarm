@@ -248,11 +248,16 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--reasoning <low\|medium\|high\|xhigh\|max\|default>` | run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing | strategy reasoning setting for the effort tier, else the connector default |
 | `--timeout <seconds>` | hard wall-clock kill timer for the delegate process | none — the delegate is allowed to run to completion |
 | `--heartbeat <seconds>` | print one compact progress heartbeat to stderr per interval without streaming delegate output | off |
-| `--dry-run` | print the routing decision, the forecast, and the exact command that would be spawned, without spawning, registering an assignment, or writing the decision log | off (dispatches for real) |
-| `--no-caller` | exclude the calling agent from routing, so the task must go to a delegate pool or fail | off — the caller competes for the lane like any other pool |
+| `--answer-schema <file>` | a JSON schema for a typed answer; the verdict carries `answer` and `answerCheck`, and a mismatch is failure kind `schema` | none |
+| `--no-retry` | one attempt only | off — one retry |
+| `--avoid-pool <pool,...>` | never route this task to these pools | unset |
+| `--use-provider <provider,...>` | route only to pools of these providers | unset |
+| `--avoid-provider <provider,...>` | never route to pools of these providers | unset |
+| `--dry-run` | print the kernel's routing pick, the forecast, and the exact command that would be spawned, without spawning, recording a run, registering an assignment, or writing the decision log | off (dispatches for real) |
+| `--no-caller` | accepted and ignored for one release: the calling agent is never a pool of its own run | removed in 0.37.0 |
 | `--json` | print the machine-readable verdict document | human-readable summary line |
 
-One attempt only: a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. The JSON shape is in [Result envelope](/reference/result).
+A run is a one-step workflow, recorded under `workflows/<id>/` (`bullswarm workflow runs --all`). It gets the step's one automatic retry unless `--no-retry`; a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. A build or chore run must change a file (else failure kind `not-produced`). The JSON shape is in [Result envelope](/reference/result).
 
 ```bash
 # Show the exact argv, including the clamped reasoning flag, without dispatching.

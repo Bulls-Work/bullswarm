@@ -770,9 +770,7 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
   — `history` or `bootstrap` (the measured projection exceeded the floor),
   `penalty` (the flat 3-points-per-in-flight-agent floor set the charge, either
   because no rate is measured or because the projection was smaller), `none`
-  (nothing to charge). An incumbent carrying more in-flight agents than a
-  challenger loses its incumbency margin and cost guard, so `why` can name a
-  pricier pool when the incumbent is the one that is loaded.
+  (nothing to charge).
 - `forecastGated` is always `false` now, and `forecast.gated` is always empty:
   a forecast past the wall no longer excludes a pool. `forecastOverLimit: true`
   means the pool's forecast runs past 100% of its 5-hour window, so it is
