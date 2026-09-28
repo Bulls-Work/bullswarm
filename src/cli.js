@@ -33,10 +33,6 @@ export function getBullswarmDir() {
   return h && h.length ? h : join(homedir(), '.bullswarm');
 }
 
-// Backwards-compatible snapshot for external imports. Internal CLI paths
-// call getBullswarmDir() so BULLSWARM_HOME is honored at invocation time.
-export const BULLSWARM_DIR = getBullswarmDir();
-
 const BOOLEAN_FLAGS = new Set([
   'overview',
   'json', 'force', 'no-caller', 'no-retry', 'yes', 'setup', 'strategy', 'integrate', 'dry-run',
@@ -680,4 +676,3 @@ export async function main(argv) {
       return 2;
   }
 }
-

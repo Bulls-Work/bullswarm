@@ -40,7 +40,6 @@ const TEST_SEAMS = {
 // test that only covers it), then its line here: the third test fails while a
 // line names something that no longer needs it.
 const NOT_YET_REMOVED = {
-  'src/cli.js': ['BULLSWARM_DIR'],
   'src/lib/attempt-usage.js': ['attemptCapture'],
   'src/lib/stale.js': ['streamFacts'],
   'src/meters/framework.js': ['meterIntervalDelta', 'monotonicDelta'],
