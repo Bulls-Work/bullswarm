@@ -112,9 +112,12 @@
   command; a `workflow watch` or `workflow wait` result gets a note naming a
   waiting gate or loop, the loop's round and the checked answers.
 - stats: the totals line and Home's figures name single runs apart from
-  workflows (`1 run`, `3 runs · 5 workflows`); the overview carries
-  `oneStepRuns`, and a v3 rollup carries `programFormat: 3` and, for a
-  one-step run, `oneStep: true`.
+  workflows (the totals line reads `3 runs · 5 workflows`, Home reads
+  `Runs: 3 · workflows 5 · verified 2 (40%)`). Home's verified count and share
+  are of the v2 workflows alone, and Home leaves them out when the period has
+  no v2 workflow (`Runs: 3 · workflows 2`). The overview carries `oneStepRuns`,
+  `verifiableRuns` and `verifiedRuns`, and a v3 rollup carries
+  `programFormat: 3` and, for a one-step run, `oneStep: true`.
 - stats: single runs count. Stats, Budget and History read the single runs the
   decision log still holds (older ones) and the one-step workflows new runs
   record, so totals from this version on include `bullswarm run` work that

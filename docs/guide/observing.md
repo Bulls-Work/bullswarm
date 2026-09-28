@@ -281,9 +281,14 @@ A real run on grok, parked at its gate, on the Run page at 120 columns:
 - **A one-step run** (`bullswarm run`, or a v3 program of one step and no gate
   or loop) has no plan boxes and no phase rule: its timeline is the goal and the
   attempt rows, with the answer under them.
-- **Counts.** Stats' totals line and Home's figures name one-step runs apart from
-  workflows: `1 run`, `3 runs · 5 workflows`, or `Workflows: 5 · verified 2 (40%)`
-  when there are no one-step runs.
+- **Counts.** Stats and Home name one-step runs apart from workflows. Stats'
+  totals line reads `1 run` or `3 runs · 5 workflows`. Home's figure reads
+  `Runs: 3 · workflows 5 · verified 2 (40%)`, `Workflows: 5 · verified 2 (40%)`
+  when there are no one-step runs, or `Runs: 3` when there are only one-step
+  runs. Only a v2 workflow can be verified, so the verified count and its share
+  are of the v2 workflows alone: when the period has none (only v3 runs and
+  one-step runs), Home leaves the verified part out, as in
+  `Runs: 3 · workflows 2`.
 
 The Claude mod's pane draws the same timeline. Its strip and prompt context list
 a parked run as `2fne62 (waiting at gate approve, 12m): 3/4 done; continue:
