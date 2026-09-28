@@ -712,3 +712,30 @@ test('wait on a step behind a waiting gate names the gate and its continue comma
   const json = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'wait', run.shortId, 'report', '--json'], { encoding: 'utf8', env: cliEnv(f) }).stdout);
   assert.equal(json.waitingFor[0].next, `bullswarm workflow continue ${run.shortId} review`);
 });
+
+// QA37 (0.37.0): a step added to a phase the run already has joins that
+// phase. The stored stage kept its old members, so the new state failed
+// validation ("presentation is missing program action ...").
+test('add a step whose phase names a phase the run already has: the step joins that phase and the state validates', async (t) => {
+  const f = fixture(t);
+  const program = {
+    schemaVersion: V3,
+    steps: [
+      { id: 'draft', phase: 'write', prompt: 'Draft the acme brief.' },
+      { id: 'review', phase: 'review', dependsOn: ['draft'], prompt: 'Review the acme brief.' },
+    ],
+  };
+  const run = await launch(f, program, fakeDispatch());
+  assert.equal(run.result.status, 'completed');
+  const fragment = { steps: [{ id: 'review-again', phase: 'review', dependsOn: ['draft'], prompt: 'Review the acme brief again.' }] };
+  const added = await addV3Steps({ bullswarmDir: f.bullswarmDir, token: run.shortId, fragment, waitMs: 0, relaunch: noRelaunch });
+  assert.equal(added.status, 'applied', JSON.stringify(added));
+  const state = readState(run);
+  assert.equal(validateV2DurableState(state), true);
+  const stage = state.presentation.stages.find((entry) => entry.actionIds.includes('review'));
+  assert.deepEqual(stage.actionIds, ['review', 'review-again']);
+  assert.equal(stage.completedAt, null);
+  const next = await resume(f, run.runId, fakeDispatch());
+  assert.equal(next.result.status, 'completed');
+  assert.equal(statusOf(readState(run), 'review-again'), 'succeeded');
+});

@@ -112,7 +112,9 @@ function memberTimes(stage, runtime) {
 
 // The kernel-owned stages written when a revision applies. An unchanged level
 // keeps its stage record (and so its start); one that has work to do again
-// loses its completion so the kernel reports it when it finishes again.
+// loses its completion so the kernel reports it when it finishes again. A v3
+// phase keeps its id when a step joins it, so a kept stage takes the phase's
+// current members and label.
 export function deriveV2LiveStages(state, { revision, at }) {
   const prior = new Map((state.presentation?.stages ?? []).map((stage) => [stage.id, stage]));
   const runtime = new Map((state.actions ?? []).map((action) => [action.id, action]));
@@ -120,7 +122,12 @@ export function deriveV2LiveStages(state, { revision, at }) {
     const status = presentationStageStatus(stage, state.actions);
     const { start, finish } = memberTimes(stage, runtime);
     const kept = prior.get(stage.id);
-    if (kept) return { ...kept, completedAt: status.terminal ? kept.completedAt ?? finish ?? at : null };
+    if (kept) {
+      return {
+        ...kept, label: stage.label, actionIds: stage.actionIds,
+        completedAt: status.terminal ? kept.completedAt ?? finish ?? at : null,
+      };
+    }
     return {
       ...stage,
       revision,
