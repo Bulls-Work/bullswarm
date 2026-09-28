@@ -977,7 +977,7 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
   ];
   // The router's last-mile reason, as pickPool prints it, promises no retry.
   const near = { name: 'claude-code:acme', costRank: 2, lanes: ['analyze', 'build', 'chore'], pace: -5, fiveHourUsedPct: 88.1 };
-  const { why } = pickPool('build', [near], { callerEligible: false, callerSession: false, now: 1_000_000_000_000 });
+  const { why } = pickPool('build', [near], { now: 1_000_000_000_000 });
   const clause = why.split(' · ').find((part) => part.startsWith('last mile: '));
   assert.equal(clause, 'last mile: claude-code:acme 88.1% of 5h, a limit mid-attempt goes back to the caller');
   assert.ok(flat('docs/guide/routing.md').includes(`\`${clause}\``));

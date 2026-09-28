@@ -176,7 +176,7 @@ test('a state.json holding old quarantine and bench records routes normally (S1)
       assert.equal(Object.hasOwn(pool, 'bench'), false, `${pool.name}: no bench on the view`);
     }
     // Both pools are offered: the old records keep nothing out.
-    const route = pickPool('build', pools, { now, callerEligible: false });
+    const route = pickPool('build', pools, { now });
     assert.ok(route.pick, route.why);
     assert.deepEqual(route.candidates.map((candidate) => candidate.pool).sort(), ['grok', 'relay']);
     assert.doesNotMatch(route.why, /bench|paus|quarantin/i);
@@ -286,8 +286,8 @@ test('a lock left behind by a dead process is taken over after the stale timeout
     assert.equal(STATE_LOCK_STALE_MS, 30_000, 'documented takeover window');
     acquireStateLock(dir); // never released: the holder "crashed"
     // staleMs: 0 treats it as already stale rather than sleeping 30 s here.
-    updateState(dir, (s) => { s.config.callerName = 'grok'; }, { staleMs: 0, waitMs: 1000, pollMs: 10 });
-    assert.equal(loadState(dir).config.callerName, 'grok');
+    updateState(dir, (s) => { s.config.depthLimit = 3; }, { staleMs: 0, waitMs: 1000, pollMs: 10 });
+    assert.equal(loadState(dir).config.depthLimit, 3);
     assert.equal(existsSync(stateLockPath(dir)), false);
   } finally { cleanup(); }
 });

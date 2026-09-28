@@ -88,8 +88,9 @@
   will be removed. A run at
   the recursion depth limit is a plain refusal: `ok: false`, failure kind
   `depth`. Every step is routed by one rule, so nothing reads or writes
-  `incumbents` in `state.json`, and the fleet view and the Claude Code mod no
-  longer show "incumbent for".
+  `incumbents` in `state.json` or `config.callerName` (a new home no longer
+  writes it), and the fleet view and the Claude Code mod no longer show
+  "incumbent for".
 - run: `--timeout <seconds>` kills the worker as before and the verdict reads
   `timeout after <N>s` with failure kind `interrupted` (a process failure), so
   it gets the one automatic retry on another pool; `--no-retry` gives one

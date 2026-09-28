@@ -75,8 +75,6 @@ export async function previewStepPick({ action, pools, bullswarmDir, coreState, 
   attachForecast(routingPools, bullswarmDir, { now, decisionLog });
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])?.strategyAssignments?.[effort] ?? null;
   const route = pickPool(lane, routingPools, {
-    callerEligible: false,
-    callerSession: false,
     preferredPool: configuredAssignment?.pool ?? null,
     effortTier: effort,
     now,

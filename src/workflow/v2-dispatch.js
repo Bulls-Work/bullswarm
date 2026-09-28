@@ -1304,8 +1304,6 @@ export async function dispatchV2Action({
     // meter poll and no network.
     attachForecast(routingPools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
     const route = choosePool(action.lane ?? 'chore', routingPools, {
-      callerEligible: false,
-      callerSession: false,
       preferredPool: effectivePreferredPool,
       // `routingPools` is already filtered to the pin; the router needs the
       // name so routeWhy says the pick was pinned, not compared.

@@ -65,7 +65,7 @@ test('SEAM: exhausted pool (usedPct 100 via state) is excluded from picks', () =
     };
     const { pools } = buildPools(dir, Date.now(), readings);
     assert.equal(isExhausted(pools.find((p) => p.name === 'grok')), true);
-    const r = pickPool('chore', pools, { callerEligible: false });
+    const r = pickPool('chore', pools, {});
     assert.equal(r.pick.pool, 'codex'); // NOT grok
   } finally {
     cleanup();
@@ -92,7 +92,7 @@ test('SEAM: highest-surplus pool wins without any meter-shaped input', () => {
       },
     };
     const { pools } = buildPools(dir, now, readings);
-    const r = pickPool('chore', pools, { callerEligible: false });
+    const r = pickPool('chore', pools, {});
     assert.equal(r.pick.pool, 'grok'); // surplus 50 beats -16 despite higher costRank
   } finally {
     cleanup();
@@ -107,49 +107,11 @@ test('SEAM: no readings at all → declared meters still rank by headroom', () =
     const { pools } = buildPools(dir, Date.now(), {});
     assert.equal(pools[0].meterSource, 'declared');
     assert.equal(pools[0].pace, -95);
-    const r = pickPool('chore', pools, { callerEligible: false });
+    const r = pickPool('chore', pools, {});
     assert.equal(r.pick.pool, 'grok');
-    assert.equal(r.keepOnClaude, false);
   } finally {
     cleanup();
   }
-});
-
-test('caller pool winning on merit returns keepOnClaude, never self-dispatch', () => {
-  const { dir, cleanup } = fixture();
-  try {
-    writeConnector(dir, 'claude-code', {
-      flags: { isCaller: true },
-      lanes: ['analyze', 'build', 'chore'],
-    });
-    writeState(dir, { 'claude-code': { enabled: true } });
-    const readings = {
-      'claude-code': {
-        source: 'cache',
-        pacing: { usedPct: 5, elapsedPct: 50, surplus: 45, resetsAt: new Date(Date.now() + 3600_000).toISOString() },
-        burstGate: false,
-      },
-    };
-    const { pools } = buildPools(dir, Date.now(), readings);
-    const r = pickPool('chore', pools, { callerEligible: true, callerName: 'claude' });
-    assert.equal(r.pick, null);
-    assert.equal(r.keepOnClaude, true);
-    assert.match(r.why, /keep work in-session/);
-  } finally {
-    cleanup();
-  }
-});
-
-test('distressed incumbent forfeits cost protection; equal-rank may displace', () => {
-  const pools = [
-    { name: 'cheap-incumbent', costRank: 1, lanes: ['chore'], incumbent: true,
-      usedPct: 99, meterSource: 'cache' },           // surplus via flat pace below
-    { name: 'pricier-fresh', costRank: 3, lanes: ['chore'] },
-  ];
-  pools[0].pace = -49;  // distressed
-  pools[1].pace = 30;
-  const r = pickPool('chore', pools, { callerEligible: false });
-  assert.equal(r.pick.pool, 'pricier-fresh'); // distress voids the cost guard
 });
 
 test('paceScore never returns NaN on malformed usedPct', () => {
@@ -157,39 +119,12 @@ test('paceScore never returns NaN on malformed usedPct', () => {
   assert.equal(paceScore({}), 0);
 });
 
-test("callerName fallback matches pool name without flags (reviewer residual)", () => {
-  // The default caller name must equal the claude-code connector's pool name,
-  // so even if flags.isCaller is lost, self-dispatch cannot happen.
-  const pools = [
-    { name: 'claude-code', costRank: 4, lanes: ['chore'], pace: 45, meterSource: 'cache' },
-    { name: 'grok', costRank: 2, lanes: ['chore'], pace: -10 },
-  ];
-  const r = pickPool('chore', pools, { callerEligible: true }); // no explicit callerName
-  assert.equal(r.pick, null);
-  assert.equal(r.keepOnClaude, true);
-});
-
-test('equal-cost challenger displaces distressed incumbent (true equal rank)', () => {
-  const pools = [
-    { name: 'a', costRank: 2, lanes: ['chore'], incumbent: true, pace: -25 },
-    { name: 'b', costRank: 2, lanes: ['chore'], pace: -10 },
-  ];
-  const r = pickPool('chore', pools, { callerEligible: false });
-  assert.equal(r.pick.pool, 'b'); // same costRank: distress valve allows displacement
-});
-
-test('callerSession:false lets caller pool serve as worker (workflow context)', () => {
+test('a pool flagged as the caller is picked as a worker like any other', () => {
   const pools = [
     { name: 'claude-code', costRank: 4, lanes: ['chore'],
       connector: { flags: { isCaller: true } }, pace: 45, meterSource: 'cache' },
     { name: 'grok', costRank: 2, lanes: ['chore'], pace: 5 },
   ];
-  // workflow dispatch: no caller session exists
-  const r = pickPool('chore', pools, { callerEligible: false, callerSession: false });
+  const r = pickPool('chore', pools, {});
   assert.equal(r.pick.pool, 'claude-code'); // highest surplus wins, dispatched as worker
-  assert.equal(r.keepOnClaude, false);
-  // interactive session: same pools, caller wins → keep in-session
-  const r2 = pickPool('chore', pools, { callerEligible: true, callerName: 'claude' });
-  assert.equal(r2.keepOnClaude, true);
-  assert.equal(r2.pick, null);
 });

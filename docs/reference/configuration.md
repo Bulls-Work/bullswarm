@@ -53,7 +53,6 @@ The file is version `1`. Every write is atomic (temp + rename). Every mutation g
   "decisionLog": [],
   "config": {
     "depthLimit": 2,
-    "callerName": "claude-code",
     "worktreeIsolation": "agent-decides"
   }
 }
@@ -66,7 +65,7 @@ The file is version `1`. Every write is atomic (temp + rename). Every mutation g
 | `retention` | `{ enabled, workspacesDays }`; see [Retention](#retention) |
 | `decisionLog` | last 500 dispatch records (`ts`, `lane`, `picked`, `ok`, `why`, `wallSec`, `model`, `reasoning`, `usage`, `outFile`, `forecast`). An older home may still hold `incumbents` and `keepOnClaude` fields; nothing reads them since 0.37.0 |
 | `config.depthLimit` | recursion cap. Core sets `BULLSWARM_DEPTH` on children; callers cannot widen this via flags. Default `2` |
-| `config.callerName` | which pool counts as the calling agent when `run` is allowed to keep the task. Default `claude-code` |
+| `config.callerName` | left by 0.36.x and earlier; nothing reads it since 0.37.0, because every pick is made for a worker |
 | `config.worktreeIsolation` | `agent-decides` (default), `off`, or `required`. Set by the setup wizard. `workflow goal --isolation` opts a run into per-worker worktrees regardless |
 
 `strategy` is added the first time you assign models, set reasoning, or apply a refresh. Do not hand-edit `state.json` while a command is running; use the `strategy` and `provider` verbs.

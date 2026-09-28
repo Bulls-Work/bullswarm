@@ -681,8 +681,6 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
     // itself and needs the rejects to tell an empty candidate list caused by
     // the tier allow-list apart from one caused by capabilities (D7).
     const route = pickPool(context.lane, candidates, {
-      callerEligible: false,
-      callerSession: false,
       requiredCapabilities: context.capabilities,
       preferredPool: assignment?.pool ?? null,
       effortTier: tier,

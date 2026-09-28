@@ -2325,7 +2325,7 @@ test('evidence: a failed check retries once on the same pool, with the failure a
   // After attempt 1 the meters say pool-a is the worst choice. Without the
   // pin the router would move the retry (checked directly first).
   const flipped = (order) => order.map((name) => connector(name, { pace: name === 'pool-a' ? -90 : 90 }));
-  assert.notEqual(pickPool('analyze', flipped(names), { callerEligible: false, callerSession: false, effortTier: 'medium' }).pick.pool, 'pool-a');
+  assert.notEqual(pickPool('analyze', flipped(names), { effortTier: 'medium' }).pick.pool, 'pool-a');
   for (let round = 0; round < 20; round += 1) {
     const order = shuffled(names, round);
     const launch = order.map((name) => connector(name, { pace: name === 'pool-a' ? 90 : -90 }));
@@ -3133,7 +3133,7 @@ test('failure rule: a sign-in failure moves the step to an independent pool, nev
     connector('relay-b', { credentialGroup: RELAY_GROUP, pace: 90 }),
     connector('indie', { pace: -90 }),
   ];
-  assert.equal(pickPool('build', trio().slice(1), { callerEligible: false, callerSession: false, effortTier: 'low' }).pick.pool, 'relay-b');
+  assert.equal(pickPool('build', trio().slice(1), { effortTier: 'low' }).pick.pool, 'relay-b');
   const signIn = { ok: false, failureKind: 'auth', why: 'upstream auth failure: "auth_unavailable"', meta: { exitCode: 1, wallSec: 0.2 } };
   const refreshCalls = [];
   const { result, core } = await markedDispatch([signIn, good], {
@@ -3155,7 +3155,7 @@ test('failure rule: not-produced is retried on the same pool, forced, in a fresh
   const launch = [conversational('pool-a', { pace: 90 }), conversational('pool-b', { pace: -90 })];
   const flipped = [conversational('pool-a', { pace: -90 }), conversational('pool-b', { pace: 90 })];
   // Without the pin the router would move the retry to pool-b.
-  assert.equal(pickPool('build', flipped, { callerEligible: false, callerSession: false, effortTier: 'medium' }).pick.pool, 'pool-b');
+  assert.equal(pickPool('build', flipped, { effortTier: 'medium' }).pick.pool, 'pool-b');
   const refreshCalls = [];
   const facts = [];
   let session = 0;

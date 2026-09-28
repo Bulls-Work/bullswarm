@@ -367,7 +367,6 @@ export const DEFAULT_STATE = {
   decisionLog: [],  // {ts, lane, picked, ok, why, wallSec, ...}
   config: {
     depthLimit: 2,
-    callerName: 'claude-code',
     worktreeIsolation: 'agent-decides',
   },
 };

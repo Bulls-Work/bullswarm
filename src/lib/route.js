@@ -6,12 +6,9 @@
 //   R2. Selection is by time-adjusted pace: surplus = elapsed% − used%.
 //       Most-behind (HIGHEST surplus) wins — quota piling up unspent is
 //       expiring money.
-//   R3. Incumbency margin: an incumbent pool keeps the lane unless a
-//       challenger beats its surplus by MARGIN points — no flapping.
-//   R4. Cost guard (incumbency path only): pace may promote a challenger
-//       over an incumbent only if the challenger is CHEAPER.
-//   R5. The caller wins its lane only when no eligible delegate remains —
-//       it has to WIN, not be protected.
+//   R3-R5. Removed in 0.37.0: the incumbency margin, its cost guard and the
+//       caller-session rule. No pool is marked incumbent and every pick is
+//       made for a worker, so the pace order below decides alone.
 //   R6. A pool with a metered window at its limit — its 5-hour, weekly or
 //       monthly reading at 100%, until that window resets — is exhausted.
 //       Nothing else takes a pool out: no pause or bench is kept between
@@ -36,11 +33,9 @@
 //       With no forecast fields attached, every rule above behaves exactly as
 //       it did before: an unmeasured pool is never penalized for a number
 //       nobody produced.
-//   R9. Load beats incumbency: an incumbent carrying more in-flight agents
-//       than a challenger keeps neither its margin nor its cost guard; the
-//       quieter pool wins as soon as its effective surplus is higher. Effective
-//       surplus subtracts the measured remaining-work charge when a rate is
-//       known, and the flat per-agent tie-breaker only when it is not.
+//   R9. Removed in 0.37.0 with incumbency. Load still counts through R8:
+//       effective surplus subtracts the measured remaining-work charge when a
+//       rate is known, and the flat per-agent tie-breaker only when it is not.
 //  R10. The near-limit line remains clock-relative for the soft penalty. A
 //       forecast at/above FIVE_HOUR_NEAR_LIMIT_PCT and above the percentage of
 //       the 5h window already elapsed is the last-mile case; a near-limit
@@ -91,11 +86,9 @@
 //                    and the 5% it had left was going to expire unspent.)
 //         normal   — expiring soon but on or ahead of pace: ranked with
 //                    everyone else on effective surplus, exactly as today.
-//       Urgency outranks incumbency (R3/R4/R9) and a configured effort
-//       assignment (preferredPool) by the same mechanism R7's tier uses —
-//       selection happens among the urgent pools while one exists — so an
-//       urgent challenger needs neither the 10-point margin nor the cost
-//       guard. It never overrides a strict pin (workflow strictPool filters
+//       Urgency outranks a configured effort assignment (preferredPool) by
+//       the same mechanism R7's tier uses — selection happens among the
+//       urgent pools while one exists. It never overrides a strict pin (workflow strictPool filters
 //       the pool list before pickPool ever sees it), and never the 5h rules:
 //       a pool's 5h wall is not rescued by urgency; the near-limit and
 //       forecast-over-wall states remain eligible and are ordered accordingly.
@@ -130,14 +123,11 @@ import { isFreeModel } from './usage.js';
 
 export const LANES = ['analyze', 'build', 'chore'];
 
-export const INCUMBENCY_MARGIN = 10; // surplus points a challenger must beat
-
 /**
  * Surplus points charged per in-flight agent when no spend rate is known for
  * the pool's pacing window (or, failing that, its weekly one). It is a
- * tie-breaker, not a measurement: three points is
- * under a third of INCUMBENCY_MARGIN, so it separates pools of similar pace
- * without ever overturning a real quota difference. It applies only when the
+ * tie-breaker, not a measurement: three points separates pools of similar
+ * pace without ever overturning a real quota difference. It applies only when the
  * pacing rate is unmeasured (and as the fallback for an untimed record); callers
  * override it with opts.inflightPenaltyPct.
  */
@@ -189,14 +179,6 @@ export function elapsedPct(meter, now = Date.now()) {
     0;
   if (!ms || !start) return 0;
   return Math.min(100, ((now - start) / ms) * 100);
-}
-
-export const DEFAULT_COST_RANK = 5;
-
-/** Coerce costRank safely: missing/NaN/non-number → DEFAULT_COST_RANK. */
-export function costOf(pool) {
-  const c = Number(pool?.costRank);
-  return Number.isFinite(c) ? c : DEFAULT_COST_RANK;
 }
 
 /**
@@ -674,8 +656,8 @@ export function isExhausted(pool, now = Date.now()) {
 /**
  * Pick a pool for a lane.
  * @param {string} lane   analyze | build | chore
- * @param {Array}  pools  enabled pools: {name, costRank, lanes[], meter?,
- *                        incumbent?}. Optional forecast fields,
+ * @param {Array}  pools  enabled pools: {name, costRank, lanes[], meter?}.
+ *                        Optional forecast fields,
  *                        attached by the caller when it tracks them:
  *                        inflight {count, minutes, records:[{remainingMinutes}]},
  *                        spend {fiveHour:{ratePerMinute, source},
@@ -683,8 +665,7 @@ export function isExhausted(pool, now = Date.now()) {
  *                        pacing:{window, ratePerMinute, source}},
  *                        pacingWindow, projectedFiveHourPct,
  *                        projectedWeeklyPct, projectedPacingPct.
- * @param {object} [opts] { callerEligible=true, callerName='claude', now,
- *                        requiredCapabilities, preferredPool, effortTier,
+ * @param {object} [opts] { now, requiredCapabilities, preferredPool, effortTier,
  *                        strictPool (the --worker-pool pin the caller already
  *                        filtered `pools` down to; naming it here is what lets
  *                        the reason say the pick was pinned rather than chosen),
@@ -693,18 +674,16 @@ export function isExhausted(pool, now = Date.now()) {
  *                        routeNote=null (the step's route summary, appended to
  *                        every reason as ` · route: <summary>`; no ranking change),
  *                        evidence: { writerPools: string[] },
- *                        callerSession, candidateMinutes=null (expected minutes
+ *                        candidateMinutes=null (expected minutes
  *                        of the assignment being routed),
  *                        inflightPenaltyPct=DEFAULT_INFLIGHT_PENALTY_PCT
  *                        (unmeasured-pool fallback) }
- * @returns {{pick: object|null, keepOnClaude: boolean, why: string,
+ * @returns {{pick: object|null, why: string,
  *            candidates: Array,
  *            forecast: {candidateMinutes: number|null, gated: string[]}}}
  */
 export function pickPool(lane, pools, opts = {}) {
   const {
-    callerEligible = true,
-    callerName = 'claude-code',
     now = Date.now(),
     requiredCapabilities = [],
     preferredPool = null,
@@ -730,7 +709,6 @@ export function pickPool(lane, pools, opts = {}) {
   if (!LANES.includes(lane)) {
     return {
       pick: null,
-      keepOnClaude: false,
       why: noted(`unknown lane ${lane}`),
       candidates: [],
       forecast: { candidateMinutes: candidateMins, gated: [] },
@@ -797,7 +775,7 @@ export function pickPool(lane, pools, opts = {}) {
 
   // A near-limit pool gives way only when another eligible pool is also behind
   // pace. This is deliberately a score key, not an eligibility filter: a
-  // configured assignment, incumbent, urgency tier, or the only remaining
+  // configured assignment, urgency tier, or the only remaining
   // pool can still select it, and the reason then records the last mile.
   for (const entry of scored) {
     entry.nearPenalty = entry.forecast.nearLimit
@@ -882,23 +860,12 @@ export function pickPool(lane, pools, opts = {}) {
     const withCapabilities = requiredCapabilities.length
       ? ` with capabilities: ${requiredCapabilities.join(', ')}`
       : '';
-    const emptyDelegateWhy = blocked ?? `no eligible delegate pool${withCapabilities}`;
-    const emptyPoolWhy = blocked ?? `no eligible pool${withCapabilities}`;
-    return callerEligible
-      ? {
-          pick: null,
-          keepOnClaude: true,
-          why: noted(`${emptyDelegateWhy}; caller takes the lane`),
-          candidates,
-          forecast: forecastReport,
-        }
-      : {
-          pick: null,
-          keepOnClaude: false,
-          why: noted(emptyPoolWhy),
-          candidates,
-          forecast: forecastReport,
-        };
+    return {
+      pick: null,
+      why: noted(blocked ?? `no eligible pool${withCapabilities}`),
+      candidates,
+      forecast: forecastReport,
+    };
   }
 
   // Forecasts past the wall remain eligible but are the last ordering rung: use
@@ -933,9 +900,8 @@ export function pickPool(lane, pools, opts = {}) {
 
     // R11, by the same mechanism and one rung below it: while any pool's
     // quota is about to expire with room to spend it, that pool is the only
-    // selectable one — which is what puts urgency ahead of incumbency and of
-    // a configured effort assignment, both of which are resolved inside
-    // `selectable` below. A draining pool is the mirror image: out of
+    // selectable one — which is what puts urgency ahead of a configured
+    // effort assignment, resolved inside `selectable` below. A draining pool is the mirror image: out of
     // selection until nothing else is left.
     // R13: urgency is read across writers too. An urgent independent pool
     // still wins; with none, an urgent writer takes the evidence step rather
@@ -953,40 +919,9 @@ export function pickPool(lane, pools, opts = {}) {
     const preferredEntry = preferredPool
       ? selectable.find((entry) => entry.pool.name === preferredPool)
       : null;
-    const incumbentEntry = selectable.find((e) => e.pool.incumbent === true);
-
-    if (preferredEntry) {
-      // A user-applied effort-tier assignment is an explicit choice, but it
-      // never bypasses eligibility, exhaustion, or the wall.
-      winnerEntry = preferredEntry;
-    } else if (incumbentEntry) {
-      // R3+R4: challenger needs margin. The cost guard protects the incumbent
-      // ONLY while it is a reasonable steward of its quota: a distressed
-      // incumbent (deep negative surplus) forfeits cost protection, and
-      // equal-cost challengers may displace (strict < caused permanent
-      // lock-in between same-rank pools). R8c: the comparison is on effective
-      // surplus, so an incumbent already loaded with in-flight work is easier
-      // to displace than an idle one at the same reading.
-      const INCUMBENT_DISTRESS = -20;
-      const incumbentDistressed =
-        incumbentEntry.effective <= INCUMBENT_DISTRESS || isExhausted(incumbentEntry.pool, now);
-      // R9: incumbency guards against flapping on noisy pace numbers, not
-      // against real concurrent load. Against a challenger carrying fewer
-      // in-flight agents, a loaded incumbent keeps neither its margin nor its
-      // cost protection — the quieter pool wins as soon as its effective
-      // surplus is higher. (Observed 2026-09-09: an incumbent at surplus 26.7
-      // with three agents in flight kept the lane against an idle pool at 23.6
-      // because the challenger lacked the 10-point margin.)
-      const challenger = selectable.find((e) => {
-        if (e === incumbentEntry) return false;
-        if (incumbentEntry.load.count > e.load.count) return e.effective > incumbentEntry.effective;
-        return e.effective >= incumbentEntry.effective + INCUMBENCY_MARGIN &&
-          (incumbentDistressed || costOf(e.pool) <= costOf(incumbentEntry.pool));
-      });
-      winnerEntry = challenger ?? incumbentEntry;
-    } else {
-      winnerEntry = selectable[0];
-    }
+    // A user-applied effort-tier assignment is an explicit choice, but it
+    // never bypasses eligibility, exhaustion, or the wall.
+    winnerEntry = preferredEntry ?? selectable[0];
   }
   const writerWon = Boolean(evidence) && winnerEntry?.writerRank === 1;
   // R13: a writer beat an eligible independent pool only because its quota
@@ -1034,38 +969,8 @@ export function pickPool(lane, pools, opts = {}) {
     yieldedBusier,
   }));
 
-  // R5: the caller wins its lane only when no eligible delegate remains —
-  // or when the caller's own pool entry genuinely wins on merit. Dispatching
-  // the caller to itself as a subprocess is always wrong — BUT only when a
-  // caller session actually exists. In workflow/batch contexts every pool is
-  // just a worker; opts.callerSession (default: callerEligible) controls it.
-  const hasCallerSession = opts.callerSession ?? callerEligible;
-  if (!hasCallerSession) {
-    return {
-      pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
-      keepOnClaude: false,
-      why,
-      candidates,
-      forecast: forecastReport,
-    };
-  }
-  const isCaller =
-    winnerEntry.pool.isCaller === true ||
-    winnerEntry.pool.connector?.flags?.isCaller === true ||
-    (callerName && winnerEntry.pool.name === callerName);
-  if (isCaller) {
-    return {
-      pick: null,
-      keepOnClaude: true,
-      why: noted('caller pool won the lane; keep work in-session'),
-      candidates,
-      forecast: forecastReport,
-    };
-  }
-
   return {
     pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
-    keepOnClaude: false,
     why,
     candidates,
     forecast: forecastReport,
