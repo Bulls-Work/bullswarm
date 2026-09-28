@@ -65,25 +65,28 @@ const RULES = Object.freeze([
   'A usage limit (a spent 5-hour, weekly or monthly window, or no credit left) ends the step and sends it to you at once: nothing waits, moves or retries. A short rate limit backs off on the same pool at most twice, then comes to you. Finding no capable pool free at the pick also sends the step to you.',
   'Nothing else is automatic: only what you declared runs by itself (the retry, loop rounds, gates that pass because their when does not hold).',
   'A gate stops only the steps behind it; other branches keep running. When only waiting gates or loops are left, the run parks with status waiting; workflow continue <run> <id> moves a gate on, and --rounds N gives a loop that ran out N more rounds.',
+  'A loop runs every one of its steps in every round and reads its condition when the round is over, so put the deciding step last, and give every writer in a loop work to do each round: a build or chore step that changes no file fails not-produced (a draft that is rewritten from the critique works; a revise step after a critique that already passed does not).',
   'A failed step blocks only the steps that depend on it; other branches finish.',
   'route.independentOf can only name steps this step depends on (directly or through others): a check that must run on another provider than its source also depends on that source.',
   'Workers share one folder: tell each writer to keep other workers\' edits, and give it the exact files it changes in files.',
   'A v3 run\'s steps, gates and loops are never edited: plan revise refuses any change to them and may only rerun steps. Add steps (workflow add), rerun a step (workflow step rerun), accept a failed one (workflow step accept, recorded as your choice), or cancel and start a new run.',
 ]);
 
-// The design's third workflow: research, a critique loop, a gate, publish.
+// The draft, critique, approve, publish workflow: research in parallel, a
+// loop that rewrites the brief until an independent critique passes, a gate
+// for the caller, then an outward step that must not repeat.
+const claims = { type: 'object', required: ['claims'], properties: { claims: { type: 'array', items: { type: 'string' } } } };
 const EXAMPLE = Object.freeze({
   schemaVersion: PROGRAM_V3_SCHEMA_VERSION,
-  defaults: { lane: 'analyze', effort: 'medium', retry: 1 },
+  defaults: { lane: 'analyze', effort: 'medium' },
   steps: [
-    { id: 'search-a', phase: 'research', prompt: 'In /abs/workspace, collect claims about acme widgets from sources/a.md. Answer {"claims": [...]}.', answer: { type: 'object', required: ['claims'], properties: { claims: { type: 'array', items: { type: 'string' } } } } },
-    { id: 'search-b', phase: 'research', prompt: 'In /abs/workspace, collect claims about acme widgets from sources/b.md. Answer {"claims": [...]}.', answer: { type: 'object', required: ['claims'], properties: { claims: { type: 'array', items: { type: 'string' } } } } },
-    { id: 'merge', phase: 'research', dependsOn: ['search-a', 'search-b'], lane: 'build', files: ['brief.md'], deliverable: { type: 'files', paths: ['brief.md'] }, prompt: 'In /abs/workspace, write brief.md from the claims your dependencies answered.' },
-    { id: 'critique', phase: 'quality', dependsOn: ['merge'], route: { independentOf: ['merge'] }, prompt: 'In /abs/workspace, check every claim in brief.md against sources/. Answer {"passed": true} when every claim holds, else {"passed": false, "problems": [...]}.', answer: { type: 'object', required: ['passed', 'problems'], properties: { passed: { type: 'boolean' }, problems: { type: 'array', items: { type: 'string' } } } } },
-    { id: 'revise', phase: 'quality', dependsOn: ['critique'], lane: 'build', files: ['brief.md'], prompt: 'In /abs/workspace, fix the problems the critique answered in brief.md.' },
-    { id: 'post', phase: 'publish', dependsOn: ['approve'], deliverable: 'outward', retry: 0, prompt: 'Publish /abs/workspace/brief.md to the acme wiki.' },
+    { id: 'search-a', phase: 'research', prompt: 'In /abs/workspace, collect the claims sources/a.md makes about acme widgets.', answer: claims },
+    { id: 'search-b', phase: 'research', prompt: 'In /abs/workspace, collect the claims sources/b.md makes about acme widgets.', answer: claims },
+    { id: 'draft', phase: 'writing', dependsOn: ['search-a', 'search-b'], lane: 'build', files: ['brief.md'], prompt: 'In /abs/workspace, write brief.md from the claims your dependencies answered. From round 2 on, fix the problems the previous critique listed.' },
+    { id: 'critique', phase: 'writing', dependsOn: ['draft'], route: { independentOf: ['draft'] }, prompt: 'In /abs/workspace, check every claim in brief.md against sources/. Answer passed true when every claim holds; list each problem otherwise.', answer: { type: 'object', required: ['passed', 'problems'], properties: { passed: { type: 'boolean' }, problems: { type: 'array', items: { type: 'string' } } } } },
+    { id: 'post', phase: 'publish', dependsOn: ['approve'], deliverable: 'outward', retry: 0, prompt: 'Publish /abs/workspace/brief.md to the acme wiki, and list the page you created.' },
   ],
-  loops: [{ id: 'polish', steps: ['critique', 'revise'], until: { step: 'critique', field: 'passed' }, maxRounds: 3 }],
+  loops: [{ id: 'polish', steps: ['draft', 'critique'], until: { step: 'critique', field: 'passed' }, maxRounds: 3 }],
   gates: [{ id: 'approve', dependsOn: ['polish'], note: 'Read brief.md and decide whether to publish it' }],
 });
 
