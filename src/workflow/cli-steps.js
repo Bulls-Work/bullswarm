@@ -427,7 +427,7 @@ const settled = (fact) => (fact.type === 'step' ? STEP_SETTLED : NODE_SETTLED).h
  * what a watch woken at a gate prints, so a wait on the gate says it too.
  * A named loop is left out; it is among the nodes already.
  */
-export function loopsBefore(state, ids) {
+function loopsBefore(state, ids) {
   const control = state.program.control ?? {};
   const loops = new Map((control.loops ?? []).map((loop) => [loop.id, loop]));
   const depends = new Map([
