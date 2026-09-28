@@ -651,7 +651,7 @@ function goalNextCommands(goal, cwd, { isolation = false, program } = {}) {
 }
 
 const GOAL_NEXT_PURPOSES = Object.freeze({
-  contract: 'what the kernel will enforce: requirement IDs, rules, schema, example',
+  contract: 'the program format the kernel enforces: fields, rules, an example that validates',
   validate: 'check plan.json against that contract without launching',
   launch: 'launch with your program; zero planner or scout dispatches',
   scout: 'kernel surveys the repository first, then pauses for your program',
