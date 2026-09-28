@@ -688,7 +688,7 @@ test('a v3 step whose route left no pool is handed back without retry or rerun, 
   assert.doesNotMatch(human.stdout, /^ {2}rerun /m);
   assert.match(human.stdout, /^ {2}add {7}bullswarm workflow add /m);
   assert.match(human.stdout, new RegExp(`^ {2}accept {4}bullswarm workflow step accept ${run.shortId} check-f1 `, 'm'));
-  assert.match(human.stdout, /^ {2}no pool {3}check-f1: no configured pool passes its route, so resume and step rerun fail the same way; enable a pool of another provider first/m);
+  assert.match(human.stdout, /^ {2}no pool {3}check-f1: no pool passes its route at its tier, so resume and step rerun fail the same way until the pools change/m);
   const summary = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId, '--summary'], { encoding: 'utf8', env: cliEnv(f) }).stdout);
   assert.deepEqual(Object.keys(summary.handback.options), ['add', 'accept', 'noPool', 'takeOver', 'restart']);
 
@@ -761,4 +761,29 @@ test('a step whose route left no pool records routeWhy and each pool\'s reason i
   assert.equal(step.routeWhy, check.lastFailure.route.why);
   assert.deepEqual(step.routeCandidates, check.lastFailure.route.candidates);
   assert.equal(step.failure.message, check.lastFailure.message);
+});
+
+// QA37 (0.37.0): the summary said `retryable: true` for a step whose route
+// left no pool while its noPool option said a rerun fails the same way, and
+// `answerChecked: 5` beside an `answerCheckedSteps` of four names.
+test('a no-pool step reads retryable false with noPool true in result.json and the summary; answerCheckedSteps names every checked step', async (t) => {
+  const f = fixture(t);
+  const checks = ['f1', 'f2', 'f3', 'f4', 'f5'].map((id) => ({ id: `check-${id}`, prompt: `Check finding ${id}.`, answer: confirmAnswer }));
+  const program = {
+    schemaVersion: V3,
+    steps: [
+      ...checks,
+      { id: 'review', dependsOn: ['check-f1'], route: { independentOf: ['check-f1'] }, prompt: 'Review the acme checks.', answer: confirmAnswer },
+    ],
+  };
+  const run = await launch(f, program, fakeDispatch(() => ({ answer: { confirmed: true } }), { pools: [connector('acme-pool')] }));
+  assert.equal(run.result.status, 'partial');
+  const result = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
+  assert.deepEqual(result.handback.unfinished.map(({ id, retryable, noPool }) => ({ id, retryable, noPool })), [{ id: 'review', retryable: false, noPool: true }]);
+  const summary = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId, '--summary'], { encoding: 'utf8', env: cliEnv(f) }).stdout);
+  const [row] = summary.handback.unfinished;
+  assert.deepEqual([row.id, row.retryable, row.noPool], ['review', false, true]);
+  assert.equal(summary.proof.answerChecked, 5);
+  assert.deepEqual(summary.proof.answerCheckedSteps, checks.map((step) => step.id));
+  assert.match(summary.handback.options.noPool, /^review: no pool passes its route at its tier/);
 });

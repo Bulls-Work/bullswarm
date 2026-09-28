@@ -260,13 +260,14 @@ function validateHandback(value) {
   value.unfinished.forEach((entry, index) => {
     const name = `handback.unfinished[${index}]`;
     resultObject(entry, name);
-    exactFields(entry, new Set(['id', 'status', 'failureKind', 'why', 'retryAfter', 'retryable', 'retries']), name);
+    exactFields(entry, new Set(['id', 'status', 'failureKind', 'why', 'retryAfter', 'retryable', 'noPool', 'retries']), name);
     resultString(entry.id, `${name}.id`);
     if (!ACTION_STATUSES.has(entry.status)) resultFail(`${name}.status is invalid`);
     nullableString(entry.failureKind, `${name}.failureKind`);
     nullableString(entry.why, `${name}.why`);
     if (entry.retryAfter !== undefined && (typeof entry.retryAfter !== 'string' || Number.isNaN(Date.parse(entry.retryAfter)))) resultFail(`${name}.retryAfter must be an ISO-compatible timestamp`);
     if (typeof entry.retryable !== 'boolean') resultFail(`${name}.retryable must be a boolean`);
+    if (entry.noPool !== undefined && entry.noPool !== true) resultFail(`${name}.noPool must be true when present`);
     if (entry.retries !== undefined && (!Number.isInteger(entry.retries) || entry.retries < 0)) resultFail(`${name}.retries must be a non-negative integer`);
   });
   value.unresolvedRequirements.forEach((entry, index) => {
@@ -295,11 +296,15 @@ function buildV2Handback(state, { unreadSteering = [], failureRule = false } = {
   const runtimeStates = stateByAction(state);
   const plan = v2RetryPlan(state);
   const rerun = new Set([...plan.rerun, ...plan.blocked]);
+  const v3 = isProgramV3(state.program);
   const unfinished = state.program.actions.map((definition) => {
     const runtime = runtimeStates.get(definition.id);
     const status = runtime?.status ?? 'pending';
     if (status === 'succeeded' || status === 'removed') return null;
     const failure = runtime?.lastFailure ?? null;
+    // A v3 step whose route left no pool fails the same way on resume until
+    // a pool passes its route at its tier: not retryable, and marked so.
+    const noPool = v3 && status === 'failed' && isRouteUnavailable(failure);
     return {
       id: definition.id,
       status,
@@ -308,7 +313,8 @@ function buildV2Handback(state, { unreadSteering = [], failureRule = false } = {
       // it is cut; an unmarked run's is cut at its end, as before.
       why: failureRule ? clipWhy(failure?.message, 300) : firstLine(failure?.message, 300),
       ...(typeof failure?.retryAfter === 'string' && !Number.isNaN(Date.parse(failure.retryAfter)) ? { retryAfter: failure.retryAfter } : {}),
-      retryable: rerun.has(definition.id),
+      retryable: rerun.has(definition.id) && !noPool,
+      ...(noPool ? { noPool: true } : {}),
       // Marked runs count the step's automatic retries from its attempts'
       // retryOf facts (D3); saved runs carry no count.
       ...(failureRule && status === 'failed' ? { retries: countRetries(state, definition.id) } : {}),
@@ -1150,7 +1156,10 @@ function summaryHandback(envelope, handback, token, { failureRule = false, actio
       why: clipWhy(entry.why, 160),
       ...(entry.status === 'failed' && notRun.has(entry.id) ? { evidenceNotRun: true } : {}),
       ...(entry.retryAfter ? { retryAfter: entry.retryAfter } : {}),
-      retryable: entry.retryable,
+      // Saved results said retryable for a no-pool step; the summary reads
+      // it as the run's options do (QA37).
+      retryable: entry.retryable && !noPool.has(entry.id),
+      ...(noPool.has(entry.id) ? { noPool: true } : {}),
       ...(Number.isInteger(entry.retries) ? { retries: entry.retries } : {}),
     })),
     unreadSteering: handback.unreadSteering.map((entry) => ({ id: entry.id, message: firstLine(entry.message, 160) ?? '' })),
@@ -1171,7 +1180,7 @@ function summaryHandback(envelope, handback, token, { failureRule = false, actio
         accept: `bullswarm workflow step accept ${token} ${failedStep} --reason "…" (recorded as your choice, never proof)`,
       } : {}),
       ...(noPoolIds.length ? {
-        noPool: `${noPoolIds.slice(0, 4).join(', ')}${noPoolIds.length > 4 ? ` and ${noPoolIds.length - 4} more` : ''}: no configured pool passes ${noPoolIds.length === 1 ? 'its route' : 'their routes'}, so resume and step rerun fail the same way; enable a pool of another provider first, or add a step with a route today's pools serve, or accept it`,
+        noPool: `${noPoolIds.slice(0, 4).join(', ')}${noPoolIds.length > 4 ? ` and ${noPoolIds.length - 4} more` : ''}: no pool passes ${noPoolIds.length === 1 ? 'its route at its tier' : 'their routes at their tiers'}, so resume and step rerun fail the same way until the pools change (its failure names each pool's reason); enable a pool of another provider with a model on that tier, or add a step with a route and effort today's pools serve, or accept it`,
       } : {}),
       ...(failureRule ? reviewVerbs(envelope, token, actions) : {}),
       takeOver: `do the unfinished work yourself; bullswarm workflow runs result ${token} --json names every step's output`,
@@ -1345,8 +1354,10 @@ function summaryProof(rows) {
     byType: acceptedRows.length ? { ...byType, choice: acceptedRows.length } : byType,
     unproven: unprovenRows.length,
     unprovenSteps: unprovenRows.slice(0, 4).map((row) => row.id),
-    ...(checkedRows.length ? { answerChecked: checkedRows.length, answerCheckedSteps: checkedRows.slice(0, 4).map((row) => row.id) } : {}),
-    ...(acceptedRows.length ? { accepted: acceptedRows.length, acceptedSteps: acceptedRows.slice(0, 4).map((row) => row.id) } : {}),
+    // Every checked or accepted step is named, so each count and its list
+    // agree (QA37); only the unproven names stop at four.
+    ...(checkedRows.length ? { answerChecked: checkedRows.length, answerCheckedSteps: checkedRows.map((row) => row.id) } : {}),
+    ...(acceptedRows.length ? { accepted: acceptedRows.length, acceptedSteps: acceptedRows.map((row) => row.id) } : {}),
   };
 }
 

@@ -660,8 +660,11 @@ on; a v3 run is never verified, so a completed v3 run with no unread steering
 carries none:
 
 - `handback.unfinished[]`: `{id, status, failureKind, why, retryAfter?,
-  retryable, retries?}` for every step that did not succeed. `retryable` says
-  whether `workflow resume` would run it again. `retries` (runs started by this
+  retryable, noPool?, retries?}` for every step that did not succeed.
+  `retryable` says whether `workflow resume` would run it again with a
+  chance to pass. A v3 step whose route left no pool reads `retryable: false`
+  and `noPool: true`: it fails the same way until a pool passes its route at
+  its tier, and its `routeWhy` and `routeCandidates` name each pool's reason. `retries` (runs started by this
   version) counts the automatic retries the current definition spent. `retryAfter` is set when a
   return time is known: the failed pool's reset after a usage limit, the end
   of a rate limit's named wait, or, when every pool able to run the step was
