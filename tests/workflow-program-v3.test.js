@@ -494,7 +494,7 @@ test('a valid fresh answer file counts as usable output when the stream errors w
 
 // --- the CLI -----------------------------------------------------------------
 
-test('plan validate accepts a v3 program with gates and loops; goal refuses to launch it until the next build', (t) => {
+test('plan validate accepts a v3 program with gates and loops', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-v3-cli-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'home');
@@ -512,10 +512,6 @@ test('plan validate accepts a v3 program with gates and loops; goal refuses to l
   const payload = JSON.parse(validate.stdout);
   assert.deepEqual(payload.program.gates.map((gate) => gate.id), ['approve']);
   assert.deepEqual(payload.program.loops.map((loop) => loop.id), ['polish']);
-  const goal = spawnSync(process.execPath, [cli, 'workflow', 'goal', 'Research and publish the brief', '--program', programFile, '--cwd', workspace, '--json'], { encoding: 'utf8', env });
-  assert.equal(goal.status, 2, goal.stderr + goal.stdout);
-  assert.match(goal.stdout + goal.stderr, /gates and loops arrive in the next build/);
-  assert.equal(existsSync(join(home, 'workflows')) && execFileSync('ls', [join(home, 'workflows')], { encoding: 'utf8' }).trim().length > 0, false, 'nothing launched');
   assert.equal(dirname(programFile), root);
 });
 
@@ -675,7 +671,7 @@ function controlNodes(state) {
   ];
 }
 
-test('the scheduler holds dependents behind a waiting gate', { todo: 'wave B: control nodes in the scheduler (design section 4)' }, () => {
+test('the scheduler holds dependents behind a waiting gate', () => {
   const state = acceptedV3State();
   const statuses = Object.fromEntries(state.actions.map((action) => [action.id, action.id === 'post' ? 'pending' : 'succeeded']));
   statuses.polish = 'passed';
@@ -686,7 +682,7 @@ test('the scheduler holds dependents behind a waiting gate', { todo: 'wave B: co
   assert.deepEqual(schedule.waiting.map((entry) => entry.id), ['post']);
 });
 
-test('resume leaves control nodes alone', { todo: 'wave B: reconcileResume skips control nodes (design section 4)' }, async (t) => {
+test('resume leaves control nodes alone', async (t) => {
   const f = v3Fixture(t);
   const runId = 'wf-acme01-a1b2c3';
   const runDir = join(f.bullswarmDir, 'workflows', runId);
@@ -701,6 +697,11 @@ test('resume leaves control nodes alone', { todo: 'wave B: reconcileResume skips
     });
   }
   Object.assign(state.lifecycle, { status: 'waiting', startedAt: at, waitingFor: [{ id: 'approve', type: 'gate', since: at, note: 'Read brief.md and decide whether to publish' }] });
+  // The loop passed and the gate waits, as the kernel stored them.
+  state.controlNodes = [
+    { id: 'polish', type: 'loop', status: 'passed', at, round: 1, maxRounds: 3 },
+    { id: 'approve', type: 'gate', status: 'waiting', at },
+  ];
   writeFileSync(join(runDir, 'goal.json'), JSON.stringify(f.goalDocument));
   writeFileSync(join(runDir, 'state.json'), serializeV2DurableState(state));
   writeFileSync(join(runDir, 'features.json'), JSON.stringify({ ...STAGE3_RUN_FEATURES, programFormat: 3 }));
@@ -712,4 +713,6 @@ test('resume leaves control nodes alone', { todo: 'wave B: reconcileResume skips
   assert.deepEqual(dispatched, [], 'nothing behind the waiting gate runs');
   assert.deepEqual(resumed.state.lifecycle.waitingFor.map((entry) => entry.id), ['approve']);
   assert.deepEqual(resumed.waiting?.map((entry) => entry.id), ['approve']);
+  assert.deepEqual(resumed.state.controlNodes.map((record) => [record.id, record.status]), [['polish', 'passed'], ['approve', 'waiting']]);
+  assert.equal(resumed.state.actions.find((action) => action.id === 'post').status, 'pending');
 });
