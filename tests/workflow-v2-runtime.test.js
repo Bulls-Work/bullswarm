@@ -7,9 +7,10 @@ import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import {
-  GATE_RETRY_HANDOFF_LINE, acceptCallerPlannerResponse, handoffBlock, normalizeAttempt, preferredUsage,
-  recordAttemptCapture, reopenV2RunForRetry, reviseV2Program, runV2AutonomousWorkflow,
+  GATE_RETRY_HANDOFF_LINE, acceptCallerPlannerResponse, handoffBlock, preferredUsage, reopenV2RunForRetry,
+  reviseV2Program, runV2AutonomousWorkflow,
 } from '../src/workflow/v2-runtime.js';
+import { normalizeAttempt, recordAttemptCapture } from '../src/workflow/attempt-record.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { needsYouFacts } from '../src/workflow/needs-you.js';
 import { summarizeV2Result, v2LimitStoppedDispatch } from '../src/workflow/v2-outcome.js';
