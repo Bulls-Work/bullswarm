@@ -275,7 +275,7 @@ test('workflow help documents failed evidence and the planner contract evidence 
   // the stage-1 clause (a build-lane step that changed nothing) still holds.
   assert.ok(resume.includes('a failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun; use step rerun, step accept, or plan revise'), resume);
   const contract = helpText(['workflow', 'plan', 'contract']);
-  assert.match(contract, /evidence checks Bullswarm runs after steps/);
+  assert.match(contract, /evidence checks Bullswarm runs after a step/);
 });
 
 test('workflow reindex help exposes the exact usage line and flags', () => {

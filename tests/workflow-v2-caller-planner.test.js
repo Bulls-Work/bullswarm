@@ -491,7 +491,7 @@ function cliProgram(workId = 'create-done') {
 test('CLI: plan contract exposes requirement IDs, rules, and the example without touching state', () => {
   const f = cliFixture();
   try {
-    const result = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json']);
+    const result = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json', '--v2']);
     assert.equal(result.status, 0, result.stderr);
     const contract = JSON.parse(result.stdout);
     assert.equal(contract.action, 'plan-contract');
@@ -508,7 +508,7 @@ test('CLI: plan contract exposes requirement IDs, rules, and the example without
     // already splits into several requirements never carries it.
     assert.match(contract.advice.requirements, /tracked as one requirement/);
     assert.match(contract.advice.requirements, /do not invent clauses to split it/);
-    const split = cli(f, ['workflow', 'plan', 'contract', '1. Create done.txt. 2. Keep the suite green.', '--cwd', f.target, '--json']);
+    const split = cli(f, ['workflow', 'plan', 'contract', '1. Create done.txt. 2. Keep the suite green.', '--cwd', f.target, '--json', '--v2']);
     assert.equal(split.status, 0, split.stderr);
     const splitContract = JSON.parse(split.stdout);
     assert.equal(splitContract.requirements.length, 2);
@@ -864,7 +864,7 @@ test('CLI: bare value flags are usage errors, and plan contract rejects flags th
     const missingCwd = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', join(f.root, 'missing')]);
     assert.equal(missingCwd.status, 1);
     assert.match(missingCwd.stderr, /goal cwd is not an existing directory/);
-    const settings = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--max-expansion-rounds', '3', '--retry-attempts', '0', '--concurrency', '2']);
+    const settings = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--max-expansion-rounds', '3', '--retry-attempts', '0', '--concurrency', '2', '--v2']);
     assert.equal(settings.status, 0, settings.stderr);
     const contract = JSON.parse(settings.stdout);
     assert.equal(contract.settings.maxExpansionRounds, 3);
@@ -1058,7 +1058,7 @@ test('CLI: workflow goal without a program refuses, launches nothing, and names 
     const contractArgs = ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json'];
     const contract = cli(f, contractArgs);
     assert.equal(contract.status, 0, contract.stderr);
-    assert.equal(JSON.parse(contract.stdout).requirements.length, 1);
+    assert.equal(JSON.parse(contract.stdout).goal, GOAL);
   } finally { f.cleanup(); }
 });
 
@@ -1265,7 +1265,7 @@ test('CLI: refusal guidance is copy-pasteable — shell-safe quoting, and a plac
       cwd: REPO, env: { ...process.env, BULLSWARM_HOME: f.home, BULLSWARM_DEPTH: '0' }, encoding: 'utf8', timeout: 30_000,
     });
     assert.equal(viaShell.status, 0, viaShell.stderr);
-    assert.equal(JSON.parse(viaShell.stdout).requirements[0].text, "Fix the parser's bug");
+    assert.equal(JSON.parse(viaShell.stdout).goal, "Fix the parser's bug");
 
     // A multi-line goal is not inlined: JSON escapes would not survive shell
     // double quotes, and the guidance would bury the commands.

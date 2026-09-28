@@ -73,7 +73,7 @@ function run(f, actions, handler, dependencies = {}, defaults = null) {
 test('new CLI planning contracts use shared program execution and isolation is explicit', (t) => {
   const f = fixture(t);
   writeFileSync(join(f.bullswarmDir, 'state.json'), JSON.stringify({ version: 1, config: { worktreeIsolation: 'required' } }));
-  const contract = (...flags) => JSON.parse(execFileSync(process.execPath, [cli, 'workflow', 'plan', 'contract', 'Create a report', '--json', ...flags], { encoding: 'utf8', env: { ...process.env, BULLSWARM_HOME: f.bullswarmDir } }));
+  const contract = (...flags) => JSON.parse(execFileSync(process.execPath, [cli, 'workflow', 'plan', 'contract', 'Create a report', '--json', '--v2', ...flags], { encoding: 'utf8', env: { ...process.env, BULLSWARM_HOME: f.bullswarmDir } }));
   const shared = contract();
   assert.equal(shared.settings.executionMode, 'program');
   assert.equal(shared.settings.workspaceMode, 'shared');

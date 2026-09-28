@@ -56,6 +56,7 @@ import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
 import { stepJsonModel } from './step-json.js';
 import { changeStepHint, rerunStepHint } from './step-change-hint.js';
+import { buildV3Contract } from './contract-v3.js';
 import { listAssignments } from '../lib/assignments.js';
 import { loadPoolLabels, resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 
@@ -1005,10 +1006,12 @@ function planningGoalDocument(opts, path, { allowProgram = false, programV3 = fa
 
 function planContract(opts) {
   if (opts.help) { console.log(helpText(['workflow', 'plan', 'contract'])); return 0; }
-  const built = planningGoalDocument(opts, ['workflow', 'plan', 'contract']);
+  const built = planningGoalDocument(opts, ['workflow', 'plan', 'contract'], { programV3: opts.v2 !== true });
   if (built.exit !== undefined) return built.exit;
   const { goal, doc } = built;
   const next = goalNextCommands(goal, doc.intent.cwd, opts);
+  // v3 by default (contract-v3.js); --v2 prints the contract of old programs.
+  if (opts.v2 !== true) { console.log(JSON.stringify(buildV3Contract({ goal, cwd: doc.intent.cwd, next, workerReasoning: doc.config.workerRouting?.reasoning ?? null }), null, 2)); return 0; }
   const contract = buildV2PlannerContract(doc, { launchCommand: next.launch });
   // Advice, never a rule, and only when it applies: a goal that collapsed to a
   // single requirement gets one verdict for the whole thing, and any gap

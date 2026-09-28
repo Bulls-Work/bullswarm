@@ -434,7 +434,7 @@ test('plan contract echoes the run-wide reasoning levels a launch will apply', (
   try {
     const result = cli(f, [
       'workflow', 'plan', 'contract', 'Create done.txt and verify it.',
-      '--cwd', f.target, '--worker-reasoning', 'high', '--json',
+      '--cwd', f.target, '--worker-reasoning', 'high', '--json', '--v2',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const contract = JSON.parse(result.stdout);
@@ -469,7 +469,7 @@ test('--planner-reasoning is refused where there is no dispatched planner to app
     // --worker-reasoning stays accepted in exactly the same place.
     const worker = cli(f, [
       'workflow', 'plan', 'contract', 'Create done.txt and verify it.',
-      '--cwd', f.target, '--worker-reasoning', 'high', '--json',
+      '--cwd', f.target, '--worker-reasoning', 'high', '--json', '--v2',
     ]);
     assert.equal(worker.status, 0, worker.stderr || worker.stdout);
     assert.equal(JSON.parse(worker.stdout).reasoning.worker, 'high');

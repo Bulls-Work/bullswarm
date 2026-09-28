@@ -54,7 +54,7 @@ const DERIVED_FROM = Object.freeze({
 });
 const GATE_KEYS = new Set(['id', 'dependsOn', 'when', 'note']);
 const LOOP_KEYS = new Set(['id', 'steps', 'until', 'maxRounds']);
-const MAX_ROUNDS = 5;
+export const LOOP_MAX_ROUNDS = 5;
 const LABEL_MAX = 200;
 const PHASE_MAX = 80;
 const NOTE_MAX = 1000;
@@ -298,8 +298,8 @@ export function normaliseProgramV3(input, runtime = {}) {
       else if (loopOfStep.has(id)) issues.push(`step ${id} is in two loops (${loopOfStep.get(id)} and ${raw.id}); a step belongs to at most one loop`);
       else loopOfStep.set(id, raw.id);
     }
-    if (!(Number.isInteger(raw.maxRounds) && raw.maxRounds >= 1 && raw.maxRounds <= MAX_ROUNDS)) {
-      issues.push(`${at}.maxRounds must be a whole number from 1 to ${MAX_ROUNDS}`);
+    if (!(Number.isInteger(raw.maxRounds) && raw.maxRounds >= 1 && raw.maxRounds <= LOOP_MAX_ROUNDS)) {
+      issues.push(`${at}.maxRounds must be a whole number from 1 to ${LOOP_MAX_ROUNDS}`);
     }
     return { index, raw, id: raw.id, steps: body, maxRounds: raw.maxRounds };
   });

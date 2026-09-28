@@ -134,7 +134,7 @@ const TABLE = {
   'workflow plan contract': [
     'cwd', 'isolation', 'json', 'scout', 'worker-pool', 'worker-model',
     'worker-reasoning', 'max-agents', 'max-actions', 'max-expansion-rounds',
-    'concurrency', 'retry-attempts',
+    'concurrency', 'retry-attempts', 'v2',
   ],
   'workflow plan validate': [
     'program', 'cwd', 'summary', 'json', 'isolation', 'scout', 'worker-pool',

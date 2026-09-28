@@ -1162,14 +1162,17 @@ const workflowResumeText = rich({
 });
 
 const workflowPlanContractText = rich({
-  usage: 'bullswarm workflow plan contract "<goal>" [--cwd <dir>] [--json]',
-  purpose: 'Print everything a caller planner needs to author a valid initial program for a goal: '
-    + 'the requirement IDs the kernel will derive from the goal text (numbered clauses become '
-    + 'requirement-1..n), read-only constraints, the planning rules, the generic action fields, the '
-     + 'validation the kernel enforces, the response envelope, evidence checks Bullswarm runs after steps, and one worked example.',
-  args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal; numbering clauses 1. 2. 3. yields one requirement per clause' }],
+  usage: 'bullswarm workflow plan contract "<goal>" [--cwd <dir>] [--json] [--v2]',
+  purpose: 'Print everything you need to write a v3 program (bullswarm.workflow.program.v3) for a goal: the '
+    + 'step, gate and loop fields, the one condition form a gate\'s when and a loop\'s until use, the '
+    + 'evidence checks Bullswarm runs after a step, the rules the kernel keeps (a step passes by facts; one '
+    + 'retry, then you; a usage limit comes to you at once), one worked example that validates, and the '
+    + 'validate and launch commands. --v2 prints the old contract instead (requirement IDs, roles and kinds, '
+    + 'the v2 action fields), for a v2 program; old programs still run.',
+  args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal; with --v2, numbering clauses 1. 2. 3. yields one requirement per clause' }],
   options: [
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in', default: 'current directory' },
+    { flag: '--v2', desc: 'print the contract of a v2 program (bullswarm.workflow.program.v2) instead', default: 'off (the v3 contract)' },
     { flag: '--isolation', desc: 'describe strict per-worker worktree isolation and retain the flag in launch guidance', default: 'off (shared workspace)' },
     { flag: '--json', desc: 'accepted for consistency; the contract is always printed as JSON', default: 'JSON' },
     { flag: '--max-agents <n>', desc: 'advisory dispatch target recorded in the contract settings', default: '30' },
@@ -1186,8 +1189,8 @@ const workflowPlanContractText = rich({
     'read-only — derives the contract from the goal text and local state; nothing is launched, dispatched, or written',
     'rejects launch-only and dispatched-planner flags (--program, --planner dispatched, --orchestrator*) so the contract cannot silently describe a different run',
   ],
-  examples: [{ cmd: 'bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json' }],
-  next: 'author plan.json, then bullswarm workflow goal "<same goal>" --cwd <dir> --program plan.json',
+  examples: [{ cmd: 'bullswarm workflow plan contract "Fix the parser and update the docs" --cwd . --json' }],
+  next: 'write plan.json, check it with bullswarm workflow plan validate "<same goal>" --cwd <dir> --program plan.json, then launch it with bullswarm workflow goal "<same goal>" --cwd <dir> --program plan.json',
 });
 
 const workflowPlanShowText = rich({
