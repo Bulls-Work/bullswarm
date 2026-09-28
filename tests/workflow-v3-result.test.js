@@ -39,3 +39,11 @@ test('runs result --json --summary carries a v3 step\'s checked answer', () => w
   const task = summary.actions.find((action) => action.id === 'task');
   assert.deepEqual(task.answer, { words: 13 });
 }));
+
+test('runs result --json --summary of a v3 run carries no verified field (verified is v2 only)', () => withHome((result) => {
+  const out = result('--json', '--summary');
+  assert.equal(out.status, 0, out.stderr);
+  const summary = JSON.parse(out.stdout);
+  assert.equal(summary.status, 'completed');
+  assert.equal(Object.hasOwn(summary, 'verified'), false, `summary carries verified: ${summary.verified}`);
+}));

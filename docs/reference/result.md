@@ -214,7 +214,7 @@ objects and money-pair basis, are available through `workflow action show`.
 | Field | Meaning |
 |---|---|
 | `runId`, `shortId` | same ids as the full envelope |
-| `status`, `verified`, `executionMode`, `reason`, `finishedAt` | same facts, compacted |
+| `status`, `verified`, `executionMode`, `reason`, `finishedAt` | same facts, compacted. `verified` is on v2 runs only; a v3 run's summary omits it |
 | `goal` | first line of the goal, at most 120 characters, plus `goalBytes` |
 | `requirements[]` | `{ id, status, mandatory, evidenceCount, why }`. `why` is filled only when the requirement is not `passed` |
 | `actions[]` | `{ id, kind, lane, effort, status, pool, model, reasoning, wallSec, outFile, bytes }`, plus `answer` on a v3 step that declares one: its checked answer, `null` when none was checked, or `answerBytes` in its place when the answer's JSON is over 1 KiB (the full result holds it). `outFile` is a basename inside `next.runDir` |

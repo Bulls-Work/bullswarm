@@ -1431,7 +1431,8 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
     runId: envelope.runId,
     shortId: envelope.shortId,
     status: envelope.status,
-    verified: envelope.verified,
+    // A v3 run reports each step's facts, never a verified verdict (v2 only).
+    ...(isProgramV3(state?.program) ? {} : { verified: envelope.verified }),
     executionMode: envelope.executionMode ?? null,
     reason: envelope.reason,
     finishedAt: envelope.finishedAt,

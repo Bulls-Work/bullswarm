@@ -49,7 +49,8 @@
   <run> --steps part.json`, then `bullswarm workflow wait <run> <added ids>`)
   where a v2 run offers `change the step`.
 - workflow: a completed v3 run hands nothing back and prints no `your call:`
-  (a v3 run is never "verified": every step succeeding is what it reports). A
+  (a v3 run is never "verified": every step succeeding is what it reports, and
+  its `runs result --json --summary` carries no `verified` field). A
   partial v3 run's `restart` line names the run's folder: `start a new run:
   bullswarm workflow goal "<goal>" --cwd <run folder> --program <file.json>`.
 - workflow: `bullswarm workflow plan contract` prints the v3 contract
