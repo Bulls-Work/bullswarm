@@ -537,7 +537,7 @@ test('a detached v3 launch says where the run stops for you and points to workfl
   assert.doesNotMatch(launched.instructions.callerPlanner.purpose, /never waits/);
 });
 
-test('a v3 run with no gate or loop says it never stops for you; a completed v3 run\'s result prints no requirement or verified line', async (t) => {
+test('a v3 run with no gate or loop says it never stops for you; a completed v3 run\'s result and resume point to add, never to plan revise', async (t) => {
   const plain = v3LaunchInstruction({ gates: [], loops: [] }, 'acme01');
   assert.match(plain.purpose, /It declares no gate or loop, so it never stops for you/);
   const both = v3LaunchInstruction({ gates: [{ id: 'approve', when: { step: 'merge', field: 'hasUncertain', equals: true } }], loops: [{ id: 'polish', maxRounds: 3 }] }, 'acme01');
@@ -548,4 +548,12 @@ test('a v3 run with no gate or loop says it never stops for you; a completed v3 
   const human = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId], { encoding: 'utf8', env: cliEnv(f) });
   assert.equal(human.status, 0, human.stdout + human.stderr);
   assert.doesNotMatch(human.stdout, /# requirements|# verified|plan export|plan revise/);
+  const resumed = spawnSync(process.execPath, [cli, 'workflow', 'resume', run.shortId, '--json'], { encoding: 'utf8', env: cliEnv(f) });
+  assert.equal(resumed.status, 1, resumed.stdout + resumed.stderr);
+  const next = JSON.parse(resumed.stdout).next;
+  assert.deepEqual(next, {
+    result: `bullswarm workflow runs result ${run.shortId} --json --summary`,
+    add: `bullswarm workflow add ${run.shortId} --steps part.json`,
+    rerun: `bullswarm workflow step rerun ${run.shortId} <step>`,
+  });
 });

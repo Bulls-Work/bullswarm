@@ -1562,7 +1562,9 @@ function reopenFinishedRun(resolvedRun, opts) {
       runStatus: current.lifecycle.status, needsCaller: outcome.needsCaller ?? [],
       next: {
         result: `bullswarm workflow runs result ${id} --json --summary`,
-        ...(program ? { revise: `bullswarm workflow plan export ${id} --out plan.json, then bullswarm workflow plan revise ${id} --program plan.json --rerun <step ids>` } : {}),
+        ...(program && isProgramV3(current.program)
+          ? { add: `bullswarm workflow add ${id} --steps part.json`, rerun: `bullswarm workflow step rerun ${id} <step>` }
+          : program ? { revise: `bullswarm workflow plan export ${id} --out plan.json, then bullswarm workflow plan revise ${id} --program plan.json --rerun <step ids>` } : {}),
       },
     };
     if (opts.json) console.log(JSON.stringify(payload, null, 2));
@@ -1570,6 +1572,7 @@ function reopenFinishedRun(resolvedRun, opts) {
       console.error(`✗ nothing to retry in ${id} (${current.lifecycle.status}): no step stopped for a reason a plain retry fixes; nothing was relaunched`);
       for (const entry of payload.needsCaller) console.error(`  ${entry.id}  ${entry.status}${entry.failureKind ? ` (${entry.failureKind})` : ''}`);
       if (payload.next.revise) console.error(`  change the plan: ${payload.next.revise}`);
+      if (payload.next.add) console.error(`  add steps: ${payload.next.add}\n  rerun a step: ${payload.next.rerun}`);
       console.error(`  result: ${payload.next.result}`);
     }
     return 1;
