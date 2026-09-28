@@ -23,7 +23,7 @@ import { STAGE3_RUN_FEATURES, readRunFeatures, repairLoopApplies } from '../src/
 import {
   PROGRAM_V3_SCHEMA_VERSION, implicitV3Requirements, isProgramV3, normaliseProgramV3,
 } from '../src/workflow/program-v3.js';
-import { answerFileFor, answerInstruction, checkAnswer } from '../src/workflow/answers.js';
+import { ANSWER_MAX_BYTES, answerFileFor, answerInstruction, checkAnswer } from '../src/workflow/answers.js';
 import { V3_REVISE_REFUSED } from '../src/workflow/revision-v3.js';
 import { watchOnce } from '../src/lib/watch.js';
 import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
@@ -606,5 +606,34 @@ test('a v3 revision that changes only gates or loops is refused, never applied a
   const dropped = structuredClone({ ...exported, rerun: ['search-a'] });
   delete dropped.program.control;
   assert.deepEqual(planV2Revision(state, dropped).issues, [V3_REVISE_REFUSED], 'a request without control would drop the gates and loops');
+});
+
+test('an answer above the size cap is refused: nothing large is stored on the attempt, the step or the result', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-answer-cap-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const schemaFile = join(dir, 'schema.json');
+  writeFileSync(schemaFile, JSON.stringify({ type: 'object', required: ['n'], properties: { n: { type: 'integer' } } }));
+  const file = join(dir, 'answer.json');
+  const big = (bytes) => JSON.stringify({ n: 1, pad: 'x'.repeat(bytes) });
+  writeFileSync(file, big(ANSWER_MAX_BYTES + 1));
+  const refused = checkAnswer({ answerFile: file, schemaFile });
+  assert.equal(refused.answerCheck.ok, false);
+  assert.equal(refused.answer, null, 'the value is not kept');
+  assert.match(refused.answerCheck.why, /answer file too large: .* \(limit 256 KiB\)/);
+  writeFileSync(file, big(ANSWER_MAX_BYTES - 100));
+  assert.equal(checkAnswer({ answerFile: file, schemaFile }).answerCheck.ok, true, 'just under the cap passes');
+  assert.match(answerInstruction('{}', '/x/answer.json'), /at most 256 KiB/);
+
+  const f = v3Fixture(t);
+  const huge = { count: 1, pad: 'x'.repeat(ANSWER_MAX_BYTES) };
+  const run = await launchV3(f, oneStepV3({ retry: 0 }), answeringDispatch({ answers: [huge] }));
+  assert.equal(run.result.status, 'partial', run.result.reason);
+  const attempt = run.state.attempts.find((item) => item.actionId === 'count');
+  assert.equal(attempt.failureKind, 'schema');
+  assert.equal(attempt.answer.ok, false);
+  assert.equal(attempt.answer.value, null);
+  assert.equal(run.state.actions[0].answer, undefined);
+  assert.equal(run.result.actions[0].answer, null);
+  assert.ok(statSync(join(run.runDir, 'state.json')).size < ANSWER_MAX_BYTES, 'state.json does not carry the answer');
 });
 

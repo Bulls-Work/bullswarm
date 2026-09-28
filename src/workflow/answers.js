@@ -25,6 +25,11 @@ import { checkSchemaFiles, unwrapOneFence } from './schema-check.js';
 
 const NOT_REWRITTEN = 'answer file not rewritten by this run';
 const ERRORS_KEPT = 100;
+// An answer is stored on its attempt, on the step and in the result, so it
+// must stay small: a larger file is refused before it is parsed, and nothing
+// of it is stored. Bulk output belongs in a deliverable file.
+export const ANSWER_MAX_BYTES = 256 * 1024;
+const ANSWER_MAX_LABEL = '256 KiB';
 
 const attemptStem = (outFile) => basename(outFile).replace(/^out-/, '').replace(/\.[^.]+$/, '');
 
@@ -44,7 +49,7 @@ export function answerInstruction(schemaText, answerFile) {
   return [
     '## Required: typed final answer',
     `When you are done, write your final answer as a single JSON value to this file: ${answerFile}`,
-    'The file must contain only JSON (no prose, no code fence) and must satisfy this JSON Schema:',
+    `The file must contain only JSON (no prose, no code fence), be at most ${ANSWER_MAX_LABEL}, and must satisfy this JSON Schema:`,
     '```json',
     schemaText,
     '```',
@@ -56,16 +61,26 @@ function answerFileMtime(file) {
   try { return statSync(file).mtimeMs; } catch { return null; }
 }
 
+function answerFileBytes(file) {
+  try { return statSync(file).size; } catch { return null; }
+}
+
 /**
  * Read, parse and schema-check an answer file. Returns
  * `{ answer, answered, answerCheck: { ok, errors, file, why } }`. `answer` is
  * the parsed value even when it breaks the schema, and null when there is
  * nothing to parse. A file that existed before the attempt (`mtimeBefore`)
- * and was not written since is stale, never an answer.
+ * and was not written since is stale, never an answer; a file above
+ * ANSWER_MAX_BYTES is refused unread, so its value is never stored.
  */
 export function checkAnswer({ answerFile, schemaFile, mtimeBefore = null }) {
   if (mtimeBefore != null && answerFileMtime(answerFile) === mtimeBefore) {
     return { answer: null, answered: false, answerCheck: { ok: false, errors: [NOT_REWRITTEN], file: answerFile, why: NOT_REWRITTEN } };
+  }
+  const bytes = answerFileBytes(answerFile);
+  if (bytes != null && bytes > ANSWER_MAX_BYTES) {
+    const why = `answer file too large: ${(bytes / 1024).toFixed(1)} KiB (limit ${ANSWER_MAX_LABEL}); keep the answer small and put bulk content in a file`;
+    return { answer: null, answered: false, answerCheck: { ok: false, errors: [why], file: answerFile, why } };
   }
   const result = checkSchemaFiles({ file: answerFile, schema: schemaFile, format: 'json', unfence: true });
   // Exit 2 is "could not check": missing, unreadable, not JSON, or too large.
