@@ -1831,7 +1831,8 @@ export async function dispatchV2Action({
       finishedAt,
       // An attempt the dispatcher retries failed; `willRetry` says a retry
       // follows. Runs under the failure rule record it as failed (QA37: a
-      // retried check failure read "interrupted"); older runs keep the
+      // retried check failure read "interrupted"), unless a signal or a
+      // kernel stop cut it (kind `interrupted`); older runs keep the
       // "interrupted" label they were written with. Nothing replays on the
       // label: resume, handoff and retry counting read willRetry, retryOf
       // and failureKind, and treat failed and interrupted alike.
@@ -1839,7 +1840,7 @@ export async function dispatchV2Action({
         ? 'succeeded'
         : kind === 'cancelled'
           ? 'cancelled'
-          : willRecover && !failureRule
+          : willRecover && (!failureRule || kind === 'interrupted')
             ? 'interrupted'
             : 'failed',
       failureKind: kind,
