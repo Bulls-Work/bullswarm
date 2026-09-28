@@ -36,11 +36,11 @@ flowchart LR
 
 - **Spends quota by pace.** Each task goes to the plan with the most spare quota for how far its window has run, so a plan that is behind, or about to reset with quota left, gets used first.
 - **Picks models for you.** Tasks come in three lanes (`analyze`, `build`, `chore`). Setup asks each CLI which models it offers and suggests the newest one for each effort level, so you don't have to update settings every time a vendor ships a model.
-- **Runs one task or a whole workflow.** `bullswarm run` sends one task to one agent and returns a verdict. For bigger goals your main agent writes a plan; Bullswarm runs the independent steps in parallel across agents, then integration, and a review by a different agent when the plan asks for one.
-- **Checks the work, not the exit code.** A delegate saying "done" isn't enough. Bullswarm reads what it actually produced, and a workflow finishing is kept separate from its requirements being verified.
+- **Runs one task or a whole workflow.** `bullswarm run` is a one-step workflow: one task to one agent, one automatic retry, and an optional answer checked against a JSON schema. For bigger goals your main agent writes a program from four blocks: steps (each with an optional checked answer), phases that group them, gates where the run waits for you, and loops that repeat steps until a condition holds, such as "until the tests pass". Independent steps run in parallel across agents, and a step can be routed away from the agents that did the work it checks.
+- **Checks the work, not the exit code.** A delegate saying "done" isn't enough. Bullswarm reads what it actually produced, runs the checks a step declares (a command, a schema), checks each answer itself, and labels every finished step by what backs it: `proven by command`, `proven by answer`, or `unproven`. A run reports these facts, not a verdict; `verified` requirements belong to old v2 programs only.
 - **Shows everything live.** A terminal dashboard covers quota, history, running workflows and each agent's individual turns.
 - **Works with the agent you already use.** The `/bullswarm` skill teaches Claude Code, Codex and Grok when to delegate. There's also an early-access Claude Code Mod that shows runs and usage inside Claude Code.
-- **Lets you steer mid-run.** Add, change, remove or rerun steps while a workflow is running, or pause and resume it.
+- **Lets you steer mid-run.** Add steps, gates or loops while a workflow runs (`workflow add`, also straight from a step's answer), continue a waiting gate or give a loop more rounds, rerun a step, or pause and resume it.
 - **Extends with providers.** Claude Code, Codex and Grok are built in. Other CLIs can be added as providers without touching the core.
 
 ## See it

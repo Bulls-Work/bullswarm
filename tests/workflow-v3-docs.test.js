@@ -134,3 +134,16 @@ test('the skill leads with v3 and mentions v2 only as old programs', () => {
     }
   }
 });
+
+test('the README bullets describe v3 (steps, phases, gates, loops, answers), and "verified" only as a v2 word', () => {
+  const readme = read('README.md');
+  const bullets = readme.split('\n').filter((line) => line.startsWith('- **'));
+  const text = bullets.join('\n');
+  for (const word of [/\bsteps?\b/, /\bphases?\b/, /\bgates?\b/, /\bloops?\b/, /\banswers?\b/]) assert.match(text, word);
+  assert.match(text, /workflow add/);
+  // Every sentence of the README that says verified names v2.
+  const sentences = readme.replace(/\n/g, ' ').split(/(?<=[.!?])\s+/).filter((sentence) => /\bverified\b/i.test(sentence));
+  assert.ok(sentences.length >= 1, 'the README says what verified means');
+  for (const sentence of sentences) assert.match(sentence, /\bv2\b/, sentence);
+  assert.doesNotMatch(text, /change, remove or rerun steps/, 'v3 steps are added, never edited or removed');
+});
