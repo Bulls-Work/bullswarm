@@ -914,7 +914,7 @@ const workflowText = rich({
     + 'configured machine.',
   argsTitle: 'Commands',
   args: [
-    { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal from your program (--program), a kernel scout that finishes with its report (--scout), or an explicitly dispatched Workflow Planner (--orchestrator); a run never waits, it finishes and hands back what is left' },
+    { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal from your program (--program), a kernel scout that finishes with its report (--scout), or an explicitly dispatched Workflow Planner (--orchestrator); a v2 run never waits, it finishes and hands back what is left; a v3 run also stops at its gates and at loops out of rounds until you continue them' },
     { name: 'plan ...', desc: 'you are the Workflow Planner: read the planning contract, validate a program, export and revise a live or finished run\'s plan at any time, and answer a run an older version left waiting' },
     { name: 'pause <runId>', desc: 'stop starting new steps (--now also stops running ones); resume continues' },
     { name: 'cancel <runId>', desc: 'stop a run cooperatively; a run stopped by pause, or left waiting by an older version, is finalized immediately' },
@@ -968,9 +968,10 @@ const workflowGoalText = rich({
     + 'Without a program the command refuses (exit 2, nothing launched) and prints '
     + 'the next commands; --scout alone has the kernel survey the repository and finish with the report, '
     + 'which you plan from and add with plan revise; --orchestrator explicitly dispatches a Workflow Planner '
-    + 'agent instead of planning yourself. A run never waits for its caller: when nothing more can run on its '
+    + 'agent instead of planning yourself. A v2 run never waits for its caller: when nothing more can run on its '
     + 'own it finishes, and its result hands back every unfinished step, open requirement, and unread '
-    + 'steering with the commands to continue, retry, take over, or restart. '
+    + 'steering with the commands to continue, retry, take over, or restart. A v3 run waits at a gate, and at a '
+    + 'loop out of rounds, until you move it with workflow continue; otherwise it finishes the same way. '
     + 'In a run started by this version a usage limit, a rate limit still there after its short backoff, or '
     + 'no free pool stops the dispatched planner or the scout, with no move to another pool: the run '
     + 'finishes with the reason (`the workflow planner stopped on a usage limit: …`) and your call: after '
@@ -989,7 +990,7 @@ const workflowGoalText = rich({
     { flag: '--watch', desc: 'immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with --detach, --foreground, --json, --resume, or --request', default: 'off' },
     { flag: '--foreground', desc: 'keep execution attached to this terminal instead of detaching', default: 'off (detaches into a background process)' },
     { flag: '--json', desc: 'print the launch/report document as JSON', default: 'human-readable launch instructions' },
-    { flag: '--program <file.json>', desc: 'your program: a bullswarm.workflow.planner-response.v2 envelope or a bare bullswarm.workflow.program.v2 document; validated against the exact requirement ledger before anything launches (exit 2 with the issues and nothing launched when invalid), then executed with zero planner or scout dispatches', default: 'required unless --scout or --orchestrator is given' },
+    { flag: '--program <file.json>', desc: 'your program: a bullswarm.workflow.planner-response.v2 envelope, or a bare bullswarm.workflow.program.v2 or bullswarm.workflow.program.v3 document; validated against the exact requirement ledger before anything launches (exit 2 with the issues and nothing launched when invalid), then executed with zero planner or scout dispatches', default: 'required unless --scout or --orchestrator is given' },
     { flag: '--summary <text>', desc: 'one-line summary recorded for a bare --program document', default: 'derived from the action purposes' },
     { flag: '--scout', desc: 'with --program: run the kernel scout first and hand its units to you as advisory context; alone: survey the repository, then finish partial with the scout report and the plan revise command that adds your program', default: 'off' },
     { flag: '--orchestrator <auto|pool>', desc: 'dispatch a Workflow Planner agent at every planning boundary instead of planning yourself: auto lets the kernel route it, a pool name prefers that pool and falls back when it is already quota-gated or unavailable at the pick; in a run started by this version a usage limit it hits while it plans stops the run instead', default: 'off (you are the planner)' },
@@ -1082,7 +1083,7 @@ const workflowPlanValidateText = rich({
     + 'every validator issue so you can fix the file and re-run.',
   args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal' }],
   options: [
-    { flag: '--program <file.json>', desc: 'planner response envelope or bare bullswarm.workflow.program.v2 document', default: 'required' },
+    { flag: '--program <file.json>', desc: 'planner response envelope, or bare bullswarm.workflow.program.v2 or bullswarm.workflow.program.v3 document', default: 'required' },
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in (must exist)', default: 'current directory' },
     { flag: '--summary <text>', desc: 'one-line summary recorded for a bare program document', default: 'derived from the action purposes' },
     { flag: '--json', desc: 'print the acceptance document ({action: "plan-valid", requirements, program, next}) or the refusal ({error: "program-invalid", issues, next}) as JSON', default: 'human summary' },
@@ -1745,14 +1746,15 @@ const workflowWaitText = rich({
     + 'blocked or cancelled; a gate or loop passed, is waiting for you, or was blocked. Then print each one\'s '
     + 'status and facts (pool, model, duration, evidence, deliverable, output file) and its checked answer. '
     + 'Returns early when the run stops short of an id (it finished, parked, paused, or its kernel is not '
-    + 'running). Reads state.json by polling; changes nothing.',
+    + 'running); when it parked, each gate or loop it waits on is printed with its continue command. '
+    + 'Reads state.json by polling; changes nothing.',
   args: [
     { name: '<runId>', desc: 'shortId or runId of a v3 program run' },
     { name: '<id...>', desc: 'step, gate or loop ids of the run' },
   ],
   options: [
     { flag: '--timeout <seconds>', desc: 'stop waiting after this long', default: 'no limit' },
-    { flag: '--json', desc: 'print {action: "workflow-wait", status: settled|stopped|timeout, run, nodes: [{id, type, status, pool, model, durationSec, evidence, deliverable, answer, ...}]}', default: 'human text' },
+    { flag: '--json', desc: 'print {action: "workflow-wait", status: settled|stopped|timeout, run, nodes: [{id, type, status, pool, model, durationSec, evidence, deliverable, answer, ...}], waitingFor?: [{id, type, status, next, ...}] when the run parked}', default: 'human text' },
   ],
   safety: [
     'exit 0 when no named id failed or was blocked (each succeeded, passed, or waits for you); 1 when one failed, was blocked or cancelled, or the run stopped short of one; 2 on a timeout or an id the run does not have',

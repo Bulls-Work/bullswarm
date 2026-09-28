@@ -178,7 +178,7 @@ export async function cmdWorkflow(args, {
     case 'continue':
       return wfContinue(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume });
     case 'add':
-      return wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => (programRoutes(actions) ? routePoolIssues(actions, configuredPools(), doc, undefined, state) : []) });
+      return wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => (programRoutes(actions) ? routePoolIssues(actions, configuredPools(), doc, undefined, state, { recordedWork: true }) : []) });
     case 'wait':
       return wfWait(opts, { bullswarmDir, helpText, flagErrors });
     default: {
@@ -729,8 +729,9 @@ function programRoutes(actions) {
   return (actions ?? []).some((action) => action?.route && typeof action.route === 'object');
 }
 
-// `state` (a running run) lets the pin check see which steps already did work.
-function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR()), state = null) {
+// `state` (a running run) lets the pin check see which steps already did work;
+// `recordedWork` (workflow add) lets every independentOf check see it.
+function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR()), state = null, { recordedWork = false } = {}) {
   if (!programRoutes(actions) || !Array.isArray(pools)) return [];
   const routing = doc?.config?.workerRouting ?? {};
   const preferredModel = routing.model ?? routing.preferredModel ?? null;
@@ -739,6 +740,7 @@ function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_
     preparePools: (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options }),
     labels,
     state,
+    recordedWork,
   });
 }
 

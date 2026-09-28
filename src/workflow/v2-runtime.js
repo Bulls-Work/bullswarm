@@ -380,16 +380,16 @@ function commitRevisionUnderLease(runDir, request, { now }) {
     // what lifts that cancellation, so they run again. Their earlier attempts
     // stay on record but never count as this step's completion. Failed steps
     // are left as they are: rerunning them is the caller's decision.
-    // F22 (D32, P3): a step rerun or step accept names one step. An act step
-    // the cancellation stopped after its worker started may already have
-    // acted, so that verb never runs it again: it stays cancelled and is
-    // listed to the caller (`keptCancelled`).
-    const singleStep = request.source === 'step-rerun' || request.source === 'step-accept';
+    // F22 (D32, P3): a step rerun, step accept or workflow add never runs
+    // again an act step the cancellation stopped after its worker started (it
+    // may already have acted): it stays cancelled and is listed to the caller
+    // (`keptCancelled`). `plan revise` keeps its saved behaviour.
+    const keepStartedActs = ['step-rerun', 'step-accept', 'workflow-add'].includes(request.source);
     const requeued = [];
     const keptCancelled = [];
     for (const action of state.actions) {
       if (action.status !== 'cancelled') continue;
-      if (singleStep && actStoppedAfterStart(state, action)) {
+      if (keepStartedActs && actStoppedAfterStart(state, action)) {
         keptCancelled.push(action.id);
         continue;
       }

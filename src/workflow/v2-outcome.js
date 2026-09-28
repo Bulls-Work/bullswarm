@@ -10,6 +10,7 @@ import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { resultAnswerField, resultAnswerIssue } from './answers.js';
 import { schedulerView } from './gates-loops.js';
+import { isRouteUnavailable } from './step-route.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -1109,8 +1110,11 @@ function reviewVerbs(envelope, token, actions) {
   return {};
 }
 
-function summaryHandback(envelope, handback, token, { failureRule = false, actions = [], stopped = null, v3 = false } = {}) {
-  const retryable = handback.unfinished.filter((entry) => entry.retryable);
+function summaryHandback(envelope, handback, token, { failureRule = false, actions = [], stopped = null, v3 = false, routeBound = [] } = {}) {
+  // A v3 step whose route left no pool fails the same way on every retry or
+  // rerun until the pools or the route change: neither is offered for it.
+  const noPool = new Set(v3 ? routeBound : []);
+  const retryable = handback.unfinished.filter((entry) => entry.retryable && !noPool.has(entry.id));
   const waits = retryable.map((entry) => Date.parse(entry.retryAfter ?? '')).filter(Number.isFinite);
   // Named only when every step to retry is waiting on a spent pool: resume
   // gets through once the first of them is back.
@@ -1128,6 +1132,8 @@ function summaryHandback(envelope, handback, token, { failureRule = false, actio
     .map((action) => action.id));
   const failedIds = envelope.executionMode === 'program' ? handback.unfinished.filter((entry) => entry.status === 'failed').map((entry) => entry.id) : [];
   const failedStep = failedIds.length === 1 ? failedIds[0] : '<step>';
+  const rerunnable = failedIds.some((id) => !noPool.has(id));
+  const noPoolIds = failedIds.filter((id) => noPool.has(id));
   return {
     unfinished: handback.unfinished.map((entry) => ({
       id: entry.id,
@@ -1153,8 +1159,11 @@ function summaryHandback(envelope, handback, token, { failureRule = false, actio
         : {}),
       // A marked run's failed steps come back with the caller verbs (§2.9).
       ...(failureRule && failedIds.length ? {
-        rerun: `bullswarm workflow step rerun ${token} ${failedStep} [--avoid <pool>] (runs it again with its last attempt's handoff)`,
+        ...(rerunnable ? { rerun: `bullswarm workflow step rerun ${token} ${failedStep} [--avoid <pool>] (runs it again with its last attempt's handoff)` } : {}),
         accept: `bullswarm workflow step accept ${token} ${failedStep} --reason "…" (recorded as your choice, never proof)`,
+      } : {}),
+      ...(noPoolIds.length ? {
+        noPool: `${noPoolIds.slice(0, 4).join(', ')}${noPoolIds.length > 4 ? ` and ${noPoolIds.length - 4} more` : ''}: no configured pool passes ${noPoolIds.length === 1 ? 'its route' : 'their routes'}, so resume and step rerun fail the same way; enable a pool of another provider first, or add a step with a route today's pools serve, or accept it`,
       } : {}),
       ...(failureRule ? reviewVerbs(envelope, token, actions) : {}),
       takeOver: `do the unfinished work yourself; bullswarm workflow runs result ${token} --json names every step's output`,
@@ -1229,7 +1238,7 @@ export function formatV2HandbackLines(summary) {
   }
   if (open.length > shown) lines.push(`  … and ${open.length - shown} more open requirement(s)`);
   for (const entry of handback.unreadSteering) lines.push(`  steering not acted on: ${entry.message}`);
-  const labels = { continue: 'continue', add: 'add', retry: 'retry', rerun: 'rerun', accept: 'accept', rerunReview: 'rerun', acceptRequirement: 'accept', takeOver: 'take over', restart: 'restart' };
+  const labels = { continue: 'continue', add: 'add', retry: 'retry', rerun: 'rerun', accept: 'accept', noPool: 'no pool', rerunReview: 'rerun', acceptRequirement: 'accept', takeOver: 'take over', restart: 'restart' };
   const options = Object.entries(handback.options ?? {});
   if (options.length) {
     lines.push('your call:');
@@ -1415,7 +1424,10 @@ export function summarizeV2Result(envelope, state = null, { runDir = null, featu
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
     },
     usage: clone(envelope.usage),
-    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, { failureRule: flags.failureRule, actions, stopped, v3: isProgramV3(state?.program) }) } : {}),
+    ...(handback ? { handback: summaryHandback(envelope, handback, shortId, {
+      failureRule: flags.failureRule, actions, stopped, v3: isProgramV3(state?.program),
+      routeBound: (state?.actions ?? []).filter((action) => action.status === 'failed' && isRouteUnavailable(action.lastFailure)).map((action) => action.id),
+    }) } : {}),
     // The loop's rounds once one ran, and the caller's block when there is one.
     ...(envelope.verifyRounds?.used > 0 ? { verifyRounds: clone(envelope.verifyRounds) } : {}),
     ...(envelope.callerDecision ? { callerDecision: clone(envelope.callerDecision) } : {}),

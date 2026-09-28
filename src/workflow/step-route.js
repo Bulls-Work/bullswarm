@@ -269,13 +269,24 @@ export function poolPassesRoute(pool, filter) {
   return true;
 }
 
+const ROUTE_UNAVAILABLE_HEAD = 'no eligible pool under the step\'s route ';
+
+/**
+ * Whether a step's recorded failure is a route that left no pool
+ * (routeUnavailableWhy): running it again fails the same way until the pools
+ * or the route change.
+ */
+export function isRouteUnavailable(failure) {
+  return failure?.kind === 'unavailable' && typeof failure.message === 'string' && failure.message.startsWith(ROUTE_UNAVAILABLE_HEAD);
+}
+
 /**
  * The run-time "no eligible pool" reason under a route (§2.4). With
  * `sharedProvider` true the capable pools existed but every one shares a
  * provider with a step the route is independent of.
  */
 export function routeUnavailableWhy(filter, { lane, effort, sharedProvider = false } = {}) {
-  const head = `no eligible pool under the step's route (${filter?.summary ?? ''})`;
+  const head = `${ROUTE_UNAVAILABLE_HEAD}(${filter?.summary ?? ''})`;
   if (!sharedProvider) return `${head}: no enabled pool left has a model on the ${effort} tier for ${lane} work`;
   const steps = Object.keys(filter?.independentOf ?? {});
   return `${head}: every pool that could run it shares a provider with ${joined(steps)} (${joined(filter?.independentProviders ?? [])})`;
@@ -383,9 +394,12 @@ function stepsWorkingOnPin(program, action, state, pinProvider, pools) {
  * action, effort, opts)` is the dispatcher's capability filter (called with
  * the metered-window gates ignored); `runPin` is --worker-pool. With
  * `state` (a running run) the pin check reads which steps already did work.
+ * With `recordedWork` too (workflow add), an unpinned step's independentOf
+ * resolves against the providers that already did the named steps' work, as
+ * the dispatcher will, so a route no pool is left for is refused up front.
  */
 export function routeIssuesForPools(program, pools = [], {
-  runPin = null, preparePools = null, labels = {}, state = null,
+  runPin = null, preparePools = null, labels = {}, state = null, recordedWork = false,
 } = {}) {
   const issues = [];
   const configured = (pools ?? []).map((pool) => pool?.name).filter((name) => typeof name === 'string');
@@ -422,13 +436,19 @@ export function routeIssuesForPools(program, pools = [], {
       }
       continue;
     }
-    const capable = typeof preparePools === 'function'
+    const capableUnder = (routeFilter) => (typeof preparePools === 'function'
       ? preparePools(pools, action, action.effort, {
-        routeFilter: filter, ignoreBurstGate: true,
-      }).filter((pool) => poolPassesRoute(pool, filter))
-      : (pools ?? []).filter((pool) => pool?.enabled !== false && poolPassesRoute(pool, filter));
-    if (!capable.length) {
+        routeFilter, ignoreBurstGate: true,
+      }).filter((pool) => poolPassesRoute(pool, routeFilter))
+      : (pools ?? []).filter((pool) => pool?.enabled !== false && poolPassesRoute(pool, routeFilter)));
+    if (!capableUnder(filter).length) {
       issues.push(`step ${step}: no enabled pool can run it under its route (${action.lane}/${action.effort} work; route: ${filter.summary})`);
+      continue;
+    }
+    const resolved = recordedWork && state ? resolveRouteFilter(state, action, pools) : null;
+    if (resolved?.independentProviders.length && !capableUnder(resolved).length) {
+      const done = Object.entries(resolved.independentOf).filter(([, providers]) => providers.length).map(([id]) => id);
+      issues.push(`step ${step}: its route is independent of ${joined(done)}, whose work ran on provider ${joined(resolved.independentProviders)}, and every enabled pool that could run it (${action.lane}/${action.effort} work) uses ${resolved.independentProviders.length === 1 ? 'that provider' : 'one of those providers'}; enable a pool of another provider or drop independentOf`);
     }
   }
   return issues;

@@ -17,7 +17,8 @@ import { implicitV3Requirements, normaliseProgramV3 } from '../src/workflow/prog
 import { appendedActionsV3, appendedProgramV3 } from '../src/workflow/revision-v3.js';
 import { exportV2Plan, planV2Revision } from '../src/workflow/v2-revision.js';
 import { v2LiveProgramRuntime } from '../src/workflow/v2-state.js';
-import { addV3Steps, waitV3Nodes } from '../src/workflow/cli-steps.js';
+import { addV3Steps, waitV3Nodes, wfAdd } from '../src/workflow/cli-steps.js';
+import { routeIssuesForPools } from '../src/workflow/step-route.js';
 import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
 import { v3LaunchInstruction } from '../src/workflow/gates-loops.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
@@ -56,7 +57,7 @@ const connector = (name) => ({
 });
 
 // The real dispatch with a fake worker; `script(actionId, turn)` returns {answer?, fail?}.
-function fakeDispatch(script = () => ({}), { seen = [] } = {}) {
+function fakeDispatch(script = () => ({}), { seen = [], pools = null } = {}) {
   const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
   const turns = new Map();
   return (options) => {
@@ -64,7 +65,7 @@ function fakeDispatch(script = () => ({}), { seen = [] } = {}) {
     return dispatchV2Action({
       ...options,
       // Two pools, so a check independent of its finder has somewhere to run.
-      pools: [connector('acme-pool'), connector('initech-pool')],
+      pools: pools ?? [connector('acme-pool'), connector('initech-pool')],
       dependencies: {
         watchOnce: async (_pool, task, _targetDir, files, opts) => {
           const turn = (turns.get(options.action.id) ?? 0) + 1;
@@ -556,4 +557,158 @@ test('a v3 run with no gate or loop says it never stops for you; a completed v3 
     add: `bullswarm workflow add ${run.shortId} --steps part.json`,
     rerun: `bullswarm workflow step rerun ${run.shortId} <step>`,
   });
+});
+
+// --- review fixes ------------------------------------------------------------------
+
+// Every console line a verb prints, while it runs.
+async function captured(fn) {
+  const out = [];
+  const log = console.log;
+  const error = console.error;
+  console.log = (...args) => out.push(args.join(' '));
+  console.error = (...args) => out.push(args.join(' '));
+  try { return { code: await fn(), text: out.join('\n') }; } finally { console.log = log; console.error = error; }
+}
+
+test('add on a cancelled run never runs again an act step the cancel stopped after its worker started, and says so', async (t) => {
+  const f = fixture(t);
+  const calls = [];
+  let hold = true;
+  // An outward step whose worker starts, then is stopped by the cancel.
+  const dispatch = async (options) => {
+    const files = options.paths(1);
+    calls.push(options.action.id);
+    const record = { ordinal: 1, pool: 'acme-pool', model: 'acme-model', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
+    writeFileSync(files.taskFile, options.taskText);
+    options.onAttempt?.('started', record);
+    if (options.action.id === 'post' && hold) {
+      hold = false;
+      writeFileSync(files.outFile, 'partial');
+      await new Promise((done) => { const poll = setInterval(() => { if (options.shouldCancel?.()) { clearInterval(poll); done(); } }, 5); });
+      Object.assign(record, { status: 'cancelled', finishedAt: new Date().toISOString(), failureKind: 'cancelled', outputFile: files.outFile });
+      options.onAttempt?.('finished', record);
+      return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts: [record], verdict: { ok: false, why: 'cancelled' } };
+    }
+    writeFileSync(files.outFile, `delivered ${options.action.id}`);
+    Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString() });
+    options.onAttempt?.('finished', record);
+    return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
+  };
+  const running = launch(f, { schemaVersion: V3, steps: [{ id: 'post', prompt: 'Post the acme notice.', deliverable: 'outward', retry: 0 }] }, dispatch);
+  let runDir = null;
+  for (let i = 0; i < 300 && !(runDir && calls.includes('post')); i += 1) {
+    await new Promise((done) => setTimeout(done, 10));
+    try { runDir = join(f.bullswarmDir, 'workflows', readdirSync(join(f.bullswarmDir, 'workflows'))[0]); } catch { runDir = null; }
+  }
+  writeFileSync(join(runDir, 'cancellation.json'), JSON.stringify({ requested: true, requestedAt: new Date().toISOString(), reason: 'caller cancelled' }));
+  const cancelled = await running;
+  assert.equal(cancelled.result.status, 'cancelled');
+  assert.equal(statusOf(readState(cancelled), 'post'), 'cancelled');
+
+  const file = join(f.root, 'note.json');
+  writeFileSync(file, JSON.stringify({ steps: [{ id: 'note', prompt: 'Note it.' }] }));
+  const relaunched = [];
+  const printed = await captured(() => wfAdd({ rest: [cancelled.runId], steps: file, wait: '0' }, {
+    bullswarmDir: f.bullswarmDir, helpText: () => '', flagErrors: () => null, routeIssues: () => [],
+    launchDetachedResume: async (_doc, runId) => { relaunched.push(runId); return { action: 'goal-resumed', runId }; },
+  }));
+  assert.equal(printed.code, 0, printed.text);
+  assert.match(printed.text, /reopened the cancelled run; its earlier result is archived\n/);
+  assert.match(printed.text, /not run again \(act step, may have acted\): post/);
+  const reopened = readEvents(runDir).findLast((event) => event.type === 'workflow.reopened');
+  assert.deepEqual([reopened.payload.requeued, reopened.payload.keptCancelled], [[], ['post']]);
+  assert.equal(statusOf(readState(cancelled), 'post'), 'cancelled');
+
+  calls.length = 0;
+  await resume(f, cancelled.runId, dispatch);
+  assert.deepEqual(calls, ['note']);
+  assert.equal(statusOf(readState(cancelled), 'post'), 'cancelled');
+});
+
+test('add refuses a check whose independentOf names a step that already ran on the only provider left', async (t) => {
+  const f = fixture(t);
+  const one = [connector('acme-pool')];
+  const run = await launch(f, findProgram(), fakeDispatch(script, { pools: one }));
+  assert.deepEqual(run.waiting.map((entry) => entry.id), ['review']);
+  const before = readState(run);
+  const actionsOf = (fragment) => fragment.steps.map((step) => ({ ...step, lane: 'analyze', effort: 'medium' }));
+  // plan revise and step rerun keep their checks: recorded work counts only under a run pin there.
+  assert.deepEqual(routeIssuesForPools({ actions: actionsOf(checkFragment(['f1'])) }, one, { state: before }), []);
+  const hook = (pools) => (actions, _doc, state) => routeIssuesForPools({ actions }, pools, { state, recordedWork: true });
+  const refused = await addV3Steps({ bullswarmDir: f.bullswarmDir, token: run.shortId, fragment: checkFragment(['f1']), waitMs: 0, relaunch: noRelaunch, routeIssues: hook(one) });
+  assert.deepEqual([refused.code, refused.status], [2, 'rejected'], JSON.stringify(refused));
+  assert.deepEqual(refused.issues, [
+    'step check-f1: its route is independent of find, whose work ran on provider acme-pool, and every enabled pool that could run it (analyze/medium work) uses that provider; enable a pool of another provider or drop independentOf',
+  ]);
+  const after = readState(run);
+  assert.equal(after.program.revision, before.program.revision);
+  assert.deepEqual(after.actions.map((action) => action.id), before.actions.map((action) => action.id));
+  // A second provider leaves a pool, so the same check is added.
+  const two = [connector('acme-pool'), connector('initech-pool')];
+  const added = await addV3Steps({ bullswarmDir: f.bullswarmDir, token: run.shortId, fragment: checkFragment(['f1']), waitMs: 0, relaunch: noRelaunch, routeIssues: hook(two) });
+  assert.equal(added.status, 'applied', JSON.stringify(added));
+});
+
+test('the CLI add checks independentOf against the providers that already did the work (exit 2, run unchanged)', async (t) => {
+  const f = fixture(t);
+  const echo = JSON.parse(readFileSync(new URL('../src/providers/echo/connector.json', import.meta.url), 'utf8'));
+  mkdirSync(join(f.bullswarmDir, 'connectors'), { recursive: true });
+  writeFileSync(join(f.bullswarmDir, 'connectors', 'echo.json'), JSON.stringify(echo));
+  writeFileSync(join(f.bullswarmDir, 'state.json'), JSON.stringify({ version: 1, pools: { echo: { enabled: true } }, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } }));
+  // find's work ran on the home's only pool.
+  const run = await launch(f, findProgram(), fakeDispatch(script, { pools: [connector('echo')] }));
+  const before = readState(run);
+  const file = join(f.root, 'checks.json');
+  writeFileSync(file, JSON.stringify(checkFragment(['f1'])));
+  const env = { ...cliEnv(f), BULLSWARM_NO_PACKAGED_PROVIDERS: '1' };
+  const out = spawnSync(process.execPath, [cli, 'workflow', 'add', run.shortId, '--steps', file], { encoding: 'utf8', env });
+  assert.equal(out.status, 2, out.stdout + out.stderr);
+  assert.match(out.stderr, new RegExp(`✗ nothing added to ${run.shortId} \\(run unchanged\\)`));
+  assert.match(out.stderr, /step check-f1: its route is independent of find, whose work ran on provider \S+, and every enabled pool that could run it \(analyze\/medium work\) uses that provider/);
+  assert.equal(readState(run).program.revision, before.program.revision);
+});
+
+test('a v3 step whose route left no pool is handed back without retry or rerun, pointing to add, accept and another provider', async (t) => {
+  const f = fixture(t);
+  const program = {
+    schemaVersion: V3,
+    steps: [
+      { id: 'find', prompt: 'Find claims in the acme notes.', answer: findingsAnswer },
+      { id: 'check-f1', dependsOn: ['find'], route: { independentOf: ['find'] }, prompt: 'Check finding f1.', answer: confirmAnswer },
+    ],
+  };
+  const run = await launch(f, program, fakeDispatch(script, { pools: [connector('acme-pool')] }));
+  assert.equal(run.result.status, 'partial');
+  const check = readState(run).actions.find((action) => action.id === 'check-f1');
+  assert.equal(check.lastFailure.kind, 'unavailable');
+  const human = spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId], { encoding: 'utf8', env: cliEnv(f) });
+  assert.equal(human.status, 1, human.stdout + human.stderr); // a partial run's result exits 1
+  assert.doesNotMatch(human.stdout, /^ {2}retry /m);
+  assert.doesNotMatch(human.stdout, /^ {2}rerun /m);
+  assert.match(human.stdout, /^ {2}add {7}bullswarm workflow add /m);
+  assert.match(human.stdout, new RegExp(`^ {2}accept {4}bullswarm workflow step accept ${run.shortId} check-f1 `, 'm'));
+  assert.match(human.stdout, /^ {2}no pool {3}check-f1: no configured pool passes its route, so resume and step rerun fail the same way; enable a pool of another provider first/m);
+  const summary = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', run.shortId, '--summary'], { encoding: 'utf8', env: cliEnv(f) }).stdout);
+  assert.deepEqual(Object.keys(summary.handback.options), ['add', 'accept', 'noPool', 'takeOver', 'restart']);
+
+  // Any other failure a retry can fix keeps its retry and rerun.
+  const g = fixture(t);
+  const crashed = await launch(g, program, fakeDispatch((id, turn) => (id === 'check-f1' ? { fail: 'process' } : script(id, turn))));
+  const other = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'runs', 'result', crashed.shortId, '--summary'], { encoding: 'utf8', env: cliEnv(g) }).stdout);
+  assert.deepEqual(Object.keys(other.handback.options), ['add', 'retry', 'rerun', 'accept', 'takeOver', 'restart']);
+});
+
+test('wait on a step behind a waiting gate names the gate and its continue command', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, findProgram(), fakeDispatch(script));
+  const stopped = await waitV3Nodes({ bullswarmDir: f.bullswarmDir, token: run.shortId, ids: ['report'], pollMs: 10 });
+  assert.deepEqual([stopped.code, stopped.status], [1, 'stopped']);
+  assert.deepEqual(stopped.waitingFor.map((node) => [node.type, node.id, node.status, node.next]),
+    [['gate', 'review', 'waiting', `bullswarm workflow continue ${run.shortId} review`]]);
+  const human = spawnSync(process.execPath, [cli, 'workflow', 'wait', run.shortId, 'report'], { encoding: 'utf8', env: cliEnv(f) });
+  assert.equal(human.status, 1, human.stdout + human.stderr);
+  assert.match(human.stdout, /the run is waiting; not every id finished\. See bullswarm workflow runs show \S+\n {2}waiting {2}gate review · Add one check per finding, then continue\n {2}continue bullswarm workflow continue \S+ review\n/);
+  const json = JSON.parse(spawnSync(process.execPath, [cli, 'workflow', 'wait', run.shortId, 'report', '--json'], { encoding: 'utf8', env: cliEnv(f) }).stdout);
+  assert.equal(json.waitingFor[0].next, `bullswarm workflow continue ${run.shortId} review`);
 });

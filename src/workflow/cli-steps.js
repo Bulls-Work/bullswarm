@@ -23,7 +23,7 @@ import { writeJsonAtomic } from '../lib/fsjson.js';
 import { glyphs } from '../lib/glyphs.js';
 import { usageLine } from '../help.js';
 import {
-  CONTINUE_MAX_ROUNDS, applyContinueOffline, continueRefusal, readContinueIntents, requestContinue,
+  CONTINUE_MAX_ROUNDS, applyContinueOffline, continueRefusal, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, fragmentShapeIssues } from './revision-v3.js';
@@ -319,7 +319,11 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
     const by = result.appliedBy === 'kernel' ? 'applied by its running kernel'
       : result.paused ? 'applied directly; the run stays paused' : 'applied directly; kernel relaunched';
     console.log(`✓ added to ${id}${fromAnswer ? ` from the answer of ${fromAnswer}` : ''} · revision ${result.programRevision} (${by})`);
-    if (result.reopened) console.log(`  reopened the ${result.reopened.previousStatus} run; its earlier result is archived`);
+    if (result.reopened) {
+      const requeued = result.reopened.requeued ?? [];
+      console.log(`  reopened the ${result.reopened.previousStatus} run; its earlier result is archived${requeued.length ? `; running again: ${requeued.join(', ')}` : ''}`);
+      if (result.reopened.keptCancelled?.length) console.log(`  not run again (act step, may have acted): ${result.reopened.keptCancelled.join(', ')}`);
+    }
   }
   let state = null;
   try { state = readState(resolveRunId(bullswarmDir, id)?.runDir ?? ''); } catch { state = null; }
@@ -446,7 +450,11 @@ export async function waitV3Nodes({
       const stopped = STOPPED.has(state.lifecycle.status) || (alive.checked && !alive.alive);
       if (stopped) {
         const why = alive.checked && !alive.alive && !STOPPED.has(state.lifecycle.status) ? alive.reason : `the run is ${state.lifecycle.status}`;
-        return { code: 1, status: 'stopped', why, ...base, nodes: facts.nodes };
+        // A run parked at a gate or loop: each one it waits on, with the
+        // command that moves it, since that is what the named ids wait behind.
+        const parked = parkedWaitingFor(state);
+        const waitingFor = parked ? { waitingFor: parked.map((entry) => nodeFacts(state, entry.id)) } : {};
+        return { code: 1, status: 'stopped', why, ...base, nodes: facts.nodes, ...waitingFor };
       }
       if (Date.now() >= deadline) return { code: 2, status: 'timeout', ...base, nodes: facts.nodes };
     } else if (Date.now() >= deadline) return { code: 2, status: 'timeout', why: 'the run state could not be read' };
@@ -498,6 +506,12 @@ export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
   const id = result.shortId ?? result.runId ?? token;
   for (const fact of result.nodes ?? []) for (const line of factLine(fact)) console.log(line);
   if (result.status === 'timeout') console.log(`${glyphs().waiting} timed out after ${timeoutSec}s; the run is ${result.run ?? 'unreadable'}. Wait again: bullswarm workflow wait ${id} ${ids.join(' ')}`);
-  if (result.status === 'stopped') console.log(`${glyphs().stopped} ${result.why}; not every id finished. See bullswarm workflow runs show ${id}`);
+  if (result.status === 'stopped') {
+    console.log(`${glyphs().stopped} ${result.why}; not every id finished. See bullswarm workflow runs show ${id}`);
+    for (const node of result.waitingFor ?? []) {
+      console.log(`  waiting  ${node.type} ${node.id}${node.note ? ` · ${node.note}` : ''}`);
+      if (node.next) console.log(`  continue ${node.next}`);
+    }
+  }
   return code;
 }
