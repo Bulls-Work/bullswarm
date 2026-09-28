@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createV2DurableState, createV2GoalDocument, validateV2DurableState } from '../src/workflow/v2-state.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
-import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { reopenV2RunForRetry, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { readEvents } from '../src/workflow/events.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
@@ -20,6 +20,7 @@ import { runWorkflowWatch, watchSnapshot, watchTrouble } from '../src/workflow/w
 import {
   applyContinueOffline, previousRoundBlock, readContinueIntents, requestContinue, schedulerView,
 } from '../src/workflow/gates-loops.js';
+import { acceptV2Step, rerunV2Step } from '../src/workflow/cli.js';
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
 import { continueV2Run } from '../src/workflow/cli-steps.js';
 import { deserializeV2DurableState, serializeV2DurableState } from '../src/workflow/v2-state.js';
@@ -531,3 +532,73 @@ test('workflow goal --foreground launches a program with a gate, parks it and pr
   assert.deepEqual(document.waitingFor.map((entry) => [entry.id, entry.type, entry.note]), [['approve', 'gate', 'Read the draft and decide']]);
   assert.deepEqual(document.next, [`bullswarm workflow continue ${document.shortId} approve`]);
 });
+
+// --- recovering a failed step before a gate or loop --------------------------------
+// A step behind a gate or loop runs once the caller recovers the failed step
+// before it, by step rerun, step accept or workflow resume.
+
+const draftFails = () => fakeDispatch((id, turn) => (id === 'draft' && turn <= 2 ? { fail: 'provider' } : {}));
+const fixFails = () => fakeDispatch((id, turn) => (id === 'fix' && turn <= 2 ? { fail: 'provider' } : id === 'check' ? { answer: { passed: true } } : {}));
+const checkPasses = () => fakeDispatch((id) => (id === 'check' ? { answer: { passed: true } } : {}));
+
+async function recoverStep(f, run, how, stepId) {
+  if (how === 'rerun') {
+    const done = await rerunV2Step({ bullswarmDir: f.bullswarmDir, token: run.runId, stepId, waitMs: 0 });
+    assert.equal(done.status, 'applied', JSON.stringify(done));
+    return done.changes.invalidated;
+  }
+  if (how === 'accept') {
+    const done = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token: run.runId, stepId, reason: 'the acme draft is fine as it is', waitMs: 0 });
+    assert.equal(done.status, 'applied', JSON.stringify(done));
+    return done.changes.invalidated;
+  }
+  const reopened = reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId: run.runId });
+  assert.equal(reopened.status, 'reopened');
+  return reopened.requeued.filter((id) => id !== stepId);
+}
+
+for (const how of ['rerun', 'accept', 'resume']) {
+  test(`a gate: ${how} of its failed dependency lets the step behind the gate run`, async (t) => {
+    const f = fixture(t);
+    const run = await launch(f, gateProgram(), draftFails());
+    assert.equal(run.result.status, 'partial');
+    assert.equal(status(run, 'publish'), 'blocked');
+    assert.equal(node(run, 'approve').status, 'blocked');
+    assert.deepEqual(await recoverStep(f, run, how, 'draft'), ['publish']);
+    const parked = await resume(f, run.runId, fakeDispatch());
+    assert.deepEqual(parked.waiting?.map((entry) => entry.id), ['approve'], parked.result?.reason);
+    assert.equal(status(parked, 'draft'), 'succeeded');
+    assert.equal(status(parked, 'publish'), 'pending');
+    continueOffline(parked, 'approve');
+    const done = await resume(f, run.runId, fakeDispatch());
+    assert.equal(done.result.status, 'completed', done.result.reason);
+    assert.equal(status(done, 'publish'), 'succeeded');
+    assert.equal(node(done, 'approve').status, 'passed');
+  });
+
+  test(`a loop: ${how} of its failed body step lets the step behind the loop run`, async (t) => {
+    const f = fixture(t);
+    const run = await launch(f, loopProgram(), fixFails());
+    assert.equal(run.result.status, 'partial');
+    assert.equal(status(run, 'ship'), 'blocked');
+    assert.equal(node(run, 'polish').status, 'blocked');
+    assert.deepEqual(await recoverStep(f, run, how, 'fix'), ['check', 'ship']);
+    const done = await resume(f, run.runId, checkPasses());
+    assert.equal(done.result.status, 'completed', done.result.reason);
+    assert.equal(status(done, 'check'), 'succeeded');
+    assert.equal(status(done, 'ship'), 'succeeded');
+    assert.equal(node(done, 'polish').status, 'passed');
+  });
+}
+
+test('a rerun before a gate that already passed leaves the steps behind it as they are', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, gateProgram(), fakeDispatch());
+  continueOffline(run, 'approve');
+  const done = await resume(f, run.runId, fakeDispatch());
+  assert.equal(done.result.status, 'completed', done.result.reason);
+  const rerun = await rerunV2Step({ bullswarmDir: f.bullswarmDir, token: run.runId, stepId: 'draft', waitMs: 0 });
+  assert.equal(rerun.status, 'applied', JSON.stringify(rerun));
+  assert.deepEqual(rerun.changes.invalidated, []);
+});
+

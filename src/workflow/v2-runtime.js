@@ -47,7 +47,9 @@ import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
 import { STAGE3_RUN_FEATURES, isProgramV3Run, readRunFeatures, repairLoopApplies, runFeatureFlags, withProgramFormat, writeRunFeatures } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { dependencyAnswerField, settleStepAnswer, stepAnswerHooks } from './answers.js';
-import { clearWaitingFor, continuePending, evidenceIsCondition, kernelControlPass, previousRoundBlock, schedulerView } from './gates-loops.js';
+import {
+  clearWaitingFor, continuePending, evidenceIsCondition, kernelControlPass, previousRoundBlock, schedulerView, unblockControlNodes,
+} from './gates-loops.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
@@ -3263,6 +3265,7 @@ async function runV2Kernel({
         continue;
       }
       if (state.program.actions.length) {
+        unblockControlNodes(state, { at: now() }); // a gate or loop whose failed step was recovered (gates-loops.js)
         const graph = schedulerView(state);
         const blockedSchedule = scheduleV2Actions(graph.actions, graph.states, schedulingOptions);
         for (const blocked of blockedSchedule.blocked) {

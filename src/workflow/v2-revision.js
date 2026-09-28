@@ -37,6 +37,7 @@ import * as v2State from './v2-state.js';
 import { v2LiveProgramRuntime, validateV2DurableState } from './v2-state.js';
 import { revisedVerifyRounds } from './verify-rounds.js';
 import { desiredActionsV3, exportedProgramV3, isV3Revision } from './revision-v3.js';
+import { controlReachEdges } from './gates-loops.js';
 
 export const V2_REVISION_SCHEMA_VERSION = 'bullswarm.workflow.revision.v1';
 const PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
@@ -371,6 +372,11 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
   for (const action of desired) for (const dependency of action.dependsOn) {
     if (!dependents.has(dependency)) dependents.set(dependency, []);
     dependents.get(dependency).push(action.id);
+  }
+  // A v3 run's gates and loops are nodes of the walk too (gates-loops.js).
+  for (const [from, to] of controlReachEdges(state)) {
+    if (!dependents.has(from)) dependents.set(from, []);
+    dependents.get(from).push(to);
   }
   const reached = new Set();
   // An accepted failed step now counts as succeeded: its blocked dependents run.

@@ -298,6 +298,46 @@ function applyContinue(state, intent, { at, emit, rerun }) {
 }
 
 /**
+ * Before the kernel marks steps blocked behind failures: a gate or loop left
+ * blocked by a step the caller has since recovered (step rerun, step accept,
+ * workflow resume) goes back to pending, so the steps behind it are not
+ * blocked again by its stale record. Silent, like the control pass's own
+ * blocked-to-pending move.
+ */
+export function unblockControlNodes(state, { at }) {
+  const control = controlOf(state);
+  if (!control || !(state.controlNodes ?? []).some((record) => record.status === 'blocked')) return;
+  const records = new Map(state.controlNodes.map((record) => [record.id, record]));
+  const nodes = [...control.loops.map((loop) => [loop.id, loop.steps]), ...control.gates.map((gate) => [gate.id, gate.dependsOn])];
+  for (let pass = 0; pass <= nodes.length; pass += 1) {
+    let moved = false;
+    for (const [id, inputs] of nodes) {
+      const record = records.get(id);
+      if (record?.status !== 'blocked' || inputs.some((input) => UNSUCCESSFUL.has(outcomeOf(state, records, input)))) continue;
+      settle(record, 'pending', at);
+      moved = true;
+    }
+    if (!moved) break;
+  }
+}
+
+/**
+ * The revision walk's edges through the run's gates and loops ([from, to]): a
+ * gate's dependencies lead to the gate, a loop's steps to the loop, so a step
+ * rerun or accepted before one reaches the steps behind it. A node that has
+ * passed is left out: the steps behind it would start before the rerun step.
+ */
+export function controlReachEdges(state) {
+  const control = controlOf(state);
+  if (!control) return [];
+  const status = new Map(controlRecords(state).map((record) => [record.id, record.status]));
+  const edges = [];
+  for (const loop of control.loops) if (status.get(loop.id) !== 'passed') for (const id of loop.steps) edges.push([id, loop.id]);
+  for (const gate of control.gates) if (status.get(gate.id) !== 'passed') for (const id of gate.dependsOn) edges.push([id, gate.id]);
+  return edges;
+}
+
+/**
  * The kernel's control-node pass: apply the caller's continue intents, then
  * move every gate and loop as far as its dependencies allow. Emits
  * gate.waiting / loop.out-of-rounds the moment a node starts waiting, even
