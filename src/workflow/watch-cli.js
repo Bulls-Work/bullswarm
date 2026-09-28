@@ -22,6 +22,9 @@ import { declaredEvidence, NEEDS_YOU_LABELS } from './step-vocabulary.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
+import {
+  continueCommands, controlTrouble, controlWatchEvent, parkedWaitingFor, renderControlEvent, waitingOutcomeLines,
+} from './gates-loops.js';
 
 // The needs-you facts ride on the notable under a symbol: the JSONL object
 // carries only needsYouJson's fields, and the human block renders from these.
@@ -126,6 +129,8 @@ export function watchSnapshot(runDir, state, now = new Date()) {
   // An operator pause: the kernel has stopped and nothing starts until resume.
   const paused = !terminal && lifecycle.status === 'paused' ? { mode: state.pause?.mode ?? null, pausedAt: state.pause?.pausedAt ?? null } : null;
   const elapsedSec = secondsBetween(lifecycle.startedAt, lifecycle.finishedAt ?? now.toISOString());
+  // A v3 run parked at a gate or an out-of-rounds loop (gates-loops.js).
+  const waiting = parkedWaitingFor(state);
   return {
     at: now.toISOString(), runId: state.runId, shortId: state.shortId ?? null,
     interrupted, status: interrupted ? 'interrupted' : lifecycle.status ?? 'unknown', stage: state.preflight?.scout?.status === 'running' ? 'preflight' : state.planner?.status === 'running' ? 'planning' : terminal ? 'finished' : 'execution',
@@ -147,6 +152,7 @@ export function watchSnapshot(runDir, state, now = new Date()) {
     evidencePassed: hasPassingRequirementEvidence(state),
     // Program v3 reports step facts, never a verified verdict (v2 snapshots keep their shape).
     ...(isProgramV3(state.program) ? { programV3: true } : {}),
+    ...(waiting ? { waiting } : {}),
     terminal, timing: terminal ? timingBreakdown(state) : null,
     ...(kernelStderrTail.length ? { kernelStderrTail } : {}),
   };
@@ -827,8 +833,12 @@ export function notableWatchEvents({
           requirements: (payload.requirements ?? []).length, changedFiles: payload.changedFiles ?? null, status: payload.status ?? null,
         });
         break;
-      default:
+      default: {
+        // A v3 gate or loop event (gates-loops.js).
+        const control = controlWatchEvent(event, { token });
+        if (control) notable.push(control);
         break;
+      }
     }
   }
 
@@ -947,7 +957,7 @@ export function watchTrouble(event, { program = false } = {}) {
     case 'steering.received':
       return 'steering';
     default:
-      return null;
+      return controlTrouble(event);
   }
 }
 
@@ -1075,7 +1085,7 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
       if (event.stage === 'started') return `${glyphs().retry} repair round ${event.round} · ${event.requirements} requirement${event.requirements === 1 ? '' : 's'} · ${event.actionId}`;
       return `${glyphs().ok} repair round ${event.round} finished · ${event.changedFiles == null ? 'changed files unknown' : `${event.changedFiles} file${event.changedFiles === 1 ? '' : 's'} changed`}`;
     default:
-      return null;
+      return renderControlEvent(event);
   }
 }
 
@@ -1343,6 +1353,14 @@ export async function runWorkflowWatch(bullswarmDir, token, {
               + `  or revise: bullswarm workflow plan export ${runToken} --out plan.json, then bullswarm workflow plan revise ${runToken} --program plan.json\n`
               + `  or finish it: bullswarm workflow resume ${runToken} (it finishes and hands back what is left)\n`);
         }
+        return 0;
+      }
+      if (snapshot.waiting) {
+        // A v3 run parked at a gate or loop: its kernel exited and nothing
+        // runs until the caller continues it (gates-loops.js).
+        const runToken = snapshot.shortId ?? snapshot.runId;
+        if (eventMode && jsonl) emitLine({ type: 'waiting', waitingFor: snapshot.waiting, next: continueCommands(runToken, snapshot.waiting) });
+        else if (!jsonl) output.write(`${waitingOutcomeLines(runToken, snapshot.waiting).join('\n')}\n`);
         return 0;
       }
       if (snapshot.paused) {
