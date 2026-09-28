@@ -21,7 +21,8 @@
 
 import { formatMoney } from '../lib/usage-basis.js';
 import { FIX_ROUNDS_DEFAULT, VERIFY_ROUNDS_DEFAULT } from './action-validator.js';
-import { removedActionIds } from './execution-policy.js';
+import { isProgramWorkflow, removedActionIds } from './execution-policy.js';
+import { isProgramV3 } from './program-v3.js';
 import { inheritedRepairRoute, inheritedVerifyRoute } from './step-route.js';
 import { declaredDeliverable, declaredEvidence } from './step-vocabulary.js';
 
@@ -1203,4 +1204,27 @@ export function verifyLoopResult(state, { readText = null, token = null, failure
     // A verified run has only the requirements no evidence step covers left.
     callerDecision: callerDecision(state, { readText, token, failureRule }),
   };
+}
+
+// The repair loop's durable record, written once, when a program run accepts
+// its first program. In a run marked `failureRule` (D13) `defaults.verifyRounds`
+// counts fix cycles (0-3, default 1); otherwise total review rounds (1-3,
+// default 3). A saved run without the record keeps its old behaviour.
+export function ensureVerifyLoop(state, response, features = null) {
+  if (!isProgramWorkflow(state) || state.verifyLoop || response?.kind !== 'program' || isProgramV3(response.program)) return;
+  const program = response.program ?? {};
+  state.verifyLoop = createVerifyLoop(program.verifyRounds ?? program.defaults?.verifyRounds, { countsFixes: features?.failureRule === true });
+}
+
+// After a caller revision: its `defaults.verifyRounds` sets the budget for
+// the rest of the run (never below the rounds already closed), and a program
+// run whose first program arrived by revision gets its loop now. The value is
+// read through the run's marker, as at launch.
+export function applyRevisionLoopBudget(state, request, hadActions, features = null) {
+  if (!isProgramWorkflow(state)) return;
+  if (!state.verifyLoop) {
+    if (!hadActions) ensureVerifyLoop(state, { kind: 'program', program: request?.program }, features);
+    return;
+  }
+  applyRevisionVerifyRounds(state, request?.program, { countsFixes: features?.failureRule === true });
 }

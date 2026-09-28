@@ -9,8 +9,8 @@ import {
 } from './v2-revision.js';
 import { ACTION_PROGRAM_SCHEMA_VERSION } from './action-validator.js';
 import {
-  applyRevisionVerifyRounds, closeRound, createVerifyLoop, failingRequirements, kernelRepairActionIds, nextLoopStep,
-  openFirstRound, openNextRound, planRepairStep, planVerifyStep, recheckSet, repairChangedFiles, repairInheritedPaths,
+  closeRound, failingRequirements, kernelRepairActionIds, nextLoopStep, openFirstRound, openNextRound, planRepairStep,
+  planVerifyStep, recheckSet, repairChangedFiles, repairInheritedPaths,
 } from './verify-rounds.js';
 import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
@@ -70,6 +70,7 @@ import { handoffBlock } from './retry-handoff.js';
 import { buildWorkTask, buildDigestTask, buildEvidenceTask, correctionTask } from './step-prompts.js';
 import { embeddedRequirementBytes, attemptBytes, observeAttemptBytes } from './attempt-bytes.js';
 import { actStoppedDuringChecksWhy, clearEvidenceRunning, reconcileResume } from './kernel-resume.js';
+import { ensureVerifyLoop, applyRevisionLoopBudget } from './verify-rounds.js';
 export { preferredUsage } from './usage-preference.js';
 
 const ACTIVE_RUNS = new Set();
@@ -130,32 +131,6 @@ export function acceptCallerPlannerResponse(state, response, { boundary, runDir,
   return { state: next, accepted };
 }
 
-// One composer for every durable caller-planner request, whether the kernel
-// writes it at a boundary or `plan show` refreshes it with steering queued
-// while the run was paused. Steering is surfaced (peeked), never consumed.
-// The repair loop's durable record, written once, when a program run accepts
-// its first program. In a run marked `failureRule` (D13) `defaults.verifyRounds`
-// counts fix cycles (0-3, default 1); otherwise total review rounds (1-3,
-// default 3). A saved run without the record keeps its old behaviour.
-function ensureVerifyLoop(state, response, features = null) {
-  if (!isProgramWorkflow(state) || state.verifyLoop || response?.kind !== 'program' || isProgramV3(response.program)) return;
-  const program = response.program ?? {};
-  state.verifyLoop = createVerifyLoop(program.verifyRounds ?? program.defaults?.verifyRounds, { countsFixes: features?.failureRule === true });
-}
-
-// After a caller revision: its `defaults.verifyRounds` sets the budget for
-// the rest of the run (never below the rounds already closed), and a program
-// run whose first program arrived by revision gets its loop now. The value is
-// read through the run's marker, as at launch.
-function applyRevisionLoopBudget(state, request, hadActions, features = null) {
-  if (!isProgramWorkflow(state)) return;
-  if (!state.verifyLoop) {
-    if (!hadActions) ensureVerifyLoop(state, { kind: 'program', program: request?.program }, features);
-    return;
-  }
-  applyRevisionVerifyRounds(state, request?.program, { countsFixes: features?.failureRule === true });
-}
-
 // What a committed revision's acceptances look like on the event log (§2.8):
 // one `step.accepted` per accepted step or check, after the revision commits.
 function acceptedEventPayloads(planned) {
@@ -181,6 +156,9 @@ function clearRejectedRerunIntent(runDir, request) {
   }
 }
 
+// One composer for every durable caller-planner request, whether the kernel
+// writes it at a boundary or `plan show` refreshes it with steering queued
+// while the run was paused. Steering is surfaced (peeked), never consumed.
 function composeCallerPlannerRequest(state, { boundary, turn, requestPath, candidatePath, correction = null, pendingSteering = [], scoutReport = null }) {
   const context = createV2PlannerContext(state, {
     scout: scoutReport,
