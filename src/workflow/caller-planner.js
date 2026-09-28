@@ -9,7 +9,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent } from './events.js';
-import { deserializeV2DurableState, serializeV2DurableState, statePath, v2PlannerMode } from './v2-state.js';
+import {
+  deserializeV2DurableState, initializeNewActions, serializeV2DurableState, statePath, v2PlannerMode,
+} from './v2-state.js';
 import { V2_TERMINAL_STATUSES } from './status.js';
 import {
   applyV2PlannerResponse, createV2PlannerContext, createV2PlannerRequest, validateV2PlannerResponse,
@@ -46,14 +48,7 @@ export function acceptCallerPlannerResponse(state, response, { boundary, runDir,
   }
   if (boundary === 'gaps') next.budget.expansions += 1;
   ensureVerifyLoop(next, response, runFeatureFlags(readRunFeatures(runDir)));
-  const known = new Set(next.actions.map((action) => action.id));
-  for (const action of next.program.actions) if (!known.has(action.id)) {
-    next.actions.push({
-      id: action.id, status: 'pending', attempts: 0, workRevision: next.ledger.workRevision,
-      programRevision: next.program.revision,
-      startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null,
-    });
-  }
+  initializeNewActions(next);
   const accepted = next.planner.lastDecision;
   if (accepted.kind === 'exhausted') {
     next.lifecycle.status = 'planning';

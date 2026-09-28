@@ -4,7 +4,7 @@ import {
   V2_GOAL_SCHEMA_VERSION, V2_STATE_SCHEMA_VERSION,
   createV2GoalDocument, createV2DurableState, createV2State,
   serializeV2DurableState, deserializeV2DurableState,
-  assertV2Resume, validateV2DurableState, validateV2GoalDocument,
+  assertV2Resume, validateV2DurableState, validateV2GoalDocument, initializeNewActions,
 } from '../src/workflow/v2-state.js';
 
 const input = () => ({ goal: 'Implement the result envelope', cwd: '/tmp/repo', requirements: [{ id: 'result-versioned', text: 'Result is versioned' }, { id: 'tests-pass', text: 'Tests pass', mandatory: false }], settings: { concurrency: 2 }, plannerRouting: { pool: 'planner' }, workerRouting: { preferredPool: 'worker' } });
@@ -548,4 +548,21 @@ test('planner and scout limitStop records load, older states without them still 
     [withStops(undefined, { ...scout, failureKind: 'auth' }), /state\.preflight\.scout\.limitStop\.failureKind must be quota, throttle or unavailable/],
     [withStops(undefined, { failureKind: 'quota', at }), /state\.preflight\.scout\.limitStop\.retryAfter must be null or a non-empty string/],
   ]) assert.throws(() => validateV2DurableState(bad), pattern);
+});
+
+test('initializeNewActions adds one pending record per new program action and keeps the rest', () => {
+  const kept = { id: 'a', status: 'finished', attempts: 1 };
+  const state = {
+    actions: [kept],
+    program: { revision: 3, actions: [{ id: 'a' }, { id: 'b' }] },
+    ledger: { workRevision: 2 },
+  };
+  initializeNewActions(state);
+  initializeNewActions(state);
+  assert.equal(state.actions[0], kept);
+  assert.equal(JSON.stringify(state.actions[1]), JSON.stringify({
+    id: 'b', status: 'pending', attempts: 0, workRevision: 2, programRevision: 3,
+    startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null,
+  }));
+  assert.equal(state.actions.length, 2);
 });

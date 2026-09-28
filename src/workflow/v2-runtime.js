@@ -18,7 +18,7 @@ import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
 import { scheduleV2Actions } from './v2-scheduler.js';
 import {
   actionDefinition, actionState, assertV2Resume, createV2DurableState, deserializeV2DurableState,
-  serializeV2DurableState, statePath, validateV2GoalDocument, writeRunState,
+  initializeNewActions, serializeV2DurableState, statePath, validateV2GoalDocument, writeRunState,
 } from './v2-state.js';
 import { V2_TERMINAL_STATUSES } from './status.js';
 import { clone } from '../lib/clone.js';
@@ -125,17 +125,6 @@ function extraSnapshotPathsFor(state, actionId) {
 
 function nextShortId(bullswarmDir) {
   return generateShortId({ existing: listRuns(bullswarmDir).map((run) => run.shortId).filter(Boolean) });
-}
-
-function initializeNewActions(state) {
-  const known = new Set(state.actions.map((action) => action.id));
-  for (const action of state.program.actions) if (!known.has(action.id)) {
-    state.actions.push({
-      id: action.id, status: 'pending', attempts: 0, workRevision: state.ledger.workRevision,
-      programRevision: state.program.revision,
-      startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null,
-    });
-  }
 }
 
 async function runV2Kernel({

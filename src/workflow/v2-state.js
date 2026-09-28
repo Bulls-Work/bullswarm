@@ -1444,5 +1444,17 @@ export function writeRunState(runDir, state) {
 }
 
 // A step's runtime record and its current definition in the program.
+/** A pending runtime record for every program action that has none yet. */
+export function initializeNewActions(state) {
+  const known = new Set(state.actions.map((action) => action.id));
+  for (const action of state.program.actions) if (!known.has(action.id)) {
+    state.actions.push({
+      id: action.id, status: 'pending', attempts: 0, workRevision: state.ledger.workRevision,
+      programRevision: state.program.revision,
+      startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null,
+    });
+  }
+}
+
 export function actionState(state, id) { return state.actions.find((entry) => entry.id === id); }
 export function actionDefinition(state, id) { return state.program.actions.find((entry) => entry.id === id); }
