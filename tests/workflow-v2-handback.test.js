@@ -20,7 +20,8 @@ import {
   formatV2HandbackLines, summarizeV2Result, v2RetryPlan, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
 import { classifyV2DispatchFailure, dispatchV2Action, workerSilenceTimeoutSec } from '../src/workflow/v2-dispatch.js';
-import { runDelegate, watchOnce } from '../src/lib/watch.js';
+import { watchOnce } from '../src/lib/watch.js';
+import { runDelegate } from '../src/lib/run-delegate.js';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const BIN = join(ROOT, 'bin', 'bullswarm.js');
