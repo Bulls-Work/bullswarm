@@ -5,6 +5,7 @@ import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionPr
 import { DELIVERABLE_TYPES, RETRY_FACTS, evidenceResultsIssues } from './step-vocabulary.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
+import { PROGRAM_V3_SCHEMA_VERSION, validateStoredProgramV3 } from './program-v3.js';
 
 export const V2_GOAL_SCHEMA_VERSION = 'bullswarm.workflow.goal.v2';
 export const V2_STATE_SCHEMA_VERSION = 'bullswarm.workflow.state.v2';
@@ -27,6 +28,9 @@ const ACTION_STATE_FIELDS = new Set([
   // Stage 3: present only while a caller's `step accept` is current (D22);
   // any reset of the step clears it.
   'acceptance',
+  // Program v3: the step's current answer {attemptId, value}, the parsed
+  // answer of the attempt that finished it. Absent on every v2 step.
+  'answer',
 ]);
 const ACCEPTANCE_FIELDS = new Set(['evidence', 'reason', 'attemptId', 'failureKind', 'at', 'revision', 'requirements']);
 const ACCEPTANCE_REASON_MAX = 500;
@@ -100,7 +104,15 @@ const ATTEMPT_FIELDS = new Set([
   // because of an earlier one (`how` is a RETRY_FACTS value). Written only in
   // runs marked failureRule, never on the failed attempt itself.
   'retryOf',
+  // Program v3: the checked answer file {file, ok, value, errors}. `value` is
+  // what the worker wrote even when it breaks the schema (null when there was
+  // nothing to parse). Absent on every v2 attempt.
+  'answer',
 ]);
+const ATTEMPT_ANSWER_FIELDS = new Set(['file', 'ok', 'value', 'errors']);
+const ACTION_ANSWER_FIELDS = new Set(['attemptId', 'value']);
+const WAITING_FOR_FIELDS = new Set(['id', 'type', 'since', 'note']);
+const ANSWER_ERRORS_MAX = 100;
 const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried']);
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
 const ATTEMPT_TIME_BOX_SOURCES = new Set(['program', 'pair', 'kind', 'fallback']);
@@ -575,13 +587,45 @@ function validatePresentation(presentation, program, removed = new Set()) {
 
 function validateLifecycle(lifecycle) {
   object(lifecycle, 'state.lifecycle');
-  noUnknown(lifecycle, new Set(['status', 'startedAt', 'finishedAt', 'resultFile']), 'state.lifecycle');
+  noUnknown(lifecycle, new Set(['status', 'startedAt', 'finishedAt', 'resultFile', 'waitingFor']), 'state.lifecycle');
   if (!LIFECYCLE_STATUSES.has(lifecycle.status)) fail('state.lifecycle.status is invalid');
   timestamp(lifecycle.startedAt, 'state.lifecycle.startedAt');
   timestamp(lifecycle.finishedAt, 'state.lifecycle.finishedAt');
   nullableString(lifecycle.resultFile, 'state.lifecycle.resultFile');
   if (lifecycle.finishedAt !== null && !['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status)) fail('state.lifecycle.finishedAt requires a terminal status');
   if (lifecycle.resultFile !== null && !['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status)) fail('state.lifecycle.resultFile requires a terminal status');
+  if (lifecycle.waitingFor !== undefined) validateWaitingFor(lifecycle);
+}
+
+// Program v3: the gates and loops a parked run waits on (optional; the ids
+// are checked against state.program.control in validateWaitingForProgram).
+function validateWaitingFor(lifecycle) {
+  const list = lifecycle.waitingFor;
+  if (!Array.isArray(list)) fail('state.lifecycle.waitingFor must be an array');
+  if (list.length && lifecycle.status !== 'waiting') fail('state.lifecycle.waitingFor requires status waiting');
+  for (const [index, entry] of list.entries()) {
+    const at = `state.lifecycle.waitingFor[${index}]`;
+    object(entry, at);
+    noUnknown(entry, WAITING_FOR_FIELDS, at);
+    identifier(entry.id, `${at}.id`);
+    if (entry.type !== 'gate' && entry.type !== 'loop') fail(`${at}.type must be gate|loop`);
+    timestamp(entry.since, `${at}.since`);
+    if (entry.since === null) fail(`${at}.since is required`);
+    if (entry.note !== undefined) nullableString(entry.note, `${at}.note`);
+  }
+}
+
+function validateWaitingForProgram(state) {
+  const list = state.lifecycle.waitingFor;
+  if (list === undefined) return;
+  if (state.program.schemaVersion !== PROGRAM_V3_SCHEMA_VERSION) fail('state.lifecycle.waitingFor needs a v3 program');
+  const nodes = new Map([
+    ...(state.program.control?.gates ?? []).map((gate) => [gate.id, 'gate']),
+    ...(state.program.control?.loops ?? []).map((loop) => [loop.id, 'loop']),
+  ]);
+  for (const [index, entry] of list.entries()) {
+    if (nodes.get(entry.id) !== entry.type) fail(`state.lifecycle.waitingFor[${index}].id must name a ${entry.type} of the program`);
+  }
 }
 
 function validatePreflight(preflight) {
@@ -737,8 +781,41 @@ function validateRevisions(revisions, program) {
   }
 }
 
+// Program v3 (program-v3.js): one live graph of steps plus its gates and
+// loops, checked by the v3 rules. v2 programs never reach this.
+function validateProgramV3State(program, state) {
+  noUnknown(program, new Set(['schemaVersion', 'revision', 'actions', 'control']), 'state.program');
+  positiveInteger(program.revision, 'state.program.revision');
+  if (!Array.isArray(program.actions) || !program.actions.length) fail('a v3 state.program must have actions');
+  try {
+    validateStoredProgramV3(program, v2LiveProgramRuntime(state, { enforceRoutingPolicy: false }));
+  } catch (error) {
+    const detail = Array.isArray(error?.issues) ? error.issues.join('; ') : error.message;
+    fail(`state.program is invalid: ${detail}`);
+  }
+}
+
+function validateAttemptAnswer(answer, at) {
+  object(answer, at);
+  noUnknown(answer, ATTEMPT_ANSWER_FIELDS, at);
+  requiredString(answer.file, `${at}.file`);
+  if (typeof answer.ok !== 'boolean') fail(`${at}.ok must be a boolean`);
+  if (!Object.hasOwn(answer, 'value')) fail(`${at}.value is required (null when nothing was parsed)`);
+  if (!Array.isArray(answer.errors) || answer.errors.length > ANSWER_ERRORS_MAX || answer.errors.some((item) => typeof item !== 'string')) {
+    fail(`${at}.errors must be an array of at most ${ANSWER_ERRORS_MAX} strings`);
+  }
+}
+
+function validateActionAnswer(answer, at) {
+  object(answer, at);
+  noUnknown(answer, ACTION_ANSWER_FIELDS, at);
+  requiredString(answer.attemptId, `${at}.attemptId`);
+  if (!Object.hasOwn(answer, 'value')) fail(`${at}.value is required`);
+}
+
 function validateProgram(program, state) {
   object(program, 'state.program');
+  if (program.schemaVersion === PROGRAM_V3_SCHEMA_VERSION) return validateProgramV3State(program, state);
   noUnknown(program, new Set(['schemaVersion', 'revision', 'actions']), 'state.program');
   if (program.schemaVersion !== ACTION_PROGRAM_SCHEMA_VERSION) fail(`state.program.schemaVersion must be ${ACTION_PROGRAM_SCHEMA_VERSION}`);
   nonNegativeInteger(program.revision, 'state.program.revision');
@@ -821,6 +898,7 @@ function validateActionStates(actions, program, live = false) {
       if (action.supersededAttempts > action.attempts) fail(`state.actions[${index}].supersededAttempts cannot exceed attempts`);
     }
     if (action.acceptance !== undefined) validateAcceptance(action.acceptance, `state.actions[${index}].acceptance`);
+    if (action.answer !== undefined) validateActionAnswer(action.answer, `state.actions[${index}].answer`);
     if (action.status === 'removed' && !live) fail(`state.actions[${index}] is removed, which requires an applied plan revision`);
   }
   for (const id of programIds) if (!ids.has(id)) fail(`state.actions is missing program action ${id}`);
@@ -1030,6 +1108,7 @@ function validateAttempts(attempts, program) {
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
     if (attempt.retryOf !== undefined) validateRetryOf(attempt.retryOf, `state.attempts[${index}].retryOf`);
+    if (attempt.answer !== undefined) validateAttemptAnswer(attempt.answer, `state.attempts[${index}].answer`);
   }
   // A retry follows an earlier attempt of the same step.
   const byId = new Map(attempts.map((attempt) => [attempt.id, attempt]));
@@ -1283,6 +1362,7 @@ function validateState(state) {
   const ledger = validateLedger(state);
   validateActionStates(state.actions, state.program, live);
   validateProgram(state.program, { ...state, ledger });
+  validateWaitingForProgram(state);
   validateAttempts(state.attempts, state.program);
   validateAttemptConsistency(state.actions, state.attempts);
   if (!Array.isArray(state.steering)) fail('state.steering must be an array');

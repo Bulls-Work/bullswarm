@@ -15,6 +15,7 @@ import { deriveV2PresentationStages, deriveV2DependencyStages, deriveV2LiveStage
 import { extractScoutUnitIds } from './goal.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { REASONING_LEVELS } from '../lib/reasoning.js';
+import { PROGRAM_V3_SCHEMA_VERSION, isProgramV3, programV3AcceptanceIssues, storedProgramV3 } from './program-v3.js';
 
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 
@@ -156,7 +157,16 @@ export function validateV2PlannerResponse(response, state, {
     if (response.reason !== undefined) issues.push('reason is allowed only for kind=exhausted');
     if (!plain(response.program)) issues.push('program must be an object for kind=program');
     else try {
-      program = validateActionProgram(response.program, {
+      // Program v3 (0.37.0) has its own validator and stored form.
+      const v3 = isProgramV3(response.program);
+      if (v3) {
+        const refused = programV3AcceptanceIssues({
+          callerMode: v2PlannerMode(state) === 'caller', programMode: isProgramWorkflow(state),
+          hasActions: state.program.actions.length > 0, requirements: state.intent.requirements,
+        });
+        if (refused.length) throw new V2PlannerValidationError(refused);
+      } else if (isProgramV3(state.program)) throw new V2PlannerValidationError(['this run holds a v3 program; a v2 program cannot be added to it']);
+      program = v3 ? storedProgramV3(response.program, { ...runtimeFromState(state), evidenceAllowed: true }) : validateActionProgram(response.program, {
         ...runtimeFromState(state),
         evidenceAllowed: v2PlannerMode(state) === 'caller',
       });
@@ -623,6 +633,16 @@ export function normalizeCallerPlannerResponse(input, { summary = null, exhauste
     if (substantive(summary) && !substantive(input.summary)) return { ...clone(input), summary: summary.trim() };
     return clone(input);
   }
+  if (input.schemaVersion === PROGRAM_V3_SCHEMA_VERSION) {
+    const steps = Array.isArray(input.steps) ? input.steps : [];
+    const derived = steps.map((step) => step?.label ?? step?.id).filter(substantive).slice(0, 3).join('; ');
+    return {
+      schemaVersion: V2_PLANNER_RESPONSE_SCHEMA_VERSION,
+      kind: 'program',
+      summary: substantive(summary) ? summary.trim() : (derived || `Caller-authored program with ${steps.length} step(s)`),
+      program: clone(input),
+    };
+  }
   if (input.schemaVersion === ACTION_PROGRAM_SCHEMA_VERSION) {
     const actions = Array.isArray(input.actions) ? input.actions : [];
     const derived = actions.map((action) => action?.purpose).filter(substantive).slice(0, 3).join('; ');
@@ -642,7 +662,7 @@ export function normalizeCallerPlannerResponse(input, { summary = null, exhauste
     };
   }
   throw new V2PlannerValidationError([
-    `planner response schemaVersion must be "${V2_PLANNER_RESPONSE_SCHEMA_VERSION}" or a bare "${ACTION_PROGRAM_SCHEMA_VERSION}" program`,
+    `planner response schemaVersion must be "${V2_PLANNER_RESPONSE_SCHEMA_VERSION}", a bare "${ACTION_PROGRAM_SCHEMA_VERSION}" program or a bare "${PROGRAM_V3_SCHEMA_VERSION}" program`,
   ]);
 }
 
@@ -658,9 +678,10 @@ export function applyV2PlannerResponse(state, response, options = {}) {
   next.planner.status = 'waiting';
   const revision = next.program.revision + 1;
   next.program = {
-    schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,
+    schemaVersion: isProgramV3(accepted.program) ? PROGRAM_V3_SCHEMA_VERSION : ACTION_PROGRAM_SCHEMA_VERSION,
     revision,
     actions: [...next.program.actions, ...accepted.program.actions],
+    ...(accepted.program.control ? { control: accepted.program.control } : {}),
   };
   // Advice about this revision's effort choices, recorded once so `runs show`
   // lists exactly what the launch printed. Never gates acceptance.
