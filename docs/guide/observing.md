@@ -334,23 +334,14 @@ counted **once** even though the day page and the task ledger both offer it.
 The Claude mod's pane shows a task in flight too, instead of the old
 `No ongoing workflow run`.
 
-## The output sparkline
+## Output samples
 
-Each attempt records how many bytes its output file held over time, so the
-`Run` and `Step` pages can draw the shape of a worker's progress instead of
-only its current size:
-
-```text
- ● integrate · claude-code:acme · 19m · output ▁▁▂▃▃▄▆█ 14 KB
-```
-
-It is drawn on a **running** attempt: in the `Run` page's plan strip and live
-agent list, and in the `Step` page header. The series is read from the attempt's
-persisted event stream when the connector has one, and otherwise from
-`outputSamples` on the durable attempt record — a bounded list of
-`[atMs, bytes]` pairs, capped at 240 per attempt so a reader can redraw a run
-without loading the transcript. An attempt with no samples draws no sparkline
-rather than a flat line.
+Each attempt records how many bytes its worker's output held over time, as
+`outputSamples` on the durable attempt record: a bounded list of
+`[atMs, bytes]` pairs, at most one per five seconds and capped at 240 per
+attempt, so a reader can see the shape of a worker's progress without loading
+the transcript. No dashboard page draws them in this version; read them from
+the run's `state.json` (`attempts[].outputSamples`).
 
 ## The Step page: one header, turns, result, task, cost
 

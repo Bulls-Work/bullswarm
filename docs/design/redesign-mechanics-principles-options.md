@@ -280,7 +280,7 @@ Where it plugs in:
 
 - `ACTION_FIELDS` in `src/workflow/action-validator.js` and
   `V2_PROGRAM_ACTION_FIELDS` in `src/workflow/v2-planner.js`;
-- `buildProgramWorkTask` in `src/workflow/v2-runtime.js`;
+- `buildProgramWorkTask` in `src/workflow/step-prompts.js`;
 - `dispatchV2Action` in `src/workflow/v2-dispatch.js`;
 - `summarizeV2Result` in `src/workflow/v2-outcome.js`.
 

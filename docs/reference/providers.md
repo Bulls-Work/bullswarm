@@ -140,7 +140,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | Field | Read by |
 |---|---|
 | `name` (required) | routing, strategy state, meter cache |
-| `spawn.cmd` with `{taskFile}` (required), `spawn.cwdMode` | the runner (`src/lib/watch.js`). Placeholders: `{taskFile}`, `{cwd}`, `{sessionId}`, `{bullswarmDir}`. `cwdMode: "pwd"` makes the runner set `PWD` and spawn inside the target repository, for CLIs that resolve their project from `$PWD` |
+| `spawn.cmd` with `{taskFile}` (required), `spawn.cwdMode` | the runner (`src/lib/run-delegate.js` spawns the worker; `src/lib/worker-argv.js` fills the placeholders). Placeholders: `{taskFile}`, `{cwd}`, `{sessionId}`, `{bullswarmDir}`. `cwdMode: "pwd"` makes the runner set `PWD` and spawn inside the target repository, for CLIs that resolve their project from `$PWD` |
 | `outputExtraction.strategy` (required: `stdout`, `stdout-tail`, `json-field`, `file`, `event-stream`), `eventStream.output` | the watcher |
 | `model`, `modelSelection.flag` and `mode`, `knownModels`, `modelDiscovery` (required: at least `model`) | dispatch, `set-rung`, model discovery. The only `mode` is `replace-or-append`; `knownModels` is a last-resort list when live discovery fails |
 | `displayName` (a provider export) | strategy tables |
