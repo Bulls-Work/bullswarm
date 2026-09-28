@@ -15,7 +15,7 @@ import { wfAdd, wfContinue, wfWait } from './cli-steps.js';
 import { DELIVERABLE_TYPES, EVIDENCE_TYPES, STEP_EVIDENCE_TYPES, USABLE_EVIDENCE_TYPES, poolCausedPools } from './step-vocabulary.js';
 import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, CHECKER_PATH } from './evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
-import { createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
+import { deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import { runV2AutonomousWorkflow } from './v2-runtime.js';
 import { pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run } from './run-control.js';
 import { submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './caller-planner.js';
@@ -30,8 +30,8 @@ import {
 import { isProgramWorkflow } from './execution-policy.js';
 import { requestCancel } from './dashboard.js';
 import {
-  buildV2PlannerContract, normalizeCallerPlannerResponse, validateV2PlannerResponse,
-  V2PlannerValidationError, v2RoleCatalog, workspacePathIssues,
+  buildV2PlannerContract, normalizeCallerPlannerResponse, V2PlannerValidationError, v2RoleCatalog,
+  workspacePathIssues,
 } from './v2-planner.js';
 import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
@@ -53,6 +53,10 @@ import {
   executeGoalDocument, launchDetachedResume, launchDetachedGoal, printGoalLaunchInstructions,
 } from './cli-launch.js';
 import { buildNewGoalDocument } from './cli-goal-document.js';
+import {
+  readJsonFile, shellArg, goalArg, goalNextCommands, refuseProgramRequired, refuseProgramInvalid, loadCallerProgram,
+  previewValidateInitialProgram, VERIFY_ROUNDS_NOTE, setsVerifyRounds, printAdvisories, printValidationIssues,
+} from './cli-program-checks.js';
 
 function isHomeSnapshot(dir) {
   try {
@@ -197,14 +201,6 @@ export function shouldAutoWatchGoal(opts) {
     opts.json !== true && opts.resume == null && opts.request == null;
 }
 
-function readJsonFile(path, label) {
-  let raw;
-  try { raw = readFileSync(resolve(path), 'utf8'); }
-  catch (err) { throw new Error(`cannot read ${label} ${path}: ${err.message}`); }
-  try { return JSON.parse(raw); }
-  catch (err) { throw new Error(`${label} ${path} is not valid JSON: ${err.message}`); }
-}
-
 // Caller-first planning. `workflow goal` needs a program: the calling agent is
 // the Workflow Planner unless it asks for a dispatched one with --orchestrator.
 // Usage conflicts throw; the "program required" case is returned, not thrown,
@@ -258,112 +254,6 @@ function contractFlagError(opts, { allowProgram = false } = {}) {
   if (!allowProgram && opts.program !== undefined) return 'this command takes the goal text only; pass --program to workflow plan validate or workflow goal';
   if (opts.resume !== undefined || opts.request !== undefined) return '--resume and --request do not apply to the planning commands';
   return null;
-}
-
-function shellArg(value) {
-  if (/^[A-Za-z0-9_./\-]+$/.test(value)) return value;
-  // Single-quote for the shell: a JSON string would re-escape newlines as a
-  // literal backslash-n, which does not round-trip through double quotes.
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
-// A goal is inlined into the next-commands only when it stays readable on one
-// line; otherwise the caller (who already holds the text) sees a placeholder,
-// so the guidance does not bury the commands under the whole goal.
-function goalArg(goal) {
-  const text = String(goal);
-  return text.includes('\n') || text.length > 120 ? '"<goal>"' : shellArg(text);
-}
-
-// The commands a caller can run next when it has a goal but no accepted program.
-function goalNextCommands(goal, cwd, { isolation = false, program } = {}) {
-  const q = goalArg(goal);
-  const c = shellArg(cwd);
-  const workspaceFlag = isolation === true ? ' --isolation' : '';
-  // The program file the caller named, absolute so the line works from any folder.
-  const p = typeof program === 'string' && program !== '-' && !program.startsWith('/dev/') ? shellArg(resolve(program)) : 'plan.json';
-  return {
-    contract: `bullswarm workflow plan contract ${q} --cwd ${c}${workspaceFlag} --json`,
-    validate: `bullswarm workflow plan validate ${q} --program ${p} --cwd ${c}${workspaceFlag} --json`,
-    launch: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --program ${p} --json`,
-    scout: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --scout`,
-    orchestrator: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --orchestrator auto`,
-  };
-}
-
-const GOAL_NEXT_PURPOSES = Object.freeze({
-  contract: 'the program format the kernel enforces: fields, rules, an example that validates',
-  validate: 'check plan.json against that contract without launching',
-  launch: 'launch with your program; zero planner or scout dispatches',
-  scout: 'kernel surveys the repository first, then pauses for your program',
-  orchestrator: 'dispatch a Workflow Planner agent instead of planning yourself',
-});
-
-function printGoalNext(next, { only = null } = {}) {
-  for (const [name, command] of Object.entries(next)) {
-    if (only && !only.includes(name)) continue;
-    console.error(`  ${name.padEnd(13)} ${command}`);
-    console.error(`                ${GOAL_NEXT_PURPOSES[name]}`);
-  }
-}
-
-function refuseProgramRequired(goal, opts) {
-  const doc = {
-    error: 'program-required',
-    message: 'workflow goal needs a program: you are the Workflow Planner',
-    next: goalNextCommands(goal, resolve(opts.cwd ?? process.cwd()), opts),
-  };
-  if (opts.json) console.log(JSON.stringify(doc, null, 2));
-  else {
-    console.error(`✗ ${doc.message}.`);
-    printGoalNext(doc.next);
-  }
-  return 2;
-}
-
-function refuseProgramInvalid(goal, opts, issues, { message = 'caller program invalid (nothing ran)' } = {}) {
-  const next = goalNextCommands(goal, resolve(opts.cwd ?? process.cwd()), opts);
-  const doc = { error: 'program-invalid', message, issues: [...issues], next: { contract: next.contract, validate: next.validate } };
-  if (opts.json) console.log(JSON.stringify(doc, null, 2));
-  else {
-    printValidationIssues(message, issues);
-    printGoalNext(next, { only: ['contract', 'validate'] });
-  }
-  return 2;
-}
-
-function loadCallerProgram(opts) {
-  if (!opts.program) return null;
-  const raw = readJsonFile(opts.program, 'program file');
-  return normalizeCallerPlannerResponse(raw, { summary: opts.summary ?? null });
-}
-
-// Validate a caller-authored initial program against a preview of the exact
-// durable state the run will start with, so an invalid program is rejected
-// synchronously and nothing is launched or dispatched.
-function previewValidateInitialProgram(doc, response) {
-  const preview = createV2DurableState(doc, { runId: 'wf-preview-000000', shortId: 'previe' });
-  // The callers run workspacePathIssues next to their pinned-pool check.
-  return validateV2PlannerResponse(response, preview, { boundary: 'initial', requiredScoutUnits: [], workspacePaths: false });
-}
-
-// D35: a program that sets verifyRounds is told that it now counts fix cycles.
-const VERIFY_ROUNDS_NOTE = 'note: defaults.verifyRounds counts fix cycles since this version (1 = one fix and one re-review, 0 = review only); it counted review rounds before';
-function setsVerifyRounds(program) {
-  return program?.verifyRounds !== undefined || program?.defaults?.verifyRounds !== undefined;
-}
-
-// Advisories are advice, never a rejection: they go to stderr so a --json
-// caller keeps a clean stdout document, and the exit code is untouched.
-function printAdvisories(advisories, { stream = console.error } = {}) {
-  for (const advisory of advisories) {
-    stream(`advisory: ${advisory.code}${advisory.actionId ? ` ${advisory.actionId}` : ''} — ${advisory.message}`);
-  }
-}
-
-function printValidationIssues(prefix, issues) {
-  console.error(`✗ ${prefix}:`);
-  for (const issue of issues) console.error(`  - ${issue}`);
 }
 
 // The same goal text in the same cwd while the first launch is still going is
