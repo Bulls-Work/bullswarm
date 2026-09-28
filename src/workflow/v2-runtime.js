@@ -64,6 +64,9 @@ import { meterLedgerAttribution } from '../lib/subscription-cost.js';
 import { spawnRetentionSweep } from '../lib/retention.js';
 import { preferredUsage } from './usage-preference.js';
 import { parseNotDone, timeBoxForAttempt, timeBoxHistory } from './time-box.js';
+import {
+  SUBSCRIPTION_BASIS_RANK, TOKEN_SOURCE_RANK, attemptApiUsd, finiteNonNegative, positiveIntervalTotal, unionLedgerIntervals,
+} from './metrics.js';
 export { preferredUsage } from './usage-preference.js';
 
 const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
@@ -761,22 +764,6 @@ function recordReturnedEarly(attempt) {
   else delete attempt.returnedEarly;
 }
 
-const TOKEN_SOURCE_ORDER = new Map([
-  ['unknown', 0],
-  ['estimated:utf8-bytes/4', 1],
-  ['transcript-summed', 2],
-  ['provider-reported', 3],
-]);
-const SUBSCRIPTION_BASIS_ORDER = new Map([
-  ['unknown:no-price', 0],
-  ['unknown:no-meter', 1],
-  ['unknown:below-resolution', 2],
-  ['unknown:no-cost', 3],
-  ['calibrated:usd-per-pct', 4],
-  ['observed:meter-delta', 5],
-  ['observed:meter-ledger', 6],
-]);
-
 // The `captured` dispatch stage: the worker has exited and its stream is
 // decoded, but the verdict (meters, transcripts, verification) is still
 // being assembled. Record what the provider reported now, once — the first
@@ -802,10 +789,12 @@ function settleFinishedAttempt(attempt, prior) {
   if (confirmed && attempt.session && typeof attempt.session === 'object') attempt.session.sessionId = confirmed;
 }
 
-function worstBasis(current, next, order) {
-  if (!next || !order.has(next)) return current ?? null;
-  if (!current || !order.has(current)) return next;
-  return order.get(next) < order.get(current) ? next : current;
+// A running basis: an unrecorded value leaves it as it was (metrics.js holds
+// the ranks).
+function worstBasis(current, next, rank) {
+  if (!next || !Object.hasOwn(rank, next)) return current ?? null;
+  if (!current || !Object.hasOwn(rank, current)) return next;
+  return rank[next] < rank[current] ? next : current;
 }
 
 export function addUsage(state, attempt) {
@@ -853,12 +842,12 @@ export function addUsage(state, attempt) {
     state.usage.tokenSource = worstBasis(
       state.usage.tokenSource,
       usage?.tokenSource,
-      TOKEN_SOURCE_ORDER,
+      TOKEN_SOURCE_RANK,
     ) ?? 'unknown';
     state.usage.subscriptionBasis = worstBasis(
       state.usage.subscriptionBasis,
       usage?.subscription?.basis,
-      SUBSCRIPTION_BASIS_ORDER,
+      SUBSCRIPTION_BASIS_RANK,
     ) ?? 'unknown:no-meter';
   }
   // A widened v2 state may opt into the conserved subscription ledger. Keep
@@ -875,68 +864,13 @@ export function addUsage(state, attempt) {
         basis: subscription.basis ?? 'unknown:no-meter',
       };
       current.assignedPct = Number(current.assignedPct ?? 0) + deltaPct;
-      current.basis = worstBasis(current.basis, subscription.basis, SUBSCRIPTION_BASIS_ORDER);
+      current.basis = worstBasis(current.basis, subscription.basis, SUBSCRIPTION_BASIS_RANK);
       state.usage.subscriptionLedgerByPool[pool] = current;
     }
   }
   state.budget.agents += 1;
   const wall = Number(attempt?.wallSec ?? 0);
   if (Number.isFinite(wall) && wall > 0) state.budget.seconds += wall;
-}
-
-function finiteNonNegative(value) {
-  if (value == null || value === '' || typeof value === 'boolean') return null;
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? number : null;
-}
-
-function attemptApiUsd(attempt) {
-  return finiteNonNegative(
-    attempt?.usage?.api?.usd
-      ?? attempt?.usage?.cost?.estimatedUsd
-      ?? attempt?.usage?.apiUsd,
-  );
-}
-
-function attemptIntervals(attempt) {
-  const attribution = attempt?.usage?.subscription?.attribution;
-  const subscription = attempt?.usage?.subscription;
-  const intervals = attribution?.intervals
-    ?? attribution?.ledgerIntervals
-    ?? subscription?.ledgerIntervals
-    ?? subscription?.attribution?.intervals;
-  return Array.isArray(intervals) ? intervals : [];
-}
-
-function intervalKey(interval) {
-  return [
-    interval?.pool ?? '', interval?.window ?? '', interval?.from ?? '',
-    interval?.at ?? interval?.to ?? interval?.captured_at ?? '',
-    interval?.row ?? interval?.index ?? '', interval?.deltaPct ?? '',
-    interval?.reason ?? '',
-  ].join('|');
-}
-
-function unionIntervals(attempts) {
-  const unique = new Map();
-  for (const attempt of attempts) {
-    for (const interval of attemptIntervals(attempt)) {
-      if (!interval || typeof interval !== 'object') continue;
-      unique.set(intervalKey(interval), interval);
-    }
-  }
-  return [...unique.values()].sort((a, b) => {
-    const left = Date.parse(a?.at ?? a?.to ?? a?.captured_at ?? '') || 0;
-    const right = Date.parse(b?.at ?? b?.to ?? b?.captured_at ?? '') || 0;
-    return left - right;
-  });
-}
-
-function positiveIntervalTotal(intervals) {
-  return intervals.reduce((total, interval) => {
-    const delta = finiteNonNegative(interval?.deltaPct ?? interval?.delta_pct);
-    return delta != null && !interval?.reason ? total + delta : total;
-  }, 0);
 }
 
 /**
@@ -962,7 +896,7 @@ export function reconcileSubscriptionLedger(state) {
 
   const totals = {};
   for (const [pool, poolAttempts] of byPool) {
-    const intervals = unionIntervals(poolAttempts);
+    const intervals = unionLedgerIntervals(poolAttempts);
     if (!intervals.length) continue;
     const allocatorAttempts = poolAttempts.map((attempt) => ({
       id: attempt.id,
@@ -1054,7 +988,7 @@ export function reconcileSubscriptionLedger(state) {
         knownSubtotal += usd;
         priced += 1;
       }
-      basis = worstBasis(basis, subscription?.basis, SUBSCRIPTION_BASIS_ORDER);
+      basis = worstBasis(basis, subscription?.basis, SUBSCRIPTION_BASIS_RANK);
     }
     state.usage.subscriptionKnownSubtotalUsd = priced ? knownSubtotal : null;
     state.usage.subscriptionPricedAttempts = priced;

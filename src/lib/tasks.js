@@ -87,9 +87,9 @@ function taskText(record, home) {
   return null;
 }
 
-function taskRow(record, home) {
+function taskRow(record, home, { withText = true } = {}) {
   const usage = record?.usage && typeof record.usage === 'object' ? record.usage : null;
-  const prompt = taskText(record, home);
+  const prompt = withText ? taskText(record, home) : null;
   const amount = finiteNumber(record?.apiEquivalentUsd
     ?? record?.apiUsd
     ?? record?.costUsd
@@ -120,7 +120,7 @@ function taskRow(record, home) {
   };
 }
 
-function isRunEntry(entry) {
+export function isRunEntry(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
   // `kind` is the new explicit discriminator. `source` keeps entries written
   // during the transition readable, and the final fallback recognizes the
@@ -142,8 +142,12 @@ function sinceAllows(entry, sinceMs) {
   return event == null || event >= sinceMs;
 }
 
-function finishedRow(entry, home) {
-  const row = taskRow(entry, home);
+/**
+ * One finished single-run log entry as a row. `withText: false` skips reading
+ * the prompt file, for readers that only count the run.
+ */
+export function finishedRow(entry, home, { withText = true } = {}) {
+  const row = taskRow(entry, home, { withText });
   const endedAt = nullableString(entry?.endedAt ?? entry?.finishedAt ?? entry?.ts);
   const reasonValue = entry && Object.hasOwn(entry, 'reason')
     ? entry.reason
