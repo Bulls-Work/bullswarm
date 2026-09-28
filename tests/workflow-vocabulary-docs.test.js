@@ -283,7 +283,9 @@ test('the repair rules for act and report steps are documented', () => {
 test('the enforced rules and field rows name the deliverable path refusals', () => {
   assert.throws(() => validate([{ ...step, id: 'a', role: 'produce', ownedFiles: ['README.md'], deliverable: { type: 'files', paths: ['CHANGELOG.md'] } }]), /deliverable\.paths must be listed in ownedFiles/);
   for (const path of PROGRAM_REFERENCES) {
-    const text = flat(path);
+    // The v2 part of the reference (the v3 part comes first since 0.37.0).
+    const whole = flat(path);
+    const text = whole.slice(whole.indexOf('## v2 programs'));
     const rules = text.slice(text.indexOf('## Enforced rules'), text.indexOf('## Example'));
     assert.ok(rules.includes('A deliverable path must be an exact file, not a directory.'), `${path}: directory rule`);
     assert.ok(rules.includes('every deliverable path, `files` paths included, must be listed in it'), `${path}: ownedFiles rule`);
@@ -568,6 +570,8 @@ test('every JSON example with evidence in the docs validates on a program step',
   for (const path of docs) {
     for (const [, body] of read(path).matchAll(/```json\n([\s\S]*?)```/g)) {
       const value = JSON.parse(body);
+      // v3 programs in the public docs are validated in workflow-v3-docs.test.js.
+      if (value.schemaVersion === 'bullswarm.workflow.program.v3') continue;
       const steps = value.schemaVersion ? value.actions : [value];
       for (const example of steps.filter((item) => item.evidence)) {
         const writer = { ...step, id: 'w', role: 'produce', ownedFiles: ['out/records.json', 'tests/probe.test.js'], deliverable: { type: 'data', paths: ['out/records.json'] }, evidence: example.evidence };

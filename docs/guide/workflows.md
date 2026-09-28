@@ -22,23 +22,160 @@ Reach for a workflow instead when the work splits into parallel territories, whe
 
 The calling agent writes the program. The **kernel** is Bullswarm's own runtime, not an agent: it validates the graph, applies each step's route, schedules dependencies, retries each step once, and computes the result.
 
-Start from the contract, which prints the requirement IDs, rules, schema, and a worked example for your exact goal:
+Start from the contract. It prints the program v3 format (`bullswarm.workflow.contract.v3`: the step, gate and loop fields, the rules, and an example that validates) as JSON. `--v2` prints the contract of old v2 programs instead, with the requirement IDs derived from your goal:
 
 ```bash
-# the requirements, rules, program schema, and an example for this goal
-bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd /abs/path/to/repo --json
+# the v3 program format, its rules and an example that validates
+bullswarm workflow plan contract "Make the acme tests pass" --cwd /abs/path/to/acme --json
+
+# the v2 contract: requirement IDs, rules, schema and an example for this goal
+bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd /abs/path/to/repo --v2 --json
 ```
 
 `workflow goal` never plans on your behalf unless you ask for it by name: with no `--program`, `--scout`, or `--orchestrator` it exits 2, launches nothing, and prints the three commands that come next.
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `--program <file.json>` | the program you authored; validated against the exact requirements before launch, then executed with zero planner or scout dispatches | required unless `--scout` or `--orchestrator` is given |
+| `--program <file.json>` | the program you authored (v3, or an old v2 one); validated against its contract before launch, then executed with zero planner or scout dispatches | required unless `--scout` or `--orchestrator` is given |
 | `--scout` | the kernel surveys the repository first and hands you advisory findings to plan from | off |
 | `--orchestrator auto\|<pool>` | dispatch a Workflow Planner agent at every planning boundary instead of planning yourself | off (you are the planner) |
 | `--isolation` | per-worker worktrees and strict exact-file ownership checks | off (shared workspace, advisory territories) |
 | `--concurrency <n>` | maximum parallel dispatches | 4 |
 | `--retry-attempts <0..3>` | automatic retries per step before it comes back to you | 1 |
+
+## Program v3: steps, gates and loops
+
+New work is written as a v3 program (`bullswarm.workflow.program.v3`). It has
+four blocks:
+
+- `steps`: the work. Each step is a run: `id`, `prompt`, `dependsOn`, and
+  optional `phase`, `label`, `lane`, `effort`, `reasoning`, `route`, `answer`,
+  `evidence`, `deliverable`, `files`, `retry` (0 or 1) and `timeBox`.
+- `phase`: a label on a step that groups steps on the dashboard. It changes
+  nothing else.
+- `gates`: `{id, dependsOn, when?, note?}`. The steps behind a gate wait until
+  you run `bullswarm workflow continue <run> <gate>`. With `when`, the gate
+  waits only when its condition holds and passes by itself otherwise.
+- `loops`: `{id, steps, until, maxRounds}` (1-5 rounds). The loop runs every
+  one of its steps in every round and reads `until` when the round is over.
+
+A step passes by facts: its worker ended cleanly, its deliverable was
+produced, its evidence passed, and its answer (when it declares one) matched
+the schema. An `answer` is a JSON schema: the worker writes JSON to a file
+Bullswarm names, and the file is checked, handed to the steps that depend on
+it, and read by conditions. A check is an ordinary step with an `answer`
+and/or `evidence`. v3 has no requirement IDs, `evidenceFor`, roles, kinds or
+`verifyRounds`: validate refuses them, and a v3 run reports facts per step,
+never `verified`.
+
+There is one condition form, for a gate's `when` and a loop's `until`:
+`{"step": "critique", "field": "passed"}` reads a boolean the step's answer
+schema requires (add `"equals": false` to invert it), and
+`{"step": "check", "evidence": "passed"}` reads whether the step's evidence
+passed. When `until` is the evidence form, a failed check on that step reads
+as "not passed" and the loop goes on; with the field form, a failed check
+fails the step as it would outside a loop.
+
+A loop that fixes until the tests pass:
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "fix",
+      "lane": "build",
+      "prompt": "In /private/tmp/v37fix/acme, `npm test` fails. Find the cause in src/ and fix it; do not change tests/. From round 2 on, the Previous round block lists what the last check saw: fix that."
+    },
+    {
+      "id": "check",
+      "dependsOn": ["fix"],
+      "prompt": "In /private/tmp/v37fix/acme, run `npm test` and list every failing test with its first error line. Change no file.",
+      "answer": {
+        "type": "object",
+        "required": ["problems"],
+        "properties": { "problems": { "type": "array", "items": { "type": "string" } } }
+      },
+      "evidence": [{ "type": "command", "cmd": "npm test", "timeoutSec": 120 }]
+    }
+  ],
+  "loops": [
+    { "id": "until-green", "steps": ["fix", "check"], "until": { "step": "check", "evidence": "passed" }, "maxRounds": 3 }
+  ]
+}
+```
+
+```bash
+bullswarm workflow plan validate "Make the acme tests pass" --cwd=/private/tmp/v37fix/acme --program=/private/tmp/v37fix/loop.json
+```
+
+```text
+✓ program v3 valid: 2 steps, 0 gates, 1 loop (nothing launched)
+  fix                      build/medium deliverable=files
+  check                    analyze/medium evidence=command answer after fix
+  loop until-green         steps fix, check · until check's evidence passed · at most 3 rounds
+  launch   bullswarm workflow goal 'Make the acme tests pass' --cwd /private/tmp/v37fix/acme --program /private/tmp/v37fix/loop.json --json
+```
+
+A gate that stops before publishing, validated the same way:
+
+```text
+✓ program v3 valid: 2 steps, 1 gate, 0 loops (nothing launched)
+  count                    analyze/medium answer
+  post                     build/medium deliverable=files after approve
+  gate approve             after count · waits for you · Read the count and decide whether to write DONE.md
+  launch   bullswarm workflow goal 'Count and publish' --cwd /private/tmp/v37fix/proj --program /private/tmp/v37fix/gate.json --json
+```
+
+A goal over 120 characters, or with a line break, shows as `"<goal>"` in the
+launch line: put your goal back in its place before you run it.
+
+### A run that waits for you
+
+A gate stops only the steps behind it; other branches keep running. When only
+waiting gates or loops are left (a gate waiting, or a loop out of rounds), the
+run parks with status `waiting`. `bullswarm workflow watch <run> --until
+trouble` wakes on it, and `runs result` prints where it waits:
+
+```text
+outcome: waiting
+waiting: gate approve · Read NOTE.md and decide whether to write DONE.md
+next: bullswarm workflow continue 2fne62 approve
+```
+
+`bullswarm workflow wait <run> <id...>` reads until the named steps, gates or
+loops settle, and prints their facts and checked answers (exit 0, 1 when one
+failed or the run stopped short, 2 on a timeout or an unknown id):
+
+```text
+✓ count succeeded · grok · grok-4.7 · 35s
+  output   /private/tmp/we-home/workflows/wf-mulitifp-c82a30/out-count-attempt-1.md
+  answer
+    {
+      "lines": 4,
+      "short": true
+    }
+⧖ gate approve waiting · Read NOTE.md and decide whether to write DONE.md
+  continue bullswarm workflow continue 2fne62 approve
+```
+
+What moves a waiting run:
+
+| You want | Command |
+| --- | --- |
+| pass a waiting gate | `bullswarm workflow continue <run> <gate>` |
+| give a loop out of rounds more rounds | `bullswarm workflow continue <run> <loop> --rounds <1-5>` (without `--rounds` the loop passes as it stands) |
+| add work that depends on an answer | `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when the step's answer is itself a fragment `{steps, gates?, loops?}`), then `bullswarm workflow wait <run> <added ids>` |
+
+A v3 run's steps, gates and loops are never edited: `plan revise` on a v3 run
+accepts only reruns. `workflow add` appends steps, gates and loops without
+changing anything the run has, and reopens a finished run.
+
+## v2 programs
+
+The rest of this page describes v2 programs (`bullswarm.workflow.program.v2`):
+actions with requirement IDs, roles and kinds, and a review loop. They still
+validate, run and replay as before; write new work in v3.
 
 ## Decompose into actions with exact-file territories
 
@@ -206,7 +343,7 @@ bullswarm workflow goal "1. Add --since to runs list. 2. Document it in README. 
 
 ## Steer a live run
 
-The plan is never frozen. Export the live plan, edit it into the whole program you want from now on — add, change, or delete actions — and revise:
+The plan is never frozen. In a v3 run you add steps with `workflow add` (above), and `plan revise` only reruns steps. In a v2 run, export the live plan, edit it into the whole program you want from now on — add, change, or delete actions — and revise:
 
 ```bash
 # write the live plan as an editable revision document
@@ -237,7 +374,7 @@ A revision never lifts a pause, and a finished run that gets revised is reopened
 
 ## When a run finishes
 
-A run never waits for its caller: when nothing more can happen on its own it finishes and hands back what is left. The terminal lines give `outcome:` (`completed`, `partial`, or `cancelled`) plus whether the run is `verified`, `reason:` in one line, one `step …` / `requirement …` line per unfinished item, and then `your call:` with one command per option.
+A v2 run never waits for its caller: when nothing more can happen on its own it finishes and hands back what is left. A v3 run finishes the same way, except that it parks with status `waiting` at a gate or at a loop out of rounds (see [A run that waits for you](#a-run-that-waits-for-you)), and a completed v3 run hands nothing back. The terminal lines give `outcome:` (`completed`, `partial`, or `cancelled`) plus, for a v2 run, whether the run is `verified`, `reason:` in one line, one `step …` / `requirement …` line per unfinished item, and then `your call:` with one command per option.
 
 | Option | When it fits | What to do |
 | --- | --- | --- |
@@ -410,8 +547,20 @@ started by an earlier version keep moving the planner and the scout to another
 pool.
 
 ```bash
-# the compact result: status, verified, reason, every action, usage, and next
+# the compact result: status, verified (v2), reason, every action with a v3 step's answer, usage, and next
 bullswarm workflow runs result ab12cd --json --summary
+```
+
+On a finished v3 run, the text form prints each step's checked answer:
+
+```text
+# workflow result  wf-mulitn5f-6c56dd  (5r8jyi)
+# status  completed  result ready
+# outcome  all 1 step succeeded
+# proof  1 finished · unproven: task
+# answer  task  {"words":13}
+# actions  1
+  task                     analyze/medium  succeeded
 ```
 
 ## Next steps

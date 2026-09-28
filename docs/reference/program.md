@@ -1,20 +1,139 @@
 ---
 title: Workflow program
-description: The plan.json fields, roles, kinds, deliverables, requirement IDs, and rules that workflow plan validate and workflow goal --program enforce.
+description: The plan.json fields and rules that workflow plan validate and workflow goal --program enforce - program v3 (steps, phases, gates, loops) for new work, and the v2 roles, kinds, deliverables and requirement IDs that old programs use.
 ---
 
 # Workflow program
 
-After this page you can author a `plan.json` that `bullswarm workflow plan validate` accepts, and know which field, role, kind, deliverable, or rule would make launch exit 2.
+After this page you can author a `plan.json` that `bullswarm workflow plan validate` accepts, and know which field or rule would make launch exit 2.
 
-`plan.json` is the program `bullswarm workflow goal --program` executes. Validate it against the running kernel before launch. Exit 2 returns `issues` and a `next` block; fix the file yourself. Exit 0 returns the resolved program and an `advisories` array. How to decompose a goal into actions is in [Workflows](/guide/workflows).
+`plan.json` is the program `bullswarm workflow goal --program` executes. New programs are v3 (`bullswarm.workflow.program.v3`): steps, with phases as labels, gates and loops. Old v2 programs (`bullswarm.workflow.program.v2`, with actions, roles, kinds and requirement IDs) still validate, run and replay as before; they are described from [v2 programs](#v2-programs) on. How to plan a goal is in [Workflows](/guide/workflows).
+
+Validate a file against the running kernel before launch. Exit 2 lists the `issues`; fix the file yourself. Exit 0 prints each step, gate and loop and the launch line.
 
 ```bash
-# Print the live contract for this goal (requirements, rules, schema, example).
-bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json
+# The v3 format, its rules and an example that validates, as JSON.
+bullswarm workflow plan contract "Make the acme tests pass" --cwd /abs/path/to/acme --json
+
+# The v2 contract: requirement IDs derived from the goal, rules, schema, example.
+bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --v2 --json
 ```
 
-Fetch that contract only when an issue names an unknown field, role, kind, deliverable, or `schemaVersion`, which can only happen after an upgrade this page has not followed.
+## Program v3
+
+| Field | Required | Value |
+|---|---|---|
+| `schemaVersion` | yes | exactly `bullswarm.workflow.program.v3` |
+| `steps` | yes | a non-empty array of steps |
+| `gates` | no | an array of gates |
+| `loops` | no | an array of loops |
+| `defaults` | no | `lane`, `effort`, `reasoning`, `retry`, `timeBox`; a step's own field outranks it |
+
+Steps, gates and loops share one id space: an id is kebab-case and used once.
+
+### Step
+
+| Field | Required | Value |
+|---|---|---|
+| `id` | yes | kebab-case, unique |
+| `prompt` | yes | the self-contained task; nothing is substituted, so write the absolute workspace path in |
+| `dependsOn` | no | step, gate or loop ids that must finish first (default `[]`); depend on a loop by its id, never on a step inside it |
+| `phase` | no | one-line label that groups steps on the dashboard; it changes nothing else |
+| `label` | no | one-line display name (default: the id) |
+| `lane` | no | `analyze` (reads; the default), `build` (changes files), `chore` (mechanical changes) |
+| `effort` | no | `high`, `medium`, `low`; default by lane: analyze medium, build medium, chore low; a chore step must be low |
+| `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, or `default` (pass nothing): how hard the picked model thinks |
+| `route` | no | `{pools: {use, avoid}, providers: {use, avoid}, independentOf: [step ids]}`: a hard filter applied before quota pacing; `independentOf` names steps this step depends on (directly or through others) whose providers it must not use |
+| `answer` | no | a JSON schema: the worker writes its final answer as JSON to a file Bullswarm names (at most 256 KiB), and that file is checked; a mismatch is failure kind `schema`; the checked answer goes to dependent steps, conditions, `workflow wait`, `watch` and `runs result` |
+| `evidence` | no | up to 5 checks Bullswarm runs after the worker, as in [Evidence](#evidence-command-and-schema) |
+| `deliverable` | no | `files`, `report`, `data`, `media`, `outward`, or `{type, paths}` (default `files` for build and chore, `report` for analyze without an answer, none for analyze with an answer); not produced is failure kind `not-produced` |
+| `files` | no | exact relative paths the step may change (no directory, no glob); steps whose files overlap run one after the other |
+| `retry` | no | `1` (default) or `0`: the one automatic retry after a failure |
+| `timeBox` | no | whole minutes 0-240: the soft time box written into the task (0 leaves it out); a guide, never a timeout |
+
+`purpose`, `affects`, `evidenceFor`, `kind`, `role`, `inputs`, `produces` and `defaults.verifyRounds` belong to v2 programs, and validate refuses them in v3 (`program.defaults.verifyRounds is not allowed; defaults take lane, effort, reasoning, retry and timeBox`). A check is an ordinary step with an `answer` and/or `evidence`.
+
+### Gate
+
+| Field | Required | Value |
+|---|---|---|
+| `id` | yes | kebab-case; steps behind the gate list it in `dependsOn` |
+| `dependsOn` | no | the steps, gates or loops the gate follows |
+| `when` | no | a condition: the gate waits only when it holds, and passes by itself otherwise |
+| `note` | no | one line printed when it waits: what to look at before you continue |
+
+When its dependencies succeeded, a gate waits for `bullswarm workflow continue <run> <gate>`. Only the steps behind it wait; other branches keep running. When a dependency failed, the gate is blocked like any dependent.
+
+### Loop
+
+| Field | Required | Value |
+|---|---|---|
+| `id` | yes | kebab-case; later steps depend on the loop id |
+| `steps` | yes | the step ids that repeat, in order through their own `dependsOn`; a step is in at most one loop; no loop inside a loop |
+| `until` | yes | a condition on one of the loop's steps: true ends the loop |
+| `maxRounds` | yes | 1-5 |
+
+Every step of the loop runs in every round, and the condition is read when the round is over: put the deciding step last, and give every writer work each round (a build or chore step that changes no file fails `not-produced`). From round 2 on, each step's task carries a `Previous round` block with the last round's answers and evidence. When the rounds run out, the loop waits like a gate: `bullswarm workflow continue <run> <loop> --rounds <1-5>` gives it more, and without `--rounds` it passes as it stands. A step in the loop that fails (after its retry) blocks the loop.
+
+### The condition form
+
+A gate's `when` and a loop's `until` take one of two forms:
+
+- `{"step": "<id>", "field": "<name>", "equals": true}`: a boolean field that the step's object answer schema lists in `required`; `equals` is `true` (the default) or `false`.
+- `{"step": "<id>", "evidence": "passed"}`: every evidence check of that step passed. When a loop's `until` is this form, a failed check on that step reads as "not passed" and the loop goes on; with the field form, a failed check fails the step as it would outside a loop.
+
+A gate's condition step must run before the gate, and a loop's must be one of its steps. There are no expressions and no else: anything more is your call, with `workflow wait` and `workflow add`.
+
+### Rules the kernel keeps
+
+- A step passes by facts only: its worker ended cleanly, its deliverable was produced, its evidence passed, and its answer (when declared) matched the schema.
+- A failed step gets one automatic retry: a process failure on another eligible pool, a failed check (answer, evidence, deliverable) on the same pool with the failure attached. Then it comes back to you. A usage limit sends the step to you at once.
+- When only waiting gates or loops are left, the run parks with status `waiting` until you run `workflow continue`.
+- A v3 run's steps, gates and loops are never edited: `plan revise` may only rerun steps. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`).
+
+### A v3 example
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "count",
+      "phase": "research",
+      "prompt": "Count the lines of /private/tmp/v37fix/proj/README.md. Change no file. Answer with {\"lines\": <number>, \"short\": <true when under 10 lines>}.",
+      "answer": {
+        "type": "object",
+        "required": ["lines", "short"],
+        "properties": { "lines": { "type": "integer" }, "short": { "type": "boolean" } }
+      }
+    },
+    {
+      "id": "post",
+      "phase": "publish",
+      "lane": "build",
+      "dependsOn": ["approve"],
+      "files": ["DONE.md"],
+      "prompt": "In /private/tmp/v37fix/proj create DONE.md with one line: 'approved'. Change no other file."
+    }
+  ],
+  "gates": [
+    { "id": "approve", "dependsOn": ["count"], "note": "Read the count and decide whether to write DONE.md" }
+  ]
+}
+```
+
+```text
+$ bullswarm workflow plan validate "Count and publish" --cwd=/private/tmp/v37fix/proj --program=/private/tmp/v37fix/gate.json
+✓ program v3 valid: 2 steps, 1 gate, 0 loops (nothing launched)
+  count                    analyze/medium answer
+  post                     build/medium deliverable=files after approve
+  gate approve             after count · waits for you · Read the count and decide whether to write DONE.md
+  launch   bullswarm workflow goal 'Count and publish' --cwd /private/tmp/v37fix/proj --program /private/tmp/v37fix/gate.json --json
+```
+
+## v2 programs
+
+Everything from here on describes v2 programs (`bullswarm.workflow.program.v2`). Fetch the v2 contract (`plan contract --v2`) only when an issue names an unknown field, role, kind, deliverable, or `schemaVersion`, which can only happen after an upgrade this page has not followed.
 
 ## Program
 

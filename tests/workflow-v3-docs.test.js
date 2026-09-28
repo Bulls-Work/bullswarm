@@ -91,6 +91,32 @@ test('every v3 program and fragment in the skill validates, and each validate bl
   assert.ok(quoted >= 6, `validate blocks checked: ${quoted}`);
 });
 
+test('every v3 program in the public docs validates, and the validate output shown after it is what the CLI prints', { timeout: 120_000 }, () => {
+  let programs = 0;
+  let quoted = 0;
+  for (const path of ['docs/guide/workflows.md', 'docs/reference/program.md']) {
+    const blocks = [...read(path).matchAll(/```(json|text)\n([\s\S]*?)```/g)].map((match) => ({ lang: match[1], body: match[2] }));
+    blocks.forEach((block, index) => {
+      if (block.lang !== 'json') return;
+      const value = JSON.parse(block.body);
+      if (value.schemaVersion !== V3) return;
+      const result = validateCli(value);
+      assert.equal(result.status, 0, `${path}: ${JSON.stringify(value).slice(0, 80)}\n${result.stderr}`);
+      programs += 1;
+      const later = blocks.slice(index + 1);
+      const end = later.findIndex((entry) => entry.lang === 'json');
+      const shown = (end === -1 ? later : later.slice(0, end)).find((entry) => entry.lang === 'text' && /^(\$ bullswarm workflow plan validate .*\n)?✓ program v3 valid/.test(entry.body));
+      if (shown) {
+        const lines = shown.body.trimEnd().split('\n').filter((line) => !line.startsWith('$ ') && !line.startsWith('  launch '));
+        assert.deepEqual(result.lines, lines, `${path}: the validate output matches the CLI`);
+        quoted += 1;
+      }
+    });
+  }
+  assert.equal(programs, 2, 'the loop in the guide and the gate in the reference');
+  assert.equal(quoted, 2);
+});
+
 test('the skill stays shorter than the 0.36 skill (32.6K)', () => {
   assert.ok(statSync(join(repo, 'skill/SKILL.md')).size < 32_600);
 });
