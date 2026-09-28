@@ -25,6 +25,7 @@ import { poolUsageAggregate, recordSpendFacts, spendFacts } from './spend-facts.
 import { cut, rule } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 import { TOKEN_SOURCE_RANK, tokenSourceOf, worstTokenSource } from './metrics.js';
+import { waitingFacts } from './v3-display.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
@@ -567,17 +568,21 @@ function tableRowModel(record, nowMs = Date.now()) {
   const recordedTime = typeof record?.duration === 'string' && record.duration.trim()
     ? record.duration.trim().replace(/^span\s+/, '')
     : null;
+  // A v3 run parked at a gate or loop reads waiting, with its next command.
+  const waiting = task ? null : waitingFacts(record?.state);
   const mark = task
     ? record?.ok === false ? glyphs().fail
       : record?.ok === true || record?.endedAt || record?.finishedAt ? glyphs().ok : glyphs().ongoing
-    : resultMark(record);
+    : waiting ? glyphs().waiting : resultMark(record);
   const described = task ? taskDescription(record) : goal(record);
   const descriptionFallback = task && described === '—';
   return {
     record,
     task,
     mark,
-    role: task ? (record?.ok === false ? 'red' : record?.ok === true || record?.endedAt || record?.finishedAt ? 'green' : 'cyan') : markRole(mark, record),
+    role: task ? (record?.ok === false ? 'red' : record?.ok === true || record?.endedAt || record?.finishedAt ? 'green' : 'cyan')
+      : waiting ? 'amber' : markRole(mark, record),
+    waiting,
     id,
     project: runProject(record),
     what: descriptionFallback ? taskDescriptionFallback(record) : described,
@@ -659,6 +664,10 @@ export function runTableLines(records, {
     // Hover covers text only, not terminal padding; Enter and click therefore
     // resolve through the same row action without lighting unused columns.
     addRegion(regions, lines, 2, Math.max(1, visible(line).length - 1), row.action);
+    if (row.waiting) {
+      const indent = ' '.repeat(3 + layout.id + 2);
+      lines.push(fit(`${indent}${tint(row.waiting.label, 'amber', ansi)} · ${row.waiting.commands.join(' · ')}`, cols, ansi));
+    }
   }
   return { lines, regions, rows, layout };
 }

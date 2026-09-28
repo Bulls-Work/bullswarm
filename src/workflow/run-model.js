@@ -477,6 +477,8 @@ function planStageStepsName(stage, index) {
   const names = (stage?.actions ?? [])
     .map((action) => String(action?.id ?? '').trim())
     .filter(Boolean);
+  // A v3 phase is named by its label in the title; the rule reads its steps.
+  if (stage?.phase) return names.join(' · ') || stage.phase;
   const label = planStageLabel(stage, index)
     .replace(/^Follow-up \d+: /, '')
     .replace(/^Phase \d+\s*·\s*/, '')
@@ -902,7 +904,7 @@ function runTimelineFacts(row, { nowMs = Date.now() } = {}) {
     const failed = phaseActions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status));
     return {
       index, id: stage.id, name: planStageStepsName(stage, index), label: stage.label, stage,
-      kindName: phaseKindName(state, phaseActions.map((action) => action.id)),
+      kindName: stage.phase ?? phaseKindName(state, phaseActions.map((action) => action.id)),
       status: active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending',
       glyph: phaseGlyph(active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending'),
       startedAt, finishedAt, endAt: active ? null : finishedAt,

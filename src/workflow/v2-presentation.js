@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isLiveProgram } from './execution-policy.js';
+import { isV3State, v3Stages } from './v3-phases.js';
 
 const CATEGORY_ORDER = Object.freeze([
   'Discovery', 'Implementation', 'Tests', 'Documentation', 'Evidence',
@@ -128,6 +129,7 @@ export function deriveV2LiveStages(state, { revision, at }) {
 
 // Project older saved program runs too, without rewriting their event history.
 export function projectV2DependencyStages(state) {
+  if (isV3State(state)) return v3Stages(state);
   const runtime = new Map((state.actions ?? []).map((action) => [action.id, action]));
   if (isLiveProgram(state)) {
     return liveStageGroups(state).map((stage) => {

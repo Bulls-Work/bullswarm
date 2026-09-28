@@ -58,6 +58,9 @@ import { stepPageModel, turnCountsText } from './step-model.js';
 import { returnedEarlyItems, returnedEarlyText } from './time-box.js';
 import { loopVerdictText } from './verify-rounds.js';
 import { NEEDS_YOU_LABELS } from './step-vocabulary.js';
+import { attemptAnswerLine, controlRowLines, roundTag, v3TimelineFacts } from './v3-timeline.js';
+import { waitingFacts } from './v3-display.js';
+import { isOneStepRun } from './v3-phases.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 
 /** Lines of the goal the Preflight segment shows before an ellipsis. */
@@ -645,6 +648,12 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
     push(stop.text, { segment: 'Preflight', at: stop.at, milestone: true, limitStop: true });
   }
   const phases = facts.phases;
+  const v3 = v3TimelineFacts(model, phases.map((phase) => phase.stage));
+  const controlRows = (phase, where) => {
+    for (const control of v3?.placed.get(phase.stage?.id)?.[where] ?? []) {
+      for (const line of controlRowLines(control, safeWidth)) push(line.text, { segment: phase.label, phaseIndex: phase.index, at: line.at, control: control.id });
+    }
+  };
   const fold = foldRangeOf(phases);
   const foldStart = fold ? fold.start : -1;
   const foldEnd = fold ? fold.end : -1;
@@ -659,10 +668,14 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
     const rule = phaseRule(phaseTitle(phase), phaseStepsText(phase), phone ? [] : [right, `${duration} · ${tally}`, tally], safeWidth);
     // The name and the steps are bold, `Phase <n> · ` plain, as `<n> · ` was.
     const named = rule.label.slice(`${phase.glyph} Phase ${phase.index + 1}`.length).replace(/^ · /, '');
-    push(paintPhaseRule(rule.line, { ...phase, name: named }), {
-      header: true, segment: phase.label, phaseIndex: phase.index, phase,
-    });
-    if (phone) push(` ${dimCell(right)}`, { segment: phase.label, phaseIndex: phase.index, span: true });
+    // A one-step run is its step: no phase frame around it.
+    if (!v3?.oneStep) {
+      push(paintPhaseRule(rule.line, { ...phase, name: named }), {
+        header: true, segment: phase.label, phaseIndex: phase.index, phase,
+      });
+      if (phone) push(` ${dimCell(right)}`, { segment: phase.label, phaseIndex: phase.index, span: true });
+    }
+    controlRows(phase, 'before');
     const attempts = phase.attempts.slice().sort((a, b) => (Date.parse(a.startedAt ?? '') || 0) - (Date.parse(b.startedAt ?? '') || 0));
     for (const attempt of attempts) {
       const at = attempt.startedAt ?? attempt.finishedAt;
@@ -681,9 +694,9 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
           const prefix = ` ${clock}  ${glyph} `;
           const suffix = ` · ${routing}`;
           const available = Math.max(1, safeWidth - visibleLength(prefix) - visibleLength(suffix) - visibleLength(duration) - 1);
-          return `${prefix}${truncate(`${attempt.actionId} · ${pool}${runningText}`, available)}${suffix}`;
+          return `${prefix}${truncate(`${attempt.actionId}${roundTag(v3, attempt)} · ${pool}${runningText}`, available)}${suffix}`;
         })()
-        : ` ${clock}  ${glyph} ${attempt.actionId} · ${pool} · ${modelName}${reasoning ? ` · reasoning ${reasoning}` : ''} · ${routing}${runningText}`;
+        : ` ${clock}  ${glyph} ${attempt.actionId}${roundTag(v3, attempt)} · ${pool} · ${modelName}${reasoning ? ` · reasoning ${reasoning}` : ''} · ${routing}${runningText}`;
       // A succeeded attempt whose report listed `## Not done` items says so
       // after its duration; a phone has no room there and gives it a row.
       const early = returnedEarlyText(attempt);
@@ -697,6 +710,8 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
       if (early && phone) {
         push(`        ${tint(early, 'amber')}`, { segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId });
       }
+      const answer = v3 ? attemptAnswerLine(model.state, attempt, safeWidth) : null;
+      if (answer) push(answer, { segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId });
       if (selected) {
         for (const item of returnedEarlyItems(attempt)) {
           push(`        ${truncate(item, Math.max(1, safeWidth - 8))}`, {
@@ -705,6 +720,7 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
         }
       }
     }
+    controlRows(phase, 'after');
   };
   phases.forEach((phase, index) => {
     if (foldStart >= 0 && index === foldStart && !foldOpen) {
@@ -1348,7 +1364,11 @@ function runPage(model, opts, body) {
   // A finished run with a repair loop says its verdict beside its status:
   // `completed · verified`, or `completed · not verified · verify rounds 3/3`.
   const loopVerdict = loopVerdictText(state);
+  // A v3 run parked at a gate or an out-of-rounds loop names where it waits.
+  const waiting = waitingFacts(state, { token: headerFacts.shortId });
+  const oneStep = isOneStepRun(state);
   const glyph = status === 'completed' || status === 'succeeded' ? glyphs().ok
+    : waiting ? glyphs().waiting
     : ['failed', 'partial', 'cancelled', 'interrupted'].includes(status) ? glyphs().fail : glyphs().ongoing;
   const activeGlyph = status === 'running' && Number(opts.spinnerFrame) > 0
     ? spinnerGlyph(opts.spinnerFrame)
@@ -1357,7 +1377,7 @@ function runPage(model, opts, body) {
   // whole: a cut `verify rounds 3…` would hide the count the caller needs.
   const verdictOwnRow = Boolean(loopVerdict) && phone
     && ` ${activeGlyph} ${headerFacts.shortId} · ${status} · ${loopVerdict}`.length > width;
-  const statusText = loopVerdict && !verdictOwnRow ? `${status} · ${loopVerdict}` : status;
+  const statusText = waiting ? waiting.label : loopVerdict && !verdictOwnRow ? `${status} · ${loopVerdict}` : status;
   const runStatusParts = [
     `${activeGlyph} ${headerFacts.shortId}`,
     statusText,
@@ -1393,7 +1413,9 @@ function runPage(model, opts, body) {
     phone ? `${headerFacts.attempts} attempts` : null,
     !phone && width >= 160 ? headerFacts.dateText : null,
   ].filter(Boolean).join(' · ');
-  const paintedRunStatus = paintRunHeader(runStatus, headerFacts, activeGlyph);
+  const paintedRunStatus = waiting
+    ? paintRunHeader(runStatus, headerFacts, activeGlyph).replace(waiting.label, tint(waiting.label, 'amber'))
+    : paintRunHeader(runStatus, headerFacts, activeGlyph);
   const paintedClock = clock ? dimCell(clock) : '';
   const header = phone ? cut(` ${paintedRunStatus}`, width) : alignRight(` ${paintedRunStatus}`, paintedClock, width);
 
@@ -1413,6 +1435,7 @@ function runPage(model, opts, body) {
     for (const line of shown) body.push(cut(` ${line}`, width));
   }
   if (phone && clock) body.push(cut(` ${dimCell(clock)}`, width));
+  for (const command of waiting?.commands ?? []) body.push(cut(` ${dimCell('next:')} ${command}`, width));
   if (!phone) {
     const project = headerFacts.project ?? '—';
     const cwd = headerFacts.cwd ?? '—';
@@ -1429,23 +1452,26 @@ function runPage(model, opts, body) {
   const cursorOn = (Number(opts.focus) || 0) === 0 && !opts.controlSelected;
   const cursorId = cursorOn ? panel.selectedPhase?.actions?.[0]?.id ?? null : null;
   const cursorInTimeline = cursorOn && phone && !opts.planBoxes;
-  if (!phone) body.push(paintRule(rule(`plan · phase ${progress.phase} of ${progress.phases}`, null, width)));
-  if (phone && !opts.planBoxes) {
-    const { stages } = planStages(row);
-    const current = stages[Math.max(0, progress.phase - 1)];
-    const next = stages.slice(Math.max(0, progress.phase)).find((stage) => (stage.actions ?? []).some((action) => !RUN_DONE.has(action.status)));
-    const currentName = current ? planStageName(current, progress.phase - 1) : 'starting';
-    const currentState = current?.actions?.some((action) => action.status === 'running') ? 'running'
-      : current?.actions?.every((action) => RUN_DONE.has(action.status)) ? 'done' : 'waiting';
-    const nextName = next ? planStageName(next, stages.indexOf(next)) : '—';
-    body.push(cut(` ${dimCell('plan')}  ${runPlanGlyphStrip(row)}  ${progress.phase} ${strong(currentName)} ${paintStatusWord(currentState)} · then ${nextName}`, width));
-  } else {
-    for (const line of planDagLines(row, {
-      width: Math.max(1, width - 1), runId: row?.runId ?? null, assignments: model.assignments, nowMs,
-      pools: !phone, selectedId: cursorId,
-    })) body.parts([{ text: ' ' }, ...line.parts.map((part) => paintPlanPart(part))]);
+  // A one-step run has no plan to draw: its step is the timeline's one row.
+  if (!oneStep) {
+    if (!phone) body.push(paintRule(rule(`plan · phase ${progress.phase} of ${progress.phases}`, null, width)));
+    if (phone && !opts.planBoxes) {
+      const { stages } = planStages(row);
+      const current = stages[Math.max(0, progress.phase - 1)];
+      const next = stages.slice(Math.max(0, progress.phase)).find((stage) => (stage.actions ?? []).some((action) => !RUN_DONE.has(action.status)));
+      const currentName = current ? planStageName(current, progress.phase - 1) : 'starting';
+      const currentState = current?.actions?.some((action) => action.status === 'running') ? 'running'
+        : current?.actions?.every((action) => RUN_DONE.has(action.status)) ? 'done' : 'waiting';
+      const nextName = next ? planStageName(next, stages.indexOf(next)) : '—';
+      body.push(cut(` ${dimCell('plan')}  ${runPlanGlyphStrip(row)}  ${progress.phase} ${strong(currentName)} ${paintStatusWord(currentState)} · then ${nextName}`, width));
+    } else {
+      for (const line of planDagLines(row, {
+        width: Math.max(1, width - 1), runId: row?.runId ?? null, assignments: model.assignments, nowMs,
+        pools: !phone, selectedId: cursorId,
+      })) body.parts([{ text: ' ' }, ...line.parts.map((part) => paintPlanPart(part))]);
+    }
+    body.push('');
   }
-  body.push('');
 
   const live = runLivePresentation(model, { nowMs, runFollow: opts.runFollow !== false });
   const spend = runSpendFacts(row, { rollup });
@@ -1487,7 +1513,10 @@ function runPage(model, opts, body) {
       || (phone ? opts.timelineSelection === 'fold'
         : panel.phaseIndex >= foldRange.start && panel.phaseIndex < foldRange.end)))
     : false;
-  body.push(paintRule(rule(`timeline · ${timeline.phases} phases · ${timeline.attempts} attempts${phone ? '' : ' · Enter on a step opens it'}`, null, width)));
+  const timelineCounts = oneStep
+    ? `${timeline.attempts} attempt${timeline.attempts === 1 ? '' : 's'}`
+    : `${timeline.phases} phases · ${timeline.attempts} attempts`;
+  body.push(paintRule(rule(`timeline · ${timelineCounts}${phone ? '' : ' · Enter on a step opens it'}`, null, width)));
   const timelineStart = body.lines.length;
   for (const line of timeline.lines) {
     const plain = cut(timelineText(line), width);
@@ -1508,7 +1537,7 @@ function runPage(model, opts, body) {
   }
   // A planner or scout stop row names no step: a word in it (`… without its
   // report`) that matches a step's id must not open that step's page.
-  markStepRows(body, body.lines.slice(timelineStart).map((text, index) => (timeline.lines[index]?.limitStop ? '' : text)),
+  markStepRows(body, body.lines.slice(timelineStart).map((text, index) => (timeline.lines[index]?.limitStop || timeline.lines[index]?.control ? '' : text)),
     workflowPanelModel(row), row?.runId ?? null);
   return header;
 }
