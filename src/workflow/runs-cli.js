@@ -22,7 +22,7 @@ import { existsSync, rmSync, readFileSync } from 'node:fs';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
-import { BULLSWARM_DIR } from './cli.js';
+import { BULLSWARM_DIR } from './cli-run-lookup.js';
 import { appendRollupIndex, readRollup, rollupIndexPath, writeLegacyRollup, writeRunRollup } from './rollup.js';
 import { readGoalProject } from './goal.js';
 import { projectName } from '../lib/project.js';

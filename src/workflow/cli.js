@@ -6,12 +6,11 @@ import {
   openSync, closeSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns, cmdReindex } from './runs-cli.js';
-import { newRunId, resolveRunId, listRuns, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine, v2RunnerLiveness } from './short-id.js';
+import { newRunId, resolveRunId, listRuns, isLegacyRunState, isProcessAlive, v2RunnerLiveness } from './short-id.js';
 import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
@@ -59,18 +58,7 @@ import { buildV3Contract } from './contract-v3.js';
 import { listAssignments } from '../lib/assignments.js';
 import { loadPoolLabels, resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 import { workflowHelpPath, parseFlags, flagErrors } from './workflow-flags.js';
-
-// BULLSWARM_DIR is read on every call so that changes to the
-// BULLSWARM_HOME env var (e.g. set per-test) are honored, not
-// captured at module load. (The previous module-level IIFE form
-// silently broke resume-by-shortId for any run whose BULLSWARM_HOME
-// differed from the one in effect when the module was first
-// imported.)
-function bullswarmDir() {
-  const h = process.env.BULLSWARM_HOME?.trim();
-  return h && h.length ? h : join(homedir(), '.bullswarm');
-}
-export const BULLSWARM_DIR = bullswarmDir; // back-compat for any external import
+import { BULLSWARM_DIR, legacyRunRefusal, loadV2RunState } from './cli-run-lookup.js';
 
 function isHomeSnapshot(dir) {
   try {
@@ -1103,30 +1091,6 @@ async function planValidate(opts) {
     console.log(`  launch   ${next.launch}`);
   }
   return 0;
-}
-
-// Legacy (pre-0.27.0 authored-graph) runs are read-only history. Every verb
-// that would drive one — cancel, resume, steer, action show, tui <runId> —
-// answers with the same sentence and exit 2 before doing anything else.
-// Returns null when `token` is not a legacy run, so the caller carries on.
-function legacyRunRefusal(token, { json = false } = {}) {
-  const resolved = resolveRunId(BULLSWARM_DIR(), token);
-  if (!resolved) return null;
-  if (!isLegacyRunDir(resolved.runDir)) return null;
-  const message = legacyRunLine({ shortId: resolved.shortId, runId: resolved.runId, runDir: resolved.runDir });
-  if (json) console.log(JSON.stringify({ legacy: true, runId: resolved.runId, shortId: resolved.shortId ?? null, dir: resolved.runDir, message }, null, 2));
-  else console.error(message);
-  return 2;
-}
-
-function loadV2RunState(token) {
-  const resolved = resolveRunId(BULLSWARM_DIR(), token);
-  if (!resolved) throw new Error(`no run found for "${token}"`);
-  const statePath = join(resolved.runDir, 'state.json');
-  if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
-  const state = withV2Cancellation(JSON.parse(readFileSync(statePath, 'utf8')), resolved.runDir);
-  if (isLegacyRunState(state)) throw new Error(`run "${token}" is not an autonomous V2 run`);
-  return { ...resolved, state };
 }
 
 function planShow(opts) {
