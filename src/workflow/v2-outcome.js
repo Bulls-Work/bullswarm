@@ -8,6 +8,7 @@ import { aggregateAttemptUsage } from './rollup.js';
 import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
+import { resultAnswerField, resultAnswerIssue } from './answers.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -194,7 +195,7 @@ function validateResultUsageBytes(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'evidenceResults', 'bytes', 'routeWhy', 'routeCandidates', 'usage', 'acceptance']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'evidenceResults', 'bytes', 'routeWhy', 'routeCandidates', 'usage', 'acceptance', 'answer']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -219,6 +220,8 @@ function validateResultAction(value, name) {
   validateResultBytes(value.bytes, `${name}.bytes`);
   if (value.usage !== undefined && value.usage !== null) validateUsageAggregate(value.usage, `${name}.usage`);
   if (value.acceptance !== undefined) validateResultAcceptance(value.acceptance, `${name}.acceptance`);
+  const answerIssue = resultAnswerIssue(value.answer, name);
+  if (answerIssue) resultFail(answerIssue);
 }
 
 function validateGaps(value, result) {
@@ -704,6 +707,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         routeCandidates: clone(attempt?.routeCandidates ?? null),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
         ...(runtime?.acceptance ? { acceptance: publicAcceptance(runtime.acceptance) } : {}),
+        // Program v3: the step's checked answer (answers.js).
+        ...resultAnswerField(definition, runtime),
       };
     }),
     gaps: status === 'completed' && verified ? null : (progress.gaps ?? consolidateV2Gaps(state)),

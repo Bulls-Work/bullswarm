@@ -173,3 +173,25 @@ export function settleStepAnswer(state, runtime, action, result, firstOrdinal = 
     runtime.answer = { attemptId: last.id, value: JSON.parse(JSON.stringify(last.answer.value)) };
   } else delete runtime.answer;
 }
+
+/**
+ * The result envelope's `answer` for one step: present only on a step that
+ * declares an answer (so v2 and answer-less envelopes keep their shape), the
+ * step's current checked answer `{attemptId, value}`, or null when no attempt
+ * produced a valid one.
+ */
+export function resultAnswerField(definition, runtime) {
+  if (definition?.answer === undefined) return {};
+  const current = runtime?.answer;
+  return { answer: current ? { attemptId: current.attemptId, value: JSON.parse(JSON.stringify(current.value)) } : null };
+}
+
+/** The issue with a result action's `answer`, or null when it is well formed. */
+export function resultAnswerIssue(value, name) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) return `${name}.answer must be null or an object`;
+  const keys = Object.keys(value).sort().join(',');
+  if (keys !== 'attemptId,value') return `${name}.answer must hold exactly attemptId and value`;
+  if (typeof value.attemptId !== 'string' || !value.attemptId) return `${name}.answer.attemptId must be a non-empty string`;
+  return null;
+}

@@ -409,6 +409,7 @@ test('a v3 step with an answer: the brief names answer-<attempt>.json and the ch
   const attempt = run.state.attempts.find((item) => item.actionId === 'count');
   assert.deepEqual(attempt.answer, { file: answerFile, ok: true, value: { count: 1 }, errors: [] });
   assert.deepEqual(run.state.actions.find((item) => item.id === 'count').answer, { attemptId: 'count-1', value: { count: 1 } });
+  assert.deepEqual(run.result.actions[0].answer, { attemptId: 'count-1', value: { count: 1 } }, 'the result carries the checked answer');
   // An empty reply beside a valid answer is a note, never the verdict.
   assert.ok(attempt.notes?.some((note) => note.kind === 'no-output'), JSON.stringify(attempt.notes));
 });
@@ -437,6 +438,7 @@ test('an answer that breaks its schema gets one same-pool correction worded for 
   assert.equal(refused.result.status, 'partial');
   assert.equal(refused.state.attempts[0].failureKind, 'schema');
   assert.equal(refused.state.actions[0].answer, undefined);
+  assert.equal(refused.result.actions[0].answer, null, 'a step with no valid answer reads null in the result');
 });
 
 test('a v3 step with no answer passes by facts: a short reply is not judged by the prose gate', async (t) => {
@@ -446,6 +448,7 @@ test('a v3 step with no answer passes by facts: a short reply is not judged by t
   assert.equal(seen[0].validator, true, 'an accept-all validator keeps judgeContent out');
   assert.equal(run.result.status, 'completed', run.result.reason);
   assert.equal(run.state.attempts[0].answer, undefined);
+  assert.equal(Object.hasOwn(run.result.actions[0], 'answer'), false, 'no answer declared, no key');
 });
 
 // --- recovery after a provider stream error ----------------------------------
