@@ -1,8 +1,9 @@
 // How a caller changes a step, in the words a refusal prints.
 //
 // A v2 run changes a step through the whole-plan revise (export, edit,
-// revise). A v3 run refuses plan revise (0.37.0, design section 5): its steps
-// are never edited, so the change is a new step appended with workflow add.
+// revise). A v3 run's steps are never edited (0.37.0, design section 5): plan
+// revise refuses any change to one, so the change is a new step appended with
+// workflow add.
 
 import { isProgramV3 } from './program-v3.js';
 

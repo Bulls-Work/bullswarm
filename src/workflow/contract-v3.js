@@ -68,7 +68,7 @@ const RULES = Object.freeze([
   'A failed step blocks only the steps that depend on it; other branches finish.',
   'route.independentOf can only name steps this step depends on (directly or through others): a check that must run on another provider than its source also depends on that source.',
   'Workers share one folder: tell each writer to keep other workers\' edits, and give it the exact files it changes in files.',
-  'A v3 run\'s steps are never edited (plan revise is refused on it): add steps, rerun a step (workflow step rerun), accept a failed one (workflow step accept, recorded as your choice), or cancel and start a new run.',
+  'A v3 run\'s steps, gates and loops are never edited: plan revise refuses any change to them and may only rerun steps. Add steps (workflow add), rerun a step (workflow step rerun), accept a failed one (workflow step accept, recorded as your choice), or cancel and start a new run.',
 ]);
 
 // The design's third workflow: research, a critique loop, a gate, publish.

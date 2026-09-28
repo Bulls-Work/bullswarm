@@ -55,17 +55,19 @@ function rich({ usage, purpose, argsTitle = 'Arguments', args = [], options = []
 
 const top = rich({
   usage: 'bullswarm <command> [options]',
-  purpose: 'Route work across coding-agent subscriptions and verify the result before treating '
-    + 'it as done. There are exactly two ways to start work: `bullswarm run` dispatches one '
-    + 'bounded task to a single agent, and `bullswarm workflow goal` executes a program you '
-    + 'author across a coordinated multi-agent run. Bare `bullswarm` opens the dashboard — '
+  purpose: 'Route work across coding-agent subscriptions and judge the result by facts before treating '
+    + 'it as done. There are exactly two ways to start work: `bullswarm run` runs one bounded task as a '
+    + 'one-step workflow, and `bullswarm workflow goal --program` runs a workflow you write from four '
+    + 'blocks: steps (one agent task each, with an optional checked JSON answer), phases (a label that '
+    + 'groups steps), gates (the run stops there for you) and loops (steps that repeat until an answer '
+    + 'says stop). Bare `bullswarm` opens the dashboard — '
     + 'Home, Runs, Run, Step, Budget, Stats, Fleet, Help — once this machine is configured, and the setup control '
     + "center when it is not. Reach for a specific command's --help for full options.",
   argsTitle: 'Commands',
   args: [
     { name: 'setup', desc: 'discover and configure installed coding agents' },
     { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, and Grok' },
-    { name: 'run', desc: 'dispatch one bounded task' },
+    { name: 'run', desc: 'run one bounded task as a one-step workflow' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
     { name: 'pools', desc: 'show routing pools, meters, load, and spent windows; label manages display names' },
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
@@ -73,7 +75,7 @@ const top = rich({
     { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
     { name: 'doctor', desc: 'report installation readiness' },
     { name: 'home', desc: 'make a selective, dashboard-readable snapshot of a Bullswarm home' },
-    { name: 'workflow', desc: 'plan, execute, observe, and audit workflows' },
+    { name: 'workflow', desc: 'write, run, watch and steer workflows of steps, phases, gates and loops' },
     { name: 'runs', desc: 'alias for workflow runs' },
     { name: 'version', desc: 'print the installed version' },
     { name: 'update', desc: 'upgrade the installed package to the latest published version' },
@@ -95,7 +97,7 @@ const top = rich({
     { cmd: 'bullswarm', note: 'open the dashboard once this machine is configured; an unconfigured machine opens setup instead' },
     { cmd: 'bullswarm --setup && bullswarm workflow tui --json', note: 'force setup on a configured machine, then read the dashboard\'s run list non-interactively' },
     { cmd: 'bullswarm setup --yes && bullswarm run --lane analyze "audit this repo for TODOs"', note: 'one-time initialization, then one bounded task' },
-    { cmd: 'bullswarm workflow goal "1. Fix the parser. 2. Add tests." --cwd . --program plan.json', note: 'author the program yourself, the kernel routes and verifies it' },
+    { cmd: 'bullswarm workflow goal "Fix the parser and add tests" --cwd . --program plan.json', note: 'run a program you wrote; bullswarm workflow plan contract prints the format' },
   ],
   next: "bullswarm <command> --help for that command's full arguments, options, and defaults.",
 });
@@ -357,7 +359,7 @@ const runText = rich({
     { flag: '--avoid-pool <pool,...>', desc: 'never route this task to these pools' },
     { flag: '--use-provider <provider,...>', desc: 'route only to pools of these providers' },
     { flag: '--avoid-provider <provider,...>', desc: 'never route to pools of these providers' },
-    { flag: '--timeout <seconds>', desc: 'hard wall-clock kill timer for the delegate process', default: 'none — the delegate is allowed to run to completion' },
+    { flag: '--timeout <seconds>', desc: 'hard wall-clock limit per attempt: the worker is killed after that many seconds, the verdict reads `timeout after <N>s` with failure kind interrupted (a process failure, so the one retry runs unless --no-retry)', default: 'none — the delegate is allowed to run to completion' },
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
     { flag: '--dry-run', desc: 'print the kernel\'s routing pick, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, recording a run, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
     { flag: '--no-caller', desc: 'accepted and ignored for one release: the calling agent is never a pool of its own run', default: 'removed in 0.37.0; a notice is printed' },
@@ -367,7 +369,7 @@ const runText = rich({
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
     'records the run under ~/.bullswarm/workflows/<id>/ (see bullswarm workflow runs --all) and each attempt in the decision log; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of each attempt and releases it when the attempt ends; --dry-run registers nothing',
-    'a build or chore run must change a file (else failure kind not-produced), as every workflow step must',
+    'a build or chore run must change a file (else failure kind not-produced), as every workflow step must; outside a git repository Bullswarm lists the folder (up to 5,000 files and 64 MiB, .git and node_modules skipped) to see it',
     'one automatic retry (a process failure on another pool, a failed answer check on the same pool) unless --no-retry; a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
   ],
   examples: [
@@ -915,14 +917,19 @@ const strategyAutoOffText = rich({
 
 const workflowText = rich({
   usage: 'bullswarm workflow [<command>] [options]',
-  purpose: 'Plan, execute, observe, and audit durable multi-agent workflows with the '
-    + 'single V2 action/evidence engine. With no command on a TTY, opens the dashboard '
+  purpose: 'Write, run, watch and steer durable multi-agent workflows. A workflow is a program of four '
+    + 'blocks: steps (one agent task each, passed by facts: a clean exit, its deliverable, its evidence '
+    + 'and its checked answer), phases (a label that groups steps), gates (the run stops there for you, '
+    + 'or only when an answer says so) and loops (steps that repeat until one step\'s answer says stop, '
+    + 'at most 5 rounds). New programs are v3 (bullswarm.workflow.program.v3; workflow plan contract '
+    + 'prints the format); old v2 programs still run. Extend a v3 run with workflow add, read a step\'s '
+    + 'answer with workflow wait, and move a waiting gate or loop on with workflow continue. With no command on a TTY, opens the dashboard '
     + '(Home, Runs, Run, Step, Budget, Stats, Fleet, Help) — the same screen bare `bullswarm` opens on a '
     + 'configured machine.',
   argsTitle: 'Commands',
   args: [
-    { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal from your program (--program), a kernel scout that finishes with its report (--scout), or an explicitly dispatched Workflow Planner (--orchestrator); a v2 run never waits, it finishes and hands back what is left; a v3 run also stops at its gates and at loops out of rounds until you continue them' },
-    { name: 'plan ...', desc: 'you are the Workflow Planner: read the planning contract, validate a program, export and revise a live or finished run\'s plan at any time, and answer a run an older version left waiting' },
+    { name: 'goal "<goal>"', desc: 'run a program you wrote (--program): steps start when their dependencies finish, a gate or a loop out of rounds stops the run for you until workflow continue, and the run finishes when nothing more can run, handing back what is left; --scout and --orchestrator survey or plan a v2 program for you' },
+    { name: 'plan ...', desc: 'plan contract prints the v3 format, plan validate checks your file; plan export and plan revise change a v2 run\'s plan (on a v3 run revise may only rerun steps); show and submit answer a run an older version left waiting' },
     { name: 'pause <runId>', desc: 'stop starting new steps (--now also stops running ones); resume continues' },
     { name: 'cancel <runId>', desc: 'stop a run cooperatively; a run stopped by pause, or left waiting by an older version, is finalized immediately' },
     { name: 'resume <runId>', desc: 'lift a pause, continue an interrupted run, or retry a finished run\'s retryable steps, with its durable planner mode and routing' },
@@ -935,9 +942,9 @@ const workflowText = rich({
     { name: 'step restart <runId> <step>', desc: 'stop a running step and run it again with its handoff, optionally on another pool; nothing restarts on its own' },
     { name: 'step rerun <runId> <step>', desc: 'run a failed or finished step again with its last attempt\'s handoff; --avoid keeps it off pools and stays in the step\'s route' },
     { name: 'step accept <runId> <step>', desc: 'accept a failed step, or a check\'s failing requirements, by your choice (--reason); dependents run; recorded as evidence "choice", never proof' },
-    { name: 'continue <runId> <id>', desc: 'pass a v3 gate that waits for you, or give a loop out of rounds more rounds (--rounds); relaunches the kernel when none is running' },
+    { name: 'continue <runId> <id>', desc: 'pass a gate that waits for you, or give a loop out of rounds more rounds (--rounds); relaunches the kernel when none is running' },
     { name: 'add <runId>', desc: 'append steps, gates or loops to a v3 run (--steps <file.json> or --from-answer <step>); never changes what the run has; reopens a finished run' },
-    { name: 'wait <runId> <id...>', desc: 'block until the named v3 steps, gates or loops finish, fail, block or wait; print their facts and checked answers' },
+    { name: 'wait <runId> <id...>', desc: 'block until the named steps, gates or loops finish, fail, block or wait; print their facts and checked answers' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
@@ -949,16 +956,18 @@ const workflowText = rich({
       + 'stdout are TTYs; non-interactive callers receive this help text instead',
     'goal dispatches real coding-agent CLI processes and writes durable state under '
       + '~/.bullswarm/workflows/<runId>/',
-    'capabilities, tui, watch, events, action show, and task show are read-only; cancel, steer, step restart, step rerun, '
-      + 'step accept, continue, plan submit, and runs delete are the exceptions — see their own --help',
+    'capabilities, tui, watch, wait, events, action show, and task show are read-only; cancel, steer, step restart, step rerun, '
+      + 'step accept, add, continue, plan submit, and runs delete are the exceptions — see their own --help',
     'legacy authored-graph runs are read-only; driving commands fail closed before dispatch',
     'plan contract, plan validate, plan show, and plan export are read-only; plan submit and plan revise write the accepted program into the run and relaunch its kernel when none is running',
     'pause writes a pause request the kernel honors within about a second; resume lifts it',
   ],
   examples: [
     { cmd: 'bullswarm workflow', note: 'open the human workflow home: runs, live preview, timeline, agents, and activity' },
-    { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd . --program plan.json', note: 'autonomous goal, launched independently; goal needs --program, --scout, or --orchestrator or it exits 2' },
-    { cmd: 'bullswarm workflow goal "1. Fix the parser. 2. Verify it." --cwd . --program plan.json', note: 'caller-planner goal: you author the program, the kernel routes, verifies, and completes' },
+    { cmd: 'bullswarm workflow plan contract "Audit this repository for TODOs" --cwd . --json', note: 'the v3 format: step, gate and loop fields, the condition form, and an example that validates' },
+    { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd . --program plan.json', note: 'launched detached; prints the short id; goal needs --program, --scout, or --orchestrator or it exits 2' },
+    { cmd: 'bullswarm workflow watch ab12cd --until trouble', note: 'quiet until a gate waits, a loop runs out of rounds, a step needs you, or the run ends' },
+    { cmd: 'bullswarm workflow continue ab12cd approve', note: 'go past the gate approve; the steps behind it start' },
     { cmd: 'bullswarm workflow runs --all --since 7d', note: 'list every run started in the last week' },
   ],
   next: "bullswarm workflow <command> --help for that command's full arguments, options, and defaults.",
@@ -967,18 +976,21 @@ const workflowText = rich({
 const workflowGoalText = rich({
   usage: 'bullswarm workflow goal "<goal>" (--program <file.json> [--scout] | --scout | --orchestrator auto|<pool>) '
     + '[--cwd <dir>] [--watch|--foreground] [--json] [planning options] [--again]  ·  bullswarm workflow goal --resume <shortId|runId>',
-  purpose: 'Run an autonomous V2 goal end to end. You are the Workflow Planner: pass the program you '
-    + 'authored (--program, from `workflow plan contract`) and the kernel validates it against the exact '
-    + 'requirements, schedules the dependency graph in a shared workspace, and returns every action result. '
-    + 'File territories guide coordination; exact-file enforcement and worktree copying require --isolation. '
-    + 'Completion means all actions succeeded; verified separately reports requirement evidence. There are no automatic gap rounds. '
-    + 'Without a program the command refuses (exit 2, nothing launched) and prints '
-    + 'the next commands; --scout alone has the kernel survey the repository and finish with the report, '
-    + 'which you plan from and add with plan revise; --orchestrator explicitly dispatches a Workflow Planner '
-    + 'agent instead of planning yourself. A v2 run never waits for its caller: when nothing more can run on its '
-    + 'own it finishes, and its result hands back every unfinished step, open requirement, and unread '
-    + 'steering with the commands to continue, retry, take over, or restart. A v3 run waits at a gate, and at a '
-    + 'loop out of rounds, until you move it with workflow continue; otherwise it finishes the same way. '
+  purpose: 'Run a program you wrote, end to end. Write it from `workflow plan contract` (a v3 program: steps, '
+    + 'phases, gates and loops) and check it with `workflow plan validate`; goal validates it again (exit 2 '
+    + 'with the issues and nothing launched when invalid), launches it detached and prints its short id. '
+    + 'Steps start when their dependencies finish, up to --concurrency at once, in one shared folder (file '
+    + 'lists guide scheduling; exact-file enforcement and worktree copies need --isolation). A step passes by '
+    + 'facts: a clean exit, its deliverable produced, its evidence passed and its answer matching its schema. '
+    + 'A failed step gets one automatic retry, then comes back to you; a usage limit comes back at once. A gate '
+    + 'stops the steps behind it until you run workflow continue; a loop repeats its steps until its condition '
+    + 'holds, and waits for you like a gate when its rounds run out. Add steps at any time with workflow add. '
+    + 'When nothing more can run the run finishes, and its result hands back every unfinished step and '
+    + 'unread steering with your options; a completed v3 run hands nothing back. '
+    + 'Old v2 programs still run: a v2 run never stops for you, it finishes and hands back what is left, and '
+    + 'its requirements are verified separately. Without a program the command refuses (exit 2, nothing '
+    + 'launched) and prints the next commands; --scout alone has the kernel survey the repository and finish '
+    + 'with the report; --orchestrator dispatches a Workflow Planner agent that writes a v2 program for you. '
     + 'In a run started by this version a usage limit, a rate limit still there after its short backoff, or '
     + 'no free pool stops the dispatched planner or the scout, with no move to another pool: the run '
     + 'finishes with the reason (`the workflow planner stopped on a usage limit: …`) and your call: after '
@@ -1033,13 +1045,13 @@ const workflowGoalText = rich({
     'there is no V1 autonomous migration or fallback; explicitly resuming an old run dispatches nothing',
   ],
   examples: [
-    { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --watch', note: 'you are the planner: author plan.json from `workflow plan contract`, then the kernel routes, owns, verifies, and completes' },
+    { cmd: 'bullswarm workflow goal "Fix src/parser.js and update the docs" --cwd . --program plan.json', note: 'write plan.json from `workflow plan contract`, check it with `workflow plan validate`, then launch; watch it with bullswarm workflow watch <shortId> --until trouble' },
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --scout', note: 'kernel surveys and finishes with the report; add your program with plan revise' },
     { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd . --orchestrator auto', note: 'dispatch a Workflow Planner agent instead of planning yourself' },
     { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --orchestrator codex --orchestrator-strict --orchestrator-model gpt-5.6-sol --worker-pool relay --worker-model a/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --worker-reasoning high --json', note: 'every worker thinks at high unless an action sets its own reasoning field' },
   ],
-  next: 'bullswarm workflow watch <shortId> --next to follow progress, bullswarm workflow runs result <shortId> --json --summary once it finishes, or bare bullswarm workflow for the interactive workflow home.',
+  next: 'bullswarm workflow watch <shortId> --until trouble to be woken only when you are needed (at a gate, a loop out of rounds, a step that needs you, or the end), bullswarm workflow wait <shortId> <step> for one step\'s answer, or bullswarm workflow runs result <shortId> --json --summary once it finishes.',
 });
 
 // --- workflow plan ---------------------------------------------------------
@@ -1051,21 +1063,22 @@ const workflowGoalText = rich({
 
 const workflowPlanText = rich({
   usage: 'bullswarm workflow plan <contract|validate|show|submit|export|revise> [options]',
-  purpose: 'You are the Workflow Planner. contract prints the exact planning contract (requirement IDs, '
-    + 'rules, program schema, example, and the run-wide reasoning levels your optional per-action '
-    + '`reasoning` field would override) for a goal before any run exists; validate checks a program against '
-    + 'that contract without launching; export and revise change the plan of a live or finished run. '
+  purpose: 'You write the program. contract prints the v3 format for a goal before any run exists (step, '
+    + 'gate and loop fields, the condition form, the rules, an example, and the run-wide reasoning level a '
+    + 'step\'s `reasoning` field would override; --v2 prints the old contract); validate checks a program '
+    + 'without launching; export and revise change the plan of a live or finished v2 run (a v3 run\'s steps, '
+    + 'gates and loops are never edited, so revise may only rerun its steps: extend it with workflow add). '
     + 'show and submit answer only a run an older version left waiting for its caller: show prints its '
     + 'planner request, submit validates the next program (or an exhausted decision) against that exact run '
     + 'state and relaunches the kernel. Launch the initial program with workflow goal --program.',
   argsTitle: 'Commands',
   args: [
-    { name: 'contract "<goal>"', desc: 'print the planning contract for a goal: requirements, constraints, rules, program schema (including the optional per-action `reasoning` level), example, and the launch line' },
+    { name: 'contract "<goal>"', desc: 'print the v3 program format for a goal: step, gate and loop fields, the condition form, rules, an example that validates, and the validate and launch lines (--v2: the old contract)' },
     { name: 'validate "<goal>" --program <file>', desc: 'dry-run a program against the contract: exit 0 with the accepted actions, or exit 2 with the validator issues; nothing is launched' },
     { name: 'show <runId>', desc: 'print the pending planner request of a run an older version left waiting' },
     { name: 'submit <runId>', desc: 'answer a run an older version left waiting with the next program (or --exhausted at a gaps boundary) and relaunch it' },
     { name: 'export <runId>', desc: 'write the live plan of a running, paused, or finished run as an editable revision document' },
-    { name: 'revise <runId> --program <file>', desc: 'replace the live plan at any time: add, amend, remove, or rerun steps; running agents whose steps change are stopped and restarted' },
+    { name: 'revise <runId> --program <file>', desc: 'replace the live plan of a v2 run at any time: add, amend, remove, or rerun steps; running agents whose steps change are stopped and restarted; on a v3 run it may only rerun steps' },
   ],
   options: [],
   safety: [

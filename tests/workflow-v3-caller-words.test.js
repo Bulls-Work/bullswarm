@@ -265,3 +265,19 @@ test('walkFolderFiles lists a folder\'s files, skips .git and node_modules, and 
   assert.equal(walkFolderFiles(root, { maxBytes: 5 }), null);
   assert.equal(walkFolderFiles(join(root, 'missing')), null);
 });
+
+test('run --timeout: the worker is killed, the failure kind is interrupted, and the one retry runs unless --no-retry', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-timeout-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = echoHome(root);
+  const folder = join(root, 'notes');
+  mkdirSync(folder);
+  const env = { ...cliEnv(home), BULLSWARM_NO_PACKAGED_PROVIDERS: '1' };
+  const verdictOf = (extra) => JSON.parse(spawnSync(process.execPath, [cli, 'run', '--lane', 'analyze', '--json', '--timeout', '1', ...extra, '--add-dir', folder, '--prompt', 'SLEEP_MS:8000 slow'], { cwd: folder, env, encoding: 'utf8', timeout: 60_000 }).stdout);
+  const retried = verdictOf([]);
+  assert.deepEqual([retried.ok, retried.why, retried.failureKind, retried.attempts, retried.meta.timedOut], [false, 'timeout after 1s', 'interrupted', 2, true]);
+  const once = verdictOf(['--no-retry']);
+  assert.deepEqual([once.failureKind, once.attempts], ['interrupted', 1]);
+  const help = helpText(['run']);
+  assert.ok(help.includes('the verdict reads `timeout after <N>s` with failure kind interrupted'), help);
+});

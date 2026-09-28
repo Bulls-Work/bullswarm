@@ -445,14 +445,14 @@ test('watch --until lists needs you as trouble (a usage limit is one), and block
   assert.doesNotMatch(watch, /already waiting/);
 });
 
-test('goal and plan validate --help name program.v3, and only a v2 run never waits', () => {
+test('goal and plan validate --help name program.v3, and a gate or a loop out of rounds stops a run for you', () => {
   const goal = helpText(['workflow', 'goal']);
   assert.match(goal, /bare bullswarm\.workflow\.program\.v2 or bullswarm\.workflow\.program\.v3 document/);
-  assert.match(goal, /A v2 run never waits for its caller/);
-  assert.match(goal, /A v3 run waits at a gate, and at a loop out of rounds, until you move it with workflow continue/);
-  assert.doesNotMatch(goal, /(^|[^2] )A run never waits/);
+  assert.match(goal, /a v2 run never stops for you, it finishes and hands back what is left/);
+  assert.match(goal, /A gate stops the steps behind it until you run workflow continue; a loop repeats its steps until its condition holds, and waits for you like a gate when its rounds run out\./);
+  assert.doesNotMatch(goal, /never waits/);
   assert.match(helpText(['workflow', 'plan', 'validate']), /bare bullswarm\.workflow\.program\.v2 or bullswarm\.workflow\.program\.v3 document/);
   const workflow = helpText(['workflow']);
-  assert.match(workflow, /a v2 run never waits, it finishes and hands back what is left; a v3 run also stops at its gates/);
-  assert.doesNotMatch(workflow, /; a run never waits/);
+  assert.match(workflow, /a gate or a loop out of rounds stops the run for you until workflow continue/);
+  assert.doesNotMatch(workflow, /never waits/);
 });
