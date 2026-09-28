@@ -682,6 +682,22 @@ export function groupEntries(entries) {
 }
 
 /**
+ * How many of the entries' attempts were both priced and measured: the count
+ * `runSpendFacts` reads as `measuredAttempts` (estimated = priced minus it).
+ * An entry's `measuredAttempts` counts measured tokens whether or not a price
+ * was found, so the two are taken per entry: exact for a one-attempt entry,
+ * and for a map entry, whose attempts share one token source.
+ */
+export function pricedMeasuredAttemptCount(entries) {
+  let count = 0;
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry) continue;
+    count += Math.max(0, Math.min(entry.pricedAttempts ?? 0, entry.measuredAttempts ?? 0));
+  }
+  return count;
+}
+
+/**
  * The sum of a set of entries, with coverage (M1, M2).
  *
  * `apiUsd` is the whole amount only when every attempt was priced, and the

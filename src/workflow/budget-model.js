@@ -29,8 +29,8 @@ import { periodRange } from './stats-model.js';
 import { poolWindows } from './usage-view.js';
 import { localTimeZone } from './day-key.js';
 import {
-  addNullable as add, finite, measuredAttemptCount as measuredAttempts, parseIso, recordEntries,
-  recordTimeMs, recordWorkerMinutes, round, sumEntries,
+  addNullable as add, finite, measuredAttemptCount as measuredAttempts, parseIso, pricedMeasuredAttemptCount,
+  recordEntries, recordTimeMs, recordWorkerMinutes, round, sumEntries,
 } from './metrics.js';
 
 const MINUTE_MS = 60_000;
@@ -532,7 +532,9 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     apiFacts: spendFacts({
       attempts,
       pricedAttempts,
-      measuredAttempts: measured,
+      // Priced and measured, as runSpendFacts reads it; `measured` above
+      // also counts measured attempts nobody priced.
+      measuredAttempts: pricedMeasuredAttemptCount(entries),
       apiKnownSubtotalUsd,
     }),
     tokenSource,
@@ -641,7 +643,8 @@ export function budgetModel(pools, {
     priced: [],
     unpriced: [],
   };
-  const money = sumEntries(rows.flatMap((row) => row._entries ?? []));
+  const allEntries = rows.flatMap((row) => row._entries ?? []);
+  const money = sumEntries(allEntries);
   totals.apiEquivalentUsd = money.apiUsd;
   totals.apiKnownSubtotalUsd = money.apiKnownSubtotalUsd;
   totals.tokenSource = money.tokenSource;
@@ -667,7 +670,7 @@ export function budgetModel(pools, {
   totals.apiFacts = spendFacts({
     attempts: totals.attempts,
     pricedAttempts: totals.pricedAttempts,
-    measuredAttempts: totals.measuredAttempts,
+    measuredAttempts: pricedMeasuredAttemptCount(allEntries),
     apiKnownSubtotalUsd: totals.apiKnownSubtotalUsd,
   });
   totals.tokenSource ??= 'unknown';

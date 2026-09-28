@@ -651,3 +651,34 @@ test('nothing in the budget model produces a NaN, at any period or shape', () =>
     assertNoNaN(poolBudget(junk, { rollups: junk, now: NOW }));
   }
 });
+
+// runSpendFacts reads `measuredAttempts` as priced-and-measured: estimated is
+// priced minus it. A pool whose tokens were measured but not priced must not
+// hide the priced byte estimate beside it.
+test('apiFacts: a measured but unpriced attempt does not hide a priced estimate', () => {
+  const rollups = indexOf([
+    record({
+      runId: 'wf-priced-measured', startedAt: DAY(0, 8), finishedAt: DAY(0, 9),
+      pools: { 'claude-code': { attempts: 1, minutes: 5, apiUsd: 0.1, apiKnownSubtotalUsd: 0.1, pricedAttempts: 1, measuredAttempts: 1, tokenSource: 'provider-reported' } },
+    }),
+    record({
+      runId: 'wf-measured-unpriced', startedAt: DAY(0, 10), finishedAt: DAY(0, 11),
+      pools: { 'claude-code': { attempts: 1, minutes: 5, apiUsd: null, apiKnownSubtotalUsd: null, pricedAttempts: 0, measuredAttempts: 1, tokenSource: 'provider-reported' } },
+    }),
+    record({
+      runId: 'wf-priced-estimate', startedAt: DAY(0, 12), finishedAt: DAY(0, 13),
+      pools: { 'claude-code': { attempts: 1, minutes: 5, apiUsd: 0.2, apiKnownSubtotalUsd: 0.2, pricedAttempts: 1, measuredAttempts: 0, tokenSource: 'estimated:utf8-bytes/4' } },
+    }),
+  ]);
+  const row = poolBudget(metered(), { rollups, now: NOW });
+  assert.equal(row.attempts, 3);
+  assert.equal(row.pricedAttempts, 2);
+  assert.equal(row.measuredAttempts, 2, 'the token-measured count the notes quote is unchanged');
+  assert.equal(row.apiFacts.measured, 1);
+  assert.equal(row.apiFacts.estimated, 1);
+  assert.equal(row.apiFacts.unmeasured, 1);
+  const model = budgetModel([metered()], { rollups, now: NOW });
+  assert.equal(model.totals.apiFacts.measured, 1);
+  assert.equal(model.totals.apiFacts.estimated, 1);
+  assert.equal(model.totals.apiFacts.unmeasured, 1);
+});
