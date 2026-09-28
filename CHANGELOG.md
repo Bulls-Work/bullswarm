@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- known issues in this release: a limit marker whose reset was guessed still
+  counts as a 100% reading in the spend forecast, so it can rank a pool lower
+  for up to 5 hours (it never keeps the pool out); the Claude Code mod's pool
+  panes still read the removed pausing fields, so a pool held by a usage limit
+  can show as ready there; the preflight scout and the dispatched planner can
+  make up to three attempts (a correction plus a retry); `strategy
+  set-pausing` exits 2 with the general usage text instead of naming the
+  removed command.
 - workflow: every step gets one automatic retry, then comes back to you. A
   crashed, silent or signed-out worker is retried once on another pool that can
   run the step (the same pool when it is the only one, except after a sign-in
