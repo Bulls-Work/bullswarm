@@ -9,7 +9,9 @@ import { normalizeCallerPlannerResponse, validateV2PlannerResponse } from './v2-
 
 export function readJsonFile(path, label) {
   let raw;
-  try { raw = readFileSync(resolve(path), 'utf8'); }
+  // /dev/stdin is read from fd 0: on Linux a stdin that is a socket (Node's
+  // spawn with `input`) cannot be opened by path (ENXIO).
+  try { raw = readFileSync(path === '/dev/stdin' || path === '-' ? 0 : resolve(path), 'utf8'); }
   catch (err) { throw new Error(`cannot read ${label} ${path}: ${err.message}`); }
   try { return JSON.parse(raw); }
   catch (err) { throw new Error(`${label} ${path} is not valid JSON: ${err.message}`); }

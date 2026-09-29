@@ -220,7 +220,7 @@ test('output: merged streams, ANSI-free tail within 2048 bytes, bounded log with
   const { runDir, outFile } = runFiles(t);
   const cwd = tempDir(t);
   const node = JSON.stringify(process.execPath);
-  const script = `${node} -e "for (let i = 0; i < 400; i++) console.log('\\x1b[31mline ' + i + ' ✓ ok\\x1b[0m'); console.error('to stderr'); process.exit(1)"`;
+  const script = `${node} -e "let s = ''; for (let i = 0; i < 400; i++) s += '\\x1b[31mline ' + i + ' ✓ ok\\x1b[0m\\n'; process.stdout.write(s, () => setTimeout(() => { console.error('to stderr'); process.exit(1); }, 100))"`;
   const run = await runStepEvidence([cmd(script)], stepOptions(cwd, runDir, outFile));
   const [result] = run.results;
   assert.ok(Buffer.byteLength(result.tail) <= EVIDENCE_TAIL_BYTES);
