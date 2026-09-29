@@ -31,6 +31,24 @@ test('a run verdict carries its checked answer into the note', () => {
   assert.doesNotMatch(verdictContext('run', plain), /answer/, 'a run with no answer schema claims no answer');
 });
 
+test('a run verdict\'s token counts come from its short usage summary, or from meta.usage in an older verdict', () => {
+  const compact = parseVerdict(JSON.stringify({
+    ok: true, why: 'all 1 step succeeded', shortId: '5r8jyi', pick: { pool: 'grok' }, outFile: '/tmp/o.md',
+    meta: { exitCode: 0, wallSec: 42 },
+    usage: { attempts: 1, minutes: 0.7, tokens: { standardRead: 1200, cacheRead: 0, cacheWrite: 0, output: 300, reasoning: 0, total: 1500 }, tokenSource: 'provider', apiUsd: 0.01, money: '$0.01 api' },
+    details: 'bullswarm workflow runs result 5r8jyi --json',
+  }), 0);
+  assert.equal(compact.inputTokens, 1200);
+  assert.equal(compact.outputTokens, 300);
+  assert.equal(compact.wallSec, 42);
+  const older = parseVerdict(JSON.stringify({
+    ok: true, why: 'verified', pick: { pool: 'grok' }, outFile: '/tmp/o.md',
+    meta: { wallSec: 9, usage: { tokens: { standardRead: 7, output: 3 } } },
+  }), 0);
+  assert.equal(older.inputTokens, 7);
+  assert.equal(older.outputTokens, 3);
+});
+
 test('a launched workflow is watched with --until trouble, which wakes at a gate', () => {
   const note = verdictContext('workflow goal', parseVerdict(JSON.stringify({ ok: true, shortId: '2fne62', runId: 'wf-mulitifp-c82a30' }), 0));
   assert.match(note, /bullswarm workflow watch 2fne62 --until trouble/);

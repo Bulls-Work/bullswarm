@@ -276,3 +276,39 @@ test('run: complete content after a non-zero exit is reported usable, and no ans
   assert.doesNotMatch(verdict.why, /structured output validated/);
   assert.match(readFileSync(verdict.outFile, 'utf8'), /Refactor complete/);
 });
+
+// QA37 rerun (N2): the --json verdict was 366 lines, the run id at the top
+// and ~220 lines of cost detail at the end, so callers who read the tail lost
+// their run id. The verdict is compact and ends with the details command.
+test('run --json: a compact verdict with a short usage summary, ending in the details command', (t) => {
+  const f = fixture(t);
+  const result = bullswarm(f, ['run', '--lane', 'analyze', '--json', '--add-dir', f.repo, '--prompt', 'Summarise the acme readme']);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const verdict = JSON.parse(result.stdout);
+  const lines = result.stdout.trimEnd().split('\n');
+  assert.ok(lines.length <= 60, `${lines.length} lines`);
+  assert.deepEqual(Object.keys(verdict), [
+    'ok', 'why', 'failureKind', 'retryAfter', 'runId', 'shortId', 'pick', 'outFile', 'answer', 'answerCheck',
+    'taskFile', 'attempts', 'routeWhy', 'reasoning', 'meta', 'usage', 'contentUsableDespiteExit', 'details',
+  ]);
+  assert.deepEqual(Object.keys(verdict.pick), ['pool', 'model', 'command', 'poolLabel']);
+  assert.deepEqual(Object.keys(verdict.meta), ['exitCode', 'signal', 'timedOut', 'stalled', 'cancelled', 'wallSec', 'outBytes', 'reasoning']);
+  assert.deepEqual(Object.keys(verdict.usage), ['attempts', 'minutes', 'tokens', 'tokenSource', 'apiUsd', 'money']);
+  assert.equal(verdict.usage.attempts, 1);
+  assert.equal(typeof verdict.usage.money, 'string');
+  assert.equal(verdict.details, `bullswarm workflow runs result ${verdict.shortId} --json`);
+  // The tail a caller reads names the run.
+  assert.match(lines.slice(-3).join('\n'), new RegExp(`runs result ${verdict.shortId} --json`));
+});
+
+test('run without --json ends with the run id and the result command', (t) => {
+  const f = fixture(t);
+  const result = bullswarm(f, ['run', '--lane', 'analyze', '--add-dir', f.repo, '--prompt', 'Summarise the acme readme']);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const lines = result.stdout.trimEnd().split('\n');
+  assert.match(lines[0], /^OK \[echo\] /);
+  assert.match(lines.at(-1), /^run: [a-z0-9]{6} · details: bullswarm workflow runs result [a-z0-9]{6}$/);
+  const [, id, again] = lines.at(-1).match(/^run: ([a-z0-9]{6}) · details: bullswarm workflow runs result ([a-z0-9]{6})$/);
+  assert.equal(id, again);
+});
+

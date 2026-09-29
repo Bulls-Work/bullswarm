@@ -363,7 +363,7 @@ const runText = rich({
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
     { flag: '--dry-run', desc: 'print the kernel\'s routing pick, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, recording a run, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
     { flag: '--no-caller', desc: 'accepted and ignored for one release: the calling agent is never a pool of its own run', default: 'removed in 0.37.0; a notice is printed' },
-    { flag: '--json', desc: 'print the machine-readable verdict document', default: 'human-readable summary line' },
+    { flag: '--json', desc: 'print the compact machine-readable verdict; its last field, details, is the command for the full record and per-attempt cost (bullswarm workflow runs result <shortId> --json)', default: 'human-readable summary ending with the run id and that command' },
   ],
   safety: [
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',

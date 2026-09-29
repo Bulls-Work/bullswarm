@@ -255,7 +255,7 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--avoid-provider <provider,...>` | never route to pools of these providers | unset |
 | `--dry-run` | print the kernel's routing pick, the forecast, and the exact command that would be spawned, without spawning, recording a run, registering an assignment, or writing the decision log | off (dispatches for real) |
 | `--no-caller` | accepted and ignored for one release: the calling agent is never a pool of its own run | removed in 0.37.0 |
-| `--json` | print the machine-readable verdict document | human-readable summary line |
+| `--json` | print the compact machine-readable verdict; its last field, details, is the command for the full record and per-attempt cost (bullswarm workflow runs result <shortId> --json) | human-readable summary ending with the run id and that command |
 
 A run is a one-step workflow, recorded under `workflows/<id>/` (`bullswarm workflow runs --all`). It gets the step's one automatic retry unless `--no-retry`; a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. A build or chore run must change a file (else failure kind `not-produced`). The JSON shape is in [Result envelope](/reference/result).
 

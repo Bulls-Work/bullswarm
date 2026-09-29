@@ -73,7 +73,14 @@
   step does. The verdict keeps `ok`, `why`, `failureKind`, `retryAfter`,
   `pick` and `outFile`, and adds `runId`, `shortId`, `answer`, `answerCheck`
   and `attempts`; `why` is the run's own fact line (`all 1 step succeeded`, or
-  the step's failure).
+  the step's failure). The `--json` verdict is compact (about 50 lines): the
+  last attempt's full usage (`meta.usage`, often 200 lines of cost detail) is
+  replaced by `usage`, a short summary of the whole run (attempts, minutes,
+  tokens, money with its basis), and the last field, `details`, names
+  `bullswarm workflow runs result <shortId> --json`, where per-attempt cost
+  lives. A caller that reads only the tail still finds its run. The text
+  verdict ends with `run: <shortId> · details: bullswarm workflow runs result
+  <shortId>`.
 - run: a run gets the step's one automatic retry (a crash on another pool
   that can run it, a failed answer check on the same pool with the errors
   attached). `--no-retry` gives one attempt, as before. A usage limit is

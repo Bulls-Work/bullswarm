@@ -59,7 +59,9 @@ export function parseVerdict(text: string, exitCode: number): BullswarmVerdict {
   const doc = jsonIn(text)
   const pick = (doc?.pick ?? null) as Raw | null
   const meta = (doc?.meta ?? null) as Raw | null
-  const usage = (meta?.usage ?? null) as Raw | null
+  // 0.37: a run's verdict carries a short `usage` summary; earlier ones kept
+  // the attempt's full usage under meta.usage.
+  const usage = (doc?.usage ?? meta?.usage ?? null) as Raw | null
   const tokens = (usage?.tokens ?? null) as Raw | null
   const check = (doc?.answerCheck ?? null) as Raw | null
   const errors = Array.isArray(check?.errors) ? (check.errors as unknown[]) : []

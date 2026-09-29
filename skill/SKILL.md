@@ -50,11 +50,11 @@ changes. Use `--task-file` for long text. Options you will use:
 
 Read the verdict. `ok: true` means read `outFile` (and `answer`) and check the
 content before you use it. `ok: false` means inspect and report the failure;
-`failureKind` names it and `why` says it in one line. `runId` names the run
-(`bullswarm workflow runs show <shortId>`). A build or chore run that changes no
-file fails `not-produced`, also outside a git repository (it lists the
-folder, up to 5,000 files). Do not run `doctor` unless dispatch reports a
-readiness problem.
+`failureKind` names it and `why` says it in one line. `shortId` names the run;
+the last field, `details`, is the command for its record and cost. A
+build or chore run that changes no file (files git ignores count) fails
+`not-produced`, also outside git. Do not run `doctor` unless dispatch reports
+a readiness problem.
 
 ## 3. A workflow: four blocks
 

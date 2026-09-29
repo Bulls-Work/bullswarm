@@ -11,7 +11,7 @@ Judge delegate output by content, not exit code. A clean process exit is not pro
 
 ## run --json
 
-`bullswarm run --json` prints one verdict object. Without `--json` it prints a one-line `OK`/`FAIL` summary and, on `--dry-run`, the command and a `forecast:` line.
+`bullswarm run --json` prints one compact verdict object (about 50 lines) whose last field, `details`, names the run again. Without `--json` it prints an `OK`/`FAIL` summary that ends with `run: <shortId> · details: bullswarm workflow runs result <shortId>`, and, on `--dry-run`, the command and a `forecast:` line. Per-attempt cost (token classes, price sources, subscription share) is not in the verdict: read it with `bullswarm workflow runs result <shortId> --json`.
 
 ```bash
 # Dispatch one bounded task and print the verdict document.
@@ -41,7 +41,9 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `reasoning` | `{ requested, applied, source, clamped }` — the level this attempt actually ran at |
 | `meta.exitCode`, `meta.signal`, `meta.timedOut`, `meta.stalled`, `meta.cancelled` | process observation |
 | `meta.wallSec`, `meta.outBytes` | duration and extracted output size |
-| `meta.usage` | complete v2 attempt usage: provider-reported, transcript-summed, estimated, or unknown exclusive token classes; `api.usd` is the local dated rate-card calculation and `subscription.usd` is the separately measured or calibrated quota-window amount |
+| `meta.reasoning` | the same as `reasoning` |
+| `usage` | a short summary of every attempt of the run: `{ attempts, minutes, tokens: { standardRead, cacheRead, cacheWrite, output, reasoning, total }, tokenSource, apiUsd, money }`. `tokenSource` is the basis (`provider-reported`, `transcript-summed`, `estimated:utf8-bytes/4` or `unknown`), and `money` is the API-rate amount in words with that basis (`api unknown` when it cannot be priced). Before 0.37.0 the last attempt's full usage was `meta.usage` |
+| `details` | `bullswarm workflow runs result <shortId> --json`: the run's full record, with per-attempt usage and cost (`usage.steps`, `usage.totals`). Always the last field |
 
 `--dry-run` prints `ok`, `dryRun: true`, `why`, `forecast`, `candidates`, `pick` (the kernel's first pick, with the resolved argv including the clamped reasoning flag), and `reasoning`. It omits `runId`, `outFile`, `taskFile`, `meta`, and the failure fields, because nothing was spawned or recorded. `--dry-run` that finds no pool for the step sets `ok: false` and exits 1.
 

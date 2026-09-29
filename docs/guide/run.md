@@ -37,7 +37,7 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 | `--avoid-provider <provider,...>` | Never route to pools of these providers. | — |
 | `--dry-run` | Print the kernel's routing pick, the forecast, and the exact command that would be spawned, without spawning, recording a run or registering anything. | off (dispatches for real) |
 | `--no-caller` | Accepted and ignored for one release: the calling agent is never a pool of its own run. | removed in 0.37.0 |
-| `--json` | Print the machine-readable verdict document. | human-readable summary line |
+| `--json` | Print the compact machine-readable verdict. Its last field, `details`, is the command for the full record and per-attempt cost (`bullswarm workflow runs result <shortId> --json`). | human-readable summary ending with the run id and that command |
 
 The task itself is also accepted as trailing words: `bullswarm run --lane analyze "list every TODO in src/"`.
 
