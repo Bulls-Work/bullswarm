@@ -74,7 +74,9 @@ const RULES = Object.freeze([
 
 // The draft, critique, approve, publish workflow: research in parallel, a
 // loop that rewrites the brief until an independent critique passes, a gate
-// for the caller, then an outward step that must not repeat.
+// for the caller, then an outward step that must not repeat. It is pattern 3
+// of skill/references/patterns.md, with /abs/workspace for /work/acme
+// (tests/workflow-v3-docs.test.js keeps the two the same).
 const claims = { type: 'object', required: ['claims'], properties: { claims: { type: 'array', items: { type: 'string' } } } };
 const EXAMPLE = Object.freeze({
   schemaVersion: PROGRAM_V3_SCHEMA_VERSION,
@@ -83,10 +85,10 @@ const EXAMPLE = Object.freeze({
     { id: 'search-a', phase: 'research', prompt: 'In /abs/workspace, collect the claims sources/a.md makes about acme widgets.', answer: claims },
     { id: 'search-b', phase: 'research', prompt: 'In /abs/workspace, collect the claims sources/b.md makes about acme widgets.', answer: claims },
     { id: 'draft', phase: 'writing', dependsOn: ['search-a', 'search-b'], lane: 'build', files: ['brief.md'], prompt: 'In /abs/workspace, write brief.md from the claims your dependencies answered. From round 2 on, fix the problems the previous critique listed.' },
-    { id: 'critique', phase: 'writing', dependsOn: ['draft'], route: { independentOf: ['draft'] }, prompt: 'In /abs/workspace, check every claim in brief.md against sources/. Answer passed true when every claim holds; list each problem otherwise.', answer: { type: 'object', required: ['passed', 'problems'], properties: { passed: { type: 'boolean' }, problems: { type: 'array', items: { type: 'string' } } } } },
+    { id: 'critique', phase: 'writing', dependsOn: ['draft'], route: { independentOf: ['draft'] }, prompt: 'In /abs/workspace, check every claim in brief.md against sources/. List only problems a line of sources/ shows (quote it); a claim that something is missing from sources/ is not a problem. Answer passed true when you list none.', answer: { type: 'object', required: ['passed', 'problems'], properties: { passed: { type: 'boolean' }, problems: { type: 'array', items: { type: 'string' } } } } },
     { id: 'post', phase: 'publish', dependsOn: ['approve'], deliverable: 'outward', retry: 0, prompt: 'Publish /abs/workspace/brief.md to the acme wiki, and list the page you created.' },
   ],
-  loops: [{ id: 'polish', steps: ['draft', 'critique'], until: { step: 'critique', field: 'passed' }, maxRounds: 3 }],
+  loops: [{ id: 'polish', steps: ['draft', 'critique'], until: { step: 'critique', field: 'passed' }, maxRounds: 2 }],
   gates: [{ id: 'approve', dependsOn: ['polish'], note: 'Read brief.md and decide whether to publish it' }],
 });
 

@@ -172,3 +172,24 @@ test('the README bullets describe v3 (steps, phases, gates, loops, answers), and
   for (const sentence of sentences) assert.match(sentence, /\bv2\b/, sentence);
   assert.doesNotMatch(text, /change, remove or rerun steps/, 'v3 steps are added, never edited or removed');
 });
+
+// `plan contract` prints the draft, critique, approve, publish example: it
+// must teach the critique and round cap the skill and patterns.md teach.
+test('the plan contract example is the draft-critique program of patterns.md, and keeps the skill\'s critique rule and round cap', async () => {
+  const { buildV3Contract } = await import('../src/workflow/contract-v3.js');
+  const example = buildV3Contract({ goal: 'g', cwd: '/abs/workspace', next: {} }).example;
+  const patterns = read('skill/references/patterns.md');
+  const section = patterns.slice(patterns.indexOf('## 3. Draft, critique, approve, publish'));
+  const block = /```json\n([\s\S]*?)\n```/.exec(section)[1];
+  const documented = JSON.parse(block.replaceAll('/work/acme', '/abs/workspace'));
+  assert.deepEqual(example, documented);
+  const skill = read('skill/SKILL.md');
+  const skillProgram = JSON.parse(/```json\n(\{\n  "schemaVersion": "bullswarm\.workflow\.program\.v3"[\s\S]*?)\n```/.exec(skill)[1]);
+  const critique = (program) => program.steps.find((step) => step.id === 'critique').prompt;
+  for (const sentence of ['List only problems a line of sources/ shows', 'Answer passed true when you list none.']) {
+    assert.ok(critique(example).includes(sentence), sentence);
+    assert.ok(critique(skillProgram).includes(sentence), sentence);
+  }
+  assert.equal(example.loops[0].maxRounds, skillProgram.loops[0].maxRounds);
+  assert.equal(example.loops[0].maxRounds, 2);
+});
