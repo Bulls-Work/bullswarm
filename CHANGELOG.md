@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.37.0 — One model: steps, phases, gates and loops
+
 - 0.37.0 in one line: a step is a run, and a workflow composes steps, phases,
   gates and loops. `bullswarm run` is a one-step workflow; `bullswarm workflow
   goal --program` runs a program you write. New programs are
