@@ -170,6 +170,14 @@ if (existsSync(${JSON.stringify(resumeFile)})) {
   const workerPid = Number(readFileSync(pidFile)); const grandchildPid = Number(readFileSync(grandchildFile));
   workerPids.push(workerPid, grandchildPid);
   const runId = readdirSync(join(f.home, 'workflows'))[0];
+  // The kernel records a worker (workers.json) after it spawns it, and under
+  // a loaded full suite the grandchild can start first; a kernel killed
+  // before the record leaves nothing for the resume to drain. Kill it once
+  // the worker is on record, which is what this test is about.
+  const recorded = () => {
+    try { return JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'workers.json'), 'utf8')).some((entry) => entry.pid === workerPid); } catch { return false; }
+  };
+  await until(recorded, 'the kernel recorded its worker', 30_000);
   first.child.kill(signal);
   const stopped = await first.closed;
   if (signal === 'SIGTERM') {
