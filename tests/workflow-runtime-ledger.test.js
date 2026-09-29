@@ -95,3 +95,57 @@ test('unknown subscription dollars remain null in durable state counters', () =>
   assert.equal(state.usage.subscriptionMissingAttempts, 1);
   assert.equal(state.usage.subscriptionBasis, 'observed:meter-ledger');
 });
+
+// Reconciliation moves meter share between same-pool attempts, so each
+// attempt's dollars follow its new share at one price per percent: from any
+// attempt priced by the meter, or from the plan price it carries.
+const shared = { pool: 'acme', window: 'weekly', from: '2026-09-29T10:00:00Z', at: '2026-09-29T10:05:00Z', deltaPct: 1, resolutionPct: 1 };
+
+function sharing(id, startedAt, subscription, apiUsd = 1) {
+  return {
+    id, pool: 'acme', status: 'succeeded', startedAt, finishedAt: '2026-09-29T10:10:00Z',
+    usage: { api: { usd: apiUsd }, subscription: { window: 'weekly', ...subscription } },
+  };
+}
+
+function costState(attempts) {
+  return { attempts, usage: { total: 0, byPool: {}, subscriptionUsd: null, subscriptionKnownSubtotalUsd: null } };
+}
+
+test('finish reconciliation prices a share that moved to an attempt with no watch-time dollars', () => {
+  const a = sharing('a', '2026-09-29T09:59:00Z', { deltaPct: null, usd: null, basis: 'unknown:below-resolution' });
+  const b = sharing('b', '2026-09-29T09:59:30Z', { deltaPct: 1, usd: 2, basis: 'observed:meter-ledger', ledgerIntervals: [shared] });
+  const state = costState([a, b]);
+  const totals = reconcileSubscriptionLedger(state);
+  assert.deepEqual(totals.acme, { observedPct: 1, assignedPct: 1, unassignedPct: 0, basis: 'observed:meter-ledger' });
+  assert.equal(a.usage.subscription.deltaPct, 0.5);
+  assert.equal(b.usage.subscription.deltaPct, 0.5);
+  assert.equal(a.usage.subscription.usd, 1, 'the moved half keeps its price');
+  assert.equal(b.usage.subscription.usd, 1);
+  assert.equal(state.usage.subscriptionKnownSubtotalUsd, 2, 'the observed 1% was priced at $2');
+  assert.equal(state.usage.subscriptionUsd, 2);
+});
+
+test('finish reconciliation prices every share from the plan price when no attempt had dollars', () => {
+  // 304.375 a month over 7 of 30.4375 days is $70 a week: $0.70 per percent.
+  const plan = { monthlyPriceUsd: 304.375, windowDays: 7 };
+  const a = sharing('a', '2026-09-29T09:59:00Z', { ...plan, deltaPct: null, usd: null, basis: 'unknown:below-resolution' });
+  const b = sharing('b', '2026-09-29T09:59:30Z', { ...plan, deltaPct: 1, usd: null, basis: 'observed:meter-ledger', ledgerIntervals: [shared] });
+  const state = costState([a, b]);
+  reconcileSubscriptionLedger(state);
+  assert.equal(a.usage.subscription.usd, 0.35);
+  assert.equal(b.usage.subscription.usd, 0.35);
+  assert.equal(state.usage.subscriptionUsd, 0.7);
+});
+
+test('finish reconciliation drops the dollars of an attempt whose share became unknown', () => {
+  // No API amounts to weigh the shared interval by: the allocator cannot
+  // split it, so the share is unknown and so are its dollars.
+  const a = sharing('a', '2026-09-29T09:59:00Z', { deltaPct: null, usd: null, basis: 'unknown:below-resolution' }, null);
+  const b = sharing('b', '2026-09-29T09:59:30Z', { deltaPct: 1, usd: 2, basis: 'observed:meter-ledger', ledgerIntervals: [shared] }, null);
+  const state = costState([a, b]);
+  reconcileSubscriptionLedger(state);
+  assert.equal(b.usage.subscription.deltaPct, null);
+  assert.equal(b.usage.subscription.usd, null, 'dollars never outlive the share they priced');
+  assert.equal(state.usage.subscriptionKnownSubtotalUsd, null);
+});

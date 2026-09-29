@@ -3,7 +3,8 @@
 // meter ledger is reconciled over every same-pool attempt
 // (reconcileSubscriptionLedger). metrics.js holds the arithmetic both share.
 
-import { meterLedgerAttribution } from '../lib/subscription-cost.js';
+import { subscriptionCostUsd } from '../lib/prices.js';
+import { meterLedgerAttribution, subscriptionUsdFromPct } from '../lib/subscription-cost.js';
 import {
   SUBSCRIPTION_BASIS_RANK, TOKEN_SOURCE_RANK, attemptApiUsd, finiteNonNegative, positiveIntervalTotal,
   unionLedgerIntervals,
@@ -93,6 +94,32 @@ export function addUsage(state, attempt) {
   if (Number.isFinite(wall) && wall > 0) state.budget.seconds += wall;
 }
 
+// The dollars one percent of an attempt's window costs: its plan price over
+// the window, else its own watch-time dollars over its own share, else null.
+function usdPerPct(subscription) {
+  const planRate = subscriptionUsdFromPct(1, subscriptionCostUsd(
+    subscription?.monthlyPriceUsd, { days: subscription?.windowDays },
+  ));
+  if (planRate != null) return planRate;
+  const usd = finiteNonNegative(subscription?.usd);
+  const delta = finiteNonNegative(subscription?.deltaPct);
+  return usd != null && delta != null && delta > 0 ? usd / delta : null;
+}
+
+// One price per percent for each window of a pool: same-pool attempts share
+// one plan, so a share that reconciliation moves keeps the same price.
+function poolRates(poolAttempts) {
+  const rates = new Map();
+  for (const attempt of poolAttempts) {
+    const subscription = attempt.usage?.subscription;
+    const window = subscription?.window ?? null;
+    if (rates.get(window) != null) continue;
+    const rate = usdPerPct(subscription);
+    if (rate != null) rates.set(window, rate);
+  }
+  return rates;
+}
+
 /**
  * Reconcile subscription meter attribution after all durable attempts exist.
  *
@@ -128,6 +155,8 @@ export function reconcileSubscriptionLedger(state) {
       api: { usd: attemptApiUsd(attempt) },
     }));
     const observedPct = positiveIntervalTotal(intervals);
+    // Read before any attempt is rewritten below.
+    const rates = poolRates(poolAttempts);
     let assignedPct = 0;
     for (const attempt of poolAttempts) {
       const usage = attempt.usage ??= {};
@@ -147,12 +176,16 @@ export function reconcileSubscriptionLedger(state) {
       const previousDelta = finiteNonNegative(subscription.deltaPct);
       const previousUsd = finiteNonNegative(subscription.usd);
       const nextDelta = result.deltaPct;
-      // Preserve a known plan-price conversion when watch-time accounting
-      // already produced one, scaling it to the reconciled quota share.
-      const nextUsd = previousUsd != null && previousDelta != null && previousDelta > 0
-        && nextDelta != null
-        ? previousUsd * nextDelta / previousDelta
-        : previousUsd;
+      // A meter-observed share is priced at the pool's price per percent,
+      // including a share that moved to an attempt with no watch-time
+      // dollars. Other bases keep the watch-time conversion scaled to the new
+      // share, and an unknown share has unknown dollars.
+      const rate = usdPerPct(subscription) ?? rates.get(subscription.window ?? null) ?? null;
+      const nextUsd = nextDelta == null ? null
+        : result.basis === 'observed:meter-ledger' && rate != null ? rate * nextDelta
+          : previousUsd != null && previousDelta != null && previousDelta > 0
+            ? previousUsd * nextDelta / previousDelta
+            : previousUsd;
       Object.assign(subscription, {
         deltaPct: nextDelta,
         conservedDeltaPct: result.conservedDeltaPct ?? null,
@@ -160,7 +193,8 @@ export function reconcileSubscriptionLedger(state) {
         basis: result.basis ?? subscription.basis ?? null,
         ledgerRows: result.ledgerRows ?? [],
         ledgerIntervals: result.ledgerIntervals ?? [],
-        ...(nextUsd != null ? { usd: Math.round(nextUsd * 1e8) / 1e8 } : {}),
+        ...(nextUsd != null ? { usd: Math.round(nextUsd * 1e8) / 1e8 }
+          : previousUsd != null ? { usd: null } : {}),
         attribution: {
           ...(subscription.attribution && typeof subscription.attribution === 'object' ? subscription.attribution : {}),
           attemptId: attempt.id,
