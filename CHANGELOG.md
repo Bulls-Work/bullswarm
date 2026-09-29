@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.37.1 — The Claude mod loads again
+
 - mod: 0.37.0's `hooks/pools.ts` did not parse (a quote inside a
   single-quoted string), so reloading the Claude mod kept the previous
   version. Fixed, and a test now strips each hooks module's types and
