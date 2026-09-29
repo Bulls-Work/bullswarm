@@ -312,8 +312,8 @@ test('run without --json ends with the run id and the result command', (t) => {
   assert.equal(id, again);
 });
 
-// QA37 rerun (N2): every goal began 'Work in /Users/…/runs/<case>/proj.', so
-// the 28-character goal column read 'Work in /Users/<you>/.bu' on every
+// QA37 rerun (N2): every goal began 'Work in ~/…/runs/<case>/proj.', so
+// the 28-character goal column read 'Work in ~/<home>/.bullsw' on every
 // row. A goal that starts with a folder is listed by what comes after it.
 test('workflow runs lists a goal that starts with a folder by the words after the folder', (t) => {
   const f = fixture(t);
