@@ -38,6 +38,14 @@ import { parkedFailures, parkedWaitingFor, waitingDocument, waitingOutcomeLines 
 import { isProgramV3 } from './program-v3.js';
 import { resultAnswerLines } from './answers.js';
 
+// A v3 run reports facts per step, so its printed result leaves out the v2
+// fields the stored envelope still carries: `verified`, the implicit goal
+// requirement and the requirement gaps. result.json on disk is unchanged.
+function v3ResultView(envelope) {
+  const { verified, gaps, ...rest } = envelope;
+  return { ...rest, requirements: envelope.requirements.filter((requirement) => requirement.mandatory) };
+}
+
 function jsonOut(obj, opts) {
   if (!(opts.json || opts.summary)) return;
   // Summary is budgeted against compact JSON.stringify; --json alone stays pretty.
@@ -406,7 +414,8 @@ function runsResult(idToken, opts) {
     return 0;
   }
   if (opts.json) {
-    jsonOut(kernelStderrTail.length ? { ...stable, kernelStderrTail } : stable, opts);
+    const shown = isProgramV3(state?.program) ? v3ResultView(stable) : stable;
+    jsonOut(kernelStderrTail.length ? { ...shown, kernelStderrTail } : shown, opts);
     return 0;
   }
   console.log(`# workflow result  ${stable.runId}  (${stable.shortId ?? 'no shortId'})`);

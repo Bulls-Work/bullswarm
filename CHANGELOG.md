@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- workflow runs: a goal that starts with a labelled folder ("Repo: <path>
+  (note). …", as routed subagents write it) is listed by the words after the
+  folder, like "Work in <path>".
+- runs result: `--json` on a program-v3 run no longer prints `verified`, the
+  implicit goal requirement or requirement gaps (v3 reports facts per step).
+  The stored `result.json` is unchanged.
+- mod: the note on a routed Agent call names what the worker left not done,
+  as the note on a `bullswarm run` verdict already did.
+
 ## 0.37.1 — The Claude mod loads again
 
 - mod: 0.37.0's `hooks/pools.ts` did not parse (a quote inside a

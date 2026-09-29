@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseVerdict, verdictContext, watchContext } from '../mods/bullswarm/hooks/verdict.ts';
+import { parseVerdict, routedContext, verdictContext, watchContext } from '../mods/bullswarm/hooks/verdict.ts';
 import { parseRuns, runLine } from '../mods/bullswarm/hooks/runs.ts';
 import { readFileSync } from 'node:fs';
 
@@ -169,4 +169,18 @@ test('the strip and prompt context list a waiting run with where it waits', () =
   const pools = readFileSync(new URL('../mods/bullswarm/hooks/pools.ts', import.meta.url), 'utf8');
   assert.match(pools, /bullswarm workflow watch <shortId> --until trouble/);
   assert.doesNotMatch(pools, /watch <shortId> --next/);
+});
+
+// 0.37.2 (real use): the model-facing note on a routed Agent call now names
+// what the worker left not done; before, only the on-screen notice did.
+test('the routed-subagent note names the worker\'s not-done items', () => {
+  const verdict = parseVerdict(JSON.stringify({
+    ok: true, why: 'all 1 step succeeded', pick: { pool: 'claude-code:w', model: 'm' }, outFile: '/tmp/out.md',
+    notDone: { count: 2, items: ['tests were not run: no node_modules', 'skimmed slack-agent.md'] },
+  }));
+  const note = routedContext(verdict, 'analyze');
+  assert.match(note, /left 2 items not done \(its ## Not done section\): tests were not run: no node_modules; skimmed slack-agent\.md\./);
+  assert.match(note, /routed by the bullswarm mod to pool "claude-code:w"/);
+  const clean = routedContext(parseVerdict(JSON.stringify({ ok: true, why: 'ok', pick: { pool: 'p', model: 'm' }, outFile: '/tmp/o.md', notDone: null })), 'analyze');
+  assert.doesNotMatch(clean, /not done/);
 });

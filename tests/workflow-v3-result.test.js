@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,4 +46,19 @@ test('runs result --json --summary of a v3 run carries no verified field (verifi
   const summary = JSON.parse(out.stdout);
   assert.equal(summary.status, 'completed');
   assert.equal(Object.hasOwn(summary, 'verified'), false, `summary carries verified: ${summary.verified}`);
+}));
+
+// 0.37.2 (real use): the full --json view of a v3 run still printed
+// `verified: false`, a pending implicit "goal" requirement and v2 gaps.
+test('runs result --json of a v3 run leaves out verified, the implicit requirement and gaps; result.json is unchanged', () => withHome((result) => {
+  const out = result('--json');
+  assert.equal(out.status, 0, out.stderr);
+  const full = JSON.parse(out.stdout);
+  assert.equal(full.status, 'completed');
+  assert.equal(Object.hasOwn(full, 'verified'), false);
+  assert.equal(Object.hasOwn(full, 'gaps'), false);
+  assert.deepEqual(full.requirements, []);
+  assert.deepEqual(full.actions.find((action) => action.id === 'task').answer.value, { words: 13 });
+  const stored = JSON.parse(readFileSync(join(SINGLE, 'result.json'), 'utf8'));
+  assert.equal(stored.verified, false, 'the stored envelope keeps its v2 shape');
 }));

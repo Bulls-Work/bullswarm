@@ -7,10 +7,11 @@
 // A leading folder, with its lead-in words, is dropped and the rest shown;
 // a bare path with no lead-in is dropped only when it ends in "/" (QA37 wave H).
 
-// "Work in", "Working inside", "In", "cd", "At", "From", "Under", then a path
+// "Work in", "Working inside", "In", "cd", "At", "From", "Under", or a label
+// such as "Repo:" or "Workspace:" (0.37.2: routed subagents start "Repo: <path>"), then a path
 // that starts with /, ~/, ./ or ../, bare or in quotes or backticks. The
 // path stops before punctuation that ends it ("proj.", "parser.js:").
-const LEADING_FOLDER = /^((?:work(?:ing)?|run(?:ning)?|operate)\s+(?:in|inside|on|at|from|under)\s+|(?:in|inside|at|from|under|cd)\s+)?([`'"]?)((?:~|\.{1,2})?\/[^\s`'"]*?)\2(?=[.,:;]*(?:[\s`'"]|$))/i;
+const LEADING_FOLDER = /^((?:work(?:ing)?|run(?:ning)?|operate)\s+(?:in|inside|on|at|from|under)\s+|(?:in|inside|at|from|under|cd)\s+|(?:repo(?:sitory)?|folder|dir(?:ectory)?|workspace|project|cwd|path)\s*:\s*)?([`'"]?)((?:~|\.{1,2})?\/[^\s`'"]*?)\2(?=[.,:;]*(?:[\s`'"]|$))/i;
 // What joins the folder to the rest: punctuation, "&&", "and", "then".
 const JOINER = /^(?:[\s.,:;]|&&|\b(?:and|then)\b)+/i;
 
