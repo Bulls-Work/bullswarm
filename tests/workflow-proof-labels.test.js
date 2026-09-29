@@ -404,7 +404,7 @@ test('the step page header says a gate retry ran on the same pool with the failu
   state.program = { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [
     { id: 'build', purpose: 'Build', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Build.', lane: 'build', effort: 'medium', evidenceFor: [], inputs: [], produces: [] },
   ] };
-  state.actions = [{ id: 'build', status: 'failed', attempts: 2, programRevision: 1, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: { kind: 'not-produced', message: 'no file changed and no commit made' } }];
+  state.actions = [{ id: 'build', status: 'failed', attempts: 2, programRevision: 1, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: { kind: 'not-produced', message: 'no file changed' } }];
   state.attempts = [
     { id: 'build-1', actionId: 'build', ordinal: 1, status: 'failed', failureKind: 'not-produced', pool: 'pool-a', startedAt: '2026-09-24T01:00:00Z', finishedAt: '2026-09-24T01:04:00Z' },
     { id: 'build-2', actionId: 'build', ordinal: 2, status: 'failed', failureKind: 'not-produced', pool: 'pool-a', startedAt: '2026-09-24T01:05:00Z', finishedAt: '2026-09-24T01:09:00Z', retryOf: { attempt: 'build-1', how: 'same-pool' } },

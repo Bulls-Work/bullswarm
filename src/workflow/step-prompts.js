@@ -117,14 +117,16 @@ function deliverableBriefLine(action, targetDir) {
     return 'Declared deliverable: the combined work in this workspace. Changing nothing is acceptable when there is nothing to reconcile.';
   }
   if (action.ownedFiles?.length) {
-    const line = `Declared deliverable: changes to your territory files (${action.ownedFiles.join(', ')}) or a commit.`;
+    const line = `Declared deliverable: changes to your territory files (${action.ownedFiles.join(', ')}).`;
     return possible
-      ? `${line} Bullswarm fails this step as not produced if none of them changes and no commit is made.`
+      ? `${line} Bullswarm fails this step as not produced if none of them changes.`
       : line;
   }
-  const line = 'Declared deliverable: file changes in this workspace (a commit counts).';
+  // A worker is never steered into committing (QA 0.37.0 rerun, N1): the
+  // check reads the files themselves, ignored ones included.
+  const line = 'Declared deliverable: file changes in this workspace (files git ignores count too).';
   return possible
-    ? `${line} Bullswarm fails this step as not produced if no file changes and no commit is made.`
+    ? `${line} Bullswarm fails this step as not produced if no file changes.`
     : line;
 }
 

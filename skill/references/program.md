@@ -124,7 +124,7 @@ step with one.
 
 | type | lane | produced when |
 |---|---|---|
-| `files` | build, chore | a file changed or a commit was made (with `files`: one of those files changed) |
+| `files` | build, chore | a file changed, files git ignores included, or a commit was made (with `files`: one of those files changed, ignored or not) |
 | `data`, `media` | build, chore | every path in `paths` exists and one of them was written; `paths` is required and must be listed in `files` |
 | `report` | analyze | the final response is not empty |
 | `outward` | analyze | nothing to check: the step acts outside the workspace (sending, publishing) and is never retried once its worker started |
@@ -132,7 +132,11 @@ step with one.
 A deliverable not produced is failure kind `not-produced`, and the step gets
 its same-pool retry. Outside a git repository Bullswarm lists the folder itself
 (up to 5,000 files and 64 MiB, `.git` and `node_modules` skipped) to see a
-change; in a larger folder, name the files the step changes.
+change; in a larger folder, name the files the step changes. Inside a git
+repository, files git ignores (an `out/` in `.gitignore`) count too, up to
+20,000 of them, tool caches such as `__pycache__` and `.venv` skipped; with
+more, a step that changed nothing else is recorded unchecked, not failed. No
+worker prompt names a commit as a way to produce.
 
 ## Evidence: command and schema
 

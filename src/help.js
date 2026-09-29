@@ -369,7 +369,7 @@ const runText = rich({
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
     'records the run under ~/.bullswarm/workflows/<id>/ (see bullswarm workflow runs --all) and each attempt in the decision log; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of each attempt and releases it when the attempt ends; --dry-run registers nothing',
-    'a build or chore run must change a file (else failure kind not-produced), as every workflow step must; outside a git repository Bullswarm lists the folder (up to 5,000 files and 64 MiB, .git and node_modules skipped) to see it',
+    'a build or chore run must change a file (else failure kind not-produced), as every workflow step must; files git ignores count too; outside a git repository Bullswarm lists the folder (up to 5,000 files and 64 MiB, .git and node_modules skipped) to see it',
     'one automatic retry (a process failure on another pool, a failed answer check on the same pool) unless --no-retry; a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
   ],
   examples: [

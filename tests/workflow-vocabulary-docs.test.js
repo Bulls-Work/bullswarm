@@ -226,7 +226,7 @@ test('program references document evidence keywords and the public command envir
 test('the changelog and operations reference say what is new against 0.35.6', () => {
   // The code: a lane-only build step that changed nothing fails in a run started by this version.
   const buildStep = { ...step, lane: 'build', ownedFiles: ['a.js'] };
-  assert.equal(deliverableVerdict({ action: buildStep, verdict: { ok: true }, snapshotOk: true }).failWhy, 'no file changed and no commit made');
+  assert.equal(deliverableVerdict({ action: buildStep, verdict: { ok: true }, snapshotOk: true }).failWhy, 'no file changed');
   assert.equal(deliverableVerdict({ action: buildStep, verdict: { ok: true }, snapshotOk: true, legacyGate: false }).failWhy, null);
   const truth = [
     'A program written only with kinds or lanes validates exactly as before.',
@@ -301,7 +301,7 @@ test('the enforced rules and field rows name the deliverable path refusals', () 
 
 test('not-produced covers a build-lane step that changed nothing, and stoppedBy lists every stop', () => {
   const result = flat('docs/reference/result.md');
-  assert.ok(result.includes('`not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file and made no commit)'));
+  assert.ok(result.includes('`not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file, files git ignores included, and made no commit)'));
   // F18: help and the result reference list the same not-rerun cases (stage 3
   // reworded the list and points to step rerun, step accept or plan revise).
   const notRerun = '(declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun';

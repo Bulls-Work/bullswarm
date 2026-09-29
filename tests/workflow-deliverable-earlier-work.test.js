@@ -305,7 +305,7 @@ test('an amendment starts a new definition: attempts before it are not unknown, 
   });
   assert.deepEqual(before.earlierOf('write'), { produced: false, unknown: false });
   assert.equal(before.lastOf('write').failureKind, 'not-produced');
-  assert.equal(before.lastOf('write').why, 'no file changed and no commit made');
+  assert.equal(before.lastOf('write').why, 'no file changed');
 
   // The amended step then starts once and the kernel dies before its snapshot.
   const after = await scenario(t, {

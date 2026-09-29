@@ -150,7 +150,7 @@ test('a data brief names its paths, and the files line names territory files or 
     deliverable: { type: 'files' }, ownedFiles: ['src/a.js', 'src/b.js'],
   });
   const territoryText = buildProgramWorkTask(briefState(territory, root), territory, root, null);
-  assert.match(territoryText, /Declared deliverable: changes to your territory files \(src\/a\.js, src\/b\.js\) or a commit\. Bullswarm fails this step as not produced if none of them changes and no commit is made\./);
+  assert.match(territoryText, /Declared deliverable: changes to your territory files \(src\/a\.js, src\/b\.js\)\. Bullswarm fails this step as not produced if none of them changes\./);
   assert.doesNotMatch(territoryText, /in this workspace/);
 
   execFileSync('git', ['init', '-q', root]);
@@ -158,7 +158,7 @@ test('a data brief names its paths, and the files line names territory files or 
     deliverable: { type: 'files' }, ownedFiles: [],
   });
   const openText = buildProgramWorkTask(briefState(open, root), open, root, null);
-  assert.match(openText, /Declared deliverable: file changes in this workspace \(a commit counts\)\. Bullswarm fails this step as not produced if no file changes and no commit is made\./);
+  assert.match(openText, /Declared deliverable: file changes in this workspace \(files git ignores count too\)\. Bullswarm fails this step as not produced if no file changes\./);
 });
 
 test('a files brief outside git leaves out the failure sentence', (t) => {
@@ -168,7 +168,7 @@ test('a files brief outside git leaves out the failure sentence', (t) => {
     deliverable: { type: 'files' }, ownedFiles: [],
   });
   const text = buildProgramWorkTask(briefState(action, root), action, root, null);
-  assert.match(text, /Declared deliverable: file changes in this workspace \(a commit counts\)\./);
+  assert.match(text, /Declared deliverable: file changes in this workspace \(files git ignores count too\)\./);
   assert.doesNotMatch(text, /Bullswarm fails this step as not produced/);
 });
 
@@ -183,12 +183,12 @@ test('a files brief in a folder its repository ignores leaves out the failure se
   mkdirSync(site, { recursive: true });
   const open = baseAction({ deliverable: { type: 'files' }, ownedFiles: [] });
   const openText = buildProgramWorkTask(briefState(open, site), open, site, null);
-  assert.match(openText, /Declared deliverable: file changes in this workspace \(a commit counts\)\./);
+  assert.match(openText, /Declared deliverable: file changes in this workspace \(files git ignores count too\)\./);
   assert.doesNotMatch(openText, /Bullswarm fails this step as not produced/);
   // Exact owned files are hashed directly, so that promise is kept.
   const owned = baseAction({ deliverable: { type: 'files' }, ownedFiles: ['index.html'] });
   const ownedText = buildProgramWorkTask(briefState(owned, site), owned, site, null);
-  assert.match(ownedText, /Bullswarm fails this step as not produced if none of them changes and no commit is made\./);
+  assert.match(ownedText, /Bullswarm fails this step as not produced if none of them changes\./);
 });
 
 const connector = (name) => ({
@@ -337,7 +337,7 @@ test('resuming a marked run fails an unchanged build step as not-produced', asyn
   assert.equal(seen[0].legacyGate, true);
   assert.equal(run.state.attempts[0].status, 'failed');
   assert.equal(run.state.attempts[0].failureKind, 'not-produced');
-  assert.equal(run.state.attempts[0].why, 'no file changed and no commit made');
+  assert.equal(run.state.attempts[0].why, 'no file changed');
   assert.equal(Object.hasOwn(run.state.attempts[0], 'deliverable'), false);
 });
 

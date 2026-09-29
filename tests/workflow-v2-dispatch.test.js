@@ -317,7 +317,7 @@ test('a writing action with a successful empty diff snapshot fails as a no-op', 
     assert.equal(result.failureKind, 'not-produced');
     assert.equal(result.attempts[0].failureKind, 'not-produced');
     assert.equal(result.attempts[0].status, 'failed');
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
     assert.equal(result.attempts[0].changedFileCount, 0);
     assert.equal(Object.hasOwn(result.attempts[0], 'deliverable'), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -423,7 +423,7 @@ test('an implement-kind writer that changes nothing still fails as a no-op', asy
     });
     assert.equal(result.ok, false);
     assert.equal(result.failureKind, 'not-produced');
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -431,7 +431,7 @@ test('files with no paths fails when nothing changed, and a commit that moves HE
   await withGate('bs-files-none-', { action: produceFiles() }, ({ result }) => {
     assert.equal(result.ok, false);
     assert.equal(result.failureKind, 'not-produced');
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
     assert.deepEqual(result.attempts[0].deliverable, { type: 'files', gated: true, produced: false });
   });
   await withGate('bs-files-head-', {
@@ -697,7 +697,7 @@ test('earlier work carries a clean dispatch, and a refusal rerun is judged again
   }, ({ result }) => {
     assert.equal(result.ok, false);
     assert.equal(result.failureKind, 'not-produced');
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
     assert.equal(result.attempts[0].deliverable.carried, undefined);
   });
 });
@@ -840,7 +840,7 @@ test('a workspace its repository ignores is outside git (D21)', async () => {
   await run(owned, () => [good], ({ result, repo }) => {
     assert.equal(snapshotPossible(site(repo), owned), true);
     assert.equal(result.ok, false);
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
   });
   await run(owned, rewrite, ({ result }) => {
     assert.equal(result.ok, true);
@@ -854,7 +854,7 @@ test('a workspace its repository ignores is outside git (D21)', async () => {
     return good;
   }], ({ result }) => {
     assert.equal(result.ok, false);
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
   });
 });
 
@@ -874,7 +874,7 @@ test('outside git, exact owned files and data paths are judged and a pathless st
     assert.equal(snapshotPossible(repo, owned), true);
     assert.equal(result.ok, false);
     assert.equal(result.failureKind, 'not-produced');
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
   });
   await withGate('bs-d21-write-', {
     plain: true,
@@ -2627,7 +2627,7 @@ test('evidence: a text-only failure verdict does not skip the checks (E30)', asy
     dependencies: { runStepEvidence: passedRunner(calls) },
   }, ({ result }) => {
     assert.equal(result.failureKind, 'not-produced');
-    assert.equal(result.attempts[0].why, 'no file changed and no commit made');
+    assert.equal(result.attempts[0].why, 'no file changed');
     assert.equal(calls.length, 0);
   });
   // The same output on a step without evidence keeps today's rule.

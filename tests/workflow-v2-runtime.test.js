@@ -1075,7 +1075,7 @@ const eventsOfType = (runDir, type) => readEvents(runDir).filter((event) => even
 const readState = (runDir) => JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
 
 test('handoffBlock adds the gate line only for a gate retry, just before the unverified-edits line', () => {
-  const facts = { pool: 'relay', startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z', failureKind: 'not-produced', why: 'no file changed and no commit made' };
+  const facts = { pool: 'relay', startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z', failureKind: 'not-produced', why: 'no file changed' };
   const plain = handoffBlock(facts);
   assert.equal(handoffBlock({ ...facts, gate: false }), plain);
   assert.doesNotMatch(plain, /automatic retry/);

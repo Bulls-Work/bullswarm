@@ -41,3 +41,42 @@ export function walkFolderFiles(root, { maxFiles = WALK_MAX_FILES, maxBytes = WA
   }
   return files.sort();
 }
+
+// Folders that hold tool caches, not work: a worker that only ran the tests
+// (a __pycache__) or installed packages has not produced anything.
+const CACHES = new Set([...SKIPPED, '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.cache', '.venv', 'venv', '.tox', '.nyc_output']);
+export const IGNORED_MAX_FILES = 20000;
+
+/**
+ * The files of the entries `git ls-files --others --ignored --directory`
+ * names (a folder ends in "/"), relative like the entries, sorted. Tool
+ * caches are skipped and links are not followed. Null when there are more
+ * than `maxFiles` files: the ignored part is then not listed at all.
+ */
+export function walkIgnoredEntries(root, entries, { maxFiles = IGNORED_MAX_FILES } = {}) {
+  const files = [];
+  const pending = [];
+  for (const entry of entries ?? []) {
+    if (typeof entry !== 'string' || !entry) continue;
+    const path = entry.replace(/\/+$/, '');
+    if (path.split('/').some((part) => CACHES.has(part))) continue;
+    if (entry.endsWith('/')) pending.push(path);
+    else {
+      try { if (lstatSync(join(root, path)).isFile()) files.push(path); } catch { /* gone */ }
+    }
+    if (files.length > maxFiles) return null;
+  }
+  while (pending.length) {
+    const relative = pending.pop();
+    let entriesHere;
+    try { entriesHere = readdirSync(join(root, relative), { withFileTypes: true }); } catch { continue; }
+    for (const entry of entriesHere) {
+      if (CACHES.has(entry.name)) continue;
+      const path = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile()) files.push(path);
+      if (files.length > maxFiles) return null;
+    }
+  }
+  return files.sort();
+}
