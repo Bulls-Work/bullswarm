@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { goalColumnText } from '../src/workflow/goal-column.js';
 
 test('a leading folder, with or without a lead-in, is dropped', () => {
-  assert.equal(goalColumnText('Work in /Users/dev/qa/runs/s2-triage-r1/proj. Read every ticket in tickets/'), 'Read every ticket in tickets/');
+  assert.equal(goalColumnText('Work in /home/dev/qa/runs/s2-triage-r1/proj. Read every ticket in tickets/'), 'Read every ticket in tickets/');
   assert.equal(goalColumnText('In ~/src/acme, fix the failing tests'), 'fix the failing tests');
   assert.equal(goalColumnText('/srv/acme/app/: add a health endpoint'), 'add a health endpoint');
   assert.equal(goalColumnText('cd ./acme && run the linter'), 'run the linter');
