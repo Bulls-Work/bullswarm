@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.37.2 — Real-use fixes: goal column, v3 result, routed note
+
 - workflow runs: a goal that starts with a labelled folder ("Repo: <path>
   (note). …", as routed subagents write it) is listed by the words after the
   folder, like "Work in <path>".
