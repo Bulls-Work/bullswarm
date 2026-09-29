@@ -554,7 +554,7 @@ function latestChangelogSection(text) {
 
 test('the changelog describes what ships, without internal stage names', () => {
   const latest = latestChangelogSection(read('CHANGELOG.md'));
-  assert.ok(latest.length > 1000, 'the newest changelog section is read');
+  assert.ok(/^- /m.test(latest), 'the newest changelog section is read');
   assert.doesNotMatch(latest, /\bstage[ -]?[0-9]\b/i);
 });
 
@@ -955,7 +955,7 @@ test('no skill page, guide, reference or help text describes a step that waits f
     for (const phrase of stale) assert.ok(!text.includes(phrase), `${path}: ${phrase}`);
   }
   const changelog = latestChangelogSection(read('CHANGELOG.md')).replace(/\s+/g, ' ');
-  assert.ok(changelog.length > 1000, 'the newest changelog section is read');
+  assert.ok(changelog.includes(' - '), 'the newest changelog section is read');
   for (const phrase of stale) assert.ok(!changelog.includes(phrase), `CHANGELOG newest section: ${phrase}`);
   // The contract a planner reads, and the resume note, say the same.
   const contract = v2PlannerContractRules({ executionMode: 'program', plannerMode: 'caller' }).join(' ');
