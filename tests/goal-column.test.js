@@ -44,7 +44,7 @@ test('a folder alone on the first line is followed by the next non-empty line', 
 });
 
 // 0.37.2 (real use): routed subagents start their task "Repo: <path> (note). …",
-// and every such row read "Repo: /Users/…".
+// and every such row read "Repo: ~/…".
 test('a labelled leading folder ("Repo:", "Workspace:") is dropped like "Work in"', () => {
   assert.equal(goalColumnText('Repo: /srv/acme/_wt/team-agents (TypeScript monorepo, Next.js). Read-only survey, very thorough.'), 'Read-only survey, very thorough.');
   assert.equal(goalColumnText('Repository: ./app\nFix the parser'), 'Fix the parser');
