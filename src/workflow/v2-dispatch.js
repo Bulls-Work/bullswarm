@@ -351,8 +351,8 @@ function territoryFiles(targetDir, ownedFiles, execFile, extraPaths = [], { dire
   }
   const untracked = unignoredUntrackedFiles(targetDir, execFile);
   if (untracked == null) return { ok: false, files: new Set(), tracked, git: true };
-  // Ignored files compare by size and time, not bytes (hashTerritory). Too
-  // many to list leaves them unlisted, as before.
+  // Too many ignored files to list leaves them out: the gate then compares
+  // the tracked and untracked files, as before ignored files were listed.
   const ignored = ignoredFiles(targetDir, execFile);
   return {
     ok: true,
@@ -376,12 +376,17 @@ function fileDigest(targetDir, relativePath) {
   }
 }
 
-// An ignored file's size and modification time: a cache or build folder can
-// be large, and a write changes its time even when the bytes repeat.
-function statDigest(targetDir, relativePath) {
+// An ignored file's bytes, like any other file, so a build that writes the
+// same output again changes nothing (QA37 wave H). A file over
+// IGNORED_HASH_MAX_BYTES is compared by size and modification time instead:
+// an ignored folder can hold large data, and a file only crosses that bound
+// when its size changes, which is a change either way.
+const IGNORED_HASH_MAX_BYTES = 4 * 1024 * 1024;
+function ignoredDigest(targetDir, relativePath) {
   try {
     const stat = statSync(join(targetDir, relativePath));
-    return stat.isFile() ? `stat:${stat.size}:${stat.mtimeMs}` : null;
+    if (!stat.isFile()) return null;
+    return stat.size > IGNORED_HASH_MAX_BYTES ? `stat:${stat.size}:${stat.mtimeMs}` : fileDigest(targetDir, relativePath);
   } catch {
     return null;
   }
@@ -391,7 +396,7 @@ function hashTerritory(targetDir, territory) {
   const hashes = new Map();
   const ignored = territory.ignored ?? new Set();
   for (const file of territory.files) {
-    hashes.set(file, ignored.has(file) ? statDigest(targetDir, file) : fileDigest(targetDir, file));
+    hashes.set(file, ignored.has(file) ? ignoredDigest(targetDir, file) : fileDigest(targetDir, file));
   }
   return {
     ok: territory.ok,
@@ -537,7 +542,6 @@ export function deliverableVerdict({
   pathsAfter = null,
   outputBytes = null,
   earlierWork = { produced: false, unknown: false },
-  ignoredUnlisted = false,
 } = {}) {
   const declared = declaredDeliverable(action);
   const contentOk = verdict?.ok !== false;
@@ -554,15 +558,12 @@ export function deliverableVerdict({
   // may leave a log behind without redoing the deliverable.
   const dispatchChanged = paths.length ? statWrite : changedList.length > 0 || headMoved || statWrite;
   const earlierHit = !dispatchChanged && (earlierWork?.produced === true || earlierWork?.unknown === true);
-  // Too many ignored files to list: a change there cannot be seen, so a step
-  // that changed nothing else is recorded unchecked, never failed.
-  const unseen = !dispatchChanged && ignoredUnlisted === true;
   const quiet = (fact, failWhy) => ({ fact, failWhy: contentOk ? failWhy : null });
 
   if (!declared) {
     if (action?.kind === 'digest' || evidence || legacyGate === false) return { fact: null, failWhy: null };
     const judged = action?.lane === 'build' && action?.kind !== 'integration' && snapshotOk === true;
-    if (!judged || earlierHit || unseen) return { fact: null, failWhy: null };
+    if (!judged || earlierHit) return { fact: null, failWhy: null };
     if (!dispatchChanged) return quiet(null, 'no file changed');
     return { fact: null, failWhy: null };
   }
@@ -610,7 +611,6 @@ export function deliverableVerdict({
     };
   }
   if (earlierHit) return { fact: { type: 'files', gated: false, produced: null, carried: true }, failWhy: null };
-  if (unseen) return { fact: { type: 'files', gated: false, produced: null }, failWhy: null };
   if (!dispatchChanged) return quiet({ type: 'files', gated: true, produced: false }, 'no file changed');
   return { fact: { type: 'files', gated: true, produced: true }, failWhy: null };
 }
@@ -642,8 +642,7 @@ function captureDiffSnapshot(targetDir, ownedFiles, before, execFile = execFileS
     trackedStat(targetDir, tracked, execFile),
     untrackedStat(targetDir, untracked),
   ].filter(Boolean);
-  const ignoredUnlisted = before.ignored === null || afterTerritory.ignored === null;
-  return { ok: true, statText: pieces.join('\n'), changedFiles, ...(ignoredUnlisted ? { ignoredUnlisted } : {}) };
+  return { ok: true, statText: pieces.join('\n'), changedFiles };
 }
 
 function writeFileIfChanged(path, body) {
@@ -1596,7 +1595,6 @@ export async function dispatchV2Action({
       verdict: gateVerdict,
       legacyGate,
       snapshotOk: snapshot.ok,
-      ignoredUnlisted: snapshot.ignoredUnlisted === true,
       changed: [...stepChanged].sort(),
       headBefore: stepHeadBefore,
       headAfter,

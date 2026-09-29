@@ -42,16 +42,22 @@ export function walkFolderFiles(root, { maxFiles = WALK_MAX_FILES, maxBytes = WA
   return files.sort();
 }
 
-// Folders that hold tool caches, not work: a worker that only ran the tests
-// (a __pycache__) or installed packages has not produced anything.
-const CACHES = new Set([...SKIPPED, '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.cache', '.venv', 'venv', '.tox', '.nyc_output']);
+// Folders that hold tool caches or build, coverage and test output, not
+// work: a worker that only ran the tests (a __pycache__, a coverage/), ran a
+// build (dist/, build/, target/) or installed packages has not produced
+// anything (QA37 wave H). Log and TypeScript build-info files likewise.
+const CACHES = new Set([
+  ...SKIPPED, '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.cache', '.venv', 'venv', '.tox', '.nyc_output',
+  'dist', 'build', 'coverage', 'target',
+]);
+const OUTPUT_FILE = /\.(?:log|tsbuildinfo)$/;
 export const IGNORED_MAX_FILES = 20000;
 
 /**
  * The files of the entries `git ls-files --others --ignored --directory`
  * names (a folder ends in "/"), relative like the entries, sorted. Tool
- * caches are skipped and links are not followed. Null when there are more
- * than `maxFiles` files: the ignored part is then not listed at all.
+ * caches and build output are skipped and links are not followed. Null when
+ * there are more than `maxFiles` files: the ignored part is then not listed.
  */
 export function walkIgnoredEntries(root, entries, { maxFiles = IGNORED_MAX_FILES } = {}) {
   const files = [];
@@ -61,6 +67,7 @@ export function walkIgnoredEntries(root, entries, { maxFiles = IGNORED_MAX_FILES
     const path = entry.replace(/\/+$/, '');
     if (path.split('/').some((part) => CACHES.has(part))) continue;
     if (entry.endsWith('/')) pending.push(path);
+    else if (OUTPUT_FILE.test(path)) continue;
     else {
       try { if (lstatSync(join(root, path)).isFile()) files.push(path); } catch { /* gone */ }
     }
@@ -74,7 +81,7 @@ export function walkIgnoredEntries(root, entries, { maxFiles = IGNORED_MAX_FILES
       if (CACHES.has(entry.name)) continue;
       const path = `${relative}/${entry.name}`;
       if (entry.isDirectory()) pending.push(path);
-      else if (entry.isFile()) files.push(path);
+      else if (entry.isFile() && !OUTPUT_FILE.test(entry.name)) files.push(path);
       if (files.length > maxFiles) return null;
     }
   }

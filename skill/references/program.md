@@ -133,10 +133,13 @@ A deliverable not produced is failure kind `not-produced`, and the step gets
 its same-pool retry. Outside a git repository Bullswarm lists the folder itself
 (up to 5,000 files and 64 MiB, `.git` and `node_modules` skipped) to see a
 change; in a larger folder, name the files the step changes. Inside a git
-repository, files git ignores (an `out/` in `.gitignore`) count too, up to
-20,000 of them, tool caches such as `__pycache__` and `.venv` skipped; with
-more, a step that changed nothing else is recorded unchecked, not failed. No
-worker prompt names a commit as a way to produce.
+repository, files git ignores (an `out/` in `.gitignore`) count too when
+their bytes change, up to 20,000 of them. Tool caches and build output
+(`__pycache__`, `.venv`, `dist`, `build`, `coverage`, `target`, `*.log`,
+`*.tsbuildinfo`) do not count; name such a file in `files` when it is the
+deliverable. With more ignored files than that, they are left out and the
+check runs on the other files. No worker prompt names a commit as a way to
+produce.
 
 ## Evidence: command and schema
 

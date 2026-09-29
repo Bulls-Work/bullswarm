@@ -90,9 +90,11 @@
   worker writes to a file Bullswarm names and Bullswarm checks against the
   schema (a mismatch is failure kind `schema`). A `build` or `chore` run must
   change a file, else it fails `not-produced`; ask a question on
-  `--lane analyze`. A file git ignores counts (a deliverable in an `out/`
-  that `.gitignore` lists), and no worker prompt names a commit as a way to
-  produce, so a retry is never steered into committing.
+  `--lane analyze`. A file git ignores counts when its bytes change (a
+  deliverable in an `out/` that `.gitignore` lists), except tool caches and
+  build output (`dist`, `build`, `coverage`, `target`, `*.log`,
+  `*.tsbuildinfo`), and no worker prompt names a commit as a way to produce,
+  so a retry is never steered into committing.
 - workflow: `workflow runs` lists a goal that starts with a folder ("Work in
   /path/proj. Read every ticket…") by the words after the folder, so runs
   with the same lead-in can be told apart.

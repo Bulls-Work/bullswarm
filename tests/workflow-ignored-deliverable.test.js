@@ -10,12 +10,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { deliverableVerdict, dispatchV2Action } from '../src/workflow/v2-dispatch.js';
-import { walkIgnoredEntries } from '../src/workflow/folder-walk.js';
+import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { IGNORED_MAX_FILES, walkIgnoredEntries } from '../src/workflow/folder-walk.js';
 import { buildProgramWorkTask } from '../src/workflow/step-prompts.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -89,8 +89,9 @@ test('walkIgnoredEntries lists the files of git\'s ignored entries, skips tool c
   writeFileSync(join(root, 'node_modules', 'pkg', 'index.js'), 'x');
   writeFileSync(join(root, '__pycache__', 'm.pyc'), 'x');
   writeFileSync(join(root, 'debug.log'), 'x');
-  const entries = ['out/', 'node_modules/', '__pycache__/', 'debug.log', 'gone.log'];
-  assert.deepEqual(walkIgnoredEntries(root, entries), ['debug.log', 'out/a.jsonl', 'out/deep/b.md']);
+  writeFileSync(join(root, 'notes.md'), 'x');
+  const entries = ['out/', 'node_modules/', '__pycache__/', 'debug.log', 'gone.log', 'notes.md'];
+  assert.deepEqual(walkIgnoredEntries(root, entries), ['notes.md', 'out/a.jsonl', 'out/deep/b.md']);
   assert.equal(walkIgnoredEntries(root, entries, { maxFiles: 2 }), null);
 });
 
@@ -113,14 +114,75 @@ test('a build step with no declared deliverable (the old gate) also counts an ig
   assert.equal(result.attempts.length, 1);
 });
 
-test('too many ignored files to list: a step that changed nothing else is unchecked, never failed', () => {
-  const files = { id: 'task', role: 'produce', lane: 'build', deliverable: { type: 'files' }, ownedFiles: [] };
-  const legacy = { id: 'task', lane: 'build', ownedFiles: [] };
-  const base = { verdict: { ok: true }, snapshotOk: true, changed: [] };
-  assert.deepEqual(deliverableVerdict({ ...base, action: files, ignoredUnlisted: true }), { fact: { type: 'files', gated: false, produced: null }, failWhy: null });
-  assert.deepEqual(deliverableVerdict({ ...base, action: legacy, ignoredUnlisted: true }), { fact: null, failWhy: null });
-  assert.equal(deliverableVerdict({ ...base, action: files }).failWhy, 'no file changed');
-  assert.equal(deliverableVerdict({ ...base, action: legacy }).failWhy, 'no file changed');
+// Build, coverage and log output is what running a build or the tests leaves
+// behind, not the work (QA37 wave H): alone, it is not produced.
+for (const [name, write] of [
+  ['dist/', (repo) => { mkdirSync(join(repo, 'dist'), { recursive: true }); writeFileSync(join(repo, 'dist', 'a.js'), String(Math.random())); }],
+  ['build/', (repo) => { mkdirSync(join(repo, 'build'), { recursive: true }); writeFileSync(join(repo, 'build', 'a.o'), String(Math.random())); }],
+  ['coverage/', (repo) => { mkdirSync(join(repo, 'coverage'), { recursive: true }); writeFileSync(join(repo, 'coverage', 'lcov.info'), String(Math.random())); }],
+  ['target/', (repo) => { mkdirSync(join(repo, 'pkg', 'target'), { recursive: true }); writeFileSync(join(repo, 'pkg', 'target', 'a.o'), String(Math.random())); }],
+  ['a .log file', (repo) => writeFileSync(join(repo, 'npm-debug.log'), String(Math.random()))],
+  ['a .tsbuildinfo file', (repo) => writeFileSync(join(repo, 'tsconfig.tsbuildinfo'), String(Math.random()))],
+]) {
+  test(`a step whose only change is ignored build output (${name}) is not produced`, async (t) => {
+    const f = ignoringRepo(t);
+    writeFileSync(join(f.repo, '.gitignore'), 'out/\ndist/\nbuild/\ncoverage/\ntarget/\n*.log\n*.tsbuildinfo\n');
+    const worker = () => { write(f.repo); return good; };
+    const files = { id: 'task', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' }, ownedFiles: [] };
+    const { result } = await dispatch(f, files, [worker, worker], { failureRule: true });
+    assert.equal(result.ok, false, JSON.stringify(result.attempts[0]?.changedFiles));
+    assert.equal(result.failureKind, 'not-produced');
+    assert.equal(result.attempts[0].why, 'no file changed');
+    const legacy = await dispatch(f, { id: 'task', lane: 'build', effort: 'low', ownedFiles: [] }, [worker, worker], { failureRule: true });
+    assert.equal(legacy.result.ok, false);
+    assert.equal(legacy.result.failureKind, 'not-produced');
+  });
+}
+
+test('an ignored file rewritten with the same bytes is not work; new bytes of the same size are', async (t) => {
+  const f = ignoringRepo(t);
+  mkdirSync(join(f.repo, 'out'));
+  writeFileSync(join(f.repo, 'out', 'triage.jsonl'), 'same\n');
+  const action = { id: 'task', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' }, ownedFiles: [] };
+  const rewrite = (body) => () => {
+    const path = join(f.repo, 'out', 'triage.jsonl');
+    writeFileSync(path, body);
+    const later = new Date(Date.now() + 5000);
+    utimesSync(path, later, later);
+    return good;
+  };
+  const same = await dispatch(f, action, [rewrite('same\n'), rewrite('same\n')], { failureRule: true });
+  assert.equal(same.result.ok, false, JSON.stringify(same.result.attempts[0]?.changedFiles));
+  assert.equal(same.result.failureKind, 'not-produced');
+  const changed = await dispatch(f, action, [rewrite('next\n')]);
+  assert.equal(changed.result.ok, true, changed.result.attempts[0]?.why);
+  assert.deepEqual(changed.result.attempts[0].changedFiles, ['out/triage.jsonl']);
+});
+
+// More ignored files than the bound (QA37 wave H): the ignored files are left
+// out and the gate runs on tracked and untracked files, as before they were
+// listed; a step that changed nothing is still not produced.
+test('too many ignored files to list: the gate still runs on the other files', async (t) => {
+  const f = ignoringRepo(t);
+  writeFileSync(join(f.repo, '.gitignore'), 'out/\ndata/\n');
+  for (let index = 0; index <= IGNORED_MAX_FILES; index += 1) {
+    const dir = join(f.repo, 'data', `d${index % 200}`);
+    if (index < 200) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${index}.bin`), 'x');
+  }
+  const files = { id: 'task', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' }, ownedFiles: [] };
+  const noop = await dispatch(f, files, [good, good], { failureRule: true });
+  assert.equal(noop.result.ok, false);
+  assert.equal(noop.result.failureKind, 'not-produced');
+  assert.equal(noop.result.attempts[0].why, 'no file changed');
+  const legacy = await dispatch(f, { id: 'task', lane: 'build', effort: 'low', ownedFiles: [] }, [good, good], { failureRule: true });
+  assert.equal(legacy.result.ok, false);
+  assert.equal(legacy.result.failureKind, 'not-produced');
+  const edit = () => { writeFileSync(join(f.repo, 'tickets', 'T-1001.md'), 'Refund sent\n'); return good; };
+  const worked = await dispatch(f, files, [edit]);
+  assert.equal(worked.result.ok, true, worked.result.attempts[0]?.why);
+  assert.deepEqual(worked.result.attempts[0].changedFiles, ['tickets/T-1001.md']);
+  assert.deepEqual(worked.result.attempts[0].deliverable, { type: 'files', gated: true, produced: true });
 });
 
 test('a step that declared an ignored file counts it', async (t) => {
