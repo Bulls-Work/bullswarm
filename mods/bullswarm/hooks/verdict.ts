@@ -98,7 +98,7 @@ export function verdictContext(
   if (verb === 'workflow goal') {
     if (v.waitingFor.length && v.shortId) return `bullswarm mod: ${waitingSentence(v.shortId, v.waitingFor, v.next)}`
     return v.shortId
-      ? `bullswarm mod: workflow ${v.shortId} launched and detached. It stops for you only at a gate, a loop out of rounds or a step that needs you: run \`bullswarm workflow watch ${v.shortId} --until trouble\` (in the background when your harness wakes you when it exits, else in the foreground with `--timeout` below your tool's time limit; never end your turn while it runs), act on what wakes you, and relaunch it with the \`next:\` line it prints; \`/bullswarm\` shows the meters.`
+      ? `bullswarm mod: workflow ${v.shortId} launched and detached. It stops for you only at a gate, a loop out of rounds or a step that needs you: run \`bullswarm workflow watch ${v.shortId} --until trouble\` (in the background when your harness wakes you when it exits, else in the foreground with \`--timeout\` below your tool's time limit; never end your turn while it runs), act on what wakes you, and relaunch it with the \`next:\` line it prints; \`/bullswarm\` shows the meters.`
       : null
   }
   // A run given --answer-schema reports its answer, checked against the schema.

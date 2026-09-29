@@ -140,8 +140,6 @@ test('the skill puts the run-or-workflow choice first, with the chunking rule, t
   assert.match(skill, /A restart without `--after` attaches at the newest event and skips/);
   const guide = read('docs/guide/observing.md').replace(/\s+/g, ' ');
   assert.match(guide, /--timeout/);
-  const mod = read('mods/bullswarm/hooks/verdict.ts');
-  assert.match(mod, /--timeout/);
   assert.match(skill, /Never end your turn while a run you own is still running/);
   assert.match(skill, /`bullswarm workflow plan contract` \(no goal needed\)/);
 });

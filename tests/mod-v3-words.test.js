@@ -34,6 +34,7 @@ test('a run verdict carries its checked answer into the note', () => {
 test('a launched workflow is watched with --until trouble, which wakes at a gate', () => {
   const note = verdictContext('workflow goal', parseVerdict(JSON.stringify({ ok: true, shortId: '2fne62', runId: 'wf-mulitifp-c82a30' }), 0));
   assert.match(note, /bullswarm workflow watch 2fne62 --until trouble/);
+  assert.match(note, /else in the foreground with `--timeout` below your tool's time limit/);
   assert.match(note, /gate/);
   assert.doesNotMatch(note, /never waits for you/);
 });
