@@ -96,7 +96,8 @@ The command prints exactly one verdict document when the delegate finishes, trim
   "answer": null,
   "answerCheck": null,
   "taskFile": "~/.bullswarm/workflows/wf-mulcn6cq-5b736a/task-task-attempt-1.md",
-  "meta": { "pool": "grok", "exitCode": 0, "wallSec": 148.5 }
+  "meta": { "exitCode": 0, "wallSec": 148.5 },
+  "details": "bullswarm workflow runs result u2rxms --json"
 }
 ```
 
@@ -111,7 +112,9 @@ The command prints exactly one verdict document when the delegate finishes, trim
 | `pick` | The pool and model that ran it, and the argv template that was spawned (`{taskFile}` is filled with the task file path). |
 | `contentUsableDespiteExit` | `true` when the process exited non-zero but its content still passed; read the output before re-running. |
 | `outFile` | The saved delegate output; `taskFile` is the prompt that produced it. |
-| `meta` | Exit code, wall time, output bytes, token/cost usage, and the reasoning level actually applied. |
+| `meta` | Exit code, wall time, output bytes, and the reasoning level actually applied. |
+| `usage` | A short summary of the whole run: attempts, minutes, tokens, and money with its basis (`tokenSource`). |
+| `details` | Always the last field: the command for the run's full record, with per-attempt cost. |
 
 ```bash
 # read the output the verdict points at
