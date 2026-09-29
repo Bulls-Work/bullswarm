@@ -193,3 +193,11 @@ test('the plan contract example is the draft-critique program of patterns.md, an
   assert.equal(example.loops[0].maxRounds, skillProgram.loops[0].maxRounds);
   assert.equal(example.loops[0].maxRounds, 2);
 });
+
+// A loop continued without --rounds ends continued, condition not met: never a pass.
+test('operations.md says a loop continued without --rounds ends unmet, never that it passes as it stands', () => {
+  const ops = read('skill/references/operations.md');
+  assert.doesNotMatch(ops, /as it stands/);
+  const line = ops.split('\n').find((row) => row.startsWith('bullswarm workflow continue <shortId> <loop>'));
+  assert.match(line, /without --rounds it ends continued, condition not met/);
+});

@@ -297,8 +297,8 @@ function nextRound(state, loop, record, { at, emit, rerun }) {
 
 /**
  * Apply one `workflow continue` intent: pass a waiting gate, or give an
- * out-of-rounds loop `rounds` more rounds (none: the loop passes as it
- * stands). Returns {applied, why}.
+ * out-of-rounds loop `rounds` more rounds (none: the loop ends continued,
+ * condition not met, and the steps behind it run). Returns {applied, why}.
  */
 function applyContinue(state, intent, { at, emit, rerun }) {
   const control = controlOf(state);

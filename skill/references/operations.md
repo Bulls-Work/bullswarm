@@ -25,7 +25,7 @@ bullswarm workflow add <shortId> --steps part.json [--summary '<why>'] [--wait <
 bullswarm workflow add <shortId> --from-answer <step>                                  # append the fragment a step answered
 bullswarm workflow wait <shortId> <id...> [--timeout <s>] [--json]                     # facts and answers of steps, gates, loops
 bullswarm workflow continue <shortId> <gate>                                           # pass a waiting gate
-bullswarm workflow continue <shortId> <loop> [--rounds <1-5>]                          # more rounds, or pass it as it stands
+bullswarm workflow continue <shortId> <loop> [--rounds <1-5>]                          # more rounds; without --rounds it ends continued, condition not met
 bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]                        # run a step again with its handoff
 bullswarm workflow step accept <shortId> <step> --reason '<why>'                       # keep a failed step, as your choice
 ```
