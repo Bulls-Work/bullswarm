@@ -91,6 +91,21 @@ export async function wfWatch(opts) {
       return 2;
     }
   }
+  // --timeout: a foreground caller whose tool call is killed after a few
+  // minutes exits in time with a relaunch line instead of losing its cursor.
+  let timeoutMs = null;
+  if (opts.timeout != null) {
+    const timeoutSec = Number(opts.timeout);
+    if (!Number.isFinite(timeoutSec) || timeoutSec < 1) {
+      console.error('✗ --timeout must be >= 1 second');
+      return 2;
+    }
+    if (opts.once === true || opts.classic === true) {
+      console.error('✗ --timeout cannot combine with --once or --classic: it applies to event mode');
+      return 2;
+    }
+    timeoutMs = timeoutSec * 1000;
+  }
   let sinceMs = null;
   if (opts.since != null) {
     sinceMs = Date.parse(opts.since);
@@ -112,6 +127,7 @@ export async function wfWatch(opts) {
       jsonl: opts.jsonl === true,
       verbose: opts.verbose === true,
       until,
+      timeoutMs,
     });
   } catch (err) {
     console.error(`✗ ${err.message}`);

@@ -52,9 +52,9 @@ Read the verdict. `ok: true` means read `outFile` (and `answer`) and check the
 content before you use it. `ok: false` means inspect and report the failure;
 `failureKind` names it and `why` says it in one line. `runId` names the run
 (`bullswarm workflow runs show <shortId>`). A build or chore run that changes no
-file fails `not-produced`, also outside a git repository (Bullswarm then lists
-the folder itself, up to 5,000 files). Do not run `doctor` unless dispatch
-reports a readiness problem.
+file fails `not-produced`, also outside a git repository (it lists the
+folder, up to 5,000 files). Do not run `doctor` unless dispatch reports a
+readiness problem.
 
 ## 3. A workflow: four blocks
 
@@ -191,11 +191,14 @@ trouble · <n> steps` and then nothing until a wake. Each exit is one wake:
 read the output, act, and start the printed `next:` line again. If your
 harness cannot wake you when a background process ends (a subagent's turn
 ends when it replies), run the watch in the foreground: it blocks until the
-wake. Never end your turn while a run you own is still running. Between wakes
-do not poll, read the run directory, or send per-step status replies.
+wake; give it a `--timeout` under your tool's time limit (`--until trouble
+--timeout 100` for 2 minutes). A restart without `--after` attaches at the
+newest event and skips wakes in between. Never end your turn while a run you
+own is still running. Between wakes do not poll, read the run directory, or
+send per-step status replies.
 
 A gate wake-up after a loop (real output of the fix-until-green loop above,
-run on grok with a gate `ship` and a `notes` step after it). The loop's line
+with a gate `ship` after it). The loop's line
 comes with the wake, so you need no `workflow wait` to learn how it ended:
 
 ```text
@@ -360,7 +363,7 @@ your call:
 | `retry` | a step stopped for a reason a retry fixes: a crashed or silent worker, a usage limit, or no pool free | `bullswarm workflow resume <shortId>` (run it after its `back at` time) |
 | `rerun` | a step failed | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]` |
 | `accept` | you keep a failed step as it is | `bullswarm workflow step accept <shortId> <step> --reason "…"` |
-| `take over` | the rest is small, or needs something only you have | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |
+| `take over` | the rest is small, or needs something only you have | do it yourself |
 | `restart` | the goal or the approach was wrong | `bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>` |
 
 `retry` appears only when a step is retryable. When nothing is retryable,

@@ -173,6 +173,15 @@
   failed and was retried is recorded as `failed` (its `attempt.finished`
   event says `willRetry: true`), not `interrupted`. Earlier runs keep their
   label.
+- fixed (candidate QA): a loop writer that changed no file in round 2 or later
+  passed, carrying round 1's work; a loop round is new work now, so it fails
+  `not-produced` like round 1. `workflow wait` said `deliverable files
+  produced` for a step whose attempt changed nothing and carried earlier work;
+  `wait` and `watch` now say `carried from an earlier attempt`.
+- workflow: `watch --timeout <seconds>` exits 0 after that long with no wake,
+  printing `⧖ watch timed out after <s>s · the run is still <status>` and a
+  `next:` line with `--after`, `--since` and `--timeout`, so a foreground watch
+  ends before the caller's tool call is killed and loses no wake.
 - skill: the run-or-workflow choice comes first. One worker that can hold the
   whole input and make one deliverable (a 40-ticket triage, a research brief,
   one feature) is one `bullswarm run`, with `--answer-schema` for a checkable

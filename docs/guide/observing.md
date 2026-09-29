@@ -628,7 +628,11 @@ An agent that starts a run should start one watch for that run and do nothing
 more about it until the watch exits. Run it in the background when your
 harness wakes you when a background process ends; otherwise (a subagent whose
 turn ends when it replies) run it in the foreground, where it blocks until the
-wake. Never end your turn while a run you own is still running. The watch
+wake, with `--timeout` set below your tool call's time limit: at the timeout
+it prints `⧖ watch timed out after <s>s · the run is still running` and a
+`next:` line carrying `--after`, `--since` and `--timeout`; run that line again
+(a restart without `--after` attaches at the newest event and skips what
+happened in between). Never end your turn while a run you own is still running. The watch
 prints one start line (`watching ab12cd until trouble · 4 steps`) and then
 nothing until a wake:
 

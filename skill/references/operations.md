@@ -123,6 +123,7 @@ Observe and consume:
 ```bash
 bullswarm workflow watch <shortId> --until trouble                     # the standard: one watch per run (foreground if nothing wakes you)
 bullswarm workflow watch <shortId> --until trouble --after <sequence> --since <iso-timestamp>
+bullswarm workflow watch <shortId> --until trouble --timeout 100       # foreground: exits before a 2-minute tool limit with a `next:` line
 bullswarm workflow watch <shortId> --until outcome                     # trouble lines print; only the outcome ends it
 bullswarm workflow watch <shortId> --next
 bullswarm workflow watch <shortId>

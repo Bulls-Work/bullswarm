@@ -428,6 +428,38 @@ test('--until trouble wakes on the needs-you block of a failed program step and 
   assert.equal(records[0].label, 'worker exited with an error');
 });
 
+// A caller whose shell tool is killed after a few minutes watches in the
+// foreground with --timeout: the watch exits in time with a relaunch line
+// whose cursor keeps every event committed while no watch ran.
+test('--timeout exits a quiet watch with the relaunch line, and the relaunch prints what happened in between', async (t) => {
+  const quietMs = minutesAfterLastEvent(1);
+  const run = stagedRun(t, { nowMs: quietMs });
+  const cursor = run.state.events.sequence;
+  let clock = quietMs;
+  const watcher = watch(run, { until: 'trouble', timeoutMs: 1000, stale: false, now: () => { clock += 400; return clock; } });
+  assert.equal(await watcher.promise, 0);
+  const lines = watcher.lines;
+  assert.match(lines[0], /^⧖ watch timed out after 1s · the run is still running$/);
+  const next = /^next: bullswarm workflow watch (\S+) --until trouble --after (\d+) --since (\S+) --timeout 1$/.exec(lines[1]);
+  assert.ok(next, lines.join('\n'));
+  assert.deepEqual([next[1], Number(next[2])], [SHORT, cursor]);
+  assert.equal(lines.length, 2);
+  // A failure lands while no watch runs; the relaunch from the printed cursor wakes on it.
+  Object.assign(run.state.actions.find((action) => action.id === 'verify'), { status: 'failed', finishedAt: new Date(quietMs).toISOString(), lastFailure: { kind: 'process', message: 'worker exited with code 1' } });
+  Object.assign(run.state.attempts.find((entry) => entry.id === 'verify-1'), { status: 'failed', failureKind: 'process', finishedAt: new Date(quietMs).toISOString() });
+  run.emit('action.finished', { actionId: 'verify', status: 'failed', failureKind: 'process', why: 'worker exited with code 1', attemptIds: ['verify-1'], retries: 0 });
+  const relaunch = watch(run, { until: 'trouble', timeoutMs: 1000, stale: false, afterSequence: Number(next[2]), sinceMs: Date.parse(next[3]), now: () => quietMs });
+  assert.equal(await relaunch.promise, 0);
+  assert.equal(relaunch.lines[0], '✗ verify needs you · worker exited with an error · not retried');
+  // The machine form ends with a timeout object carrying the cursor.
+  let jclock = quietMs;
+  const quiet = stagedRun(t, { nowMs: quietMs });
+  const jsonl = watch(quiet, { until: 'trouble', timeoutMs: 1000, stale: false, jsonl: true, now: () => { jclock += 400; return jclock; } });
+  assert.equal(await jsonl.promise, 0);
+  const records = jsonl.raw.map((line) => JSON.parse(line));
+  assert.deepEqual(records.map((record) => [record.type, record.sequence, record.timeoutSec]), [['timeout', quiet.state.events.sequence, 1]]);
+});
+
 // A usage limit ends the step and goes to the caller (owner decision,
 // 2026-09-25): the needs-you block says when the pool is back, and waiting for
 // it is one of the caller's options. Bullswarm never waits by itself.

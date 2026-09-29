@@ -134,6 +134,14 @@ test('the skill puts the run-or-workflow choice first, with the chunking rule, t
   assert.match(skill, /A critique asks only for what the sources can show/);
   assert.match(skill, /Cap `maxRounds` at 2 unless a round is cheap/);
   assert.match(skill, /run the watch in the foreground: it blocks until the wake/);
+  // A foreground tool call is killed after a few minutes: the watch must end
+  // in time and relaunch from its cursor (--after), or wakes are lost.
+  assert.match(skill, /--until trouble --timeout 100/);
+  assert.match(skill, /A restart without `--after` attaches at the newest event and skips/);
+  const guide = read('docs/guide/observing.md').replace(/\s+/g, ' ');
+  assert.match(guide, /--timeout/);
+  const mod = read('mods/bullswarm/hooks/verdict.ts');
+  assert.match(mod, /--timeout/);
   assert.match(skill, /Never end your turn while a run you own is still running/);
   assert.match(skill, /`bullswarm workflow plan contract` \(no goal needed\)/);
 });

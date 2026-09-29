@@ -152,7 +152,7 @@ const TABLE = {
   'workflow tui': ['json', 'all', 'show', 'cancel', 'overview', 'width', 'height'],
   'workflow watch': [
     'classic', 'interval', 'heartbeat', 'stall-after', 'next', 'after',
-    'since', 'jsonl', 'once', 'verbose', 'until',
+    'since', 'jsonl', 'once', 'verbose', 'until', 'timeout',
   ],
   'workflow events': ['after', 'json'],
   'workflow steer': ['message', 'json'],

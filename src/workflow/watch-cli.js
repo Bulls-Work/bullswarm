@@ -1149,6 +1149,9 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   until = null,
   // The stale-score probe (see src/lib/stale.js); false turns it off.
   stale = null,
+  // Event mode only: exit after this long with no wake, printing a relaunch
+  // line whose --after cursor keeps what happens before the next watch.
+  timeoutMs = null,
   now = Date.now,
   output = process.stdout,
   onPendingEventCount = null,
@@ -1182,10 +1185,12 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   let lastActivityAt = null;
   let memory = null;
   let attached = false;
+  let startedMs = null;
   while (true) {
     const state = withV2Cancellation(readJson(statePath), resolved.runDir);
     if (state) {
       const nowMs = now();
+      startedMs ??= nowMs;
       const snapshot = watchSnapshot(resolved.runDir, state, new Date(nowMs));
       // --once stays a single snapshot and --classic forces the historical
       // transition-plus-heartbeat stream; everything else is event-based.
@@ -1407,6 +1412,19 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           for (const step of staleSteps) {
             output.write(`  or restart: bullswarm workflow step restart ${runToken} ${step}\n`);
           }
+        }
+        return 0;
+      }
+      // --timeout: no wake in time. The relaunch line's cursor is what this
+      // watch consumed, so a wake that lands before the next watch still prints.
+      if (timeoutMs != null && eventMode && nowMs - startedMs >= timeoutMs) {
+        const seconds = timeoutMs / 1000;
+        if (jsonl) emitLine({ type: 'timeout', timeoutSec: seconds, status: snapshot.status });
+        else {
+          const runToken = snapshot.shortId ?? snapshot.runId;
+          const mode = until ? ` --until ${until}` : next ? ' --next' : '';
+          output.write(`${glyphs().waiting} watch timed out after ${seconds}s · the run is still ${snapshot.status}\n`);
+          output.write(`next: bullswarm workflow watch ${runToken}${mode} --after ${priorSequence} --since ${snapshot.at} --timeout ${seconds}\n`);
         }
         return 0;
       }
