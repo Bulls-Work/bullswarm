@@ -83,7 +83,9 @@
   worker writes to a file Bullswarm names and Bullswarm checks against the
   schema (a mismatch is failure kind `schema`). A `build` or `chore` run must
   change a file, else it fails `not-produced`; ask a question on
-  `--lane analyze`.
+  `--lane analyze`. A file git ignores counts (a deliverable in an `out/`
+  that `.gitignore` lists), and no worker prompt names a commit as a way to
+  produce, so a retry is never steered into committing.
 - run: new routing flags `--avoid-pool`, `--use-provider` and
   `--avoid-provider` (comma-separated), the same filters a workflow step's
   `route` takes. `--dry-run` prints the kernel's own first pick for the step.

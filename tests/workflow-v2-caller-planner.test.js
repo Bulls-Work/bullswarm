@@ -1461,7 +1461,7 @@ test('CLI: a role-only program validates, dispatches on the role routing, judges
     assert.deepEqual(fact('check-create-done'), { type: 'report', gated: false, produced: null });
     // The briefs carry the role lines.
     const brief = (id) => readFileSync(state.attempts.find((attempt) => attempt.actionId === id).taskFile, 'utf8');
-    assert.match(brief('create-done'), /Declared deliverable: changes to your territory files \(done\.txt\) or a commit\. Bullswarm fails this step as not produced/);
+    assert.match(brief('create-done'), /Declared deliverable: changes to your territory files \(done\.txt\)\. Bullswarm fails this step as not produced/);
     assert.match(brief('notify-done'), /This is an act step: it acts outside the workspace/);
     assert.match(brief('survey-done'), /Declared deliverable: your final response is the report\./);
     // A check with evidenceFor is never judged by the gate, so its brief promises nothing.
