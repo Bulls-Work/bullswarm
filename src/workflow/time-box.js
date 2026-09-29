@@ -207,8 +207,28 @@ export function timeBoxForAttempt({ action, pool = null, startedAt, evidence = f
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const NOT_DONE_HEADING = /^not done:?$/i;
 const LIST_ITEM = /^ ?(?:[-*+]|\d{1,9}[.)])(?:\s+(.*)|$)/;
-const NOT_AN_ITEM = /^(?:none|nothing|n\/a|-|—)\.?$/i;
+const DASH_ONLY = /^(?:-|—|–)$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+// "none", "nothing" or "n/a" opening the line, optionally with words that say
+// where nothing is left ("left", "for this build step"), then the end or
+// punctuation and a reason (QA-REPORT-3, B2). An exception after it ("none,
+// except …", "none — but …") and a word that goes on ("none of the tests
+// pass", "nothing handles …") name work, so those lines stay items.
+const EMPTY_WORD = /^(?:none|nothing|n\/a|nil)(?![\w/])/i;
+const EMPTY_SCOPE = /^(?:\s+(?:left|remaining|outstanding|pending|undone|unfinished|open|else|further|more|here|at all|to (?:report|do|list|add)|(?:for|in|within|from|on) (?:this|the|my|that|our) (?:[\w'’-]+ ){0,3}?(?:step|action|task|part|scope|round|run|stage|phase|job)s?))*/i;
+const EMPTY_END = /^[*_`]*\s*(?:$|[.;:!?,)(]|—|–|-(?:\s|$))/;
+const BUT = /^[*_`]*\s*(?:[.;:!?,(]|—|–|-)?\s*(?:except|but|apart from|aside from|besides|other than|save for|only|although|though|however)\b/i;
+
+/** True when a `## Not done` list line names no unfinished work. */
+function notAnItem(said) {
+  const text = said.replace(/^[*_`]+/, '').trim();
+  if (DASH_ONLY.test(text)) return true;
+  const word = text.match(EMPTY_WORD);
+  if (!word) return false;
+  const afterWord = text.slice(word[0].length);
+  const rest = afterWord.slice(afterWord.match(EMPTY_SCOPE)[0].length);
+  return EMPTY_END.test(rest) && !BUT.test(rest);
+}
 
 function cutAtWord(text, limit) {
   if (text.length <= limit) return text;
@@ -220,7 +240,8 @@ function cutAtWord(text, limit) {
 /**
  * The items of a report's `## Not done` section: the last heading of any
  * level reading `Not done`, up to the next heading or the end. Top-level list
- * lines only; `none`, `nothing`, `n/a` and dashes are not items. `count` is
+ * lines only; dashes, and `none`, `nothing` or `n/a` alone or with a reason
+ * (`none for this step. …`), are not items. `count` is
  * every item; `items` keeps the first 20, each at most 300 characters.
  * Headings inside fenced code are not headings.
  */
@@ -253,7 +274,7 @@ export function parseNotDone(text) {
     const item = line.match(LIST_ITEM);
     if (!item) continue;
     const said = String(item[1] ?? '').trim();
-    if (!said || NOT_AN_ITEM.test(said)) continue;
+    if (!said || notAnItem(said)) continue;
     found.push(said);
   }
   return {

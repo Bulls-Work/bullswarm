@@ -100,6 +100,12 @@
   next line when the folder is alone on its line, so runs with the same
   lead-in can be told apart. A bare leading file path stays, shown by its
   name ("parser.js: fix …").
+- workflow: a `## Not done` line that says `none`, `nothing` or `n/a` and
+  then gives a reason or a scope (`- none for this build step. The review
+  rounds belong to other actions…`, `- None — all done.`, `- nothing left`)
+  is not an unfinished item, so the step no longer reads `returned early · 1
+  not done`. A line that goes on to name work (`- none of the tests pass`,
+  `- None, except the README update.`) still counts.
 - run: new routing flags `--avoid-pool`, `--use-provider` and
   `--avoid-provider` (comma-separated), the same filters a workflow step's
   `route` takes. `--dry-run` prints the kernel's own first pick for the step.

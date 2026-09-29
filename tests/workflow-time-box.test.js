@@ -165,6 +165,45 @@ test('parseNotDone reads the last `Not done` section: top-level items only, `non
   assert.equal(parsed.items[19], 'item 20 word');
 });
 
+// Real `## Not done` lines from 0.37 QA runs (QA-REPORT-3, B2): a worker that
+// says "none" and explains why did nothing short, and is not flagged.
+test('parseNotDone: `none`, `nothing` or `n/a` with a reason or a scope is not an item; real items still count', () => {
+  const notItems = [
+    "- none for this build step. The independent review rounds and `review-log.json` from TASK.md belong to other workflow actions, so I didn't do them here.",
+    '- none. `review-log.json` and the reviewer rounds are separate workflow steps, not part of this one.',
+    '- None.',
+    '- None — all done.',
+    '- none for this step',
+    '- nothing left',
+    '- Nothing remaining.',
+    '- N/A: this step is read-only.',
+    '- none - everything in scope is finished',
+    '- **None.**',
+    '- none (the review is another step)',
+    '- Nothing left undone in this action.',
+  ];
+  for (const line of notItems) assert.equal(parseNotDone(`## Not done\n${line}`).count, 0, line);
+  const items = [
+    '- f10 and f11 are still unconfirmed.',
+    "- The dependency report’s f11 candidate remains unconfirmed and outside this check’s scope.",
+    '- **Message-queue report (`report.md` in `runs/s3-research-v037b-r2/proj`) not written.** The task file gives three instructions that cannot all be followed:',
+    '- none of the tests pass yet',
+    '- nothing handles the empty separator',
+    '- None, except the README update.',
+    '- none — but the migration is still unwritten',
+    '- nonexistent config path is not handled',
+  ];
+  for (const line of items) assert.equal(parseNotDone(`## Not done\n${line}`).count, 1, line);
+  // The p2 build report as the worker wrote it: nothing short.
+  const build = [
+    '## Done', '- src/slugify.js', '',
+    '## Not done',
+    "- none for this build step. The independent review rounds and `review-log.json` from TASK.md belong to other workflow actions, so I didn't do them here.",
+    '', '## Suggested next step', 'Run the independent reviewer against rules 1–12.',
+  ].join('\n');
+  assert.deepEqual(parseNotDone(build), { count: 0, items: [] });
+});
+
 test('the display strings: returned early, box, and ran only past the box', () => {
   assert.equal(returnedEarlyText({ returnedEarly: { count: 2, items: ['a', 'b'] } }), 'returned early · 2 not done');
   assert.deepEqual(returnedEarlyItems({ returnedEarly: { count: 2, items: ['a', 'b'] } }), ['a', 'b']);
