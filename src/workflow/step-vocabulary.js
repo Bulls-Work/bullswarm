@@ -263,6 +263,11 @@ export const NEEDS_YOU_LABELS = Object.freeze({
 export const RETRY_FACTS = Object.freeze(['other-pool', 'same-pool', 'wait']);
 const COUNTED_RETRY_FACTS = new Set(['other-pool', 'same-pool']);
 
+/** Whether the dispatcher started this attempt as a counted retry (D3). */
+export function isCountedRetry(attempt) {
+  return COUNTED_RETRY_FACTS.has(attempt?.retryOf?.how);
+}
+
 /**
  * Retries the step's current definition has spent (D2/D3): its attempts after
  * `supersededAttempts` whose `retryOf.how` is other-pool or same-pool. A
@@ -275,7 +280,7 @@ export function countRetries(state, stepId, supersededAttempts) {
   let count = 0;
   for (const attempt of state?.attempts ?? []) {
     if (attempt?.actionId !== stepId || !(attempt.ordinal > superseded)) continue;
-    if (COUNTED_RETRY_FACTS.has(attempt.retryOf?.how)) count += 1;
+    if (isCountedRetry(attempt)) count += 1;
   }
   return count;
 }

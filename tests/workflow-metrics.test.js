@@ -148,9 +148,29 @@ test('rollups store one metrics record per attempt, planner and scout included',
 });
 
 test('attemptMetric names the retry and the outcome', () => {
-  const metric = attemptMetric({ ...attempt(), attemptNumber: 2, status: 'failed' }, { role: 'worker' });
+  const metric = attemptMetric({
+    ...attempt(), attemptNumber: 2, status: 'failed', retryOf: { attempt: 's1#1', how: 'same-pool' },
+  }, { role: 'worker' });
   assert.equal(metric.retry, 1);
+  assert.equal(metric.retryHow, 'same-pool');
+  assert.equal(metric.ordinal, 2);
   assert.equal(metric.outcome, 'failed');
+});
+
+test('attemptMetric reads a retry from retryOf, never from the attempt\'s position', () => {
+  // A loop's second round and a caller's rerun both start a later ordinal of
+  // the step with no retryOf: neither is an automatic retry.
+  const round2 = attemptMetric({ ...attempt(), ordinal: 2, attemptNumber: undefined }, { role: 'worker' });
+  assert.equal(round2.retry, 0);
+  assert.equal(round2.retryHow, null);
+  assert.equal(round2.ordinal, 2);
+  // A rate-limit back-off is recorded but spends no retry, as in countRetries.
+  const waited = attemptMetric({ ...attempt(), attemptNumber: 2, retryOf: { attempt: 's1#1', how: 'wait' } });
+  assert.equal(waited.retry, 0);
+  assert.equal(waited.retryHow, 'wait');
+  const first = attemptMetric(attempt(), { role: 'worker' });
+  assert.equal(first.retry, 0);
+  assert.equal(first.ordinal, 1);
 });
 
 // ------------------------------------------ Stats and Budget read the same

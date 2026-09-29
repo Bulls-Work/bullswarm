@@ -27,6 +27,8 @@
 //       pools, legacy runs, single-run log entries) reach these functions
 //       through the legacy reader (metrics-legacy.js), marked `legacy`.
 
+import { isCountedRetry } from './step-vocabulary.js';
+
 // ------------------------------------------------------------------ numbers
 
 export function finite(value) {
@@ -525,11 +527,16 @@ export function providerOfPool(pool) {
 export function attemptMetric(attempt, { role = 'worker' } = {}) {
   const usage = attemptUsage(attempt);
   const pool = typeof attempt?.pool === 'string' && attempt.pool ? attempt.pool : null;
-  const number = finite(attempt?.attemptNumber ?? attempt?.ordinal);
+  const ordinal = finite(attempt?.ordinal ?? attempt?.attemptNumber);
+  const retryHow = typeof attempt?.retryOf?.how === 'string' ? attempt.retryOf.how : null;
   return {
     role,
     actionId: typeof attempt?.actionId === 'string' ? attempt.actionId : null,
-    retry: number != null && number >= 1 ? number - 1 : null,
+    // An automatic retry is the dispatcher's retryOf fact. The ordinal is
+    // run-wide per step, so loop rounds and caller reruns raise it too.
+    retry: isCountedRetry(attempt) ? 1 : 0,
+    retryHow,
+    ordinal,
     pool,
     model: typeof attempt?.model === 'string' && attempt.model ? attempt.model : null,
     provider: providerOfPool(pool),
