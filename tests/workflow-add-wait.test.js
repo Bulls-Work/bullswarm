@@ -17,9 +17,9 @@ import { implicitV3Requirements, normaliseProgramV3 } from '../src/workflow/prog
 import { appendedActionsV3, appendedProgramV3 } from '../src/workflow/revision-v3.js';
 import { exportV2Plan, planV2Revision } from '../src/workflow/v2-revision.js';
 import { v2LiveProgramRuntime } from '../src/workflow/v2-state.js';
-import { addV3Steps, waitV3Nodes, wfAdd } from '../src/workflow/cli-steps.js';
+import { addV3Steps, waitFactLines, waitFacts, waitV3Nodes, wfAdd } from '../src/workflow/cli-steps.js';
 import { routeIssuesForPools } from '../src/workflow/step-route.js';
-import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
+import { renderWatchEvent, runWorkflowWatch } from '../src/workflow/watch-cli.js';
 import { v3LaunchInstruction } from '../src/workflow/gates-loops.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
 import { readEvents } from '../src/workflow/events.js';
@@ -786,4 +786,28 @@ test('a no-pool step reads retryable false with noPool true in result.json and t
   assert.equal(summary.proof.answerChecked, 5);
   assert.deepEqual(summary.proof.answerCheckedSteps, checks.map((step) => step.id));
   assert.match(summary.handback.options.noPool, /^review: no pool passes its route at its tier/);
+});
+
+test('wait and watch read a step\'s deliverable from its attempt: carried work says carried, never produced', () => {
+  const stateWith = (deliverable) => ({
+    program: { actions: [{ id: 'draft', deliverable: { type: 'files' } }], control: {} },
+    actions: [{ id: 'draft', status: 'succeeded', supersededAttempts: 0 }],
+    attempts: [{ actionId: 'draft', ordinal: 1, status: 'succeeded', pool: 'acme-pool', model: 'acme-model', deliverable }],
+  });
+  const factOf = (deliverable) => waitFacts(stateWith(deliverable), ['draft']).nodes[0];
+  const carried = factOf({ type: 'files', gated: false, produced: null, carried: true });
+  assert.deepEqual(carried.deliverable, { type: 'files', produced: null, carried: true });
+  assert.match(waitFactLines(carried)[0], /deliverable files carried from an earlier attempt/);
+  assert.doesNotMatch(waitFactLines(carried)[0], /produced/);
+  const made = factOf({ type: 'files', gated: true, produced: true });
+  assert.deepEqual(made.deliverable, { type: 'files', produced: true });
+  assert.match(waitFactLines(made)[0], /deliverable files produced/);
+  // Not gated (no snapshot): nothing was checked, so nothing is claimed.
+  const unchecked = factOf({ type: 'files', gated: false, produced: null });
+  assert.deepEqual(unchecked.deliverable, { type: 'files', produced: null });
+  assert.doesNotMatch(waitFactLines(unchecked)[0], /produced|carried/);
+
+  const line = renderWatchEvent({ type: 'action.finished', actionId: 'draft', status: 'succeeded', durationSec: 5, carried: true });
+  assert.match(line, /draft finished · .*deliverable carried from an earlier attempt/);
+  assert.doesNotMatch(renderWatchEvent({ type: 'action.finished', actionId: 'draft', status: 'succeeded', durationSec: 5 }), /carried/);
 });

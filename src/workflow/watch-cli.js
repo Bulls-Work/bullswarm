@@ -648,6 +648,7 @@ export function notableWatchEvents({
             ? { returnedEarly: payload.returnedEarly.count } : {}),
           // What backs the step (E22); events of older runs carry none.
           ...(status === 'succeeded' && payload.proof && typeof payload.proof === 'object' ? { proof: payload.proof } : {}),
+          ...(status === 'succeeded' && payload.carried === true ? { carried: true } : {}),
           ...(status === 'failed' && evidenceNotRun(state, payload, event) ? { evidenceNotRun: true } : {}),
           // A v3 step's checked answer, cut to one line (answers.js).
           ...(status === 'succeeded' ? answerField(state, payload.actionId, event.committedAt) : {}),
@@ -1001,7 +1002,8 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
       }
       if (event.status === 'succeeded') {
         const label = formatV2ProofLabel(event.proof);
-        return `${glyphs().ok} ${event.actionId} finished · ${label ? `${label} · ` : ''}${formatDuration(event.durationSec)}${event.answer ? `\n  answer ${event.answer}` : ''}`;
+        const carried = event.carried ? ' · deliverable carried from an earlier attempt' : '';
+        return `${glyphs().ok} ${event.actionId} finished · ${label ? `${label} · ` : ''}${formatDuration(event.durationSec)}${carried}${event.answer ? `\n  answer ${event.answer}` : ''}`;
       }
       if (event.status === 'blocked') return `${glyphs().blocked} ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;
       if (event.status === 'cancelled' && event.failureKind === 'superseded') return `${glyphs().reroute} ${event.actionId} stopped · replaced by a plan revision`;

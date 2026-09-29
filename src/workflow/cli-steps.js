@@ -375,6 +375,18 @@ function evidenceFacts(results) {
   }));
 }
 
+// Whether the step's deliverable was produced, read from the attempt's own
+// fact: work carried from an earlier attempt, or a promise no snapshot could
+// check, is never reported as produced. An attempt with no fact (an older
+// run) falls back to the step's status.
+function deliverableOutcome(runtime, failure, last) {
+  if (failure?.kind === 'not-produced' && runtime.status !== 'succeeded') return { produced: false };
+  if (runtime.status !== 'succeeded') return { produced: null };
+  const fact = last?.status === 'succeeded' ? last.deliverable : null;
+  if (!fact || typeof fact !== 'object' || !Object.hasOwn(fact, 'produced')) return { produced: true };
+  return { produced: fact.carried === true ? null : fact.produced ?? null, ...(fact.carried === true ? { carried: true } : {}) };
+}
+
 function stepFacts(state, definition, runtime) {
   const attempts = currentAttempts(state, runtime);
   const last = attempts.findLast((attempt) => attempt.status === 'succeeded') ?? attempts.at(-1) ?? null;
@@ -387,10 +399,7 @@ function stepFacts(state, definition, runtime) {
     durationSec: secondsBetween(runtime.startedAt, runtime.finishedAt),
     attempts: attempts.length,
     evidence: evidenceFacts(last?.evidenceResults),
-    deliverable: deliverable ? {
-      ...deliverable,
-      produced: runtime.status === 'succeeded' ? true : failure?.kind === 'not-produced' ? false : null,
-    } : null,
+    deliverable: deliverable ? { ...deliverable, ...deliverableOutcome(runtime, failure, last) } : null,
     outputFile: runtime.outputFile ?? null,
     ...(failure && runtime.status !== 'succeeded' ? { failure: { kind: failure.kind ?? null, why: failure.message ?? null } } : {}),
   };
@@ -502,7 +511,8 @@ export async function waitV3Nodes({
   }
 }
 
-function factLine(fact) {
+/** The printed lines of one `workflow wait` fact. */
+export function waitFactLines(fact) {
   const g = glyphs();
   if (fact.type === 'loop' && fact.status === 'passed' && fact.reason === 'continued') {
     return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds)}`];
@@ -520,7 +530,10 @@ function factLine(fact) {
   if (fact.pool) parts.push(`${fact.pool}${fact.model ? ` · ${fact.model}` : ''}`);
   if (fact.durationSec != null) parts.push(formatDuration(fact.durationSec));
   if (fact.evidence?.length) parts.push(`evidence ${fact.evidence.filter((item) => item.status === 'passed').length}/${fact.evidence.length} passed`);
-  if (fact.deliverable) parts.push(`deliverable ${fact.deliverable.type}${fact.deliverable.produced === true ? ' produced' : fact.deliverable.produced === false ? ' not produced' : ''}`);
+  if (fact.deliverable) {
+    const { type, produced, carried } = fact.deliverable;
+    parts.push(`deliverable ${type}${carried ? ' carried from an earlier attempt' : produced === true ? ' produced' : produced === false ? ' not produced' : ''}`);
+  }
   const lines = [parts.join(' · ')];
   if (fact.failure) lines.push(`  why      ${fact.failure.kind ?? 'failed'}: ${fact.failure.why ?? 'no reason recorded'}`);
   for (const item of fact.evidence ?? []) if (item.status !== 'passed') lines.push(`  evidence ${item.type === 'schema' ? `schema ${item.file}` : `\`${item.cmd}\``}: ${item.status}${item.why ? ` · ${item.why}` : ''}`);
@@ -547,7 +560,7 @@ export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
   if (opts.json) { console.log(JSON.stringify({ action: 'workflow-wait', ...payload }, null, 2)); return code; }
   if (result.status === 'error') { console.error(`✗ ${result.why}`); return code; }
   const id = result.shortId ?? result.runId ?? token;
-  for (const fact of [...(result.loops ?? []), ...(result.nodes ?? [])]) for (const line of factLine(fact)) console.log(line);
+  for (const fact of [...(result.loops ?? []), ...(result.nodes ?? [])]) for (const line of waitFactLines(fact)) console.log(line);
   if (result.status === 'timeout') console.log(`${glyphs().waiting} timed out after ${timeoutSec}s; the run is ${result.run ?? 'unreadable'}. Wait again: bullswarm workflow wait ${id} ${ids.join(' ')}`);
   if (result.status === 'stopped') {
     console.log(`${glyphs().stopped} ${result.why}; not every id finished. See bullswarm workflow runs show ${id}`);

@@ -13,6 +13,7 @@ import { reopenV2RunForRetry, reviseV2Program } from '../src/workflow/run-contro
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { readEvents } from '../src/workflow/events.js';
 import { removeSettled } from './fixtures/settled-cleanup.mjs';
 
 const connector = (name) => ({
@@ -219,7 +220,7 @@ test('an isolated dispatch ignores earlier work that was never integrated', asyn
 });
 
 test('an isolated rerun of a step that succeeded carries its integrated work', async (t) => {
-  const { earlierOf, lastOf, seen, workspace } = await scenario(t, {
+  const { earlierOf, lastOf, runDir, seen, workspace } = await scenario(t, {
     runId: 'wf-isook0-abcdef',
     workspaceMode: 'isolated',
     actions: [step({ id: 'write', ownedFiles: ['write.txt'], role: 'produce', prompt: 'Write write.txt.' })],
@@ -236,6 +237,8 @@ test('an isolated rerun of a step that succeeded carries its integrated work', a
   assert.deepEqual(earlierOf('write'), { produced: true, unknown: false });
   assert.equal(lastOf('write').status, 'succeeded');
   assert.deepEqual(lastOf('write').deliverable, { type: 'files', gated: false, produced: null, carried: true });
+  const finished = readEvents(runDir).filter((event) => event.type === 'action.finished' && event.payload.actionId === 'write');
+  assert.equal(finished.at(-1).payload.carried, true, 'the finish event says the work was carried');
 });
 
 // kernel-0: only an amendment starts a new definition.

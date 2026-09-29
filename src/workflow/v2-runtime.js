@@ -1286,6 +1286,8 @@ async function runV2Kernel({
         actionId: action.id, status: 'succeeded', outputFile: runtime.outputFile, artifacts: runtime.artifactIds,
         ...(finished?.returnedEarly ? { returnedEarly: { count: finished.returnedEarly.count } } : {}),
         ...(proof ? { proof } : {}),
+        // This dispatch changed nothing; an earlier attempt's work stands (D19).
+        ...(finished?.deliverable?.carried === true ? { carried: true } : {}),
       });
     }
     releaseWorkspace();

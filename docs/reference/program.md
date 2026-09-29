@@ -332,7 +332,7 @@ When a step ends, Bullswarm checks its deliverable. A step that did not produce 
 | `report` | the step's final response is not empty |
 | `outward` | not judged yet |
 
-A step with `evidenceFor`, and a `digest`, are never judged. The rule for a step with no deliverable applies only to runs started by this version; saved runs keep their original rules when resumed. "During the step" covers every attempt of the step, so a retry, resume or rerun that finds its work already done is not failed. A rerun of a step that failed `not-produced` is judged again. In an isolated run, only work from a step that succeeded counts.
+A step with `evidenceFor`, and a `digest`, are never judged. The rule for a step with no deliverable applies only to runs started by this version; saved runs keep their original rules when resumed. "During the step" covers every attempt of the step, so a retry, resume or rerun that finds its work already done is not failed (`workflow wait` and `watch` say its deliverable was carried from an earlier attempt). A loop round is new work: an earlier round's work is never carried into it. A rerun of a step that failed `not-produced` is judged again. In an isolated run, only work from a step that succeeded counts.
 
 An `act` step works outside the workspace. It runs on lane `analyze`, its `ownedFiles` and `evidenceFor` are empty, and its deliverable is `outward`. Its task says not to modify workspace files and not to stage, commit, stash, check out or reset anything, and to list every action it took. It is never judged by files. It may list requirements in `affects`, but the kernel never repairs a requirement an act step affects: a failing one comes back to you. It is allowed in a read-only goal, because it does not change the workspace.
 

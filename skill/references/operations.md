@@ -57,8 +57,9 @@ answer, which must itself be a fragment `{steps, gates?, loops?}`; read it with
 blocked, cancelled or removed; 1 when one was, or the run stopped short of them (it then names each
 gate or loop the run waits on, with its `continue` command); 2 on a timeout or
 an unknown id. `--json` gives per step `status`, `pool`, `model`,
-`durationSec`, `attempts`, `evidence`, `deliverable` (with `produced`),
-`outputFile`, `failure`, and `answer` (or `answerErrors`); per gate or loop
+`durationSec`, `attempts`, `evidence`, `deliverable` (with `produced`, and
+`carried: true` when the attempt changed nothing and an earlier attempt's work
+stands), `outputFile`, `failure`, and `answer` (or `answerErrors`); per gate or loop
 `status`, `since`, `note`, `round`, `maxRounds` and the `next` command.
 
 **continue** writes a durable intent next to the run. A running kernel applies
