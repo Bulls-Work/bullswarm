@@ -2,8 +2,8 @@
 //
 // Callers often start a goal, or a one-step run's task (whose first line is
 // both the goal and the step's purpose), with the folder to work in: "Work in
-// /Users/…/proj. Read every ticket …". Cut to a narrow column, every such row
-// read "Work in /Users/…", so a caller could not tell its run from another.
+// ~/…/proj. Read every ticket …". Cut to a narrow column, every such row
+// read "Work in ~/…", so a caller could not tell its run from another.
 // A leading folder, with its lead-in words, is dropped and the rest shown;
 // a bare path with no lead-in is dropped only when it ends in "/" (QA37 wave H).
 
