@@ -93,6 +93,9 @@
   `--lane analyze`. A file git ignores counts (a deliverable in an `out/`
   that `.gitignore` lists), and no worker prompt names a commit as a way to
   produce, so a retry is never steered into committing.
+- workflow: `workflow runs` lists a goal that starts with a folder ("Work in
+  /path/proj. Read every ticket…") by the words after the folder, so runs
+  with the same lead-in can be told apart.
 - run: new routing flags `--avoid-pool`, `--use-provider` and
   `--avoid-provider` (comma-separated), the same filters a workflow step's
   `route` takes. `--dry-run` prints the kernel's own first pick for the step.

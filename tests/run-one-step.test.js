@@ -312,3 +312,18 @@ test('run without --json ends with the run id and the result command', (t) => {
   assert.equal(id, again);
 });
 
+// QA37 rerun (N2): every goal began 'Work in /Users/…/runs/<case>/proj.', so
+// the 28-character goal column read 'Work in /Users/<you>/.bu' on every
+// row. A goal that starts with a folder is listed by what comes after it.
+test('workflow runs lists a goal that starts with a folder by the words after the folder', (t) => {
+  const f = fixture(t);
+  const result = bullswarm(f, ['run', '--lane', 'analyze', '--json', '--add-dir', f.repo, '--prompt', `Work in ${f.repo}. Summarise the acme readme`]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const { shortId } = JSON.parse(result.stdout);
+  const listed = bullswarm(f, ['workflow', 'runs', '--all']);
+  assert.equal(listed.status, 0, listed.stderr);
+  const row = listed.stdout.split('\n').find((line) => line.includes(shortId));
+  assert.ok(row, listed.stdout);
+  assert.match(row, /Summarise the acme readme/);
+  assert.doesNotMatch(row, /Work in \//);
+});

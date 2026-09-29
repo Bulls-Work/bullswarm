@@ -25,6 +25,7 @@ import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine, v2Run
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 import { appendRollupIndex, readRollup, rollupIndexPath, writeLegacyRollup, writeRunRollup } from './rollup.js';
 import { readGoalProject } from './goal.js';
+import { goalColumnText } from './goal-column.js';
 import { projectName } from '../lib/project.js';
 import { isTerminalWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
@@ -230,7 +231,7 @@ function runsList(opts) {
     const completed = r.state.actions?.filter((action) => ['succeeded', 'failed', 'blocked', 'cancelled'].includes(action.status)).length ?? 0;
     // Steps a plan revision removed are history, not part of the plan's size.
     const total = r.state.actions?.filter((action) => action.status !== 'removed').length ?? 0;
-    console.log(`${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} ${(r.state.intent?.goal ?? '?').slice(0, 28).padEnd(28)} ${status.padEnd(10)} ${`${completed}/${total}`.padStart(5)} actions  ${humanAge(runStartedAt(r))}`);
+    console.log(`${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} ${goalColumnText(r.state.intent?.goal).slice(0, 28).padEnd(28)} ${status.padEnd(10)} ${`${completed}/${total}`.padStart(5)} actions  ${humanAge(runStartedAt(r))}`);
   }
   return 0;
 }
