@@ -66,7 +66,7 @@ const connector = (name) => ({
 });
 
 // The real dispatch (its evidence checks run for real) with a fake worker.
-// `script(actionId, turn, task)` returns {answer?, fail?, sleepMs?}; `turn`
+// `script(actionId, turn, task)` returns {answer?, fail?, sleepMs?, write?}; `turn`
 // counts that step's worker runs from 1.
 function fakeDispatch(script = () => ({}), { seen = [] } = {}) {
   const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
@@ -77,11 +77,12 @@ function fakeDispatch(script = () => ({}), { seen = [] } = {}) {
       ...options,
       pools: [connector('acme-pool')],
       dependencies: {
-        watchOnce: async (_pool, task, _targetDir, files, opts) => {
+        watchOnce: async (_pool, task, targetDir, files, opts) => {
           const turn = (turns.get(options.action.id) ?? 0) + 1;
           turns.set(options.action.id, turn);
           const plan = script(options.action.id, turn, task) ?? {};
           if (plan.sleepMs) await new Promise((done) => setTimeout(done, plan.sleepMs));
+          for (const [path, body] of Object.entries(plan.write ?? {})) writeFileSync(join(targetDir, path), body);
           writeFileSync(files.taskFile, task);
           const named = /to this file: (\S+)/.exec(task)?.[1] ?? null;
           if (named && plan.answer !== undefined) writeFileSync(named, JSON.stringify(plan.answer));
@@ -337,6 +338,33 @@ test('a loop out of rounds waits; continue --rounds gives it more; continue with
   assert.equal(done.result.status, 'completed', done.result.reason);
   assert.equal(status(done, 'ship'), 'succeeded');
   assert.equal(node(done, 'polish').reason, 'continued');
+});
+
+test('a loop writer that changes no file in round 2 fails not-produced: round 1\'s work is not carried into it', async (t) => {
+  const f = fixture(t);
+  const program = {
+    schemaVersion: V3,
+    steps: [
+      { id: 'draft', lane: 'build', files: ['brief.md'], prompt: 'Write the acme brief.md.' },
+      { id: 'critique', dependsOn: ['draft'], prompt: 'Critique the acme brief.', answer: passedAnswer },
+    ],
+    loops: [{ id: 'polish', steps: ['draft', 'critique'], until: { step: 'critique', field: 'passed' }, maxRounds: 2 }],
+  };
+  // The writer writes brief.md in its first turn only; the critique never passes.
+  const run = await launch(f, program, fakeDispatch((id, turn) => {
+    if (id === 'critique') return { answer: { passed: false } };
+    return turn === 1 ? { write: { 'brief.md': 'acme brief v1\n' } } : {};
+  }));
+  const drafts = run.state.attempts.filter((attempt) => attempt.actionId === 'draft');
+  assert.equal(drafts[0].status, 'succeeded');
+  const round2 = drafts.slice(1);
+  assert.ok(round2.length >= 1, 'round 2 dispatched the writer');
+  for (const attempt of round2) {
+    assert.equal(attempt.failureKind, 'not-produced', `${attempt.id}: ${attempt.status} ${attempt.why}`);
+    assert.equal(attempt.deliverable?.carried, undefined, 'round 1 is not carried into round 2');
+  }
+  assert.equal(status(run, 'draft'), 'failed');
+  assert.equal(node(run, 'polish').status, 'blocked');
 });
 
 test('an evidence-form until: a failed check reads "checked, not passed" and the next round starts', async (t) => {
