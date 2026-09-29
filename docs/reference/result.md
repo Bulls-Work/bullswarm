@@ -25,6 +25,7 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `runId`, `shortId` | the run's record under `workflows/<id>/`; a run is a one-step workflow (`bullswarm workflow runs show <shortId>`) |
 | `answer` | with `--answer-schema`: the JSON the worker wrote (kept even when it breaks the schema); `null` otherwise |
 | `answerCheck` | with `--answer-schema`: `{ ok, errors, file }`; `null` otherwise |
+| `notDone` | `{ count, items }` when the worker's report listed unfinished items under `## Not done` (every item counted, the first five kept, each at most 160 characters); `null` otherwise. A fact beside `ok`, which it never changes; the text verdict prints `worker left N items not done: …` |
 | `attempts` | how many attempts the step made (one retry by default, none with `--no-retry`) |
 | `pick.pool` | pool that ran the last attempt, or `null` when none could take it |
 | `pick.model` | model id sent to the CLI |

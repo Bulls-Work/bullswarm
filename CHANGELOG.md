@@ -137,6 +137,13 @@
   phase frame. A v3 run or step never reads `verified` or `not verified`; the
   Step page leads its result with the answer. `bullswarm workflow runs --json`
   lists a parked run's `waitingFor`.
+- run: the verdict carries `notDone`, `{count, items}` (the first five
+  items, each at most 160 characters), when the worker's report listed
+  unfinished items under `## Not done`, and `null` otherwise; the text verdict
+  prints `worker left 2 items not done: <item>; <item>`. `ok` and `why` are
+  unchanged: a step that returned early still succeeded by its facts, and the
+  caller now sees what it left. The mod's verdict note and routed-subagent
+  notice say the same.
 - mod: the verdict note of `bullswarm run --answer-schema` carries the checked
   answer (or the failed check); a launched workflow is pointed at `workflow
   watch <run> --until trouble` instead of `--next`; the strip and prompt

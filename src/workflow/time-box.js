@@ -297,6 +297,21 @@ export function returnedEarlyItems(attempt) {
     : [];
 }
 
+const VERDICT_ITEMS = 5;
+const VERDICT_ITEM_CHARS = 160;
+
+/**
+ * `{count, items}` for a run verdict: every unfinished item counted, the
+ * first five kept, each at most 160 characters; null when the attempt
+ * listed none (QA-REPORT-3, B1).
+ */
+export function notDoneSummary(attempt) {
+  const count = Number(attempt?.returnedEarly?.count);
+  if (!Number.isInteger(count) || count <= 0) return null;
+  const items = returnedEarlyItems(attempt).slice(0, VERDICT_ITEMS).map((item) => cutAtWord(item.trim(), VERDICT_ITEM_CHARS));
+  return { count, items };
+}
+
 /**
  * `box 20m · ran 34m` once the attempt ran past its box (its wall minutes,
  * rounded), `box 20m` otherwise; null when the attempt had no box.

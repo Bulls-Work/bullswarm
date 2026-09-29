@@ -6,6 +6,7 @@
 //   INTENT:     -> prints only an announcement, exits 0
 //   ANSWER_JSON:<json> -> also writes <json> to the answer file the task names
 //   TOUCH:<name> -> also writes <name> in the task's Workspace directory
+//   NOT_DONE:<a>|<b> -> ends the answer with a `## Not done` section listing a, b
 //   otherwise   -> echoes the task as a completed answer, exit 0
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -58,7 +59,11 @@ if (task.includes('PWD:')) {
   process.exit(0);
 }
 
+// Items the worker says it left, as a report's `## Not done` section.
+const notDone = task.match(/NOT_DONE:(.+)$/m)?.[1].split('|').map((item) => item.trim()).filter(Boolean) ?? [];
+const notDoneSection = notDone.length ? `\n\n## Not done\n${notDone.map((item) => `- ${item}`).join('\n')}` : '';
+
 console.log(
-  `## Completed\n\nProcessed the task file successfully.\n\n- Read and executed every directive found in ${process.argv[2]}.\n- Verified the output directory exists and is writable before writing.\n- Ran the full local validation suite: all checks passed with exit code 0.\n\nNo errors were encountered during the run.`,
+  `## Completed\n\nProcessed the task file successfully.\n\n- Read and executed every directive found in ${process.argv[2]}.\n- Verified the output directory exists and is writable before writing.\n- Ran the full local validation suite: all checks passed with exit code 0.\n\nNo errors were encountered during the run.${notDoneSection}`,
 );
 process.exit(0);

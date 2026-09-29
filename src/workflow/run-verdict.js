@@ -5,14 +5,17 @@
 // failureKind, retryAfter, pick {pool, model, command}, outFile, taskFile,
 // meta {exitCode, ..., wallSec, outBytes, reasoning}, and the worker verdict's small
 // facts (contentUsableDespiteExit, usageLimit, meterRefresh, ...). New:
-// runId, shortId, answer, answerCheck, a short `usage` summary of the whole
-// run, and `details`, the command for the full record (per-attempt cost
-// lives in `workflow runs result <id> --json`). Every value comes from the
-// run's durable state and the step's last dispatch, never from the worker's
-// own report.
+// runId, shortId, answer, answerCheck, notDone, a short `usage` summary of
+// the whole run, and `details`, the command for the full record (per-attempt
+// cost lives in `workflow runs result <id> --json`). Every value comes from
+// the run's durable state and the step's last dispatch. The one value read
+// from the worker's report is `notDone`, the items it listed under
+// `## Not done` (the attempt's `returnedEarly`): what the worker says it
+// left, shown beside `ok` and never changing it.
 
 import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
 import { poolLabel, withPoolLabels } from '../lib/pool-labels.js';
+import { notDoneSummary } from './time-box.js';
 
 // The worker verdict's facts a caller may need, each only when present.
 const EXTRAS = [
@@ -89,6 +92,9 @@ export function runVerdict({ run, dispatched = null, stepId }) {
     pick: { pool: last?.pool ?? null, model: last?.model ?? null, command: worker.pick?.command ?? null },
     outFile: last?.outputFile ?? null,
     ...answerFacts(last),
+    // What the worker's report left undone: a fact beside `ok`, never a
+    // change to it (QA-REPORT-3, B1).
+    notDone: notDoneSummary(last),
   };
   const lastMeta = worker.meta ?? {};
   const reasoning = last?.reasoning ?? lastMeta.reasoning ?? null;
@@ -123,6 +129,12 @@ export function runVerdictLines(verdict, bullswarmDir) {
       + `expected=${f.expectedMinutes == null ? 'unknown' : `${f.expectedMinutes}m`} `
       + `rate=${f.ratePerMinute == null ? 'unmeasured' : `${f.ratePerMinute}%/min`} `
       + `basis=${f.estimateSource ?? 'none'}`);
+  }
+  const notDone = verdict.notDone;
+  if (notDone?.count > 0) {
+    const more = notDone.count - (notDone.items?.length ?? 0);
+    const listed = [(notDone.items ?? []).join('; '), more > 0 ? `(and ${more} more)` : ''].filter(Boolean).join(' ');
+    say(`worker left ${notDone.count} item${notDone.count === 1 ? '' : 's'} not done${listed ? `: ${listed}` : ''}`);
   }
   if (verdict.reasoning?.applied) {
     lines.push(`reasoning: ${verdict.reasoning.applied} (${verdict.reasoning.source}${verdict.reasoning.clamped ? ', clamped' : ''})`);

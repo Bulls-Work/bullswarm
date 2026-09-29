@@ -288,7 +288,7 @@ test('run --json: a compact verdict with a short usage summary, ending in the de
   const lines = result.stdout.trimEnd().split('\n');
   assert.ok(lines.length <= 60, `${lines.length} lines`);
   assert.deepEqual(Object.keys(verdict), [
-    'ok', 'why', 'failureKind', 'retryAfter', 'runId', 'shortId', 'pick', 'outFile', 'answer', 'answerCheck',
+    'ok', 'why', 'failureKind', 'retryAfter', 'runId', 'shortId', 'pick', 'outFile', 'answer', 'answerCheck', 'notDone',
     'taskFile', 'attempts', 'routeWhy', 'reasoning', 'meta', 'usage', 'contentUsableDespiteExit', 'details',
   ]);
   assert.deepEqual(Object.keys(verdict.pick), ['pool', 'model', 'command', 'poolLabel']);
@@ -310,6 +310,31 @@ test('run without --json ends with the run id and the result command', (t) => {
   assert.match(lines.at(-1), /^run: [a-z0-9]{6} · details: bullswarm workflow runs result [a-z0-9]{6}$/);
   const [, id, again] = lines.at(-1).match(/^run: ([a-z0-9]{6}) · details: bullswarm workflow runs result ([a-z0-9]{6})$/);
   assert.equal(id, again);
+});
+
+// QA-REPORT-3 (B1): a worker that listed items under `## Not done` still
+// succeeds (facts, not a verdict change), and the verdict says what it left.
+test('run: the verdict carries the worker\'s `## Not done` items; ok stays as the facts say', (t) => {
+  const f = fixture(t);
+  const prompt = 'Summarise the acme readme NOT_DONE:the changelog entry|the second report';
+  const json = bullswarm(f, ['run', '--lane', 'analyze', '--json', '--add-dir', f.repo, '--prompt', prompt]);
+  assert.equal(json.status, 0, json.stderr || json.stdout);
+  const verdict = JSON.parse(json.stdout);
+  assert.equal(verdict.ok, true, verdict.why);
+  assert.equal(verdict.why, 'all 1 step succeeded');
+  assert.deepEqual(verdict.notDone, { count: 2, items: ['the changelog entry', 'the second report'] });
+  assert.deepEqual(stepAttempts(f, verdict.runId).at(-1).returnedEarly, { count: 2, items: ['the changelog entry', 'the second report'] });
+  const text = bullswarm(f, ['run', '--lane', 'analyze', '--add-dir', f.repo, '--prompt', prompt]);
+  assert.equal(text.status, 0, text.stderr || text.stdout);
+  const lines = text.stdout.trimEnd().split('\n');
+  assert.match(lines[0], /^OK \[echo\] all 1 step succeeded$/);
+  assert.equal(lines.filter((line) => line.startsWith('worker left')).length, 1, text.stdout);
+  assert.ok(lines.includes('worker left 2 items not done: the changelog entry; the second report'), text.stdout);
+  // A worker that left nothing: null in JSON, no line in text.
+  const clean = JSON.parse(bullswarm(f, ['run', '--lane', 'analyze', '--json', '--add-dir', f.repo, '--prompt', 'Summarise the acme readme']).stdout);
+  assert.equal(clean.notDone, null);
+  const cleanText = bullswarm(f, ['run', '--lane', 'analyze', '--add-dir', f.repo, '--prompt', 'Summarise the acme readme']).stdout;
+  assert.doesNotMatch(cleanText, /not done/);
 });
 
 // QA37 rerun (N2): every goal began 'Work in ~/…/runs/<case>/proj.', so

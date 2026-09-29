@@ -95,6 +95,7 @@ The command prints exactly one verdict document when the delegate finishes, trim
   "outFile": "~/.bullswarm/workflows/wf-mulcn6cq-5b736a/out-task-attempt-1.md",
   "answer": null,
   "answerCheck": null,
+  "notDone": null,
   "taskFile": "~/.bullswarm/workflows/wf-mulcn6cq-5b736a/task-task-attempt-1.md",
   "meta": { "exitCode": 0, "wallSec": 148.5 },
   "details": "bullswarm workflow runs result u2rxms --json"
@@ -109,6 +110,7 @@ The command prints exactly one verdict document when the delegate finishes, trim
 | `why` | What decided it; on a failure `failureKind` names the kind (`quota`, `auth`, `schema`, `not-produced`, ...). |
 | `runId`, `shortId` | The run's record: a run is a one-step workflow, listed by `bullswarm workflow runs --all`. |
 | `answer`, `answerCheck` | With `--answer-schema`: the JSON answer the worker wrote and whether it matched the schema. |
+| `notDone` | What the worker's report listed under `## Not done` (`count` and the first five `items`), or `null`. `ok` can be `true` beside it: read the items before calling the work finished. |
 | `pick` | The pool and model that ran it, and the argv template that was spawned (`{taskFile}` is filled with the task file path). |
 | `contentUsableDespiteExit` | `true` when the process exited non-zero but its content still passed; read the output before re-running. |
 | `outFile` | The saved delegate output; `taskFile` is the prompt that produced it. |
