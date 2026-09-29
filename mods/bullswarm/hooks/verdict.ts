@@ -51,6 +51,15 @@ function answerText(value: unknown): string {
   return text.length > ANSWER_CHARS ? `${text.slice(0, ANSWER_CHARS - 1)}…` : text
 }
 
+/** A run verdict's `notDone` (0.37), or null when absent or malformed. */
+function notDoneOf(v: unknown): BullswarmVerdict['notDone'] {
+  const raw = (v ?? null) as Raw | null
+  const count = num(raw?.count)
+  if (count === null || count <= 0) return null
+  const items = Array.isArray(raw?.items) ? (raw.items as unknown[]).filter((i): i is string => typeof i === 'string') : []
+  return { count, items }
+}
+
 /**
  * Reads a `bullswarm run --json` or `bullswarm workflow goal --json`
  * document into one verdict shape.
@@ -80,6 +89,7 @@ export function parseVerdict(text: string, exitCode: number): BullswarmVerdict {
     answer: doc && 'answer' in doc ? (doc.answer ?? null) : null,
     answerOk: typeof check?.ok === 'boolean' ? check.ok : null,
     answerErrors: errors.map(e => (typeof e === 'string' ? e : str((e as Raw)?.message) ?? JSON.stringify(e))),
+    notDone: notDoneOf(doc?.notDone),
     waitingFor: waitingNodes(doc?.waitingFor),
     next: Array.isArray(doc?.next) ? (doc.next as unknown[]).filter((c): c is string => typeof c === 'string') : [],
     exitCode,
@@ -109,8 +119,13 @@ export function verdictContext(
     : v.answerOk === false
       ? ` Its answer check failed: ${v.answerErrors[0] ?? 'the answer does not match its schema'}.`
       : ''
+  // What the worker's report says it left: a fact beside ok, not a failure.
+  const more = v.notDone ? v.notDone.count - v.notDone.items.length : 0
+  const notDone = v.notDone
+    ? ` The worker left ${v.notDone.count} item${v.notDone.count === 1 ? '' : 's'} not done${v.notDone.items.length ? `: ${v.notDone.items.join('; ')}${more > 0 ? ` (and ${more} more)` : ''}` : ''}.`
+    : ''
   if (v.ok && v.outFile)
-    return `bullswarm mod: verdict ok from pool ${v.pool ?? '?'} (${v.model ?? '?'}); ${v.why ?? 'verified by content'}.${answer} Read ${v.outFile} and check its content before using it — a clean exit code is not proof.`
+    return `bullswarm mod: verdict ok from pool ${v.pool ?? '?'} (${v.model ?? '?'}); ${v.why ?? 'verified by content'}.${answer}${notDone} Read ${v.outFile} and check its content before using it — a clean exit code is not proof.`
   if (!v.ok)
     return `bullswarm mod: verdict ok=false — ${v.why ?? 'unknown failure'}.${answer} Inspect and report; do not retry blindly.`
   return null

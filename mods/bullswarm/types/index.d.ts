@@ -205,6 +205,9 @@ export type BullswarmVerdict = {
   /** The answer check: true, false, or null when the run declared no answer. */
   answerOk: boolean | null
   answerErrors: string[]
+  /** What the worker's report listed under `## Not done` (0.37): every item
+   *  counted, the first five kept; null when it left nothing or the verdict is older. */
+  notDone: { count: number; items: string[] } | null
   /** A parked goal's waiting gates and loops, and the commands that move them. */
   waitingFor: { id: string; type: string; note: string | null }[]
   next: string[]

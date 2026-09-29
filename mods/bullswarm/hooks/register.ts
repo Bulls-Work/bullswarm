@@ -652,7 +652,7 @@ export function register(on: On, options: PluginOptions = {}) {
 
     $.ui.notice(
       e.tool_use_id,
-      `bullswarm → ${verdict.pool ?? '?'} (${verdict.model ?? '?'}) · ${verdict.why ?? 'verified'} · ${verdict.outFile}`,
+      `bullswarm → ${verdict.pool ?? '?'} (${verdict.model ?? '?'}) · ${verdict.why ?? 'verified'}${verdict.notDone ? ` · worker left ${verdict.notDone.count} not done` : ''} · ${verdict.outFile}`,
     )
     $.ui.toast(`bullswarm routed "${description}" to ${verdict.pool ?? '?'}`, {
       timeoutMs: 6_000,

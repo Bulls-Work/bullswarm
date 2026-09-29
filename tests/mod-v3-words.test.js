@@ -31,6 +31,20 @@ test('a run verdict carries its checked answer into the note', () => {
   assert.doesNotMatch(verdictContext('run', plain), /answer/, 'a run with no answer schema claims no answer');
 });
 
+test('a run verdict\'s `## Not done` items reach the note; a verdict without them claims none', () => {
+  const early = parseVerdict(JSON.stringify({
+    ok: true, why: 'all 1 step succeeded', shortId: '5r8jyi', pick: { pool: 'grok', model: 'grok-4.7' }, outFile: '/tmp/o.md',
+    notDone: { count: 2, items: ['the changelog entry', 'the second report'] },
+  }), 0);
+  assert.deepEqual(early.notDone, { count: 2, items: ['the changelog entry', 'the second report'] });
+  assert.match(verdictContext('run', early), /The worker left 2 items not done: the changelog entry; the second report\./);
+  const clean = parseVerdict(JSON.stringify({ ok: true, why: 'all 1 step succeeded', pick: { pool: 'grok' }, outFile: '/tmp/o.md', notDone: null }), 0);
+  assert.equal(clean.notDone, null);
+  assert.doesNotMatch(verdictContext('run', clean), /not done/);
+  const older = parseVerdict(JSON.stringify({ ok: true, why: 'verified', pick: { pool: 'grok' }, outFile: '/tmp/o.md' }), 0);
+  assert.equal(older.notDone, null, 'a verdict from before 0.37 has no notDone');
+});
+
 test('a run verdict\'s token counts come from its short usage summary, or from meta.usage in an older verdict', () => {
   const compact = parseVerdict(JSON.stringify({
     ok: true, why: 'all 1 step succeeded', shortId: '5r8jyi', pick: { pool: 'grok' }, outFile: '/tmp/o.md',
