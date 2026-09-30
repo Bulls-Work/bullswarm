@@ -947,7 +947,7 @@ const workflowText = rich({
     { name: 'add <runId>', desc: 'append steps, gates or loops to a v3 run (--steps <file.json> or --from-answer <step>); never changes what the run has; reopens a finished run' },
     { name: 'wait <runId> <id...>', desc: 'block until the named steps, gates or loops finish, fail, block or wait; print their facts and checked answers' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
-    { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
+    { name: 'steer <runId>', desc: 'queue guidance for a running v3 run: watch prints it, and you act on it (workflow add)' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
     { name: 'task show <taskId>', desc: 'read one standalone task through the dashboard Step model' },
   ],
@@ -1340,18 +1340,20 @@ const workflowWatchText = rich({
     + 'prints, verbose or not: an `⚠ ... usage limit on <pool>` line, with `back at <time>` in it when the '
     + 'watch knows when the pool is back. In a run started by this version it ends `back to you` and a '
     + 'needs-you block follows: nothing waits for the pool or moves the step, and the block carries '
-    + '`back at <time>` and a `wait for it` rerun when the reset is known. In '
-    + 'a run from an earlier version it ends `retrying on another pool`, then an `↺ ... now on <pool> · '
-    + '<model>` line prints once the mechanical retry lands. In a run started by this version a preflight '
-    + 'scout stopped by a usage limit, a rate limit or no free pool prints `⚠ preflight scout stopped · '
+    + '`back at <time>` and a `wait for it` rerun when the reset is known. '
+    + 'A run saved by an earlier version replays its own lines, which this version no longer produces for '
+    + 'new work: its usage-limit line may end `retrying on another pool`, then an `↺ ... now on <pool> · '
+    + '<model>` line; a preflight '
+    + 'scout it stopped on a usage limit, a rate limit or no free pool prints `⚠ preflight scout stopped · '
     + '<label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run '
-    + 'has your program; nothing moves it to another pool. A dispatched planner stopped the same way prints '
+    + 'has your program. A dispatched planner stopped the same way prints '
     + '`✗ planner stopped · <label> on <pool> · back at <time>` and the run finishes; any other planner '
     + 'failure still prints `× planning attempt rejected · <why>`. The scout\'s or the planner\'s own usage-limit '
     + 'line ends `no retry left`, and no needs-you block follows it. '
     + '`--classic` forces the older heartbeat-based watcher instead (transition-on-change snapshots plus '
-    + 'a periodic heartbeat); it applies only to V2 runs. A legacy authored-graph run cannot be watched at '
-    + 'all: the watcher prints the legacy line and exits 2 before polling. `--next` prints no '
+    + 'a periodic heartbeat); it applies only to V2 runs. A legacy authored-graph run has nothing to '
+    + 'follow: the watcher prints its summary once (goal, status, start and finish, minutes it can show) '
+    + 'and exits 0 before polling (`--jsonl` prints it as one object). `--next` prints no '
     + 'attach line and returns after the first notable event, or immediately at a pause or terminal status '
     + '(event mode only — it cannot combine with `--classic`). '
     + 'Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and '
@@ -1362,18 +1364,19 @@ const workflowWatchText = rich({
     + 'file change while commands continue, the same command repeated, wall time over 3x the expected '
     + 'minutes) prints one `⚠ <step> looks stale: <reasons>` line; nothing is stopped, the caller decides '
     + '(`workflow step restart`). `--until outcome` prints only trouble lines (needs you, failed, rejected, '
-    + 'scout stopped, planner stopped, paused, stalled, stale, steering, a gate waiting, a loop out of rounds) '
+    + 'scout stopped, planner stopped (saved runs only), paused, stalled, stale, steering, a gate waiting, a loop out of rounds) '
     + 'and the outcome, and exits at the outcome; in a v3 run it also prints one line per loop that finished '
     + '(`✓ loop <id> passed in round 2 of 3`, or blocked), without exiting, so a wake at a gate carries it; '
     + '`--until trouble` also exits at the first trouble line with a `next:` relaunch line. In a program '
     + 'run a failed step prints one needs-you block (what failed, each try, and your options: step rerun, '
-    + 'change the step (v2: plan revise; v3: add steps with workflow add), take over, step accept); blocked '
+    + 'change the step by adding steps with workflow add, take over, step accept; a saved v2 run\'s block '
+    + 'keeps the plan revise hint it was written with, and that verb now exits 2); blocked '
     + 'dependents are listed inside the needs-you block as '
     + '"waiting on this" and are not trouble of their own. Distinct from the full-screen tui and the '
     + 'machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
-    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines, each v3 loop that finished (its verdict and round, not a wake-up) and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale or steering line (a usage limit or no free pool is a needs-you block), at a gate waiting or a loop out of rounds in a v3 run, or at a planner or preflight scout stopped on a usage limit; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
+    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines, each v3 loop that finished (its verdict and round, not a wake-up) and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale or steering line (a usage limit or no free pool is a needs-you block), at a gate waiting or a loop out of rounds in a v3 run, or, in a run saved by an earlier version, at a planner or preflight scout stopped on a usage limit; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
     { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; V2 runs only; cannot combine with --next', default: 'off (event mode)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
     { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off in event mode, 60 with --classic' },
@@ -1394,7 +1397,7 @@ const workflowWatchText = rich({
     '--classic --next is rejected with exit 2: --next only applies to event mode',
     '--until trouble exits 0 at a trouble line while the run continues, printing `next: bullswarm workflow watch <shortId> --until trouble --after <sequence> --since <iso>` and, for a stale step, `or restart: bullswarm workflow step restart <shortId> <step>`',
     '--timeout exits 0 when it passes with no wake, printing `next: bullswarm workflow watch <shortId> [--until <mode>|--next] --after <sequence> --since <iso> --timeout <s>`',
-    'a legacy authored-graph run exits 2 with the legacy line before any polling; nothing drives it',
+    'a legacy authored-graph run prints its summary once and exits 0 before any polling; nothing drives it',
   ],
   examples: [
     { cmd: 'bullswarm workflow watch ab12cd --until trouble', note: 'the standard background watch: one per run, silent until something needs you' },
@@ -1423,18 +1426,18 @@ const workflowEventsText = rich({
 
 const workflowSteerText = rich({
   usage: 'bullswarm workflow steer <runId> --message <guidance> [--json]',
-  purpose: "Queue free-text guidance for a running goal/workflow's next orchestration "
-    + 'checkpoint, without interrupting the currently active step. In a caller-planned program run the '
-    + 'guidance never halts work: watch prints it at once, and the caller acts on it, for example with '
-    + 'workflow add. A run that finishes before anyone acts on it lists it as steering not acted on.',
+  purpose: "Queue free-text guidance for a running v3 run without interrupting the currently active "
+    + 'step. The guidance never halts work and no planner reads it: watch prints it at once, and the '
+    + 'caller acts on it, for example with workflow add. A run that finishes before anyone acts on it '
+    + 'lists it as steering not acted on.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
     { flag: '--message <guidance>', desc: 'the guidance text; if omitted, all words after <runId> are joined and used instead', default: 'required, in one of the two forms' },
     { flag: '--json', desc: 'machine-readable confirmation', default: 'human-readable confirmation line' },
   ],
   safety: [
-    "appends an entry to the run's steering log; delivered only at the next not-yet-started planner checkpoint — the currently active worker or action is unaffected",
-    'refuses if the run is already terminal, and refuses a legacy authored-graph run with the legacy line and exit 2',
+    "appends an entry to the run's steering log; the currently active worker or action is unaffected",
+    'refuses if the run is already terminal, and refuses a run started by an earlier Bullswarm (v2, legacy) with the view-only sentence and exit 2',
   ],
   examples: [{ cmd: 'bullswarm workflow steer ab12cd --message "Focus only on the auth module"' }],
   next: 'bullswarm workflow watch <runId> to see when the guidance takes effect.',

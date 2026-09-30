@@ -792,7 +792,7 @@ test('a run the kernel reopens is indexed with no finish and drops out of Home r
     };
     const runId = 'wf-hreopn1-abcdef';
     const first = await runV2AutonomousWorkflow({
-      bullswarmDir, pools: [], runId, dependencies: { dispatchV2Action },
+      bullswarmDir, pools: [], runId, dependencies: { savedRunTwin: true, dispatchV2Action },
       goalDocument: createV2GoalDocument({
         goal: 'Deliver the requested files', cwd: workspace,
         requirements: [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }],

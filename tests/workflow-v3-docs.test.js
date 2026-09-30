@@ -199,3 +199,30 @@ test('operations.md says a loop continued without --rounds ends unmet, never tha
   const line = ops.split('\n').find((row) => row.startsWith('bullswarm workflow continue <shortId> <loop>'));
   assert.match(line, /without --rounds it ends continued, condition not met/);
 });
+
+// 0.38.0 removed plan export/revise, --scout, the dispatched planner and the
+// repair loop. The live guides teach the v3 way (loops, workflow add, step
+// rerun) and name the old mechanisms only as a saved run's history.
+test('the live guides teach no removed mechanism as current behaviour', () => {
+  const flat = (path) => read(path).replace(/\s+/g, ' ');
+  const patterns = flat('skill/references/patterns.md');
+  assert.ok(!patterns.includes('plan export <run> --out'), 'patterns.md: a past run\'s shape uses plan export');
+  assert.ok(patterns.includes('keep the program file you launched it with'));
+  const playbook = flat('docs/guide/playbook.md');
+  for (const gone of ['plan export <runId>', 'plan revise <runId>', 'planner checkpoint']) assert.ok(!playbook.includes(gone), `playbook.md: ${gone}`);
+  assert.ok(playbook.includes('bullswarm workflow add <runId> --steps compat-fix.json'));
+  assert.ok(playbook.includes('bullswarm workflow step rerun <runId> acceptance'));
+  const result = flat('docs/reference/result.md');
+  for (const gone of ['In a new run, a failed mandatory requirement gets one fix step', 'in a new program `defaults.verifyRounds`', 'or `plan revise` for those failures', 'Do not hand-add a fix step']) {
+    assert.ok(!result.includes(gone), `result.md: ${gone}`);
+  }
+  assert.ok(result.includes('**Saved runs only.** 0.38.0 removed the kernel\'s repair loop'));
+  assert.ok(result.includes('declare a loop in your program'));
+  assert.ok(result.includes('| `add` | add | a v3 program run |'));
+  const observing = flat('docs/guide/observing.md');
+  for (const gone of ['`--program --scout`', '`workflow resume` runs the planner again', 'The preflight scout follows the same rule in runs started by this version']) {
+    assert.ok(!observing.includes(gone), `observing.md: ${gone}`);
+  }
+  assert.ok(observing.includes('0.38.0 removed the preflight scout and the dispatched planner, so these lines come only from a run saved by 0.37.x'));
+  assert.ok(observing.includes('`addSteps` (`workflow add <id> --steps part.json`, then `workflow wait <id> <added ids>`) in a v3 run'));
+});

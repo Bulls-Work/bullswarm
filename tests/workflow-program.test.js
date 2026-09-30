@@ -74,7 +74,7 @@ function run(f, actions, handler, dependencies = {}) {
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [],
     initialPlannerResponse: v3 ? programV3(actions) : program(actions),
-    dependencies: {
+    dependencies: { savedRunTwin: true,
       dispatchV2Action: dispatcher(handler),
       captureWorkspaceManifest: () => { throw new Error('shared program must never scan a manifest'); },
       createIsolatedWorkspace: () => { throw new Error('shared program must never copy a workspace'); },
@@ -283,7 +283,7 @@ test('explicit isolation keeps strict ownership and reports rejection as a parti
   writeFileSync(join(f.workspace, 'untouched.txt'), 'user data');
   const result = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], initialPlannerResponse: program([action('write')]),
-    dependencies: { dispatchV2Action: dispatcher(async ({ targetDir, taskText }) => {
+    dependencies: { savedRunTwin: true, dispatchV2Action: dispatcher(async ({ targetDir, taskText }) => {
       assert.notEqual(targetDir, f.workspace);
       assert.match(taskText, /own exactly these files/);
       writeFileSync(join(targetDir, 'write.txt'), 'owned');

@@ -286,7 +286,7 @@ test('add refuses a v2 run as view-only, and the CLI prints what it added', asyn
   writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
   const refused = await addV3Steps({ bullswarmDir: f.bullswarmDir, token: state.runId, fragment: checkFragment(), waitMs: 0 });
   assert.equal(refused.status, 'error');
-  assert.equal(refused.code, 1);
+  assert.equal(refused.code, 2);
   assert.equal(refused.why, 'run acme20 was started by an earlier Bullswarm and is view-only; start a new run: bullswarm workflow goal "<goal>" --cwd <run folder> --program <file.json>');
 
   const run = await launch(f, findProgram(), fakeDispatch(script));

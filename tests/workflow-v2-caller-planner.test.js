@@ -199,7 +199,7 @@ test('an invalid initial program finishes at once and hands the issues back with
     bad.program.actions.pop(); // no evidence action for the mandatory requirement
     const result = await runV2AutonomousWorkflow({
       bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller2-abcdef',
-      initialPlannerResponse: bad, dependencies: { dispatchV2Action: dispatch },
+      initialPlannerResponse: bad, dependencies: { savedRunTwin: true, dispatchV2Action: dispatch },
     });
     assert.equal(dispatch.calls(), 0);
     assert.equal(result.awaiting, undefined, 'nothing waits for the caller');
@@ -327,7 +327,9 @@ function holdLikeOlderVersion(runDir, { boundary = 'gaps' } = {}) {
 
 // Legacy saved requests intentionally omit executionMode. The run finishes
 // partial at its gap and is then turned into the held run an older version
-// would have left, to exercise the real CLI recovery path.
+// would have left, to exercise the real CLI recovery path. 0.38.0 refuses a v2
+// program at every launch, so the run is built as a saved-run twin, in a child
+// process on this home's real pools, the way the older version ran it.
 function launchLegacyGoal(f, programPath, cwd = f.target) {
   const runId = 'wf-legacy-abcdef';
   const requestPath = join(f.root, 'legacy-request.json');
@@ -336,13 +338,28 @@ function launchLegacyGoal(f, programPath, cwd = f.target) {
     requirements: [{ id: 'requirement-1', text: 'Create done.txt containing exactly caller-complete followed by a newline.' }],
     settings: { scout: false, plannerMode: 'caller', workspaceMode: 'shared', concurrency: 2, maxExpansionRounds: 2 },
   });
-  writeFileSync(requestPath, JSON.stringify({
+  const request = {
     schemaVersion: 'bullswarm.goal.request.v2', runId, document,
     initialPlannerResponse: normalizeCallerPlannerResponse(JSON.parse(readFileSync(programPath, 'utf8'))),
-  }));
-  const finished = cli(f, ['workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json']);
-  assert.equal(finished.status, 1, finished.stderr || finished.stdout);
-  assert.equal(JSON.parse(finished.stdout).status, 'partial');
+  };
+  writeFileSync(requestPath, JSON.stringify(request));
+  // The CLI's own relaunch path refuses it (D2), before any run folder exists.
+  const refused = cli(f, ['workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json']);
+  assert.equal(refused.status, 2, refused.stderr || refused.stdout);
+  assert.deepEqual(JSON.parse(refused.stdout), { error: 'program-v2-refused', message: PROGRAM_V2_REFUSAL });
+  assert.equal(existsSync(join(f.home, 'workflows', runId)), false);
+  const src = (path) => JSON.stringify(new URL(`../src/workflow/${path}`, import.meta.url).href);
+  const twin = spawnSync(process.execPath, ['--input-type=module', '-e', [
+    `import { readFileSync } from 'node:fs';`,
+    `import { livePoolNames } from ${src('cli-pool-checks.js')};`,
+    `import { runV2AutonomousWorkflow } from ${src('v2-runtime.js')};`,
+    `const request = JSON.parse(readFileSync(${JSON.stringify(requestPath)}, 'utf8'));`,
+    `const { pools } = await livePoolNames();`,
+    `const run = await runV2AutonomousWorkflow({ bullswarmDir: process.env.BULLSWARM_HOME, goalDocument: request.document, pools, runId: request.runId,`,
+    `  initialPlannerResponse: request.initialPlannerResponse, dependencies: { savedRunTwin: true } });`,
+    `process.stdout.write(run.result.status);`,
+  ].join('\n')], { cwd: REPO, env: { ...process.env, BULLSWARM_HOME: f.home, BULLSWARM_DEPTH: '0' }, encoding: 'utf8', timeout: 30_000 });
+  assert.equal(twin.stdout, 'partial', twin.stderr);
   return holdLikeOlderVersion(join(f.home, 'workflows', runId));
 }
 

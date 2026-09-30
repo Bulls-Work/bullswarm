@@ -15,6 +15,8 @@ import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { legacyRunLine } from '../src/workflow/short-id.js';
 import { viewOnlyRunLine } from '../src/workflow/cli-run-lookup.js';
+import { addV3Steps, continueV2Run } from '../src/workflow/cli-steps.js';
+import { PROGRAM_V2_REFUSAL } from '../src/workflow/cli-program-checks.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
 const GOAL = 'Deliver the requested files';
@@ -70,7 +72,7 @@ async function savedRun(t, { runId, program = v2Program(), marker, interrupted =
   });
   const launch = runV2AutonomousWorkflow({
     bullswarmDir: home, goalDocument, pools: [], runId, initialPlannerResponse: response(program),
-    dependencies: {
+    dependencies: { savedRunTwin: true,
       dispatchV2Action: dispatch,
       ...(interrupted ? { writeResultAtomic: () => { throw new Error('disk full'); } } : {}),
     },
@@ -128,6 +130,8 @@ const DRIVING = (token) => [
   ['step rerun', ['workflow', 'step', 'rerun', token, 'build']],
   ['step accept', ['workflow', 'step', 'accept', token, 'build', '--reason', 'good enough']],
   ['step restart', ['workflow', 'step', 'restart', token, 'build']],
+  ['continue', ['workflow', 'continue', token, 'build']],
+  ['add', ['workflow', 'add', token, '--from-answer', 'build']],
 ];
 
 function assertRefusesDriving(f, label) {
@@ -334,4 +338,72 @@ test('resume of a v3 run whose step failed its check has nothing a retry fixes a
   assert.match(text.stderr, new RegExp(`^✗ nothing to retry in ${f.token} \\(partial\\)`));
   assert.match(text.stderr, /^ {2}build {2}failed \(failed-evidence\)$/m);
   assert.deepEqual(snapshot(f.home, f.runId), before, 'nothing was relaunched');
+});
+
+// A v3 run parked at its gate: `side` ran, `hold` waits for the caller.
+const gatedV3Program = () => ({
+  schemaVersion: 'bullswarm.workflow.program.v3',
+  steps: [{ id: 'side', prompt: 'Write side.txt.' }, { id: 'after', dependsOn: ['hold'], prompt: 'Write after.txt.' }],
+  gates: [{ id: 'hold', dependsOn: ['side'] }],
+});
+
+test('continue and add read the programFormat marker first: a waiting v3 run without it is view-only and untouched', async (t) => {
+  const f = await savedRun(t, { runId: 'wf-vwgate-abcdef', program: gatedV3Program(), marker: null });
+  assert.equal(f.status, 'waiting');
+  const line = message(f.token);
+  const before = snapshot(f.home, f.runId);
+  const fragment = join(f.root, 'part.json');
+  writeFileSync(fragment, JSON.stringify({ steps: [{ id: 'extra', prompt: 'Write extra.txt.' }] }));
+  for (const [verb, args] of [
+    ['continue', ['workflow', 'continue', f.token, 'hold', '--wait', '0']],
+    ['add', ['workflow', 'add', f.token, '--steps', fragment, '--wait', '0']],
+  ]) {
+    const text = cli(f.home, args);
+    assert.deepEqual([text.status, text.stdout, text.stderr], [2, '', `${line}\n`], args.join(' '));
+    const json = cli(f.home, [...args, '--json']);
+    assert.equal(json.status, 2, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), { viewOnly: true, verb, runId: f.runId, shortId: f.token, dir: f.runDir, message: line });
+  }
+  // The functions behind the verbs refuse it the same way, for any direct caller.
+  const continued = await continueV2Run({ bullswarmDir: f.home, token: f.token, nodeId: 'hold', waitMs: 0, relaunch: () => { throw new Error('must not relaunch'); } });
+  assert.deepEqual([continued.code, continued.status, continued.why], [2, 'refused', line]);
+  const added = await addV3Steps({ bullswarmDir: f.home, token: f.token, fragment: { steps: [{ id: 'extra', prompt: 'Write extra.txt.' }] }, waitMs: 0, relaunch: () => { throw new Error('must not relaunch'); } });
+  assert.deepEqual([added.code, added.status, added.why], [2, 'error', line]);
+  assert.deepEqual(snapshot(f.home, f.runId), before, 'nothing about the run changed');
+});
+
+test('an older v2 run the modern state validator cannot read still gets the view-only sentence from add and continue', async (t) => {
+  const f = await savedRun(t, { runId: 'wf-vwold2-abcdef' });
+  // A field an earlier Bullswarm wrote in another shape: the full validator refuses it.
+  const statePath = join(f.runDir, 'state.json');
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  delete state.steering;
+  writeFileSync(statePath, JSON.stringify(state));
+  const before = snapshot(f.home, f.runId);
+  for (const args of [['workflow', 'add', f.token, '--from-answer', 'missing'], ['workflow', 'continue', f.token, 'hold']]) {
+    const text = cli(f.home, args);
+    assert.deepEqual([text.status, text.stderr], [2, `${message(f.token)}\n`], args.join(' '));
+    assert.doesNotMatch(text.stderr, /cannot read the run state/);
+  }
+  const added = await addV3Steps({ bullswarmDir: f.home, token: f.runId, fromAnswer: 'missing', waitMs: 0 });
+  assert.deepEqual([added.code, added.why], [2, message(f.token)]);
+  assert.deepEqual(snapshot(f.home, f.runId), before);
+});
+
+test('the kernel refuses a new launch that carries no program v3, before any run folder exists (D2)', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-view-only-launch-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const workspace = join(home, 'repo');
+  mkdirSync(workspace);
+  const goalDocument = createV2GoalDocument({
+    goal: GOAL, cwd: workspace, requirements: [{ id: 'deliver', text: 'Deliver the requested files.' }],
+    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
+  });
+  for (const [runId, initialPlannerResponse] of [['wf-vwnew2-abcdef', response(v2Program())], ['wf-vwnone-fedcba', null]]) {
+    await assert.rejects(
+      runV2AutonomousWorkflow({ bullswarmDir: home, goalDocument, pools: [], runId, initialPlannerResponse, dependencies: { dispatchV2Action: dispatch } }),
+      { message: PROGRAM_V2_REFUSAL },
+    );
+    assert.equal(existsSync(join(home, 'workflows', runId)), false, runId);
+  }
 });

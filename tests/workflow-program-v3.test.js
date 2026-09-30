@@ -322,7 +322,7 @@ test('the repair loop never runs for a v3 run: features.json says programFormat 
       schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write.',
       program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [v2V3Fixtures().v2Program.actions[0]] },
     },
-    dependencies: { refreshPools: async () => null, dispatchV2Action: scriptedDispatch() },
+    dependencies: { savedRunTwin: true, refreshPools: async () => null, dispatchV2Action: scriptedDispatch() },
   });
   assert.deepEqual(readRunFeatures(v2Run.runDir), { ...STAGE3_RUN_FEATURES });
 });

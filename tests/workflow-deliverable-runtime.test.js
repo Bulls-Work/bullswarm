@@ -301,7 +301,7 @@ test('a new run writes features.json with stage 2\'s keys plus failureRule 1 and
         }],
       },
     },
-    dependencies: {
+    dependencies: { savedRunTwin: true,
       dispatchV2Action: async (options) => {
         assert.equal(options.legacyGate, true);
         assert.deepEqual(options.earlierWork, { produced: false, unknown: false });

@@ -2557,7 +2557,7 @@ async function isolatedByProductRun(prefix, { keptBytes } = {}, check) {
           }],
         },
       },
-      dependencies: {
+      dependencies: { savedRunTwin: true,
         refreshPools: async () => null,
         dispatchV2Action: (options) => dispatchV2Action({
           ...options, pools: [pool],

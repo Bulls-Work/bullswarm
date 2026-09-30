@@ -68,22 +68,24 @@ read-only Run, Step, and usage facts inside the agent session.
 Watching is not controlling. Quitting the dashboard leaves the workflow
 running, and a completed process is not automatically a verified outcome.
 
-## 5. Steer or revise deliberately
+## 5. Steer or extend deliberately
 
-Use steering to queue guidance for a workflow with a planner checkpoint. For a
-caller-authored program, export the durable plan, edit it, and revise the run:
+Steering queues guidance on a running run: `watch` prints it, and you act on
+it. No planner reads it. To change what the run does, add steps to it, or run
+a finished step again:
 
 ```bash
 bullswarm workflow steer <runId> --message "Keep the public output backward compatible"
-bullswarm workflow plan export <runId> --out plan.json
-bullswarm workflow plan revise <runId> --program plan.json --rerun acceptance \
-  --summary "Re-run acceptance after the compatibility fix"
+bullswarm workflow add <runId> --steps compat-fix.json
+bullswarm workflow step rerun <runId> acceptance
 ```
 
-Revise when the evidence reveals a missing action, dependency, or requirement.
-Resume when the plan is still right and a retryable mechanical failure stopped
-a step. Do not treat a failed acceptance check as a reason to repeat the same
-unchecked plan.
+Add steps when the evidence reveals missing work or a missing check; a loop
+you declared in the program repeats its steps until its condition holds.
+Resume when the program is still right and a retryable mechanical failure
+stopped a step. Do not treat a failed acceptance check as a reason to repeat
+the same unchecked program. (`plan export` and `plan revise` were removed in
+0.38.0; a run an earlier Bullswarm started is view-only.)
 
 ## 6. Sign off from evidence
 
@@ -114,7 +116,7 @@ same ongoing goal in the same directory unless you explicitly pass `--again`.
 The main agent should retain planning and review because it holds the user's
 intent, current conversation, and cross-step trade-offs. Let workers own clear
 execution territories and independent checks; let the main agent reconcile
-their evidence, revise the graph when needed, and make the final call.
+their evidence, extend the program when needed, and make the final call.
 
 Next, see [Workflows](/guide/workflows) for the complete program lifecycle and
 [Observing runs](/guide/observing) for the dashboard and watcher reference.

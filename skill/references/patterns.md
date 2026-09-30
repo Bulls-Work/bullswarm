@@ -306,8 +306,8 @@ the report is written without you.
 - **A planner step:** a step whose `answer` is itself a fragment `{steps,
   gates?, loops?}`; read it with `workflow wait`, then add it with `bullswarm
   workflow add <run> --from-answer <step>`.
-- **A past run's shape:** `bullswarm workflow plan export <run> --out
-  old.json` writes the run's plan; its `program` object, saved as a file of its
-  own, validates and launches as a new program. After you rename a step,
-  delete its `purpose` (validate refuses one that no longer matches the id or
-  label).
+- **A past run's shape:** keep the program file you launched it with. Check
+  it again with `bullswarm workflow plan validate` and launch it as a new run;
+  to grow the same run instead, `workflow add` appends steps, and `workflow
+  step rerun` runs a finished step again. (`plan export` and `plan revise`
+  were removed in 0.38.0 and exit 2.)

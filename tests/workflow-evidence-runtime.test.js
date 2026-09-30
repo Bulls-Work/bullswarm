@@ -104,7 +104,7 @@ function launch(f, { runId, actions, steps, dispatch, dependencies = {} }) {
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId, parentEnv: {},
     initialPlannerResponse: steps ? programV3(steps) : program(actions),
-    dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
+    dependencies: { savedRunTwin: true, refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
   });
 }
 

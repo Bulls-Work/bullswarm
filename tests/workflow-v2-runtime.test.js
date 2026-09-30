@@ -265,7 +265,7 @@ function launch3(f, { runId, actions, dispatch, dependencies = {}, onEvent = nul
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId, parentEnv: {},
     initialPlannerResponse: programOf(actions), ...(onEvent ? { onEvent } : {}),
-    dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
+    dependencies: { savedRunTwin: true, refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
   });
 }
 
@@ -320,7 +320,7 @@ test('marked: a step no pool can take now goes to the caller with each pool\'s r
   const run = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [pausedPool('luna-1', soonMs), pausedPool('luna-2', laterMs)],
     runId: 'wf-s3nofree-abcdef', parentEnv: {}, initialPlannerResponse: programOf([step3('write', { affects: ['work-done'] }), step3('notes')]),
-    dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch },
+    dependencies: { savedRunTwin: true, refreshPools: async () => null, dispatchV2Action: dispatch },
   });
   const why = `no pool with quota to spare: luna-1 at its 5-hour limit until ${soon}; luna-2 at its 5-hour limit until ${later}`;
   const write = run.state.actions.find((action) => action.id === 'write');
@@ -434,7 +434,7 @@ const recordingDispatch = (handler) => {
 };
 const launchPlanned = (f, runId, dispatch, dependencies = {}) => runV2AutonomousWorkflow({
   bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId, parentEnv: {},
-  dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
+  dependencies: { savedRunTwin: true, refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
 });
 
 // --- 0.38.0: the kernel drives program v3 runs only -------------------------
@@ -644,7 +644,7 @@ test('the kernel refuses to resume a run that is not v3: it is view-only, and no
     writeFileSync(files.outFile, 'wrote report.md');
     return { ok: true, status: 'succeeded', verdict: { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } } };
   });
-  const run = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: goal, initialPlannerResponse: v2Program, pools: [], runId: 'wf-v2only-abcdef', dependencies: { dispatchV2Action: dispatch, refreshPools: async () => null } });
+  const run = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: goal, initialPlannerResponse: v2Program, pools: [], runId: 'wf-v2only-abcdef', dependencies: { savedRunTwin: true, dispatchV2Action: dispatch, refreshPools: async () => null } });
   assert.equal(JSON.parse(readFileSync(join(run.runDir, 'features.json'), 'utf8')).programFormat, undefined);
   const before = readFileSync(join(run.runDir, 'state.json'), 'utf8');
   const events = readEvents(run.runDir).length;
@@ -672,7 +672,7 @@ test('a requested cancellation still lets the kernel finalize a run that is not 
     if (options.action.id === 'one') process.emit('SIGTERM');
     return { ok: true, status: 'succeeded', verdict: { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } } };
   });
-  const run = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: goal, initialPlannerResponse: v2Program, pools: [], runId: 'wf-v2canc-abcdef', dependencies: { dispatchV2Action: first, refreshPools: async () => null } });
+  const run = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: goal, initialPlannerResponse: v2Program, pools: [], runId: 'wf-v2canc-abcdef', dependencies: { savedRunTwin: true, dispatchV2Action: first, refreshPools: async () => null } });
   assert.equal(run.state.lifecycle.status, 'interrupted');
   writeJsonAtomic(join(run.runDir, 'cancellation.json'), { requested: true, requestedAt: '2026-09-30T01:00:00.000Z', reason: 'the caller cancelled it' });
   const never = fakeDispatch(async () => { throw new Error('a cancelled earlier run dispatches nothing'); });

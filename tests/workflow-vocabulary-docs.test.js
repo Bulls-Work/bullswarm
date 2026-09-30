@@ -274,7 +274,8 @@ test('the repair rules for act and report steps are documented', () => {
   for (const path of ['docs/reference/result.md', 'skill/references/operations.md', 'docs/reference/program.md', 'CHANGELOG.md']) {
     const text = flat(path);
     assert.match(text, /read-only `analyze` step (with|whose) deliverable (is )?`report`/, `${path}: report repair`);
-    assert.match(text, /act` step affects (is never repaired|gets no repair)/, `${path}: no act repair`);
+    // result.md tells it as a saved run's rule (0.38.0 removed the repair loop).
+    assert.match(text, /act` step (affects (is never repaired|gets no repair)|affected was never repaired)/, `${path}: no act repair`);
   }
 });
 
@@ -1214,7 +1215,7 @@ async function limitStopRun() {
   };
   try {
     const run = await runV2AutonomousWorkflow({
-      bullswarmDir, goalDocument, pools: [], runId: 'wf-docslimit-abcdef', dependencies: { dispatchV2Action: dispatch },
+      bullswarmDir, goalDocument, pools: [], runId: 'wf-docslimit-abcdef', dependencies: { savedRunTwin: true, dispatchV2Action: dispatch },
       initialPlannerResponse: { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write the report.', program },
     });
     const events = readEvents(run.runDir);

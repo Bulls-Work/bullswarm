@@ -432,19 +432,34 @@ test('help offers no --scout, --orchestrator or plan revise, and the removed pla
 
 test('watch --until lists needs you as trouble (a usage limit is one), and blocked dependents inside the block', () => {
   const watch = helpText(['workflow', 'watch']);
-  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), at a gate waiting or a loop out of rounds in a v3 run, or at a planner or preflight scout stopped on a usage limit;/);
+  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), at a gate waiting or a loop out of rounds in a v3 run, or, in a run saved by an earlier version, at a planner or preflight scout stopped on a usage limit;/);
   assert.match(watch, /blocked dependents are listed inside the needs-you block/);
-  // A marked run's scout stopped by a usage limit has its own line, and the
-  // usage-limit line names no pause: nothing pauses a pool.
+  // 0.38.0: a scout or planner line comes only from a run an earlier version
+  // saved, and the help says so; the usage-limit line names no pause.
   const flatWatch = watch.replace(/\s+/g, ' ');
-  assert.ok(flatWatch.includes('`⚠ preflight scout stopped · <label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run has your program'));
-  assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped, paused, stalled, stale, steering, a gate waiting, a loop out of rounds)'));
+  assert.ok(flatWatch.includes('A run saved by an earlier version replays its own lines, which this version no longer produces for new work'));
+  assert.ok(flatWatch.includes('a preflight scout it stopped on a usage limit, a rate limit or no free pool prints `⚠ preflight scout stopped · <label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run has your program'));
+  assert.ok(!flatWatch.includes('In a run started by this version a preflight scout'));
+  assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped (saved runs only), paused, stalled, stale, steering, a gate waiting, a loop out of rounds)'));
   assert.ok(flatWatch.includes('A dispatched planner stopped the same way prints `✗ planner stopped · <label> on <pool> · back at <time>` and the run finishes; any other planner failure still prints `× planning attempt rejected · <why>`.'));
   assert.ok(flatWatch.includes('and the block carries `back at <time>` and a `wait for it` rerun when the reset is known'));
   assert.ok(!flatWatch.includes('not paused') && !flatWatch.includes('paused until <deadline>'));
   // No step waits for a pool, so there is no waiting line to wake on or replay at attach.
   assert.doesNotMatch(watch, /waiting \(more than 30 min\)/);
   assert.doesNotMatch(watch, /already waiting/);
+});
+
+test('watch and steer --help describe 0.38.0: a legacy run prints its summary, and no planner checkpoint reads steering', () => {
+  const watch = helpText(['workflow', 'watch']).replace(/\s+/g, ' ');
+  assert.ok(!watch.includes('cannot be watched'));
+  assert.ok(!watch.includes('exits 2 with the legacy line'));
+  assert.ok(watch.includes('A legacy authored-graph run has nothing to follow: the watcher prints its summary once'));
+  assert.ok(watch.includes('a legacy authored-graph run prints its summary once and exits 0 before any polling'));
+  const steer = helpText(['workflow', 'steer']).replace(/\s+/g, ' ');
+  const index = helpText(['workflow']).replace(/\s+/g, ' ');
+  for (const text of [steer, index]) assert.ok(!/planner checkpoint|orchestration checkpoint/.test(text), text);
+  assert.ok(steer.includes('no planner reads it: watch prints it at once, and the caller acts on it'));
+  assert.ok(steer.includes('with the view-only sentence and exit 2'));
 });
 
 test('watch --help covers v3 runs: gate and loop lines, their wake-ups, the waiting outcome and workflow add', () => {
@@ -459,7 +474,8 @@ test('watch --help covers v3 runs: gate and loop lines, their wake-ups, the wait
   // --until trouble wakes on a waiting gate and a loop out of rounds.
   assert.match(flat, /--until outcome\|trouble [^|]*a gate waiting or a loop out of rounds/);
   // A v3 run's needs-you block offers add steps, not plan revise.
-  assert.ok(flat.includes('your options: step rerun, change the step (v2: plan revise; v3: add steps with workflow add), take over, step accept'));
+  assert.ok(flat.includes('your options: step rerun, change the step by adding steps with workflow add, take over, step accept; a saved v2 run\'s block keeps the plan revise hint it was written with, and that verb now exits 2)'));
+  assert.ok(!flat.includes('v2: plan revise'));
 });
 
 test('goal and plan validate --help name program.v3, and a gate or a loop out of rounds stops a run for you', () => {

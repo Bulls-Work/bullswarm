@@ -7,7 +7,7 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveRunId, listRuns } from './short-id.js';
 import { programAdvisories } from './action-validator.js';
-import { v3IssueWording } from './program-v3.js';
+import { isProgramV3, v3IssueWording } from './program-v3.js';
 import { validateV2GoalDocument } from './v2-state.js';
 import { V2PlannerValidationError, workspacePathIssues } from './v2-planner.js';
 import { runWorkflowWatch } from './watch-cli.js';
@@ -133,6 +133,9 @@ export async function wfGoal(opts) {
       console.error(`✗ cannot load goal request: ${err.message}`);
       return 1;
     }
+    // D2 holds on the relaunch path too: a request carrying anything but a
+    // program v3 (a 0.37.x request file, say) starts no run.
+    if (!isProgramV3(initialPlannerResponse)) return refuseProgramV2(opts);
   } else {
     const goal = opts.rest.join(' ').trim();
     if (!goal) {

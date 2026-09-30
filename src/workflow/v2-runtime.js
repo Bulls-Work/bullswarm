@@ -36,6 +36,7 @@ import {
 } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { viewOnlyRunLine } from './cli-run-lookup.js';
+import { PROGRAM_V2_REFUSAL, ProgramV2RefusedError } from './cli-program-checks.js';
 import { settleStepAnswer, stepAnswerHooks } from './answers.js';
 import { continuePending, evidenceIsCondition, kernelControlPass, schedulerView, unblockControlNodes } from './gates-loops.js';
 import { createPoolRefresher } from './pool-refresh.js';
@@ -1274,6 +1275,14 @@ export async function runV2AutonomousWorkflow(options = {}) {
   const runDir = join(bullswarmDir, 'workflows', id);
   if (ACTIVE_RUNS.has(runDir)) throw new Error(`run ${id} already has an active kernel`);
   if (!resumeRunId && existsSync(runDir)) throw new Error(`cannot start: run ${id} already exists`);
+  // 0.38.0 (D2): a new run takes a program v3 only, whichever caller starts
+  // it (the CLI, a --request relaunch, a direct call), and the refusal comes
+  // before the run folder exists. `dependencies.savedRunTwin` is the one
+  // exception, for tests only (no CLI path passes dependencies): it builds a
+  // run the way an earlier Bullswarm did, which is then view-only like one.
+  if (!resumeRunId && options.dependencies?.savedRunTwin !== true && !isProgramV3(options.initialPlannerResponse)) {
+    throw new ProgramV2RefusedError(PROGRAM_V2_REFUSAL);
+  }
   mkdirSync(runDir, { recursive: true });
   const lease = acquireKernelLease(runDir);
   try { return await runV2Kernel({ ...options, runId: id, lease }); }

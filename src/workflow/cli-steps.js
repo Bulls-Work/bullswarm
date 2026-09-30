@@ -28,9 +28,9 @@ import {
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, fragmentShapeIssues } from './revision-v3.js';
-import { readRunFeatures, runFeatureFlags } from './run-features.js';
+import { isProgramV3Run, readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isLegacyRunDir, resolveRunId, v2RunnerLiveness } from './short-id.js';
-import { viewOnlyRunLine } from './cli-run-lookup.js';
+import { drivableRunRefusal, viewOnlyRunLine } from './cli-run-lookup.js';
 import { createRevisionRequest, exportV2Plan, planV2Revision } from './v2-revision.js';
 import { workspacePathIssues } from './v2-planner.js';
 import { acquireKernelLease } from './v2-process.js';
@@ -44,6 +44,18 @@ function readState(runDir) {
 
 function tryLease(runDir) {
   try { return acquireKernelLease(runDir); } catch { return null; }
+}
+
+// 0.38.0 (D1): continue and add drive a run, so a run without the
+// programFormat 3 marker (v2, stage 1/2/3, legacy) is view-only. The check
+// reads only the marker and the name resolveRunId found, before the state
+// validator, so an older run's state is never read or changed.
+function viewOnlyRefusal(resolved, status) {
+  if (!isLegacyRunDir(resolved.runDir) && isProgramV3Run(readRunFeatures(resolved.runDir))) return null;
+  return {
+    code: 2, status, viewOnly: true, why: viewOnlyRunLine(resolved.shortId ?? resolved.runId),
+    runId: resolved.runId, shortId: resolved.shortId ?? null,
+  };
 }
 
 /** Parse --rounds: a whole number from 1 to 5, or null when absent. Throws with the usage message. */
@@ -69,7 +81,8 @@ export async function continueV2Run({
 } = {}) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) return { code: 1, status: 'refused', why: `no run found for "${token}"` };
-  if (isLegacyRunDir(resolved.runDir)) return { code: 2, status: 'refused', why: `run "${token}" is a legacy run; nothing drives it` };
+  const viewOnly = viewOnlyRefusal(resolved, 'refused');
+  if (viewOnly) return { ...viewOnly, node: nodeId, rounds };
   const { runDir } = resolved;
   let state;
   try { state = readState(runDir); } catch (err) { return { code: 1, status: 'refused', why: `cannot read the run state: ${err.message}` }; }
@@ -147,6 +160,8 @@ export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, lau
   try { rounds = parseContinueRounds(opts.rounds); } catch (err) { console.error(`✗ ${err.message}`); return 2; }
   const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  const viewOnly = drivableRunRefusal(token, opts, 'continue');
+  if (viewOnly !== null) return viewOnly;
   const resolved = resolveRunId(bullswarmDir, token);
   let type = null;
   try { type = resolved ? readState(resolved.runDir).program?.control?.gates?.some((gate) => gate.id === nodeId) ? 'gate' : 'loop' : null; } catch { type = null; }
@@ -213,13 +228,14 @@ export async function addV3Steps({
 } = {}) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) return { code: 1, status: 'error', why: `no run found for "${token}"` };
-  if (isLegacyRunDir(resolved.runDir)) return { code: 2, status: 'error', why: `run "${token}" is a legacy run; nothing drives it` };
+  const viewOnly = viewOnlyRefusal(resolved, 'error');
+  if (viewOnly) return viewOnly;
   let state;
   try { state = readState(resolved.runDir); } catch (err) { return { code: 1, status: 'error', why: `cannot read the run state: ${err.message}` }; }
   const id = state.shortId ?? state.runId;
   const base = { runId: state.runId, shortId: state.shortId ?? null };
   if (!isProgramV3(state.program)) {
-    return { code: 1, status: 'error', why: viewOnlyRunLine(id), ...base };
+    return { code: 2, status: 'error', viewOnly: true, why: viewOnlyRunLine(id), ...base };
   }
   let source = fragment;
   if (fromAnswer) {
@@ -300,6 +316,8 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   if (fromFile && fromAnswer) { console.error('✗ --steps and --from-answer are mutually exclusive: add from a file or from a step\'s answer'); return 2; }
   const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  const viewOnly = drivableRunRefusal(token, opts, 'add');
+  if (viewOnly !== null) return viewOnly;
   let fragment = null;
   if (fromFile) {
     try { fragment = readFragmentFile(fromFile); } catch (err) { console.error(`✗ ${err.message}`); return 2; }

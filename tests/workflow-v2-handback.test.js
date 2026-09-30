@@ -120,7 +120,7 @@ test('failing steps end the run at once with a handback that says what a resume 
     initialPlannerResponse: initial([work('a'), work('b'), work('c'), work('d', { dependsOn: ['a'] }), check('verify', ['a', 'b', 'c', 'd'])]),
     // Launched as a stage-2 run: its handback keeps the saved-run shape (no
     // stage-3 `retries`), which is what this test pins.
-    dependencies: { dispatchV2Action: s.dispatch, runFeatures: { deliverableGate: 1, proofLabels: 1 } },
+    dependencies: { savedRunTwin: true, dispatchV2Action: s.dispatch, runFeatures: { deliverableGate: 1, proofLabels: 1 } },
   });
   assert.equal(run.result.status, 'partial');
   assert.equal(run.result.verified, false);

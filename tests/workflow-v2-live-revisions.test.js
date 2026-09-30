@@ -129,7 +129,7 @@ function start(f, runId, actions, ctl, extra = {}) {
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
     initialPlannerResponse: initial(actions),
-    dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10, ...extra },
+    dependencies: { savedRunTwin: true, dispatchV2Action: ctl.dispatch, controlPollMs: 10, ...extra },
   });
 }
 

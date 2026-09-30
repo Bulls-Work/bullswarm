@@ -27,10 +27,13 @@ test('meter history can be read by local day and survives a truncated line', () 
   try {
     const path = meterHistoryPath('pool', join(dir, 'meters'));
     mkdirSync(join(path, '..'), { recursive: true });
+    // Days are local: each capture is noon of its local day, so the grouping
+    // holds in every time zone (midnight UTC is the day before in the Americas).
+    const localNoon = (day) => new Date(2026, 7, day, 12).toISOString();
     writeFileSync(path, [
-      JSON.stringify({ captured_at: '2026-08-20T00:00:00Z', five_hour: { utilization: 1 } }),
+      JSON.stringify({ captured_at: localNoon(20), five_hour: { utilization: 1 } }),
       '{"captured_at":"2026-08-21T00:',
-      JSON.stringify({ captured_at: '2026-08-21T12:00:00Z', five_hour: { utilization: 3 } }),
+      JSON.stringify({ captured_at: localNoon(21), five_hour: { utilization: 3 } }),
     ].join('\n'));
     assert.deepEqual(
       readMeterHistory('pool', { dir: join(dir, 'meters'), day: '2026-08-21' })

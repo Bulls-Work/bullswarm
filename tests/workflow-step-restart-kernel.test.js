@@ -110,7 +110,7 @@ async function until(predicate, what, timeoutMs = 5000) {
 const start = (f, runId, actions, ctl) => runV2AutonomousWorkflow({
   bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
   initialPlannerResponse: actions.every((entry) => !Object.hasOwn(entry, 'purpose')) ? initialV3(actions) : initial(actions),
-  dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
+  dependencies: { savedRunTwin: true, dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
 });
 
 test('a restart stops the running step and runs it again with its handoff on the named pool', async (t) => {
@@ -258,7 +258,7 @@ test('a restart --pool runs through the real dispatcher pinned, and the route re
   const kernel = runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
     initialPlannerResponse: initial([work('a')]),
-    dependencies: {
+    dependencies: { savedRunTwin: true,
       controlPollMs: 10, refreshPools: async () => null,
       dispatchV2Action: (options) => dispatchV2Action({
         ...options, pools: [connector('codex'), connector('grok')],
@@ -337,7 +337,7 @@ test('step accept through the live kernel and through an offline apply: step.acc
   const kernel = runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
     initialPlannerResponse: initial([work('a'), work('c', { dependsOn: ['a'] }), work('h')]),
-    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+    dependencies: { savedRunTwin: true, dispatchV2Action: dispatch, controlPollMs: 10 },
   });
   let accepted = null;
   const done = await guarded(runDir, kernel, async () => {
@@ -368,7 +368,7 @@ test('step accept through the live kernel and through an offline apply: step.acc
   const finished = await runV2AutonomousWorkflow({
     bullswarmDir: g.bullswarmDir, goalDocument: g.goalDocument, pools: [], runId: offlineId,
     initialPlannerResponse: initial([work('a'), work('c', { dependsOn: ['a'] })]),
-    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
+    dependencies: { savedRunTwin: true, dispatchV2Action: dispatch, controlPollMs: 10 },
   });
   assert.equal(finished.result.status, 'partial');
   const offline = await reviseV2Program({

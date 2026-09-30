@@ -113,7 +113,7 @@ function start(f, runId, actions, ctl) {
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
     initialPlannerResponse: v3 ? initialV3(actions) : initial(actions),
-    dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
+    dependencies: { savedRunTwin: true, dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
   });
 }
 const resumer = (f, ctl) => async (runId) => {

@@ -63,7 +63,7 @@ test('a program run prices an attempt that finished without usage before its res
         }],
       },
     },
-    dependencies: {
+    dependencies: { savedRunTwin: true,
       dispatchV2Action: async (options) => {
         const files = options.paths(1);
         writeFileSync(files.taskFile, options.taskText);

@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { normalizeCallerPlannerResponse } from '../src/workflow/v2-planner.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 
 const REPO = resolve('.');
 const CLI = join(REPO, 'bin', 'bullswarm.js');
@@ -34,18 +35,18 @@ function echoHome(t, prefix = 'bullswarm-bytes-') {
   return { root, bullswarmDir, workspace };
 }
 
-// 0.38.0 refuses a v2 program at launch. The run an older version launched
-// is started the way its detached child was: from the goal request document.
-function runProgram(home, goal, actions, extraArgs = []) {
+// The run is started the way a detached child is: from the goal request
+// document, carrying a program v3 (0.38.0 refuses any other program there).
+function runProgram(home, goal, steps, extraArgs = []) {
   const runId = 'wf-bytes0-abcdef';
   const requestPath = join(home.root, 'request.json');
   writeFileSync(requestPath, JSON.stringify({
     schemaVersion: 'bullswarm.goal.request.v2', runId,
     document: createV2GoalDocument({
-      goal, cwd: home.workspace, requirements: [{ id: 'requirement-1', text: goal, mandatory: true }],
+      goal, cwd: home.workspace, requirements: implicitV3Requirements(goal),
       settings: { scout: false, executionMode: 'program', workspaceMode: 'shared', plannerMode: 'caller' },
     }),
-    initialPlannerResponse: normalizeCallerPlannerResponse({ schemaVersion: 'bullswarm.workflow.program.v2', actions }),
+    initialPlannerResponse: normalizeCallerPlannerResponse({ schemaVersion: 'bullswarm.workflow.program.v3', steps }),
   }));
   const executed = spawnSync(process.execPath, [
     CLI, 'workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json', ...extraArgs,
@@ -65,9 +66,8 @@ function runProgram(home, goal, actions, extraArgs = []) {
 }
 
 const writer = (id, over = {}) => ({
-  id, purpose: `Deliver ${id}`, dependsOn: [], affects: ['requirement-1'], ownedFiles: [`${id}.txt`],
-  prompt: `Implement ${id} and report the focused checks you ran.`, lane: 'build', effort: 'low',
-  evidenceFor: [], inputs: [], produces: [], ...over,
+  // The echo pool writes no file, so the step delivers its report.
+  id, prompt: `Implement ${id} and report the focused checks you ran.`, lane: 'analyze', effort: 'low', ...over,
 });
 
 test('every dispatched attempt records real task, prompt, dependency and output bytes', { timeout: 120_000 }, (t) => {
@@ -84,13 +84,14 @@ test('every dispatched attempt records real task, prompt, dependency and output 
   const firstAttempt = attemptFor('first');
   const secondAttempt = attemptFor('second');
 
-  // The requirement text the kernel embedded in the task file, read from the
-  // durable goal document rather than restated here.
-  const requirementText = run.goalDocument.intent.requirements.find((item) => item.id === 'requirement-1').text;
-  const requirementBytes = Buffer.byteLength(requirementText, 'utf8');
+  // The requirement text the kernel embedded in the task file for a step that
+  // affects it, read from the durable goal document rather than restated here.
+  const requirementText = run.goalDocument.intent.requirements.find((item) => item.id === 'goal').text;
 
   for (const [id, attempt] of [['first', firstAttempt], ['second', secondAttempt]]) {
     const action = run.state.program.actions.find((entry) => entry.id === id);
+    const requirementBytes = action.affects.includes('goal') ? Buffer.byteLength(requirementText, 'utf8') : 0;
+    assert.equal(readFileSync(attempt.taskFile, 'utf8').includes(requirementText), requirementBytes > 0);
     assert.deepEqual(Object.keys(attempt.bytes).sort(), ['authorPrompt', 'dependencyInputs', 'kernel', 'output', 'taskFile']);
     assert.equal(attempt.bytes.taskFile, statSync(attempt.taskFile).size, `${id} taskFile bytes must equal the file on disk`);
     assert.equal(attempt.bytes.authorPrompt, Buffer.byteLength(action.prompt, 'utf8'));
@@ -112,9 +113,8 @@ test('every dispatched attempt records real task, prompt, dependency and output 
 test('a read-only action with no requirement context attributes every byte to kernel or prompt', { timeout: 120_000 }, (t) => {
   const home = echoHome(t);
   const report = {
-    id: 'report', purpose: 'Report on the delivered slice', dependsOn: ['first'], affects: [], ownedFiles: [],
+    id: 'report', dependsOn: ['first'],
     prompt: 'Read the dependency output and report what it claims.', lane: 'analyze', effort: 'low',
-    evidenceFor: [], inputs: [], produces: [],
   };
   const run = runProgram(home, 'Deliver one slice, then report on it.', [writer('first'), report]);
   const attempt = run.state.attempts.findLast((entry) => entry.actionId === 'report');
