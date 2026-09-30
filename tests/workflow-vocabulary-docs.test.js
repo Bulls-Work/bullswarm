@@ -20,7 +20,7 @@ import { STAGE3_RUN_FEATURES } from '../src/workflow/run-features.js';
 import { deliverableVerdict, snapshotPossible } from '../src/workflow/v2-dispatch.js';
 import * as dispatchModule from '../src/workflow/v2-dispatch.js';
 import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
-import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
+import { VERIFY_LOOP_STOPS } from '../src/workflow/legacy-verification.js';
 import { HELP_PATHS, helpText } from '../src/help.js';
 import { pickPool } from '../src/lib/route.js';
 
@@ -266,7 +266,7 @@ test('changing a role in an exported plan needs the written-back deliverable del
 });
 
 test('the repair rules for act and report steps are documented', () => {
-  const source = read('src/workflow/verify-rounds.js');
+  const source = read('src/workflow/legacy-verification.js');
   const template = source.match(/next = `(an act step affects \$\{id\}; [^`]*)`/)[1];
   const actNext = template.replace('${id}', '<id>').replace('${runToken}', '<shortId>');
   assert.ok(flat('docs/reference/result.md').includes(actNext), 'result.md quotes the act next text');
@@ -1137,8 +1137,8 @@ test('the result reference reads independent and requirements[].next as the code
   const outcome = read('src/workflow/v2-outcome.js');
   assert.match(outcome, /if \(reviewer\?\.provider && writers\.some\(\(writer\) => writer\?\.provider === reviewer\.provider\)\) return false;/);
   assert.match(outcome, /if \(!reviewer\?\.provider \|\| writers\.some\(\(writer\) => !writer\?\.provider\)\) return null;/);
-  // The marked `next` text, from the template in verify-rounds.js.
-  const source = read('src/workflow/verify-rounds.js');
+  // The marked `next` text, from the template in legacy-verification.js.
+  const source = read('src/workflow/legacy-verification.js');
   const fill = (text) => text.replace(/\$\{runToken\}/g, '<shortId>').replace(/\$\{reviewer\}/g, '<check>').replace(/\$\{pool\}/g, '<pool>').replace(/\$\{id\}/g, '<id>');
   const fix = fill(source.match(/const fix = `(fix it with a step \([^`]*\))`;/)[1]);
   const rerun = fill(source.match(/const rerun = `(rerun the review elsewhere \([^`]*\))`;/)[1]);

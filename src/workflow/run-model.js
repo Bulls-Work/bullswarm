@@ -8,7 +8,7 @@ import { finiteOrNull } from '../lib/num.js';
 import { formatMoney } from '../lib/usage-basis.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
-import { kernelRepairActionIds, loopStageLabel } from './verify-rounds.js';
+import { kernelRepairActionIds, loopStageLabel } from './legacy-verification.js';
 import { clamp, clockAt } from './dashboard.js';
 import {
   MEASURED_TOKEN_SOURCES, aggregateAttemptUsage, attemptInterval, attemptUsage, attemptWorkerMinutes, attemptsUnion,

@@ -8,7 +8,7 @@ import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { PROGRAM_V3_SCHEMA_VERSION, validateStoredProgramV3 } from './program-v3.js';
 import { writeJsonAtomic } from '../lib/fsjson.js';
-import { VERIFY_LOOP_STOPS } from './verify-rounds.js';
+import { VERIFY_LOOP_STOPS } from './legacy-verification.js';
 
 export const V2_GOAL_SCHEMA_VERSION = 'bullswarm.workflow.goal.v2';
 export const V2_STATE_SCHEMA_VERSION = 'bullswarm.workflow.state.v2';
@@ -122,8 +122,8 @@ const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'writte
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
 const ATTEMPT_TIME_BOX_SOURCES = new Set(['program', 'pair', 'kind', 'fallback']);
 const ATTEMPT_RETURNED_EARLY_FIELDS = new Set(['count', 'items']);
-// The kernel's repair loop (verify-rounds.js). None of these keys may be a
-// legacy autonomous field name: noUnknown rejects those.
+// The kernel's former repair loop (legacy-verification.js). None of these
+// keys may be a legacy autonomous field name: noUnknown rejects those.
 const VERIFY_LOOP_FIELDS = new Set(['max', 'stoppedBy', 'rounds']);
 const VERIFY_ROUND_FIELDS = new Set([
   'round', 'verifyActionIds', 'startedAt', 'closedAt', 'toJudge', 'carried', 'passed', 'failed', 'discovery',

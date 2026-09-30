@@ -22,7 +22,7 @@ import {
 import { withV2Cancellation } from './v2-cancellation.js';
 import { taskIdentity } from '../lib/tasks.js';
 import { runClockText, runDurationFacts } from './run-model.js';
-import { verifyRoundLabel } from './verify-rounds.js';
+import { verifyRoundLabel } from './legacy-verification.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { readCalibration } from '../lib/subscription-cost.js';
 import { apiMoney, apiMoneyText, formatMoney, formatMoneyPair } from '../lib/usage-basis.js';

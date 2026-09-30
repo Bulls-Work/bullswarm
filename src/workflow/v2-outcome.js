@@ -2,7 +2,7 @@ import { clone } from '../lib/clone.js';
 import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { scheduleV2Actions } from './v2-scheduler.js';
-import { NOT_JUDGED_STATUS, verifyLoopResult } from './verify-rounds.js';
+import { NOT_JUDGED_STATUS, verifyLoopResult } from './legacy-verification.js';
 import { validateV2DurableState } from './v2-state.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { aggregateAttemptUsage } from './rollup.js';

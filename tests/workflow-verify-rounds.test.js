@@ -1,6 +1,6 @@
-// verify-rounds.js on its own: the loop's decisions, the carry-forward rule,
-// the repair plan, the measures and the labels, over synthetic states. The
-// kernel paths are exercised end to end in workflow-verify-rounds-kernel.
+// legacy-verification.js on its own: the read side of the former repair loop
+// (its decisions, the carry-forward rule, the measures and the labels) over
+// synthetic saved states.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import {
   actAffectedRequirements, callerDecision, firstSuggestedStep, loopStageLabel, loopVerdictText, NOT_JUDGED_STATUS,
   notJudgedRequirements, requirementAcceptances, revisedVerifyRounds, roundPhases, verifyLoopResult,
   verifyRoundLabel,
-} from '../src/workflow/verify-rounds.js';
+} from '../src/workflow/legacy-verification.js';
 import { validateActionProgram } from '../src/workflow/action-validator.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 import { createV2GoalDocument, createV2State, validateV2DurableState } from '../src/workflow/v2-state.js';

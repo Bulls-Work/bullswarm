@@ -36,7 +36,7 @@ import { deliverSteering } from './steering.js';
 import { deriveV2LiveStages } from './v2-presentation.js';
 import * as v2State from './v2-state.js';
 import { v2LiveProgramRuntime, validateV2DurableState } from './v2-state.js';
-import { revisedVerifyRounds } from './verify-rounds.js';
+import { revisedVerifyRounds } from './legacy-verification.js';
 import { appendedActionsV3, desiredActionsV3, exportedProgramV3, isV3Revision } from './revision-v3.js';
 import { controlReachEdges } from './gates-loops.js';
 

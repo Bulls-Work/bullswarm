@@ -56,7 +56,7 @@ import {
 } from './run-model.js';
 import { stepPageModel, turnCountsText } from './step-model.js';
 import { returnedEarlyItems, returnedEarlyText } from './time-box.js';
-import { loopVerdictText } from './verify-rounds.js';
+import { loopVerdictText } from './legacy-verification.js';
 import { NEEDS_YOU_LABELS } from './step-vocabulary.js';
 import { attemptAnswerLine, controlRowLines, roundTag, v3TimelineFacts } from './v3-timeline.js';
 import { waitingFacts } from './v3-display.js';
