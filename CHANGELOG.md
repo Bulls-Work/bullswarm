@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.37.3 — Price-band model picks, tier-level reasoning, per-step model
+
 - strategy: a connector can opt into a price band (`priceBand: true`; Codex
   does). Each tier then takes the best newest-generation model whose dated
   API price is no more than what served that tier one generation back, at the
