@@ -24,25 +24,35 @@ const UNIVERSAL = ['help'];
 //   internal — a detached-launch handshake flag no operator should type
 //   refused  — recognized purely so the command can explain why it does not
 //              apply here, instead of answering "unknown flag"
+const REMOVED_0_38_GOAL_FLAGS = [
+  'scout', 'no-scout', 'orchestrator', 'orchestrator-model', 'orchestrator-strict',
+  'strict-orchestrator', 'suggested-plan', 'planner-reasoning',
+];
+
 export const UNDOCUMENTED_FLAGS = Object.freeze({
   // Bare `bullswarm` dispatches to cmdSetup(), so it accepts setup's options.
   // The root help says so in the --yes description rather than repeating all
   // six labels at the top level.
   '': ['wizard', 'strategy', 'integrate', 'agents', 'json'],
-  // The detached kernel re-invokes `workflow goal` with these three.
-  'workflow goal': ['request', 'run-id', 'quiet', 'planner'],
-  // `--planner` was removed in 0.27.0; the planning commands still recognize
-  // it (and the dispatched-planner flags) so they can say what to use instead.
+  // The detached kernel re-invokes `workflow goal` with the first three.
+  // `--planner` was removed in 0.27.0, and 0.38.0 removed the scout and the
+  // dispatched planner; these stay recognized for one release so the command
+  // can say what replaced them (D8).
+  'workflow goal': [
+    'request', 'run-id', 'quiet', 'planner', ...REMOVED_0_38_GOAL_FLAGS,
+  ],
   'workflow plan contract': [
-    'planner', 'orchestrator', 'orchestrator-model', 'orchestrator-strict',
-    'strict-orchestrator', 'suggested-plan', 'planner-reasoning', 'program',
-    'resume', 'request',
+    'planner', ...REMOVED_0_38_GOAL_FLAGS, 'v2', 'program', 'resume', 'request',
   ],
   'workflow plan validate': [
-    'planner', 'orchestrator', 'orchestrator-model', 'orchestrator-strict',
-    'strict-orchestrator', 'suggested-plan', 'planner-reasoning',
-    'resume', 'request',
+    'planner', ...REMOVED_0_38_GOAL_FLAGS, 'resume', 'request',
   ],
+  // 0.38.0 removed these plan verbs; they keep their old flags for one
+  // release so a saved hint gets the one-sentence answer, not "unknown flag".
+  'workflow plan show': ['json'],
+  'workflow plan submit': ['program', 'exhausted', 'reason', 'summary', 'foreground', 'watch', 'json'],
+  'workflow plan export': ['out', 'json'],
+  'workflow plan revise': ['program', 'rerun', 'summary', 'base-revision', 'wait', 'json'],
   // A resumed run keeps its durable planner mode and routing; these are
   // recognized so the refusal names the submit command to use instead.
   'workflow resume': [
@@ -124,29 +134,25 @@ const TABLE = {
   workflow: [],
   'workflow goal': [
     'cwd', 'isolation', 'watch', 'foreground', 'json', 'program', 'summary',
-    'scout', 'no-scout', 'orchestrator', 'orchestrator-model',
-    'orchestrator-strict', 'strict-orchestrator', 'suggested-plan',
-    'worker-pool', 'worker-model', 'worker-reasoning', 'planner-reasoning',
+    'worker-pool', 'worker-model', 'worker-reasoning',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'resume', 'detach', 'again',
   ],
   'workflow plan': [],
   'workflow plan contract': [
-    'cwd', 'isolation', 'json', 'scout', 'worker-pool', 'worker-model',
+    'cwd', 'isolation', 'json', 'worker-pool', 'worker-model',
     'worker-reasoning', 'max-agents', 'max-actions', 'max-expansion-rounds',
-    'concurrency', 'retry-attempts', 'v2',
+    'concurrency', 'retry-attempts',
   ],
   'workflow plan validate': [
-    'program', 'cwd', 'summary', 'json', 'isolation', 'scout', 'worker-pool',
+    'program', 'cwd', 'summary', 'json', 'isolation', 'worker-pool',
     'worker-model', 'worker-reasoning', 'max-agents', 'max-actions',
     'max-expansion-rounds', 'concurrency', 'retry-attempts',
   ],
-  'workflow plan show': ['json'],
-  'workflow plan submit': [
-    'program', 'exhausted', 'reason', 'summary', 'foreground', 'watch', 'json',
-  ],
-  'workflow plan export': ['out', 'json'],
-  'workflow plan revise': ['program', 'rerun', 'summary', 'base-revision', 'wait', 'json'],
+  'workflow plan show': [],
+  'workflow plan submit': [],
+  'workflow plan export': [],
+  'workflow plan revise': [],
   'workflow pause': ['now', 'json'],
   'workflow capabilities': ['json'],
   'workflow tui': ['json', 'all', 'show', 'cancel', 'overview', 'width', 'height'],

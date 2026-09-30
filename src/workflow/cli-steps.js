@@ -30,6 +30,7 @@ import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, fragmentShapeIssues } from './revision-v3.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isLegacyRunDir, resolveRunId, v2RunnerLiveness } from './short-id.js';
+import { viewOnlyRunLine } from './cli-run-lookup.js';
 import { createRevisionRequest, exportV2Plan, planV2Revision } from './v2-revision.js';
 import { workspacePathIssues } from './v2-planner.js';
 import { acquireKernelLease } from './v2-process.js';
@@ -218,7 +219,7 @@ export async function addV3Steps({
   const id = state.shortId ?? state.runId;
   const base = { runId: state.runId, shortId: state.shortId ?? null };
   if (!isProgramV3(state.program)) {
-    return { code: 1, status: 'error', why: `run ${id} is not a v3 run; workflow add appends to v3 runs. Change a v2 run's plan with bullswarm workflow plan export ${id} --out plan.json, then bullswarm workflow plan revise ${id} --program plan.json`, ...base };
+    return { code: 1, status: 'error', why: viewOnlyRunLine(id), ...base };
   }
   let source = fragment;
   if (fromAnswer) {

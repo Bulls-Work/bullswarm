@@ -165,7 +165,7 @@ test('previously-drifted flags are present in --help now that help.js is canonic
   );
   const goalHelp = helpForArgs(['workflow', 'goal', '--help']);
   assert.match(goalHelp, /--detach/, 'workflow goal --help must document --detach (accepted by the real parser)');
-  for (const flag of ['--orchestrator-model', '--worker-pool', '--worker-model']) {
+  for (const flag of ['--worker-pool', '--worker-model']) {
     assert.ok(goalHelp.includes(flag), `workflow goal --help must document ${flag}`);
   }
 
@@ -187,13 +187,13 @@ test('help describes the 0.27.1 command-surface behaviour it is now paired with'
   assert.match(runHelp, /--lane .*required/s, 'run --help must say --lane is required');
 
   // The bare example used to be `workflow goal "..." --cwd .`, which the real
-  // parser refuses with exit 2 for having no program, scout, or orchestrator.
+  // parser refuses with exit 2 for having no program.
   const workflowHelp = helpForArgs(['workflow', '--help']);
   const goalExamples = workflowHelp.split('\n').filter((l) => l.includes('bullswarm workflow goal'));
   assert.ok(goalExamples.length > 0, 'workflow --help must show a goal example');
   for (const example of goalExamples) {
     assert.match(
-      example, /--program|--scout|--orchestrator/,
+      example, /--program/,
       `workflow --help example would exit 2 as written: ${example.trim()}`,
     );
   }
@@ -273,7 +273,7 @@ test('workflow help documents failed evidence and the planner contract evidence 
   const resume = helpText(['workflow', 'resume']);
   // Stage 3 rewords the resume safety line and points at the caller verbs;
   // the stage-1 clause (a build-lane step that changed nothing) still holds.
-  assert.ok(resume.includes('a failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun; use step rerun, step accept, or plan revise'), resume);
+  assert.ok(resume.includes('a failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun; use step rerun, step accept, or workflow add'), resume);
   const contract = helpText(['workflow', 'plan', 'contract']);
   assert.match(contract, /evidence checks Bullswarm runs after a step/);
 });
@@ -412,20 +412,22 @@ test('--retry-attempts reads as automatic retries per step in all three places',
   }
 });
 
-test('workflow goal help says a usage limit stops the dispatched planner or the scout and hands back the call', () => {
-  const goal = helpText(['workflow', 'goal']).replace(/\s+/g, ' ');
-  assert.ok(goal.includes('In a run started by this version a usage limit, a rate limit still there after its short backoff, or no free pool stops the dispatched planner or the scout, with no move to another pool: the run finishes with the reason (`the workflow planner stopped on a usage limit: …`) and your call: after its back at time, workflow resume runs the stopped planner or scout again (before then it can stop the same way); or plan it yourself with plan revise; or start a new run. A scout before your own program lets the run go on without its report, and resume does not run that scout again.'), goal);
-  // Resume runs a stopped planner or scout again (it used to find nothing to retry).
-  assert.match(goal, /stopped on a usage limit[^.]*workflow resume runs the stopped planner or scout again/);
-  const resume = helpText(['workflow', 'resume']).replace(/\s+/g, ' ');
-  assert.ok(resume.includes('In a run started by this version where a usage limit or no free pool stopped the dispatched planner or preflight scout and ended the run, it runs that planner or scout again first and prints `running again: the workflow planner` (or `the preflight scout`); run it after the back at time, or it can stop the same way. A scout the run went on without (one before your own program) is not run again.'), resume);
-  // A preferred planner pool falls back only when it is out at the pick; a
-  // usage limit it hits while it plans stops the run.
-  const flag = 'a pool name prefers that pool and falls back when it is already quota-gated or unavailable at the pick; in a run started by this version a usage limit it hits while it plans stops the run instead';
-  assert.ok(goal.includes(flag));
-  assert.ok(!goal.includes('falls back when it is quota-gated or unavailable'));
-  const cliReference = readFileSync(new URL('../docs/reference/cli.md', import.meta.url), 'utf8');
-  assert.ok(cliReference.includes(`| \`--orchestrator <auto\\|pool>\` | dispatch a Workflow Planner agent at every planning boundary: \`auto\` lets the kernel route it, ${flag} |`));
+// 0.38.0 removed the scout, the dispatched planner and the plan verbs that
+// changed a v2 run. Help no longer offers them; each removed verb keeps a
+// one-sentence node for one release (D8), because saved hints still name it.
+test('help offers no --scout, --orchestrator or plan revise, and the removed plan verbs say what replaced them', () => {
+  for (const path of [[], ['workflow'], ['workflow', 'goal'], ['workflow', 'plan'], ['workflow', 'plan', 'contract'], ['workflow', 'plan', 'validate'], ['workflow', 'resume'], ['workflow', 'pause'], ['workflow', 'steer'], ['workflow', 'step', 'rerun']]) {
+    const text = helpText(path);
+    for (const gone of ['--scout', '--no-scout', '--orchestrator', '--suggested-plan', '--planner-reasoning', '--v2', 'plan revise', 'plan export', 'plan show', 'plan submit']) {
+      assert.ok(!text.includes(gone), `${path.join(' ') || '(root)'} still names ${gone}`);
+    }
+  }
+  assert.match(helpText(['workflow', 'plan']), /^Usage: bullswarm workflow plan <contract\|validate> \[options\]$/m);
+  for (const verb of ['show', 'submit', 'export', 'revise']) {
+    const text = helpText(['workflow', 'plan', verb]);
+    assert.match(text, new RegExp(`Removed in 0\\.38\\.0\\. plan ${verb} exits 2 with one sentence`));
+    assert.match(text, /view-only sentence/);
+  }
 });
 
 test('watch --until lists needs you as trouble (a usage limit is one), and blocked dependents inside the block', () => {
@@ -462,11 +464,11 @@ test('watch --help covers v3 runs: gate and loop lines, their wake-ups, the wait
 
 test('goal and plan validate --help name program.v3, and a gate or a loop out of rounds stops a run for you', () => {
   const goal = helpText(['workflow', 'goal']);
-  assert.match(goal, /bare bullswarm\.workflow\.program\.v2 or bullswarm\.workflow\.program\.v3 document/);
-  assert.match(goal, /a v2 run never stops for you, it finishes and hands back what is left/);
+  assert.match(goal, /a bare bullswarm\.workflow\.program\.v3 document, or one inside a bullswarm\.workflow\.planner-response\.v2 envelope; a bullswarm\.workflow\.program\.v2 is refused/);
+  assert.match(goal, /A bullswarm\.workflow\.program\.v2 is refused \(exit 2, nothing launched\)/);
   assert.match(goal, /A gate stops the steps behind it until you run workflow continue; a loop repeats its steps until its condition holds, and waits for you like a gate when its rounds run out\./);
   assert.doesNotMatch(goal, /never waits/);
-  assert.match(helpText(['workflow', 'plan', 'validate']), /bare bullswarm\.workflow\.program\.v2 or bullswarm\.workflow\.program\.v3 document/);
+  assert.match(helpText(['workflow', 'plan', 'validate']), /a bare bullswarm\.workflow\.program\.v3 document, or one inside a planner response envelope/);
   const workflow = helpText(['workflow']);
   assert.match(workflow, /a gate or a loop out of rounds stops the run for you until workflow continue/);
   assert.doesNotMatch(workflow, /never waits/);

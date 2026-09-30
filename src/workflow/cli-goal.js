@@ -7,20 +7,19 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveRunId, listRuns } from './short-id.js';
 import { programAdvisories } from './action-validator.js';
-import { isProgramV3, v3IssueWording } from './program-v3.js';
+import { v3IssueWording } from './program-v3.js';
 import { validateV2GoalDocument } from './v2-state.js';
-import { callerPlannerSubmitCommand } from './caller-planner.js';
 import { V2PlannerValidationError, workspacePathIssues } from './v2-planner.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { helpText } from '../help.js';
-import { flagErrors } from './workflow-flags.js';
-import { BULLSWARM_DIR } from './cli-run-lookup.js';
+import { flagErrors, removedFlagExit } from './workflow-flags.js';
+import { BULLSWARM_DIR, drivableRunRefusal } from './cli-run-lookup.js';
 import { pinnedPoolIssues, routePoolIssues, livePoolNames } from './cli-pool-checks.js';
 import { executeGoalDocument, launchDetachedGoal } from './cli-launch.js';
 import { buildNewGoalDocument } from './cli-goal-document.js';
 import {
   shellArg, goalArg, refuseProgramRequired, refuseProgramInvalid, loadCallerProgram, previewValidateInitialProgram,
-  VERIFY_ROUNDS_NOTE, setsVerifyRounds, printAdvisories,
+  printAdvisories, ProgramV2RefusedError, refuseProgramV2,
 } from './cli-program-checks.js';
 
 function goalUsage() {
@@ -30,45 +29,6 @@ function goalUsage() {
 export function shouldAutoWatchGoal(opts) {
   return opts.watch === true && opts.detach !== true && opts.foreground !== true &&
     opts.json !== true && opts.resume == null && opts.request == null;
-}
-
-// Caller-first planning. `workflow goal` needs a program: the calling agent is
-// the Workflow Planner unless it asks for a dispatched one with --orchestrator.
-// Usage conflicts throw; the "program required" case is returned, not thrown,
-// so the caller can print the full next-command guidance.
-function resolvePlanning(opts) {
-  if (opts.planner !== undefined) {
-    throw new Error('--planner was removed: pass --program <file.json> to plan yourself, --scout to have the kernel survey first and pause for your program, or --orchestrator auto|<pool> to dispatch a Workflow Planner agent');
-  }
-  const strictAlias = opts['strict-orchestrator'];
-  if (opts.orchestrator !== undefined && strictAlias !== undefined) throw new Error('--orchestrator and --strict-orchestrator are mutually exclusive');
-  const orchestrator = opts.orchestrator ?? strictAlias ?? null;
-  if (orchestrator !== null && (typeof orchestrator !== 'string' || !orchestrator.trim())) throw new Error('--orchestrator requires auto or a pool name');
-  const dispatched = orchestrator !== null;
-  if (dispatched && opts.program) throw new Error('--program and --orchestrator are mutually exclusive: either you author the program or a dispatched Workflow Planner does');
-  const strict = opts['orchestrator-strict'] === true || strictAlias !== undefined;
-  if (!dispatched) {
-    const dispatchedOnly = [
-      ['orchestrator-model', '--orchestrator-model'], ['orchestrator-strict', '--orchestrator-strict'],
-      ['suggested-plan', '--suggested-plan'], ['noScout', '--no-scout'],
-      // Caller-planner mode never sets plannerRouting, so a planner reasoning
-      // level would be accepted and then dropped without a trace.
-      ['planner-reasoning', '--planner-reasoning'],
-    ].filter(([key]) => opts[key] !== undefined && opts[key] !== false).map(([, flag]) => flag);
-    if (dispatchedOnly.length) {
-      throw new Error(`${dispatchedOnly.join(', ')} appl${dispatchedOnly.length === 1 ? 'ies' : 'y'} only with --orchestrator (a dispatched Workflow Planner); when you are the planner, the plan is the program`);
-    }
-  }
-  if (strict && orchestrator === 'auto') throw new Error('--orchestrator-strict needs a named pool: --orchestrator <pool> --orchestrator-strict');
-  return {
-    mode: dispatched ? 'dispatched' : 'caller',
-    pool: dispatched && orchestrator !== 'auto' ? orchestrator : null,
-    strict: dispatched && strict,
-    model: dispatched && opts['orchestrator-model'] && opts['orchestrator-model'] !== 'auto' ? opts['orchestrator-model'] : null,
-    programSupplied: Boolean(opts.program),
-    scoutFirst: !dispatched && !opts.program && opts.scout === true,
-    programRequired: !dispatched && !opts.program && opts.scout !== true,
-  };
 }
 
 // The same goal text in the same cwd while the first launch is still going is
@@ -119,15 +79,16 @@ export async function wfGoal(opts) {
     console.log(goalUsage());
     return 0;
   }
+  const removed = removedFlagExit(opts);
+  if (removed !== null) return removed;
   const flagExit = flagErrors(opts, ['workflow', 'goal']);
   if (flagExit !== null) return flagExit;
   if (opts.watch && (opts.detach || opts.foreground || opts.json || opts.resume || opts.request)) {
     console.error('✗ --watch is only valid for a new human-readable independent launch; do not combine it with --detach, --foreground, --json, --resume, or --request');
     return 2;
   }
-  let planning;
-  try { planning = resolvePlanning(opts); }
-  catch (err) { console.error(`✗ ${err.message}`); return 2; }
+  // --planner was removed in 0.27.0: the caller writes the program.
+  if (opts.planner !== undefined) { console.error('✗ --planner was removed: pass --program <file.json>; you write the program'); return 2; }
   const { names, pools } = await livePoolNames();
   let doc;
   let resumeRunId = null;
@@ -139,6 +100,8 @@ export async function wfGoal(opts) {
       console.error(`✗ --resume token "${opts.resume}" did not match any run`);
       return 1;
     }
+    const viewOnly = drivableRunRefusal(opts.resume, opts, 'goal --resume');
+    if (viewOnly !== null) return viewOnly;
     resumeRunId = resolvedRun.runId;
     const durableGoalPath = join(resolvedRun.runDir, 'goal.json');
     try {
@@ -149,13 +112,12 @@ export async function wfGoal(opts) {
       console.error(`✗ cannot resume ${resumeRunId}: ${err.message}`);
       return 1;
     }
-    if (opts.orchestrator || opts['strict-orchestrator'] || opts['orchestrator-model'] || opts['worker-pool'] || opts['worker-model']
-      || opts['worker-reasoning'] || opts['planner-reasoning']) {
+    if (opts['worker-pool'] || opts['worker-model'] || opts['worker-reasoning']) {
       console.error('✗ V2 resume preserves its durable routing contract; routing overrides are valid only when starting a new goal');
       return 2;
     }
-    if (opts.program || opts.scout || opts.isolation !== undefined) {
-      console.error(`✗ a resumed run keeps its durable planner mode; to submit a caller program use: ${callerPlannerSubmitCommand(resolvedRun.shortId ?? resumeRunId)}`);
+    if (opts.program || opts.isolation !== undefined) {
+      console.error(`✗ a resumed run keeps its program and workspace mode; to add steps use: bullswarm workflow add ${resolvedRun.shortId ?? resumeRunId} --steps <file.json>`);
       return 2;
     }
   } else if (opts.request) {
@@ -184,11 +146,12 @@ export async function wfGoal(opts) {
       const duplicate = ongoingGoalRun(goal, cwd);
       if (duplicate) return refuseDuplicateGoal(goal, opts, duplicate, cwd);
     }
-    if (planning.programRequired) return refuseProgramRequired(goal, opts);
+    if (!opts.program) return refuseProgramRequired(goal, opts);
     try {
       initialPlannerResponse = loadCallerProgram(opts);
-      doc = buildNewGoalDocument(goal, opts, { ...planning, programV3: isProgramV3(initialPlannerResponse) });
+      doc = buildNewGoalDocument(goal, opts);
     } catch (err) {
+      if (err instanceof ProgramV2RefusedError) return refuseProgramV2(opts);
       if (err instanceof V2PlannerValidationError) return refuseProgramInvalid(goal, opts, err.issues);
       console.error(`✗ invalid goal options: ${err.message}`);
       return 2;
@@ -203,10 +166,8 @@ export async function wfGoal(opts) {
 
   try { validateV2GoalDocument(doc); }
   catch (err) { console.error(`✗ autonomous V2 goal invalid (nothing ran): ${err.message}`); return 1; }
-  for (const [label, routing] of [['planner', doc.config.plannerRouting], ['worker', doc.config.workerRouting]]) {
-    const pool = routing?.pool ?? routing?.preferredPool ?? routing?.strictPool;
-    if (pool && !names.includes(pool)) { console.error(`✗ requested ${label} pool "${pool}" is not available`); return 1; }
-  }
+  const workerPool = doc.config.workerRouting?.pool ?? doc.config.workerRouting?.preferredPool ?? doc.config.workerRouting?.strictPool;
+  if (workerPool && !names.includes(workerPool)) { console.error(`✗ requested worker pool "${workerPool}" is not available`); return 1; }
   if (initialPlannerResponse && !opts.request) {
     let previewed;
     try { previewed = previewValidateInitialProgram(doc, initialPlannerResponse); }
@@ -222,13 +183,8 @@ export async function wfGoal(opts) {
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
     // The same lines `plan validate` prints, at the moment the program is
     // actually launched. The kernel also stores them on the run state.
-    const launchV3 = isProgramV3(previewed.program);
-    printAdvisories(programAdvisories(previewed.program, { requirements: launchV3 ? null : doc.intent.requirements })
-      .map((item) => (launchV3 ? { ...item, message: v3IssueWording(item.message) } : item)));
-    if (setsVerifyRounds(previewed.program)) {
-      console.error(VERIFY_ROUNDS_NOTE);
-      opts.verifyRoundsMeaning = 'fix cycles';
-    }
+    printAdvisories(programAdvisories(previewed.program, { requirements: null })
+      .map((item) => ({ ...item, message: v3IssueWording(item.message) })));
   }
 
   if (!opts.foreground && !resumeRunId && !opts.request) {

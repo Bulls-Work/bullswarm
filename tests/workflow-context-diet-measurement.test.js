@@ -11,6 +11,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { normalizeCallerPlannerResponse } from '../src/workflow/v2-planner.js';
 
 const REPO = resolve('.');
 const CLI = join(REPO, 'bin', 'bullswarm.js');
@@ -90,12 +92,21 @@ const WITH_DIGEST = [
   integrator(['condense']),
 ];
 
+// 0.38.0 refuses a v2 program at launch. The run an older version launched
+// is started the way its detached child was: from the goal request document.
 function runProgram(home, actions, label) {
-  const programPath = join(home.root, `program-${label}.json`);
-  writeFileSync(programPath, JSON.stringify({ schemaVersion: 'bullswarm.workflow.program.v2', actions }));
+  const runId = `wf-diet${label}-abcdef`;
+  const requestPath = join(home.root, `request-${label}.json`);
+  writeFileSync(requestPath, JSON.stringify({
+    schemaVersion: 'bullswarm.goal.request.v2', runId,
+    document: createV2GoalDocument({
+      goal: GOAL, cwd: home.workspace, requirements: [{ id: 'requirement-1', text: GOAL, mandatory: true }],
+      settings: { concurrency: 3, scout: false, executionMode: 'program', workspaceMode: 'shared', plannerMode: 'caller' },
+    }),
+    initialPlannerResponse: normalizeCallerPlannerResponse({ schemaVersion: 'bullswarm.workflow.program.v2', actions }),
+  }));
   const executed = spawnSync(process.execPath, [
-    CLI, 'workflow', 'goal', GOAL,
-    '--cwd', home.workspace, '--program', programPath, '--concurrency', '3', '--foreground', '--json',
+    CLI, 'workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json',
   ], {
     encoding: 'utf8',
     timeout: 120_000,

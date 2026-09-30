@@ -13,10 +13,27 @@ import {
   ACTION_KINDS, ActionValidationError, DELIVERABLE_TYPES, KIND_DEFAULTS, KIND_ROLES, ROLES, validateActionProgram,
 } from '../src/workflow/action-validator.js';
 import { EVIDENCE_TYPES } from '../src/workflow/step-vocabulary.js';
-import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
+import { normalizeCallerPlannerResponse, v2PlannerContractRules } from '../src/workflow/v2-planner.js';
+import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 
 const REPO = resolve('.');
 const CLI = join(REPO, 'bin', 'bullswarm.js');
+
+// 0.38.0 refuses a v2 program at launch. The run an older version launched
+// is started the way its detached child was: from the goal request document.
+function legacyGoalArgs(home, goal, actions, settings = {}) {
+  const runId = 'wf-digest-abcdef';
+  const requestPath = join(home.root, 'request.json');
+  writeFileSync(requestPath, JSON.stringify({
+    schemaVersion: 'bullswarm.goal.request.v2', runId,
+    document: createV2GoalDocument({
+      goal, cwd: home.workspace, requirements: [{ id: 'requirement-1', text: goal, mandatory: true }],
+      settings: { ...settings, scout: false, executionMode: 'program', workspaceMode: 'shared', plannerMode: 'caller' },
+    }),
+    initialPlannerResponse: normalizeCallerPlannerResponse(program(actions)),
+  }));
+  return [CLI, 'workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json'];
+}
 
 const writer = (id, over = {}) => ({
   id, purpose: `Deliver ${id}`, dependsOn: [], affects: ['requirement-1'], ownedFiles: [`${id}.txt`],
@@ -152,7 +169,7 @@ test('workflow capabilities reports the closed kind list, so digest is discovera
   assert.deepEqual(kinds.digest, { lane: 'analyze', effort: 'low' });
 });
 
-test('workflow capabilities reports the step roles beside the unchanged kind list', { timeout: 60_000 }, (t) => {
+test('workflow capabilities reports the unchanged kind list; 0.38.0 dropped the role catalog', { timeout: 60_000 }, (t) => {
   const home = echoHome(t);
   const executed = spawnSync(process.execPath, [CLI, 'workflow', 'capabilities'], {
     encoding: 'utf8', timeout: 60_000,
@@ -161,13 +178,7 @@ test('workflow capabilities reports the step roles beside the unchanged kind lis
   assert.equal(executed.status, 0, executed.stderr || executed.stdout);
   const engine = JSON.parse(executed.stdout).engines.autonomousV2;
   assert.deepEqual(engine.actionKinds, JSON.parse(JSON.stringify(KIND_DEFAULTS)));
-  assert.deepEqual(Object.keys(engine.actionRoles), [...ROLES]);
-  for (const role of ROLES) {
-    assert.deepEqual(engine.actionRoles[role].kinds, ACTION_KINDS.filter((kind) => KIND_ROLES[kind] === role), role);
-  }
-  assert.equal(engine.actionRoles.combine.defaultDeliverable, null);
-  assert.deepEqual(engine.actionRoles.combine.routing.files, { lane: 'build', effort: 'high' });
-  assert.deepEqual(engine.actionRoles.act.deliverables, ['outward']);
+  assert.equal(Object.hasOwn(engine, 'actionRoles'), false);
   assert.deepEqual(engine.deliverableTypes, [...DELIVERABLE_TYPES]);
   assert.deepEqual(engine.evidenceTypes, { types: [...EVIDENCE_TYPES], usable: ['command', 'schema', 'review'], note: 'choice is recorded by bullswarm workflow step accept (never proof)' });
 });
@@ -179,12 +190,7 @@ test('three writers → digest → integrator: the integrator reads only the dig
     digest({ dependsOn: ['a1', 'a2', 'a3'] }),
     writer('integrate', { dependsOn: ['condense'], ownedFiles: [], prompt: 'Apply every request the digest carries and run the repository gates.' }),
   ];
-  const programPath = join(home.root, 'program.json');
-  writeFileSync(programPath, JSON.stringify(program(actions)));
-  const executed = spawnSync(process.execPath, [
-    CLI, 'workflow', 'goal', 'Deliver three slices, condense them, then integrate.',
-    '--cwd', home.workspace, '--program', programPath, '--concurrency', '3', '--foreground', '--json',
-  ], {
+  const executed = spawnSync(process.execPath, legacyGoalArgs(home, 'Deliver three slices, condense them, then integrate.', actions, { concurrency: 3 }), {
     encoding: 'utf8', timeout: 120_000,
     env: { ...process.env, BULLSWARM_HOME: home.bullswarmDir, BULLSWARM_DEPTH: '0' },
   });
@@ -243,12 +249,7 @@ test('a digest handed more than 32 KB of dependency output targets a quarter of 
     ].join('\n'),
   });
   const actions = [writer('a1', { prompt: 'Deliver a1 and report it. PAD:60000' }), digest()];
-  const programPath = join(home.root, 'program.json');
-  writeFileSync(programPath, JSON.stringify(program(actions)));
-  const executed = spawnSync(process.execPath, [
-    CLI, 'workflow', 'goal', 'Deliver one large slice, then condense it.',
-    '--cwd', home.workspace, '--program', programPath, '--foreground', '--json',
-  ], {
+  const executed = spawnSync(process.execPath, legacyGoalArgs(home, 'Deliver one large slice, then condense it.', actions), {
     encoding: 'utf8', timeout: 120_000,
     env: { ...process.env, BULLSWARM_HOME: home.bullswarmDir, BULLSWARM_DEPTH: '0' },
   });

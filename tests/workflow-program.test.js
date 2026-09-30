@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
-import { acceptCallerPlannerResponse, submitCallerPlannerResponse } from '../src/workflow/caller-planner.js';
+import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { deserializeV2ResultEnvelope } from '../src/workflow/v2-outcome.js';
 import { readEvents } from '../src/workflow/events.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
@@ -71,17 +71,14 @@ function run(f, actions, handler, dependencies = {}, defaults = null) {
   });
 }
 
-test('new CLI planning contracts use shared program execution and isolation is explicit', (t) => {
+test('new CLI planning contracts are v3, and isolation is explicit in their commands', (t) => {
   const f = fixture(t);
   writeFileSync(join(f.bullswarmDir, 'state.json'), JSON.stringify({ version: 1, config: { worktreeIsolation: 'required' } }));
-  const contract = (...flags) => JSON.parse(execFileSync(process.execPath, [cli, 'workflow', 'plan', 'contract', 'Create a report', '--json', '--v2', ...flags], { encoding: 'utf8', env: { ...process.env, BULLSWARM_HOME: f.bullswarmDir } }));
+  const contract = (...flags) => JSON.parse(execFileSync(process.execPath, [cli, 'workflow', 'plan', 'contract', 'Create a report', '--json', ...flags], { encoding: 'utf8', env: { ...process.env, BULLSWARM_HOME: f.bullswarmDir } }));
   const shared = contract();
-  assert.equal(shared.settings.executionMode, 'program');
-  assert.equal(shared.settings.workspaceMode, 'shared');
-  assert.equal(contract('--isolation').settings.workspaceMode, 'isolated');
-  assert.match(contract('--isolation').launch.command, /--isolation/);
-  assert.match(shared.rules.join('\n'), /integrator/i);
-  assert.doesNotMatch(shared.program.validation.join('\n'), /mandatory needs at least one evidence/);
+  assert.equal(shared.schemaVersion, 'bullswarm.workflow.contract.v3');
+  assert.doesNotMatch(shared.next.launch, /--isolation/);
+  assert.match(contract('--isolation').next.launch, /--isolation/);
 });
 
 test('shared program preserves all edits, accepts new files, and completes without evidence or a planner round', async (t) => {
@@ -369,13 +366,16 @@ process.stdout.write('Completed ' + id + ': delivered the requested files or ins
     version: 1, pools: { 'program-agent': { enabled: true } }, incumbents: {}, decisionLog: [],
     config: { depthLimit: 2, worktreeIsolation: 'required' },
   }));
-  const actions = [
-    ...['a1', 'a2', 'a3'].map((id) => action(id, { affects: ['requirement-1'] })),
-    action('b1', { dependsOn: ['a1', 'a2', 'a3'], affects: ['requirement-1'], ownedFiles: [] }),
-    ...['c1', 'c2'].map((id) => action(id, { dependsOn: ['b1'], lane: 'analyze', affects: [], ownedFiles: [] })),
+  // 0.38.0 launches v3 programs only: the writers own their files, the
+  // integrator owns none (so it runs alone), and the checks only read.
+  const step = (id, options = {}) => ({ id, prompt: `Implement ${id} and run its focused checks.`, lane: 'build', effort: 'low', ...options });
+  const steps = [
+    ...['a1', 'a2', 'a3'].map((id) => step(id, { files: [`${id}.txt`] })),
+    step('b1', { dependsOn: ['a1', 'a2', 'a3'] }),
+    ...['c1', 'c2'].map((id) => step(id, { dependsOn: ['b1'], lane: 'analyze' })),
   ];
   const programPath = join(f.root, 'program.json');
-  writeFileSync(programPath, JSON.stringify(program(actions).program));
+  writeFileSync(programPath, JSON.stringify({ schemaVersion: 'bullswarm.workflow.program.v3', steps }));
   const executed = spawnSync(process.execPath, [cli, 'workflow', 'goal', 'Create three files, integrate them, then inspect the output.', '--cwd', f.workspace, '--program', programPath, '--concurrency', '3', '--foreground', '--json'], {
     encoding: 'utf8', timeout: 15_000, env: { ...process.env, BULLSWARM_HOME: f.bullswarmDir, BULLSWARM_DEPTH: '0' },
   });

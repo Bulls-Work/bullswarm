@@ -24,7 +24,6 @@ import * as dispatchModule from '../src/workflow/v2-dispatch.js';
 import { v2PlannerContractRules } from '../src/workflow/v2-planner.js';
 import { VERIFY_LOOP_STOPS } from '../src/workflow/verify-rounds.js';
 import { HELP_PATHS, helpText } from '../src/help.js';
-import { extractGoalRequirements } from '../src/workflow/goal.js';
 import { pickPool } from '../src/lib/route.js';
 
 // Stage 1 docs drift check: the role, kind and difference tables in the docs
@@ -183,7 +182,7 @@ test('the example programs in both program references validate in program mode',
       assert.deepEqual(records.deliverable, { type: 'data', paths: ['out/records.json'] }, `${path}: schema example data deliverable`);
       assert.match(records.prompt, /write out\/records\.json/, `${path}: the records prompt writes the file its check reads`);
       const goal = read(path).match(/Goal: `([^`]+)`/)[1];
-      assert.equal(extractGoalRequirements(goal).length, 3, `${path}: the goal numbers every requirement the example uses`);
+      assert.equal(goal.match(/(?:^|\s)\d+[.)]\s+/g)?.length, 3, `${path}: the goal numbers every requirement the example uses`);
       for (const action of actions.filter((item) => item.evidence)) {
         assert.ok(action.evidence.every((item) => STEP_EVIDENCE_TYPES.includes(item.type)), `${path}: normalized evidence types`);
       }
@@ -303,9 +302,9 @@ test('not-produced covers a build-lane step that changed nothing, and stoppedBy 
   const result = flat('docs/reference/result.md');
   assert.ok(result.includes('`not-produced` (a declared deliverable was not produced, or, in a run started by this version, a build-lane step with no declared deliverable changed no file, files git ignores included, and made no commit)'));
   // F18: help and the result reference list the same not-rerun cases (stage 3
-  // reworded the list and points to step rerun, step accept or plan revise).
+  // reworded the list; 0.38.0 points to step rerun, step accept or workflow add).
   const notRerun = '(declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun';
-  assert.ok(helpText(['workflow', 'resume']).includes(`${notRerun}; use step rerun, step accept, or plan revise`));
+  assert.ok(helpText(['workflow', 'resume']).includes(`${notRerun}; use step rerun, step accept, or workflow add`));
   assert.ok(result.includes(`${notRerun} by \`workflow resume\``));
   const row = result.match(/\| `stoppedBy` \| ([^\n]*) \|/)[1];
   const listed = [...row.matchAll(/`([a-z-]+)` \(/g)].map((match) => match[1]);
@@ -902,20 +901,10 @@ test('workflow capabilities states the failure rule the docs give', { timeout: 6
     });
     assert.equal(run.status, 0, run.stderr || run.stdout);
     const rule = JSON.parse(run.stdout).routing.failureRule;
-    assert.deepEqual(Object.keys(rule), ['retriesPerStep', 'processFailure', 'gateFailure', 'quota', 'throttle', 'noFreePool', 'plannerAndScout', 'then', 'savedRuns']);
-    // The planner and the scout follow the same rule; the planner mode says so too.
-    assert.match(rule.plannerAndScout, /^the dispatched planner and the preflight scout follow the quota, throttle and noFreePool rules: .* stops them with no move to another pool; /);
-    // Nearly spent pools are never fed to the planner or the scout either.
-    assert.match(rule.plannerAndScout, /stops them with no move to another pool; a nearly spent pool \(its window closes soon and the dispatch would push it past its limit\) is never given to them either, unless the caller named it; the run finishes partial/);
-    assert.match(rule.plannerAndScout, /"the workflow planner stopped on a usage limit: <why>" \(or "the preflight scout stopped on a usage limit: <why>" for a scout with no program after it; "stopped: no pool free" when a pool was out for another reason or no pool can run it at all\)/);
-    assert.match(rule.plannerAndScout, /a sign-in failure, a provider error or a worker that died at start still moves them to another pool$/);
-    // Resume after the return time runs the stopped planner turn or scout
-    // again; a scout the run went on without is not run again.
-    assert.match(rule.plannerAndScout, /back at retryAfter when known, and the caller's options \(bullswarm workflow resume after retryAfter runs the stopped planner turn or scout again; plan it yourself with plan revise; or start a new run\); a scout before a caller program lets the run go on without its report, and resume does not run that scout again; /);
-    assert.ok(!/nothing to retry|resume does not run the planner/.test(rule.plannerAndScout));
-    const modes = JSON.parse(run.stdout).engines.autonomousV2.plannerModes;
-    assert.match(modes.dispatched, /a usage limit or no free pool stops the planner \(or the scout before it\) with no move to another pool/);
-    assert.match(modes.dispatched, /a nearly spent pool is never given to either/);
+    // 0.38.0 removed the dispatched planner and the preflight scout, and with
+    // them the rule's planner-and-scout entry and the dispatched planner mode.
+    assert.deepEqual(Object.keys(rule), ['retriesPerStep', 'processFailure', 'gateFailure', 'quota', 'throttle', 'noFreePool', 'then', 'savedRuns']);
+    assert.deepEqual(Object.keys(JSON.parse(run.stdout).engines.autonomousV2.plannerModes), ['caller']);
     // The guides say the same: a draining pool is never fed, not even last.
     assert.ok(flat('docs/guide/workflows.md').includes('The dispatched planner and the preflight scout are never given such a pool either; only a pool you pinned is exempt (`--orchestrator <pool> --orchestrator-strict` for the planner, `--worker-pool` for the scout).'));
     assert.ok(flat('docs/guide/routing.md').includes('In a workflow started by this version a `draining` pool does not go last: it is never given a step, the dispatched planner or the preflight scout, even as the only pool left, unless you pinned it.'));

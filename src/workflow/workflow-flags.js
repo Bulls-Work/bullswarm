@@ -1,5 +1,6 @@
 // The `bullswarm workflow` flag grammar: parse argv into options, report a
-// verb's flag errors, and name the help node whose usage line a verb prints.
+// verb's flag errors, answer a flag 0.38.0 removed, and name the help node
+// whose usage line a verb prints.
 
 import { usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
@@ -47,7 +48,6 @@ export function parseFlags(argv) {
     if (name && !out.flags.includes(name)) out.flags.push(name);
     if (a === '--json') out.json = true;
     else if (a === '--quiet') out.quiet = true;
-    else if (a === '--no-scout') out.noScout = true;
     else if (a === '--resume' || a === '--after' || a === '--input') {
       if (missingValue(i)) { errors.push(`${a} requires a value`); continue; }
       if (a === '--resume') { out.resume = argv[++i]; continue; }
@@ -78,6 +78,33 @@ export function parseFlags(argv) {
   }
   if (errors.length) out.errors = errors;
   return out;
+}
+
+// D8: a flag 0.38.0 removed answers with exit 2 and one sentence naming what
+// replaced it, for one release, because saved hints still name it. The flag
+// tables keep accepting these names so this sentence, not "unknown flag", is
+// the answer.
+const SCOUT_GONE = 'make the survey the first step of your program and have the steps that need it depend on it';
+const PLANNER_GONE = 'write the program yourself (bullswarm workflow plan contract), or add a step whose answer is a list of steps and append them with bullswarm workflow add <runId> --from-answer <step>';
+const REMOVED_FLAGS = Object.freeze({
+  scout: SCOUT_GONE,
+  'no-scout': SCOUT_GONE,
+  orchestrator: PLANNER_GONE,
+  'orchestrator-model': PLANNER_GONE,
+  'orchestrator-strict': PLANNER_GONE,
+  'strict-orchestrator': PLANNER_GONE,
+  'suggested-plan': PLANNER_GONE,
+  'planner-reasoning': PLANNER_GONE,
+  v2: 'bullswarm workflow plan contract prints the v3 format; bullswarm.workflow.program.v2 is no longer accepted for a new run',
+});
+
+export function removedFlagExit(opts) {
+  const flag = opts.flags.find((name) => Object.hasOwn(REMOVED_FLAGS, name));
+  if (flag === undefined) return null;
+  const message = `--${flag} was removed in 0.38.0: ${REMOVED_FLAGS[flag]}`;
+  if (opts.json) console.log(JSON.stringify({ error: 'removed', flag: `--${flag}`, message }, null, 2));
+  else console.error(`✗ ${message}`);
+  return 2;
 }
 
 // Report flag-parsing errors for one command and return its exit code, or

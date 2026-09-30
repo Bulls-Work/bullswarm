@@ -1,5 +1,5 @@
 // `bullswarm workflow capabilities`: the engine's program vocabulary (lanes,
-// kinds, roles, deliverables, evidence) and this machine's pools, as a
+// kinds, deliverables, evidence) and this machine's pools, as a
 // probing caller reads them.
 
 import { KIND_DEFAULTS } from './action-validator.js';
@@ -9,7 +9,6 @@ import {
 } from './evidence-runner.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
 import { workerSilenceTimeoutSec } from './v2-dispatch.js';
-import { v2RoleCatalog } from './v2-planner.js';
 import { loadState } from '../lib/state.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 import { livePoolNames } from './cli-pool-checks.js';
@@ -29,10 +28,8 @@ export async function wfCapabilities(opts) {
         // Reported from the validator table, not restated, so a new kind is
         // visible to a probing agent the moment the closed list gains it.
         actionKinds: JSON.parse(JSON.stringify(KIND_DEFAULTS)),
-        // Program-mode vocabulary beside kinds: the roles (each kind belongs to
-        // one), the deliverable types a step may promise, and the evidence
-        // types, of which only review (a check step with evidenceFor) is usable.
-        actionRoles: v2RoleCatalog(),
+        // Program-mode vocabulary beside kinds: the deliverable types a step
+        // may promise, and the evidence types.
         deliverableTypes: [...DELIVERABLE_TYPES],
         evidenceTypes: { types: [...EVIDENCE_TYPES], usable: [...USABLE_EVIDENCE_TYPES], note: 'choice is recorded by bullswarm workflow step accept (never proof)' },
         stepEvidence: {
@@ -73,8 +70,7 @@ export async function wfCapabilities(opts) {
           workerSilenceTimeoutSec: workerSilenceTimeoutSec(),
         },
         plannerModes: {
-          caller: 'default: the calling agent authors the program (workflow plan contract|validate, workflow goal --program, workflow plan export|revise); the kernel never dispatches a planner and never waits for the caller: a run that needs a decision finishes, and its result hands the decision back',
-          dispatched: 'explicit --orchestrator auto|<pool>: the kernel routes a Workflow Planner agent process at each planning boundary; in runs started by this version a usage limit or no free pool stops the planner (or the scout before it) with no move to another pool, a nearly spent pool is never given to either, and the run finishes with the caller\'s options (routing.failureRule.plannerAndScout)',
+          caller: 'the only mode: the calling agent authors the program (workflow plan contract|validate, workflow goal --program, workflow add); the kernel never dispatches a planner and never waits for the caller: a run that needs a decision finishes, and its result hands the decision back',
         },
         defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2, plannerMode: 'caller', executionMode: 'program', workspaceMode: 'shared' },
         compatibility: { resumesAutonomousV1: false, migratesAutonomousV1: false, preservesSavedV2Semantics: true },
@@ -99,7 +95,6 @@ export async function wfCapabilities(opts) {
         quota: 'a usage limit (a spent 5-hour or weekly window, or no credit left: a notice that says so, with or without a reset, or a full meter) ends the step and goes to the caller at once, never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free',
         throttle: 'a transient rate limit (too many requests, no usage window spent) backs off on the same pool at most twice without spending the retry (20 s, then 60 s, or a named wait of at most 2 minutes), then goes to the caller; a longer named wait goes to the caller at once, with retryAfter at its end; a backoff whose pool is no longer free goes to the caller at once, as quota when that pool is out on a usage limit, with retryAfter its known return',
         noFreePool: 'no capable pool free at the first pick (nearly spent, or a 5-hour, weekly or monthly window at its limit): the step goes to the caller, as quota when every reason is a usage limit, else unavailable; why names each pool and its reason; retryAfter is the earliest known return; a promised retry that finds no free pool keeps the last failure\'s kind and its why ends "· no retry: <pool> <reason>; …"',
-        plannerAndScout: 'the dispatched planner and the preflight scout follow the quota, throttle and noFreePool rules: a usage limit, a rate limit still there after its short same-pool backoff, or no free pool stops them with no move to another pool; a nearly spent pool (its window closes soon and the dispatch would push it past its limit) is never given to them either, unless the caller named it; the run finishes partial with "the workflow planner stopped on a usage limit: <why>" (or "the preflight scout stopped on a usage limit: <why>" for a scout with no program after it; "stopped: no pool free" when a pool was out for another reason or no pool can run it at all), back at retryAfter when known, and the caller\'s options (bullswarm workflow resume after retryAfter runs the stopped planner turn or scout again; plan it yourself with plan revise; or start a new run); a scout before a caller program lets the run go on without its report, and resume does not run that scout again; a sign-in failure, a provider error or a worker that died at start still moves them to another pool',
         then: 'caller; only dependents wait',
         savedRuns: 'keep their original retry and review rules',
       },

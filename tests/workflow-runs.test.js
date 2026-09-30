@@ -149,11 +149,12 @@ test('I1: a new run gets a 6-char shortId in its durable V2 state', { timeout: 3
       config: { depthLimit: 2, callerName: 'claude-code' },
     }));
     const programPath = join(home, 'program.json');
+    // 0.38.0 launches v3 programs only.
     writeFileSync(programPath, JSON.stringify({
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [
-        { id: 'produce', purpose: 'Write done.txt', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Write done.txt containing exactly ready.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['done-artifact'] },
-        { id: 'prove', purpose: 'Inspect done.txt', dependsOn: ['produce'], affects: [], ownedFiles: [], prompt: 'Read done.txt and compare every byte with the required content.', lane: 'analyze', effort: 'low', evidenceFor: [], inputs: ['done-artifact'], produces: [] },
+      schemaVersion: 'bullswarm.workflow.program.v3',
+      steps: [
+        { id: 'produce', files: ['done.txt'], prompt: 'Write done.txt containing exactly ready.', lane: 'build', effort: 'low' },
+        { id: 'prove', dependsOn: ['produce'], prompt: 'Read done.txt and compare every byte with the required content.', lane: 'analyze', effort: 'low' },
       ],
     }));
     const executed = spawnSync('node', [BIN, 'workflow', 'goal', '1. done.txt exists and says ready.', '--cwd', workspace, '--program', programPath, '--foreground', '--json'], {

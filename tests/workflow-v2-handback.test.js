@@ -375,7 +375,7 @@ test('a failing requirement keeps its reason in the summary even when a large ru
   assert.equal(summary.handback.options.retry, undefined, 'no step failed for a reason a retry fixes');
 });
 
-test('plan validate refuses a directory or glob as an owned file and names requirements no step checks', (t) => {
+test('plan validate refuses a directory or glob as an owned file', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-validate-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'home');
@@ -383,11 +383,12 @@ test('plan validate refuses a directory or glob as an owned file and names requi
   mkdirSync(home);
   mkdirSync(join(target, 'src'), { recursive: true });
   writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, pools: {}, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } }));
-  const programOf = (ownedFiles) => ({
-    schemaVersion: 'bullswarm.workflow.program.v2',
-    actions: [
-      { id: 'build-it', purpose: 'Build it', dependsOn: [], affects: ['requirement-1'], ownedFiles, prompt: 'Build it.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [] },
-      { id: 'check-it', purpose: 'Check it', dependsOn: ['build-it'], affects: [], ownedFiles: [], prompt: 'Check it.', lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: [], produces: [] },
+  // 0.38.0 validates v3 programs only; a v3 step's files are its owned files.
+  const programOf = (files) => ({
+    schemaVersion: 'bullswarm.workflow.program.v3',
+    steps: [
+      { id: 'build-it', files, prompt: 'Build it.', lane: 'build', effort: 'low' },
+      { id: 'check-it', dependsOn: ['build-it'], prompt: 'Check it.', lane: 'analyze', effort: 'low' },
     ],
   });
   const validate = (name, ownedFiles) => {
@@ -405,9 +406,8 @@ test('plan validate refuses a directory or glob as an owned file and names requi
   assert.ok(JSON.parse(directory.stdout).issues.some((issue) => issue.includes('ownedFiles[0] names a directory ("src"); list the exact files step build-it may change')), directory.stdout);
   const good = validate('good.json', ['src/index.js']);
   assert.equal(good.status, 0, good.stderr);
-  const { advisories } = JSON.parse(good.stdout);
-  assert.deepEqual(advisories.map((advisory) => advisory.code), ['requirement-unchecked']);
-  assert.match(advisories[0].message, /^no step gives evidence for requirement-2; /);
+  // A v3 program has no requirement ledger, so no requirement-unchecked advisory.
+  assert.deepEqual(JSON.parse(good.stdout).advisories, []);
 });
 
 // L2: a failed step the summary's handback left out for size is still named

@@ -922,14 +922,14 @@ const workflowText = rich({
     + 'and its checked answer), phases (a label that groups steps), gates (the run stops there for you, '
     + 'or only when an answer says so) and loops (steps that repeat until one step\'s answer says stop, '
     + 'at most 5 rounds). New programs are v3 (bullswarm.workflow.program.v3; workflow plan contract '
-    + 'prints the format); old v2 programs still run. Extend a v3 run with workflow add, read a step\'s '
+    + 'prints the format); a v2 program is refused, and a run an earlier Bullswarm started is view-only. Extend a v3 run with workflow add, read a step\'s '
     + 'answer with workflow wait, and move a waiting gate or loop on with workflow continue. With no command on a TTY, opens the dashboard '
     + '(Home, Runs, Run, Step, Budget, Stats, Fleet, Help) — the same screen bare `bullswarm` opens on a '
     + 'configured machine.',
   argsTitle: 'Commands',
   args: [
-    { name: 'goal "<goal>"', desc: 'run a program you wrote (--program): steps start when their dependencies finish, a gate or a loop out of rounds stops the run for you until workflow continue, and the run finishes when nothing more can run, handing back what is left; --scout and --orchestrator survey or plan a v2 program for you' },
-    { name: 'plan ...', desc: 'plan contract prints the v3 format, plan validate checks your file; plan export and plan revise change a v2 run\'s plan (on a v3 run revise may only rerun steps); show and submit answer a run an older version left waiting' },
+    { name: 'goal "<goal>"', desc: 'run a program you wrote (--program): steps start when their dependencies finish, a gate or a loop out of rounds stops the run for you until workflow continue, and the run finishes when nothing more can run, handing back what is left' },
+    { name: 'plan ...', desc: 'plan contract prints the v3 format, plan validate checks your file without launching' },
     { name: 'pause <runId>', desc: 'stop starting new steps (--now also stops running ones); resume continues' },
     { name: 'cancel <runId>', desc: 'stop a run cooperatively; a run stopped by pause, or left waiting by an older version, is finalized immediately' },
     { name: 'resume <runId>', desc: 'lift a pause, continue an interrupted run, or retry a finished run\'s retryable steps, with its durable planner mode and routing' },
@@ -957,15 +957,15 @@ const workflowText = rich({
     'goal dispatches real coding-agent CLI processes and writes durable state under '
       + '~/.bullswarm/workflows/<runId>/',
     'capabilities, tui, watch, wait, events, action show, and task show are read-only; cancel, steer, step restart, step rerun, '
-      + 'step accept, add, continue, plan submit, and runs delete are the exceptions — see their own --help',
+      + 'step accept, add, continue, and runs delete are the exceptions — see their own --help',
     'legacy authored-graph runs are read-only; driving commands fail closed before dispatch',
-    'plan contract, plan validate, plan show, and plan export are read-only; plan submit and plan revise write the accepted program into the run and relaunch its kernel when none is running',
+    'plan contract and plan validate are read-only; a run an earlier Bullswarm started is view-only, and every driving command refuses it with exit 2',
     'pause writes a pause request the kernel honors within about a second; resume lifts it',
   ],
   examples: [
     { cmd: 'bullswarm workflow', note: 'open the human workflow home: runs, live preview, timeline, agents, and activity' },
     { cmd: 'bullswarm workflow plan contract "Audit this repository for TODOs" --cwd . --json', note: 'the v3 format: step, gate and loop fields, the condition form, and an example that validates' },
-    { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd . --program plan.json', note: 'launched detached; prints the short id; goal needs --program, --scout, or --orchestrator or it exits 2' },
+    { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd . --program plan.json', note: 'launched detached; prints the short id; goal needs --program or it exits 2' },
     { cmd: 'bullswarm workflow watch ab12cd --until trouble', note: 'quiet until a gate waits, a loop runs out of rounds, a step needs you, or the run ends' },
     { cmd: 'bullswarm workflow continue ab12cd approve', note: 'go past the gate approve; the steps behind it start' },
     { cmd: 'bullswarm workflow runs --all --since 7d', note: 'list every run started in the last week' },
@@ -974,7 +974,7 @@ const workflowText = rich({
 });
 
 const workflowGoalText = rich({
-  usage: 'bullswarm workflow goal "<goal>" (--program <file.json> [--scout] | --scout | --orchestrator auto|<pool>) '
+  usage: 'bullswarm workflow goal "<goal>" --program <file.json> '
     + '[--cwd <dir>] [--watch|--foreground] [--json] [planning options] [--again]  ·  bullswarm workflow goal --resume <shortId|runId>',
   purpose: 'Run a program you wrote, end to end. Write it from `workflow plan contract` (a v3 program: steps, '
     + 'phases, gates and loops) and check it with `workflow plan validate`; goal validates it again (exit 2 '
@@ -987,16 +987,8 @@ const workflowGoalText = rich({
     + 'holds, and waits for you like a gate when its rounds run out. Add steps at any time with workflow add. '
     + 'When nothing more can run the run finishes, and its result hands back every unfinished step and '
     + 'unread steering with your options; a completed v3 run hands nothing back. '
-    + 'Old v2 programs still run: a v2 run never stops for you, it finishes and hands back what is left, and '
-    + 'its requirements are verified separately. Without a program the command refuses (exit 2, nothing '
-    + 'launched) and prints the next commands; --scout alone has the kernel survey the repository and finish '
-    + 'with the report; --orchestrator dispatches a Workflow Planner agent that writes a v2 program for you. '
-    + 'In a run started by this version a usage limit, a rate limit still there after its short backoff, or '
-    + 'no free pool stops the dispatched planner or the scout, with no move to another pool: the run '
-    + 'finishes with the reason (`the workflow planner stopped on a usage limit: …`) and your call: after '
-    + 'its back at time, workflow resume runs the stopped planner or scout again (before then it can stop '
-    + 'the same way); or plan it yourself with plan revise; or start a new run. A scout before your own '
-    + 'program lets the run go on without its report, and resume does not run that scout again. '
+    + 'A bullswarm.workflow.program.v2 is refused (exit 2, nothing launched). Without a program the command '
+    + 'refuses the same way and prints the next commands; to survey first, make the survey your first step. '
     + 'Launches independently by default so the caller is not blocked. Launching the same goal text in the '
     + 'same cwd while that run is still going is refused (exit 2, nothing launched) with the running run\'s '
     + 'shortId and its watch command; --again starts the copy anyway.',
@@ -1009,25 +1001,17 @@ const workflowGoalText = rich({
     { flag: '--watch', desc: 'immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with --detach, --foreground, --json, --resume, or --request', default: 'off' },
     { flag: '--foreground', desc: 'keep execution attached to this terminal instead of detaching', default: 'off (detaches into a background process)' },
     { flag: '--json', desc: 'print the launch/report document as JSON', default: 'human-readable launch instructions' },
-    { flag: '--program <file.json>', desc: 'your program: a bullswarm.workflow.planner-response.v2 envelope, or a bare bullswarm.workflow.program.v2 or bullswarm.workflow.program.v3 document; validated against the exact requirement ledger before anything launches (exit 2 with the issues and nothing launched when invalid), then executed with zero planner or scout dispatches', default: 'required unless --scout or --orchestrator is given' },
+    { flag: '--program <file.json>', desc: 'your program: a bare bullswarm.workflow.program.v3 document, or one inside a bullswarm.workflow.planner-response.v2 envelope; a bullswarm.workflow.program.v2 is refused; validated before anything launches (exit 2 with the issues and nothing launched when invalid)', default: 'required' },
     { flag: '--summary <text>', desc: 'one-line summary recorded for a bare --program document', default: 'derived from the action purposes' },
-    { flag: '--scout', desc: 'with --program: run the kernel scout first and hand its units to you as advisory context; alone: survey the repository, then finish partial with the scout report and the plan revise command that adds your program', default: 'off' },
-    { flag: '--orchestrator <auto|pool>', desc: 'dispatch a Workflow Planner agent at every planning boundary instead of planning yourself: auto lets the kernel route it, a pool name prefers that pool and falls back when it is already quota-gated or unavailable at the pick; in a run started by this version a usage limit it hits while it plans stops the run instead', default: 'off (you are the planner)' },
-    { flag: '--orchestrator-model <model|auto>', desc: 'with --orchestrator: pin the exact model used by the dispatched planner; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
-    { flag: '--orchestrator-strict', desc: 'with --orchestrator <pool>: require exactly that pool for controlled provider QA; fails if it is unavailable rather than silently substituting', default: 'off' },
-    { flag: '--strict-orchestrator <pool>', desc: 'deprecated alias for --orchestrator <pool> --orchestrator-strict', default: 'off' },
-    { flag: '--suggested-plan <text>', desc: 'with --orchestrator: persist a caller-imagined conceptual execution shape for the dispatched planner to consider; when you are the planner, the plan is the program', default: 'none' },
-    { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool', default: 'auto (normal routing)' },
-    { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
-    { flag: '--worker-reasoning <level>', desc: 'run-wide reasoning depth for every non-planner dispatch: low|medium|high|xhigh|max, or default to pass nothing and let each worker CLI decide; outranks the configured strategy level, and a per-action `reasoning` field outranks this; clamped to the nearest level the picked connector supports', default: 'the configured strategy level, else the connector default' },
-    { flag: '--planner-reasoning <level>', desc: 'with --orchestrator: the same run-wide reasoning depth for every dispatched Workflow Planner turn', default: 'the configured strategy level, else the connector default' },
-    { flag: '--max-agents <n>', desc: 'soft planning target for total scout, planner, work, evidence, and correction dispatches; essential work may exceed it', default: '30' },
+    { flag: '--worker-pool <pool|auto>', desc: 'pin every dispatch, work and evidence steps alike, to one pool', default: 'auto (normal routing)' },
+    { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
+    { flag: '--worker-reasoning <level>', desc: 'run-wide reasoning depth for every dispatch: low|medium|high|xhigh|max, or default to pass nothing and let each worker CLI decide; outranks the configured strategy level, and a per-action `reasoning` field outranks this; clamped to the nearest level the picked connector supports', default: 'the configured strategy level, else the connector default' },
+    { flag: '--max-agents <n>', desc: 'soft planning target for total work, evidence, and correction dispatches; essential work may exceed it', default: '30' },
     { flag: '--max-expansion-rounds <n>', desc: 'legacy planning target retained for compatibility; new programs do not generate gap rounds', default: '2' },
-    { flag: '--max-actions <n>', desc: 'soft planning target for total actions across planner revisions; essential actions may exceed it', default: '100' },
-    { flag: '--no-scout', desc: 'with --orchestrator: skip the read-only repository reconnaissance before the dispatched planner creates its first program', default: 'the scout runs first for a dispatched planner' },
+    { flag: '--max-actions <n>', desc: 'soft planning target for total steps, added steps included; essential steps may exceed it', default: '100' },
     { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached)', default: '1' },
-    { flag: '--resume <shortId|runId>', desc: 'resume a V2 autonomous run; old autonomous runs fail closed before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
+    { flag: '--resume <shortId|runId>', desc: 'resume a v3 run; a run an earlier Bullswarm started is view-only and exits 2 before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
     { flag: '--again', desc: 'start another copy even when an ongoing run already has the same goal text in the same --cwd; the lookup happens before anything is validated or launched, and only a new launch is checked', default: 'off (a duplicate of an ongoing goal is refused)' },
   ],
@@ -1041,14 +1025,11 @@ const workflowGoalText = rich({
     'dispatches real coding-agent CLI processes per generic action, the same as bullswarm run',
     'the goal, action graph, routing lanes, and any declared structured evidence are validated; shared workspace file territories are advisory',
     'workers keep their edits even when their action fails; failed dependencies skip downstream actions and independent branches finish',
-    'saved V2 runs keep their original completion and isolation policy when resumed',
-    'there is no V1 autonomous migration or fallback; explicitly resuming an old run dispatches nothing',
+    'a resumed v3 run keeps its original completion and isolation policy',
+    'a run an earlier Bullswarm started (v2, stage 1-3, legacy) is view-only: resuming it exits 2 and dispatches nothing',
   ],
   examples: [
     { cmd: 'bullswarm workflow goal "Fix src/parser.js and update the docs" --cwd . --program plan.json', note: 'write plan.json from `workflow plan contract`, check it with `workflow plan validate`, then launch; watch it with bullswarm workflow watch <shortId> --until trouble' },
-    { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --scout', note: 'kernel surveys and finishes with the report; add your program with plan revise' },
-    { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd . --orchestrator auto', note: 'dispatch a Workflow Planner agent instead of planning yourself' },
-    { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --orchestrator codex --orchestrator-strict --orchestrator-model gpt-5.6-sol --worker-pool relay --worker-model a/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --worker-reasoning high --json', note: 'every worker thinks at high unless an action sets its own reasoning field' },
   ],
   next: 'bullswarm workflow watch <shortId> --until trouble to be woken only when you are needed (at a gate, a loop out of rounds, a step that needs you, or the end), bullswarm workflow wait <shortId> <step> for one step\'s answer, or bullswarm workflow runs result <shortId> --json --summary once it finishes.',
@@ -1056,59 +1037,45 @@ const workflowGoalText = rich({
 
 // --- workflow plan ---------------------------------------------------------
 // The caller-as-planner surface. A capable calling agent (Claude Code, Codex,
-// any frontier model with the repository in context) authors the V2 program
-// directly instead of paying for a dispatched scout and planner. The kernel
+// any frontier model with the repository in context) authors the v3 program
+// directly. The kernel
 // keeps everything it owns: validation, routing, ownership, evidence, ledger,
 // completion, and the stable result envelope.
 
 const workflowPlanText = rich({
-  usage: 'bullswarm workflow plan <contract|validate|show|submit|export|revise> [options]',
-  purpose: 'You write the program. contract prints the v3 format for a goal before any run exists (step, '
-    + 'gate and loop fields, the condition form, the rules, an example, and the run-wide reasoning level a '
-    + 'step\'s `reasoning` field would override; --v2 prints the old contract); validate checks a program '
-    + 'without launching; export and revise change the plan of a live or finished v2 run (a v3 run\'s steps, '
-    + 'gates and loops are never edited, so revise may only rerun its steps: extend it with workflow add). '
-    + 'show and submit answer only a run an older version left waiting for its caller: show prints its '
-    + 'planner request, submit validates the next program (or an exhausted decision) against that exact run '
-    + 'state and relaunches the kernel. Launch the initial program with workflow goal --program.',
+  usage: 'bullswarm workflow plan <contract|validate> [options]',
+  purpose: 'You write the program. contract prints the v3 format before any run exists (step, gate and loop '
+    + 'fields, the condition form, the rules, an example, and the run-wide reasoning level a step\'s '
+    + '`reasoning` field would override); validate checks a program without launching. Launch it with '
+    + 'workflow goal --program and extend the run with workflow add.',
   argsTitle: 'Commands',
   args: [
-    { name: 'contract "<goal>"', desc: 'print the v3 program format for a goal: step, gate and loop fields, the condition form, rules, an example that validates, and the validate and launch lines (--v2: the old contract)' },
-    { name: 'validate "<goal>" --program <file>', desc: 'dry-run a program against the contract: exit 0 with the accepted actions, or exit 2 with the validator issues; nothing is launched' },
-    { name: 'show <runId>', desc: 'print the pending planner request of a run an older version left waiting' },
-    { name: 'submit <runId>', desc: 'answer a run an older version left waiting with the next program (or --exhausted at a gaps boundary) and relaunch it' },
-    { name: 'export <runId>', desc: 'write the live plan of a running, paused, or finished run as an editable revision document' },
-    { name: 'revise <runId> --program <file>', desc: 'replace the live plan of a v2 run at any time: add, amend, remove, or rerun steps; running agents whose steps change are stopped and restarted; on a v3 run it may only rerun steps' },
+    { name: 'contract ["<goal>"]', desc: 'print the v3 program format: step, gate and loop fields, the condition form, rules, an example that validates, and the validate and launch lines' },
+    { name: 'validate "<goal>" --program <file>', desc: 'dry-run a program against the contract: exit 0 with the accepted steps, or exit 2 with the validator issues; nothing is launched' },
   ],
   options: [],
-  safety: [
-    'contract, validate, and show never change run state (show may rewrite the request document to list steering queued since the pause)',
-    'submit validates before writing; a rejected program leaves the run state unchanged and exits 2',
-    'submit relaunches the waiting kernel as a detached process by default (same as workflow goal)',
-  ],
+  safety: ['contract and validate never change run state, launch or dispatch anything'],
   examples: [
-    { cmd: 'bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json' },
-    { cmd: 'bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json' },
-    { cmd: 'bullswarm workflow plan export ab12cd --out plan.json' },
-    { cmd: 'bullswarm workflow plan revise ab12cd --program plan.json --json' },
+    { cmd: 'bullswarm workflow plan contract "Fix the parser and update the docs" --cwd . --json' },
+    { cmd: 'bullswarm workflow plan validate "Fix the parser and update the docs" --cwd . --program plan.json --json' },
   ],
-  next: 'bullswarm workflow goal "<goal>" --program <file.json> to launch with your initial program; bullswarm workflow watch <runId> --next after a revise.',
+  next: 'bullswarm workflow goal "<goal>" --program <file.json> to launch with your program.',
 });
 
 const workflowPlanValidateText = rich({
   usage: 'bullswarm workflow plan validate "<goal>" --program <file.json> [--cwd <dir>] [--summary <text>] [--json]',
   purpose: 'Check a program you authored against the exact contract a launch would enforce, without '
-    + 'creating a run: the same requirement ledger, the same validator, and the same preview state as '
+    + 'creating a run: the same validator and the same preview state as '
     + 'workflow goal --program. Exit 0 prints the accepted actions and the launch line; exit 2 prints '
-    + 'every validator issue so you can fix the file and re-run.',
+    + 'every validator issue so you can fix the file and re-run. A bullswarm.workflow.program.v2 is refused '
+    + '(exit 2), as a launch refuses it.',
   args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal' }],
   options: [
-    { flag: '--program <file.json>', desc: 'planner response envelope, or bare bullswarm.workflow.program.v2 or bullswarm.workflow.program.v3 document', default: 'required' },
+    { flag: '--program <file.json>', desc: 'a bare bullswarm.workflow.program.v3 document, or one inside a planner response envelope', default: 'required' },
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in (must exist)', default: 'current directory' },
     { flag: '--summary <text>', desc: 'one-line summary recorded for a bare program document', default: 'derived from the action purposes' },
     { flag: '--json', desc: 'print the acceptance document ({action: "plan-valid", requirements, program, next}) or the refusal ({error: "program-invalid", issues, next}) as JSON', default: 'human summary' },
     { flag: '--isolation', desc: 'validate against strict per-worker worktree isolation', default: 'off (shared workspace)' },
-    { flag: '--scout', desc: 'validate against a run that scouts before your program', default: 'off for a caller-authored program' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the preview routes with', default: 'auto (routing decides per action)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the worker model the preview routes with', default: 'auto' },
     { flag: '--worker-reasoning <level>', desc: 'run-wide worker thinking level for the preview', default: 'the strategy setting for the action effort tier' },
@@ -1142,30 +1109,26 @@ const workflowCancelText = rich({
 
 const workflowResumeText = rich({
   usage: 'bullswarm workflow resume <runId> [--foreground|--watch] [--json]',
-  purpose: 'Resume a V2 run with its durable planner mode and routing: a run stopped by workflow pause '
+  purpose: 'Resume a v3 run with its durable program and routing: a run stopped by workflow pause '
     + 'continues (a pause still draining is withdrawn and its live kernel carries on), an interrupted kernel '
     + 'continues where its state says, and a run with a pending cancellation records the cancelled result. '
     + 'On a finished run (completed, partial, or cancelled) resume is a retry: it reopens the run for its '
     + 'pending and cancelled steps, failed steps whose failure kind a retry fixes (provider, quota, throttle, '
     + 'auth, process, unavailable, interrupted, runtime, schema, stalled), and the steps blocked behind them; the '
-    + 'previous result moves to result-before-resume-<n>.json. In a run started by this version where a '
-    + 'usage limit or no free pool stopped the dispatched planner or preflight scout and ended the run, it '
-    + 'runs that planner or scout again first and prints `running again: the workflow planner` (or `the '
-    + 'preflight scout`); run it after the back at time, or it can stop the same way. A scout the run went '
-    + 'on without (one before your own program) is not run again. With nothing retryable it prints nothing to '
-    + 'retry, starts nothing, and exits 1. A run an older version left waiting for its caller finishes and '
-    + 'hands back what is left instead of waiting again. '
+    + 'previous result moves to result-before-resume-<n>.json. With nothing retryable it prints nothing to '
+    + 'retry, starts nothing, and exits 1. A run an earlier Bullswarm started is view-only: resume exits 2 '
+    + 'with one sentence and changes nothing. '
     + 'Detaches by default like workflow goal; this is the verb form of workflow goal --resume.',
-  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId of a V2 run' }],
+  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId of a v3 run' }],
   options: [
     { flag: '--foreground', desc: 'run the kernel attached to this terminal; combines with --json to print the result or pause document', default: 'off (detaches)' },
     { flag: '--watch', desc: 'detach, then follow human-readable progress until terminal or paused; cannot combine with --foreground or --json', default: 'off' },
     { flag: '--json', desc: 'print the relaunch document (or, with --foreground, the final result or pause document) as JSON', default: 'human launch instructions' },
   ],
   safety: [
-    'planner mode, routing pins, and settings are durable; --program, --orchestrator, --scout, and --suggested-plan are rejected here (use workflow plan revise to change the plan)',
+    'the program, routing pins, and settings are durable; --program and --isolation are rejected here (add steps with workflow add)',
     'dispatches real coding-agent CLI processes for any unfinished actions, the same as workflow goal',
-    'a failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun; use step rerun, step accept, or plan revise',
+    'a failed step whose failure is about the work itself (declared evidence, a deliverable not produced, a check that failed it, output judged failed, or a build-lane step with no declared deliverable that changed nothing) is not rerun; use step rerun, step accept, or workflow add',
   ],
   examples: [
     { cmd: 'bullswarm workflow resume ab12cd --watch' },
@@ -1175,17 +1138,15 @@ const workflowResumeText = rich({
 });
 
 const workflowPlanContractText = rich({
-  usage: 'bullswarm workflow plan contract ["<goal>"] [--cwd <dir>] [--json] [--v2]',
+  usage: 'bullswarm workflow plan contract ["<goal>"] [--cwd <dir>] [--json]',
   purpose: 'Print everything you need to write a v3 program (bullswarm.workflow.program.v3) for a goal: the '
     + 'step, gate and loop fields, the one condition form a gate\'s when and a loop\'s until use, the '
     + 'evidence checks Bullswarm runs after a step, the rules the kernel keeps (a step passes by facts; one '
     + 'retry, then you; a usage limit comes to you at once), one worked example that validates, and the '
-    + 'validate and launch commands. --v2 prints the old contract instead (requirement IDs, roles and kinds, '
-    + 'the v2 action fields), for a v2 program; old programs still run.',
-  args: [{ name: '"<goal>"', desc: 'optional for the v3 contract (without it the contract prints goal null and <goal> in its commands); the goal text exactly as it will be passed to workflow goal; --v2 needs it: numbering clauses 1. 2. 3. yields one requirement per clause' }],
+    + 'validate and launch commands.',
+  args: [{ name: '"<goal>"', desc: 'optional (without it the contract prints goal null and <goal> in its commands); the goal text exactly as it will be passed to workflow goal' }],
   options: [
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in', default: 'current directory' },
-    { flag: '--v2', desc: 'print the contract of a v2 program (bullswarm.workflow.program.v2) instead', default: 'off (the v3 contract)' },
     { flag: '--isolation', desc: 'describe strict per-worker worktree isolation and retain the flag in launch guidance', default: 'off (shared workspace)' },
     { flag: '--json', desc: 'accepted for consistency; the contract is always printed as JSON', default: 'JSON' },
     { flag: '--max-agents <n>', desc: 'advisory dispatch target recorded in the contract settings', default: '30' },
@@ -1193,14 +1154,13 @@ const workflowPlanContractText = rich({
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target recorded in the contract settings', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency recorded in the contract settings', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached)', default: '1' },
-    { flag: '--scout', desc: 'describe a kernel scout ahead of your program and retain the flag in launch guidance', default: 'off for a caller-authored program' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the contract echoes back', default: 'auto (routing decides per action)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the worker model the contract echoes back', default: 'auto' },
     { flag: '--worker-reasoning <level>', desc: 'run-wide worker thinking level the contract echoes back', default: 'the strategy setting for the action effort tier' },
   ],
   safety: [
     'read-only — derives the contract from the goal text and local state; nothing is launched, dispatched, or written',
-    'rejects launch-only and dispatched-planner flags (--program, --planner dispatched, --orchestrator*) so the contract cannot silently describe a different run',
+    'rejects the launch-only --program so the contract cannot silently describe a different run',
   ],
   examples: [
     { cmd: 'bullswarm workflow plan contract', note: 'the v3 format, no goal needed' },
@@ -1209,107 +1169,32 @@ const workflowPlanContractText = rich({
   next: 'write plan.json, check it with bullswarm workflow plan validate "<same goal>" --cwd <dir> --program plan.json, then launch it with bullswarm workflow goal "<same goal>" --cwd <dir> --program plan.json',
 });
 
-const workflowPlanShowText = rich({
-  usage: 'bullswarm workflow plan show <runId> [--json]',
-  purpose: 'For a run an older version left waiting for its caller (current versions never wait), print the durable planner request it left for you: the '
-    + 'boundary (initial, gaps, or steering), the planner context (intent, known actions and their status, '
-    + 'consolidated gaps with evidence and concerns, scout report, pending steering), the rules, and the exact submit '
-    + 'command. Exits 1 when the run is not waiting for a submission (including once it is terminal).',
-  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId' }],
-  options: [{ flag: '--json', desc: 'print the full request document', default: 'compact human summary' }],
-  safety: [
-    'never changes run state; when steering was queued after the pause it rewrites the request document so it lists every pending instruction (requestRefreshed: true)',
-    'after a cancellation request it prints the finalize command instead of a submit command',
-  ],
-  examples: [{ cmd: 'bullswarm workflow plan show ab12cd --json' }],
-  next: 'bullswarm workflow plan submit <runId> --program <file.json> (or, at a gaps boundary, --exhausted --reason <text>)',
-});
+// D8: the plan verbs 0.38.0 removed keep a help node for one release, because
+// a saved run's hints still name them. Each exits 2 with one sentence.
+function removedPlanVerbText(verb, replacement, example) {
+  return rich({
+    usage: `bullswarm workflow plan ${verb} <runId>`,
+    purpose: `Removed in 0.38.0. plan ${verb} exits 2 with one sentence: ${replacement}. On a run an earlier `
+      + 'Bullswarm started it prints the view-only sentence instead: read the run with workflow runs show, and '
+      + 'start a new one with workflow goal --program.',
+    args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId' }],
+    options: [],
+    safety: ['changes nothing: no run state, no file, no kernel'],
+    examples: [{ cmd: example }],
+    next: 'bullswarm workflow plan contract to write a v3 program.',
+  });
+}
 
-const workflowPlanSubmitText = rich({
-  usage: 'bullswarm workflow plan submit <runId> (--program <file.json> | --exhausted --reason <text>) [--summary <text>] [--foreground [--json] | --watch | --json]',
-  purpose: 'Submit your planner response to a run an older version left waiting for its caller (current '
-    + 'versions never wait; change a current run with plan revise). The program is validated against '
-    + 'the exact durable state and boundary the kernel recorded (same validator as a dispatched planner), '
-    + 'accepted as the next program revision, and the kernel is relaunched. --exhausted records that no '
-    + 'useful bounded action remains, so the kernel finalizes a partial result with its gaps.',
-  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId of a run whose plan show reports awaiting' }],
-  options: [
-    { flag: '--program <file.json>', desc: 'planner response envelope or bare program document with the new actions only (known actions are already in the run)', default: 'none' },
-    { flag: '--exhausted', desc: 'declare that no further useful bounded action exists; valid only at a gaps boundary (the initial boundary needs a program, steering needs an update)', default: 'off' },
-    { flag: '--reason <text>', desc: 'required with --exhausted: the concrete reason', default: 'none' },
-    { flag: '--summary <text>', desc: 'one-line summary recorded for a bare program document', default: 'derived from the action purposes' },
-    { flag: '--foreground', desc: 'resume the kernel attached to this terminal instead of detaching; combines with --json', default: 'off (detaches)' },
-    { flag: '--watch', desc: 'detach, then follow human-readable low-noise progress until the run is terminal or paused; cannot combine with --foreground or --json', default: 'off' },
-    { flag: '--json', desc: 'print the acceptance and relaunch document (or, with --foreground, the final result) as JSON', default: 'human summary plus operating commands' },
-  ],
-  safety: [
-    'validates before writing: a rejected program exits 2 and leaves the run untouched; a run with a pending cancellation refuses every submission (resume it once to finalize)',
-    'steering listed in the request (plan show) is marked delivered by the submission; steering queued after that stays pending; if nothing acts on it the run finishes and lists it as steering not acted on',
-    'writes the accepted candidate and a planner.finished event into the run directory, then spawns `bullswarm workflow goal --resume <runId>` detached (or runs it in the foreground)',
-    'dispatches real coding-agent CLI processes for the new actions, the same as workflow goal',
-  ],
-  examples: [
-    { cmd: 'bullswarm workflow plan submit ab12cd --program plan-2.json --watch' },
-    { cmd: 'bullswarm workflow plan submit ab12cd --exhausted --reason "the remaining gap needs a credential the workspace does not have"' },
-  ],
-  next: 'bullswarm workflow watch <runId>, then bullswarm workflow runs result <runId> --json when terminal.',
-});
-
-const workflowPlanExportText = rich({
-  usage: 'bullswarm workflow plan export <runId> [--out <file.json>] [--json]',
-  purpose: 'Write the live plan of a program-mode run as an editable revision document: every action still '
-    + 'in the plan exactly as the kernel stores it, the program revision it was exported at (baseRevision), '
-    + 'and the ids of pending steering you have now been shown. Edit it and pass it to plan revise. Works at '
-    + 'any time: while agents run, while paused, or after the run finished.',
-  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId of a program-mode run' }],
-  options: [
-    { flag: '--out <file.json>', desc: 'write the revision document to this file and print a status summary', default: 'print the revision document itself on stdout' },
-    { flag: '--json', desc: 'print {programRevision, status, actions[] with each status, pendingSteering, document|out, next}', default: 'the document (no --out) or a human summary (--out)' },
-  ],
-  safety: ['read-only for the run; --out writes only the named file'],
-  examples: [
-    { cmd: 'bullswarm workflow plan export ab12cd --out plan.json' },
-    { cmd: 'bullswarm workflow plan export ab12cd --json' },
-  ],
-  next: 'edit the file, then bullswarm workflow plan revise <runId> --program plan.json',
-});
-
-const workflowPlanReviseText = rich({
-  usage: 'bullswarm workflow plan revise <runId> --program <file.json> [--rerun <id,...>] [--summary <text>] [--base-revision <n>] [--wait <seconds>] [--json]',
-  purpose: 'Replace the plan of a program-mode run with the complete program you want now, at any time. The '
-    + 'kernel compares it with the live plan by action id: a new id is added; an unchanged action keeps its '
-    + 'result or keeps running; a changed action is stopped if running and starts over; an action missing from '
-    + 'the program is removed (stopped if running, never run again, no longer counted); ids in --rerun discard '
-    + 'their finished result and run again; and every step depending on a changed or rerun step runs again too. '
-    + 'A finished run is reopened and continues with the new plan; a paused run stays paused until resume.',
-  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId of a program-mode run' }],
-  options: [
-    { flag: '--program <file.json>', desc: 'the whole desired program: a document from plan export, a bare program, or a planner response envelope', default: 'required' },
-    { flag: '--rerun <id,...>', desc: 'comma-separated action ids whose finished results are discarded so they run again (merged with the document\'s rerun list)', default: 'none' },
-    { flag: '--summary <text>', desc: 'why the plan changed, recorded on the revision and shown by watch', default: 'the document summary, else "Plan revision <n>"' },
-    { flag: '--base-revision <n>', desc: 'refuse the revision if the run is no longer at program revision n (plan export records it for you)', default: 'the document\'s baseRevision; none for a bare program' },
-    { flag: '--wait <seconds>', desc: 'how long to wait for a running kernel to apply or reject it; 0 returns once it is queued', default: '120' },
-    { flag: '--json', desc: 'print {status: applied|rejected|queued, programRevision, changes, appliedBy, reopened, relaunch}', default: 'human summary of the changes' },
-  ],
-  safety: [
-    'checked against the run before anything is written: an invalid program, an unknown rerun id, a stale base revision, or a revision that changes nothing exits 2 and leaves the run untouched',
-    'the route of every step the revision starts again (added, changed, restored, rerun, or downstream of those) is checked against the configured pools; a pool or provider that is not configured, or a route no pool can run, exits 2',
-    'a running agent whose step is amended, removed, rerun, or downstream of such a step is stopped; files it already changed stay in the workspace, so plan a step that repairs or reverts them when that matters',
-    'with no live kernel (paused, left waiting by an older version, interrupted, or finished) the revision is applied here and the kernel is relaunched detached, except for a paused run',
-  ],
-  examples: [
-    { cmd: 'bullswarm workflow plan revise ab12cd --program plan.json' },
-    { cmd: 'bullswarm workflow plan revise ab12cd --program plan.json --rerun write-docs --summary "Docs must cover the new flag"' },
-  ],
-  next: 'bullswarm workflow watch <runId> --next; it prints a "plan revised" line when the kernel applies it.',
-});
+const workflowPlanShowText = removedPlanVerbText('show', 'runs no longer wait for a caller program; append steps with workflow add', 'bullswarm workflow add ab12cd --steps steps.json');
+const workflowPlanSubmitText = removedPlanVerbText('submit', 'runs no longer wait for a caller program; append steps with workflow add', 'bullswarm workflow add ab12cd --steps steps.json');
+const workflowPlanExportText = removedPlanVerbText('export', 'a v3 run\'s steps are never edited; append steps with workflow add, or run one again with workflow step rerun', 'bullswarm workflow step rerun ab12cd write-docs');
+const workflowPlanReviseText = removedPlanVerbText('revise', 'a v3 run\'s steps are never edited; append steps with workflow add, or run one again with workflow step rerun', 'bullswarm workflow step rerun ab12cd write-docs');
 
 const workflowPauseText = rich({
   usage: 'bullswarm workflow pause <runId> [--now] [--json]',
   purpose: 'Pause a run: the kernel starts no new step. By default running agents finish first and their results '
     + 'are kept; with --now they are stopped and those steps run again after resume. Once nothing is running the '
-    + 'kernel records the pause and exits. The plan can be exported and revised while paused; bullswarm workflow '
-    + 'resume continues.',
+    + 'kernel records the pause and exits. bullswarm workflow resume continues.',
   args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId' }],
   options: [
     { flag: '--now', desc: 'stop running agents instead of letting them finish, and wait up to 60s for the pause to take effect', default: 'off (running agents finish)' },
@@ -1324,7 +1209,7 @@ const workflowPauseText = rich({
     { cmd: 'bullswarm workflow pause ab12cd' },
     { cmd: 'bullswarm workflow pause ab12cd --now --json' },
   ],
-  next: 'bullswarm workflow plan export <runId> --out plan.json to revise, then bullswarm workflow resume <runId>.',
+  next: 'bullswarm workflow resume <runId> to continue.',
 });
 
 const workflowReindexText = rich({
@@ -1539,10 +1424,8 @@ const workflowSteerText = rich({
   usage: 'bullswarm workflow steer <runId> --message <guidance> [--json]',
   purpose: "Queue free-text guidance for a running goal/workflow's next orchestration "
     + 'checkpoint, without interrupting the currently active step. In a caller-planned program run the '
-    + 'guidance never halts work: watch prints it at once, and the caller acts on it with plan export and '
-    + 'plan revise (which marks it delivered). A run that finishes before anyone acts on it lists it as '
-    + 'steering not acted on; revising the finished run delivers it and reopens the run. To change the plan '
-    + 'yourself, use plan revise directly.',
+    + 'guidance never halts work: watch prints it at once, and the caller acts on it, for example with '
+    + 'workflow add. A run that finishes before anyone acts on it lists it as steering not acted on.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
     { flag: '--message <guidance>', desc: 'the guidance text; if omitted, all words after <runId> are joined and used instead', default: 'required, in one of the two forms' },
@@ -1659,10 +1542,9 @@ const workflowStepRerunText = rich({
     + 'which only a run saved by an earlier version can have). Its next '
     + 'attempt carries the last failed attempt\'s handoff block (what it did, its failure, its evidence), and '
     + 'its automatic retry is available again. --avoid adds pools to the step\'s route (route.pools.avoid), '
-    + 'so this attempt, its automatic retry, and later reruns stay off them; the route shows in plan export and '
-    + 'a plan revise removes it. On a step that has not run yet, --avoid only changes its route. It is a plan '
-    + 'revision (source step-rerun): the running kernel applies it, or it is applied directly and the kernel '
-    + 'relaunched. plan revise --rerun is the same rerun without the handoff.',
+    + 'so this attempt, its automatic retry, and later reruns stay off them. On a step that has not run yet, '
+    + '--avoid only changes its route. It is a plan revision (source step-rerun): the running kernel applies '
+    + 'it, or it is applied directly and the kernel relaunched.',
   args: [
     { name: '<runId>', desc: 'shortId or runId of a program-mode run' },
     { name: '<step>', desc: 'the step (action id) to run again' },
@@ -1767,7 +1649,7 @@ const workflowAddText = rich({
     { flag: '--json', desc: 'print {action: "workflow-add", status, steps, control, programRevision, appliedBy, relaunch, next}', default: 'human text' },
   ],
   safety: [
-    'append-only: refused (exit 2, run unchanged) when the fragment is invalid or would change an existing step, gate or loop; a v2 run is refused (exit 1) with the plan revise command',
+    'append-only: refused (exit 2, run unchanged) when the fragment is invalid or would change an existing step, gate or loop; a run an earlier Bullswarm started is refused (exit 1) as view-only',
     'relaunches the run\'s kernel when none is running; the added steps dispatch real coding-agent CLI processes',
   ],
   examples: [

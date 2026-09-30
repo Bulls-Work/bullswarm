@@ -1,8 +1,8 @@
-// Caller-as-planner: the invoking agent authors the V2 program directly and the
-// kernel pauses durably at every later planning boundary instead of
-// dispatching a Workflow Planner process. Runtime-level tests use the fake
-// dispatcher; CLI-level tests drive the real binary against a local
-// deterministic connector so no planner task can ever reach a worker.
+// Caller-as-planner: the invoking agent authors the program directly and the
+// kernel never dispatches a Workflow Planner process. Runtime-level tests use
+// the fake dispatcher on stored v2 programs; CLI-level tests drive the real
+// binary against a local deterministic connector with v3 programs (0.38.0
+// launches nothing else) so no planner task can ever reach a worker.
 
 import { test } from 'node:test';
 import { loadProviders } from '../src/lib/providers.js';
@@ -17,17 +17,14 @@ import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument, deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { reviseV2Program } from '../src/workflow/run-control.js';
-import {
-  submitCallerPlannerResponse, acceptCallerPlannerResponse, readCallerPlannerRequest,
-} from '../src/workflow/caller-planner.js';
+import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
-import { removeSettled, waitForExit } from './fixtures/settled-cleanup.mjs';
+import { removeSettled } from './fixtures/settled-cleanup.mjs';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
 import { rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
-import { requestCancel } from '../src/workflow/dashboard.js';
-import { queueSteering } from '../src/workflow/steering.js';
 import { viewOnlyRunLine } from '../src/workflow/cli-run-lookup.js';
+import { PROGRAM_V2_REFUSAL } from '../src/workflow/cli-program-checks.js';
 import {
   buildV2PlannerContract, buildV2PlannerPrompt, normalizeCallerPlannerResponse,
   v2PlannerContractRules, V2PlannerValidationError,
@@ -198,7 +195,7 @@ test('an invalid initial program finishes at once and hands the issues back with
   } finally { f.cleanup(); }
 });
 
-test('a gap finishes the run and hands it back; resume changes nothing; a run an older version left waiting still takes a submission', async () => {
+test('a gap finishes the run and hands it back; resume changes nothing', async () => {
   const f = setup();
   try {
     // First evidence fails the requirement so the kernel consolidates a gap.
@@ -225,74 +222,6 @@ test('a gap finishes the run and hands it back; resume changes nothing; a run an
     assert.deepEqual(again.result, finished.result);
     assert.equal(dispatch.calls(), 2);
 
-    // A run an older kernel left waiting at this gap still accepts a program.
-    const paused = { runDir: finished.runDir, ...holdLikeOlderVersion(finished.runDir) };
-    assert.equal(paused.turn, 2);
-
-    // A submission that re-uses a known action ID is rejected and leaves state unchanged.
-    const collision = submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller3-abcdef', response: envelope() });
-    assert.equal(collision.ok, false);
-    assert.equal(collision.boundary, 'gaps');
-    assert.ok(collision.issues.some((issue) => /collides with known action/.test(issue)));
-    const untouched = deserializeV2DurableState(readFileSync(join(paused.runDir, 'state.json'), 'utf8'));
-    assert.equal(untouched.planner.turns, 1);
-    assert.ok(untouched.planner.awaiting);
-
-    // A valid gap-closing program is accepted, recorded, and the resumed kernel completes.
-    evidenceStatus = 'passed';
-    const fix = {
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [
-        { id: 'rewrite-report', purpose: 'Rewrite report', dependsOn: ['write-report'], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Rewrite report.md with READY.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['report-2'] },
-        { id: 'reinspect-report', purpose: 'Reinspect report', dependsOn: ['rewrite-report'], affects: [], ownedFiles: [], prompt: 'Inspect report.md again.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['report-2'], produces: [] },
-      ],
-    };
-    const submitted = submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller3-abcdef', response: normalizeCallerPlannerResponse(fix, { summary: 'Close the report gap' }) });
-    assert.equal(submitted.ok, true);
-    assert.equal(submitted.accepted.kind, 'program');
-    assert.equal(submitted.state.planner.turns, 2);
-    assert.equal(submitted.state.planner.awaiting, null);
-    assert.equal(submitted.state.budget.expansions, 1);
-    assert.equal(submitted.state.program.revision, 2);
-    assert.equal(submitted.state.program.actions.length, 4);
-    assert.equal(submitted.state.lifecycle.status, 'running');
-    assert.ok(existsSync(submitted.candidatePath));
-    const turns = readEvents(paused.runDir).filter((event) => event.type === 'planner.finished');
-    assert.equal(turns.length, 2);
-    assert.equal(turns[1].payload.source, 'caller');
-    assert.equal(turns[1].payload.boundary, 'gaps');
-
-    const resumed = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller3-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(resumed.result.status, 'completed');
-    assert.equal(resumed.result.verified, true);
-    assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report', 'rewrite-report', 'reinspect-report']);
-    assert.equal(resumed.state.planner.attempts.length, 0);
-    assert.equal(resumed.result.requirements[0].status, 'passed');
-  } finally { f.cleanup(); }
-});
-
-test('a run an older version left waiting: a submitted exhausted decision survives resume and finalizes a partial result with gaps', async () => {
-  const f = setup();
-  try {
-    const dispatch = fakeDispatch(evidenceHandler({ status: 'failed' }));
-    const finished = await runV2AutonomousWorkflow({
-      bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller4-abcdef',
-      initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
-    });
-    assert.equal(finished.result.status, 'partial');
-    assert.equal(holdLikeOlderVersion(finished.runDir).boundary, 'gaps');
-    const submitted = submitCallerPlannerResponse({
-      bullswarmDir: f.bullswarmDir, runId: 'wf-caller4-abcdef',
-      response: normalizeCallerPlannerResponse({ kind: 'exhausted' }, { exhaustedReason: 'the fixture cannot satisfy READY' }),
-    });
-    assert.equal(submitted.ok, true);
-    assert.equal(submitted.accepted.kind, 'exhausted');
-    assert.equal(submitted.state.planner.status, 'completed');
-    const resumed = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller4-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(resumed.result.status, 'partial');
-    assert.equal(resumed.result.reason, 'the fixture cannot satisfy READY');
-    assert.match(resumed.result.gaps.summary, /report-correct=failed/);
-    assert.equal(dispatch.calls(), 2, 'no extra dispatch after exhausted');
   } finally { f.cleanup(); }
 });
 
@@ -318,44 +247,7 @@ test('caller mode without a program scouts first, then finishes and hands the sc
     assert.match(readFileSync(scoutFile, 'utf8'), /UNITS OF WORK/);
     assert.ok(finished.result.reason.startsWith(`no program to run (the scout report is at ${scoutFile}). Add steps with bullswarm workflow plan revise `), finished.result.reason);
 
-    // A run an older version left waiting at the initial boundary: plan show
-    // composes the request, and a program need not mirror the scout's units.
-    holdLikeOlderVersion(finished.runDir, { boundary: 'initial' });
-    const request = readCallerPlannerRequest({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller5-abcdef' }).request;
-    assert.deepEqual(request.context.scoutUnits, ['report-unit']);
-    assert.equal(request.scoutUnitsAdvisory, true);
-    assert.match(request.context.scout, /UNITS OF WORK/);
-    // The caller's program does not have to mirror the scout's unit IDs.
-    const submitted = submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller5-abcdef', response: envelope() });
-    assert.equal(submitted.ok, true, JSON.stringify(submitted.issues ?? null));
-    assert.equal(submitted.state.program.actions.map((action) => action.id).join(','), 'write-report,inspect-report');
   } finally { f.cleanup(); }
-});
-
-test('submit refuses dispatched-planner runs, terminal runs, and runs that are not waiting', async () => {
-  const f = setup({ plannerMode: 'dispatched' });
-  try {
-    const dispatch = fakeDispatch(async (options, _calls, files) => {
-      if (options.action.id === 'workflow-planner') {
-        const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
-        writeFileSync(candidatePath, JSON.stringify(envelope()));
-        const structured = options.outputValidator('x');
-        return { ok: true, status: 'succeeded', verdict: { ok: true, structured, outFile: files.outFile, meta: { exitCode: 0 } } };
-      }
-      return evidenceHandler()(options, _calls, files);
-    });
-    const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller6-abcdef', dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(result.result.status, 'completed');
-    assert.throws(() => submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller6-abcdef', response: envelope() }), /dispatched Workflow Planner/);
-    assert.throws(() => submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-missing-abcdef', response: envelope() }), /no durable state/);
-  } finally { f.cleanup(); }
-  const g = setup();
-  try {
-    const dispatch = fakeDispatch(evidenceHandler());
-    const result = await runV2AutonomousWorkflow({ bullswarmDir: g.bullswarmDir, goalDocument: g.goal, pools: [], runId: 'wf-caller7-abcdef', initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(result.result.status, 'completed');
-    assert.throws(() => submitCallerPlannerResponse({ bullswarmDir: g.bullswarmDir, runId: 'wf-caller7-abcdef', response: envelope() }), /already terminal/);
-  } finally { g.cleanup(); }
 });
 
 test('acceptCallerPlannerResponse records the same bookkeeping a dispatched planner turn would', async () => {
@@ -484,6 +376,7 @@ function launchLegacyGoal(f, programPath, cwd = f.target) {
   return holdLikeOlderVersion(join(f.home, 'workflows', runId));
 }
 
+// The stored v2 form an older version launched; launchLegacyGoal runs it.
 function cliProgram(workId = 'create-done') {
   return {
     schemaVersion: 'bullswarm.workflow.program.v2',
@@ -494,31 +387,29 @@ function cliProgram(workId = 'create-done') {
   };
 }
 
-test('CLI: plan contract exposes requirement IDs, rules, and the example without touching state', () => {
+// What a caller launches in 0.38.0: a v3 program, the work then a read-only check.
+function cliV3Program(workId = 'create-done') {
+  return {
+    schemaVersion: 'bullswarm.workflow.program.v3',
+    steps: [
+      { id: workId, lane: 'build', effort: 'low', files: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.' },
+      { id: `check-${workId}`, lane: 'analyze', effort: 'low', dependsOn: [workId], prompt: 'Read done.txt and compare bytes.' },
+    ],
+  };
+}
+
+test('CLI: plan contract prints the v3 format without touching state; --v2 is removed', () => {
   const f = cliFixture();
   try {
-    const result = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json', '--v2']);
+    const result = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json']);
     assert.equal(result.status, 0, result.stderr);
     const contract = JSON.parse(result.stdout);
-    assert.equal(contract.action, 'plan-contract');
-    assert.deepEqual(contract.requirements.map((requirement) => requirement.id), ['requirement-1']);
-    assert.match(contract.requirements[0].text, /caller-complete/);
-    assert.equal(contract.settings.plannerMode, 'caller');
-    assert.equal(contract.settings.scout, false);
-    assert.equal(contract.settings.executionMode, 'program');
-    assert.ok(contract.rules.some((rule) => /integrator/.test(rule)));
-    assert.equal(contract.program.schemaVersion, 'bullswarm.workflow.program.v2');
-    assert.match(contract.launch.command, /--program plan\.json --json$/);
-    // One requirement means one verdict for the whole goal, so the contract
-    // says so and explains what numbering buys. It is advice: a goal that
-    // already splits into several requirements never carries it.
-    assert.match(contract.advice.requirements, /tracked as one requirement/);
-    assert.match(contract.advice.requirements, /do not invent clauses to split it/);
-    const split = cli(f, ['workflow', 'plan', 'contract', '1. Create done.txt. 2. Keep the suite green.', '--cwd', f.target, '--json', '--v2']);
-    assert.equal(split.status, 0, split.stderr);
-    const splitContract = JSON.parse(split.stdout);
-    assert.equal(splitContract.requirements.length, 2);
-    assert.equal('advice' in splitContract, false);
+    assert.equal(contract.schemaVersion, 'bullswarm.workflow.contract.v3');
+    assert.equal(contract.goal, GOAL);
+    assert.match(contract.next.launch, /--program plan\.json --json$/);
+    const v2 = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json', '--v2']);
+    assert.equal(v2.status, 2, v2.stdout);
+    assert.equal(JSON.parse(v2.stdout).flag, '--v2');
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'contract must not create a run');
   } finally { f.cleanup(); }
 });
@@ -527,13 +418,12 @@ test('CLI: goal --program executes a caller-authored program end to end without 
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram()));
+    writeFileSync(programPath, JSON.stringify(cliV3Program()));
     const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--summary', 'Create and check done.txt', '--foreground', '--json']);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
     assert.equal(report.schemaVersion, 'bullswarm.workflow.result.v2');
     assert.equal(report.status, 'completed');
-    assert.equal(report.verified, true);
     assert.deepEqual(report.actions.map((action) => action.id), ['create-done', 'check-create-done']);
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
     const state = JSON.parse(readFileSync(join(f.home, 'workflows', report.runId, 'state.json'), 'utf8'));
@@ -546,17 +436,18 @@ test('CLI: goal --program executes a caller-authored program end to end without 
     assert.equal(state.config.plannerRouting, null);
     const goal = JSON.parse(readFileSync(join(f.home, 'workflows', report.runId, 'goal.json'), 'utf8'));
     assert.equal(goal.config.settings.plannerMode, 'caller');
-    const show = cli(f, ['workflow', 'plan', 'show', report.shortId, '--json']);
-    assert.equal(show.status, 1);
-    assert.equal(JSON.parse(show.stdout).awaiting, false);
+    // plan show was removed in 0.38.0: no run waits for its caller.
+    const show = cli(f, ['workflow', 'plan', 'show', report.shortId]);
+    assert.equal(show.status, 2);
+    assert.match(show.stderr, /^✗ plan show was removed in 0\.38\.0: runs no longer wait for a caller program; append steps with bullswarm workflow add <runId> --steps <file\.json>$/m);
   } finally { f.cleanup(); }
 });
 
 test('CLI: an invalid --program is rejected synchronously and nothing is launched', () => {
   const f = cliFixture();
   try {
-    const bad = cliProgram();
-    bad.actions[0].lane = 'analyze'; // analyze actions may not own files
+    const bad = cliV3Program();
+    bad.steps[0].lane = 'analyze'; // analyze steps may not own files
     const programPath = join(f.root, 'bad.json');
     writeFileSync(programPath, JSON.stringify(bad));
     const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
@@ -564,247 +455,21 @@ test('CLI: an invalid --program is rejected synchronously and nothing is launche
     const refusal = JSON.parse(result.stdout);
     assert.equal(refusal.error, 'program-invalid');
     assert.match(refusal.message, /caller program invalid \(nothing ran\)/);
-    assert.ok(refusal.issues.some((issue) => /analyze actions must not own workspace files/.test(issue)), refusal.issues.join('; '));
+    assert.ok(refusal.issues.some((issue) => /analyze steps must have empty files/.test(issue)), refusal.issues.join('; '));
     const human = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath]);
     assert.equal(human.status, 2);
     assert.match(human.stderr, /caller program invalid \(nothing ran\)/);
-    assert.match(human.stderr, /analyze actions must not own workspace files/);
+    assert.match(human.stderr, /analyze steps must have empty files/);
     assert.equal(existsSync(join(f.home, 'workflows')), false);
     assert.equal(existsSync(join(f.home, 'goals')), false);
     const conflict = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--orchestrator', 'caller-agent', '--json']);
     assert.equal(conflict.status, 2);
-    assert.match(conflict.stderr, /--program and --orchestrator are mutually exclusive/);
+    assert.equal(JSON.parse(conflict.stdout).flag, '--orchestrator');
     const foreign = join(f.root, 'foreign.json');
     writeFileSync(foreign, JSON.stringify({ schemaVersion: 'bullswarm.workflow.v1', phases: [] }));
     const rejected = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', foreign, '--json']);
     assert.equal(rejected.status, 2);
     assert.ok(JSON.parse(rejected.stdout).issues.some((issue) => /schemaVersion must be/.test(issue)), rejected.stdout);
-  } finally { f.cleanup(); }
-});
-
-test('CLI legacy recovery: a gap pauses the run; plan show explains it; plan submit resumes it to completion', () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const awaiting = launchLegacyGoal(f, programPath);
-    assert.equal(awaiting.boundary, 'gaps');
-    assert.equal(awaiting.turn, 2);
-    const token = awaiting.shortId;
-
-    const watch = cli(f, ['workflow', 'watch', token, '--once']);
-    assert.equal(watch.status, 0, watch.stderr);
-    assert.match(watch.stdout, /waiting for the caller planner \(gaps boundary, turn 2\)/);
-
-    const resultCmd = cli(f, ['workflow', 'runs', 'result', token, '--json']);
-    assert.equal(resultCmd.status, 1);
-    assert.match(resultCmd.stderr, /left waiting for its caller planner by an older version \(gaps boundary\); bullswarm workflow resume \S+ finishes it/);
-
-    const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
-    assert.equal(show.status, 0, show.stderr);
-    const request = JSON.parse(show.stdout);
-    assert.equal(request.action, 'plan-request');
-    assert.equal(request.boundary, 'gaps');
-    assert.match(request.context.gaps.summary, /requirement-1=failed/);
-    assert.equal(request.context.knownActions.length, 2);
-    assert.equal(request.context.knownActions[0].status, 'succeeded');
-    assert.match(request.submit.program, new RegExp(`plan submit ${token}`));
-    const human = cli(f, ['workflow', 'plan', 'show', token]);
-    assert.equal(human.status, 0);
-    assert.match(human.stdout, /waiting for its caller planner · gaps boundary · turn 2/);
-
-    const fixPath = join(f.root, 'plan-2.json');
-    writeFileSync(fixPath, JSON.stringify({
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [
-        { id: 'create-done', purpose: 'Create done.txt for real', dependsOn: ['skip-work'], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['done-2'] },
-        { id: 'check-create-done', purpose: 'Inspect done.txt', dependsOn: ['create-done'], affects: [], ownedFiles: [], prompt: 'Read done.txt and compare bytes.', lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['done-2'], produces: [] },
-      ],
-    }));
-    const rejected = cli(f, ['workflow', 'plan', 'submit', token, '--program', programPath, '--json']);
-    assert.equal(rejected.status, 2, rejected.stdout);
-    assert.match(rejected.stderr, /rejected at the gaps boundary \(run state unchanged\)/);
-    assert.match(rejected.stderr, /collides with known action/);
-
-    const submitted = cli(f, ['workflow', 'plan', 'submit', token, '--program', fixPath, '--summary', 'Close the gap', '--foreground', '--json']);
-    assert.equal(submitted.status, 0, submitted.stderr || submitted.stdout);
-    const report = JSON.parse(submitted.stdout);
-    assert.equal(report.schemaVersion, 'bullswarm.workflow.result.v2');
-    assert.equal(report.status, 'completed');
-    assert.equal(report.verified, true);
-    assert.deepEqual(report.actions.map((action) => action.id), ['skip-work', 'check-skip-work', 'create-done', 'check-create-done']);
-    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
-    const state = JSON.parse(readFileSync(join(f.home, 'workflows', report.runId, 'state.json'), 'utf8'));
-    assert.equal(state.planner.turns, 2);
-    assert.equal(state.budget.expansions, 1);
-    assert.equal(state.planner.attempts.length, 0);
-    const events = readEvents(join(f.home, 'workflows', report.runId));
-    assert.equal(events.filter((event) => event.type === 'planner.handed_back').length, 1, 'the first finish handed the gap back');
-    assert.equal(events.filter((event) => event.type === 'planner.finished' && event.payload.source === 'caller').length, 2);
-
-    const done = cli(f, ['workflow', 'plan', 'submit', token, '--program', fixPath, '--json']);
-    assert.equal(done.status, 1);
-    assert.match(done.stderr, /already terminal/);
-  } finally { f.cleanup(); }
-});
-
-test('CLI legacy recovery: plan submit --exhausted finalizes a partial result', () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const token = launchLegacyGoal(f, programPath).shortId;
-    const missingReason = cli(f, ['workflow', 'plan', 'submit', token, '--exhausted']);
-    assert.equal(missingReason.status, 2);
-    const submitted = cli(f, ['workflow', 'plan', 'submit', token, '--exhausted', '--reason', 'fixture cannot produce the file', '--foreground', '--json']);
-    assert.equal(submitted.status, 1, submitted.stderr || submitted.stdout);
-    const report = JSON.parse(submitted.stdout);
-    assert.equal(report.status, 'partial');
-    assert.equal(report.reason, 'fixture cannot produce the file');
-    assert.match(report.gaps.summary, /requirement-1=failed/);
-  } finally { f.cleanup(); }
-});
-
-test('CLI: detached program returns negative evidence durably without another planner round', async () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'plan.json');
-    // A stage-3 run counts fix cycles (D13): 0 is review only, no repair.
-    writeFileSync(programPath, JSON.stringify({ ...cliProgram('skip-work'), defaults: { verifyRounds: 0 } }));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const launch = JSON.parse(launched.stdout);
-    assert.equal(launch.action, 'goal-launched');
-    assert.equal(launch.plannerMode, 'caller');
-    assert.equal(launch.requestedOrchestrator, 'caller');
-    assert.match(launch.observe.plan, /workflow plan export \S+ --out plan\.json/);
-    assert.ok(launch.instructions.callerPlanner);
-    const statePath = join(f.home, 'workflows', launch.runId, 'state.json');
-    let state = null;
-    for (let i = 0; i < 200 && !(state?.lifecycle?.resultFile); i += 1) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-      try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* not yet */ }
-    }
-    assert.ok(state?.lifecycle?.resultFile, 'detached program must finish even when evidence is negative');
-    assert.equal(state.lifecycle.status, 'completed');
-    assert.equal(state.planner.awaiting, null);
-    assert.equal(state.planner.turns, 1);
-    const report = JSON.parse(readFileSync(state.lifecycle.resultFile, 'utf8'));
-    assert.equal(report.verified, false);
-    assert.equal(report.requirements[0].status, 'failed');
-    const request = JSON.parse(readFileSync(join(f.home, 'goals', launch.runId, 'request.json'), 'utf8'));
-    assert.equal(request.initialPlannerResponse.kind, 'program');
-    const watch = cli(f, ['workflow', 'watch', launch.runId]);
-    assert.equal(watch.status, 0, watch.stderr);
-    assert.doesNotMatch(watch.stdout, /waiting for the caller planner/);
-    assert.match(watch.stdout, /outcome: completed/);
-  } finally { f.cleanup(); }
-});
-
-// --- review fixes: pause record hygiene, cancellation, steering, durability ---
-
-test('a run an older version left waiting: cancellation refuses submissions; one resume finalizes cancelled and clears the pause record', async () => {
-  const f = setup();
-  try {
-    const dispatch = fakeDispatch(evidenceHandler({ status: 'failed' }));
-    const first = await runV2AutonomousWorkflow({
-      bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller8-abcdef',
-      initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
-    });
-    assert.equal(first.result.status, 'partial');
-    const paused = { runDir: first.runDir, ...holdLikeOlderVersion(first.runDir) };
-    assert.equal(paused.boundary, 'gaps');
-    const cancelled = requestCancel(f.bullswarmDir, 'wf-caller8-abcdef', { source: 'test' });
-    assert.equal(cancelled.alreadyFinished, false);
-    assert.ok(cancelled.state.planner.awaiting, 'the pause record survives the cancellation request');
-    // No program can be accepted once cancellation is pending.
-    assert.throws(
-      () => submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller8-abcdef', response: envelope() }),
-      /pending cancellation .* bullswarm workflow goal --resume/,
-    );
-    const untouched = deserializeV2DurableState(readFileSync(join(paused.runDir, 'state.json'), 'utf8'));
-    assert.equal(untouched.planner.turns, 1);
-    assert.ok(untouched.planner.awaiting);
-    // The resume finalizes without dispatching and leaves no stale pause.
-    const finished = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller8-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(finished.result.status, 'cancelled');
-    assert.equal(finished.state.planner.awaiting, null);
-    assert.equal(finished.state.lifecycle.status, 'cancelled');
-    assert.equal(dispatch.calls(), 2);
-    assert.throws(() => submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller8-abcdef', response: envelope() }), /already terminal/);
-    // A terminal state that still claims to be waiting is rejected by the validator.
-    const stale = JSON.parse(readFileSync(join(paused.runDir, 'state.json'), 'utf8'));
-    stale.planner.status = 'waiting';
-    stale.planner.awaiting = { boundary: 'gaps', turn: 2, requestPath: '/x', candidatePath: '/y', since: '2026-09-06T00:00:00.000Z' };
-    assert.throws(() => deserializeV2DurableState(JSON.stringify(stale)), /awaiting must be null once the workflow is terminal/);
-    const shown = readCallerPlannerRequest({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller8-abcdef' });
-    assert.equal(shown.awaiting, null);
-    assert.equal(shown.request, null);
-  } finally { f.cleanup(); }
-});
-
-test('a run an older version left waiting: plan show surfaces steering queued since, a submission consumes only what was shown, and later steering never holds the run', async () => {
-  const f = setup();
-  try {
-    let evidenceStatus = 'failed';
-    const dispatch = fakeDispatch(async (options, calls, files) => evidenceHandler({ status: evidenceStatus })(options, calls, files));
-    const first = await runV2AutonomousWorkflow({
-      bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller9-abcdef',
-      initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
-    });
-    assert.equal(first.result.status, 'partial');
-    const paused = { runDir: first.runDir, ...holdLikeOlderVersion(first.runDir) };
-    assert.equal(paused.turn, 2);
-
-    // Steering arrives while no kernel runs; plan show's reader composes the
-    // request with it and does not consume it.
-    queueSteering(f.bullswarmDir, 'wf-caller9-abcdef', 'Prefer a single rewrite action.');
-    const composed = readCallerPlannerRequest({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller9-abcdef' });
-    assert.equal(composed.refreshed, true);
-    assert.equal(composed.request.boundary, 'gaps');
-    assert.match(composed.request.context.gaps.summary, /report-correct=failed/, 'gap context is preserved');
-    assert.equal(composed.request.pendingSteering.length, 1);
-    assert.deepEqual(composed.request.context.steering, ['Prefer a single rewrite action.']);
-    assert.equal(composed.state.steering.length, 0, 'steering is peeked, not delivered');
-    assert.equal(dispatch.calls(), 2);
-
-    // plan show's reader refreshes the request for steering queued since.
-    assert.equal(readCallerPlannerRequest({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller9-abcdef' }).refreshed, false);
-    queueSteering(f.bullswarmDir, 'wf-caller9-abcdef', 'Keep the report under ten lines.');
-    const shown = readCallerPlannerRequest({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller9-abcdef' });
-    assert.equal(shown.refreshed, true);
-    assert.equal(shown.request.pendingSteering.length, 2);
-    assert.equal(shown.state.steering.length, 0);
-
-    // Steering queued after the request was shown is not consumed by the submission.
-    queueSteering(f.bullswarmDir, 'wf-caller9-abcdef', 'Late instruction the caller never saw.');
-    evidenceStatus = 'passed';
-    const fix = {
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [
-        { id: 'rewrite-report', purpose: 'Rewrite report', dependsOn: ['write-report'], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Rewrite report.md with READY.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['report-2'] },
-        { id: 'reinspect-report', purpose: 'Reinspect report', dependsOn: ['rewrite-report'], affects: [], ownedFiles: [], prompt: 'Inspect report.md again.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['report-2'], produces: [] },
-      ],
-    };
-    const submitted = submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller9-abcdef', response: normalizeCallerPlannerResponse(fix, { summary: 'Close the gap' }) });
-    assert.equal(submitted.ok, true, JSON.stringify(submitted.issues ?? null));
-    assert.equal(submitted.state.steering.length, 2, 'exactly the surfaced steering is delivered');
-    assert.ok(submitted.state.steering.every((entry) => entry.status === 'delivered_to_planner' && entry.decisionSequence === 2));
-    const delivered = readEvents(paused.runDir).filter((event) => event.type === 'steering.delivered');
-    assert.equal(delivered.length, 2);
-    assert.ok(delivered.every((event) => event.payload.source === 'caller'));
-
-    // The resumed kernel runs the new work without stopping for the unseen
-    // instruction, and the result hands it back as not acted on.
-    const done = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller9-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(done.result.status, 'completed');
-    assert.equal(done.result.verified, true);
-    assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report', 'rewrite-report', 'reinspect-report']);
-    assert.deepEqual(done.result.handback.unreadSteering.map((entry) => entry.message), ['Late instruction the caller never saw.']);
-    assert.equal(readEvents(paused.runDir).filter((event) => event.type === 'steering.received').length, 1);
-    assert.equal(done.state.planner.awaiting, null);
-    assert.equal(done.state.planner.turns, 2, 'no steering boundary was opened');
-    assert.equal(done.state.steering.length, 2);
   } finally { f.cleanup(); }
 });
 
@@ -848,7 +513,7 @@ test('CLI: bare value flags are usage errors, and plan contract rejects flags th
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram()));
+    writeFileSync(programPath, JSON.stringify(cliV3Program()));
     const bareProgram = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program']);
     assert.equal(bareProgram.status, 2, bareProgram.stdout);
     assert.match(bareProgram.stderr, /--program requires a value/);
@@ -856,9 +521,10 @@ test('CLI: bare value flags are usage errors, and plan contract rejects flags th
     const barePlanner = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--planner', '--program', programPath]);
     assert.equal(barePlanner.status, 2);
     assert.match(barePlanner.stderr, /--planner requires a value/);
+    // A removed verb answers with its sentence before its flags are read.
     const bareReason = cli(f, ['workflow', 'plan', 'submit', 'abcdef', '--exhausted', '--reason']);
     assert.equal(bareReason.status, 2);
-    assert.match(bareReason.stderr, /--reason requires a value/);
+    assert.match(bareReason.stderr, /^✗ plan submit was removed in 0\.38\.0: /m);
     const bareResume = cli(f, ['workflow', 'goal', '--resume']);
     assert.equal(bareResume.status, 2);
     assert.match(bareResume.stderr, /--resume requires a value/);
@@ -867,180 +533,12 @@ test('CLI: bare value flags are usage errors, and plan contract rejects flags th
     assert.match(dispatchedContract.stderr, /--planner was removed/);
     const routedContract = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--orchestrator', 'caller-agent']);
     assert.equal(routedContract.status, 2);
+    assert.match(routedContract.stderr, /^✗ --orchestrator was removed in 0\.38\.0/m);
     const missingCwd = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', join(f.root, 'missing')]);
     assert.equal(missingCwd.status, 1);
     assert.match(missingCwd.stderr, /goal cwd is not an existing directory/);
-    const settings = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--max-expansion-rounds', '3', '--retry-attempts', '0', '--concurrency', '2', '--v2']);
-    assert.equal(settings.status, 0, settings.stderr);
-    const contract = JSON.parse(settings.stdout);
-    assert.equal(contract.settings.maxExpansionRounds, 3);
-    assert.equal(contract.settings.maxMechanicalRetries, 0);
-    assert.equal(contract.settings.concurrency, 2);
   } finally { f.cleanup(); }
 });
-
-test('CLI: a run an older version left waiting at the initial boundary gets no exhausted hint, and plan show reports it as not waiting once finished', () => {
-  const f = cliFixture();
-  try {
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--scout', '--foreground', '--json']);
-    assert.equal(launched.status, 1, launched.stderr || launched.stdout);
-    const scouted = JSON.parse(launched.stdout);
-    assert.equal(scouted.status, 'partial');
-    const awaiting = holdLikeOlderVersion(join(f.home, 'workflows', scouted.runId), { boundary: 'initial' });
-    const token = awaiting.shortId;
-    const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
-    assert.equal(show.status, 0, show.stderr);
-    const request = JSON.parse(show.stdout);
-    assert.equal(request.submit.exhausted, undefined);
-    assert.equal(request.requestRefreshed, true, 'the first show composes the request an older kernel would have written');
-    assert.deepEqual(request.pendingSteering, []);
-    assert.ok(request.rules.some((rule) => /Scout units and numeric targets are advisory/.test(rule)));
-    const human = cli(f, ['workflow', 'plan', 'show', token]);
-    assert.ok(!/--exhausted/.test(human.stdout), human.stdout);
-    const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram()));
-    const submitted = cli(f, ['workflow', 'plan', 'submit', token, '--program', programPath, '--foreground', '--json']);
-    assert.equal(submitted.status, 0, submitted.stderr || submitted.stdout);
-    assert.equal(JSON.parse(submitted.stdout).status, 'completed');
-    const finished = cli(f, ['workflow', 'plan', 'show', token, '--json']);
-    assert.equal(finished.status, 1);
-    const status = JSON.parse(finished.stdout);
-    assert.equal(status.action, 'plan-status');
-    assert.equal(status.awaiting, false);
-    assert.match(status.note, /the run is completed/);
-    const watch = cli(f, ['workflow', 'watch', token, '--once']);
-    assert.equal(watch.status, 0, watch.stderr);
-    assert.ok(!/waiting for the caller planner/.test(watch.stdout), watch.stdout);
-  } finally { f.cleanup(); }
-});
-
-test('CLI legacy recovery: plan submit refuses a vanished goal directory before touching state', () => {
-  const f = cliFixture();
-  try {
-    const target = join(f.root, 'vanishing');
-    mkdirSync(target);
-    const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const awaiting = launchLegacyGoal(f, programPath, target);
-    assert.equal(awaiting.boundary, 'gaps');
-    rmSync(target, { recursive: true, force: true });
-    const fixPath = join(f.root, 'plan-2.json');
-    writeFileSync(fixPath, JSON.stringify(cliProgram()));
-    const submitted = cli(f, ['workflow', 'plan', 'submit', awaiting.shortId, '--program', fixPath, '--json']);
-    assert.equal(submitted.status, 1, submitted.stdout);
-    assert.match(submitted.stderr, /goal cwd is not an existing directory: .*; nothing was submitted/);
-    const state = JSON.parse(readFileSync(join(f.home, 'workflows', awaiting.runId, 'state.json'), 'utf8'));
-    assert.equal(state.planner.turns, 1);
-    assert.equal(state.planner.awaiting.turn, 2);
-    assert.equal(state.program.actions.length, 2);
-  } finally { f.cleanup(); }
-});
-
-test('CLI legacy recovery: cancelling a paused run refuses submissions, points at the finalizing resume, and leaves no stale pause', () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const token = launchLegacyGoal(f, programPath).shortId;
-    const cancel = cli(f, ['workflow', 'tui', '--cancel', token, '--json']);
-    assert.equal(cancel.status, 0, cancel.stderr);
-    const cancelDoc = JSON.parse(cancel.stdout);
-    assert.equal(cancelDoc.action, 'cancel');
-    assert.equal(cancelDoc.pausedForCaller, true);
-    assert.match(cancelDoc.finalize, /workflow cancel/);
-    const fixPath = join(f.root, 'plan-2.json');
-    writeFileSync(fixPath, JSON.stringify(cliProgram()));
-    const refused = cli(f, ['workflow', 'plan', 'submit', token, '--program', fixPath, '--json']);
-    assert.equal(refused.status, 1, refused.stdout);
-    assert.match(refused.stderr, /pending cancellation/);
-    const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
-    assert.equal(show.status, 0, show.stderr);
-    const request = JSON.parse(show.stdout);
-    assert.equal(request.cancellation.requested, true);
-    assert.equal(request.submit, null);
-    assert.match(request.finalize, /workflow cancel/);
-    const human = cli(f, ['workflow', 'plan', 'show', token]);
-    assert.match(human.stdout, /cancel\s+requested/);
-    assert.match(human.stdout, /finalize\s+bullswarm workflow cancel/);
-    const watchPaused = cli(f, ['workflow', 'watch', token]);
-    assert.equal(watchPaused.status, 0, watchPaused.stderr);
-    assert.match(watchPaused.stdout, /next: cancellation requested; bullswarm workflow cancel .* finalizes it/);
-    const finalized = cli(f, ['workflow', 'goal', '--resume', token, '--json']);
-    assert.equal(finalized.status, 1, finalized.stderr || finalized.stdout);
-    const result = JSON.parse(finalized.stdout);
-    assert.equal(result.schemaVersion, 'bullswarm.workflow.result.v2');
-    assert.equal(result.status, 'cancelled');
-    const state = JSON.parse(readFileSync(join(f.home, 'workflows', result.runId, 'state.json'), 'utf8'));
-    assert.equal(state.planner.awaiting, null);
-    assert.equal(state.lifecycle.status, 'cancelled');
-    const after = cli(f, ['workflow', 'plan', 'show', token, '--json']);
-    assert.equal(after.status, 1);
-    assert.match(JSON.parse(after.stdout).note, /the run is cancelled/);
-    const watchDone = cli(f, ['workflow', 'watch', token]);
-    assert.match(watchDone.stdout, /outcome: cancelled/);
-    assert.ok(!/waiting for the caller planner/.test(watchDone.stdout), watchDone.stdout);
-    const resultCmd = cli(f, ['workflow', 'runs', 'result', token, '--json']);
-    assert.equal(JSON.parse(resultCmd.stdout).status, 'cancelled');
-  } finally { f.cleanup(); }
-});
-
-test('CLI legacy recovery: steering queued while paused shows in plan show and is consumed by a detached plan submit that runs to completion', async () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const { shortId: token, runId } = launchLegacyGoal(f, programPath);
-    // 0.38.0 (D1): the steer verb refuses a v2 run as view-only and writes
-    // nothing, so the steering is queued the way that verb used to queue it.
-    const steer = cli(f, ['workflow', 'steer', token, '--message', 'Create the file with a single write.']);
-    assert.deepEqual([steer.status, steer.stderr], [2, `${viewOnlyRunLine(token)}\n`]);
-    queueSteering(f.home, token, 'Create the file with a single write.');
-    const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
-    assert.equal(show.status, 0, show.stderr);
-    const request = JSON.parse(show.stdout);
-    assert.equal(request.requestRefreshed, true);
-    assert.equal(request.boundary, 'gaps');
-    assert.equal(request.turn, 2);
-    assert.deepEqual(request.pendingSteering.map((entry) => entry.message), ['Create the file with a single write.']);
-    assert.deepEqual(request.context.steering, ['Create the file with a single write.']);
-    const human = cli(f, ['workflow', 'plan', 'show', token]);
-    assert.match(human.stdout, /steering 1 pending instruction/);
-    const fixPath = join(f.root, 'plan-2.json');
-    writeFileSync(fixPath, JSON.stringify({
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [
-        { id: 'create-done', purpose: 'Create done.txt for real', dependsOn: ['skip-work'], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['done-2'] },
-        { id: 'check-create-done', purpose: 'Inspect done.txt', dependsOn: ['create-done'], affects: [], ownedFiles: [], prompt: 'Read done.txt and compare bytes.', lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['done-2'], produces: [] },
-      ],
-    }));
-    const submitted = cli(f, ['workflow', 'plan', 'submit', token, '--program', fixPath, '--json']);
-    assert.equal(submitted.status, 0, submitted.stderr || submitted.stdout);
-    const report = JSON.parse(submitted.stdout);
-    assert.equal(report.action, 'plan-submitted');
-    assert.equal(report.relaunch.action, 'goal-resumed');
-    assert.equal(report.relaunch.runId, runId);
-    const launcher = JSON.parse(readFileSync(join(f.home, 'goals', runId, 'launcher.json'), 'utf8'));
-    assert.equal(launcher.resume, true);
-    assert.equal(launcher.runId, runId);
-    const statePath = join(f.home, 'workflows', runId, 'state.json');
-    let state = null;
-    for (let i = 0; i < 200 && !['completed', 'partial', 'failed', 'cancelled'].includes(state?.lifecycle?.status); i += 1) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-      try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* atomic write in progress */ }
-    }
-    assert.equal(state?.lifecycle?.status, 'completed', JSON.stringify(state?.lifecycle));
-    assert.equal(state.steering.length, 1, 'the surfaced steering was consumed by the submission');
-    assert.equal(state.steering[0].decisionSequence, 2);
-    assert.equal(state.planner.turns, 2, 'no extra steering boundary was opened');
-    assert.equal(state.planner.awaiting, null);
-    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
-    const events = readEvents(join(f.home, 'workflows', runId));
-    assert.equal(events.filter((event) => event.type === 'steering.delivered').length, 1);
-    assert.equal(events.filter((event) => event.type === 'planner.handed_back').length, 1, 'only the first finish handed back');
-  } finally { f.cleanup(); }
-});
-
-// --- caller-first CLI: the program is required, and every refusal guides ------
 
 test('CLI: workflow goal without a program refuses, launches nothing, and names every next command', () => {
   const f = cliFixture();
@@ -1048,7 +546,7 @@ test('CLI: workflow goal without a program refuses, launches nothing, and names 
     const human = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target]);
     assert.equal(human.status, 2, human.stdout);
     assert.match(human.stderr, /needs a program: you are the Workflow Planner/);
-    for (const fragment of ['plan contract', 'plan validate', '--program plan.json', '--scout', '--orchestrator auto']) {
+    for (const fragment of ['plan contract', 'plan validate', '--program plan.json']) {
       assert.ok(human.stderr.includes(fragment), `guidance must name ${fragment}: ${human.stderr}`);
     }
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'nothing may be launched');
@@ -1058,10 +556,10 @@ test('CLI: workflow goal without a program refuses, launches nothing, and names 
     assert.equal(json.status, 2);
     const doc = JSON.parse(json.stdout);
     assert.equal(doc.error, 'program-required');
-    assert.deepEqual(Object.keys(doc.next).sort(), ['contract', 'launch', 'orchestrator', 'scout', 'validate']);
+    assert.deepEqual(Object.keys(doc.next).sort(), ['contract', 'launch', 'validate']);
     assert.match(doc.next.contract, /^bullswarm workflow plan contract /);
     assert.match(doc.next.launch, /--program plan\.json --json$/);
-    assert.match(doc.next.orchestrator, /--orchestrator auto$/);
+    assert.ok(!/--scout|--orchestrator/.test(human.stderr), human.stderr);
 
     // The refusal's own contract command must run and describe this goal.
     const contractArgs = ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json'];
@@ -1077,8 +575,8 @@ test('CLI: an invalid program is refused the same way by plan validate and by go
     const badPath = join(f.root, 'bad.json');
     // A dependency on an unknown action must still be refused before dispatch.
     writeFileSync(badPath, JSON.stringify({
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [{ id: 'create-done', purpose: 'Create done.txt', dependsOn: ['missing-action'], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [] }],
+      schemaVersion: 'bullswarm.workflow.program.v3',
+      steps: [{ id: 'create-done', dependsOn: ['missing-action'], files: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', lane: 'build', effort: 'low' }],
     }));
     const validated = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', badPath, '--json']);
     assert.equal(validated.status, 2, validated.stdout);
@@ -1095,23 +593,50 @@ test('CLI: an invalid program is refused the same way by plan validate and by go
   } finally { f.cleanup(); }
 });
 
+// 0.38.0 (D2): a v2 program is refused, not translated, before a run folder
+// exists; validate gives the same answer. A bare v2 program and one inside a
+// planner response envelope are the same program.
+test('CLI: a v2 program is refused by goal and plan validate with the v3 pointer, and nothing is launched', () => {
+  const f = cliFixture();
+  try {
+    const bare = join(f.root, 'v2.json');
+    writeFileSync(bare, JSON.stringify(cliProgram()));
+    const wrapped = join(f.root, 'v2-envelope.json');
+    writeFileSync(wrapped, JSON.stringify({ schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Old program.', program: cliProgram() }));
+    assert.equal(PROGRAM_V2_REFUSAL, 'bullswarm.workflow.program.v2 is no longer accepted for a new run; write a program.v3 (bullswarm workflow plan contract) and check it (bullswarm workflow plan validate --program <file.json>)');
+    for (const programPath of [bare, wrapped]) {
+      for (const verb of [['workflow', 'goal', GOAL], ['workflow', 'plan', 'validate', GOAL]]) {
+        const human = cli(f, [...verb, '--cwd', f.target, '--program', programPath]);
+        assert.deepEqual([human.status, human.stdout, human.stderr], [2, '', `✗ ${PROGRAM_V2_REFUSAL}\n`], verb.join(' '));
+        const json = cli(f, [...verb, '--cwd', f.target, '--program', programPath, '--json']);
+        assert.equal(json.status, 2);
+        assert.deepEqual(JSON.parse(json.stdout), { error: 'program-v2-refused', message: PROGRAM_V2_REFUSAL });
+      }
+    }
+    const detached = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', bare, '--watch']);
+    assert.equal(detached.status, 2);
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'a refused v2 program creates no run folder');
+    assert.equal(existsSync(join(f.home, 'goals')), false, 'and writes no launch request');
+  } finally { f.cleanup(); }
+});
+
 test('CLI: plan validate accepts a good program without creating a run', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram()));
+    writeFileSync(programPath, JSON.stringify(cliV3Program()));
     const json = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
     assert.equal(json.status, 0, json.stderr);
     const doc = JSON.parse(json.stdout);
     assert.equal(doc.action, 'plan-valid');
     assert.deepEqual(doc.program.actions.map((a) => a.id), ['create-done', 'check-create-done']);
-    assert.deepEqual(doc.program.actions[1].evidenceFor, ['requirement-1']);
+    assert.deepEqual(doc.program.actions[1].dependsOn, ['create-done']);
     assert.ok(doc.next.launch.endsWith(`--program ${programPath} --json`), doc.next.launch);
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'validation must not create a run');
 
     const human = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath]);
     assert.equal(human.status, 0, human.stderr);
-    assert.match(human.stdout, /program valid against the contract: 2 actions for 1 requirement \(nothing launched\)/);
+    assert.match(human.stdout, /program v3 valid: 2 steps, 0 gates, 0 loops \(nothing launched\)/);
     assert.match(human.stdout, /launch\s+bullswarm workflow goal/);
 
     const missingProgram = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target]);
@@ -1120,52 +645,25 @@ test('CLI: plan validate accepts a good program without creating a run', () => {
   } finally { f.cleanup(); }
 });
 
-test('CLI: --scout alone surveys first, then finishes and hands the scout report back with the options', () => {
-  const f = cliFixture();
-  try {
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--scout', '--foreground', '--json']);
-    assert.equal(launched.status, 1, launched.stderr || launched.stdout);
-    const result = JSON.parse(launched.stdout);
-    assert.equal(result.status, 'partial');
-    const state = JSON.parse(readFileSync(join(f.home, 'workflows', result.runId, 'state.json'), 'utf8'));
-    assert.equal(state.preflight.scout.status, 'succeeded', 'the kernel scout must have run');
-    assert.equal(state.planner.attempts.length, 0, 'no planner process may be dispatched');
-    assert.equal(state.planner.awaiting, null);
-    assert.ok(result.reason.includes(`the scout report is at ${state.preflight.scout.outputFile}`), result.reason);
-    assert.ok(readFileSync(state.preflight.scout.outputFile, 'utf8').includes('UNITS OF WORK'));
-    const watch = cli(f, ['workflow', 'watch', result.shortId]);
-    assert.match(watch.stdout, /outcome: partial · not verified\n/);
-    assert.match(watch.stdout, /reason: no program to run/);
-    assert.match(watch.stdout, /your call:\n\s+continue\s+bullswarm workflow plan export \S+ --out plan\.json/);
-    assert.match(watch.stdout, /\n\s+restart\s+start a new run/);
-    assert.doesNotMatch(watch.stdout, /\n\s+retry\s/, 'nothing failed, so there is nothing to retry');
-  } finally { f.cleanup(); }
-});
-
-test('CLI: planning flags are rejected in the combinations that would plan behind the caller', () => {
+test('CLI: the removed planning flags answer with the D8 sentence, and --planner stays removed', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram()));
+    writeFileSync(programPath, JSON.stringify(cliV3Program()));
     const cases = [
-      [['--program', programPath, '--orchestrator', 'auto'], /--program and --orchestrator are mutually exclusive/],
+      [['--program', programPath, '--orchestrator', 'auto'], /^✗ --orchestrator was removed in 0\.38\.0/m],
       [['--planner', 'caller', '--program', programPath], /--planner was removed/],
-      [['--program', programPath, '--suggested-plan', 'do it'], /--suggested-plan.*only with --orchestrator/],
-      [['--program', programPath, '--no-scout'], /--no-scout.*only with --orchestrator/],
-      [['--program', programPath, '--orchestrator-model', 'worker-luna'], /--orchestrator-model.*only with --orchestrator/],
-      [['--orchestrator', 'auto', '--orchestrator-strict'], /--orchestrator-strict needs a named pool/],
-      [['--orchestrator', 'caller-agent', '--strict-orchestrator', 'caller-agent'], /mutually exclusive/],
+      [['--program', programPath, '--suggested-plan', 'do it'], /^✗ --suggested-plan was removed in 0\.38\.0/m],
+      [['--program', programPath, '--no-scout'], /^✗ --no-scout was removed in 0\.38\.0/m],
+      [['--program', programPath, '--orchestrator-model', 'worker-luna'], /^✗ --orchestrator-model was removed in 0\.38\.0/m],
+      [['--orchestrator', 'caller-agent', '--strict-orchestrator', 'caller-agent'], /^✗ --orchestrator was removed in 0\.38\.0/m],
     ];
     for (const [args, pattern] of cases) {
       const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, ...args]);
       assert.equal(result.status, 2, `${args.join(' ')}: ${result.stdout}`);
       assert.match(result.stderr, pattern);
     }
-    assert.equal(existsSync(join(f.home, 'workflows')), false, 'no rejected combination may launch');
-    // The deprecated alias still works on its own.
-    const contract = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--orchestrator', 'auto']);
-    assert.equal(contract.status, 2);
-    assert.match(contract.stderr, /--orchestrator.*do not apply/);
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'no removed flag may launch');
   } finally { f.cleanup(); }
 });
 
@@ -1191,9 +689,9 @@ test('CLI legacy recovery: workflow cancel finalizes a paused caller run and is 
     const again = cli(f, ['workflow', 'cancel', token, '--json']);
     assert.equal(again.status, 0);
     assert.equal(JSON.parse(again.stdout).alreadyFinished, true);
-    const submit = cli(f, ['workflow', 'plan', 'submit', token, '--program', programPath, '--json']);
-    assert.equal(submit.status, 1);
-    assert.match(submit.stderr, /already terminal/);
+    // plan submit was removed; on this v2 run it prints the view-only sentence.
+    const submit = cli(f, ['workflow', 'plan', 'submit', token, '--program', programPath]);
+    assert.deepEqual([submit.status, submit.stderr], [2, `${viewOnlyRunLine(token)}\n`]);
   } finally { f.cleanup(); }
 });
 
@@ -1207,7 +705,7 @@ test('CLI legacy recovery: workflow resume refuses planning flags, and refuses a
     for (const args of [['--program', programPath], ['--orchestrator', 'auto'], ['--scout']]) {
       const refused = cli(f, ['workflow', 'resume', token, ...args]);
       assert.equal(refused.status, 2, `${args.join(' ')}: ${refused.stdout}`);
-      assert.match(refused.stderr, /keeps its durable planner mode/);
+      assert.match(refused.stderr, /keeps its durable planner mode and routing; to add steps use: bullswarm workflow add /);
     }
     const missing = cli(f, ['workflow', 'resume', 'zzzzzz', '--json']);
     assert.equal(missing.status, 1);
@@ -1233,11 +731,12 @@ test('CLI: capabilities and launch instructions advertise the caller-first contr
     const capabilities = JSON.parse(cli(f, ['workflow', 'capabilities']).stdout).engines.autonomousV2;
     assert.equal(capabilities.defaults.plannerMode, 'caller');
     assert.equal(capabilities.features.programRequired, true);
-    assert.match(capabilities.plannerModes.caller, /^default:/);
-    assert.match(capabilities.plannerModes.dispatched, /^explicit --orchestrator/);
+    assert.match(capabilities.plannerModes.caller, /^the only mode:/);
+    assert.deepEqual(Object.keys(capabilities.plannerModes), ['caller']);
+    assert.equal(Object.hasOwn(capabilities, 'actionRoles'), false);
 
     const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
+    writeFileSync(programPath, JSON.stringify(cliV3Program('skip-work')));
     const launch = JSON.parse(cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--json']).stdout);
     assert.match(launch.observe.cancel, /workflow cancel .* --json/);
     assert.match(launch.observe.steer, /workflow steer /);
@@ -1281,220 +780,6 @@ test('CLI: refusal guidance is copy-pasteable — shell-safe quoting, and a plac
   } finally { f.cleanup(); }
 });
 
-// A program that states only the nature of each action: no lane, no effort.
-// `write-notes` owns a markdown file at the high effort `integration` derives,
-// which is exactly the docs-at-high advisory.
-function kindProgram() {
-  return {
-    schemaVersion: 'bullswarm.workflow.program.v2',
-    defaults: { reasoning: 'low' },
-    actions: [
-      { id: 'create-done', purpose: 'Create done.txt', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', kind: 'mechanical', evidenceFor: [], inputs: [], produces: ['done'] },
-      { id: 'write-notes', purpose: 'Record the change in notes.md', dependsOn: ['create-done'], affects: ['requirement-1'], ownedFiles: ['notes.md'], prompt: 'Summarise the done.txt change in notes.md.', kind: 'integration', evidenceFor: [], inputs: ['done'], produces: [] },
-      { id: 'check-create-done', purpose: 'Inspect done.txt', dependsOn: ['create-done', 'write-notes'], affects: [], ownedFiles: [], prompt: 'Read done.txt and compare bytes.', kind: 'check', evidenceFor: ['requirement-1'], inputs: ['done'], produces: [] },
-    ],
-  };
-}
-
-test('CLI: plan validate resolves lane and effort from kind and reports advisories at exit 0', () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'kinds.json');
-    writeFileSync(programPath, JSON.stringify(kindProgram()));
-    const result = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.action, 'plan-valid');
-    assert.deepEqual(payload.program.actions.map((action) => [action.id, action.kind, action.lane, action.effort, action.reasoning]), [
-      ['create-done', 'mechanical', 'chore', 'low', 'low'],
-      ['write-notes', 'integration', 'build', 'high', 'low'],
-      ['check-create-done', 'check', 'analyze', 'medium', 'low'],
-    ]);
-    assert.deepEqual(payload.advisories, [{
-      code: 'docs-at-high', actionId: 'write-notes',
-      message: 'owns only markdown files (notes.md) at high effort; documentation edits rarely need the high tier',
-    }]);
-    // Human output prints one advisory line and still exits 0.
-    const human = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath]);
-    assert.equal(human.status, 0, human.stderr);
-    assert.match(human.stdout, /create-done\s+chore\/low kind=mechanical reasoning=low/);
-    assert.match(human.stdout, /advisory: docs-at-high write-notes — owns only markdown files/);
-    // An unknown kind is a typo in the program, so validate refuses with exit 2.
-    const typo = kindProgram();
-    typo.actions[0].kind = 'mechanicals';
-    const typoPath = join(f.root, 'typo.json');
-    writeFileSync(typoPath, JSON.stringify(typo));
-    const rejected = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', typoPath, '--json']);
-    assert.equal(rejected.status, 2);
-    const refusal = JSON.parse(rejected.stdout);
-    assert.equal(refusal.error, 'program-invalid');
-    assert.ok(
-      refusal.issues.some((issue) => issue.includes('kind must be mechanical|io-read|digest|check|implement|integration|architecture|adversarial-acceptance')),
-      refusal.issues.join('; '),
-    );
-    assert.equal(existsSync(join(f.home, 'workflows')), false, 'validate must not create a run');
-  } finally { f.cleanup(); }
-});
-
-test('CLI: a kind-only program dispatches on the derived lane and effort and reports kind everywhere', () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'kinds.json');
-    writeFileSync(programPath, JSON.stringify(kindProgram()));
-    const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--summary', 'Kind-driven program', '--foreground', '--json']);
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const report = JSON.parse(result.stdout);
-    assert.equal(report.status, 'completed');
-    assert.equal(report.verified, true);
-    // The launch prints the same advisory line plan validate printed.
-    assert.match(result.stderr, /advisory: docs-at-high write-notes — owns only markdown files \(notes\.md\) at high effort/);
-    const state = JSON.parse(readFileSync(join(f.home, 'workflows', report.runId, 'state.json'), 'utf8'));
-    assert.deepEqual(state.program.actions.map((action) => [action.id, action.kind, action.lane, action.effort, action.reasoning]), [
-      ['create-done', 'mechanical', 'chore', 'low', 'low'],
-      ['write-notes', 'integration', 'build', 'high', 'low'],
-      ['check-create-done', 'check', 'analyze', 'medium', 'low'],
-    ]);
-    assert.deepEqual(state.advisories, [{
-      code: 'docs-at-high', actionId: 'write-notes',
-      message: 'owns only markdown files (notes.md) at high effort; documentation edits rarely need the high tier',
-    }]);
-    // The proof that kind reached routing: the mechanical action was actually
-    // dispatched on lane chore at effort low.
-    const routed = state.attempts.map((attempt) => [attempt.actionId, attempt.routing?.lane, attempt.routing?.effort]);
-    assert.deepEqual(routed, [
-      ['create-done', 'chore', 'low'],
-      ['write-notes', 'build', 'high'],
-      ['check-create-done', 'analyze', 'medium'],
-    ]);
-    const token = report.shortId ?? report.runId;
-    const show = cli(f, ['workflow', 'runs', 'show', token]);
-    assert.equal(show.status, 0, show.stderr);
-    assert.match(show.stdout, /create-done\s+chore\/low\s+kind mechanical\s+succeeded/);
-    assert.match(show.stdout, /# advisories {2}1/);
-    assert.match(show.stdout, /advisory: docs-at-high write-notes — owns only markdown files/);
-    const resultText = cli(f, ['workflow', 'runs', 'result', token]);
-    assert.equal(resultText.status, 0, resultText.stderr);
-    assert.match(resultText.stdout, /create-done\s+chore\/low\s+kind mechanical/);
-    assert.match(resultText.stdout, /advisory: docs-at-high/);
-    const actionShow = cli(f, ['workflow', 'action', 'show', token, 'create-done']);
-    assert.equal(actionShow.status, 0, actionShow.stderr);
-    const shown = JSON.parse(actionShow.stdout);
-    assert.equal(shown.actionRecord.kind, 'mechanical');
-    assert.equal(shown.actionRecord.lane, 'chore');
-    assert.equal(shown.actionRecord.effort, 'low');
-    assert.equal(shown.actionRecord.status, 'succeeded');
-    assert.deepEqual(shown.attempts.map((attempt) => attempt.actionId), ['create-done']);
-    const missing = cli(f, ['workflow', 'action', 'show', token, 'no-such-action']);
-    assert.equal(missing.status, 1);
-    assert.match(missing.stderr, /has no action "no-such-action"/);
-  } finally { f.cleanup(); }
-});
-
-// The same goal written with roles only: no kind, no lane, no effort. The
-// target folder is not a git repository, so the produce step is judged by
-// hashing its exact ownedFiles directly.
-function roleProgram() {
-  return {
-    schemaVersion: 'bullswarm.workflow.program.v2',
-    defaults: { reasoning: 'low' },
-    actions: [
-      { id: 'create-done', purpose: 'Create done.txt', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', role: 'produce', evidenceFor: [], inputs: [], produces: ['done'] },
-      { id: 'survey-done', purpose: 'Report on done.txt', dependsOn: ['create-done'], affects: [], ownedFiles: [], prompt: 'Read done.txt and report its bytes. Do not modify any file.', role: 'investigate', evidenceFor: [], inputs: ['done'], produces: [] },
-      { id: 'notify-done', purpose: 'Record the change in the outbox outside the workspace', dependsOn: ['create-done'], affects: [], ownedFiles: [], prompt: 'Append one line to the outbox outside this workspace.', role: 'act', evidenceFor: [], inputs: [], produces: [] },
-      { id: 'check-create-done', purpose: 'Inspect done.txt', dependsOn: ['create-done', 'survey-done'], affects: [], ownedFiles: [], prompt: 'Read done.txt and compare bytes.', role: 'check', evidenceFor: ['requirement-1'], inputs: ['done'], produces: [] },
-    ],
-  };
-}
-
-test('CLI: a role-only program validates, dispatches on the role routing, judges each deliverable, and reports role everywhere', () => {
-  const f = cliFixture();
-  try {
-    const programPath = join(f.root, 'roles.json');
-    writeFileSync(programPath, JSON.stringify(roleProgram()));
-    const expected = [
-      ['create-done', undefined, 'produce', 'build', 'medium', { type: 'files' }],
-      ['survey-done', undefined, 'investigate', 'analyze', 'medium', { type: 'report' }],
-      ['notify-done', undefined, 'act', 'analyze', 'medium', { type: 'outward' }],
-      ['check-create-done', undefined, 'check', 'analyze', 'medium', { type: 'report' }],
-    ];
-    const shape = (action) => [action.id, action.kind, action.role, action.lane, action.effort, action.deliverable];
-
-    // Validate: lane, effort and the deliverable come from the role.
-    const validated = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
-    assert.equal(validated.status, 0, validated.stderr || validated.stdout);
-    const payload = JSON.parse(validated.stdout);
-    assert.equal(payload.action, 'plan-valid');
-    assert.deepEqual(payload.program.actions.map(shape), expected);
-    assert.deepEqual(payload.advisories, []);
-    const human = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath]);
-    assert.equal(human.status, 0, human.stderr);
-    assert.match(human.stdout, /create-done\s+build\/medium role=produce deliverable=files reasoning=low/);
-    assert.match(human.stdout, /notify-done\s+analyze\/medium role=act deliverable=outward reasoning=low/);
-    assert.doesNotMatch(human.stdout, /kind=/);
-    assert.equal(existsSync(join(f.home, 'workflows')), false, 'validate must not create a run');
-
-    // Launch with the fake workers.
-    const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--summary', 'Role-driven program', '--foreground', '--json']);
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const report = JSON.parse(result.stdout);
-    assert.equal(report.status, 'completed');
-    assert.equal(report.verified, true);
-    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
-    const runDir = join(f.home, 'workflows', report.runId);
-    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
-    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
-    assert.deepEqual(state.program.actions.map(shape), expected);
-    const routed = state.attempts.map((attempt) => [attempt.actionId, attempt.routing?.lane, attempt.routing?.effort, attempt.status]);
-    assert.deepEqual(routed.sort(), [
-      ['check-create-done', 'analyze', 'medium', 'succeeded'],
-      ['create-done', 'build', 'medium', 'succeeded'],
-      ['notify-done', 'analyze', 'medium', 'succeeded'],
-      ['survey-done', 'analyze', 'medium', 'succeeded'],
-    ]);
-    const fact = (id) => state.attempts.find((attempt) => attempt.actionId === id).deliverable;
-    // Outside git the produce step is judged by hashing done.txt directly.
-    assert.deepEqual(fact('create-done'), { type: 'files', gated: true, produced: true });
-    assert.deepEqual(fact('survey-done'), { type: 'report', gated: true, produced: true });
-    assert.deepEqual(fact('notify-done'), { type: 'outward', gated: false, produced: null });
-    assert.deepEqual(fact('check-create-done'), { type: 'report', gated: false, produced: null });
-    // The briefs carry the role lines.
-    const brief = (id) => readFileSync(state.attempts.find((attempt) => attempt.actionId === id).taskFile, 'utf8');
-    assert.match(brief('create-done'), /Declared deliverable: changes to your territory files \(done\.txt\)\. Bullswarm fails this step as not produced/);
-    assert.match(brief('notify-done'), /This is an act step: it acts outside the workspace/);
-    assert.match(brief('survey-done'), /Declared deliverable: your final response is the report\./);
-    // A check with evidenceFor is never judged by the gate, so its brief promises nothing.
-    assert.doesNotMatch(brief('check-create-done'), /Declared deliverable/);
-
-    // Result: every surface names the role, and no kind.
-    const token = report.shortId ?? report.runId;
-    const show = cli(f, ['workflow', 'runs', 'show', token]);
-    assert.equal(show.status, 0, show.stderr);
-    assert.match(show.stdout, /create-done\s+build\/medium\s+role produce\s+succeeded/);
-    assert.match(show.stdout, /notify-done\s+analyze\/medium\s+role act\s+succeeded/);
-    assert.doesNotMatch(show.stdout, /\bkind \w/);
-    const resultText = cli(f, ['workflow', 'runs', 'result', token]);
-    assert.equal(resultText.status, 0, resultText.stderr);
-    assert.match(resultText.stdout, /check-create-done\s+analyze\/medium\s+role check/);
-    const envelope = JSON.parse(readFileSync(join(runDir, 'result.json'), 'utf8'));
-    assert.deepEqual(envelope.actions.map((action) => [action.id, action.role, action.kind]).sort(), [
-      ['check-create-done', 'check', null],
-      ['create-done', 'produce', null],
-      ['notify-done', 'act', null],
-      ['survey-done', 'investigate', null],
-    ]);
-    const actionShow = cli(f, ['workflow', 'action', 'show', token, 'notify-done']);
-    assert.equal(actionShow.status, 0, actionShow.stderr);
-    const shown = JSON.parse(actionShow.stdout);
-    assert.equal(shown.actionRecord.role, 'act');
-    assert.equal(shown.actionRecord.kind, undefined);
-    assert.deepEqual(shown.actionRecord.deliverable, { type: 'outward' });
-    assert.equal(shown.actionRecord.status, 'succeeded');
-  } finally { f.cleanup(); }
-});
-
-// Stage 2 end to end: the real binary, the fake worker below, and real checks
-// run by the evidence runner (a real /bin/sh and the real schema checker).
-// The target is outside git, so each writer's scope is its ownedFiles.
 const EVIDENCE_SCHEMA = {
   type: 'object', required: ['files', 'ok'], additionalProperties: false,
   properties: { files: { type: 'array', minItems: 1, items: { type: 'string' } }, ok: { const: true } },
@@ -1508,21 +793,21 @@ const EVIDENCE_GOAL = [
 
 function evidenceProgram() {
   return {
-    schemaVersion: 'bullswarm.workflow.program.v2',
+    schemaVersion: 'bullswarm.workflow.program.v3',
     defaults: { reasoning: 'low' },
-    actions: [
+    steps: [
       {
-        id: 'create-done', purpose: 'Create done.txt', role: 'produce', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], evidenceFor: [], inputs: [], produces: ['done'],
+        id: 'create-done', lane: 'build', files: ['done.txt'],
         prompt: 'Create done.txt with the exact line caller-complete.',
         evidence: [{ type: 'command', cmd: 'grep -qx caller-complete done.txt' }],
       },
       {
-        id: 'retry-once', purpose: 'Write retry.txt', role: 'produce', dependsOn: [], affects: ['requirement-2'], ownedFiles: ['retry.txt'], evidenceFor: [], inputs: [], produces: [],
+        id: 'retry-once', lane: 'build', files: ['retry.txt'],
         prompt: 'Write retry.txt with the single line fixed.',
         evidence: [{ type: 'command', cmd: 'grep -qx fixed retry.txt || (echo "retry.txt says $(cat retry.txt)"; exit 1)', timeoutSec: 30 }],
       },
       {
-        id: 'summarize', purpose: 'Report the files as JSON', role: 'investigate', dependsOn: ['create-done'], affects: [], ownedFiles: [], evidenceFor: [], inputs: [], produces: [],
+        id: 'summarize', lane: 'analyze', dependsOn: ['create-done'],
         prompt: 'Answer with only JSON: {"files": [...], "ok": true}.',
         evidence: [
           { type: 'command', cmd: 'test "$BULLSWARM_EVIDENCE" = 1 && grep -q done.txt "$BULLSWARM_STEP_OUTPUT"' },
@@ -1530,17 +815,13 @@ function evidenceProgram() {
         ],
       },
       {
-        id: 'always-fails', purpose: 'Append to log.md', role: 'produce', dependsOn: [], affects: ['requirement-3'], ownedFiles: ['log.md'], evidenceFor: [], inputs: [], produces: [],
+        id: 'always-fails', lane: 'build', files: ['log.md'],
         prompt: 'Append one line to log.md.',
         evidence: [{ type: 'command', cmd: 'echo "acme check failed" && exit 3' }],
       },
       {
-        id: 'survey-done', purpose: 'Report on done.txt', role: 'investigate', dependsOn: ['create-done'], affects: [], ownedFiles: [], evidenceFor: [], inputs: ['done'], produces: [],
+        id: 'survey-done', lane: 'analyze', dependsOn: ['create-done'],
         prompt: 'Read done.txt and report its bytes. Do not modify any file.',
-      },
-      {
-        id: 'check-create-done', purpose: 'Inspect done.txt', role: 'check', dependsOn: ['create-done'], affects: [], ownedFiles: [], evidenceFor: ['requirement-1'], inputs: ['done'], produces: [],
-        prompt: 'Read done.txt and compare bytes.',
       },
     ],
   };
@@ -1588,8 +869,8 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     // Validate: each step with checks names their types.
     const validated = cli(f, ['workflow', 'plan', 'validate', EVIDENCE_GOAL, '--cwd', f.target, '--program', programPath]);
     assert.equal(validated.status, 0, validated.stderr || validated.stdout);
-    assert.match(validated.stdout, /create-done\s.* evidence=command /);
-    assert.match(validated.stdout, /summarize\s.* evidence=command,schema /);
+    assert.match(validated.stdout, /create-done\s.* evidence=command reasoning=low$/m);
+    assert.match(validated.stdout, /summarize\s.* evidence=command,schema reasoning=low after create-done$/m);
     assert.doesNotMatch(validated.stdout, /survey-done\s.*evidence=/);
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'validate must not create a run');
 
@@ -1597,12 +878,12 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     const launched = cli(f, ['workflow', 'goal', EVIDENCE_GOAL, '--cwd', f.target, '--program', programPath, '--summary', 'Evidence program', '--foreground']);
     assert.equal(launched.status, 1, launched.stderr || launched.stdout);
     const lines = launched.stdout.split('\n');
-    const proofAt = lines.indexOf('proof: 3 steps proven (command 3, schema 1, review 1) · 1 finished · unproven: survey-done');
-    assert.equal(lines[proofAt - 1], 'reason: 1 of 6 steps did not succeed: always-fails failed (failed-evidence)', launched.stdout);
+    const proofAt = lines.indexOf('proof: 3 steps proven (command 3, schema 1) · 1 finished · unproven: survey-done');
+    assert.equal(lines[proofAt - 1], 'reason: 1 of 5 steps did not succeed: always-fails failed (failed-evidence)', launched.stdout);
 
     const [runId] = readdirSync(join(f.home, 'workflows'));
     const runDir = join(f.home, 'workflows', runId);
-    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller', programFormat: 3 });
     const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
     const attemptsOf = (id) => state.attempts.filter((attempt) => attempt.actionId === id);
 
@@ -1665,27 +946,22 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     assert.deepEqual(row('retry-once').evidenceResults, second.evidenceResults);
     assert.deepEqual(row('always-fails').evidenceResults, failing[1].evidenceResults);
     assert.equal(Object.hasOwn(row('survey-done'), 'evidenceResults'), false);
-    assert.equal(Object.hasOwn(row('check-create-done'), 'evidenceResults'), false);
     const finished = events.filter((event) => event.type === 'action.finished' && event.payload.status === 'succeeded');
     assert.deepEqual(Object.fromEntries(finished.map((event) => [event.payload.actionId, event.payload.proof ?? null])), {
-      // At its finish the review had not run yet; by the end of the run it passed (see the proof line).
-      'create-done': { by: ['command'], reviewPending: true },
+      'create-done': { by: ['command'], reviewPending: false },
       'retry-once': { by: ['command'], reviewPending: false },
       summarize: { by: ['command', 'schema'], reviewPending: false },
       'survey-done': { by: [], reviewPending: false },
     });
-    assert.equal(events.some((event) => event.payload?.actionId === 'check-create-done' && Object.hasOwn(event.payload, 'proof')), false, 'a review step is never labelled');
 
-    // runs result prints the same proof line. 0.38.0 (D1): this is a v2 run,
-    // so resume refuses it as view-only and relaunches nothing.
+    // runs result prints the same proof line; resume has nothing to retry,
+    // because a failed check is about the work, and relaunches nothing.
     const token = envelope.shortId ?? runId;
     const resultText = cli(f, ['workflow', 'runs', 'result', token]);
     assert.equal(resultText.status, 1, resultText.stderr); // a partial result exits 1
-    assert.match(resultText.stdout, /^# proof {2}3 steps proven \(command 3, schema 1, review 1\) · 1 finished · unproven: survey-done$/m);
+    assert.match(resultText.stdout, /^# proof {2}3 steps proven \(command 3, schema 1\) · 1 finished · unproven: survey-done$/m);
     const resumed = cli(f, ['workflow', 'resume', token, '--json']);
-    assert.equal(resumed.status, 2, resumed.stderr || resumed.stdout);
-    const refusal = JSON.parse(resumed.stdout);
-    assert.deepEqual([refusal.viewOnly, refusal.verb, refusal.runId, refusal.message], [true, 'resume', runId, viewOnlyRunLine(token)]);
+    assert.equal(resumed.status, 1, resumed.stderr || resumed.stdout);
     assert.equal(JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).attempts.length, state.attempts.length, 'resume relaunched nothing');
   } finally { f.cleanup(); }
 });
@@ -1882,20 +1158,6 @@ function stopInChildKernel(f, { runId, scout, stoppedId, reset, why }) {
   return stopped;
 }
 
-async function finishedState(f, runId) {
-  const statePath = join(f.home, 'workflows', runId, 'state.json');
-  let state = null;
-  for (let i = 0; i < 400 && !(state?.lifecycle?.resultFile); i += 1) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-    try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* not yet */ }
-  }
-  assert.ok(state?.lifecycle?.resultFile, 'the relaunched kernel finishes the run');
-  // The kernel still writes after the result (the rollup index at the home's
-  // top level, then its lease): the test's cleanup waits for it to exit.
-  assert.ok(await waitForExit([state.runner?.pid]), `the relaunched kernel (pid ${state.runner?.pid}) exits`);
-  return state;
-}
-
 test('CLI, marked: after the Workflow Planner stopped on a usage limit, the saved reason still names resume, and resume refuses the run as view-only', async () => {
   const f = cliFixture();
   try {
@@ -1934,31 +1196,5 @@ test('CLI, marked: after the preflight scout stopped on a usage limit, resume --
     assert.deepEqual(JSON.parse(resumed.stdout), { viewOnly: true, verb: 'resume', runId: 'wf-scstop-abcdef', shortId: token, dir: runDir, message: viewOnlyRunLine(token) });
     assert.equal(readFileSync(join(runDir, 'state.json'), 'utf8'), before, 'a refused resume writes nothing');
     assert.equal(JSON.parse(before).preflight.scout.status, 'failed');
-  } finally { f.cleanup(); }
-});
-
-test('CLI, marked: after the Workflow Planner stopped on a usage limit, plan revise runs the caller\'s program instead', async () => {
-  const f = cliFixture();
-  try {
-    const reset = '2026-09-25T12:00:00.000Z';
-    const why = `no pool with quota to spare: caller-agent paused for quota until ${reset}`;
-    const { token } = stopInChildKernel(f, { runId: 'wf-plrevs-abcdef', scout: false, stoppedId: 'workflow-planner', reset, why });
-
-    // `plan revise` takes the caller's program, reopens the run and runs it.
-    const programPath = join(f.root, 'plan.json');
-    writeFileSync(programPath, JSON.stringify(cliProgram()));
-    const revised = cli(f, ['workflow', 'plan', 'revise', token, '--program', programPath]);
-    assert.equal(revised.status, 0, revised.stderr || revised.stdout);
-    assert.match(revised.stdout, new RegExp(`plan of ${token} revised to revision 1 directly \\(no kernel was running\\)`));
-    assert.match(revised.stdout, /reopened the partial run; its earlier result is archived/);
-    const state = await finishedState(f, 'wf-plrevs-abcdef');
-    assert.equal(state.lifecycle.status, 'completed');
-    assert.deepEqual(state.actions.map((action) => [action.id, action.status]), [['create-done', 'succeeded'], ['check-create-done', 'succeeded']]);
-    assert.equal(state.planner.attempts.length, 0, 'no planner was dispatched after the revise');
-    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
-
-    // 0.38.0 (D1): the revised run is still a v2 run, so resume refuses it as view-only.
-    const again = cli(f, ['workflow', 'resume', token]);
-    assert.deepEqual([again.status, again.stdout, again.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
   } finally { f.cleanup(); }
 });

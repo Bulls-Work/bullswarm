@@ -192,7 +192,7 @@ test('step restart and step rerun refusals on a v3 run point to step rerun and w
 
 const V2_WORDS = /\brole\b|role=|\bkind\b|kind=|\bact steps?\b|\bactions?\b|evidenceFor|check step/;
 
-test('plan contract prints the v3 contract; --v2 prints the old one', (t) => {
+test('plan contract prints the v3 contract; --v2 was removed in 0.38.0', (t) => {
   const f = fixture(t);
   const out = run(f.bullswarmDir, ['workflow', 'plan', 'contract', 'Audit the acme notes', '--cwd', f.workspace, '--json']);
   assert.equal(out.status, 0, out.stderr);
@@ -214,13 +214,13 @@ test('plan contract prints the v3 contract; --v2 prints the old one', (t) => {
   assert.equal(existsSync(join(f.bullswarmDir, 'workflows')), false, 'contract must not create a run');
 
   const old = run(f.bullswarmDir, ['workflow', 'plan', 'contract', 'Audit the acme notes', '--cwd', f.workspace, '--json', '--v2']);
-  assert.equal(old.status, 0, old.stderr);
-  assert.equal(JSON.parse(old.stdout).program.schemaVersion, 'bullswarm.workflow.program.v2');
+  assert.equal(old.status, 2, old.stderr);
+  assert.equal(JSON.parse(old.stdout).message, '--v2 was removed in 0.38.0: bullswarm workflow plan contract prints the v3 format; bullswarm.workflow.program.v2 is no longer accepted for a new run');
 });
 
 // QA37 (0.37.0): SKILL.md tells callers to run `plan contract` bare, which
 // exited 2 with a usage line. The v3 contract needs no goal.
-test('plan contract with no goal prints the v3 contract with goal null and placeholder next commands; --v2 still needs one', (t) => {
+test('plan contract with no goal prints the v3 contract with goal null and placeholder next commands; --v2 is removed', (t) => {
   const f = fixture(t);
   const out = run(f.bullswarmDir, ['workflow', 'plan', 'contract', '--cwd', f.workspace]);
   assert.equal(out.status, 0, out.stderr);
@@ -232,7 +232,7 @@ test('plan contract with no goal prints the v3 contract with goal null and place
   assert.equal(existsSync(join(f.bullswarmDir, 'workflows')), false, 'contract must not create a run');
   const old = run(f.bullswarmDir, ['workflow', 'plan', 'contract', '--cwd', f.workspace, '--v2']);
   assert.equal(old.status, 2);
-  assert.match(old.stderr, /--v2 needs the goal/);
+  assert.match(old.stderr, /^✗ --v2 was removed in 0\.38\.0: /m);
 });
 
 test('plan validate prints a launch line with the program file the caller named', (t) => {

@@ -433,7 +433,7 @@ test('state validation: removed steps require an applied revision, and a paused 
   assert.throws(() => validateV2DurableState(pausedWithoutRecord), /paused requires state.pause/);
 });
 
-test('CLI: plan export writes an editable document; plan revise refuses no-op and unknown rerun ids; pause refuses a v2 run as view-only', async (t) => {
+test('CLI: plan export and plan revise (removed in 0.38.0) and pause answer a v2 run as view-only', async (t) => {
   const f = fixture(t);
   const ctl = controller();
   const done = await start(f, 'wf-cli10a-abcdef', [work('a'), work('b', { dependsOn: ['a'] })], ctl);
@@ -442,29 +442,23 @@ test('CLI: plan export writes an editable document; plan revise refuses no-op an
   const cli = (...args) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: 'utf8', cwd: f.workspace });
   const out = join(f.root, 'plan.json');
 
+  // 0.38.0 (D8): the removed verbs answer a run an earlier Bullswarm started
+  // with the view-only sentence, and write nothing.
+  const before = readFileSync(join(f.bullswarmDir, 'workflows', done.runId, 'state.json'), 'utf8');
   const exported = cli('workflow', 'plan', 'export', token, '--out', out, '--json');
-  assert.equal(exported.status, 0, exported.stderr);
-  const payload = JSON.parse(exported.stdout);
-  assert.equal(payload.programRevision, 1);
-  assert.deepEqual(payload.actions.map((action) => [action.id, action.status]), [['a', 'succeeded'], ['b', 'succeeded']]);
-  const document = JSON.parse(readFileSync(out, 'utf8'));
-  assert.equal(document.schemaVersion, 'bullswarm.workflow.revision.v1');
-  assert.equal(document.baseRevision, 1);
-
-  const noop = cli('workflow', 'plan', 'revise', token, '--program', out);
-  assert.equal(noop.status, 2);
-  assert.match(noop.stderr, /changes nothing/);
-  const unknown = cli('workflow', 'plan', 'revise', token, '--program', out, '--rerun', 'ghost', '--json');
-  assert.equal(unknown.status, 2);
-  assert.match(JSON.parse(unknown.stdout).issues.join(' '), /rerun names "ghost"/);
-  assert.equal(readState(f, done.runId).lifecycle.status, 'completed', 'a refused revision leaves the run untouched');
+  assert.equal(exported.status, 2, exported.stderr);
+  assert.deepEqual(JSON.parse(exported.stdout), { viewOnly: true, verb: 'plan export', runId: done.runId, shortId: token, dir: join(f.bullswarmDir, 'workflows', done.runId), message: viewOnlyRunLine(token) });
+  assert.equal(existsSync(out), false, 'plan export writes no file');
+  const revised = cli('workflow', 'plan', 'revise', token, '--program', out, '--rerun', 'ghost');
+  assert.deepEqual([revised.status, revised.stdout, revised.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
+  assert.equal(readFileSync(join(f.bullswarmDir, 'workflows', done.runId, 'state.json'), 'utf8'), before, 'the run is untouched');
 
   // 0.38.0 (D1): a v2 run is view-only, so pause refuses it before it reads its status.
   const pause = cli('workflow', 'pause', token);
   assert.deepEqual([pause.status, pause.stdout, pause.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
   const help = cli('workflow', 'plan', 'revise', '--help');
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /--rerun <id,\.\.\.>/);
+  assert.match(help.stdout, /Removed in 0\.38\.0\. plan revise exits 2 with one sentence/);
 });
 
 // Step vocabulary and revise: an untouched export of any plan shape changes
@@ -554,7 +548,7 @@ test('revise: evidence is part of the step definition and untouched evidence exp
 // E29: only a dispatched planner's own program may not carry evidence. A plan
 // revision is always the caller's, so `plan revise` of an --orchestrator
 // (dispatched) run accepts the same evidence program.
-test('CLI: plan revise of a dispatched-planner (--orchestrator) run accepts evidence the caller adds', async (t) => {
+test('a dispatched-planner (--orchestrator) run: its planner may not declare evidence, and plan revise answers it as view-only', async (t) => {
   const f = fixture(t, { plannerMode: 'dispatched' });
   const ctl = controller();
   // The kernel dispatches its own planner; this one answers with the plan.
@@ -580,18 +574,12 @@ test('CLI: plan revise of a dispatched-planner (--orchestrator) run accepts evid
 
   const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' };
   const cli = (...args) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: 'utf8', cwd: f.workspace });
+  // 0.38.0 removed plan revise; on this run it prints the view-only sentence.
   const out = join(f.root, 'plan.json');
-  assert.equal(cli('workflow', 'plan', 'export', done.shortId, '--out', out).status, 0);
-  const document = JSON.parse(readFileSync(out, 'utf8'));
-  document.program.actions.find((action) => action.id === 'a').evidence = evidence;
-  writeFileSync(out, JSON.stringify(document));
-  const revised = cli('workflow', 'plan', 'revise', done.shortId, '--program', out, '--json');
-  assert.equal(revised.status, 0, revised.stdout || revised.stderr);
-  const payload = JSON.parse(revised.stdout);
-  assert.equal(payload.status, 'applied', revised.stdout);
-  const state = readState(f, done.runId);
-  assert.deepEqual(state.program.actions.find((action) => action.id === 'a').evidence, evidence);
-  assert.equal(state.config.settings.plannerMode, 'dispatched');
+  writeFileSync(out, JSON.stringify(withEvidence));
+  const revised = cli('workflow', 'plan', 'revise', done.shortId, '--program', out);
+  assert.deepEqual([revised.status, revised.stderr], [2, `${viewOnlyRunLine(done.shortId)}\n`]);
+  assert.equal(readState(f, done.runId).program.actions.find((action) => action.id === 'a').evidence, undefined);
 });
 
 test('revise: adding the matching role to a kind step changes nothing, for every kind; replacing the kind with it is an amendment', async (t) => {

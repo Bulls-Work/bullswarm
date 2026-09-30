@@ -33,6 +33,12 @@ const TEST_SEAMS = {
   'src/lib/pool-labels.js': ['clearPoolLabelCache'], // a test rewrites a home's label file
   'src/workflow/time-box.js': ['clearTimeBoxHistoryCache'], // a test rewrites a home's history
   'src/workflow/v2-state.js': ['createV2State'], // the tests' name for createV2DurableState
+  // 0.38.0 S2 removed plan revise and plan contract --v2, their only product
+  // readers. normalizeRevisionInput is loaded by the replay tool; the other two
+  // live in files later slices own (S4: v2-planner.js and its test, S5:
+  // v2-revision.js), which delete them.
+  'src/workflow/v2-revision.js': ['normalizeRevisionInput', 'REVISION_CHANGE_KINDS'],
+  'src/workflow/v2-planner.js': ['buildV2PlannerContract'],
 };
 
 const WORD = /[A-Za-z0-9_$]/;

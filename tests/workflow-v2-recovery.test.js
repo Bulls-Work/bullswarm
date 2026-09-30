@@ -146,7 +146,8 @@ if (existsSync(${JSON.stringify(resumeFile)})) {
   writeFileSync(join(f.home, 'connectors', 'recovery-agent.json'), JSON.stringify({ name: 'recovery-agent', bin: 'node', configDirs: [], spawn: { cmd: ['node', worker, '{taskFile}'], cwdMode: 'add-dir' }, authSignatures: [], outputExtraction: { strategy: 'stdout' }, meter: { type: 'none' }, costRank: 1, lanes: ['analyze', 'build', 'chore'], capabilities: ['code-reading', 'file-editing'], knownModels: ['fixture-model'] }));
   writeFileSync(join(f.home, 'state.json'), JSON.stringify({ version: 1, pools: { 'recovery-agent': { enabled: true } }, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } }));
   const plan = join(f.root, 'program.json');
-  writeFileSync(plan, JSON.stringify({ ...program.program, actions: [{ ...action, affects: ['requirement-1'] }] }));
+  // 0.38.0 launches (and resumes) v3 programs only.
+  writeFileSync(plan, JSON.stringify({ schemaVersion: 'bullswarm.workflow.program.v3', steps: [{ id: 'write', lane: 'build', effort: 'low', files: ['a.txt', 'b.txt'], prompt: 'Write the requested files.' }] }));
   const first = runCli(f, ['Write files', '--cwd', f.cwd, '--program', plan, '--foreground', '--json']);
   const children = [first.child]; const workerPids = [];
   const cleanup = () => {

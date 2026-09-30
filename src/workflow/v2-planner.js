@@ -477,12 +477,11 @@ export function buildV2PlannerPrompt(context) {
   ].join('\n');
 }
 
-export const V2_PLANNER_REQUEST_SCHEMA_VERSION = 'bullswarm.workflow.planner-request.v2';
 export const V2_PLANNER_CONTRACT_SCHEMA_VERSION = 'bullswarm.workflow.planner-contract.v2';
 
 // Per role: the kinds that belong to it, its default and allowed deliverables,
-// and its routing per deliverable type. Read by the contract and capabilities.
-export function v2RoleCatalog() {
+// and its routing per deliverable type. Read by the v2 contract.
+function v2RoleCatalog() {
   return Object.fromEntries(ROLES.map((role) => [role, {
     kinds: Object.keys(KIND_ROLES).filter((kind) => KIND_ROLES[kind] === role),
     defaultDeliverable: ROLE_DEFAULT_DELIVERABLE[role] ?? null,
@@ -587,42 +586,6 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
     },
     plannerMode: 'caller',
     launch: launchCommand ? { command: launchCommand } : null,
-  };
-}
-
-// The durable request a paused run leaves for its caller planner. It carries
-// the exact context a dispatched planner would have received, the rules, and
-// the precise submit step, so any agent can resume the run from a cold start.
-export function createV2PlannerRequest(state, context, { turn, requestPath, candidatePath, correction = null, submitCommand = null, pendingSteering = [] } = {}) {
-  if (!plain(context) || context.schemaVersion !== 'bullswarm.workflow.planner-context.v2') throw new TypeError('invalid V2 planner context');
-  if (!Number.isInteger(turn) || turn < 1) throw new TypeError('turn must be a positive integer');
-  if (!Array.isArray(pendingSteering)) throw new TypeError('pendingSteering must be an array');
-  return {
-    schemaVersion: V2_PLANNER_REQUEST_SCHEMA_VERSION,
-    runId: state.runId,
-    shortId: state.shortId,
-    intentId: state.intentId,
-    turn,
-    boundary: context.boundary,
-    plannerMode: 'caller',
-    rules: v2PlannerContractRules({
-      executionMode: context.execution?.mode,
-      workspaceMode: context.execution?.workspaceMode,
-      workspaceMutation: context.intent.constraints?.workspaceMutation ?? 'allowed',
-      boundary: context.boundary,
-      plannerMode: 'caller',
-    }),
-    responseShape: isProgramWorkflow(state) ? { program: V2_PLANNER_RESPONSE_SHAPE.program } : { ...V2_PLANNER_RESPONSE_SHAPE },
-    actionFields: programActionFields(state),
-    scoutUnitsAdvisory: true,
-    context,
-    // Steering queued for this run that no planner turn has consumed yet.
-    // Submitting against this request marks exactly these entries delivered.
-    pendingSteering: clone(pendingSteering),
-    correction: correction ? clone(correction) : null,
-    candidatePath,
-    requestPath,
-    submit: submitCommand ? { command: submitCommand } : null,
   };
 }
 

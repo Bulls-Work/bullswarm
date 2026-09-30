@@ -277,7 +277,7 @@ test('add --from-answer appends the fragment a step answered with; an answer tha
   assert.match(readState(run).revisions.at(-1).summary, /add check-a from the answer of plan/);
 });
 
-test('add refuses a v2 run with the plan revise command, and the CLI prints what it added', async (t) => {
+test('add refuses a v2 run as view-only, and the CLI prints what it added', async (t) => {
   const f = fixture(t);
   const v2 = v2V3Fixtures();
   const state = applyV2PlannerResponse(createV2DurableState(createV2GoalDocument(v2.goal), { runId: 'wf-acme-000020', shortId: 'acme20' }), v2.response);
@@ -287,7 +287,7 @@ test('add refuses a v2 run with the plan revise command, and the CLI prints what
   const refused = await addV3Steps({ bullswarmDir: f.bullswarmDir, token: state.runId, fragment: checkFragment(), waitMs: 0 });
   assert.equal(refused.status, 'error');
   assert.equal(refused.code, 1);
-  assert.match(refused.why, /is not a v3 run; workflow add appends to v3 runs\. Change a v2 run's plan with bullswarm workflow plan export acme20 --out plan.json, then bullswarm workflow plan revise acme20 --program plan.json/);
+  assert.equal(refused.why, 'run acme20 was started by an earlier Bullswarm and is view-only; start a new run: bullswarm workflow goal "<goal>" --cwd <run folder> --program <file.json>');
 
   const run = await launch(f, findProgram(), fakeDispatch(script));
   const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
