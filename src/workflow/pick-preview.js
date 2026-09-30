@@ -15,7 +15,7 @@ import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/fore
 import { expectedMinutesFromSpendModel } from '../lib/assignments.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
-import { freeModelsOffV2DispatchPools, prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
+import { tierOffV2DispatchReasons, prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
 import { resolveRouteFilter, routeUnavailableWhy } from './step-route.js';
 import { poolCanRunModel } from '../lib/model-pin.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
@@ -40,14 +40,13 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
   }
   const failureKind = noPoolFailureKind(capable.length, held);
   if (held.length) return { why: noPoolWhy({ capableCount: capable.length, held, failureKind, lane, effort }), failureKind };
-  if (!capable.length && routeFilter
-    && prepareV2DispatchPools(pools, action, effort, { now, preferredModel, ignoreBurstGate: true }).length) {
-    return { why: routeUnavailableWhy(routeFilter, { lane, effort }), failureKind };
-  }
   if (capable.length) return { why: routerWhy, failureKind };
-  const freeOff = freeModelsOffV2DispatchPools(pools, action, effort, { preferredModel, routeFilter, now })
-    .filter((pool) => (pool.lanes ?? [lane]).includes(lane)).map((pool) => pool.name);
-  return { why: noPoolWhy({ capableCount: 0, held, failureKind, lane, effort, freeOff }), failureKind };
+  const offTier = tierOffV2DispatchReasons(pools, action, effort, { preferredModel, routeFilter, now },
+    (pool) => (pool.lanes ?? [lane]).includes(lane));
+  if (routeFilter && prepareV2DispatchPools(pools, action, effort, { now, preferredModel, ignoreBurstGate: true }).length) {
+    return { why: routeUnavailableWhy(routeFilter, { lane, effort, offTier }), failureKind };
+  }
+  return { why: noPoolWhy({ capableCount: 0, held, failureKind, lane, effort, offTier }), failureKind };
 }
 
 /**

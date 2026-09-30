@@ -286,11 +286,15 @@ export function isRouteUnavailable(failure) {
  * provider with a step the route is independent of; `others` lists the
  * enabled pools of other providers on the step's lane and what ruled each
  * out ({pool, provider, excluded, tiers}), since a capable pool one tier up
- * reads as "every pool shares a provider" otherwise (QA37).
+ * reads as "every pool shares a provider" otherwise (QA37). `offTier` names
+ * why a pool inside the route lacks the tier now (free models off, a plan
+ * without the tier's model), as noPoolWhy does.
  */
-export function routeUnavailableWhy(filter, { lane, effort, sharedProvider = false, others = [] } = {}) {
+export function routeUnavailableWhy(filter, { lane, effort, sharedProvider = false, others = [], offTier = [] } = {}) {
   const head = `${ROUTE_UNAVAILABLE_HEAD}(${filter?.summary ?? ''})`;
-  if (!sharedProvider) return `${head}: no enabled pool left has a model on the ${effort} tier for ${lane} work`;
+  if (!sharedProvider) {
+    return `${head}: no enabled pool left has a model on the ${effort} tier for ${lane} work${offTier.length ? `; ${offTier.join('; ')}` : ''}`;
+  }
   const steps = Object.keys(filter?.independentOf ?? {});
   const shared = `${head}: every pool that could run it (${lane}/${effort} work) shares a provider with ${joined(steps)} (${joined(filter?.independentProviders ?? [])})`;
   if (!others.length) return `${shared}; no pool of another provider is enabled for ${lane} work; enable one or drop independentOf`;

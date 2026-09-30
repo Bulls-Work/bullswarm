@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- no eligible pool: when a pool lacks a tier only because free models are
+  off for it, or because its plan was seen not to include the tier's model,
+  the reason now says so (`free models are off for <pool>`, `<pool> has no
+  <tier>-tier model its plan includes (plan excludes <models>)`), also under
+  a step's route and in `run --dry-run`. Before, a routed step read only `no
+  enabled pool left has a model on the <tier> tier`.
 - dispatch: a worker can mark a blocker it may not change by starting a `##
   Not done` line with `outside:` (`- outside: tests/router.test.js fails on
   main before this change`); work tasks now ask for this. A step that fails

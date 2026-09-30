@@ -47,14 +47,13 @@ export function noPoolFailureKind(capableCount, held) {
 /**
  * The reason no pool can take the step. `capableCount` counts the pools that
  * could run it were none at a limit; `held` the ones that cannot now;
- * `freeOff` the pools that have the tier only through free models while
- * free models are off for them.
+ * `offTier` the reasons a pool that would have the tier lacks it now: free
+ * models off for it (`strategy set-free never`), or a plan seen not to
+ * include the tier's model (tierOffReasons in v2-dispatch.js).
  */
-export function noPoolWhy({ capableCount, held, failureKind, strictPool = null, lane, effort, freeOff = [] }) {
+export function noPoolWhy({ capableCount, held, failureKind, strictPool = null, lane, effort, offTier = [] }) {
   if (!capableCount) {
-    // A pool whose only models for the tier are free, with free models off
-    // (`strategy set-free never`), is named with that reason.
-    const off = freeOff.length ? `; ${freeOff.map((name) => `free models are off for ${name}`).join('; ')}` : '';
+    const off = offTier.length ? `; ${offTier.join('; ')}` : '';
     return strictPool
       ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)${off}`
       : `no eligible pool: no enabled pool has a model on the ${effort} tier for ${lane} work${off}`;
