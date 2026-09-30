@@ -288,7 +288,7 @@ test('run --json: a compact verdict with a short usage summary, ending in the de
   const lines = result.stdout.trimEnd().split('\n');
   assert.ok(lines.length <= 60, `${lines.length} lines`);
   assert.deepEqual(Object.keys(verdict), [
-    'ok', 'why', 'failureKind', 'retryAfter', 'runId', 'shortId', 'pick', 'outFile', 'answer', 'answerCheck', 'notDone',
+    'ok', 'why', 'failureKind', 'retryAfter', 'runId', 'shortId', 'pool', 'model', 'pick', 'outFile', 'answer', 'answerCheck', 'notDone',
     'taskFile', 'attempts', 'routeWhy', 'reasoning', 'meta', 'usage', 'contentUsableDespiteExit', 'details',
   ]);
   assert.deepEqual(Object.keys(verdict.pick), ['pool', 'model', 'command', 'poolLabel']);

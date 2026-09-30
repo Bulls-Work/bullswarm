@@ -194,7 +194,7 @@ export function declaredEvidence(action) {
 // class; the class is derived, so stored kinds never change and saved runs
 // read the same. `stop` kinds are not failures. Any other kind is `caller`.
 export const FAILURE_CLASSES = Object.freeze({
-  process: Object.freeze(['auth', 'provider', 'process', 'interrupted', 'stalled']),
+  process: Object.freeze(['auth', 'provider', 'process', 'interrupted', 'stalled', 'model-not-in-plan']),
   gate: Object.freeze(['not-produced', 'failed-evidence', 'schema', 'semantic']),
   wait: Object.freeze(['quota', 'throttle']),
   caller: Object.freeze(['ownership', 'ownership-conflict', 'runtime', 'unavailable']),
@@ -213,7 +213,9 @@ export function failureClassOf(kind) {
 // an error before it answered or changed a file. A rerun or resume after one
 // starts on another pool when one can take the step. A usage limit is not
 // one: the caller decides where it goes (owner decision, 2026-09-25).
-const POOL_CAUSED_KINDS = new Set(['auth', 'provider']);
+// A plan that does not include the model is one too: the same pool would run
+// the same model into the same refusal.
+const POOL_CAUSED_KINDS = new Set(['auth', 'provider', 'model-not-in-plan']);
 
 /** Whether a stored attempt failed because of its pool (see above). */
 export function poolCausedFailure(attempt) {
@@ -249,6 +251,7 @@ export const NEEDS_YOU_LABELS = Object.freeze({
   provider: 'provider error',
   stalled: 'worker went silent',
   auth: 'sign-in failed',
+  'model-not-in-plan': 'model not in plan',
   interrupted: 'worker was killed',
   throttle: 'rate limited',
   quota: 'out of quota',

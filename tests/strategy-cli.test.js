@@ -9,7 +9,7 @@ import {
   buildStrategy, discoverConnectorModels, resolveDispatchModel, selectedModelsForTier,
 } from '../src/lib/strategy.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
-import { loadConnectors } from '../src/lib/config.js';
+import { buildPools, loadConnectors } from '../src/lib/config.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import {
   refreshStrategy, cmdStrategy, applyStrategyRecommendations, maybeRefreshStrategy, strategyInventory,
@@ -1357,4 +1357,117 @@ test('--resets-at declares the reset a provider does not report, as ISO-8601, an
     console.error = originalError;
     f.cleanup();
   }
+});
+
+test('strategy set-free writes the every-pool and per-pool setting, show prints it, and reset drops a pool\'s own', async () => {
+  const f = fixture();
+  try {
+    const shown = async () => (await runStrategy(['show'], f.dir)).out.split('\n').find((line) => line.startsWith('free models:'));
+    const state = loadState(f.dir);
+    state.strategy = {
+      ...(state.strategy ?? {}),
+      lastReport: { capturedAt: new Date().toISOString(), subscriptions: [], suggestions: {}, discoveries: {}, unranked: [] },
+    };
+    saveState(f.dir, state);
+    assert.equal(await shown(), 'free models: allow (all pools)');
+
+    const never = await runStrategy(['set-free', 'never', '--yes'], f.dir);
+    assert.equal(never.code, 0, never.err);
+    assert.equal(JSON.parse(never.out).action, 'free-models-updated');
+    assert.equal(loadState(f.dir).strategy.freeModels, 'never');
+    assert.equal(loadState(f.dir).strategy.lastReport, undefined, 'the cached report is dropped');
+    // show with no cached report would refresh live; put one back for the read.
+    const again = loadState(f.dir);
+    again.strategy.lastReport = state.strategy.lastReport;
+    saveState(f.dir, again);
+    assert.equal(await shown(), 'free models: never (all pools)');
+
+    assert.equal((await runStrategy(['set-free', 'allow', '--pool', 'command-code', '--yes'], f.dir)).code, 0);
+    assert.deepEqual(loadState(f.dir).strategy.freeModelsByPool, { 'command-code': 'allow' });
+    const third = loadState(f.dir);
+    third.strategy.lastReport = state.strategy.lastReport;
+    saveState(f.dir, third);
+    assert.equal(await shown(), 'free models: never (all pools) · command-code: allow');
+
+    assert.equal((await runStrategy(['set-free', 'reset', '--pool', 'command-code'], f.dir)).code, 0);
+    assert.equal(loadState(f.dir).strategy.freeModelsByPool, undefined);
+    assert.equal((await runStrategy(['set-free', 'allow', '--yes'], f.dir)).code, 0);
+    assert.equal(Object.hasOwn(loadState(f.dir).strategy, 'freeModels'), false);
+
+    // Usage errors exit 2 and write nothing.
+    const before = JSON.stringify(loadState(f.dir).strategy);
+    assert.equal((await runStrategy(['set-free', 'never'], f.dir)).code, 2);
+    assert.equal((await runStrategy(['set-free', 'sometimes', '--yes'], f.dir)).code, 2);
+    assert.equal((await runStrategy(['set-free', 'reset'], f.dir)).code, 2);
+    assert.equal((await runStrategy(['set-free', 'never', '--pool', 'missing-pool', '--yes'], f.dir)).code, 2);
+    assert.equal((await runStrategy(['set-free', 'never', '--tier', 'low', '--yes'], f.dir)).code, 2);
+    assert.equal(JSON.stringify(loadState(f.dir).strategy), before);
+  } finally { f.cleanup(); }
+});
+
+test('strategy set-free with autopilot on makes its next check refresh and re-apply', async () => {
+  const f = fixture();
+  try {
+    const state = loadState(f.dir);
+    state.strategy = {
+      ...(state.strategy ?? {}),
+      policy: { autoApplyRecommendations: true, refreshHours: 24 },
+      lastRefreshedAt: new Date().toISOString(),
+    };
+    saveState(f.dir, state);
+    const result = await runStrategy(['set-free', 'never', '--yes'], f.dir);
+    assert.equal(result.code, 0, result.err);
+    assert.equal(loadState(f.dir).strategy.lastRefreshedAt, undefined);
+    assert.match(JSON.parse(result.out).notes.join(' '), /re-picks every rung/);
+  } finally { f.cleanup(); }
+});
+
+test('a pool under free models never shows no free model and cannot take a tier its only model is free on', () => {
+  const f = fixture();
+  try {
+    const state = loadState(f.dir);
+    state.pools.echo = { ...(state.pools.echo ?? {}), enabled: true };
+    saveState(f.dir, state);
+    const echoOf = () => buildPools(f.dir, Date.now(), {}, { packaged: true, effortTier: 'low' }).pools
+      .find((pool) => pool.name === 'echo');
+    const before = echoOf();
+    assert.ok(before, 'the echo fixture pool is built');
+    assert.equal(before.free, true);
+    assert.equal(before.freeModel, 'echo-local');
+    assert.equal(before.strategyFreeModels, 'allow');
+    const off = loadState(f.dir);
+    off.strategy = { ...(off.strategy ?? {}), freeModelsByPool: { echo: 'never' } };
+    saveState(f.dir, off);
+    const after = echoOf();
+    assert.equal(after.free, false);
+    assert.equal(after.freeModel, null);
+    assert.deepEqual(after.freeTiers, {});
+    assert.equal(after.strategyFreeModels, 'never');
+    assert.deepEqual(resolveDispatchModel(after.connector, 'low', { excludeFree: after.strategyFreeModels === 'never' }), {
+      eligible: false, model: null, source: 'free-models-off', reason: 'free models are off for echo',
+    });
+  } finally { f.cleanup(); }
+});
+
+test('strategy show names a model a pool\'s plan refused, and include-model forgets it on every pool', async () => {
+  const f = fixture();
+  try {
+    const state = loadState(f.dir);
+    const refusal = (model) => ({ model, at: '2026-09-29T01:00:00.000Z', why: `plan does not include ${model}`, plan: null });
+    state.strategy = {
+      ...(state.strategy ?? {}),
+      lastReport: { capturedAt: new Date().toISOString(), subscriptions: [], suggestions: {}, discoveries: {}, unranked: [] },
+      planExcludedModels: { 'command-code': [refusal('gpt-6-astra'), refusal('claude-fable-5-1')], codex: [refusal('gpt-6-astra')] },
+    };
+    saveState(f.dir, state);
+    const line = async () => (await runStrategy(['show'], f.dir)).out.split('\n').find((text) => text.startsWith('not in plan:'));
+    assert.equal(await line(), 'not in plan: command-code: gpt-6-astra, claude-fable-5-1 · codex: gpt-6-astra (strategy include-model <model> clears it)');
+    const included = await runStrategy(['include-model', 'GPT-6-Astra'], f.dir);
+    assert.equal(included.code, 0, included.err);
+    assert.deepEqual(loadState(f.dir).strategy.planExcludedModels, { 'command-code': [refusal('claude-fable-5-1')] });
+    const again = loadState(f.dir);
+    again.strategy.lastReport = state.strategy.lastReport;
+    saveState(f.dir, again);
+    assert.equal(await line(), 'not in plan: command-code: claude-fable-5-1 (strategy include-model <model> clears it)');
+  } finally { f.cleanup(); }
 });

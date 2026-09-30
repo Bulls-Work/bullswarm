@@ -60,7 +60,7 @@ const CONDITION = Object.freeze({
 });
 
 const RULES = Object.freeze([
-  'Plan as far ahead as you know: declare steps, gates and loops up front, and add steps later with workflow add where the next part depends on an answer (workflow add <run> --steps part.json, or --from-answer <step> when a step\'s answer is itself a fragment {steps, gates?, loops?}).',
+  'Plan as far ahead as you know: declare steps, gates and loops up front, and add steps later with workflow add where the next part depends on an answer (workflow add <run> --steps part.json, or --from-answer <step> when a step\'s answer is itself a fragment {steps, gates?, loops?, blocks?}). A fragment\'s blocks {"<new step id>": ["<existing step id>", ...]} makes existing steps that have not started, and are in no loop, also wait for a step it adds: to fix a failed step before the steps behind it run, add the fix with blocks naming them, then workflow step accept the failed step (a step already blocked by it stays blocked until then).',
   'A step passes by facts only: its worker ended cleanly, its deliverable was produced, its evidence passed, and its answer (when declared) matched the schema. A worker\'s own report never decides.',
   'The one failure rule: a failed step gets one automatic retry (retry: 1): a process failure on another eligible pool, a failed check (answer, evidence, deliverable) on the same pool with the failure attached. Then it comes back to you. A step with retry 0, and an outward step whose worker started, comes back at once.',
   'A usage limit (a spent 5-hour, weekly or monthly window, or no credit left) ends the step and sends it to you at once: nothing waits, moves or retries. A short rate limit backs off on the same pool at most twice, then comes to you. Finding no capable pool free at the pick also sends the step to you.',
@@ -70,7 +70,7 @@ const RULES = Object.freeze([
   'A failed step blocks only the steps that depend on it; other branches finish.',
   'route.independentOf can only name steps this step depends on (directly or through others): a check that must run on another provider than its source also depends on that source.',
   'Workers share one folder: tell each writer to keep other workers\' edits, and give it the exact files it changes in files.',
-  'A v3 run\'s steps, gates and loops are never edited: plan revise refuses any change to them and may only rerun steps. Add steps (workflow add), rerun a step (workflow step rerun), accept a failed one (workflow step accept, recorded as your choice), or cancel and start a new run.',
+  'A v3 run\'s steps, gates and loops are never edited: plan revise refuses any change to them and may only rerun steps, and the one change workflow add makes to an existing step is its fragment\'s blocks, which grows the dependsOn of a step that has not started. Add steps (workflow add), rerun a step (workflow step rerun), accept a failed one (workflow step accept, recorded as your choice), or cancel and start a new run.',
 ]);
 
 // The draft, critique, approve, publish workflow: research in parallel, a

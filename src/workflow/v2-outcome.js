@@ -26,6 +26,8 @@ const REQUIREMENT_STATUSES = new Set(['pending', 'passed', 'failed', 'blocked'])
 // outside its files) needs the caller to change something before it reruns.
 export const V2_RETRYABLE_FAILURE_KINDS = Object.freeze([
   'provider', 'quota', 'throttle', 'auth', 'process', 'unavailable', 'interrupted', 'runtime', 'schema', 'stalled',
+  // A plan refusal is recorded for its pool, so a rerun picks another pool.
+  'model-not-in-plan',
 ]);
 const RETRYABLE_FAILURE_KINDS = new Set(V2_RETRYABLE_FAILURE_KINDS);
 const RERUN_STATUSES = new Set(['pending', 'ready', 'waiting', 'running', 'cancelled', 'interrupted']);

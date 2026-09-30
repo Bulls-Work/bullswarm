@@ -5,6 +5,7 @@ import {
   pacingForecast, DEFAULT_INFLIGHT_PENALTY_PCT, modelFamilyOf,
 } from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT, windowSpent } from '../src/meters/framework.js';
+import { resolveDispatchModel } from '../src/lib/strategy.js';
 
 const HOUR = 3600_000;
 const NOW = 1_000_000_000_000;
@@ -157,6 +158,36 @@ test('an exhausted free pool never reaches the free tier', () => {
   });
   assert.equal(r.pick.pool, 'metered');
   assert.equal(r.candidates.some((candidate) => candidate.pool === 'opencode2'), false);
+});
+
+test('free models never: no pool is free-first, and a free-only pool is ineligible with the reason', () => {
+  const connector = (name, models) => ({
+    name,
+    model: models[0],
+    modelSelection: { flag: '--model' },
+    knownModels: models,
+    modelProfiles: models.map((id) => ({ match: id, tier: 'low', qualityRank: 2, free: /:free$/.test(id) })),
+  });
+  const mixed = connector('mixed', ['mixed/a:free', 'mixed/paid']);
+  const freeOnly = connector('free-only', ['free-only/b:free']);
+  const candidates = (excludeFree) => [
+    pool('metered', { pace: 5 }),
+    ...[mixed, freeOnly].map((c) => pool(c.name, {
+      connector: c, pace: -5, modelPolicy: resolveDispatchModel(c, 'low', { excludeFree }),
+    })),
+  ];
+  // Allowed (today): the free pool leads.
+  const allowed = pickPool('chore', candidates(false), { now: NOW, effortTier: 'low' });
+  assert.match(allowed.why, /^free pool first/);
+  const never = pickPool('chore', candidates(true), { now: NOW, effortTier: 'low' });
+  assert.equal(never.pick.pool, 'metered');
+  assert.doesNotMatch(never.why, /free pool first/);
+  assert.equal(never.candidates.some((c) => c.pool === 'free-only'), false);
+  assert.equal(never.candidates.find((c) => c.pool === 'mixed').free, false);
+  // Nothing else eligible: the empty pick names the setting.
+  const alone = pickPool('chore', [candidates(true)[2]], { now: NOW, effortTier: 'low' });
+  assert.equal(alone.pick, null);
+  assert.match(alone.why, /free models are off for free-only/);
 });
 
 test('unknown lane is refused, never guessed', () => {

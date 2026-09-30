@@ -254,6 +254,11 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
     }
   }
 
+  if (pool.modelPlanSignatures !== undefined
+    && (!isStringArray(pool.modelPlanSignatures) || pool.modelPlanSignatures.some((signature) => !signature.trim()))) {
+    errors.push('modelPlanSignatures: must be an array of non-empty strings');
+  }
+
   const strategy = pool.outputExtraction?.strategy;
   if (strategy === undefined) errors.push('outputExtraction.strategy: required');
   else if (!enums.outputStrategies.includes(strategy)) {

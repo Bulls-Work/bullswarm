@@ -45,12 +45,14 @@ changes. Use `--task-file` for long text. Options you will use:
   mismatch is failure kind `schema`).
 - `--no-retry`: one attempt. Without it the step gets its one automatic retry.
 - `--avoid-pool`, `--use-provider`, `--avoid-provider`, `--model`: routing.
+  `strategy set-free never --yes` stops free models being picked.
 - `--timeout <seconds>`: kill the worker after that long (`timeout after
   <N>s`, failure kind `interrupted`; the retry still runs).
 
 Read the verdict. `ok: true` means read `outFile` (and `answer`) and check the
 content before you use it. `ok: false` means inspect and report the failure;
-`failureKind` names it and `why` says it in one line. `shortId` names the run;
+`failureKind` names it and `why` says it in one line. `pool` and `model` name
+who ran it; `shortId` names the run;
 the last field, `details`, is the command for its record and cost. A
 build or chore run that changes no file (files git ignores count) fails
 `not-produced`, also outside git. Do not run `doctor` unless dispatch reports
@@ -134,7 +136,9 @@ slices, and a triage (usually one run).
   anything a machine can check (`"evidence": [{"type": "command", "cmd": "npm
   test", "timeoutSec": 300}]`, at most 5 items). Each check has a timeout
   (default 120 seconds, at most 600); a suite that runs longer cannot be one
-  item: split it, or have the step run it and answer with the result. Run a
+  item: split it, or have the step run it and answer with the result. A step
+  whose command names none of its `files` (a bare `npm test`) gets advisory
+  `suite-wider-than-files`: scope it, or use a check step. Run a
   check by hand before launch, because fixing a wrong check reruns the worker.
   Checks are read-only: a change to the deliverable fails the item. If the
   worker fails first, no check runs: the step's handback line and watch's
@@ -149,7 +153,8 @@ slices, and a triage (usually one run).
   workspace path, the outcome, the files, what to read from dependencies, and
   the checks to run. Every task carries a soft time box (`timeBox` minutes, a
   guide, never a timeout); a step that lists items under `## Not done` still
-  succeeds and reads `returned early · N not done`.
+  succeeds and reads `returned early · N not done`. A failed step whose report
+  lists `- outside: <blocker>` (something it may not change) skips its retry.
 
 Old v2 programs (`bullswarm.workflow.program.v2`) still run? No: since 0.38.0
 a new run refuses them, and runs they started are view-only.
@@ -172,7 +177,8 @@ bullswarm workflow plan validate "$(cat goal.txt)" --cwd=<abs-dir> --program=<ab
   launch   bullswarm workflow goal 'Make the acme tests pass' --cwd /private/tmp/v37e/acme --program /private/tmp/v37e/loop.json --json
 ```
 
-Exit 2 lists the `issues`: fix them and validate again. Exit 0 prints the
+Exit 2 lists the `issues`: fix them and validate again. Advisories never
+block; with `--json` they are in the JSON (`advisories`). Exit 0 prints the
 launch line; run it. A goal over 120 characters, or with a line break, shows
 as `"<goal>"` in that line (`launch   bullswarm workflow goal "<goal>" --cwd
 …`): put `"$(cat goal.txt)"` in its place before you run it. The launch
@@ -186,20 +192,17 @@ detaches and returns `shortId`; report it.
 | Every step | each finished step with its answer, loop rounds, plus every wake-up | `bullswarm workflow watch <shortId>` (or `--next` for one step at a time) |
 | Named steps | only the steps, gates or loops you name | `bullswarm workflow wait <shortId> <id...>` |
 
-Start one watch right after launch; it prints `watching <shortId> until
-trouble · <n> steps` and then nothing until a wake. Each exit is one wake:
+Start one watch right after launch; it prints nothing more until a wake. Each exit is one wake:
 read the output, act, and start the printed `next:` line again. If your
-harness cannot wake you when a background process ends (a subagent's turn
-ends when it replies), run the watch in the foreground: it blocks until the
+harness cannot wake you when a background process ends, run the watch in the foreground: it blocks until the
 wake; give it a `--timeout` under your tool's time limit (`--until trouble
 --timeout 100` for 2 minutes). A restart without `--after` attaches at the
 newest event and skips wakes in between. Never end your turn while a run you
 own is still running. Between wakes do not poll, read the run directory, or
 send per-step status replies.
 
-A gate wake-up after a loop (real output of the fix-until-green loop above,
-with a gate `ship` after it). The loop's line
-comes with the wake, so you need no `workflow wait` to learn how it ended:
+A gate `ship` after the loop above wakes you like this (real output); the
+loop's line comes with the wake:
 
 ```text
 ✓ loop until-green passed in round 1 of 3 · check's evidence passed
@@ -218,11 +221,6 @@ after a line for each loop the named ids wait behind:
 ⧖ gate ship waiting · Read the fix and decide whether to write CHANGES.md
   continue bullswarm workflow continue m39i62 ship
 ```
-
-A watch of every step also prints each finished step with its answer and
-proof (`✓ check finished · proven by command · answer checked · 56s`, then
-`answer {…}`) and each phase (steps without a `phase` group by dependency
-level).
 
 ### Gates and loops that wait for you
 
@@ -244,9 +242,7 @@ The one failure rule: a failed step gets one automatic retry (a process
 failure on another eligible pool, a failed check on the same pool with the
 failure attached), then it comes back to you in a needs-you block. A step with
 `retry: 0`, a started outward step, a usage limit, and a step no pool can run
-come back at once (`not retried`). Nothing else is automatic except what you
-declared (the retry, loop rounds, gates) and the rate-limit backoff below.
-Only a failed step's dependents wait; other branches finish. A real block:
+come back at once (`not retried`). Only a failed step's dependents wait; other branches finish. A real block:
 
 ```text
 ✗ lint needs you · command evidence failed after 1 retry
@@ -302,7 +298,9 @@ out on a usage limit, with `back at` its return when that is known. A sign-in
 failure, a provider error or a worker that died at start still gets the step's
 one automatic retry by itself, on another free pool when there is one. After a
 sign-in failure that retry skips every pool that shares the credential;
-nothing is stored, so a later step can pick that pool again.
+nothing is stored, so a later step can pick that pool again. A model the
+pool's plan lacks (`model not in plan`) retries on another pool, and that pool
+never gets that model again until `strategy include-model <model>`.
 
 When a return time is known, for this or any other failure, the block prints
 `back at <time>` and adds one option:
@@ -319,10 +317,8 @@ run `bullswarm workflow cancel <shortId>`.
 ### A step that looks stale
 
 The watcher prints `⚠ <step> looks stale: <reasons>` once per attempt when a
-running step's score crosses its threshold: `quiet 12m with no command
-running`, `no file change in 25m while 14 commands ran`, `same command 3× in a
-row: <command>`, or `running 47m, over 3× the expected 15m`. Quiet alone is
-enough; otherwise two reasons must hold. While Bullswarm runs a step's declared
+running step's score crosses its threshold (operations.md lists the reasons).
+While Bullswarm runs a step's declared
 checks, only quiet counts, read from the checks' heartbeat: `no check heartbeat
 for <N>m`. Nothing is stopped for you: let it run (start the `next:` watch
 again), or restart it with `bullswarm workflow step restart <shortId> <step>
@@ -382,7 +378,9 @@ next by adding to it:
 - `bullswarm workflow add <shortId> --steps part.json` appends a fragment
   `{steps, gates?, loops?}`. New steps may depend on existing steps, gates and
   loops, finished or not (on a loop's steps only through the loop's id).
-  Nothing the run has changes, and a finished run reopens. Added steps do not
+  Nothing the run has changes, and a finished run reopens, except that
+  `blocks: {"fix": ["report"]}` makes existing not-started steps also wait for
+  a step it adds (then `step accept` the failed step). Added steps do not
   take the program's `defaults`: set `lane` and `effort` on each.
   `--from-answer <step>` adds the fragment a step answered (read it with
   `wait` first). Real output:

@@ -178,6 +178,10 @@ Checks must be read-only: a check that changes the step's files fails with
 `changed the deliverable: <paths>`, and untracked by-products are recorded as
 `touched`. Scope a command to its step, put a whole-suite command on a step
 that runs last, and pass `--run` or `CI=1` when a test runner watches files. A
+step with `files` whose command names none of them (no path, glob or file-name
+stem among its arguments, such as a bare `npm test`) gets the advisory
+`suite-wider-than-files`: a failure elsewhere in the suite would fail a step
+that cannot fix it. A
 suite that runs longer than 600 seconds cannot be one item: split it into
 several items, or have the step run it and answer with the result.
 
@@ -187,6 +191,16 @@ in `bullswarm workflow action show <id> <step>`. A finished step reads `proven
 by command` or `proven by schema` when its checks passed, `answer checked`
 when only its answer passed its schema (a well-formed claim, not proof: it is
 not counted as proven), and `finished · unproven` when it has neither.
+
+## Advisories
+
+`plan validate` and `workflow goal` also report advisories: authoring advice
+that never refuses a program, changes an exit code or changes dispatch
+(`all-writers-high`, `docs-at-high`, `suite-wider-than-files`). In human mode
+each prints once on stderr as `advisory: <code> [<step>] — <message>`. With `--json`
+nothing is printed; the JSON carries them as `advisories: [{code, actionId,
+message}]` (the detached launch JSON always, a foreground result when there
+are any).
 
 ## Routing and independence
 
@@ -211,7 +225,16 @@ One automatic retry per step (`retry: 1`): a process failure (`auth`,
 `provider`, `process`, `interrupted`, `stalled`) moves to another eligible pool
 when there is one; a failed check (`not-produced`, `failed-evidence`,
 `schema`) retries on the same pool with the failure attached. Then the step
-comes back to you. A usage limit (`quota`) comes back at once; a rate limit
+comes back to you. A failed check whose report lists a `## Not done` item that
+starts with `outside:` (`- outside: tests/router.test.js fails on main before
+this change`: a blocker the step may not change) skips that retry and comes
+back at once, its `why` ending `retry skipped: the worker reported a blocker
+outside this step: <item>`. `model-not-in-plan` (the provider said the pool's
+plan does not include the model) is a process failure whose retry never goes
+back to that pool; the pool is not given that model again (`strategy show`
+lists it under `not in plan:`) until `strategy include-model <model>`, a
+changed `strategy set-subscription`, or turning the model back on for that
+pool. A usage limit (`quota`) comes back at once; a rate limit
 (`throttle`) backs off at most twice on the same pool first. A `--timeout`
 kill of `bullswarm run` reads `interrupted`. Only the failed step's dependents
 wait; other branches finish.

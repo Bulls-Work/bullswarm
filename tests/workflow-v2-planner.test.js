@@ -202,7 +202,7 @@ test('the planning contract documents kind, its derived table, program defaults,
   assert.deepEqual(contract.program.kinds, KIND_DEFAULTS);
   assert.deepEqual(contract.program.defaults.allowed, ['effort', 'reasoning', 'timeBox', 'verifyRounds']);
   assert.match(contract.program.defaults.note, /action > kind > program defaults > lane default/);
-  assert.deepEqual(contract.program.advisories.codes, ['all-writers-high', 'docs-at-high', 'requirement-unchecked']);
+  assert.deepEqual(contract.program.advisories.codes, ['all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files']);
   assert.match(contract.program.advisories['requirement-unchecked'], /never verified/);
   assert.match(contract.program.advisories.note, /never a rejection/);
   // Derived, so a new kind reaches the schema description without an edit here.

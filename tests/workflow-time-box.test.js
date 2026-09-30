@@ -10,7 +10,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writ
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
-  clearTimeBoxHistoryCache, medianOf, parseNotDone, readTimeBoxHistory, resolveTimeBox,
+  clearTimeBoxHistoryCache, medianOf, outsideBlockers, parseNotDone, readTimeBoxHistory, resolveTimeBox,
   returnedEarlyItems, returnedEarlyText, timeBoxForAttempt, timeBoxHistory, timeBoxParagraph, timeBoxText,
 } from '../src/workflow/time-box.js';
 import { readEvents } from '../src/workflow/events.js';
@@ -118,13 +118,16 @@ test('the work and evidence paragraphs name the box, the start clock, the wrap-u
   assert.equal(work, 'Time box: 30 minutes, starting at 02:04:37. It is a guide, not a hard stop. Run `date +%T` every few turns to keep track. '
     + 'Work through the items in order and finish each before starting the next. At about 21 minutes (02:25), stop starting new work and wrap up: '
     + 'make what you have consistent and its tests passing. At 30 minutes (02:34), stop and write the report with three sections: `## Done`, '
-    + '`## Not done` (one line per unfinished item, or `- none`), and `## Suggested next step`. An honest partial report, with unfinished items '
+    + '`## Not done` (one line per unfinished item, or `- none`), and `## Suggested next step`. '
+    + 'If something you may not change blocks an item, list it under `## Not done` starting with `outside:` and name the file or fact, '
+    + 'e.g. `- outside: tests/router.test.js fails on main before this change`. An honest partial report, with unfinished items '
     + 'listed under `## Not done`, is better than running long, and much better than calling unfinished work done.');
   const evidence = timeBoxParagraph({ minutes: 20, startedAt: '2026-09-21T23:50:00Z', evidence: true, timeZone: 'Asia/Hong_Kong' });
   assert.match(evidence, /^Time box: 20 minutes, starting at 07:50:00\. It is a guide, not a hard stop\./);
   assert.match(evidence, /At about 14 minutes \(08:04\), stop opening new lines of inspection/);
   assert.match(evidence, /At 20 minutes \(08:10\), finish the evidence preflight with what you have: a requirement you could not finish inspecting is `blocked`/);
   assert.match(evidence, /`## Done`, `## Not done` and `## Suggested next step`/);
+  assert.doesNotMatch(evidence, /outside:/, 'only work tasks ask for outside blockers');
   const boxed = timeBoxForAttempt({ action: { kind: 'implement' }, pool: 'codex', startedAt: '2026-09-21T02:04:37Z', history, timeZone: 'UTC' });
   assert.deepEqual(boxed.record, { minutes: 30, wrapUpMinutes: 21, source: 'pair', n: 80, medianMinutes: 18.86, startClock: '02:04:37' });
   assert.equal(boxed.text, work);
@@ -203,6 +206,26 @@ test('parseNotDone: `none`, `nothing` or `n/a` with a reason or a scope is not a
     '', '## Suggested next step', 'Run the independent reviewer against rules 1–12.',
   ].join('\n');
   assert.deepEqual(parseNotDone(build), { count: 0, items: [] });
+});
+
+test('outsideBlockers: the `Not done` items marked `outside:`, named after the prefix', () => {
+  const report = [
+    '## Done', '- outside: a done line is not a blocker', '',
+    '## Not done',
+    '- outside: tests/router.test.js fails on main before this change',
+    '- the retry budget test',
+    '- **Outside:** `docs/acme.md` is not in my files',
+    '  - outside: a nested line is not an item',
+    '- outside:',
+    '', '## Suggested next step', '- outside: not this one either',
+  ].join('\n');
+  assert.deepEqual(outsideBlockers(report), [
+    'tests/router.test.js fails on main before this change',
+    '`docs/acme.md` is not in my files',
+  ]);
+  assert.deepEqual(outsideBlockers('## Not done\n- tests/router.test.js fails, outside my files\n- none'), [], 'the prefix leads the item');
+  assert.deepEqual(outsideBlockers(''), []);
+  assert.deepEqual(outsideBlockers(null), []);
 });
 
 test('the display strings: returned early, box, and ran only past the box', () => {

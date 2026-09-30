@@ -184,6 +184,7 @@ export function timeBoxParagraph({ minutes, wrapUpMinutes = wrapUpMinutesFor(min
   return `${opening} Work through the items in order and finish each before starting the next. `
     + `At about ${wrapUpMinutes} minutes (${wrapClock}), stop starting new work and wrap up: make what you have consistent and its tests passing. `
     + `At ${minutes} minutes (${endClock}), stop and write the report with three sections: \`## Done\`, \`## Not done\` (one line per unfinished item, or \`- none\`), and \`## Suggested next step\`. `
+    + 'If something you may not change blocks an item, list it under `## Not done` starting with `outside:` and name the file or fact, e.g. `- outside: tests/router.test.js fails on main before this change`. '
     + 'An honest partial report, with unfinished items listed under `## Not done`, is better than running long, and much better than calling unfinished work done.';
 }
 
@@ -281,6 +282,20 @@ export function parseNotDone(text) {
     count: found.length,
     items: found.slice(0, NOT_DONE_ITEM_CAP).map((item) => cutAtWord(item, NOT_DONE_ITEM_CHARS)),
   };
+}
+
+const OUTSIDE = /^[*_`]*outside[*_`]*\s*:[*_`]*\s*/i;
+
+/**
+ * The `## Not done` items a report marks `outside:`, the blocker named after
+ * the prefix: something the step may not change. A failed gate attempt that
+ * lists one skips its automatic retry (v2-dispatch.js); it never passes.
+ */
+export function outsideBlockers(text) {
+  return parseNotDone(text).items
+    .filter((item) => OUTSIDE.test(item))
+    .map((item) => item.replace(OUTSIDE, '').trim())
+    .filter(Boolean);
 }
 
 // --- display ---------------------------------------------------------------

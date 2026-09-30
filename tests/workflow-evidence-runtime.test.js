@@ -245,6 +245,29 @@ test('stage 3: a failing check is the step\'s one gate retry, forced onto the sa
   assert.equal(result.handback.unfinished[0].retries, 1);
 });
 
+test('a failing check whose report names an `outside:` blocker skips the gate retry: one attempt, then the caller with the blocker in the why', async (t) => {
+  const f = fixture(t);
+  const report = '## Done\n- wrote write.txt\n\n## Not done\n- outside: check.sh fails on main before this change\n- a second outside item is not quoted\n\n## Suggested next step\n- fix check.sh\n';
+  const run = await launch(f, {
+    runId: 'wf-evoutside-abcdef',
+    actions: [step({ evidence: [{ type: 'command', cmd: 'echo "acme check: write.txt says nope" && grep -q ready write.txt' }] })],
+    dispatch: realDispatch({
+      worker: ({ targetDir, files }) => { writeFileSync(join(targetDir, 'write.txt'), 'nope\n'); writeFileSync(files.outFile, report); },
+    }),
+  });
+  assert.equal(run.state.attempts.length, 1, 'the gate retry was skipped');
+  const [only] = run.state.attempts;
+  assert.deepEqual([only.status, only.failureKind], ['failed', 'failed-evidence']);
+  const why = 'echo "acme check: write.txt says nope" && grep -q ready write.txt → exit 1: acme check: write.txt says nope · retry skipped: the worker reported a blocker outside this step: check.sh fails on main before this change';
+  assert.equal(only.why, why);
+  const attemptFinished = eventsOf(run.runDir, 'attempt.finished').map((event) => event.payload);
+  assert.deepEqual(attemptFinished.map((payload) => payload.willRetry), [false]);
+  const finished = eventsOf(run.runDir, 'action.finished').at(-1).payload;
+  assert.deepEqual([finished.status, finished.failureKind, finished.retries], ['failed', 'failed-evidence', 0], 'it still fails: the report never passes it');
+  const result = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
+  assert.deepEqual([result.handback.unfinished[0].why, result.handback.unfinished[0].retries], [why, 0]);
+});
+
 // A v3 run on disk, interrupted with `attempts`, for the kernel to resume.
 async function resumeWithAttempts(t, { runId, attempts, actionState, marker, evidence = [{ type: 'command', cmd: 'true' }] }) {
   const f = fixture(t, {}, { v3: true });

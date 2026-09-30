@@ -171,6 +171,7 @@ export async function wfGoal(opts) {
   catch (err) { console.error(`✗ autonomous V2 goal invalid (nothing ran): ${err.message}`); return 1; }
   const workerPool = doc.config.workerRouting?.pool ?? doc.config.workerRouting?.preferredPool ?? doc.config.workerRouting?.strictPool;
   if (workerPool && !names.includes(workerPool)) { console.error(`✗ requested worker pool "${workerPool}" is not available`); return 1; }
+  let launchAdvisories = null;
   if (initialPlannerResponse && !opts.request) {
     let previewed;
     try { previewed = previewValidateInitialProgram(doc, initialPlannerResponse); }
@@ -187,12 +188,15 @@ export async function wfGoal(opts) {
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
     // The same lines `plan validate` prints, at the moment the program is
     // actually launched. The kernel also stores them on the run state.
-    printAdvisories(programAdvisories(previewed.program, { requirements: null })
-      .map((item) => ({ ...item, message: v3IssueWording(item.message) })));
+    // In --json mode they ride inside the JSON document instead, so a caller
+    // that merges stderr into stdout still parses one document.
+    launchAdvisories = programAdvisories(previewed.program, { requirements: null })
+      .map((item) => ({ ...item, message: v3IssueWording(item.message) }));
+    if (!opts.json) printAdvisories(launchAdvisories);
   }
 
   if (!opts.foreground && !resumeRunId && !opts.request) {
-    const launch = await launchDetachedGoal(doc, opts, { initialPlannerResponse });
+    const launch = await launchDetachedGoal(doc, opts, { initialPlannerResponse, advisories: launchAdvisories });
     if (shouldAutoWatchGoal(opts)) {
       // The detached child writes state.json asynchronously; give it a
       // bounded grace period instead of failing the handoff on a slow host.
@@ -207,5 +211,6 @@ export async function wfGoal(opts) {
     runId: opts['run-id'] ?? undefined,
     resumeRunId,
     initialPlannerResponse,
+    advisories: launchAdvisories,
   });
 }

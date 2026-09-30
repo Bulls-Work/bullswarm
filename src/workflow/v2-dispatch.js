@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './retry-handoff.js';
+import { outsideBlockers } from './time-box.js';
 import {
   LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool, isFree, modelFamilyOf,
 } from '../lib/route.js';
@@ -35,6 +36,22 @@ import {
 } from './evidence-runner.js';
 
 export const GATE_RETRY_PIN_SOURCE = 'the same pool (gate retry)';
+// Gate failures whose one retry a report's `outside:` blocker cancels. A
+// schema correction and every process failure keep their retry.
+const OUTSIDE_SKIPS_RETRY = new Set(['failed-evidence', 'not-produced', 'semantic']);
+const OUTSIDE_WHY_CHARS = 160;
+
+// The `outside:` blockers in an attempt's out file; an unreadable or missing
+// file (a killed worker) names none.
+function readOutsideBlockers(outFile) {
+  if (!outFile) return [];
+  try { return outsideBlockers(readFileSync(outFile, 'utf8')); } catch { return []; }
+}
+
+function cutChars(text, limit) {
+  const value = String(text ?? '');
+  return value.length <= limit ? value : `${value.slice(0, limit - 1).trimEnd()}…`;
+}
 // The longest wait a provider may name for a transient rate limit that is
 // still sat out on the same pool. A longer one goes to the caller, told when
 // the provider said to try again.
@@ -82,6 +99,19 @@ function attemptSilenceTimeoutSec(pool, effort, decisionLog, configuredSilenceSe
   return Math.max(MIN_EXPECTED_MINUTES * 60, medianSec);
 }
 
+// The models this pool's plan was seen not to include (config.js attaches
+// strategy.js planExclusionsForPool): passed over like a model turned off for
+// this pool only. The pool itself stays pickable (doctrine 4).
+function planExcludedIds(pool) {
+  return (Array.isArray(pool?.strategyPlanExcludedModels) ? pool.strategyPlanExcludedModels : [])
+    .map((entry) => String(entry?.model ?? '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function planExcludes(pool, model) {
+  return planExcludedIds(pool).includes(String(model ?? '').trim().toLowerCase());
+}
+
 function classifyFailure(verdict, pool = null) {
   if (verdict?.ok) return null;
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
@@ -92,6 +122,9 @@ function classifyFailure(verdict, pool = null) {
   if (verdict?.failureKind === 'quota') return 'quota';
   if (verdict?.failureKind === 'throttle') return 'throttle';
   if (verdict?.failureKind === 'auth') return 'auth';
+  // The pool's plan does not include the model (a connector's
+  // modelPlanSignatures): a fact about that pool and model, not a dead pool.
+  if (verdict?.failureKind === 'model-not-in-plan') return 'model-not-in-plan';
   if (verdict?.failureKind === 'stalled' || verdict?.meta?.stalled) return 'stalled';
   if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
   if (verdict?.failureKind === 'schema') return 'schema';
@@ -173,17 +206,20 @@ function preparePools(pools, action, effort, {
     // replaces the tier's model: a pool runs it only when it can say it
     // runs that model (model-pin.js), whatever its tier selection holds.
     if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) continue;
+    if (preferredModel && planExcludes(pool, preferredModel)) continue;
     const assignment = pool.strategyAssignments?.[effort] ?? null;
     const modelPolicy = preferredModel ? { eligible: true, model: preferredModel, source: 'caller-model' } : resolveDispatchModel(connector, effort, {
       assignment,
       excludedModels: [
         ...(pool.strategyExcludedModels ?? []),
         ...disabledModelsForPool({ disabledModels: pool.strategyDisabledModels }, pool.name),
+        ...planExcludedIds(pool),
       ],
       allowedModels: selectedModelsForTier({
         modelTiers: pool.strategyModelTiers,
         configuredTiers: pool.strategyConfiguredTiers,
       }, pool.name, effort),
+      excludeFree: pool.strategyFreeModels === 'never',
     });
     if (!modelPolicy.eligible) continue;
     // Free-ness is a property of the model selected for THIS effort tier, not
@@ -1606,6 +1642,9 @@ export async function dispatchV2Action({
     // the stored attempt never promises a retry that does not happen. Null
     // sends the step to the caller (D10).
     let next = null;
+    // The `outside:` items of a failed gate attempt's report, when they
+    // cancelled its retry.
+    let blockers = [];
     // F23: a transient rate limit's short backoff on the same pool records
     // `quotaNext: 'wait'` on the attempt. A usage limit records none: it goes
     // to the caller.
@@ -1636,8 +1675,22 @@ export async function dispatchV2Action({
       } else if (kind === 'failed-evidence' && evidenceRun?.checkFault) {
         // E19: the worker cannot fix a check that could not run.
         next = null;
+      } else if (hasBudget && OUTSIDE_SKIPS_RETRY.has(kind) && (blockers = readOutsideBlockers(files.outFile)).length) {
+        // The worker's own report names a blocker outside what the step may
+        // change: the same-pool retry could not fix it, so the step goes to
+        // the caller now. It still fails; the report only cancels the retry.
+        next = null;
+        const suffix = ` · retry skipped: the worker reported a blocker outside this step: ${cutChars(blockers[0], OUTSIDE_WHY_CHARS)}`;
+        verdict = {
+          ...verdict,
+          why: (kind === 'failed-evidence' ? evidenceFailureWhy(evidenceResults, { suffix }) : null)
+            ?? `${verdict.why ?? kind}${suffix}`,
+        };
       } else if (failureClass === 'process') {
         if (hasBudget && others.length) next = { how: 'other-pool' };
+        // A plan without the model is never replayed on the same pool, like a
+        // dead sign-in: the same model would be refused again.
+        else if (kind === 'model-not-in-plan') next = null;
         else if (hasBudget && soleCandidate && kind !== 'auth') next = { how: 'same-pool', replay: true };
       } else if (failureClass === 'gate') {
         if (hasBudget && kind === 'schema') {
@@ -1689,6 +1742,7 @@ export async function dispatchV2Action({
         ...(verdict.outputSource ? { outputSource: verdict.outputSource } : {}),
       } : {}),
       ...(Array.isArray(verdict.notes) && verdict.notes.length ? { notes: clone(verdict.notes) } : {}),
+      ...(!next && blockers.length ? { outsideBlockers: blockers } : {}),
       ...(kind === 'stalled'
         ? { stalled: true, partialOutput: files.outFile, silentSec: attemptSilenceSec }
         : {}),
@@ -1920,6 +1974,7 @@ function noPoolCandidates(allPools, action, effort, {
     else if (sharedWith.length) excluded = `shares provider ${provider} with ${sharedWith.join(', ')}`;
     else if (!ignoreBurstGate && windowSpent(pool, now)) excluded = 'a usage window is at its limit';
     else if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) excluded = poolCanRunModel(pool, preferredModel).reason;
+    else if (preferredModel && planExcludes(pool, preferredModel)) excluded = `${preferredModel} is not in ${pool.name}'s plan`;
     else if (!tiers.includes(effort)) excluded = `no model on the ${effort} tier for ${lane} work (has ${tiers.length ? tiers.join(', ') : 'none'})`;
     else excluded = heldText.get(pool.name) ?? 'capable, but no pick was made';
     return { pool: pool.name, provider, excluded, tiers, inRoute, onLane: lanes };

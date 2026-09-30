@@ -92,3 +92,12 @@ test('bullswarm run --model becomes the one step\'s model', () => {
   assert.match(runStepRequest({ lane: 'analyze', prompt: 'x', model: 'acme 6' }).error, /model must be a model id/);
   assert.equal(runStepProgram(runStepRequest({ lane: 'analyze', prompt: 'x' }).request).steps[0].model, undefined);
 });
+
+test('poolCanRunModel: a model the pool\'s plan refused is not runnable there, with the plan as the reason', () => {
+  const pool = {
+    name: 'command-code', discoveredModels: ['gpt-6-astra', 'gpt-6-sol'],
+    strategyPlanExcludedModels: [{ model: 'gpt-6-astra', at: '2026-09-29T01:00:00.000Z', why: 'x' }],
+  };
+  assert.deepEqual(poolCanRunModel(pool, 'gpt-6-astra'), { ok: false, reason: 'command-code plan does not include gpt-6-astra' });
+  assert.deepEqual(poolCanRunModel(pool, 'gpt-6-sol'), { ok: true });
+});

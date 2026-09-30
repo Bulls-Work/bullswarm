@@ -33,8 +33,8 @@ import {
 import { loadProviders } from './providers.js';
 import { isFreeModel } from './usage.js';
 import {
-  configuredModel, disabledModelsForPool, resolveDispatchModel, selectedModelsForTier,
-  STRATEGY_TIERS,
+  configuredModel, disabledModelsForPool, freeModelsBanned, freeModelsSetting, planExclusionsForPool,
+  resolveDispatchModel, selectedModelsForTier, STRATEGY_TIERS,
 } from './strategy.js';
 import { poolLabel } from './pool-labels.js';
 
@@ -85,11 +85,14 @@ function freeSelection(connector, state, poolName, effortTier = null) {
         ...disabledModelsForPool(strategy, poolName),
       ],
       allowedModels: selectedModelsForTier(strategy, poolName, effortTier),
+      excludeFree: freeModelsBanned(strategy, poolName),
     })
     : null;
   const model = policy?.model
     ?? (assignment?.pool === poolName ? assignment.model : null)
     ?? configuredModel(connector);
+  // Free models off for this pool: it never runs one, so it shows none.
+  if (freeModelsBanned(strategy, poolName) && isFreeModel(connector, model)) return { model: null, free: false };
   return { model, free: isFreeModel(connector, model) };
 }
 
@@ -174,6 +177,12 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       strategyModelTiers: state.strategy?.modelTiers ?? {},
       strategyConfiguredTiers: state.strategy?.configuredTiers ?? [],
       strategyDisabledModels: state.strategy?.disabledModels ?? {},
+      // The models this pool's plan does not include (model-not-in-plan):
+      // dispatch passes them over on this pool only.
+      strategyPlanExcludedModels: planExclusionsForPool(state.strategy ?? {}, name),
+      // 'allow' | 'never' (strategy set-free): under never, dispatch passes
+      // resolveDispatchModel excludeFree so this pool never runs a free model.
+      strategyFreeModels: freeModelsSetting(state.strategy ?? {}, name),
       // What the last `strategy refresh` found this pool can run (model-pin.js).
       discoveredModels: (state.strategy?.lastReport?.discoveries?.[name]?.models ?? [])
         .map((model) => model?.id).filter((id) => typeof id === 'string' && id),

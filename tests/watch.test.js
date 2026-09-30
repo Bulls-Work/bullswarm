@@ -1741,3 +1741,145 @@ test('the error-channel scan keeps provider records and drops agent prose', () =
   );
   assert.equal(mirrored, '', 'a mirrored reply is not evidence');
 });
+
+// A connector's modelPlanSignatures: a provider that refuses a model its plan
+// does not include (command-code 1.72.3: `403 MODEL_NOT_IN_PLAN: …`) fails as
+// model-not-in-plan, and the pool's plan fact is recorded for that model only.
+const PLAN_REFUSAL = '403 MODEL_NOT_IN_PLAN: Claude Fable 5.1 available in Provider and above plans or extra on demand usage';
+
+function commandCodeRefusing(line) {
+  const shipped = JSON.parse(readFileSync(join(REPO_ROOT, 'providers/contrib/command-code/connector.json'), 'utf8'));
+  return {
+    ...shipped,
+    spawn: { ...shipped.spawn, cmd: [process.execPath, '-e', `process.stderr.write(${JSON.stringify(`${line}\n`)}); process.exit(1)`, '{taskFile}'] },
+  };
+}
+
+test('a plan refusal on the provider error channel is model-not-in-plan, recorded for that pool and model', async () => {
+  const ctx = makeCtx();
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-home-'));
+  try {
+    const v = await watchOnce(commandCodeRefusing(PLAN_REFUSAL), 'Do the work.', ctx.dir, ctx.paths, {
+      timeoutSec: 60, home, poolName: 'command-code', model: 'gpt-6-astra',
+    });
+    assert.equal(v.ok, false);
+    assert.equal(v.failureKind, 'model-not-in-plan', v.why);
+    assert.equal(v.planModel, 'gpt-6-astra');
+    assert.match(v.why, /^command-code plan does not include gpt-6-astra/);
+    assert.ok(v.why.length <= 160);
+    const { loadState } = await import('../src/lib/state.js');
+    const entries = loadState(home).strategy.planExcludedModels['command-code'];
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].model, 'gpt-6-astra');
+    assert.ok(Number.isFinite(Date.parse(entries[0].at)), 'when it was seen');
+    assert.equal(entries[0].why, v.why);
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('the plan-refusal code in the agent\'s reply is not a plan refusal (W7)', async () => {
+  const ctx = makeCtx();
+  try {
+    const quoting = {
+      name: 'fixture-plan',
+      spawn: { cmd: [process.execPath, '-e', `console.log(${JSON.stringify(`Completed: mapped ${PLAN_REFUSAL} to a clear message.`)})`] },
+      modelPlanSignatures: ['MODEL_NOT_IN_PLAN'],
+      outputExtraction: { strategy: 'stdout' },
+    };
+    const v = await watchOnce(quoting, 'Do the work.', ctx.dir, ctx.paths, { timeoutSec: 60, model: 'gpt-6-astra' });
+    assert.notEqual(v.failureKind, 'model-not-in-plan', v.why);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a connector that declares no plan wording keeps the refusal a process failure', async () => {
+  const ctx = makeCtx();
+  try {
+    const bare = { ...commandCodeRefusing(PLAN_REFUSAL) };
+    delete bare.modelPlanSignatures;
+    const v = await watchOnce(bare, 'Do the work.', ctx.dir, ctx.paths, { timeoutSec: 60, model: 'gpt-6-astra' });
+    assert.equal(v.ok, false);
+    assert.notEqual(v.failureKind, 'model-not-in-plan');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+// Dispatch: the one retry goes to another pool, never the same model again.
+const planRefused = { ok: false, failureKind: 'model-not-in-plan', planModel: 'gpt-6-astra', why: 'alpha plan does not include gpt-6-astra', meta: { exitCode: 1, wallSec: 1 } };
+const processFailed = { ok: false, failureKind: 'process', why: 'worker exited 1', meta: { exitCode: 1, wallSec: 1 } };
+const planPool = (name, extra = {}) => ({
+  name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
+  modelSelection: { flag: '--model' }, ...extra,
+});
+
+async function planDispatch(t, pools, verdicts) {
+  const { dispatchV2Action } = await import('../src/workflow/v2-dispatch.js');
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-dispatch-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+  const picked = [];
+  let index = 0;
+  const result = await dispatchV2Action({
+    action: { id: 'task', role: 'investigate', lane: 'analyze', effort: 'medium', deliverable: { type: 'report' } },
+    taskText: 'look into it', targetDir: home,
+    paths: { taskFile: join(home, 'task-task-attempt-1.md'), outFile: join(home, 'out-task-attempt-1.md') },
+    pools, bullswarmDir: home, failureRule: true,
+    dependencies: {
+      watchOnce: async (connector, _task, _dir, paths) => {
+        picked.push(connector.name);
+        writeFileSync(paths.outFile, '## Done\n- looked\n');
+        return verdicts[index++];
+      },
+      loadState: () => structuredClone(core),
+      saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
+      now: (() => { let value = Date.parse('2026-09-29T01:00:00Z'); return () => (value += 1000); })(),
+      uuid: () => 'session-fixed',
+    },
+  });
+  return { result, picked };
+}
+
+const ok = { ok: true, why: 'verified', meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10 } } };
+
+test('dispatch: model-not-in-plan retries once on another eligible pool', async (t) => {
+  const { result, picked } = await planDispatch(t, [planPool('alpha'), planPool('beta')], [planRefused, ok]);
+  assert.equal(picked.length, 2);
+  assert.notEqual(picked[1], picked[0], 'the retry went to another pool');
+  assert.equal(result.attempts[0].failureKind, 'model-not-in-plan');
+  assert.equal(result.attempts[0].willRetry, true);
+  assert.equal(result.ok, true, result.attempts.at(-1)?.why);
+});
+
+test('dispatch: a sole pool is not replayed after model-not-in-plan (a process failure is)', async (t) => {
+  const refused = await planDispatch(t, [planPool('alpha')], [planRefused, ok]);
+  assert.deepEqual(refused.picked, ['alpha']);
+  assert.equal(refused.result.ok, false);
+  assert.equal(refused.result.attempts[0].failureKind, 'model-not-in-plan');
+  assert.equal(refused.result.attempts[0].willRetry, false);
+  const crashed = await planDispatch(t, [planPool('alpha')], [processFailed, ok]);
+  assert.deepEqual(crashed.picked, ['alpha', 'alpha'], 'the process failure is replayed');
+});
+
+test('dispatch: a model the pool\'s plan excludes is passed over on that pool only, and the pool stays pickable', async () => {
+  const { prepareV2DispatchPools } = await import('../src/workflow/v2-dispatch.js');
+  const action = { id: 'task', role: 'investigate', lane: 'analyze', effort: 'medium' };
+  const models = ['gpt-6-astra', 'gpt-6-sol'];
+  const excluded = planPool('alpha', { discoveredModels: models, strategyPlanExcludedModels: [{ model: 'gpt-6-astra', at: '2026-09-29T01:00:00.000Z', why: 'x' }] });
+  const other = planPool('beta', { discoveredModels: models });
+  const pinned = prepareV2DispatchPools([excluded, other], action, 'medium', { preferredModel: 'gpt-6-astra' });
+  assert.deepEqual(pinned.map((pool) => pool.name), ['beta']);
+  const free = prepareV2DispatchPools([excluded, other], action, 'medium', { preferredModel: 'gpt-6-sol' });
+  assert.deepEqual(free.map((pool) => pool.name).sort(), ['alpha', 'beta'], 'the pool itself is still offered');
+});
+
+test('dispatch: a pool whose free models are off is not offered a free model, and allow keeps today\'s pick', async () => {
+  const { prepareV2DispatchPools } = await import('../src/workflow/v2-dispatch.js');
+  const action = { id: 'task', role: 'investigate', lane: 'analyze', effort: 'medium' };
+  const freeOnly = (setting) => planPool('alpha', { model: 'vendor/model-x:free', strategyFreeModels: setting });
+  assert.deepEqual(prepareV2DispatchPools([freeOnly('allow')], action, 'medium').map((pool) => pool.name), ['alpha']);
+  assert.deepEqual(prepareV2DispatchPools([freeOnly('never')], action, 'medium').map((pool) => pool.name), []);
+});

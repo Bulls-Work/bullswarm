@@ -280,7 +280,7 @@ test('plan validate on a v3 program speaks of steps: no v2 role or kind words, i
   const human = validate(valid);
   assert.equal(human.status, 0, human.stderr);
   assert.match(human.stdout, /post {20} analyze\/medium deliverable=outward after notes/);
-  assert.match(human.stdout, /advisory: all-writers-high — all 3 build\/chore steps run at high effort/);
+  assert.match(human.stderr, /advisory: all-writers-high — all 3 build\/chore steps run at high effort/);
   assert.doesNotMatch(human.stdout, V2_WORDS, human.stdout);
   const json = JSON.parse(validate(valid, true).stdout);
   for (const step of json.program.actions) {

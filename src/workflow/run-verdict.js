@@ -89,6 +89,9 @@ export function runVerdict({ run, dispatched = null, stepId }) {
     retryAfter: ok ? null : failure?.retryAfter ?? dispatched?.retryAfter ?? null,
     runId: run.runId,
     shortId: run.shortId ?? state.shortId ?? null,
+    // The last attempt's pool and model, top-level for callers; `pick` stays.
+    pool: last?.pool ?? null,
+    model: last?.model ?? null,
     pick: { pool: last?.pool ?? null, model: last?.model ?? null, command: worker.pick?.command ?? null },
     outFile: last?.outputFile ?? null,
     ...answerFacts(last),
@@ -161,16 +164,22 @@ export function runVerdictLines(verdict, bullswarmDir) {
 }
 
 // JSON with two-space indent, but an array of plain values on one line, so
-// an argv or an error list costs one line, not one per item.
+// an argv or an error list costs one line, not one per item. A short object of
+// plain values (a reasoning record) is one line too.
+const plain = (item) => item === null || typeof item !== 'object';
 function compactJson(value, indent = '') {
   if (Array.isArray(value)) {
-    if (value.every((item) => item === null || typeof item !== 'object')) return JSON.stringify(value);
+    if (value.every(plain)) return JSON.stringify(value);
     const inner = `${indent}  `;
     return `[\n${value.map((item) => `${inner}${compactJson(item, inner)}`).join(',\n')}\n${indent}]`;
   }
   if (value && typeof value === 'object') {
     const entries = Object.entries(value).filter(([, item]) => item !== undefined);
     if (!entries.length) return '{}';
+    if (entries.every(([, item]) => plain(item))) {
+      const line = JSON.stringify(Object.fromEntries(entries));
+      if (line.length <= 80) return line;
+    }
     const inner = `${indent}  `;
     return `{\n${entries.map(([key, item]) => `${inner}${JSON.stringify(key)}: ${compactJson(item, inner)}`).join(',\n')}\n${indent}}`;
   }

@@ -42,7 +42,9 @@ import { spawnRetentionSweep } from './retention.js';
 import { findUpstreamAuthFailure } from './auth-signatures.js';
 import { reasoningRecord } from './reasoning.js';
 import { getMeterReading, refreshMeterAfterQuota } from '../meters/registry.js';
-import { relayedQuotaNotice, matchLikelyAuthFailure } from './provider-errors.js';
+import { relayedQuotaNotice, matchLikelyAuthFailure, matchModelPlanSignature } from './provider-errors.js';
+import { updateState } from './state.js';
+import { recordPlanExcludedModel } from './strategy.js';
 import { followUpArgv } from './worker-argv.js';
 import { FOLLOW_UP_PROMPT, derivedReport, outputIsTruncated, extractOutput } from './worker-report.js';
 import {
@@ -467,6 +469,12 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   const upstreamAuth = obs.providerFailureType
     ? findUpstreamAuthFailure(connector, errorChannel)
     : null;
+  // The provider refused the model because this pool's plan does not include
+  // it (the connector's `modelPlanSignatures`). Not a sign-in and not a limit:
+  // read only when neither of those matched.
+  const modelPlanHit = upstreamAuth || quotaFailure || fatalKind === 'auth'
+    ? null
+    : matchModelPlanSignature(connector, errorChannel);
   // quota.js Q6 — the one rule for when a limit resets: the pool's own meter
   // at >= 95% on a running window, or a provider line that says a usage
   // window is spent AND names its reset. The decision (line, meter reading,
@@ -565,6 +573,16 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       usageLimit,
       why: usageLimit.why,
     };
+  } else if (modelPlanHit) {
+    // The model is named by the attempt's own pick, never parsed from the
+    // provider's sentence (which may use a display name).
+    const planModel = selectedModelFor(connector, opts, obs);
+    verdict = {
+      ok: false,
+      failureKind: 'model-not-in-plan',
+      planModel: planModel ?? null,
+      why: `${poolName ?? 'this pool'} plan does not include ${planModel ?? 'the model'} (provider said "${String(modelPlanHit).slice(0, 60)}")`,
+    };
   } else if (obs.providerFailureType) {
     // After the limit gates: a usage limit inside the provider's error event
     // keeps its throttle or quota kind. A recovered output is only inspected
@@ -630,6 +648,23 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // reset when there is one (named by the provider, or measured by the
   // meter), else until a reset registry.js guesses from the last reading —
   // a guessed one keeps no pool out (framework.js windowSpent).
+  // A plan that does not include the model is a durable subscription fact,
+  // recorded for this pool and model only: the pool stays pickable with its
+  // other models (it is not a spent or dead pool, doctrine 4), and strategy
+  // suggestions and dispatch pass that model over on this pool until the plan
+  // changes (strategy.js planExclusionsForPool).
+  if (verdict.failureKind === 'model-not-in-plan' && verdict.planModel && poolName && home) {
+    try {
+      updateState(home, (state) => {
+        state.strategy ??= {};
+        recordPlanExcludedModel(state.strategy, poolName, verdict.planModel, {
+          at: new Date(endedAt).toISOString(),
+          why: verdict.why,
+        });
+      });
+      verdict.planExclusionRecorded = true;
+    } catch { /* the verdict stands; the next refusal records it again */ }
+  }
   let meterRefresh = null;
   if (verdict.failureKind === 'quota' && poolName && home) {
     const meterReader = opts.meterReader ?? opts.readMeter ?? opts.reader;

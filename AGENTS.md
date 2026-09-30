@@ -51,6 +51,12 @@ before doing anything. Their readers and stored formats are unchanged.
    outlives a step is the 100% refusal marker a usage limit writes when the
    meter cannot be read, and it counts only when its reset was named or
    measured, never guessed (`refusalResetKnown` in `src/meters/framework.js`).
+   Beside it sits one plan fact: `state.strategy.planExcludedModels[pool]`,
+   the models a provider said that pool's subscription does not include
+   (failure kind `model-not-in-plan`). It is a fact about the plan, like its
+   price, not a spent or dead pool: the pool stays pickable with its other
+   models, and the record ends when the subscription changes or the operator
+   turns the model back on (`src/lib/strategy.js`).
    Recursion depth is core-owned via env (`BULLSWARM_DEPTH`).
 5. Workflow dispatches honor the same guarantees as single runs, in
    `src/workflow/v2-dispatch.js`: `BULLSWARM_DEPTH` is checked and propagated

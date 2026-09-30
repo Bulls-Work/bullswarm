@@ -31,6 +31,27 @@ export function matchAuthSignature(connector, text) {
   return sigs.find((s) => text.toLowerCase().includes(s.toLowerCase())) ?? null;
 }
 
+// A connector's `modelPlanSignatures` (its own wording for "this plan does not
+// include that model", doctrine 3), matched on the provider's error channel:
+// the signature that matched, or null. As for auth, the line must read as a
+// provider failure (a provider error event, an error-shaped line, or a line
+// that opens with the signature after an optional HTTP status), because a
+// connector without an event stream has its reply on that channel too.
+export function matchModelPlanSignature(connector, text) {
+  const sigs = (Array.isArray(connector?.modelPlanSignatures) ? connector.modelPlanSignatures : [])
+    .filter((s) => typeof s === 'string' && s.trim());
+  if (!sigs.length) return null;
+  for (const raw of String(text ?? '').split('\n')) {
+    const line = raw.trim();
+    const lower = line.toLowerCase();
+    const opening = lower.replace(/^(?:error:\s*)?(?:\d{3}\s+)?/, '');
+    const hit = sigs.find((s) => lower.includes(s.toLowerCase()));
+    if (!hit) continue;
+    if (JSON_ERROR_EVENT_LINE.test(line) || ERROR_SHAPED_LINE.test(line) || opening.startsWith(hit.toLowerCase())) return hit;
+  }
+  return null;
+}
+
 export function matchLikelyAuthFailure(connector, text) {
   const hit = matchAuthSignature(connector, text);
   if (!hit) return null;

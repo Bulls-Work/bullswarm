@@ -22,7 +22,8 @@ import {
   GENERIC_QUOTA_SIGNATURES,
   ERROR_SHAPED_LINE,
 } from '../src/lib/quota.js';
-import { providerErrorRecords } from '../src/lib/provider-errors.js';
+import { matchLikelyAuthFailure, matchModelPlanSignature, providerErrorRecords } from '../src/lib/provider-errors.js';
+import { validateProvider } from '../src/provider-cli.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const connectorOf = (path) => JSON.parse(readFileSync(join(REPO, path), 'utf8'));
@@ -292,6 +293,49 @@ test('every provider classifies both wordings: throttle retries, window is a usa
   for (const [name, path] of Object.entries(PROVIDER_CONNECTORS)) {
     const declared = connectorOf(path).throttleSignatures;
     assert.ok(declared === undefined || (Array.isArray(declared) && declared.every((s) => typeof s === 'string')), name);
+  }
+});
+
+// command-code 1.72.3's refusal of a model its plan does not include.
+const COMMAND_CODE_NOT_IN_PLAN = '403 MODEL_NOT_IN_PLAN: Claude Fable 5.1 available in Provider and above plans or extra on demand usage';
+
+test('a plan refusal is neither a usage limit nor a sign-in on any provider, and Command Code names it', () => {
+  for (const [name, path] of Object.entries(PROVIDER_CONNECTORS)) {
+    const connector = connectorOf(path);
+    assert.equal(limitOf(connector, COMMAND_CODE_NOT_IN_PLAN), null, `${name}: not a limit`);
+    assert.equal(matchLikelyAuthFailure(connector, COMMAND_CODE_NOT_IN_PLAN), null, `${name}: not a sign-in`);
+    const declared = connector.modelPlanSignatures;
+    assert.ok(declared === undefined || (Array.isArray(declared) && declared.every((s) => typeof s === 'string' && s.trim())), name);
+  }
+  const commandCode = connectorOf(PROVIDER_CONNECTORS['command-code']);
+  assert.equal(matchModelPlanSignature(commandCode, COMMAND_CODE_NOT_IN_PLAN), 'MODEL_NOT_IN_PLAN');
+  assert.equal(matchModelPlanSignature(commandCode, `Error: ${COMMAND_CODE_NOT_IN_PLAN}`), 'MODEL_NOT_IN_PLAN');
+  assert.equal(matchModelPlanSignature(commandCode, JSON.stringify({ type: 'error', message: COMMAND_CODE_NOT_IN_PLAN })), 'MODEL_NOT_IN_PLAN');
+  // Prose that mentions the code is not the provider's refusal.
+  assert.equal(matchModelPlanSignature(commandCode, 'Completed: the handler now maps MODEL_NOT_IN_PLAN to a message.'), null);
+  // Only a connector that declares the wording reads it (doctrine 3).
+  assert.equal(matchModelPlanSignature(connectorOf(PROVIDER_CONNECTORS.codex), COMMAND_CODE_NOT_IN_PLAN), null);
+});
+
+test('provider validate refuses a modelPlanSignatures that is not a list of non-empty strings', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-validate-'));
+  try {
+    const dir = join(home, 'providers', 'plan-fixture');
+    mkdirSync(dir, { recursive: true });
+    const pool = {
+      name: 'plan-fixture', spawn: { cmd: ['plan-fixture', '{taskFile}'] }, outputExtraction: { strategy: 'stdout' },
+      meter: { type: 'none' }, lanes: ['build'],
+    };
+    const errorsWith = (modelPlanSignatures) => {
+      writeFileSync(join(dir, 'connector.json'), JSON.stringify({ ...pool, ...(modelPlanSignatures === undefined ? {} : { modelPlanSignatures }) }));
+      return validateProvider(home, dir).pools[0].errors.filter((error) => error.startsWith('modelPlanSignatures'));
+    };
+    assert.deepEqual(errorsWith(undefined), []);
+    assert.deepEqual(errorsWith(['MODEL_NOT_IN_PLAN']), []);
+    assert.equal(errorsWith('MODEL_NOT_IN_PLAN').length, 1);
+    assert.equal(errorsWith(['']).length, 1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

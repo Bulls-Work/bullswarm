@@ -9,7 +9,9 @@
 // a revision may rerun or accept steps, never change or remove one, and never
 // change the run's gates or loops, so no gate or loop can lose a step. Steps,
 // gates and loops are added only by `workflow add`, in its append-only mode
-// (below).
+// (below). The one change `workflow add` makes to an existing step (0.38.1):
+// its fragment's `blocks` may make a step that has not started also wait for
+// a step the fragment adds, so that step's dependsOn grows and nothing else.
 
 import { PROGRAM_V3_SCHEMA_VERSION, isProgramV3, storedProgramV3 } from './program-v3.js';
 
@@ -79,21 +81,29 @@ export function desiredActionsV3(state, program, runtime, { avoidRoute = [] } = 
 // `workflow add` sends a revision request with `append: true` whose program is
 // the run's exported program followed by the caller's fragment. It may add
 // steps, gates and loops and name existing ids in dependsOn and
-// route.independentOf; it never changes, removes or reruns what is there. The
-// normalised stored form of a step normalises to itself (program-v3.js), so an
-// existing step reads as unchanged; one that would not is refused, never
-// amended.
+// route.independentOf; it never removes or reruns what is there, and changes
+// an existing step in one way only: the fragment's `blocks`
+// ({newStepId: [existing step ids]}) appends a step it adds to the dependsOn
+// of existing steps that have not started, are in no loop and would form no
+// cycle. The request carries that edge in the step itself, so the live kernel
+// that applies the request checks the step's status again under its own
+// state. A step already blocked by a failed dependency stays blocked until
+// that dependency is accepted or rerun. The normalised stored form of a step
+// normalises to itself (program-v3.js), so an existing step reads as
+// unchanged apart from its added dependsOn; one that would not is refused,
+// never amended.
 
-const FRAGMENT_KEYS = new Set(['schemaVersion', 'steps', 'gates', 'loops']);
+const FRAGMENT_KEYS = new Set(['schemaVersion', 'steps', 'gates', 'loops', 'blocks']);
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** Why this value is not a v3 fragment {steps?, gates?, loops?}, as a list of issues ([] when it is one). */
+/** Why this value is not a v3 fragment {steps?, gates?, loops?, blocks?}, as a list of issues ([] when it is one). */
 export function fragmentShapeIssues(fragment) {
-  if (!isObject(fragment)) return ['a fragment must be a JSON object {steps, gates?, loops?}'];
+  if (!isObject(fragment)) return ['a fragment must be a JSON object {steps, gates?, loops?, blocks?}'];
   const issues = [];
   for (const key of Object.keys(fragment)) {
-    if (!FRAGMENT_KEYS.has(key)) issues.push(`fragment.${key} is not allowed; a fragment has steps, gates and loops (set lane, effort and retry on each step)`);
+    if (!FRAGMENT_KEYS.has(key)) issues.push(`fragment.${key} is not allowed; a fragment has steps, gates, loops and blocks (set lane, effort and retry on each step)`);
   }
+  issues.push(...blocksShapeIssues(fragment));
   if (fragment.schemaVersion !== undefined && fragment.schemaVersion !== PROGRAM_V3_SCHEMA_VERSION) issues.push(`fragment.schemaVersion must be "${PROGRAM_V3_SCHEMA_VERSION}" when given`);
   for (const name of ['steps', 'gates', 'loops']) {
     if (fragment[name] !== undefined && !Array.isArray(fragment[name])) issues.push(`fragment.${name} must be an array`);
@@ -103,15 +113,69 @@ export function fragmentShapeIssues(fragment) {
   return issues;
 }
 
+const BLOCKS_FORM = 'blocks maps a step the fragment adds to the existing steps that must also wait for it: {"<new step id>": ["<existing step id>", ...]}';
+
+// fragment.blocks read on its own: an object whose keys are steps the fragment adds.
+function blocksShapeIssues(fragment) {
+  if (fragment.blocks === undefined) return [];
+  if (!isObject(fragment.blocks)) return [`fragment.blocks must be an object; ${BLOCKS_FORM}`];
+  const adds = new Set((Array.isArray(fragment.steps) ? fragment.steps : []).map((step) => step?.id));
+  const issues = [];
+  for (const [key, targets] of Object.entries(fragment.blocks)) {
+    if (!adds.has(key)) issues.push(`fragment.blocks.${key} names no step the fragment adds; ${BLOCKS_FORM}`);
+    if (!Array.isArray(targets) || !targets.length || targets.some((id) => typeof id !== 'string' || !id)) {
+      issues.push(`fragment.blocks.${key} must be a non-empty array of existing step ids`);
+    } else {
+      for (const id of new Set(targets.filter((item, index) => targets.indexOf(item) !== index))) issues.push(`fragment.blocks.${key} names ${id} twice`);
+    }
+  }
+  return issues;
+}
+
+/**
+ * Why the fragment's blocks cannot apply to this run ([] when they can): each
+ * target must be a step the run has. Whether it may still wait (not started,
+ * in no loop, no cycle) is checked by appendedActionsV3, where a live kernel
+ * reads it too.
+ */
+export function blocksIssues(state, fragment) {
+  const issues = [];
+  const control = state.program.control ?? { gates: [], loops: [] };
+  const runtime = new Map((state.actions ?? []).map((action) => [action.id, action]));
+  const steps = new Set(state.program.actions.filter((action) => runtime.get(action.id)?.status !== 'removed').map((action) => action.id));
+  const gates = new Set((control.gates ?? []).map((gate) => gate.id));
+  const loops = new Set((control.loops ?? []).map((loop) => loop.id));
+  const adds = new Set((fragment.steps ?? []).map((step) => step?.id));
+  for (const [key, targets] of Object.entries(fragment.blocks ?? {})) {
+    for (const id of targets) {
+      if (steps.has(id)) continue;
+      if (gates.has(id) || loops.has(id)) issues.push(`fragment.blocks.${key} names the ${gates.has(id) ? 'gate' : 'loop'} ${id}; blocks may name only existing steps, and a gate or loop never changes`);
+      else if (adds.has(id)) issues.push(`fragment.blocks.${key} names ${id}, a step the fragment adds; give ${id} dependsOn ["${key}"] instead`);
+      else issues.push(`fragment.blocks.${key} names "${id}", which is not a step of the run`);
+    }
+  }
+  return issues;
+}
+
 /**
  * The request program of `workflow add`: the run's live steps and its gates
  * and loops as stored, then the fragment's. Items keep the fragment's order.
+ * A step named in the fragment's blocks also depends on the step that names
+ * it, appended to its dependsOn in the fragment's order.
  */
 export function appendedProgramV3(state, liveActions, fragment) {
   const control = state.program.control ?? { gates: [], loops: [] };
+  const waitsFor = new Map();
+  for (const [key, targets] of Object.entries(isObject(fragment.blocks) ? fragment.blocks : {})) {
+    for (const id of Array.isArray(targets) ? targets : []) waitsFor.set(id, [...(waitsFor.get(id) ?? []), key]);
+  }
+  const blocked = (action) => {
+    const added = (waitsFor.get(action.id) ?? []).filter((id) => !action.dependsOn.includes(id));
+    return added.length ? { ...action, dependsOn: [...action.dependsOn, ...added] } : action;
+  };
   return {
     schemaVersion: state.program.schemaVersion,
-    actions: [...liveActions.map(clone), ...clone(fragment.steps ?? [])],
+    actions: [...liveActions.map(clone).map(blocked), ...clone(fragment.steps ?? [])],
     control: {
       gates: [...clone(control.gates ?? []), ...clone(fragment.gates ?? [])],
       loops: [...clone(control.loops ?? []), ...clone(fragment.loops ?? [])],
@@ -142,10 +206,17 @@ export function appendedActionsV3(state, program, runtime) {
     loops: Array.isArray(program?.control?.loops) ? program.control.loops : [],
   };
   const issues = [];
+  // An existing step may depend on a step the request adds only through the
+  // fragment's blocks; with those ids left out it must read as stored.
+  const adds = new Set(requested.steps.slice(counts.steps).filter(isObject).map((step) => step.id));
+  const withoutAdded = (action) => (isObject(action) && Array.isArray(action.dependsOn)
+    ? { ...action, dependsOn: action.dependsOn.filter((id) => !adds.has(id)) } : action);
+  const addedDeps = (action) => (isObject(action) && Array.isArray(action.dependsOn) ? action.dependsOn.filter((id) => adds.has(id)) : []);
   // The run's own items come first and unchanged; a fragment item never reuses an id.
   const heads = [['steps', stored], ['gates', control.gates ?? []], ['loops', control.loops ?? []]];
+  const asRequested = (list, index) => (list === 'steps' ? withoutAdded(requested.steps[index]) : requested[list][index]);
   for (const [list, own] of heads) {
-    if (requested[list].length < own.length || own.some((item, index) => !same(item, requested[list][index]))) {
+    if (requested[list].length < own.length || own.some((item, index) => !same(item, asRequested(list, index)))) {
       issues.push(`workflow add never changes or removes what the run has; its ${list} must come first, as stored`);
     }
   }
@@ -165,6 +236,46 @@ export function appendedActionsV3(state, program, runtime) {
       if (stored.some((action) => action.id === id)) issues.push(`fragment loops[${index}] names the existing step ${id}; a new loop's steps must be steps the fragment adds`);
     }
   });
+  // blocks: the step must not have started, be in no loop, and not be one
+  // the added step itself waits for. Read from this state, so the live kernel
+  // that applies the request decides with what it has.
+  const blocks = stored.map((action, index) => ({ step: action.id, waitsFor: addedDeps(requested.steps[index]) }))
+    .filter((entry) => entry.waitsFor.length);
+  if (blocks.length) {
+    const runtimeById = new Map((state.actions ?? []).map((action) => [action.id, action]));
+    const nodes = new Map([
+      ...requested.steps.filter(isObject).map((step) => [step.id, Array.isArray(step.dependsOn) ? step.dependsOn : []]),
+      ...requested.gates.filter(isObject).map((gate) => [gate.id, Array.isArray(gate.dependsOn) ? gate.dependsOn : []]),
+      ...requested.loops.filter(isObject).map((loop) => [loop.id, Array.isArray(loop.steps) ? loop.steps : []]),
+    ]);
+    // True when `from` waits for `target`, through the requested graph.
+    const reaches = (from, target) => {
+      const seen = new Set();
+      const queue = [from];
+      while (queue.length) {
+        for (const dep of nodes.get(queue.shift()) ?? []) {
+          if (dep === target) return true;
+          if (!seen.has(dep)) { seen.add(dep); queue.push(dep); }
+        }
+      }
+      return false;
+    };
+    for (const { step, waitsFor } of blocks) {
+      const record = runtimeById.get(step);
+      const running = (state.attempts ?? []).some((attempt) => attempt.actionId === step && attempt.status === 'running');
+      const loop = (control.loops ?? []).find((item) => (item.steps ?? []).includes(step));
+      for (const key of waitsFor) {
+        if (!record || !NOT_STARTED.has(record.status) || record.attempts > 0 || running) {
+          const attempts = record?.attempts > 0 ? ` after ${record.attempts} attempt${record.attempts === 1 ? '' : 's'}` : '';
+          issues.push(`fragment.blocks.${key} names step ${step}, which is ${running ? 'running' : record?.status ?? 'unknown'}${attempts}; blocks may name only steps that have not started`);
+        } else if (loop) {
+          issues.push(`fragment.blocks.${key} names step ${step}, which is in loop ${loop.id}; a loop's steps never change`);
+        } else if (reaches(key, step)) {
+          issues.push(`fragment.blocks.${key} names step ${step}, which ${key} itself waits for (a cycle)`);
+        }
+      }
+    }
+  }
   if (issues.length) return { issues };
   let normal;
   try {
@@ -174,11 +285,15 @@ export function appendedActionsV3(state, program, runtime) {
   }
   // The round-trip guarantee: every existing item normalises to itself.
   const changed = [
-    ...stored.filter((action, index) => !same(action, normal.actions[index])).map((action) => `step ${action.id}`),
+    ...stored.filter((action, index) => !same(action, withoutAdded(normal.actions[index]))
+      || !same(addedDeps(normal.actions[index]), addedDeps(requested.steps[index]))).map((action) => `step ${action.id}`),
     ...(control.gates ?? []).filter((gate, index) => !same(gate, normal.control.gates[index])).map((gate) => `gate ${gate.id}`),
     ...(control.loops ?? []).filter((loop, index) => !same(loop, normal.control.loops[index])).map((loop) => `loop ${loop.id}`),
   ];
   if (changed.length) return { issues: [`workflow add would change ${changed.join(', ')} of the run; nothing was added`] };
   const addedControl = [...normal.control.gates.slice(counts.gates), ...normal.control.loops.slice(counts.loops)].map((node) => node.id);
-  return { desired: normal.actions, control: normal.control, addedControl };
+  return { desired: normal.actions, control: normal.control, addedControl, blocks };
 }
+
+// A step that has not started: it may still be made to wait.
+const NOT_STARTED = new Set(['pending', 'ready', 'blocked']);

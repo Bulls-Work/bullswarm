@@ -53,6 +53,19 @@ run stays paused. `--from-answer <step>` reads that step's current checked
 answer, which must itself be a fragment `{steps, gates?, loops?}`; read it with
 `wait` first.
 
+`blocks` is the one change a fragment may make to an existing step: `{"<new
+step id>": ["<existing step id>", ...]}` makes those existing steps also wait
+for the new step. It is how you put a fix in front of work that has not run
+yet: add `fix` with `"blocks": {"fix": ["report"]}`, then `step accept` the
+failed step, and `report` runs after `fix` (`waits    step report now also
+waits for fix`). The key must be a step the fragment adds (not a gate or
+loop), and each named step must be a step of the run that has not started
+(pending, ready or blocked, no attempts) and is in no loop. Anything else is
+refused in fragment words, such as `fragment.blocks.fix names step report,
+which is succeeded; blocks may name only steps that have not started` or
+`… which fix itself waits for (a cycle)`, and the run is unchanged. A running
+kernel checks it again against its own state when it applies the addition.
+
 **wait** reads the run until every named id has settled: a step `succeeded`,
 `failed`, `blocked`, `cancelled` or `removed`; a gate or loop `passed`,
 `waiting` or `blocked`. It changes nothing. Exit 0 when none failed or was

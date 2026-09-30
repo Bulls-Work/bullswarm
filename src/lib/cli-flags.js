@@ -126,6 +126,7 @@ const TABLE = {
   'strategy exclude-model': [],
   'strategy include-model': [],
   'strategy set-subscription': ['plan', 'monthly-usd', 'included-usd', 'quota-window', 'resets-at'],
+  'strategy set-free': ['pool', 'yes'],
   'strategy auto': ['yes'],
   'strategy auto status': [],
   'strategy auto off': ['yes'],

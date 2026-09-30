@@ -255,7 +255,7 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--avoid-provider <provider,...>` | never route to pools of these providers | unset |
 | `--dry-run` | print the kernel's routing pick, the forecast, and the exact command that would be spawned, without spawning, recording a run, registering an assignment, or writing the decision log | off (dispatches for real) |
 | `--no-caller` | accepted and ignored for one release: the calling agent is never a pool of its own run | removed in 0.37.0 |
-| `--json` | print the compact machine-readable verdict; its last field, details, is the command for the full record and per-attempt cost (bullswarm workflow runs result <shortId> --json) | human-readable summary ending with the run id and that command |
+| `--json` | print the compact machine-readable verdict; top-level `pool` and `model` name who ran the last attempt (null when nothing was dispatched; `pick` keeps the same two beside the command); its last field, details, is the command for the full record and per-attempt cost (bullswarm workflow runs result <shortId> --json) | human-readable summary ending with the run id and that command |
 
 A run is a one-step workflow, recorded under `workflows/<id>/` (`bullswarm workflow runs --all`). It gets the step's one automatic retry unless `--no-retry`; a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. A build or chore run must change a file (else failure kind `not-produced`). The JSON shape is in [Result envelope](/reference/result).
 
@@ -626,7 +626,7 @@ bullswarm strategy show --json
 |---|---|---|
 | `--json` | print the full report as JSON | human-readable summary |
 
-Does not change routing. A tier line such as `high: codex/gpt-6-astra (best now; routing picks by spare quota)` names the best pick right now; it is not a pin. A pinned tier adds a line such as `pinned to claude-code/claude-opus-5 by you · high dispatches go there while it is available · strategy clear-assignment high removes it`. Models no family rule ranks are counted per pool on one line, `unranked: 312 models (command-code 180, opencode 130, grok 2) · never recommended · strategy show --json lists them`; `--json` keeps the full `unranked` list.
+Does not change routing. A tier line such as `high: codex/gpt-6-astra (best now; routing picks by spare quota)` names the best pick right now; it is not a pin. A pinned tier adds a line such as `pinned to claude-code/claude-opus-5 by you · high dispatches go there while it is available · strategy clear-assignment high removes it`. Models no family rule ranks are counted per pool on one line, `unranked: 312 models (command-code 180, opencode 130, grok 2) · never recommended · strategy show --json lists them`; `--json` keeps the full `unranked` list. Two lines read the home's current state rather than the cached report: `free models: never (all pools) · openrouter: allow` (see [`set-free`](#set-free)), and, when a provider refused a model because a pool's plan does not include it, `not in plan: command-code: gpt-6-astra (strategy include-model <model> clears it)`. That pool stays offered with its other models; `--json` has the same facts under `notInPlan`.
 
 ### assign
 
@@ -668,7 +668,7 @@ No flags. Argument: exact model identifier. Reverse with `include-model`.
 
 ### include-model
 
-Remove a previously persisted model exclusion.
+Remove a previously persisted model exclusion, and forget every pool's record that its plan does not include the model (failure kind `model-not-in-plan`).
 
 ```bash
 # Unblock a previously excluded model.
@@ -695,7 +695,25 @@ bullswarm strategy set-subscription opencode --resets-at 2026-09-17T01:46:01Z
 | `--quota-window <weekly\|monthly>` | the subscription window that paces routing for this pool (used% vs elapsed% of it); `unknown` clears it back to the connector default | unchanged |
 | `--resets-at <iso\|unknown>` | the date-time this pool's quota window next ends, used only when the provider reports usage but no reset; a provider-reported reset always wins; `unknown` clears it | unchanged |
 
-Writes `state.strategy.subscriptions[pool]` and invalidates the cached report.
+Writes `state.strategy.subscriptions[pool]` and invalidates the cached report. A changed subscription also retires the pool's `not in plan` records made under the old one.
+
+### set-free
+
+Choose whether strategy may suggest, apply or dispatch a free model (a connector model declared free, or an id such as `openrouter/x:free`). The default is `allow`.
+
+```bash
+# No free model on any pool; then let one pool use them again.
+bullswarm strategy set-free never --yes
+bullswarm strategy set-free allow --pool openrouter --yes
+bullswarm strategy set-free reset --pool openrouter
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--pool <name>` | set it for this pool only; a pool's own setting wins over the every-pool one | every pool |
+| `--yes` | required for `allow` and `never`, which change routing | none; exits 2 without it |
+
+Argument: `allow`, `never`, or `reset` (drops one pool's own setting; needs `--pool`, no `--yes`). Under `never` a pool whose tier has a non-free model switches to it; a pool left with only free models for a tier is out of that tier, with the reason `free models are off for <pool>`. A model you name yourself (a step's `model`, `--worker-model`) is still allowed. Writes `state.strategy.freeModels` / `freeModelsByPool` and invalidates the cached report; with autopilot on, its next check re-picks every rung. A usage mistake exits 2 and writes nothing.
 
 ### auto
 
@@ -856,7 +874,7 @@ bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --progra
 | `--isolation` | opt into per-worker worktrees and strict exact-file ownership checks; saved runs retain their original workspace policy on resume | off (shared workspace, advisory territories) |
 | `--watch` | immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with `--detach`, `--foreground`, `--json`, `--resume`, or `--request` | off |
 | `--foreground` | keep execution attached to this terminal instead of detaching | off (detaches into a background process) |
-| `--json` | print the launch/report document as JSON | human-readable launch instructions |
+| `--json` | print the launch/report document as JSON; advisories are in it as `advisories` (the detached launch document always, a foreground result when there are any) and are not printed as text | human-readable launch instructions, with each advisory once on stderr |
 | `--program <file.json>` | your program: a bare `bullswarm.workflow.program.v3` document, or one inside a `bullswarm.workflow.planner-response.v2` envelope; a `bullswarm.workflow.program.v2` is refused; validated before anything launches (exit 2 with the issues and nothing launched when invalid) | required |
 | `--summary <text>` | one-line summary recorded for a bare `--program` document | derived from the action purposes |
 | `--worker-pool <pool\|auto>` | pin every dispatch, work and evidence steps alike, to one pool | `auto` (normal routing) |
@@ -939,7 +957,27 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 | `--concurrency <n>` | execution concurrency for the previewed run | `4` |
 | `--retry-attempts <0..3>` | automatic retries per step for the previewed run | `1` |
 
-Read-only. Exit 0 valid, 2 invalid, 1 bad cwd.
+Read-only. Exit 0 valid, 2 invalid, 1 bad cwd. Advisories (authoring advice such as `suite-wider-than-files`, never a refusal) print on stderr as `advisory: <code> [<step>] — <message>`; with `--json` they are only in the JSON document, as `advisories`.
+
+### add
+
+Append a fragment `{steps, gates?, loops?, blocks?}` to a v3 run. Nothing the run has changes, except through `blocks`: `{"<new step id>": ["<existing step id>", ...]}` makes existing steps that have not started also wait for a step the fragment adds.
+
+```bash
+# Put a fix in front of the report, then accept the failed check it replaces.
+bullswarm workflow add ab12cd --steps fix.json      # fix.json: {"steps":[{"id":"fix",…}],"blocks":{"fix":["report"]}}
+bullswarm workflow step accept ab12cd check --reason "fix replaces it"
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--steps <file.json>` | the fragment to append | one of `--steps` or `--from-answer` is required |
+| `--from-answer <step>` | append the fragment that step's checked answer holds | unset |
+| `--summary <text>` | the revision summary | `add <ids>` |
+| `--wait <seconds>` | how long to wait for a running kernel to apply it before reporting it queued | `120` |
+| `--json` | machine-readable result, with `waits` (`[{step, waitsFor}]`) when `blocks` was used | human text |
+
+The human output names each added dependency (`waits    step report now also waits for fix`). A `blocks` key must be a step the fragment adds, not a gate or loop; a named step must be a step of the run that has not started (pending, ready or blocked, with no attempts) and is in no loop, and must not be one the new step waits for. Anything else is refused in fragment words and the run is unchanged (exit 2); a running kernel checks it again against its own state when it applies the addition.
 
 ### pause
 

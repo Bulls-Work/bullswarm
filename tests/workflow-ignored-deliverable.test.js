@@ -206,6 +206,47 @@ test('an ignored file left as it was is not work: not-produced, and neither the 
   for (const task of tasks) assert.doesNotMatch(task, /commit (counts|was made|is made)|or a commit|no commit/i);
 });
 
+const OUTSIDE_REPORT = '## Done\n- read the tickets\n\n## Not done\n- outside: tickets/T-1001.md is not in my files\n\n## Suggested next step\n- add a step that owns it\n';
+const reporting = (verdict, report = OUTSIDE_REPORT) => ({ paths }) => { writeFileSync(paths.outFile, report); return verdict; };
+
+test('not-produced with an `outside:` blocker in the report: no gate retry, the step fails to the caller naming the blocker', async (t) => {
+  const f = ignoringRepo(t);
+  const action = { id: 'task', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' }, ownedFiles: [] };
+  const { result, tasks } = await dispatch(f, action, [reporting(good), good], { failureRule: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.failureKind, 'not-produced');
+  assert.equal(tasks.length, 1, 'the gate retry was skipped');
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].status, 'failed');
+  assert.equal(result.attempts[0].willRetry, false);
+  assert.equal(result.attempts[0].why, 'no file changed · retry skipped: the worker reported a blocker outside this step: tickets/T-1001.md is not in my files');
+  assert.deepEqual(result.attempts[0].outsideBlockers, ['tickets/T-1001.md is not in my files']);
+  assert.equal(result.verdict.why, result.attempts[0].why);
+});
+
+test('the same report without the `outside:` prefix still gets the gate retry', async (t) => {
+  const f = ignoringRepo(t);
+  const action = { id: 'task', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' }, ownedFiles: [] };
+  const plain = OUTSIDE_REPORT.replace('- outside: ', '- ');
+  const { result, tasks } = await dispatch(f, action, [reporting(good, plain), good], { failureRule: true });
+  assert.equal(tasks.length, 2, 'the gate retry ran');
+  assert.equal(result.attempts[0].willRetry, true);
+  assert.equal(result.attempts[0].why, 'no file changed');
+  assert.equal(Object.hasOwn(result.attempts[0], 'outsideBlockers'), false);
+});
+
+test('a process failure keeps its retry even when the report names an `outside:` blocker', async (t) => {
+  const f = ignoringRepo(t);
+  const action = { id: 'task', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' }, ownedFiles: ['out/triage.jsonl'] };
+  const processFail = { ok: false, failureKind: 'process', why: 'worker exited 1', meta: { exitCode: 1, wallSec: 1 } };
+  const { result, tasks } = await dispatch(f, action, [reporting(processFail), writeOut(f.repo)], { failureRule: true });
+  assert.equal(tasks.length, 2, 'the process retry ran');
+  assert.equal(result.attempts[0].willRetry, true);
+  assert.equal(result.attempts[0].why, 'worker exited 1');
+  assert.equal(Object.hasOwn(result.attempts[0], 'outsideBlockers'), false);
+  assert.equal(result.ok, true, result.attempts.at(-1)?.why);
+});
+
 test('no deliverable line in a worker prompt offers a commit as a way to produce', (t) => {
   const f = ignoringRepo(t);
   const state = {

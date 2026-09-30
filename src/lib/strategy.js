@@ -178,8 +178,13 @@ export function pinRung(strategy, tier, pin) {
   setModelTierSelection(strategy, pin.pool, pin.model, [...existing, tier]);
 }
 
+// The models a pool must not run: the ones the operator turned off for it,
+// plus the ones its plan was seen not to include (planExclusionsForPool).
 export function disabledModelsForPool(strategy = {}, pool) {
-  return normalizeExcludedModels(strategy.disabledModels?.[pool] ?? []);
+  return normalizeExcludedModels([
+    ...(strategy?.disabledModels?.[pool] ?? []),
+    ...planExclusionsForPool(strategy, pool).map((entry) => entry.model),
+  ]);
 }
 
 export function setModelDisabled(strategy, pool, model, disabled) {
@@ -189,6 +194,115 @@ export function setModelDisabled(strategy, pool, model, disabled) {
   else current.delete(String(model).trim().toLowerCase());
   if (current.size) strategy.disabledModels[pool] = [...current];
   else delete strategy.disabledModels[pool];
+  // Turning a model back on is the operator saying the pool runs it now.
+  if (!disabled) clearPlanExcludedModels(strategy, pool, model);
+}
+
+// --- models a plan does not include ------------------------------------------
+// `state.strategy.planExcludedModels = { [pool]: [{ model, at, why, plan }] }`:
+// a provider refused a model because this pool's subscription does not
+// include it (a connector's `modelPlanSignatures`, failure kind
+// `model-not-in-plan`). It is a fact about the subscription, like its price,
+// not a spent or dead pool (doctrine 4): the pool stays fully pickable with
+// its other models, and only that model is treated as turned off for that
+// pool. `plan` is the pool's declared subscription when the refusal was seen;
+// once `strategy set-subscription` changes it the entry no longer counts, and
+// turning the model back on for the pool (setModelDisabled) removes it.
+
+function subscriptionKey(strategy, pool) {
+  const declared = strategy?.subscriptions?.[pool];
+  if (!declared || typeof declared !== 'object') return null;
+  return JSON.stringify(Object.keys(declared).sort().map((key) => [key, declared[key]]));
+}
+
+/** The plan exclusions that still apply to `pool`: `[{ model, at, why }]`. */
+export function planExclusionsForPool(strategy = {}, pool) {
+  const entries = strategy?.planExcludedModels?.[pool];
+  if (!Array.isArray(entries)) return [];
+  const plan = subscriptionKey(strategy, pool);
+  return entries
+    .filter((entry) => typeof entry?.model === 'string' && entry.model.trim())
+    .filter((entry) => (entry.plan ?? null) === plan)
+    .map((entry) => ({
+      model: entry.model.trim().toLowerCase(),
+      at: entry.at ?? null,
+      why: entry.why ?? null,
+    }));
+}
+
+/** Record that `pool`'s plan does not include `model` (newest sighting wins). */
+export function recordPlanExcludedModel(strategy, pool, model, { at = new Date().toISOString(), why = null } = {}) {
+  const id = String(model ?? '').trim().toLowerCase();
+  if (!strategy || !pool || !id) return;
+  strategy.planExcludedModels ??= {};
+  const kept = (strategy.planExcludedModels[pool] ?? [])
+    .filter((entry) => String(entry?.model ?? '').trim().toLowerCase() !== id);
+  strategy.planExcludedModels[pool] = [...kept, { model: id, at, why, plan: subscriptionKey(strategy, pool) }];
+}
+
+/** Forget `pool`'s plan exclusions: every one, or only `model`'s. */
+export function clearPlanExcludedModels(strategy, pool, model = null) {
+  const entries = strategy?.planExcludedModels?.[pool];
+  if (!Array.isArray(entries)) return;
+  const id = model == null ? null : String(model).trim().toLowerCase();
+  const kept = id == null ? [] : entries.filter((entry) => String(entry?.model ?? '').trim().toLowerCase() !== id);
+  if (kept.length) strategy.planExcludedModels[pool] = kept;
+  else delete strategy.planExcludedModels[pool];
+  if (!Object.keys(strategy.planExcludedModels).length) delete strategy.planExcludedModels;
+}
+
+// --- free models -------------------------------------------------------------
+// `state.strategy.freeModels = 'allow' | 'never'` for every pool, and
+// `state.strategy.freeModelsByPool = { [pool]: 'allow' | 'never' }` for one;
+// a pool's own value wins. Absent means allow, today's behaviour. Under
+// `never` a free model (isFreeModel: the connector's declaration, else the
+// name pattern) is never suggested, applied or dispatched on that pool, and a
+// pool left with no other model for a tier is ineligible for it, with the
+// reason `free models are off for <pool>`.
+
+export const FREE_MODEL_SETTINGS = Object.freeze(['allow', 'never']);
+
+/** The free-model setting in force for `pool`: 'allow' or 'never'. */
+export function freeModelsSetting(strategy = {}, pool = null) {
+  const own = pool == null ? undefined : strategy?.freeModelsByPool?.[pool];
+  if (FREE_MODEL_SETTINGS.includes(own)) return own;
+  return strategy?.freeModels === 'never' ? 'never' : 'allow';
+}
+
+export function freeModelsBanned(strategy = {}, pool = null) {
+  return freeModelsSetting(strategy, pool) === 'never';
+}
+
+/**
+ * Write the setting for every pool (`pool` null) or one pool. Every-pool
+ * `allow` removes the key, so an unset home stays byte-identical.
+ */
+export function setFreeModels(strategy, value, { pool = null } = {}) {
+  if (!FREE_MODEL_SETTINGS.includes(value)) throw new Error(`free models must be ${FREE_MODEL_SETTINGS.join(' or ')}`);
+  if (pool == null) {
+    if (value === 'never') strategy.freeModels = 'never';
+    else delete strategy.freeModels;
+    return;
+  }
+  strategy.freeModelsByPool ??= {};
+  strategy.freeModelsByPool[pool] = value;
+}
+
+/** Drop one pool's own setting, so the every-pool setting applies to it again. */
+export function resetFreeModels(strategy, { pool } = {}) {
+  if (!strategy?.freeModelsByPool) return;
+  delete strategy.freeModelsByPool[pool];
+  if (!Object.keys(strategy.freeModelsByPool).length) delete strategy.freeModelsByPool;
+}
+
+/** `{ default, pools }` for reports: the every-pool value and each pool's own. */
+export function freeModelsView(strategy = {}) {
+  return {
+    default: freeModelsSetting(strategy, null),
+    pools: Object.fromEntries(Object.entries(strategy?.freeModelsByPool ?? {})
+      .filter(([, value]) => FREE_MODEL_SETTINGS.includes(value))
+      .sort(([a], [b]) => a.localeCompare(b))),
+  };
 }
 
 // --- reasoning depth ---------------------------------------------------------
@@ -557,15 +671,28 @@ function strongestFirst(connector, models) {
  * excluded, an implicit provider default is not trustworthy: Bullswarm pins
  * an allowed model through the connector-owned modelSelection flag, or marks
  * that pool ineligible when it cannot guarantee the policy.
+ *
+ * `excludeFree` (the pool's free-model setting is `never`, freeModelsBanned)
+ * treats every free model as excluded too, the connector's own default
+ * included when it is known to be free; a pool left with none is ineligible
+ * with source `free-models-off`.
  */
 export function resolveDispatchModel(connector, tier, {
   assignment = null,
   excludedModels = [],
   allowedModels = null,
+  excludeFree = false,
 } = {}) {
   const excluded = normalizeExcludedModels(excludedModels);
+  const freeOff = (model) => excludeFree === true && isFreeModel(connector, model);
+  const freeOffResult = {
+    eligible: false, model: null, source: 'free-models-off',
+    reason: `free models are off for ${connector.name}`,
+  };
   if (Array.isArray(allowedModels)) {
-    const allowed = unique(allowedModels).filter((model) => !isModelExcluded(model, excluded));
+    const enabled = unique(allowedModels).filter((model) => !isModelExcluded(model, excluded));
+    const allowed = enabled.filter((model) => !freeOff(model));
+    if (!allowed.length && enabled.length) return freeOffResult;
     if (!allowed.length) return {
       eligible: false, model: null, source: 'tier-selection-empty',
       reason: `no enabled model is assigned to ${tier}`,
@@ -583,15 +710,18 @@ export function resolveDispatchModel(connector, tier, {
       reason: `connector ${connector.name} cannot select an assigned ${tier} model`,
     };
   }
-  if (assignment?.pool === connector.name && !isModelExcluded(assignment.model, excluded)) {
+  if (assignment?.pool === connector.name && !isModelExcluded(assignment.model, excluded)
+    && !freeOff(assignment.model)) {
     return { eligible: true, model: assignment.model, source: 'assignment' };
   }
-  if (!excluded.length) return { eligible: true, model: null, source: 'connector-default' };
-
   const configured = configuredModel(connector);
-  const candidates = strongestFirst(connector, unique([...(connector.knownModels ?? []), configured])
+  // A default that is known to be free cannot be left to the CLI: pin another.
+  if (!excluded.length && !freeOff(configured)) return { eligible: true, model: null, source: 'connector-default' };
+
+  const tierModels = strongestFirst(connector, unique([...(connector.knownModels ?? []), configured])
     .filter((model) => !isModelExcluded(model, excluded))
     .filter((model) => modelRanking(connector, model).tier === tier));
+  const candidates = tierModels.filter((model) => !freeOff(model));
 
   // Never fall back onto a model the connector marks never-recommend (such as
   // a premium or double-price variant); the configured model comes next.
@@ -599,9 +729,10 @@ export function resolveDispatchModel(connector, tier, {
   if (connector.modelSelection?.flag && fallback) {
     return { eligible: true, model: fallback, source: 'exclusion-safe-tier-fallback' };
   }
-  if (configured && !isModelExcluded(configured, excluded)) {
+  if (configured && !isModelExcluded(configured, excluded) && !freeOff(configured)) {
     return { eligible: true, model: configured, source: 'configured-model' };
   }
+  if (tierModels.length > candidates.length || freeOff(configured)) return freeOffResult;
   return {
     eligible: false,
     model: null,
@@ -754,6 +885,7 @@ export function rungsFor({
   const rows = [];
   for (const pool of visible) {
     const connector = pool.connector ?? connectors[pool.name] ?? pool;
+    const notInPlan = planExclusionsForPool(strategy, pool.name);
     for (const tier of tiers) {
       const policy = resolveDispatchModel(connector, tier, {
         assignment: strategy?.assignments?.[tier] ?? null,
@@ -762,6 +894,7 @@ export function rungsFor({
           ...disabledModelsForPool(strategy, pool.name),
         ],
         allowedModels: selectedModelsForTier(strategy, pool.name, tier),
+        excludeFree: freeModelsBanned(strategy, pool.name),
       });
       const reasoning = resolveReasoningLevel({
         connector, tier, model: policy.model, strategy: strategy ?? {},
@@ -795,6 +928,9 @@ export function rungsFor({
         },
         evidence: found,
         record: rungRecord(decisionLog, pool.name, tier),
+        // The models this rung passed over because the pool's plan does not
+        // include them, with when that was seen: the reason, not a pool state.
+        ...(notInPlan.length ? { notInPlan } : {}),
       });
     }
   }
@@ -1289,10 +1425,12 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
     // What this pool may recommend on any tier; the newest generation is read
     // from these.
     const listed = recommendationModels(pool, rankedDiscoveries[pool.name]);
-    const eligible = listed
+    const freeOff = freeModelsBanned(state.strategy, pool.name);
+    const enabled = listed
       .filter((model) => model.tier
         && model.autoRecommend !== false
         && !disabled.has(model.id.toLowerCase()));
+    const eligible = enabled.filter((model) => !(freeOff && model.free));
     for (const tier of tiers) {
       const context = TIER_CONTEXTS[tier];
       if (pool.enabled === false || windowSpent(pool) || !supportsContext(pool, context)) continue;
@@ -1310,12 +1448,15 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
           ...candidates.filter((entry) => entry.model.id !== band.model.id));
         candidates.unshift(fallback);
       }
+      // Nothing left for the tier only because its models are free: say so.
+      const freeOnly = !candidates.length && enabled.some((model) => model.tier === tier);
       providerSuggestions[pool.name][tier] = {
         recommended: recommendedView(candidates[0], false),
         candidates: candidates.map((entry) => ({
           ...candidateView(entry),
           openRouter: entry.model.openRouter,
         })),
+        ...(freeOnly ? { ineligible: `free models are off for ${pool.name}` } : {}),
       };
     }
   }
@@ -1345,6 +1486,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
         if (model.autoRecommend === false) continue;
         if (isModelExcluded(model.id, state.strategy?.excludedModels)) continue;
         if (disabled.includes(model.id.toLowerCase())) continue;
+        if (model.free && freeModelsBanned(state.strategy, pool.name)) continue;
         candidates.push({ pool: pool.name, poolView: pool, model, key: tierKey(model, pool, tier) });
       }
       const fallback = fallbacks[pool.name]?.[tier];
@@ -1393,6 +1535,14 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
       error: openRouterCatalog.error ?? null,
     } : null,
     excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
+    // Present only once someone set it, so an unset home's report is unchanged.
+    ...(state.strategy?.freeModels !== undefined || state.strategy?.freeModelsByPool !== undefined
+      ? { freeModels: freeModelsView(state.strategy) } : {}),
+    // pool -> the models its plan was seen not to include: why each pool's
+    // suggestions skip them. The pools themselves stay offered.
+    notInPlan: Object.fromEntries(pools
+      .map((pool) => [pool.name, planExclusionsForPool(state.strategy, pool.name)])
+      .filter(([, entries]) => entries.length)),
     caveats: [
       'Model availability comes from local CLI discovery plus connector fallbacks.',
       'Tier and quality rank come from connector family rules and model profiles; inside a family the newest version always ranks first.',

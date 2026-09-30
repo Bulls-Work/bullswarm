@@ -12,6 +12,8 @@ import {
   rungsFor, setRung, configuredModel, formatRungEvidence,
   TIER_LANES, clearTierAssignment, applyRecommendedReasoning, getRecommendedReasoning,
   sortLegacyPins, dropStrategyReport, releaseAppliedPins, pinRung,
+  FREE_MODEL_SETTINGS, freeModelsBanned, freeModelsView, setFreeModels, resetFreeModels,
+  planExclusionsForPool, clearPlanExcludedModels,
 } from './lib/strategy.js';
 import {
   connectorReasoningLevels, isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel,
@@ -61,7 +63,7 @@ function strategyHelpPath(sub, opts) {
     'tui', 'inventory', 'routes', 'set-provider', 'set-model', 'reset-tier',
     'set-reasoning', 'rungs', 'set-rung', 'reset-reasoning', 'configure',
     'refresh', 'recommend', 'apply', 'show', 'assign', 'clear-assignment',
-    'exclude-model', 'include-model', 'set-subscription',
+    'exclude-model', 'include-model', 'set-subscription', 'set-free',
   ];
   return LEAVES.includes(sub) ? ['strategy', sub] : null;
 }
@@ -192,7 +194,30 @@ export function unrankedLine(unranked = []) {
   return `unranked: ${unranked.length} ${noun} (${pools}) · never recommended · strategy show --json lists them`;
 }
 
-function render(report, reasoning = null, copies = [], pins = {}) {
+/**
+ * `free models: never (all pools)` / `free models: allow (all pools) · openrouter: never`,
+ * from the home's current state, which a cached report may predate.
+ */
+export function freeModelsLine(strategy = {}) {
+  const view = freeModelsView(strategy);
+  const pools = Object.entries(view.pools).map(([pool, value]) => `${pool}: ${value}`);
+  return `free models: ${view.default} (all pools)${pools.length ? ` · ${pools.join(' · ')}` : ''}`;
+}
+
+/**
+ * `not in plan: command-code: gpt-6-astra` — models a pool's plan refused
+ * (failure kind model-not-in-plan), from current state. The pool itself stays
+ * offered with its other models.
+ */
+export function notInPlanLine(strategy = {}) {
+  const pools = Object.keys(strategy?.planExcludedModels ?? {})
+    .map((pool) => [pool, planExclusionsForPool(strategy, pool).map((entry) => entry.model)])
+    .filter(([, models]) => models.length)
+    .map(([pool, models]) => `${pool}: ${models.join(', ')}`);
+  return pools.length ? `not in plan: ${pools.join(' · ')} (strategy include-model <model> clears it)` : null;
+}
+
+function render(report, reasoning = null, copies = [], pins = {}, free = null, notInPlan = null) {
   const lines = [`bullswarm strategy · ${report.capturedAt}`, '', 'subscriptions:'];
   for (const sub of report.subscriptions) {
     const value = subscriptionValueText(sub);
@@ -231,6 +256,8 @@ function render(report, reasoning = null, copies = [], pins = {}) {
   const unranked = unrankedLine(report.unranked);
   if (unranked) lines.push('', unranked);
   lines.push('', `excluded models: ${report.excludedModels?.length ? report.excludedModels.join(', ') : 'none'}`);
+  if (free) lines.push(free);
+  if (notInPlan) lines.push(notInPlan);
   if (reasoning) lines.push('', ...reasoningLines(reasoning));
   if (copies.length) {
     lines.push('', 'connector copies that differ from the package (bullswarm doctor has the fix):',
@@ -282,8 +309,10 @@ function reasoningLines(reasoning) {
 // The human `strategy show`/`refresh` text, read against the home's current
 // state: reasoning levels, connector copies, and the pins in force.
 function humanReport(report, bullswarmDir) {
-  const pins = loadState(bullswarmDir).strategy?.assignments ?? {};
-  return withPoolLabels(render(report, reasoningReport(bullswarmDir), copyWarnings(bullswarmDir), pins), bullswarmDir);
+  const strategy = loadState(bullswarmDir).strategy ?? {};
+  const pins = strategy.assignments ?? {};
+  return withPoolLabels(render(report, reasoningReport(bullswarmDir), copyWarnings(bullswarmDir), pins,
+    freeModelsLine(strategy), notInPlanLine(strategy)), bullswarmDir);
 }
 
 function reasoningReport(bullswarmDir) {
@@ -509,13 +538,16 @@ function modelsForPool(pool, discovery, state) {
   }
   const explicit = state.strategy?.modelTiers?.[pool.name] ?? {};
   const disabledModels = disabledModelsForPool(state.strategy, pool.name);
+  const freeBanned = freeModelsBanned(state.strategy, pool.name);
   return models.map((model) => {
     const tiers = STRATEGY_TIERS.filter((tier) => (explicit[model.id] ?? []).includes(tier));
     const disabled = disabledModels.includes(model.id.toLowerCase());
-    const effectiveTiers = disabled ? [] : STRATEGY_TIERS.filter((tier) => (
+    // A free model under `strategy set-free never` runs on no tier.
+    const freeOff = freeBanned && model.free === true;
+    const effectiveTiers = disabled || freeOff ? [] : STRATEGY_TIERS.filter((tier) => (
       (state.strategy?.configuredTiers ?? []).includes(tier) ? tiers.includes(tier) : model.tier === tier
     ));
-    return { ...model, tiers, effectiveTiers, disabled };
+    return { ...model, tiers, effectiveTiers, disabled, ...(freeOff ? { freeOff } : {}) };
   });
 }
 
@@ -675,6 +707,7 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
           ...disabledModelsForPool(state.strategy, pool.name),
         ],
         allowedModels: selectedModelsForTier(state.strategy, pool.name, tier),
+        excludeFree: freeModelsBanned(state.strategy, pool.name),
       }),
     }));
     // Not pre-filtered on modelPolicy.eligible: pickPool applies that filter
@@ -1250,6 +1283,37 @@ export async function cmdStrategy(args, {
       console.log(JSON.stringify({ action: 'subscription-updated', pool, subscription: state.strategy.subscriptions[pool] }, null, 2));
       return 0;
     }
+    if (sub === 'set-free') {
+      const value = opts.rest[0];
+      if (![...FREE_MODEL_SETTINGS, 'reset'].includes(value) || opts.pool === true) {
+        throw new Error(`usage: ${usageLine(['strategy', 'set-free'])}`);
+      }
+      const pool = typeof opts.pool === 'string' && opts.pool.trim() ? opts.pool.trim() : null;
+      if (value === 'reset' && !pool) throw new Error('strategy set-free reset needs --pool');
+      if (value !== 'reset' && opts.yes !== true) throw new Error('strategy set-free changes routing; pass --yes to approve');
+      if (pool && !loadConnectors(bullswarmDir, PACKAGED)[pool]) throw new Error(`unknown pool "${pool}"`);
+      let reapply = false;
+      const state = updateState(bullswarmDir, (fresh) => {
+        fresh.strategy ??= {};
+        if (value === 'reset') resetFreeModels(fresh.strategy, { pool });
+        else setFreeModels(fresh.strategy, value, { pool });
+        dropStrategyReport(fresh.strategy);
+        // Autopilot rungs may hold a free model: the next autopilot check
+        // refreshes and re-applies instead of waiting out its cadence.
+        reapply = fresh.strategy.policy?.autoApplyRecommendations === true;
+        if (reapply) delete fresh.strategy.lastRefreshedAt;
+      });
+      console.log(JSON.stringify({
+        action: 'free-models-updated',
+        value,
+        pool,
+        freeModels: freeModelsView(state.strategy),
+        notes: reapply
+          ? ['strategy autopilot re-picks every rung at its next check']
+          : ['rungs you set keep their models; a pool whose only model for a tier is free is ineligible for it'],
+      }, null, 2));
+      return 0;
+    }
     if (sub === 'assign') {
       const tier = opts.rest[0];
       if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'assign'])}`);
@@ -1278,6 +1342,13 @@ export async function cmdStrategy(args, {
         fresh.strategy.excludedModels = sub === 'exclude-model'
           ? normalizeExcludedModels([...current, normalized])
           : current.filter((entry) => entry !== normalized);
+        // Including a model is the operator saying it runs now, so a plan
+        // refusal recorded for it on any pool is forgotten too.
+        if (sub === 'include-model') {
+          for (const pool of Object.keys(fresh.strategy.planExcludedModels ?? {})) {
+            clearPlanExcludedModels(fresh.strategy, pool, normalized);
+          }
+        }
         dropStrategyReport(fresh.strategy);
       });
       console.log(JSON.stringify({
@@ -1332,7 +1403,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning|set-free) changes|free models must be|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }

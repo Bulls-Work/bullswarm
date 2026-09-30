@@ -412,7 +412,7 @@ test('ownedFiles name exact files, and a requirement no step checks is an adviso
 });
 
 test('advisories report the two effort smells and never change validity', () => {
-  assert.deepEqual([...PROGRAM_ADVISORY_CODES], ['all-writers-high', 'docs-at-high', 'requirement-unchecked']);
+  assert.deepEqual([...PROGRAM_ADVISORY_CODES], ['all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files']);
   const writers = (efforts) => ({
     schemaVersion: 'bullswarm.workflow.program.v2',
     actions: efforts.map((effort, index) => kindWork('implement', { id: `w-${index}`, effort })),
@@ -943,4 +943,24 @@ test('a top-level timeoutSec points to the evidence item', () => {
   const issues = issuesOf([kindWork('implement', { timeoutSec: 300 })]);
   hasIssue(issues, 'actions[0].timeoutSec is not allowed in V2; a time limit belongs on an evidence item (evidence[].timeoutSec)');
   hasIssue(issuesOf([kindWork('implement', { pool: 'acme' })]), 'actions[0].pool is not allowed in V2');
+});
+
+test('a command that names none of the step files raises suite-wider-than-files', () => {
+  const advise = (cmd, over = {}) => programAdvisories({
+    schemaVersion: 'bullswarm.workflow.program.v3',
+    actions: [kindWork('implement', {
+      id: 'router', effort: 'medium', ownedFiles: ['src/router.js'], evidence: [{ type: 'command', cmd }], ...over,
+    })],
+  }).filter((advisory) => advisory.code === 'suite-wider-than-files');
+  const wide = advise('npm test');
+  assert.deepEqual(wide.map((advisory) => [advisory.code, advisory.actionId]), [['suite-wider-than-files', 'router']]);
+  assert.match(wide[0].message, /^evidence `npm test` runs without naming any of this step's files \(src\/router\.js\)/);
+  assert.equal(advise('node --test tests/').length, 1, 'a bare directory is still the whole suite');
+  assert.equal(advise('node --test').length, 1);
+  for (const cmd of [
+    'node --test tests/router.test.js', 'npx eslint src/router.js', 'node --test --test-name-pattern router',
+    'npm run test:router', 'node --test "tests/*.test.js"',
+  ]) assert.deepEqual(advise(cmd), [], cmd);
+  assert.deepEqual(advise('npm test', { ownedFiles: [] }), [], 'a step without files is the whole-suite check');
+  assert.deepEqual(advise('npm test', { evidence: [{ type: 'schema', file: '$output', schema: { type: 'object' } }] }), []);
 });

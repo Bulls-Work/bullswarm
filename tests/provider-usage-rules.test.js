@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
+import { compareVersions, modelFamily, modelRanking } from '../src/lib/model-family.js';
 import { validateProvider } from '../src/provider-cli.js';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -165,4 +166,37 @@ test('Command Code result usage reads the real captured stream and removes the i
     cacheWrite: 21097,
     output: 5,
   });
+});
+
+test('Command Code ranks by family: the newest version leads and new families are ranked', () => {
+  const commandCode = contribConnector('command-code');
+  const rank = (id) => {
+    const r = modelRanking(commandCode, id);
+    return [r.tier, r.qualityRank, r.family, r.version];
+  };
+  assert.deepEqual(rank('gpt-6.1-sol'), ['high', 6, 'sol', '6.1']);
+  assert.deepEqual(rank('gpt-5.6-sol'), ['high', 6, 'sol', '5.6']);
+  assert.equal(compareVersions(
+    modelFamily(commandCode, 'gpt-6.1-sol').versionParts,
+    modelFamily(commandCode, 'gpt-5.6-sol').versionParts,
+  ), 1);
+  assert.deepEqual(rank('gpt-6-astra'), ['high', 7, 'astra', '6']);
+  assert.equal(compareVersions(
+    modelFamily(commandCode, 'claude-opus-5-5').versionParts,
+    modelFamily(commandCode, 'claude-opus-4-7').versionParts,
+  ), 1);
+  assert.deepEqual(rank('claude-opus-5-5'), ['high', 5, 'opus', '5.5']);
+  assert.deepEqual(rank('claude-opus-4-7'), ['high', 5, 'opus', '4.7']);
+  assert.deepEqual(rank('grok-4.6'), ['high', 5, 'grok', '4.6']);
+  // The old rows' deliberate overrides and the vendor-prefixed ids still rank.
+  assert.deepEqual(rank('gpt-5.4').slice(0, 2), ['medium', 4]);
+  assert.deepEqual(rank('anthropic/claude-sonnet-5').slice(0, 2), ['medium', 4]);
+  // Pricing stays on the exact row; a new version in a family carries none.
+  assert.equal(modelRanking(commandCode, 'gpt-5.6-sol').profile.pricing.inputUsdPerMillion, 4);
+  assert.equal(modelRanking(commandCode, 'gpt-6.1-sol').profile, null);
+  // Open-weight models with no benchmark evidence stay unranked, not invented.
+  assert.equal(modelRanking(commandCode, 'moonshotai/kimi-k3').ranking, 'unranked');
+  assert.equal(modelRanking(commandCode, 'z-ai/glm-5.3').ranking, 'unranked');
+  assert.equal(commandCode.generationFallback, undefined);
+  assert.equal(commandCode.priceBand, undefined);
 });

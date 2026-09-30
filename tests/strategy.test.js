@@ -7,6 +7,8 @@ import {
   rungsFor, setRung, rungRecord, formatRungEvidence,
   TIER_LANES, TIER_CONTEXTS, clearTierAssignment, STRATEGY_TIERS,
   applyRecommendedReasoning, getRecommendedReasoning, setStrategyReasoning, clearStrategyReasoning,
+  disabledModelsForPool, setModelDisabled, planExclusionsForPool, recordPlanExcludedModel, clearPlanExcludedModels,
+  freeModelsSetting, freeModelsBanned, setFreeModels, resetFreeModels, freeModelsView,
 } from '../src/lib/strategy.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../src/workflow/action-validator.js';
@@ -254,6 +256,83 @@ test('strategy recommendations omit persistently excluded models', () => {
   });
   assert.deepEqual(report.excludedModels, ['premium']);
   assert.deepEqual(report.suggestions.high.recommended, { pool: 'planner', model: 'standard' });
+});
+
+// A plan that does not include a model (failure kind model-not-in-plan) is a
+// subscription fact for one pool: that model is passed over there, the pool
+// is still offered, and a changed plan or turning the model back on clears it.
+function planReport(strategy) {
+  const connector = { name: 'command-code', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'] };
+  const other = { name: 'other-pool', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'] };
+  const models = [
+    { id: 'gpt-6-astra', tier: 'high', qualityRank: 7 },
+    { id: 'gpt-6-sol', tier: 'high', qualityRank: 6 },
+  ];
+  return buildStrategy({
+    connectors: { 'command-code': connector, 'other-pool': other },
+    pools: [
+      { name: 'command-code', connector, enabled: true, pace: 10, costRank: 1 },
+      { name: 'other-pool', connector: other, enabled: true, pace: 0, costRank: 1 },
+    ],
+    state: { strategy },
+    discoveries: { 'command-code': { models }, 'other-pool': { models } },
+  });
+}
+
+test('a model the pool\'s plan excludes is skipped on that pool only, and the pool is still offered', () => {
+  const strategy = { subscriptions: { 'command-code': { plan: 'starter', monthlyPriceUsd: 10 } } };
+  const before = planReport(strategy);
+  assert.equal(before.providerSuggestions['command-code'].high.recommended.model, 'gpt-6-astra');
+  recordPlanExcludedModel(strategy, 'command-code', 'gpt-6-astra', { at: '2026-09-29T01:00:00.000Z', why: 'command-code plan does not include gpt-6-astra' });
+  assert.deepEqual(disabledModelsForPool(strategy, 'command-code'), ['gpt-6-astra']);
+  assert.deepEqual(disabledModelsForPool(strategy, 'other-pool'), []);
+  assert.deepEqual(strategy.disabledModels ?? {}, {}, 'the operator\'s own list is untouched');
+  const after = planReport(strategy);
+  assert.equal(after.providerSuggestions['command-code'].high.recommended.model, 'gpt-6-sol', 'the pool is still offered with its other model');
+  assert.equal(after.providerSuggestions['other-pool'].high.recommended.model, 'gpt-6-astra', 'other pools keep the model');
+  const tierPicks = after.suggestions.high.candidates.map((entry) => `${entry.pool}/${entry.model}`);
+  assert.ok(!tierPicks.includes('command-code/gpt-6-astra'));
+  assert.ok(tierPicks.includes('command-code/gpt-6-sol'));
+  assert.deepEqual(after.notInPlan, { 'command-code': [{ model: 'gpt-6-astra', at: '2026-09-29T01:00:00.000Z', why: 'command-code plan does not include gpt-6-astra' }] });
+});
+
+test('a changed plan (strategy set-subscription) retires a plan exclusion; turning the model on removes it', () => {
+  const strategy = { subscriptions: { 'command-code': { plan: 'starter' } } };
+  recordPlanExcludedModel(strategy, 'command-code', 'gpt-6-astra', { at: '2026-09-29T01:00:00.000Z' });
+  assert.equal(planExclusionsForPool(strategy, 'command-code').length, 1);
+  // set-subscription merges the new declaration into subscriptions[pool].
+  strategy.subscriptions['command-code'] = { ...strategy.subscriptions['command-code'], plan: 'pro' };
+  assert.deepEqual(planExclusionsForPool(strategy, 'command-code'), []);
+  assert.deepEqual(disabledModelsForPool(strategy, 'command-code'), []);
+
+  recordPlanExcludedModel(strategy, 'command-code', 'gpt-6-astra');
+  recordPlanExcludedModel(strategy, 'command-code', 'claude-fable-5-1');
+  assert.deepEqual(planExclusionsForPool(strategy, 'command-code').map((entry) => entry.model), ['gpt-6-astra', 'claude-fable-5-1']);
+  setModelDisabled(strategy, 'command-code', 'gpt-6-astra', false);
+  assert.deepEqual(planExclusionsForPool(strategy, 'command-code').map((entry) => entry.model), ['claude-fable-5-1']);
+  clearPlanExcludedModels(strategy, 'command-code');
+  assert.equal(strategy.planExcludedModels, undefined);
+});
+
+test('a rung passes over a model its pool\'s plan excludes and names it as the reason', () => {
+  const connector = {
+    name: 'command-code', modelSelection: { flag: '--model' },
+    modelProfiles: [
+      { match: 'gpt-6-astra', tier: 'high', qualityRank: 7 },
+      { match: 'gpt-6-sol', tier: 'high', qualityRank: 6 },
+    ],
+  };
+  const strategy = {
+    configuredTiers: ['high'],
+    modelTiers: { 'command-code': { 'gpt-6-astra': ['high'], 'gpt-6-sol': ['high'] } },
+  };
+  const pool = { name: 'command-code', connector, enabled: true };
+  assert.equal(rungsFor({ pools: [pool], strategy })[0].model, 'gpt-6-astra');
+  recordPlanExcludedModel(strategy, 'command-code', 'gpt-6-astra', { at: '2026-09-29T01:00:00.000Z', why: 'command-code plan does not include gpt-6-astra' });
+  const [row] = rungsFor({ pools: [pool], strategy });
+  assert.equal(row.model, 'gpt-6-sol');
+  assert.equal(row.eligible, true, 'the pool keeps its rung');
+  assert.deepEqual(row.notInPlan, [{ model: 'gpt-6-astra', at: '2026-09-29T01:00:00.000Z', why: 'command-code plan does not include gpt-6-astra' }]);
 });
 
 test('multi-tier model selections are normalized and become an explicit allow-list', () => {
@@ -1272,4 +1351,144 @@ test('rungRecord leaves stalled attempts out of medianMinutes', () => {
   assert.equal(stallOnly.dispatches, 2);
   assert.equal(stallOnly.medianMinutes, null, 'only stalls means no measured duration');
   assert.equal(stallOnly.okShare, 0);
+});
+
+test('buildPools hands each pool its plan exclusions for dispatch', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { buildPools } = await import('../src/lib/config.js');
+  const { updateState } = await import('../src/lib/state.js');
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-pools-'));
+  try {
+    updateState(home, (state) => {
+      state.strategy ??= {};
+      recordPlanExcludedModel(state.strategy, 'echo', 'echo-premium', { at: '2026-09-29T01:00:00.000Z', why: 'echo plan does not include echo-premium' });
+    });
+    const { pools } = buildPools(home, Date.now(), {}, { packaged: true });
+    const echo = pools.find((pool) => pool.name === 'echo');
+    assert.deepEqual(echo.strategyPlanExcludedModels, [{ model: 'echo-premium', at: '2026-09-29T01:00:00.000Z', why: 'echo plan does not include echo-premium' }]);
+    for (const pool of pools.filter((entry) => entry.name !== 'echo')) assert.deepEqual(pool.strategyPlanExcludedModels, []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// --- free models off (strategy set-free) -------------------------------------
+// `never` for every pool or one: no free model is suggested, applied or
+// dispatched there, and a pool with nothing else for a tier is ineligible for
+// it with a named reason. Unset is today's behaviour.
+
+function freeReport(strategy) {
+  const connector = (name) => ({ name, lanes: ['analyze', 'build', 'chore'], capabilities: [] });
+  const connectors = { openrouter: connector('openrouter'), opencode: connector('opencode'), onlyfree: connector('onlyfree') };
+  return buildStrategy({
+    connectors,
+    pools: Object.values(connectors).map((c) => ({ name: c.name, connector: c, enabled: true, pace: 0, costRank: 2 })),
+    state: { strategy },
+    discoveries: {
+      openrouter: { models: [
+        { id: 'openrouter/union:free', tier: 'low', qualityRank: 2, free: true },
+        { id: 'openrouter/paid-mini', tier: 'low', qualityRank: 3, free: false },
+      ] },
+      opencode: { models: [{ id: 'opencode/alpha-free', tier: 'low', qualityRank: 1, free: true }] },
+      onlyfree: { models: [{ id: 'onlyfree/x:free', tier: 'low', qualityRank: 2, free: true }] },
+    },
+  });
+}
+
+test('free-model setting: a pool\'s own value wins, unset is allow, and every-pool allow leaves no key', () => {
+  const strategy = {};
+  assert.equal(freeModelsSetting(strategy, 'openrouter'), 'allow');
+  setFreeModels(strategy, 'never');
+  assert.equal(freeModelsBanned(strategy, 'openrouter'), true);
+  setFreeModels(strategy, 'allow', { pool: 'openrouter' });
+  assert.equal(freeModelsSetting(strategy, 'openrouter'), 'allow');
+  assert.equal(freeModelsSetting(strategy, 'opencode'), 'never');
+  assert.deepEqual(freeModelsView(strategy), { default: 'never', pools: { openrouter: 'allow' } });
+  resetFreeModels(strategy, { pool: 'openrouter' });
+  setFreeModels(strategy, 'allow');
+  assert.deepEqual(strategy, {});
+  assert.throws(() => setFreeModels(strategy, 'sometimes'), /free models must be allow or never/);
+});
+
+test('free models never: the low tier picks the best non-free model, and an unset home is unchanged', () => {
+  const unset = freeReport({});
+  // Unset, a free model leads the low tier, as before.
+  assert.match(unset.suggestions.low.recommended.model, /[:/-]free$/);
+  assert.equal(unset.providerSuggestions.openrouter.low.recommended.model, 'openrouter/union:free');
+  assert.equal(Object.hasOwn(unset, 'freeModels'), false);
+  assert.equal(Object.hasOwn(unset.providerSuggestions.onlyfree.low, 'ineligible'), false);
+  const never = freeReport({ freeModels: 'never' });
+  assert.deepEqual(never.suggestions.low.recommended, { pool: 'openrouter', model: 'openrouter/paid-mini' });
+  assert.equal(never.suggestions.low.candidates.some((c) => c.free), false);
+  assert.deepEqual(never.freeModels, { default: 'never', pools: {} });
+  // A pool left with no allowed model on the tier says why.
+  assert.equal(never.providerSuggestions.onlyfree.low.recommended, null);
+  assert.equal(never.providerSuggestions.onlyfree.low.ineligible, 'free models are off for onlyfree');
+  assert.equal(never.providerSuggestions.openrouter.low.recommended.model, 'openrouter/paid-mini');
+});
+
+test('free models never on one pool leaves every other pool\'s free models allowed', () => {
+  const report = freeReport({ freeModelsByPool: { openrouter: 'never' } });
+  assert.equal(report.providerSuggestions.openrouter.low.recommended.model, 'openrouter/paid-mini');
+  assert.equal(report.providerSuggestions.opencode.low.recommended.model, 'opencode/alpha-free');
+  assert.equal(report.providerSuggestions.onlyfree.low.recommended.model, 'onlyfree/x:free');
+  const low = report.suggestions.low.candidates.map((c) => `${c.pool}/${c.model}`);
+  assert.equal(low.includes('openrouter/openrouter/union:free'), false);
+  assert.equal(low.includes('onlyfree/onlyfree/x:free'), true);
+});
+
+test('dispatch under free models never pins a non-free model or makes the pool ineligible with the reason', () => {
+  const connector = {
+    name: 'openrouter',
+    model: 'openrouter/union:free',
+    modelSelection: { flag: '--model', mode: 'replace-or-append' },
+    knownModels: ['openrouter/union:free', 'openrouter/paid-mini'],
+    modelProfiles: [
+      { match: 'union:free', tier: 'low', qualityRank: 3, free: true },
+      { match: 'paid-mini', tier: 'low', qualityRank: 2 },
+    ],
+  };
+  // Unset: the connector default, as before.
+  assert.deepEqual(resolveDispatchModel(connector, 'low', {}), { eligible: true, model: null, source: 'connector-default' });
+  assert.deepEqual(resolveDispatchModel(connector, 'low', { excludeFree: true }), {
+    eligible: true, model: 'openrouter/paid-mini', source: 'exclusion-safe-tier-fallback',
+  });
+  // A free rung or pin is passed over.
+  assert.deepEqual(resolveDispatchModel(connector, 'low', {
+    allowedModels: ['openrouter/union:free'], excludeFree: true,
+  }), { eligible: false, model: null, source: 'free-models-off', reason: 'free models are off for openrouter' });
+  assert.equal(resolveDispatchModel(connector, 'low', {
+    allowedModels: ['openrouter/union:free', 'openrouter/paid-mini'], excludeFree: true,
+  }).model, 'openrouter/paid-mini');
+  assert.equal(resolveDispatchModel(connector, 'low', {
+    assignment: { pool: 'openrouter', model: 'openrouter/union:free' }, excludeFree: true,
+  }).model, 'openrouter/paid-mini');
+  // Only free models: ineligible, and the reason names the setting.
+  const onlyFree = { ...connector, knownModels: ['openrouter/union:free'] };
+  assert.deepEqual(resolveDispatchModel(onlyFree, 'low', { excludeFree: true }), {
+    eligible: false, model: null, source: 'free-models-off', reason: 'free models are off for openrouter',
+  });
+  // A paid default is still left to the CLI.
+  const paidDefault = { ...connector, model: 'openrouter/paid-mini' };
+  assert.deepEqual(resolveDispatchModel(paidDefault, 'low', { excludeFree: true }), {
+    eligible: true, model: null, source: 'connector-default',
+  });
+});
+
+test('rungs show a tier whose only model is free as ineligible under free models never', () => {
+  const connector = {
+    name: 'openrouter', modelSelection: { flag: '--model' },
+    knownModels: ['openrouter/union:free'],
+    modelProfiles: [{ match: 'union:free', tier: 'low', qualityRank: 3, free: true }],
+  };
+  const strategy = {
+    configuredTiers: ['low'], modelTiers: { openrouter: { 'openrouter/union:free': ['low'] } },
+  };
+  const rows = (s) => rungsFor({ pools: [{ name: 'openrouter', connector, enabled: true }], strategy: s });
+  assert.equal(rows(strategy)[0].model, 'openrouter/union:free');
+  const off = rows({ ...strategy, freeModelsByPool: { openrouter: 'never' } })[0];
+  assert.equal(off.eligible, false);
+  assert.equal(off.modelSource, 'free-models-off');
 });

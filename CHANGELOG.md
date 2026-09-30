@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- dispatch: a worker can mark a blocker it may not change by starting a `##
+  Not done` line with `outside:` (`- outside: tests/router.test.js fails on
+  main before this change`); work tasks now ask for this. A step that fails
+  `failed-evidence`, `not-produced` or `semantic` with such a line skips its
+  one automatic retry and comes back to you at once, its `why` ending `retry
+  skipped: the worker reported a blocker outside this step: <item>`. `schema`
+  and process failures keep their retry.
+- workflow add: a fragment may carry `blocks: {"<new step id>": ["<existing
+  step id>", ...]}` to make existing steps that have not started also wait for
+  a step it adds, for example a fix in front of a report (then `step accept`
+  the failed step). It is the one change a fragment may make to an existing
+  step; a started step, a loop's step, a gate, a loop or a cycle is refused in
+  fragment words. The output prints `waits    step <id> now also waits for
+  <ids>`, and `--json` carries `waits`.
+- advisories: a new `suite-wider-than-files` advisory names a step that owns
+  files but runs a command check naming none of them (a bare `npm test`),
+  because a failure elsewhere in the suite would fail a step that cannot fix
+  it. Scope the command, or run the suite in a check step. Like every advisory
+  it never refuses a program or changes an exit code.
+- advisories: with `--json`, `workflow goal` and `workflow plan validate` no
+  longer print advisory text; the advisories are in the JSON as `advisories`
+  (the detached launch document always, a foreground result when there are
+  any). In human mode `plan validate` now prints them on stderr, as `workflow
+  goal` does.
+- run --json: the verdict has top-level `pool` and `model`, the last attempt's
+  (null when nothing was dispatched). `pick` keeps them too. Small flat
+  objects such as the reasoning record now print on one line, so the verdict
+  stays within 60 lines.
+- workflow runs: the goal column skips constraint sentences that follow a
+  dropped leading folder (`Work in /abs/path (git branch x). Do not commit.
+  Fix the parser crash.` shows `Fix the parser crash.`); a goal that is only
+  constraints shows the folder name.
+- strategy: new `bullswarm strategy set-free <allow|never> [--pool <name>]
+  --yes` (and `set-free reset --pool <name>`) stops free models being
+  suggested, applied or dispatched, for every pool or one; a pool's own
+  setting wins. A pool left with only free models for a tier is out of that
+  tier with the reason `free models are off for <pool>`. A model you name
+  yourself is still allowed. `strategy show` prints a `free models:` line.
+- providers: a connector may list `modelPlanSignatures`, the text its CLI
+  prints when the subscription's plan does not include the requested model
+  (Command Code: `MODEL_NOT_IN_PLAN`). A hit is the new failure kind
+  `model-not-in-plan` (a process failure, labelled `model not in plan`): the
+  step's retry goes to another pool, and `state.strategy.planExcludedModels`
+  records the model for that pool. The pool keeps running its other models;
+  strategy, rungs, pins and dispatch pass that model over on that pool only.
+  `strategy show` prints `not in plan: <pool>: <model>`. `strategy
+  include-model <model>`, a changed `strategy set-subscription`, or turning
+  the model back on for the pool clears it, and `workflow resume` reruns such
+  a step.
+- command-code: models are ranked by family (astra, sol, gpt, terra, luna,
+  mini, fable, opus, sonnet, haiku, grok), so a newly listed model is ranked
+  the day it appears and the newer version of a family ranks first
+  (`gpt-6.1-sol` above `gpt-5.6-sol`, `claude-opus-5-5` above
+  `claude-opus-4-7`). Dated prices and the deliberate overrides (`gpt-5.4` and
+  `grok-4.5` medium, `minimax-m3` high) stay as rows; kimi and glm stay
+  unranked.
+
 ## 0.38.0 — The removals release: v3 only, saved runs view-only, less code
 
 - removed: the mechanisms program v3 replaced (0.37.0) no longer run. The

@@ -26,7 +26,7 @@ const STOP_KINDS = ['cancelled', 'paused', 'restarted', 'superseded'];
 
 test('FAILURE_CLASSES is the D1 table, frozen, with each kind in exactly one class', () => {
   assert.deepEqual(FAILURE_CLASSES, {
-    process: ['auth', 'provider', 'process', 'interrupted', 'stalled'],
+    process: ['auth', 'provider', 'process', 'interrupted', 'stalled', 'model-not-in-plan'],
     gate: ['not-produced', 'failed-evidence', 'schema', 'semantic'],
     wait: ['quota', 'throttle'],
     caller: ['ownership', 'ownership-conflict', 'runtime', 'unavailable'],
@@ -71,6 +71,7 @@ test('NEEDS_YOU_LABELS is the §2.5 label table and covers every failure kind', 
     provider: 'provider error',
     stalled: 'worker went silent',
     auth: 'sign-in failed',
+    'model-not-in-plan': 'model not in plan',
     interrupted: 'worker was killed',
     throttle: 'rate limited',
     quota: 'out of quota',

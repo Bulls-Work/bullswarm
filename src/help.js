@@ -364,7 +364,7 @@ const runText = rich({
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
     { flag: '--dry-run', desc: 'print the kernel\'s routing pick, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, recording a run, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
     { flag: '--no-caller', desc: 'accepted and ignored for one release: the calling agent is never a pool of its own run', default: 'removed in 0.37.0; a notice is printed' },
-    { flag: '--json', desc: 'print the compact machine-readable verdict; its last field, details, is the command for the full record and per-attempt cost (bullswarm workflow runs result <shortId> --json)', default: 'human-readable summary ending with the run id and that command' },
+    { flag: '--json', desc: 'print the compact machine-readable verdict; top-level `pool` and `model` name the last attempt\'s pool and model (null when nothing was dispatched; `pick` carries them too); its last field, details, is the command for the full record and per-attempt cost (bullswarm workflow runs result <shortId> --json)', default: 'human-readable summary ending with the run id and that command' },
   ],
   safety: [
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
@@ -583,13 +583,14 @@ const strategyText = rich({
     { name: 'exclude-model', desc: 'persistently block a model from any dispatch' },
     { name: 'include-model', desc: 'remove a model exclusion' },
     { name: 'set-subscription', desc: 'record known plan economics for a pool' },
+    { name: 'set-free', desc: 'never suggest or pick a free model, for every pool or one' },
     { name: 'auto', desc: 'inspect or disable the auto-apply-on-refresh policy' },
   ],
   options: [
     { flag: '--json', desc: 'machine-readable output where the subcommand supports it' },
   ],
   safety: [
-    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning/set-rung all mutate ~/.bullswarm/state.json',
+    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-free/set-reasoning/reset-reasoning/set-rung all mutate ~/.bullswarm/state.json',
     'refresh (and a cold show) perform live discovery calls against every installed agent CLI and the public OpenRouter model API',
   ],
   examples: [
@@ -841,10 +842,10 @@ const strategyExcludeModelText = rich({
 
 const strategyIncludeModelText = rich({
   usage: 'bullswarm strategy include-model <model>',
-  purpose: 'Remove a previously persisted model exclusion.',
+  purpose: 'Remove a previously persisted model exclusion, and forget any pool\'s record that its plan does not include the model.',
   args: [{ name: '<model>', desc: 'exact model identifier to unblock' }],
   options: [],
-  safety: ['writes state.strategy.excludedModels and invalidates the cached report'],
+  safety: ['writes state.strategy.excludedModels and state.strategy.planExcludedModels, and invalidates the cached report'],
   examples: [{ cmd: 'bullswarm strategy include-model gpt-5.4-mini' }],
   next: 'bullswarm strategy show to confirm.',
 });
@@ -869,6 +870,31 @@ const strategySetSubscriptionText = rich({
     { cmd: 'bullswarm strategy set-subscription opencode --resets-at 2026-09-17T01:46:01Z', note: 'a wallet whose usage is reported but whose refill date is not' },
   ],
   next: 'bullswarm strategy refresh to recompute recommendations with the new economics.',
+});
+
+const strategySetFreeText = rich({
+  usage: 'bullswarm strategy set-free <allow|never|reset> [--pool <name>] [--yes]',
+  purpose: 'Choose whether strategy may suggest, apply or dispatch a free model (a connector '
+    + 'model declared free, or an id like openrouter/x:free). The default is allow. Under never, '
+    + 'a pool left with no other model for a tier is ineligible for it, with the reason '
+    + '"free models are off for <pool>". A pool\'s own setting wins over the every-pool one.',
+  argsTitle: 'Commands',
+  args: [
+    { name: 'allow', desc: 'free models may be picked (the default)' },
+    { name: 'never', desc: 'no free model is suggested, applied or dispatched' },
+    { name: 'reset', desc: 'drop one pool\'s own setting (needs --pool), so the every-pool one applies' },
+  ],
+  options: [
+    { flag: '--pool <name>', desc: 'set it for this pool only', default: 'every pool' },
+    { flag: '--yes', desc: 'approve the routing change (allow and never)' },
+  ],
+  safety: ['writes state.strategy.freeModels / freeModelsByPool and invalidates the cached report; with autopilot on, its next check re-picks every rung'],
+  examples: [
+    { cmd: 'bullswarm strategy set-free never --yes' },
+    { cmd: 'bullswarm strategy set-free never --pool openrouter --yes', note: 'other pools keep their free models' },
+    { cmd: 'bullswarm strategy set-free reset --pool openrouter' },
+  ],
+  next: 'bullswarm strategy show prints the setting; bullswarm strategy rungs shows a tier left with no model.',
 });
 
 const strategyAutoText = rich({
@@ -1638,7 +1664,9 @@ const workflowAddText = rich({
     + 'lists of a v3 program; its items may name the run\'s existing steps, gates and loops in dependsOn and '
     + 'route.independentOf (a step it must be independent of has to run before it, so depend on it too). '
     + 'Nothing the run has changes: an id the run already has, a new loop around an existing step, or any '
-    + 'change to an existing step is refused. A running run takes the addition at its next check; a parked '
+    + 'change to an existing step is refused, except blocks: {"<new step id>": ["<existing step id>", ...]} '
+    + 'makes existing steps that have not started (and are in no loop) also wait for a step the fragment '
+    + 'adds, for example a fix in front of a report; then step accept the failed step. A running run takes the addition at its next check; a parked '
     + 'or finished run takes it here, reopens, and its kernel is relaunched. --from-answer reads a step\'s '
     + 'current checked answer as the fragment (preview it with workflow wait first). Built-in defaults '
     + 'apply to the added steps (lane analyze, retry 1): set lane, effort and retry on each step.',
@@ -1650,7 +1678,7 @@ const workflowAddText = rich({
     { flag: '--from-answer <step>', desc: 'append the fragment that step\'s checked answer holds' },
     { flag: '--summary <text>', desc: 'the revision summary', default: '"add <ids>"' },
     { flag: '--wait <seconds>', desc: 'how long to wait for a running kernel to apply the addition before reporting it queued', default: '120' },
-    { flag: '--json', desc: 'print {action: "workflow-add", status, steps, control, programRevision, appliedBy, relaunch, next}', default: 'human text' },
+    { flag: '--json', desc: 'print {action: "workflow-add", status, steps, control, programRevision, appliedBy, relaunch, next}, plus waits [{step, waitsFor}] when blocks was used', default: 'human text' },
   ],
   safety: [
     'append-only: refused (exit 2, run unchanged) when the fragment is invalid or would change an existing step, gate or loop; a run an earlier Bullswarm started is refused (exit 1) as view-only',
@@ -1935,6 +1963,7 @@ const HELP = {
     'exclude-model': { _text: strategyExcludeModelText },
     'include-model': { _text: strategyIncludeModelText },
     'set-subscription': { _text: strategySetSubscriptionText },
+    'set-free': { _text: strategySetFreeText },
     auto: {
       _text: strategyAutoText,
       status: { _text: strategyAutoStatusText },

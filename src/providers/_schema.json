@@ -44,6 +44,10 @@
     "strings in output that mean this credential's usage window is spent RIGHT NOW (session/weekly/monthly limit hit)"
   ],
   "$comment-quotaSignatures": "Optional. Spent-window wording. Merged on top of DEFAULT_WINDOW_SIGNATURES (src/lib/quota.js), matched case-insensitively, and only honored when the matched line is quota-shaped (<=300 chars and the phrase starts in the first 40 chars or the line is error-shaped) so agent prose and tool output that merely discuss limits are never killed. A hit is a limit notice (checked before authSignatures) and kills the attempt. A run started by this version and a single bullswarm run read it as a usage limit (quota) that goes back to the caller, with its reset when that is known (decideUsageLimit, doctrine Q6): the reset the notice names, or the reset of a window the pool's own meter reads at >= 95%. A run started by an earlier version reads it as quota only when its reset is known, else as a transient throttle it retries. No pool is ever paused for it. A phrase core knows as throttle wording stays a throttle even when listed here.",
+  "modelPlanSignatures": [
+    "strings in the provider's error output that mean this subscription's plan does not include the requested model"
+  ],
+  "$comment-modelPlanSignatures": "Optional. Plan-refusal wording, matched case-insensitively on the provider's error channel only (stderr, error events, the terminal record; never the agent's reply), after the auth and quota gates. A hit is failure kind model-not-in-plan: the step's one retry goes to another eligible pool, never to the same pool with the same model, and Bullswarm records the model under state.strategy.planExcludedModels[pool]. That model is then treated as turned off for that pool only, until strategy set-subscription changes the pool's plan or the model is turned back on for the pool. The pool itself stays pickable with its other models: this is a fact about the plan, not a spent or dead pool.",
   "throttleSignatures": [
     "strings in output that mean a momentary request throttle (please wait a moment and try again)"
   ],

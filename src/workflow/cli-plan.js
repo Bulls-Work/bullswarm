@@ -182,7 +182,7 @@ async function planValidate(opts) {
     console.log(`✓ program v3 valid: ${count(payload.program.actions.length, 'step')}, ${count(control.gates.length, 'gate')}, ${count(control.loops.length, 'loop')} (nothing launched)`);
     for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.answer ? ' answer' : ''}${action.dependsOn.length ? ` after ${action.dependsOn.join(', ')}` : ''}${action.route ? ` route: ${routeSummary(action.route)}` : ''}`);
     for (const line of controlSummaryLines(control)) console.log(line);
-    printAdvisories(payload.advisories, { stream: console.log });
+    printAdvisories(payload.advisories);
     console.log(`  launch   ${next.launch}`);
   }
   return 0;

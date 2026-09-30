@@ -15,7 +15,8 @@ import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { implicitV3Requirements, normaliseProgramV3 } from '../src/workflow/program-v3.js';
 import { appendedActionsV3, appendedProgramV3 } from '../src/workflow/revision-v3.js';
-import { exportV2Plan, planV2Revision } from '../src/workflow/v2-revision.js';
+import { createRevisionRequest, exportV2Plan, planV2Revision } from '../src/workflow/v2-revision.js';
+import { acceptV2Step } from '../src/workflow/cli-step-verbs.js';
 import { v2LiveProgramRuntime } from '../src/workflow/v2-state.js';
 import { addV3Steps, waitFactLines, waitFacts, waitV3Nodes, wfAdd } from '../src/workflow/cli-steps.js';
 import { routeIssuesForPools } from '../src/workflow/step-route.js';
@@ -294,7 +295,7 @@ test('add refuses a v2 run as view-only, and the CLI prints what it added', asyn
   delete env.BULLSWARM_DEPTH;
   const file = join(f.root, 'checks.json');
   // No route: this home configures no pool, and add checks a route against today's pools.
-  writeFileSync(file, JSON.stringify({ steps: [{ id: 'check-f1', dependsOn: ['find'], prompt: 'Check finding f1.' }] }));
+  writeFileSync(file, JSON.stringify({ steps: [{ id: 'check-f1', dependsOn: ['find'], prompt: 'Check finding f1.' }], blocks: { 'check-f1': ['report'] } }));
   const call = (...args) => spawnSync(process.execPath, [cli, 'workflow', 'add', ...args], { encoding: 'utf8', env });
   let out = call(run.shortId);
   assert.equal(out.status, 2);
@@ -309,6 +310,7 @@ test('add refuses a v2 run as view-only, and the CLI prints what it added', asyn
   assert.equal(out.status, 0, out.stdout + out.stderr);
   assert.match(out.stdout, new RegExp(`✓ added to ${run.shortId} · revision \\d+ \\(applied directly; the run stays paused\\)`));
   assert.match(out.stdout, /added {4}step check-f1/);
+  assert.match(out.stdout, /waits {4}step report now also waits for check-f1/);
   assert.match(out.stdout, new RegExp(`wait {5}bullswarm workflow wait ${run.shortId} check-f1`));
 });
 
@@ -331,6 +333,144 @@ test('the append-only check backs onto the round trip: a stored step that would 
   const planned = planV2Revision(state, { program: dropped, append: true, rerun: [], steeringIds: [] });
   assert.equal(planned.ok, false);
   assert.match(planned.issues[0], /workflow add never changes or removes what the run has/);
+});
+
+// --- workflow add: blocks (0.38.1) -------------------------------------------------
+
+test('blocks makes a step that has not started also wait for a step the fragment adds; nothing else of the run changes', async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  const run = await launch(f, findProgram(), fakeDispatch(script, { seen }));
+  assert.deepEqual(run.waiting.map((entry) => entry.id), ['review']);
+  const before = readState(run);
+  const added = await addV3Steps({
+    bullswarmDir: f.bullswarmDir, token: run.shortId, waitMs: 0, relaunch: noRelaunch,
+    fragment: { steps: [{ id: 'tidy', dependsOn: ['find'], prompt: 'Tidy the acme notes.' }], blocks: { tidy: ['report'] } },
+  });
+  assert.equal(added.status, 'applied', JSON.stringify(added));
+  assert.deepEqual(added.steps, ['tidy']);
+  assert.deepEqual(added.waits, [{ step: 'report', waitsFor: ['tidy'] }]);
+  const after = readState(run);
+  assert.equal(validateV2DurableState(structuredClone(after)), true);
+  assert.deepEqual(after.program.actions[0], before.program.actions[0], 'a step blocks does not name is byte-identical');
+  const { dependsOn, ...rest } = after.program.actions[1];
+  const { dependsOn: beforeDeps, ...beforeRest } = before.program.actions[1];
+  assert.deepEqual(beforeDeps, ['review']);
+  assert.deepEqual(dependsOn, ['review', 'tidy'], 'its dependsOn grows by the added step');
+  assert.deepEqual(rest, beforeRest, 'and nothing else of it changes');
+  assert.deepEqual(after.program.control, before.program.control);
+  assert.equal(statusOf(after, 'report'), 'pending');
+  assert.match(after.revisions.at(-1).summary, /add tidy; report waits for tidy/);
+
+  const again = await resume(f, run.runId, fakeDispatch(script, { seen }));
+  assert.deepEqual(again.waiting.map((entry) => entry.id), ['review']);
+  assert.deepEqual(seen, ['find', 'tidy'], 'the added step runs; the step behind the gate still waits');
+  assert.equal(statusOf(again.state, 'report'), 'pending');
+});
+
+test('blocks on the steps behind a failed step: they stay blocked, and after step accept they wait for the fix', async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  let failTests = true;
+  const dispatch = () => fakeDispatch((id) => (id === 'tests' && failTests ? { fail: 'process' } : {}), { seen });
+  const program = {
+    schemaVersion: V3,
+    steps: [
+      { id: 'tests', prompt: 'Run the acme tests.', retry: 0 },
+      { id: 'integrate', dependsOn: ['tests'], prompt: 'Integrate the acme work.' },
+    ],
+  };
+  const run = await launch(f, program, dispatch());
+  assert.equal(statusOf(run.state, 'tests'), 'failed');
+  assert.equal(statusOf(run.state, 'integrate'), 'blocked');
+  failTests = false;
+  const added = await addV3Steps({
+    bullswarmDir: f.bullswarmDir, token: run.shortId, waitMs: 0, relaunch: noRelaunch,
+    fragment: { steps: [{ id: 'fix-tests', prompt: 'Fix the acme tests.' }], blocks: { 'fix-tests': ['integrate'] } },
+  });
+  assert.equal(added.status, 'applied', JSON.stringify(added));
+  assert.deepEqual(readState(run).program.actions.find((action) => action.id === 'integrate').dependsOn, ['tests', 'fix-tests']);
+  // The fix runs; integrate is still behind the failed tests.
+  const fixed = await resume(f, run.runId, dispatch());
+  assert.deepEqual(seen, ['tests', 'fix-tests']);
+  assert.equal(statusOf(fixed.state, 'fix-tests'), 'succeeded');
+  assert.equal(statusOf(fixed.state, 'integrate'), 'blocked', 'blocks never unblocks a step behind a failed dependency');
+  // Accepting the failed step releases integrate, which now also waited for the fix.
+  const accepted = await acceptV2Step({
+    bullswarmDir: f.bullswarmDir, token: run.shortId, stepId: 'tests', reason: 'the acme fix step repaired them', waitMs: 0, relaunch: noRelaunch,
+  });
+  assert.equal(accepted.status, 'applied', JSON.stringify(accepted));
+  const done = await resume(f, run.runId, dispatch());
+  assert.deepEqual(seen, ['tests', 'fix-tests', 'integrate']);
+  assert.equal(done.result.status, 'completed', done.result.reason);
+});
+
+test('blocks is refused, in the fragment\'s words, on a started step, a gate, a loop step, an id it does not add, or a cycle', async (t) => {
+  const f = fixture(t);
+  const passed = { type: 'object', required: ['passed'], properties: { passed: { type: 'boolean' } } };
+  const program = {
+    ...findProgram(),
+    steps: [
+      ...findProgram().steps,
+      { id: 'draft', dependsOn: ['review'], prompt: 'Draft the acme brief.' },
+      { id: 'critique', dependsOn: ['draft'], prompt: 'Critique the acme brief.', answer: passed },
+    ],
+    loops: [{ id: 'polish', steps: ['draft', 'critique'], until: { step: 'critique', field: 'passed' }, maxRounds: 2 }],
+  };
+  const run = await launch(f, program, fakeDispatch(script));
+  assert.deepEqual(run.waiting.map((entry) => entry.id), ['review']);
+  const before = readFileSync(join(run.runDir, 'state.json'), 'utf8');
+  const fix = { id: 'fix', dependsOn: ['find'], prompt: 'Fix the acme notes.' };
+  const refused = async (fragment, pattern) => {
+    const result = await addV3Steps({ bullswarmDir: f.bullswarmDir, token: run.shortId, fragment, waitMs: 0, relaunch: noRelaunch });
+    assert.equal(result.status, 'rejected', JSON.stringify(result));
+    assert.equal(result.code, 2);
+    assert.ok(result.issues.some((issue) => pattern.test(issue)), JSON.stringify(result.issues));
+  };
+  await refused({ steps: [fix], blocks: { fix: ['find'] } },
+    /^fragment\.blocks\.fix names step find, which is succeeded after 1 attempt; blocks may name only steps that have not started$/);
+  await refused({ steps: [fix], blocks: { fix: ['review'] } }, /^fragment\.blocks\.fix names the gate review; blocks may name only existing steps/);
+  await refused({ steps: [fix], blocks: { fix: ['polish'] } }, /^fragment\.blocks\.fix names the loop polish/);
+  await refused({ steps: [fix], blocks: { fix: ['draft'] } }, /^fragment\.blocks\.fix names step draft, which is in loop polish; a loop's steps never change$/);
+  await refused({ steps: [fix], blocks: { other: ['report'] } }, /^fragment\.blocks\.other names no step the fragment adds/);
+  await refused({ steps: [fix], blocks: { fix: ['nowhere'] } }, /^fragment\.blocks\.fix names "nowhere", which is not a step of the run$/);
+  await refused({ steps: [fix, { id: 'fix-2', prompt: 'Fix more.' }], blocks: { fix: ['fix-2'] } }, /names fix-2, a step the fragment adds; give fix-2 dependsOn \["fix"\] instead/);
+  await refused({ steps: [fix], blocks: { fix: ['report', 'report'] } }, /^fragment\.blocks\.fix names report twice$/);
+  await refused({ steps: [fix], blocks: { fix: [] } }, /^fragment\.blocks\.fix must be a non-empty array of existing step ids$/);
+  await refused({ steps: [fix], blocks: ['report'] }, /^fragment\.blocks must be an object/);
+  await refused({ steps: [{ id: 'fix', dependsOn: ['report'], prompt: 'Fix after the report.' }], blocks: { fix: ['report'] } },
+    /^fragment\.blocks\.fix names step report, which fix itself waits for \(a cycle\)$/);
+  assert.equal(readFileSync(join(run.runDir, 'state.json'), 'utf8'), before, 'a refusal leaves the run as it was');
+});
+
+test('blocks is checked again on the state the applying kernel holds: a target that started since the preview is refused', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, findProgram(), fakeDispatch(script));
+  const state = readState(run);
+  const fragment = { steps: [{ id: 'tidy', dependsOn: ['find'], prompt: 'Tidy the acme notes.' }], blocks: { tidy: ['report'] } };
+  const body = { baseRevision: state.program.revision, program: appendedProgramV3(state, exportV2Plan(state).program.actions, fragment), rerun: [], steeringIds: [], append: true };
+  const request = createRevisionRequest(body, { source: 'workflow-add' });
+  assert.equal(planV2Revision(state, request).ok, true, 'the preview passes while report has not started');
+  // Between the preview and the kernel's apply, report is claimed and
+  // started: the check planV2Revision runs reads the state it is given.
+  const check = (tampered) => appendedActionsV3(tampered, request.program, v2LiveProgramRuntime(tampered));
+  assert.deepEqual(check(state).blocks, [{ step: 'report', waitsFor: ['tidy'] }]);
+  const started = structuredClone(state);
+  Object.assign(started.actions.find((action) => action.id === 'report'), { status: 'running', attempts: 1 });
+  assert.deepEqual(check(started).issues, ['fragment.blocks.tidy names step report, which is running after 1 attempt; blocks may name only steps that have not started']);
+  const claimed = structuredClone(state);
+  claimed.attempts.push({ ...structuredClone(claimed.attempts[0]), id: 'attempt-report-1', actionId: 'report', status: 'running' });
+  assert.match(check(claimed).issues[0], /names step report, which is running; blocks may name only steps that have not started/);
+  // A step reset for a rerun keeps its earlier attempts and is refused too.
+  const rerun = structuredClone(state);
+  Object.assign(rerun.actions.find((action) => action.id === 'report'), { status: 'pending', attempts: 2 });
+  assert.match(check(rerun).issues[0], /which is pending after 2 attempts/);
+  // A request carrying an added edge on a step that changed otherwise is still refused whole.
+  const edited = structuredClone(body.program);
+  edited.actions[1].prompt = 'Report differently.';
+  const refused = planV2Revision(state, { ...request, program: edited });
+  assert.equal(refused.ok, false);
+  assert.match(refused.issues[0], /workflow add never changes or removes what the run has/);
 });
 
 // --- workflow wait ---------------------------------------------------------------
@@ -536,6 +676,62 @@ test('a detached v3 launch says where the run stops for you and points to workfl
   assert.equal(launched.instructions.callerPlanner.command, `bullswarm workflow add ${token} --steps part.json`);
   assert.match(launched.instructions.callerPlanner.purpose, new RegExp(`The run stops for you at gate approve: watch --until trouble wakes you there, and bullswarm workflow continue ${token} <id> moves it on`));
   assert.doesNotMatch(launched.instructions.callerPlanner.purpose, /never waits/);
+});
+
+test('advisories ride inside the JSON in --json mode and print once, on stderr, in human mode', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-advisory-'));
+  const home = join(root, 'home');
+  const workspace = join(root, 'acme');
+  mkdirSync(join(home, 'connectors'), { recursive: true });
+  mkdirSync(workspace);
+  const echo = JSON.parse(readFileSync(new URL('../src/providers/echo/connector.json', import.meta.url), 'utf8'));
+  writeFileSync(join(home, 'connectors', 'echo.json'), JSON.stringify(echo));
+  writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, pools: { echo: { enabled: true } }, incumbents: {}, decisionLog: [], config: { depthLimit: 2 } }));
+  execFileSync('git', ['init', '-q', workspace]);
+  writeFileSync(join(workspace, 'README.md'), 'acme\n');
+  execFileSync('git', ['-C', workspace, 'add', '.']);
+  execFileSync('git', ['-C', workspace, '-c', 'user.name=Acme Dev', '-c', 'user.email=dev@example.com', 'commit', '-qm', 'seed']);
+  const plan = join(root, 'plan.json');
+  writeFileSync(plan, JSON.stringify({
+    schemaVersion: V3,
+    steps: [{ id: 'docs', prompt: 'Write the acme docs.', lane: 'build', effort: 'high', files: ['README.md'] }],
+  }));
+  const env = { ...process.env, BULLSWARM_HOME: home, BULLSWARM_DEPTH: '0', BULLSWARM_NO_PACKAGED_PROVIDERS: '1' };
+  const run = (...args) => spawnSync(process.execPath, [cli, 'workflow', ...args], { encoding: 'utf8', env, cwd: workspace, timeout: 60_000 });
+  const lines = (text) => text.split('\n').filter((line) => line.startsWith('advisory: docs-at-high'));
+  const settle = async (runId) => {
+    const statePath = join(home, 'workflows', runId, 'state.json');
+    for (let i = 0; i < 300; i += 1) {
+      try { if (['waiting', 'completed', 'partial', 'failed'].includes(JSON.parse(readFileSync(statePath, 'utf8')).lifecycle.status)) return; } catch { /* mid-write */ }
+      await new Promise((done) => setTimeout(done, 50));
+    }
+  };
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const json = run('goal', 'Write the acme docs', '--cwd', workspace, '--program', plan, '--json');
+  assert.equal(json.status, 0, json.stdout + json.stderr);
+  const launched = JSON.parse(json.stdout);
+  assert.equal(lines(json.stdout + json.stderr).length, 0, 'no advisory text on any stream in --json mode');
+  assert.deepEqual(launched.advisories.map((item) => item.code), ['docs-at-high']);
+  assert.equal(typeof launched.advisories[0].message, 'string');
+  await settle(launched.runId);
+
+  const human = run('goal', 'Write the acme docs', '--cwd', workspace, '--program', plan);
+  assert.equal(human.status, 0, human.stdout + human.stderr);
+  assert.equal(lines(human.stderr).length, 1, human.stderr);
+  assert.equal(lines(human.stdout).length, 0, 'human launch prints advisories on stderr only');
+  const token = human.stdout.match(/wf-[a-z0-9-]+/)?.[0];
+  if (token) await settle(token);
+
+  const validateJson = run('plan', 'validate', 'Write the acme docs', '--program', plan, '--cwd', workspace, '--json');
+  assert.equal(validateJson.status, 0, validateJson.stdout + validateJson.stderr);
+  assert.equal(lines(validateJson.stdout + validateJson.stderr).length, 0);
+  assert.deepEqual(JSON.parse(validateJson.stdout).advisories.map((item) => item.code), ['docs-at-high']);
+
+  const validateHuman = run('plan', 'validate', 'Write the acme docs', '--program', plan, '--cwd', workspace);
+  assert.equal(validateHuman.status, 0, validateHuman.stdout + validateHuman.stderr);
+  assert.equal(lines(validateHuman.stderr).length, 1, 'plan validate prints each advisory once, on stderr');
+  assert.equal(lines(validateHuman.stdout).length, 0);
 });
 
 test('a v3 run with no gate or loop says it never stops for you; a completed v3 run\'s result and resume point to add, never to plan revise', async (t) => {

@@ -50,3 +50,15 @@ test('a labelled leading folder ("Repo:", "Workspace:") is dropped like "Work in
   assert.equal(goalColumnText('Repository: ./app\nFix the parser'), 'Fix the parser');
   assert.equal(goalColumnText('Workspace: ~/acme. Summarise README.md'), 'Summarise README.md');
 });
+
+// Friction from 0.38.0: after the folder, a constraint sentence became the
+// column text and hid what the work is.
+test('constraint sentences right after a dropped folder are skipped', () => {
+  assert.equal(goalColumnText('Work in /abs/path (git branch x). Do not commit. Fix the parser crash on empty input.'), 'Fix the parser crash on empty input.');
+  assert.equal(goalColumnText('Work in /abs/path (Bullswarm 0.38.0, branch v1/x). Read only; change no file.\n\nFor each item below, find where it lives.'), 'For each item below, find where it lives.');
+  // Only constraints left: the folder name, like a goal that is only a folder.
+  assert.equal(goalColumnText('Work in /abs/path (git branch x). Do not commit.'), 'path');
+  // Not pure constraints, or no dropped folder: untouched.
+  assert.equal(goalColumnText('Work in /abs/path. Read-only survey, very thorough.'), 'Read-only survey, very thorough.');
+  assert.equal(goalColumnText('Do not merge PR 12 until CI is green'), 'Do not merge PR 12 until CI is green');
+});

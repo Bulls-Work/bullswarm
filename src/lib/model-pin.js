@@ -51,6 +51,13 @@ export function poolCanRunModel(pool, model) {
   if (disabled.includes(wanted) || disabled.includes(base(wanted))) {
     return { ok: false, reason: `${model} is turned off for ${pool.name}` };
   }
+  // The provider said this pool's plan does not include the model
+  // (model-not-in-plan); the pool still runs its other models.
+  const notInPlan = (Array.isArray(pool?.strategyPlanExcludedModels) ? pool.strategyPlanExcludedModels : [])
+    .map((entry) => String(entry?.model ?? '').trim().toLowerCase());
+  if (notInPlan.includes(wanted) || notInPlan.includes(base(wanted))) {
+    return { ok: false, reason: `${pool.name} plan does not include ${model}` };
+  }
   // A provider-qualified id (`<providerId>/<model>`) under this pool's own
   // provider id is that credential's namespace: the pool runs it.
   const providerId = (pool?.connector ?? pool)?.profile?.providerId;

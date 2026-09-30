@@ -27,7 +27,7 @@ import {
   CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, loopOutcome, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
-import { appendedProgramV3, fragmentShapeIssues } from './revision-v3.js';
+import { appendedProgramV3, blocksIssues, fragmentShapeIssues } from './revision-v3.js';
 import { isProgramV3Run, readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isLegacyRunDir, resolveRunId, v2RunnerLiveness } from './short-id.js';
 import { drivableRunRefusal, viewOnlyRunLine } from './cli-run-lookup.js';
@@ -244,6 +244,7 @@ export async function addV3Steps({
     source = read.fragment;
   }
   const shape = fragmentShapeIssues(source);
+  if (!shape.length) shape.push(...blocksIssues(state, source));
   if (shape.length) return { code: 2, status: 'rejected', issues: shape, ...base, ...(fromAnswer ? { fromAnswer } : {}) };
   let doc;
   try { doc = JSON.parse(readFileSync(join(resolved.runDir, 'goal.json'), 'utf8')); }
@@ -254,8 +255,17 @@ export async function addV3Steps({
   }
   const live = exportV2Plan(state).program.actions;
   const names = (list) => (Array.isArray(list) ? list : []).map((item) => item?.id).filter((item) => typeof item === 'string');
+  // The existing steps the fragment's blocks make wait, each with what it now also waits for.
+  const waits = [];
+  for (const [key, targets] of Object.entries(source.blocks ?? {})) {
+    for (const stepId of targets) {
+      const entry = waits.find((item) => item.step === stepId);
+      if (entry) entry.waitsFor.push(key); else waits.push({ step: stepId, waitsFor: [key] });
+    }
+  }
+  const waitText = waits.map((entry) => `; ${entry.step} waits for ${entry.waitsFor.join(', ')}`).join('');
   const body = {
-    summary: summary ?? `add ${[...names(source.steps), ...names(source.gates), ...names(source.loops)].join(', ')}${fromAnswer ? ` from the answer of ${fromAnswer}` : ''}`,
+    summary: summary ?? `add ${[...names(source.steps), ...names(source.gates), ...names(source.loops)].join(', ')}${fromAnswer ? ` from the answer of ${fromAnswer}` : ''}${waitText}`,
     baseRevision: state.program.revision,
     program: appendedProgramV3(state, live, source),
     rerun: [], steeringIds: [], append: true,
@@ -279,6 +289,7 @@ export async function addV3Steps({
   const result = {
     ...base, requestId: request.id, ...(fromAnswer ? { fromAnswer } : {}),
     steps: [...precheck.changes.added], control: [...(precheck.changes.addedControl ?? [])],
+    ...(waits.length ? { waits } : {}),
   };
   if (outcome.status === 'rejected') return { code: 2, status: 'rejected', issues: outcome.record?.issues ?? [], ...result };
   if (outcome.status === 'queued') return { code: 0, status: 'queued', programRevision: null, appliedBy: null, relaunch: null, ...result };
@@ -358,6 +369,7 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   let state = null;
   try { state = readState(resolveRunId(bullswarmDir, id)?.runDir ?? ''); } catch { state = null; }
   for (const line of addedLines(result, state)) console.log(`  added    ${line}`);
+  for (const entry of result.waits ?? []) console.log(`  waits    step ${entry.step} now also waits for ${entry.waitsFor.join(', ')}`);
   if (result.paused) console.log(`  resume   bullswarm workflow resume ${id}`);
   console.log(`  wait     ${payload.next.wait}`);
   return code;

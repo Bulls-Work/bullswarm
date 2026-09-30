@@ -39,10 +39,10 @@ export const KIND_DEFAULTS = Object.freeze({
   'adversarial-acceptance': Object.freeze({ lane: 'analyze', effort: 'high' }),
 });
 export const ACTION_KINDS = Object.freeze(Object.keys(KIND_DEFAULTS));
-// Exactly three advisory codes: two about effort choices, one about a
-// requirement no step checks. Advisories never affect validity, exit codes, or
-// dispatch.
-export const PROGRAM_ADVISORY_CODES = Object.freeze(['all-writers-high', 'docs-at-high', 'requirement-unchecked']);
+// Exactly four advisory codes: two about effort choices, one about a
+// requirement no step checks, one about a command that runs wider than the
+// step's files. Advisories never affect validity, exit codes, or dispatch.
+export const PROGRAM_ADVISORY_CODES = Object.freeze(['all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files']);
 // `verifyRounds` at the top level is the normalized form this validator
 // returns (see the end of validateActionProgram); accepting it back keeps an
 // accepted program valid when it is validated a second time.
@@ -109,6 +109,23 @@ export function resolveActionRouting(action, defaults = {}) {
   };
 }
 
+// A command scopes itself to a step's files when an argument after the program
+// is a file path (not a bare directory), a glob, or carries a file's stem. The
+// rule reads only the arguments, so it names no program and no package script.
+const stemsOf = (files) => files
+  .map((file) => String(file).split('/').pop().split('.')[0].toLowerCase())
+  .filter((stem) => stem.length >= 3);
+function commandNamesFiles(cmd, stems) {
+  const args = cmd.split(/\s+/).slice(1).map((token) => token.replace(/^['"]+|['"]+$/g, '')).filter(Boolean);
+  return args.some((arg) => {
+    if (/[*?[\]]/.test(arg)) return true;
+    if (/\.[A-Za-z][A-Za-z0-9]{0,5}$/.test(arg)) return true;
+    if (arg.includes('/') && !arg.endsWith('/')) return true;
+    const lower = arg.toLowerCase();
+    return stems.some((stem) => lower.includes(stem));
+  });
+}
+
 const isMarkdown = (file) => typeof file === 'string' && /\.md$/i.test(file);
 
 /**
@@ -122,6 +139,9 @@ export function programAdvisories(program, { requirements = null } = {}) {
   const resolved = program.actions.filter(isObject).map((action) => ({
     id: typeof action.id === 'string' ? action.id : null,
     ownedFiles: Array.isArray(action.ownedFiles) ? action.ownedFiles : [],
+    commands: (Array.isArray(action.evidence) ? action.evidence : [])
+      .filter((item) => isObject(item) && item.type === 'command' && typeof item.cmd === 'string')
+      .map((item) => item.cmd.trim()),
     ...resolveActionRouting(action, defaults),
   }));
   const writers = resolved.filter((action) => action.lane === 'build' || action.lane === 'chore');
@@ -140,6 +160,19 @@ export function programAdvisories(program, { requirements = null } = {}) {
       code: 'docs-at-high',
       actionId: action.id,
       message: `owns only markdown files (${action.ownedFiles.join(', ')}) at high effort; documentation edits rarely need the high tier`,
+    });
+  }
+  // A command that names none of the step's files also runs whatever else is
+  // in the tree, so a failure elsewhere fails a step that cannot fix it.
+  for (const action of resolved) {
+    if (!action.ownedFiles.length) continue;
+    const stems = stemsOf(action.ownedFiles);
+    const wide = action.commands.find((cmd) => !commandNamesFiles(cmd, stems));
+    if (wide === undefined) continue;
+    advisories.push({
+      code: 'suite-wider-than-files',
+      actionId: action.id,
+      message: `evidence \`${wide}\` runs without naming any of this step's files (${action.ownedFiles.join(', ')}); a failure elsewhere in the suite fails this step and it cannot fix it, so scope the command to the files or move the whole-suite run to a check step with no files`,
     });
   }
   // A requirement no step gives evidence for can never pass, so the run can

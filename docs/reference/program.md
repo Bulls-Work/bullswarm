@@ -89,7 +89,7 @@ A gate's condition step must run before the gate, and a loop's must be one of it
 - A step passes by facts only: its worker ended cleanly, its deliverable was produced, its evidence passed, and its answer (when declared) matched the schema.
 - A failed step gets one automatic retry: a process failure on another eligible pool, a failed check (answer, evidence, deliverable) on the same pool with the failure attached. Then it comes back to you. A usage limit sends the step to you at once.
 - When only waiting gates or loops are left, the run parks with status `waiting` until you run `workflow continue`.
-- A v3 run's steps, gates and loops are never edited. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`).
+- A v3 run's steps, gates and loops are never edited. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`). The one change a fragment may make to an existing step is `blocks: {"<new step id>": ["<existing step id>", ...]}`: those steps, which must not have started and must be in no loop, also wait for the new step.
 
 ### A v3 example
 
@@ -177,7 +177,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 
 | Failure | Automatic action | Then |
 |---|---|---|
-| `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`, whose retry also skips every pool that shares its credential) | You decide |
+| `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`, `model-not-in-plan`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`, whose retry also skips every pool that shares its credential, and `model-not-in-plan`, whose retry never goes back to the pool whose plan refused the model) | You decide |
 | `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached | You decide |
 | `wait` | `quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry | You decide; the block shows `back at <time>` when the pool's return time is known |
 | `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
@@ -252,6 +252,8 @@ The box for an attempt is the first of these that applies:
 3. 1.5 × the median wall minutes of the succeeded attempts in this home for the same pool and kind (or role, for a step with no kind), when that pair has at least 5, else for the kind or role alone when it has at least 5, else 20. It is rounded to a multiple of 5 and kept within 10–60. `opencode` attempts never feed it, because that pool runs a slow free model.
 
 The box is resolved for each attempt, so a retry on another pool gets its own clock. A step whose report lists items under `## Not done` still succeeds. Its attempt records `returnedEarly` with the count and the items, the Step page reads `returned early · N not done` (and `box 20m · ran 34m` when the attempt ran past its box) and lists the stored items in the header, the selected Run timeline row and the Run live block list them too, `workflow watch` prints `◐ <step> returned early · N not done`, and the items are quoted to the verifiers that judge the requirements the step affects.
+
+A work task's paragraph also asks the worker to start a blocker it may not change with `outside:` (`- outside: tests/router.test.js fails on main before this change`). When a step fails `failed-evidence`, `not-produced` or `semantic` and its report lists such an item, its one automatic retry is skipped, because the same pool would hit the same blocker: the step comes back to you at once and its `why` ends `retry skipped: the worker reported a blocker outside this step: <first item>`. `schema` failures keep their correction retry and process failures their retry on another pool.
 
 ## Verify rounds
 
@@ -387,7 +389,7 @@ Validate and launch apply the same rules. A kind outside the table, a lane outsi
 - A deliverable path must be an exact file, not a directory. When `ownedFiles` is not empty, every deliverable path, `files` paths included, must be listed in it. An isolated run refuses a git-ignored deliverable path, because it copies back only files git would track.
 - `timeBox` is a whole number of minutes from 0 to 240 and `verifyRounds` a whole number from 0 to 3; anything else, and any `repair` field, exits 2.
 
-Exit 0 always carries `advisories`. `all-writers-high` and `docs-at-high` name an action whose effort is above what its work warrants. `requirement-unchecked` names a requirement no step lists in `evidenceFor`: the run can finish but never verify it.
+Exit 0 always carries `advisories`. `all-writers-high` and `docs-at-high` name an action whose effort is above what its work warrants. `requirement-unchecked` names a requirement no step lists in `evidenceFor`: the run can finish but never verify it. `suite-wider-than-files` names a step that owns files and runs a command check naming none of them (no path, glob or file-name stem among its arguments, such as a bare `npm test`): a failure elsewhere in the suite would fail a step that cannot fix it, so scope the command or move the whole-suite run to a check step. In human mode each advisory prints once on stderr; with `--json`, `plan validate` and `workflow goal` print none and carry them in the JSON as `advisories`.
 
 ## Example
 

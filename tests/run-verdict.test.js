@@ -47,3 +47,15 @@ test('runVerdict: one item reads in the singular; no record means notDone null a
   assert.equal(none.notDone, null);
   assert.equal(runVerdictLines(none).some((line) => /not done/.test(line)), false);
 });
+
+test('runVerdict: top-level pool and model are the last attempt\'s; a never-dispatched step gives null', () => {
+  const verdict = runVerdict({ run: runWith(null), stepId: 'task' });
+  assert.equal(verdict.pool, 'acme');
+  assert.equal(verdict.model, 'acme-model');
+  assert.equal(verdict.pick.pool, 'acme');
+  const run = runWith(null);
+  run.state.attempts = [];
+  const idle = runVerdict({ run, stepId: 'task' });
+  assert.equal(idle.pool, null);
+  assert.equal(idle.model, null);
+});

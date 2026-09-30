@@ -511,7 +511,7 @@ test('connector metadata upgrades insert packaged model profiles the installed c
     // the field was missing entirely, so this connector never learned the
     // new entry.
     // The packaged generic catch-all, verbatim pattern, operator-customised rank.
-    const generic = { match: '(?:flash|(?:^|[/.-])mini(?:$|[/.-])|luna|free)', tier: 'low', qualityRank: 1 };
+    const generic = { match: '(?:flash|free)', tier: 'low', qualityRank: 1 };
     const own = { match: '^my-company/.*$', tier: 'high', qualityRank: 9 };
     writeFileSync(join(dir, 'command-code.json'), `${JSON.stringify({
       name: 'command-code', modelProfiles: [own, generic],

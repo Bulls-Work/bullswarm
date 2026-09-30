@@ -27,6 +27,25 @@ function withoutLeadingNote(text) {
   return text;
 }
 
+// A sentence that only restricts the work ("Do not commit.", "Read only;
+// change no file."): every clause starts like one of these.
+const CONSTRAINT = /^(?:do not|don't|never|must not|no\b|nothing\b|read[- ]only$|change no\b|commit nothing|keep\b.*\b(?:unchanged|as is)|stay\b|leave\b)/i;
+
+function isConstraint(sentence) {
+  const clauses = sentence.replace(/[.!?]+$/, '').split(/[;,]/).map((part) => part.trim()).filter(Boolean);
+  return clauses.length > 0 && clauses.every((clause) => CONSTRAINT.test(clause));
+}
+
+// The text without its leading constraint sentences. Splits only on ". "
+// before a capital, so "0.38.0" and paths stay whole. Empty when all of it
+// was constraints.
+function withoutLeadingConstraints(text) {
+  const sentences = text.split(/(?<=[.!?])\s+(?=[A-Z])/);
+  let skip = 0;
+  while (skip < sentences.length && isConstraint(sentences[skip])) skip += 1;
+  return sentences.slice(skip).join(' ');
+}
+
 const lastPart = (path) => path.replace(/\/+$/, '').split('/').filter(Boolean).at(-1) ?? null;
 
 // One line without its leading folder: `{ text, folder }`. A bare path with
@@ -45,7 +64,8 @@ function withoutFolder(line) {
 
 /**
  * The goal's first line without a leading folder. A folder alone on its line
- * is followed by the next non-empty line; a goal that is only a folder shows
+ * is followed by the next non-empty line, as are constraint-only sentences
+ * after it ("Do not commit."); a goal that is only a folder shows
  * the folder's name; `?` when empty.
  */
 export function goalColumnText(goal) {
@@ -54,7 +74,9 @@ export function goalColumnText(goal) {
   let folder = null;
   for (const line of lines) {
     const next = withoutFolder(line);
-    if (next.text) return next.text;
+    // Constraints are skipped only right after a dropped folder.
+    const text = next.folder === null ? next.text : withoutLeadingConstraints(next.text);
+    if (text) return text;
     folder ??= next.folder;
   }
   return folder ?? lines[0];

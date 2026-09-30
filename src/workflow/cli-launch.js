@@ -16,7 +16,7 @@ import { runV2AutonomousWorkflow } from './v2-runtime.js';
 import { formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 
-export async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initialPlannerResponse = null }) {
+export async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initialPlannerResponse = null, advisories = null }) {
   const result = await runV2AutonomousWorkflow({
     bullswarmDir: BULLSWARM_DIR(), goalDocument: doc, pools, runId, resumeRunId, initialPlannerResponse,
   });
@@ -41,7 +41,7 @@ export async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId
     else if (!opts.quiet) console.log(`workflow ${token} paused; nothing new starts until: ${paused.next}`);
     return 0;
   }
-  if (opts.json) console.log(JSON.stringify(result.result, null, 2));
+  if (opts.json) console.log(JSON.stringify(advisories ? { ...result.result, advisories } : result.result, null, 2));
   else if (!opts.quiet) {
     console.log(`workflow ${result.shortId ?? result.runId} ${result.result.status}; result: bullswarm workflow runs result ${result.shortId ?? result.runId} --json`);
     if (result.result.executionMode === 'program') {
@@ -167,7 +167,7 @@ export async function launchDetachedResume(doc, runId, opts) {
   return launch;
 }
 
-export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null } = {}) {
+export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null, advisories = null } = {}) {
   const runId = newRunId();
   const goalDir = join(BULLSWARM_DIR(), 'goals', runId);
   mkdirSync(goalDir, { recursive: true });
@@ -219,6 +219,7 @@ export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = n
     },
     observe: goalObserveCommands(token, { callerPlanner, v3: Boolean(control) }),
     logs: { stdout: stdoutPath, stderr: stderrPath },
+    ...(advisories ? { advisories } : {}),
     ...(opts.verifyRoundsMeaning ? { verifyRoundsMeaning: opts.verifyRoundsMeaning } : {}),
   };
   launch.instructions = goalLaunchInstructions(launch.observe, control && { control, token });
