@@ -42,6 +42,8 @@
   planner mode; roles and kinds stay only as the reader of saved v2 runs.
 - The text judge (`judgeContent`) stays: `pools probe`, `health` and
   `contentUsableDespiteExit` in `bullswarm run --json` still use it.
+- dispatch: a worker a signal stopped (the kernel's SIGTERM, a timeout) is
+  recorded as `interrupted`, not as a `process` failure, on v3 steps too.
 
 ## 0.37.3 — Price-band model picks, tier-level reasoning, per-step model
 
