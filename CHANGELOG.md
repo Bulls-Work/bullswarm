@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.1 — Fewer wasted retries, honest no-pool reasons
+
 - no eligible pool: when a pool lacks a tier only because free models are
   off for it, or because its plan was seen not to include the tier's model,
   the reason now says so (`free models are off for <pool>`, `<pool> has no
