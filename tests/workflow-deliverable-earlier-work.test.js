@@ -157,12 +157,16 @@ test('a --rerun of a data step that failed not-produced is judged again, even th
     reopen: (ctx) => revise(ctx, () => {}, { rerun: ['gen'] }),
   });
   assert.deepEqual(earlierOf('gen'), { produced: false, unknown: false });
-  const rerun = lastOf('gen');
+  const [rerun, retry] = run.state.attempts.filter((item) => item.actionId === 'gen').slice(1);
   assert.equal(rerun.ordinal, 2);
   assert.equal(rerun.status, 'failed');
   assert.equal(rerun.failureKind, 'not-produced');
   assert.equal(rerun.why, 'declared data not written: out/data.json');
   assert.equal(rerun.deliverable.carried, undefined);
+  // The one rule: the rerun's gate failure gets the step's one retry, on the
+  // same pool, judged the same way.
+  assert.deepEqual([retry.ordinal, retry.failureKind, retry.retryOf], [3, 'not-produced', { attempt: 'gen-2', how: 'same-pool' }]);
+  assert.equal(lastOf('gen'), retry);
   assert.equal(run.state.actions[0].status, 'failed');
   assert.equal(readFileSync(join(workspace, 'out', 'data.json'), 'utf8'), '{"stale":true}\n');
 });

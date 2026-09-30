@@ -33,13 +33,10 @@ import {
   restoreChangedOutOfScope, runStepEvidence,
 } from './evidence-runner.js';
 
-const MECHANICAL_KINDS = new Set(['auth', 'quota', 'throttle', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
-/** Kinds that make the SAME pool unusable, so a retry must move elsewhere. */
-const POOL_FATAL_KINDS = new Set(['auth', 'quota']);
 export const GATE_RETRY_PIN_SOURCE = 'the same pool (gate retry)';
-// Marked runs: the longest wait a provider may name for a transient rate
-// limit that is still sat out on the same pool. A longer one goes to the
-// caller, told when the provider said to try again.
+// The longest wait a provider may name for a transient rate limit that is
+// still sat out on the same pool. A longer one goes to the caller, told when
+// the provider said to try again.
 export const MARKED_THROTTLE_MAX_WAIT_MS = 2 * 60_000;
 
 // A worker that writes nothing at all for this long is stalled: its process is
@@ -110,24 +107,24 @@ function classifyFailure(verdict, pool = null) {
   return 'semantic';
 }
 
-// Stage 3, marked runs only: a worker whose CLI never started did nothing,
-// so its failure is a process failure (another pool, D4) and the one retry an
-// act step may get (D32). classifyFailure keeps reading it as saved runs do.
+// A worker whose CLI never started did nothing, so its failure is a process
+// failure (another pool, D4) and the one retry an act step may get (D32).
+// classifyFailure keeps reading it as saved runs do.
 function workerNeverStarted(verdict) {
   return verdict?.meta?.workerNotStarted === true || Boolean(verdict?.meta?.spawnError);
 }
 
 // A spent usage window arrives as `quota` from the worker's verdict itself:
-// every dispatch under the usage-limit rules asks watchOnce for the
-// limits-to-caller reading (`usageLimitsToCaller`).
-function markedFailureKind(verdict, pool = null) {
+// every dispatch asks watchOnce for the limits-to-caller reading
+// (`usageLimitsToCaller`).
+function failureKindOf(verdict, pool = null) {
   const kind = classifyFailure(verdict, pool);
   if (kind && kind !== 'cancelled' && workerNeverStarted(verdict) && failureClassOf(kind) !== 'process') return 'process';
   return kind;
 }
 
-// Marked usage-limit rules: when a rate limit names a wait too long to sit
-// out, the time the provider said to try again (never slept), else null.
+// When a rate limit names a wait too long to sit out, the time the provider
+// said to try again (never slept), else null.
 function longThrottleReturn(kind, verdict, finishedMs) {
   const wait = kind === 'throttle' && Number(verdict?.throttleWaitMs) > 0 ? Number(verdict.throttleWaitMs) : null;
   return wait != null && wait > MARKED_THROTTLE_MAX_WAIT_MS ? finishedMs + wait : null;
@@ -561,15 +558,15 @@ export function deliverableVerdict({
   const quiet = (fact, failWhy) => ({ fact, failWhy: contentOk ? failWhy : null });
 
   if (!declared) {
-    if (action?.kind === 'digest' || evidence || legacyGate === false) return { fact: null, failWhy: null };
-    const judged = action?.lane === 'build' && action?.kind !== 'integration' && snapshotOk === true;
+    if (evidence || legacyGate === false) return { fact: null, failWhy: null };
+    const judged = action?.lane === 'build' && snapshotOk === true;
     if (!judged || earlierHit) return { fact: null, failWhy: null };
     if (!dispatchChanged) return quiet(null, 'no file changed');
     return { fact: null, failWhy: null };
   }
 
   const type = declared.type;
-  if (action?.kind === 'digest' || evidence) return { fact: { type, gated: false, produced: null }, failWhy: null };
+  if (evidence) return { fact: { type, gated: false, produced: null }, failWhy: null };
   if (type === 'outward') return { fact: { type: 'outward', gated: false, produced: null }, failWhy: null };
   if (type === 'report') {
     const produced = Number(outputBytes) > 0;
@@ -946,10 +943,6 @@ export async function dispatchV2Action({
   legacyGate = true,
   earlierWork = { produced: false, unknown: false },
   extraSnapshotPaths = [],
-  // Stage 2 (E14): false once an attempt of the step's current definition
-  // already failed with failed-evidence, so the one evidence retry survives a
-  // kernel restart. The checks themselves are read from `action.evidence`.
-  evidenceRetryAvailable = true,
   // Program v3 (gates-loops.js): this step's evidence is its loop's `until`
   // condition, so a failed check is recorded "checked, not passed" and the
   // attempt succeeds; a check that could not run still fails it.
@@ -958,21 +951,6 @@ export async function dispatchV2Action({
   onEvidence = null,
   // The step runs in an isolated copy of its own (E5): the private-copy scope.
   privateWorkspace = false,
-  // Stage 3 (§2.1, marked runs only): one automatic retry per step, then the
-  // caller. False keeps every rule above byte for byte (saved runs, planner,
-  // scout, `bullswarm run`).
-  failureRule = false,
-  // Stage 3, the Workflow Planner and preflight scout of a marked run (owner
-  // decision, 2026-09-25): the usage-limit rules of the failure rule and
-  // nothing else. A usage limit ends the dispatch with no retry and no move;
-  // a transient rate limit backs off on its own pool only (20 s, then 60 s,
-  // or a named wait up to two minutes), then ends it; a nearly spent
-  // (draining) pool is never fed, as for a marked step; no pool that can take
-  // the work now ends it at once; the end reports each capable pool's reason
-  // as a marked step does. Crashes, sign-in failures, provider errors and the
-  // output corrections keep the unmarked rules. Ignored when failureRule is
-  // true.
-  usageLimitsToCaller = false,
   // Counted retries (`retryOf.how` other-pool or same-pool) the step's current
   // definition already started, so a kernel resume never refunds the budget.
   retriesAlready = 0,
@@ -980,7 +958,7 @@ export async function dispatchV2Action({
   routeFilter = null,
   // Who pinned `strictPool` (D30): null reads `--worker-pool`.
   pinSource = null,
-  // Stage 3: `[{pool, failureKind}]`, the pools the step's earlier attempts
+  // `[{pool, failureKind}]`, the pools the step's earlier attempts
   // failed on because of the pool (step-vocabulary.js poolCausedPools). The
   // first pick of this dispatch takes another pool when one can take the
   // step now.
@@ -1026,13 +1004,6 @@ export async function dispatchV2Action({
     : workerSilenceTimeoutSec(parentEnv);
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
   const failedProbes = new Set();
-  // `limitsOnly`: the usage-limit rules without the rest of the failure rule
-  // (the planner and scout of a marked run). `limitsRule`: either one, for
-  // what the two share (the worker reads a spent window as quota, the end
-  // names each pool's reason and when to try again).
-  const limitsOnly = usageLimitsToCaller === true && !failureRule;
-  const limitsRule = failureRule || limitsOnly;
-  const failureKindOf = failureRule ? markedFailureKind : classifyFailure;
   // Credential groups a sign-in failure in THIS dispatch showed dead: no
   // later pick of this dispatch takes a pool in one, however many pool names
   // front it (the 2026-09-11 bug: a retry walked three names for one dead
@@ -1040,20 +1011,17 @@ export async function dispatchV2Action({
   // S1) and learns of a dead credential only by trying it.
   const deadGroups = new Set();
   const inLiveGroup = (pool) => !deadGroups.size || !deadGroups.has(upstreamGroupOf(pool));
-  // Stage 3 (marked runs): a pool the router calls "expiring but draining"
-  // (its pacing window closes soon and this step would take it past the
-  // wall) is never given the step, even when nothing else can take it; the
-  // router alone would pick it as a last resort. The step goes to another
-  // pool, or to the caller when none can take it, and the picture is read
-  // again at every pick. The Workflow Planner and preflight scout of a marked
-  // run follow the same rule (`limitsRule`): one rule everywhere. A pool the
+  // A pool the router calls "expiring but draining" (its pacing window closes
+  // soon and this step would take it past the wall) is never given the step,
+  // even when nothing else can take it; the router alone would pick it as a
+  // last resort. The step goes to another pool, or to the caller when none
+  // can take it, and the picture is read again at every pick. A pool the
   // caller named (the run's pin, or a route that allows only it) is exempt.
-  // Unmarked runs keep the router's last-resort pick. Map: pool name ->
-  // {until, forecast, elapsed}.
+  // Map: pool name -> {until, forecast, elapsed}.
   const namedPool = strictPool ?? (routeFilter?.usePools?.length === 1 ? routeFilter.usePools[0] : null);
   const drainingAt = (poolList, at) => {
     const found = new Map();
-    if (!limitsRule || !poolList.length) return found;
+    if (!poolList.length) return found;
     const viewed = attachForecast(poolList.map((pool) => ({ ...pool })), bullswarmDir, { now: at, decisionLog: coreDecisionLog() });
     for (const pool of viewed) {
       if (pool.name === namedPool) continue;
@@ -1066,18 +1034,13 @@ export async function dispatchV2Action({
   };
   // The draining pools the last prepare() kept out, for the pick's reason.
   let keptOffDraining = new Map();
-  // The pools that can take work now and, among them, the draining ones,
-  // read live; prepare() keeps the draining ones out.
-  const preparedView = (poolList) => {
+  // The pools that can take work now, read live, less the draining ones.
+  const prepare = (poolList) => {
     const at = now();
     const prepared = preparePools(poolList, action, effort, {
       preferredModel, strictPool, now: at, routeFilter,
     }).filter((pool) => !failedProbes.has(pool.name) && inLiveGroup(pool));
-    return { prepared, draining: drainingAt(prepared, at) };
-  };
-  const prepare = (poolList) => {
-    const { prepared, draining } = preparedView(poolList);
-    keptOffDraining = draining;
+    keptOffDraining = drainingAt(prepared, at);
     return keptOffDraining.size ? prepared.filter((pool) => !keptOffDraining.has(pool.name)) : prepared;
   };
   const safeCoreState = () => {
@@ -1095,16 +1058,12 @@ export async function dispatchV2Action({
     { lane: action.lane ?? 'chore', effort },
     { decisionLog: spendDecisionLog },
   );
-  let candidates = prepare(pools);
   // The unfiltered list, kept current across refreshes.
   let allPools = pools;
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
   const effectivePreferredPool = preferredPool ?? configuredAssignment?.pool ?? null;
-  const remaining = [...candidates];
   const attempts = [];
-  let correctionUsed = false;
-  let retriesUsed = 0;
   let throttleRetries = 0;
   let nextTask = taskText;
   let last = null;
@@ -1140,26 +1099,18 @@ export async function dispatchV2Action({
   let stepPathsBefore = new Map();
   const stepChanged = new Set();
   let stepBaselineReady = false;
-  // Stage 2 evidence (E14): the checks, the schema hashes at the step
-  // baseline (E26), and the one same-pool retry. `pinNext` pins exactly one
-  // pick; `pendingRefresh` is the forced refresh that decided the pool was
-  // still eligible, reused by that pick; `pinnedRecord` is the attempt the
-  // pinned pick retries, corrected in place if the pick finds no pool.
+  // Evidence (E14): the checks and the schema hashes at the step baseline
+  // (E26). A failed check is a gate failure: the rule below decides its retry.
   const evidenceItems = declaredEvidence(action);
   let schemaBaseline = null;
-  let evidenceRetryUsed = false;
-  let pinNext = null;
-  let pendingRefresh = null;
-  let pinnedRecord = null;
-  let pinnedResults = null;
   // Paths the checks left changed in a private copy that could not be put
   // back (E11): the ownership gate reads them as check by-products, not as
   // the worker's edits.
   const checkByProducts = new Set();
-  // Stage 3 (§2.1), marked runs only. The budget is the step's, not this
-  // call's: it starts from the counted retries already stored and is spent
-  // when a counted retry STARTS. `pendingRetry` ({attempt, pool, how}) is the
-  // retry decided after a failure; the next attempt's record carries it as
+  // The one rule (§2.1). The budget is the step's, not this call's: it
+  // starts from the counted retries already stored and is spent when a
+  // counted retry STARTS. `pendingRetry` ({attempt, pool, how}) is the retry
+  // decided after a failure; the next attempt's record carries it as
   // `retryOf`, and the failed attempt never does. `leftAfterProcessFailure`
   // are pools the step left after a process-class failure (a crash, a stall,
   // a provider error, a sign-in failure and that credential's siblings): a
@@ -1170,14 +1121,8 @@ export async function dispatchV2Action({
   // capable pool free now, sends it to the caller (owner decision,
   // 2026-09-25); only a transient rate limit backs off, on the same pool and
   // only while that pool can take the step. `backoffBlocked` names the pool
-  // whose backoff could not be taken or replayed (under the usage-limit rules
-  // alone, also the pool a correction or same-pool retry could not replay);
-  // `namedReturn` is when a provider said to try again after a wait too long
-  // to sit out. Both are read by the usage-limit rules alone too
-  // (`limitsOnly`), where `limitsBackoff` marks the next pick as a backoff's
-  // replay of its pool, and `limitsReplayFor` ({how, record}) as a schema
-  // correction's (`correction`) or the one bounded same-pool retry's
-  // (`same-pool`) replay of the pool the attempt `record` failed on.
+  // whose backoff could not be taken or replayed; `namedReturn` is when a
+  // provider said to try again after a wait too long to sit out.
   const retryBudget = Math.max(0, (Number(maxMechanicalRetries) || 0) - (Number(retriesAlready) || 0));
   let retriesStarted = 0;
   let pendingRetry = null;
@@ -1187,155 +1132,66 @@ export async function dispatchV2Action({
   let gateBlocked = false;
   let backoffBlocked = null;
   let namedReturn = null;
-  let limitsBackoff = false;
-  let limitsReplayFor = null;
-  let leaveFirst = failureRule && Array.isArray(leavePools) && leavePools.length
+  let leaveFirst = Array.isArray(leavePools) && leavePools.length
     ? new Map(leavePools.map((entry) => [entry.pool, entry.failureKind ?? null]))
     : null;
-  const correctPinnedRetry = (poolName) => {
-    const why = evidenceFailureWhy(pinnedResults, { suffix: ` · no retry: ${poolName} is no longer eligible` })
-      ?? `${pinnedRecord.why ?? 'failed evidence'} · no retry: ${poolName} is no longer eligible`;
-    Object.assign(pinnedRecord, { status: 'failed', willRetry: false, why });
-    onAttempt?.('corrected', clone(pinnedRecord));
-    return {
-      ok: false, status: 'failed', failureKind: 'failed-evidence', attempts,
-      verdict: { ...(last ?? {}), ok: false, failureKind: 'failed-evidence', why },
-    };
-  };
 
-  while (failureRule || remaining.length || (last && retriesUsed < maxMechanicalRetries) || pinNext) {
+  for (;;) {
     if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
     const replay = replayPool;
     replayPool = null;
-    // Stage 3: this pick replays a transient rate limit's backoff (a marked
-    // step, or the planner or scout of a marked run).
-    const backoffReplay = failureRule && replay != null && pendingRetry?.how === 'wait';
-    const limitsReplay = limitsOnly && replay != null && limitsBackoff;
-    limitsBackoff = false;
-    const replayFor = replay != null ? limitsReplayFor : null;
-    limitsReplayFor = null;
-    const pin = pinNext;
-    pinNext = null;
+    // This pick replays a transient rate limit's backoff.
+    const backoffReplay = replay != null && pendingRetry?.how === 'wait';
     // Meters move while an action is in flight. Re-read them
     // before every pick so a pool that just hit its limit — here or in another
-    // run — is no longer a candidate. A forced refresh already taken to decide
-    // an evidence retry is this pick's refresh (E14).
-    if (typeof refreshPools === 'function' || pendingRefresh) {
+    // run — is no longer a candidate.
+    if (typeof refreshPools === 'function') {
       let refreshed = null;
-      if (pendingRefresh) refreshed = pendingRefresh;
-      else {
-        try { refreshed = await refreshPools({ force: forceRefresh }); }
-        catch { refreshed = null; }
-      }
-      pendingRefresh = null;
+      try { refreshed = await refreshPools({ force: forceRefresh }); }
+      catch { refreshed = null; }
       forceRefresh = false;
-      if (Array.isArray(refreshed) && refreshed.length) {
-        allPools = refreshed;
-        candidates = prepare(refreshed);
-        remaining.length = 0;
-        // A pool deliberately re-queued for a same-pool retry survives the
-        // rebuild; every other already-tried pool stays out.
-        if (replay) remaining.push(replay);
-        for (const candidate of candidates) {
-          if (!tried.has(candidate.name) && candidate.name !== replay?.name) remaining.push(candidate);
-        }
-      }
+      if (Array.isArray(refreshed) && refreshed.length) allPools = refreshed;
     }
-    // Stage 3: the pick's pool list, rebuilt from the live picture every time
+    // The pick's pool list, rebuilt from the live picture every time
     // (prepare() re-reads the meters). A gate retry is forced onto its
     // pool whenever that pool can take work at this pick, and otherwise this
     // pick falls back to the untried eligible pools; the pin stays until an
     // attempt starts. A backoff replays its own pool only: when that pool can
     // no longer take the step (a window at its limit, or draining)
     // the step goes to the caller, never to another pool.
-    let gatePick = null;
-    let markedPools = null;
-    if (failureRule) {
-      candidates = prepare(allPools);
-      remaining.length = 0;
-      const replayed = replay ? candidates.find((candidate) => candidate.name === replay.name) : null;
-      if (backoffReplay && !replayed) {
-        backoffBlocked = replay.name;
-        break;
-      }
-      if (replayed) remaining.push(replayed);
-      for (const candidate of backoffReplay ? [] : candidates) {
-        if (candidate.name !== replayed?.name && !tried.has(candidate.name)) remaining.push(candidate);
-      }
-      const pinned = gatePin && !gateBlocked
-        ? candidates.find((candidate) => candidate.name === gatePin)
-        : null;
-      gatePick = pinned ? pinned.name : null;
-      // A rerun after a failure the pool caused starts elsewhere when it can;
-      // the same pool is used only when nothing else can take the step now.
-      const left = leaveFirst && !pinned && remaining.some((candidate) => !leaveFirst.has(candidate.name))
-        ? remaining.filter((candidate) => leaveFirst.has(candidate.name)).map((candidate) => candidate.name)
-        : [];
-      if (left.length) {
-        for (let i = remaining.length - 1; i >= 0; i -= 1) if (leaveFirst.has(remaining[i].name)) remaining.splice(i, 1);
-        const note = `moved off ${left.map((name) => `${name} (${leaveFirst.get(name) ?? 'pool'})`).join(', ')}: `
-          + `${left.length === 1 ? 'an earlier attempt' : 'earlier attempts'} failed there on the pool`;
-        if (!fallbackWhy?.includes(note)) fallbackWhy = fallbackWhy ? `${note} · ${fallbackWhy}` : note;
-      }
-      markedPools = pinned ? [pinned] : remaining;
-      // Nothing can take the step now: it goes to the caller with each capable
-      // pool's reason and return time (the failure below), never a wait.
-      if (!markedPools.length) break;
+    const candidates = prepare(allPools);
+    const remaining = [];
+    const replayed = replay ? candidates.find((candidate) => candidate.name === replay.name) : null;
+    if (backoffReplay && !replayed) {
+      backoffBlocked = replay.name;
+      break;
     }
-    // The usage-limit rules alone: a backoff replays its own pool, read live,
-    // and goes to the caller when that pool can no longer take the work.
-    let backoffPools = null;
-    if (limitsReplay) {
-      const replayed = prepare(allPools).find((candidate) => candidate.name === replay.name);
-      if (!replayed) {
-        backoffBlocked = replay.name;
-        break;
-      }
-      backoffPools = [replayed];
+    if (replayed) remaining.push(replayed);
+    for (const candidate of backoffReplay ? [] : candidates) {
+      if (candidate.name !== replayed?.name && !tried.has(candidate.name)) remaining.push(candidate);
     }
-    // The usage-limit rules alone: a schema correction, or the one bounded
-    // same-pool retry, replays its pool only while that pool is not nearly
-    // spent (draining) at this pick, read live as every first pick reads it.
-    // A nearly spent pool is not fed: the correction moves, with its
-    // correction task, to another free pool that is not nearly spent (a
-    // correction is not a move after a limit); the same-pool retry has no
-    // other pool. With none, the dispatch goes to the caller as quota, with
-    // that pool's reason and reset (the failure below).
-    let movedPools = null;
-    if (replayFor) {
-      const view = preparedView(allPools);
-      if (view.draining.has(replay.name)) {
-        keptOffDraining = view.draining;
-        candidates = view.prepared.filter((candidate) => !view.draining.has(candidate.name));
-        for (let index = remaining.length - 1; index >= 0; index -= 1) {
-          if (remaining[index].name === replay.name) remaining.splice(index, 1);
-        }
-        movedPools = replayFor.how === 'correction'
-          ? candidates.filter((candidate) => candidate.name !== replay.name && !tried.has(candidate.name))
-          : [];
-        // The attempt promised this retry: corrected at the end unless an
-        // attempt starts.
-        promisedRecord = replayFor.record;
-        if (!movedPools.length) {
-          backoffBlocked = replay.name;
-          break;
-        }
-        const note = `correction moved: ${replay.name} is nearly spent`;
-        fallbackWhy = fallbackWhy ? `${fallbackWhy} · ${note}` : note;
-      }
+    const pinned = gatePin && !gateBlocked
+      ? candidates.find((candidate) => candidate.name === gatePin)
+      : null;
+    const gatePick = pinned ? pinned.name : null;
+    // A rerun after a failure the pool caused starts elsewhere when it can;
+    // the same pool is used only when nothing else can take the step now.
+    const left = leaveFirst && !pinned && remaining.some((candidate) => !leaveFirst.has(candidate.name))
+      ? remaining.filter((candidate) => leaveFirst.has(candidate.name)).map((candidate) => candidate.name)
+      : [];
+    if (left.length) {
+      for (let i = remaining.length - 1; i >= 0; i -= 1) if (leaveFirst.has(remaining[i].name)) remaining.splice(i, 1);
+      const note = `moved off ${left.map((name) => `${name} (${leaveFirst.get(name) ?? 'pool'})`).join(', ')}: `
+        + `${left.length === 1 ? 'an earlier attempt' : 'earlier attempts'} failed there on the pool`;
+      if (!fallbackWhy?.includes(note)) fallbackWhy = fallbackWhy ? `${note} · ${fallbackWhy}` : note;
     }
-    // An evidence retry is pinned to its pool for this one pick: the router
-    // ranks every pool it is given, so re-queuing alone would move it. The
-    // fallback list may predate a sign-in failure in this dispatch (no
-    // refresh since), so its dead credential groups are dropped here too.
-    const routePools = markedPools ?? backoffPools ?? movedPools ?? (pin
-      ? prepare(allPools).filter((candidate) => candidate.name === pin)
-      : remaining.length ? remaining : candidates.filter(inLiveGroup));
-    const onlyPool = pin ?? gatePick;
-    const pickStrictPool = onlyPool ?? strictPool;
+    const routePools = pinned ? [pinned] : remaining;
+    // Nothing can take the step now: it goes to the caller with each capable
+    // pool's reason and return time (the failure below), never a wait.
+    if (!routePools.length) break;
+    const pickStrictPool = gatePick ?? strictPool;
     const pickAt = now();
-    const routingPools = routePools
-      .filter((candidate) => !failedProbes.has(candidate.name) && (!onlyPool || candidate.name === onlyPool));
+    const routingPools = routePools.filter((candidate) => !failedProbes.has(candidate.name));
     // The ledger is re-read HERE, before every pick and every retry, not on
     // the refresher's 15s throttle: up to four kernel actions start within
     // milliseconds of each other, and each has to see the assignments the
@@ -1361,22 +1217,17 @@ export async function dispatchV2Action({
         view.elapsed != null ? ` (${view.elapsed.toFixed(1)}% elapsed)` : ''}`).join(', ');
       route.why = `${route.why} · expiring but draining (forecast >= ${PACING_FORECAST_BLOCK_PCT}% and past its clock), kept off: ${kept}`;
     }
-    // The pool was eligible on the forced refresh, but the pinned pick still
-    // found none (a race inside the pick): the stored attempt promised a retry
-    // that does not happen, so it is corrected, and no other pool is tried.
-    if (!route.pick && pin) return correctPinnedRetry(pin);
-    // Stage 3: the router refused the gate retry's pool (off its lane, or its
-    // live meter is at its limit): the retry falls back to the other untried
-    // pools at the next pick.
+    // The router refused the gate retry's pool (off its lane, or its live
+    // meter is at its limit): the retry falls back to the other untried pools
+    // at the next pick.
     if (!route.pick && gatePick) {
       gateBlocked = true;
       continue;
     }
     if (!route.pick) {
-      // The router refused a backoff's own pool, or every pool a correction
-      // moved to off its nearly spent pool (off the lane, or a live window at
-      // its limit): the caller, as above.
-      if (backoffReplay || limitsReplay || movedPools) backoffBlocked = replay.name;
+      // The router refused a backoff's own pool (off the lane, or a live
+      // window at its limit): the caller, as above.
+      if (backoffReplay) backoffBlocked = replay.name;
       break;
     }
     const pool = route.pick.connector;
@@ -1401,13 +1252,8 @@ export async function dispatchV2Action({
         const reason = `probe: ${liveness.reason}`;
         failedProbes.add(pool.name);
         tried.add(pool.name);
-        for (let index = remaining.length - 1; index >= 0; index -= 1) {
-          if (remaining[index].name === pool.name) remaining.splice(index, 1);
-        }
-        // A pinned evidence retry never moves to another pool, and neither
-        // does a backoff: its step goes to the caller.
-        if (pin) return correctPinnedRetry(pin);
-        if (backoffReplay || limitsReplay) {
+        // A backoff never moves to another pool: its step goes to the caller.
+        if (backoffReplay) {
           backoffBlocked = pool.name;
           break;
         }
@@ -1464,7 +1310,7 @@ export async function dispatchV2Action({
     const startedAt = new Date(now()).toISOString();
     // A gate retry that starts on another pool says so (D5): the move is a
     // fact of the pick that starts it, not of an earlier look.
-    const gateMoved = failureRule && gatePin && pool.name !== gatePin
+    const gateMoved = gatePin && pool.name !== gatePin
       ? `gate retry moved: ${gatePin} cannot take work now`
       : null;
     const routeWhy = [gateMoved, fallbackWhy, route.why].filter(Boolean).join(' · ');
@@ -1480,7 +1326,7 @@ export async function dispatchV2Action({
     // D3: the retry becomes a fact only when its attempt starts. A counted
     // retry is `same-pool` when it landed where the failure happened (a
     // planned same-pool retry that fell back reads `other-pool`).
-    const retryOf = failureRule && pendingRetry
+    const retryOf = pendingRetry
       ? {
         attempt: pendingRetry.attempt,
         how: pendingRetry.how === 'wait' ? 'wait' : pool.name === pendingRetry.pool ? 'same-pool' : 'other-pool',
@@ -1550,7 +1396,7 @@ export async function dispatchV2Action({
         bullswarmDir,
         poolName: pool.name,
         // A spent usage window is `quota`, even with no reset named.
-        ...(limitsRule ? { usageLimitsToCaller: true } : {}),
+        usageLimitsToCaller: true,
         runId: runId ?? runIdFromPaths(files),
         attemptId: `${action.id}-${ordinal}`,
         startedAt,
@@ -1711,74 +1557,35 @@ export async function dispatchV2Action({
     const lastEvents = lastResponseEvents(streamFile);
     const finishedAt = workerFinishedAt;
     const kind = failureKindOf(verdict, pool);
-    // The one evidence retry (E14), decided before the record is built so the
-    // stored attempt never promises a retry that does not happen. (e) first:
-    // an act step or a check that could not run goes to the caller at once.
-    let canRetryEvidence = false;
-    // Stage 3 (D5): in marked runs §2.1 below replaces E14; an act step's
-    // failed checks still say why they go to the caller.
-    if (failureRule && kind === 'failed-evidence' && roleOf(action) === 'act' && !evidenceRun?.checkFault) {
+    // D5: failed checks are a gate failure and take the rule below; an act
+    // step's failed checks still say why they go to the caller.
+    if (kind === 'failed-evidence' && roleOf(action) === 'act' && !evidenceRun?.checkFault) {
       const suffix = ' · act steps are not retried';
       verdict = { ...verdict, why: evidenceFailureWhy(evidenceResults, { suffix }) ?? `${verdict.why ?? 'failed evidence'}${suffix}` };
-    }
-    if (!failureRule && kind === 'failed-evidence') {
-      let suffix = '';
-      if (roleOf(action) === 'act') suffix = ' · act steps are not retried';
-      else if (!evidenceRun?.checkFault && evidenceRetryAvailable && maxMechanicalRetries > 0 && !evidenceRetryUsed) {
-        // (d): a forced refresh, reused by the pinned pick (an empty or failed
-        // refresh keeps the current list, and the pick does not refresh again).
-        if (typeof refreshPools === 'function') {
-          let refreshed = null;
-          try { refreshed = await refreshPools({ force: true }); }
-          catch { refreshed = null; }
-          pendingRefresh = Array.isArray(refreshed) ? refreshed : [];
-        }
-        // The pinned pick's own filter: prepare() drops a pool whose live
-        // meter is at its limit (windowSpent), the usual way a pool stops
-        // being eligible after a finished worker, and pickPool one off its lane.
-        const lane = action.lane ?? 'chore';
-        const eligibleNow = prepare(pendingRefresh?.length ? pendingRefresh : allPools)
-          .filter((candidate) => (candidate.lanes ?? LANES).includes(lane));
-        if (eligibleNow.some((candidate) => candidate.name === pool.name)) canRetryEvidence = true;
-        else {
-          pendingRefresh = null;
-          suffix = ` · no retry: ${pool.name} is no longer eligible`;
-        }
-      }
-      if (suffix) {
-        verdict = { ...verdict, why: evidenceFailureWhy(evidenceResults, { suffix }) ?? `${verdict.why ?? 'failed evidence'}${suffix}` };
-      }
     }
     // One dead upstream credential is ONE outage however many pool names front
     // it: the next attempt of THIS action must not walk from one pool name to
     // the next sibling on the same credential into the same failure, as it
-    // did on 2026-09-11. The group is dropped from the untried list now, and
-    // prepare() keeps it out of every later pick of this dispatch, a refresh
-    // included (`deadGroups`).
+    // did on 2026-09-11. prepare() keeps the group out of every later pick of
+    // this dispatch, a refresh included (`deadGroups`).
     const deadGroup = kind === 'auth' ? upstreamGroupOf(pool) : null;
-    if (deadGroup) {
-      deadGroups.add(deadGroup);
-      for (let i = remaining.length - 1; i >= 0; i -= 1) {
-        if (upstreamGroupOf(remaining[i]) === deadGroup) remaining.splice(i, 1);
-      }
-    }
+    if (deadGroup) deadGroups.add(deadGroup);
     // The pools that can take work now, read live once for what follows this
-    // failure under the usage-limit rules.
+    // failure.
     let liveNow = null;
     const pickableLive = () => (liveNow ??= prepare(allPools));
-    // The usage-limit rules (`limitsRule`: a marked step, or the planner or
-    // scout of a marked run), one decision for a rate limit. A wait the
-    // provider named that is too long to sit out is never slept: the caller is
-    // told when to try again. A transient one backs off on the same pool, never
-    // counted, only while that pool can still take the work; otherwise the
-    // caller, with that pool's reason. A usage limit is never retried, moved or
-    // waited out: the caller decides (owner decision, 2026-09-25). A marked act
-    // step whose worker started is not backed off either (D32).
+    // One decision for a rate limit. A wait the provider named that is too
+    // long to sit out is never slept: the caller is told when to try again. A
+    // transient one backs off on the same pool, never counted, only while that
+    // pool can still take the work; otherwise the caller, with that pool's
+    // reason. A usage limit is never retried, moved or waited out: the caller
+    // decides (owner decision, 2026-09-25). An act step whose worker started
+    // is not backed off either (D32).
     let limitsBackoffNow = false;
-    if (limitsRule && !verdict.ok && kind !== 'cancelled') {
+    if (!verdict.ok && kind !== 'cancelled') {
       namedReturn = longThrottleReturn(kind, verdict, toMs(workerFinishedAt) ?? now());
       backoffBlocked = null;
-      const actStarted = failureRule && roleOf(action) === 'act' && !workerNeverStarted(verdict);
+      const actStarted = roleOf(action) === 'act' && !workerNeverStarted(verdict);
       if (kind === 'throttle' && namedReturn == null && throttleRetries < MAX_THROTTLE_RETRIES && !actStarted) {
         if (!leftAfterProcessFailure.has(pool.name) && pickableLive().some((candidate) => candidate.name === pool.name)) {
           limitsBackoffNow = true;
@@ -1787,15 +1594,15 @@ export async function dispatchV2Action({
         }
       }
     }
-    // Stage 3 §2.1 (marked runs): what follows this failure, decided before
-    // the record is built so the stored attempt never promises a retry that
-    // does not happen. Null sends the step to the caller (D10).
+    // §2.1: what follows this failure, decided before the record is built so
+    // the stored attempt never promises a retry that does not happen. Null
+    // sends the step to the caller (D10).
     let next = null;
     // F23: a transient rate limit's short backoff on the same pool records
     // `quotaNext: 'wait'` on the attempt. A usage limit records none: it goes
     // to the caller.
     let quotaNext = null;
-    if (failureRule && !verdict.ok && kind !== 'cancelled') {
+    if (!verdict.ok && kind !== 'cancelled') {
       const failureClass = failureClassOf(kind);
       const hasBudget = retriesStarted < retryBudget;
       if (deadGroup) {
@@ -1836,53 +1643,21 @@ export async function dispatchV2Action({
         quotaNext = 'wait';
       }
     }
-    // The usage-limit rules alone (the planner and scout of a marked run): a
-    // usage limit, and a rate limit that is not backed off, end the dispatch
-    // below with no retry and no move.
-    const limitKind = limitsOnly && (kind === 'quota' || kind === 'throttle');
-    const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
-    const canCorrectSchema = kind === 'schema' && !correctionUsed && typeof correctionTask === 'function';
-    // A free stall (and the provider-shaped verdict for literally empty free
-    // output) is bounded by the tried-set, not by the mechanical retry budget:
-    // it may move on to every other eligible pool even after a metered failure
-    // has spent today's allowance, but it is never replayed on the same pool.
-    const freeBudgetExempt = pool.free === true
-      && (kind === 'stalled' || (kind === 'provider' && verdict?.why === 'empty output'));
-    const hasUntriedPool = remainingAfterAttempt.length > 0;
-    const hasRetryBudget = retriesUsed < maxMechanicalRetries;
-    const canRetrySamePool = hasRetryBudget && candidates.length === 1 && !POOL_FATAL_KINDS.has(kind);
-    const canRetryMechanically = !limitKind
-      && MECHANICAL_KINDS.has(kind)
-      && kind !== 'schema'
-      && (freeBudgetExempt
-        ? hasUntriedPool
-        : hasRetryBudget && (hasUntriedPool || canRetrySamePool));
-    // A throttle that named a wait longer than THROTTLE_MAX_WAIT_MS is not
-    // sat out on the same pool: the attempt falls over instead (quota.js Q6).
-    // The usage-limit rules alone back off as decided above, and never fall
-    // over.
-    const canRetryThrottle = limitsOnly
-      ? limitsBackoffNow
-      : kind === 'throttle'
-        && verdict?.throttleRetrySamePool !== false
-        && throttleRetries < MAX_THROTTLE_RETRIES;
-    const willRecover = failureRule
-      ? next != null
-      : canCorrectSchema || canRetryThrottle || canRetryMechanically || canRetryEvidence;
+    const willRecover = next != null;
     Object.assign(record, {
       finishedAt,
       // An attempt the dispatcher retries failed; `willRetry` says a retry
-      // follows. Runs under the failure rule record it as failed (QA37: a
-      // retried check failure read "interrupted"), unless a signal or a
-      // kernel stop cut it (kind `interrupted`); older runs keep the
-      // "interrupted" label they were written with. Nothing replays on the
-      // label: resume, handoff and retry counting read willRetry, retryOf
-      // and failureKind, and treat failed and interrupted alike.
+      // follows. It is recorded as failed (QA37: a retried check failure read
+      // "interrupted"), unless a signal or a kernel stop cut it (kind
+      // `interrupted`); older runs keep the "interrupted" label they were
+      // written with. Nothing replays on the label: resume, handoff and retry
+      // counting read willRetry, retryOf and failureKind, and treat failed
+      // and interrupted alike.
       status: verdict.ok
         ? 'succeeded'
         : kind === 'cancelled'
           ? 'cancelled'
-          : willRecover && (!failureRule || kind === 'interrupted')
+          : willRecover && kind === 'interrupted'
             ? 'interrupted'
             : 'failed',
       failureKind: kind,
@@ -1939,9 +1714,6 @@ export async function dispatchV2Action({
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
     }, { updateCoreState });
     onAttempt?.('finished', clone(record), verdict);
-    // A quota failure invalidates this run's meter picture: poll live before
-    // choosing where the work goes next.
-    if (kind === 'quota') forceRefresh = true;
     if (verdict.ok) {
       return {
         ok: true, status: 'succeeded', attempts, verdict, session: currentSession,
@@ -1949,208 +1721,89 @@ export async function dispatchV2Action({
       };
     }
     if (kind === 'cancelled') return { ok: false, status: 'cancelled', failureKind: kind, attempts, verdict };
-    if (failureRule) {
-      // D10: a failure that will not be retried goes to the caller; the
-      // dispatcher never walks on to another pool by itself.
-      if (!next) break;
-      pendingRetry = { attempt: `${action.id}-${ordinal}`, pool: pool.name, how: next.how };
-      promisedRecord = record;
-      const index = remaining.findIndex((candidate) => candidate.name === pool.name);
-      if (index >= 0) remaining.splice(index, 1);
-      if (failureClassOf(kind) === 'process' && !next.replay) leftAfterProcessFailure.add(pool.name);
-      if (next.correction) {
-        // `schema`: today's same-conversation correction, now the step's one
-        // retry, forced onto the same pool.
-        nextTask = correctionTask(verdict, { originalTask: baseTaskText, attempt: ordinal });
-        gatePin = pool.name;
-        forceRefresh = true;
-        continue;
-      }
-      const block = formatHandoff({
-        pool: pool.name,
-        model: record.model,
-        startedAt,
-        finishedAt,
-        failureKind: kind,
-        why: verdict.why ?? null,
-        diffStatText: snapshot.statText,
-        diffFile: snapshot.ok ? files.diffFile : null,
-        changedFiles: snapshot.changedFiles,
-        outputFile: files.outFile,
-        partialOutput: kind === 'stalled' ? files.outFile : null,
-        outputBytes,
-        streamFile,
-        hasEventStream: connector.eventStream != null,
-        lastEvents,
-        ...(evidenceResults ? { evidenceResults: clone(evidenceResults) } : {}),
-        // §2.3: the gate retry's extra line.
-        ...(next.gate ? { gate: true } : {}),
-      });
-      nextTask = `${baseTaskText}\n\n${block}`;
-      priorHandoff = {
-        from: `${action.id}-${ordinal}`,
-        bytes: Buffer.byteLength(block, 'utf8'),
-      };
-      if (next.gate) {
-        // D5: the same pool, forced, after a live look at whether it can
-        // still take work. `not-produced` starts a fresh session (D7).
-        gatePin = pool.name;
-        forceRefresh = true;
-        if (next.fresh) currentSession = null;
-      } else if (next.replay) {
-        replayPool = pool;
-      } else if (next.sameBackoff) {
-        throttleRetries += 1;
-        replayPool = pool;
-        await backoff(throttleBackoffMs(throttleRetries, { waitMs: verdict.throttleWaitMs }));
-      } else if (kind === 'stalled') {
-        fallbackWhy = `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
-      }
-      continue;
-    }
-    if (canRetryEvidence) {
-      // One retry on the same pool with the check output attached (E14). It
-      // does not spend the mechanical allowance.
-      evidenceRetryUsed = true;
-      const block = formatHandoff({
-        pool: pool.name,
-        model: record.model,
-        startedAt,
-        finishedAt,
-        failureKind: kind,
-        why: verdict.why ?? null,
-        diffStatText: snapshot.statText,
-        diffFile: snapshot.ok ? files.diffFile : null,
-        changedFiles: snapshot.changedFiles,
-        outputFile: files.outFile,
-        partialOutput: null,
-        outputBytes,
-        streamFile,
-        hasEventStream: connector.eventStream != null,
-        lastEvents,
-        evidenceResults: clone(evidenceResults),
-      });
-      nextTask = `${baseTaskText}\n\n${block}`;
-      priorHandoff = {
-        from: `${action.id}-${ordinal}`,
-        bytes: Buffer.byteLength(block, 'utf8'),
-      };
-      pinNext = pool.name;
-      pinnedRecord = record;
-      pinnedResults = clone(evidenceResults);
-      fallbackWhy = 'retry on the same pool after failed evidence';
-      continue;
-    }
-    if (!MECHANICAL_KINDS.has(kind)) return { ok: false, status: 'failed', failureKind: kind, attempts, verdict };
-
-    if (kind === 'stalled' && canRetryMechanically) {
-      fallbackWhy = `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
-    }
-
-    const index = remaining.findIndex((candidate) => candidate.name === pool.name);
-    if (index >= 0) remaining.splice(index, 1);
-    if (canCorrectSchema) {
-      correctionUsed = true;
+    // D10: a failure that will not be retried goes to the caller; the
+    // dispatcher never walks on to another pool by itself.
+    if (!next) break;
+    pendingRetry = { attempt: `${action.id}-${ordinal}`, pool: pool.name, how: next.how };
+    promisedRecord = record;
+    if (failureClassOf(kind) === 'process' && !next.replay) leftAfterProcessFailure.add(pool.name);
+    if (next.correction) {
+      // `schema`: today's same-conversation correction, now the step's one
+      // retry, forced onto the same pool.
       nextTask = correctionTask(verdict, { originalTask: baseTaskText, attempt: ordinal });
-      // Schema correction continues the same physical conversation when the
-      // connector supports it. Put the same pool first without widening the
-      // total correction allowance.
-      remaining.unshift(pool);
-      replayPool = pool;
-      // The usage-limit rules: the next pick replays this pool only while it
-      // is not nearly spent (above).
-      if (limitsRule) limitsReplayFor = { how: 'correction', record };
+      gatePin = pool.name;
+      forceRefresh = true;
       continue;
     }
-    if (canRetryMechanically || canRetryThrottle) {
-      const facts = {
-        pool: pool.name,
-        model: record.model,
-        startedAt,
-        finishedAt,
-        failureKind: kind,
-        why: verdict.why ?? null,
-        diffStatText: snapshot.statText,
-        diffFile: snapshot.ok ? files.diffFile : null,
-        changedFiles: snapshot.changedFiles,
-        outputFile: files.outFile,
-        partialOutput: kind === 'stalled' ? files.outFile : null,
-        outputBytes,
-        streamFile,
-        hasEventStream: connector.eventStream != null,
-        lastEvents,
-      };
-      const block = formatHandoff(facts);
-      nextTask = `${baseTaskText}\n\n${block}`;
-      priorHandoff = {
-        from: `${action.id}-${ordinal}`,
-        bytes: Buffer.byteLength(block, 'utf8'),
-      };
-    }
-    if (canRetryThrottle) {
+    const block = formatHandoff({
+      pool: pool.name,
+      model: record.model,
+      startedAt,
+      finishedAt,
+      failureKind: kind,
+      why: verdict.why ?? null,
+      diffStatText: snapshot.statText,
+      diffFile: snapshot.ok ? files.diffFile : null,
+      changedFiles: snapshot.changedFiles,
+      outputFile: files.outFile,
+      partialOutput: kind === 'stalled' ? files.outFile : null,
+      outputBytes,
+      streamFile,
+      hasEventStream: connector.eventStream != null,
+      lastEvents,
+      ...(evidenceResults ? { evidenceResults: clone(evidenceResults) } : {}),
+      // §2.3: the gate retry's extra line.
+      ...(next.gate ? { gate: true } : {}),
+    });
+    nextTask = `${baseTaskText}\n\n${block}`;
+    priorHandoff = {
+      from: `${action.id}-${ordinal}`,
+      bytes: Buffer.byteLength(block, 'utf8'),
+    };
+    if (next.gate) {
+      // D5: the same pool, forced, after a live look at whether it can
+      // still take work. `not-produced` starts a fresh session (D7).
+      gatePin = pool.name;
+      forceRefresh = true;
+      if (next.fresh) currentSession = null;
+    } else if (next.replay) {
+      replayPool = pool;
+    } else if (next.sameBackoff) {
       throttleRetries += 1;
-      remaining.unshift(pool);
       replayPool = pool;
-      if (limitsOnly) {
-        // The next pick replays this pool only; the record's promised retry
-        // is corrected at the end when that pool can no longer take it.
-        limitsBackoff = true;
-        promisedRecord = record;
-      }
       await backoff(throttleBackoffMs(throttleRetries, { waitMs: verdict.throttleWaitMs }));
-      continue;
-    }
-    // The usage-limit rules alone: a usage limit, or a rate limit that is not
-    // backed off, goes to the caller (the failure below).
-    if (limitKind) break;
-    // Free transport failures do not spend the mechanical retry budget. The
-    // selected pool was already removed above; continue only when an untried
-    // eligible pool remains, so a free-only action still terminates.
-    if (freeBudgetExempt) {
-      if (canRetryMechanically) continue;
-      break;
-    }
-    if (retriesUsed >= maxMechanicalRetries) break;
-    retriesUsed += 1;
-    // Prefer a different eligible pool. If no alternative exists, one bounded
-    // same-pool retry is permitted for transient process/provider failure.
-    if (!remaining.length && candidates.length === 1 && !POOL_FATAL_KINDS.has(kind)) {
-      remaining.push(pool);
-      replayPool = pool;
-      // The usage-limit rules: never on this pool once it is nearly spent.
-      if (limitsRule) limitsReplayFor = { how: 'same-pool', record };
+    } else if (kind === 'stalled') {
+      fallbackWhy = `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
     }
   }
 
   // The step fails now rather than waiting for a pool: a run never sits open
-  // on quota. Marked runs name each capable pool's reason (a usage limit, a
+  // on quota. The failure names each capable pool's reason (a usage limit, a
   // window at its limit, nearly spent, a process failure here) and when it is
-  // back, take a spent usage window as quota, and say why a promised retry or
-  // a backoff did not happen; so do the planner and scout of a marked run
-  // (`limitsRule`).
+  // back, takes a spent usage window as quota, and says why a promised retry
+  // or a backoff did not happen.
   const lane = action.lane ?? 'chore';
-  // In marked runs a pool with a window at its limit is still capable: it
-  // comes back at that window's reset, so the reason is the limit, never a
-  // missing tier (§2.1). A pool off the step's lane is not capable there.
-  const onLane = (pool) => !limitsRule || (pool.lanes ?? LANES).includes(lane);
+  // A pool with a window at its limit is still capable: it comes back at
+  // that window's reset, so the reason is the limit, never a missing tier
+  // (§2.1). A pool off the step's lane is not capable there.
+  const onLane = (pool) => (pool.lanes ?? LANES).includes(lane);
   const capable = preparePools(allPools, action, effort, {
-    preferredModel, strictPool, now: now(), routeFilter,
-    ...(limitsRule ? { ignoreBurstGate: true } : {}),
+    preferredModel, strictPool, now: now(), routeFilter, ignoreBurstGate: true,
   }).filter((pool) => !failedProbes.has(pool.name) && onLane(pool));
   const endAt = now();
   const lastKind = last ? failureKindOf(last, lastPool) : null;
   // The failed pool's own reset, when its usage window is spent and the
   // reset is known (quota.js Q6).
-  const lastReset = limitsRule && lastKind === 'quota' && lastPool
+  const lastReset = lastKind === 'quota' && lastPool
     ? toMs(last.retryAfter) ?? toMs(last.usageLimit?.until)
     : null;
-  const draining = limitsRule ? drainingAt(capable, endAt) : new Map();
-  // Under the usage-limit rules, each capable pool that cannot take the step
-  // now, as {pool, text, limit (a usage limit), back (when it is back)}: a
+  const draining = drainingAt(capable, endAt);
+  // Each capable pool that cannot take the step now, as {pool, text, limit
+  // (a usage limit), back (when it is back)}: a
   // spent window (known reset or not), a metered window at its limit and a
   // nearly spent window keep the pool out, even when their return is unknown.
   const held = [];
-  for (const pool of limitsRule ? capable : []) {
+  for (const pool of capable) {
     const parts = [];
     if (pool.name === lastPool?.name && lastKind === 'quota') {
       if (lastReset == null) parts.push(['out of quota', null, true]);
@@ -2161,7 +1814,7 @@ export async function dispatchV2Action({
     if (draining.has(pool.name)) parts.push(drainingPart(draining.get(pool.name)));
     if (!parts.length) {
       // A pool the step left after a process failure cannot take its retry.
-      if (failureRule && leftAfterProcessFailure.has(pool.name)) held.push({ pool: pool.name, text: `${pool.name} already failed on this step`, limit: false, back: null });
+      if (leftAfterProcessFailure.has(pool.name)) held.push({ pool: pool.name, text: `${pool.name} already failed on this step`, limit: false, back: null });
       continue;
     }
     held.push(heldEntry(pool.name, parts));
@@ -2172,23 +1825,22 @@ export async function dispatchV2Action({
   const comesBack = capable.length && held.length === capable.length && known.length ? Math.min(...known) : null;
   // The pool a backoff could not be taken or replayed on: its usage limit
   // makes the step's failure quota, and its return is when to try again.
-  const blocked = limitsRule && backoffBlocked ? held.find((entry) => entry.pool === backoffBlocked) ?? null : null;
+  const blocked = backoffBlocked ? held.find((entry) => entry.pool === backoffBlocked) ?? null : null;
   const returnAt = lastReset ?? namedReturn ?? blocked?.back ?? comesBack;
   const retryAfter = returnAt == null ? null : new Date(returnAt).toISOString();
   // No attempt: a usage limit on every capable pool reads as quota.
-  const failureKind = last ? (blocked?.limit ? 'quota' : lastKind)
-    : limitsRule ? noPoolFailureKind(capable.length, held) : 'unavailable';
+  const failureKind = last ? (blocked?.limit ? 'quota' : lastKind) : noPoolFailureKind(capable.length, held);
   // A promised retry, or a backoff, that no pool could take keeps the
   // attempt's failure and says why nothing ran after it.
   let noRetry = null;
-  if (limitsRule && last && (backoffBlocked || promisedRecord?.willRetry)) {
+  if (last && (backoffBlocked || promisedRecord?.willRetry)) {
     const texts = held.map((entry) => entry.text);
     if (backoffBlocked && !blocked) texts.unshift(`${backoffBlocked} cannot take work now`);
     noRetry = ` · no retry: ${texts.length ? texts.join('; ') : 'no pool can take it now'}`;
   }
-  // Stage 3: an attempt that promised a retry no pool could take is corrected
-  // (the step goes to the caller); it adds no usage and settles nothing.
-  if (limitsRule && promisedRecord?.willRetry) {
+  // An attempt that promised a retry no pool could take is corrected (the
+  // step goes to the caller); it adds no usage and settles nothing.
+  if (promisedRecord?.willRetry) {
     Object.assign(promisedRecord, {
       status: 'failed', willRetry: false, ...(noRetry ? { why: `${promisedRecord.why ?? promisedRecord.failureKind}${noRetry}` } : {}),
     });
@@ -2199,13 +1851,12 @@ export async function dispatchV2Action({
   // A step no pool took records what ruled each enabled pool out, so its
   // result says why without re-deriving the pick (QA37).
   const ruledOut = last ? null : noPoolCandidates(allPools, action, effort, {
-    lane, strictPool, preferredModel, routeFilter, failedProbes, onLane, held, now: endAt, ignoreBurstGate: Boolean(limitsRule),
+    lane, strictPool, preferredModel, routeFilter, failedProbes, onLane, held, now: endAt, ignoreBurstGate: true,
   });
   if (!capable.length && routeFilter) {
     // §2.4: the route, not the tier or the pin, emptied the capable set.
     const unrouted = preparePools(allPools, action, effort, {
-      preferredModel, strictPool, now: now(),
-      ...(limitsRule ? { ignoreBurstGate: true } : {}),
+      preferredModel, strictPool, now: now(), ignoreBurstGate: true,
     }).filter((pool) => !failedProbes.has(pool.name) && onLane(pool));
     if (unrouted.length) {
       const withoutIndependence = { ...routeFilter, independentProviders: [] };
@@ -2220,11 +1871,9 @@ export async function dispatchV2Action({
     ok: false,
     status: 'failed',
     failureKind,
-    // Marked runs carry a return time for any failure: it is set only when
-    // trying again then is the real next step. The planner and scout of a
-    // marked run carry one for a rate limit too.
-    ...(retryAfter && (failureRule || ['quota', 'auth', 'unavailable'].includes(failureKind)
-      || (limitsOnly && failureKind === 'throttle')) ? { retryAfter } : {}),
+    // A return time for any failure: it is set only when trying again then
+    // is the real next step.
+    ...(retryAfter ? { retryAfter } : {}),
     attempts,
     verdict: last
       ? noRetry ? { ...last, why: `${last.why ?? lastKind}${noRetry}` } : last

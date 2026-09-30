@@ -19,9 +19,6 @@ import { dispatchV2Action, requestStepRestart } from '../src/workflow/v2-dispatc
 import { STAGE3_RUN_FEATURES, readRunFeatures } from '../src/workflow/run-features.js';import { formatV2ProofLabel, v2RetryPlan } from '../src/workflow/v2-outcome.js';
 import { staleScore } from '../src/lib/stale.js';
 
-// What a stage-2 launch wrote to features.json (E23); saved runs keep it.
-const STAGE2_RUN_FEATURES = Object.freeze({ deliverableGate: 1, proofLabels: 1 });
-
 const REQUIREMENT = { id: 'deliver', text: 'Deliver the requested files and validate them.' };
 
 const connector = (name) => ({
@@ -202,39 +199,6 @@ test('a passing check: results on the attempt, the receipt and the result; event
   assert.equal(Object.hasOwn(rows.notes, 'evidenceResults'), false);
 });
 
-test('a failing check retries once on the same pool with the check output, then fails the step', async (t) => {
-  const f = fixture(t);
-  // A stage-2 launch (its marker, E14 byte for byte); the stage-3 twin follows.
-  const run = await launch(f, {
-    runId: 'wf-evfail-abcdef',
-    actions: [step({ evidence: [{ type: 'command', cmd: 'echo "acme check: write.txt says nope" && grep -q ready write.txt' }] })],
-    dispatch: realDispatch({ worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'nope\n') }),
-    dependencies: { runFeatures: STAGE2_RUN_FEATURES },
-  });
-  assert.deepEqual(readRunFeatures(run.runDir), { ...STAGE2_RUN_FEATURES });
-  const [first, second] = run.state.attempts;
-  assert.equal(run.state.attempts.length, 2);
-  assert.equal(first.status, 'interrupted');
-  assert.equal(first.failureKind, 'failed-evidence');
-  assert.equal(second.status, 'failed');
-  assert.equal(second.failureKind, 'failed-evidence');
-  assert.equal(second.pool, first.pool);
-  assert.match(second.routeWhy, /^retry on the same pool after failed evidence/);
-  const task = readFileSync(second.taskFile, 'utf8');
-  assert.match(task, /## Prior attempt on this step/);
-  assert.match(task, /- Failure: failed-evidence — echo "acme check: write\.txt says nope" && grep -q ready write\.txt → exit 1: acme check: write\.txt says nope/);
-  assert.match(task, /- Evidence Bullswarm ran after that attempt:\n {2}- command `echo "acme check: write\.txt says nope" && grep -q ready write\.txt`: failed · exit 1 · \d+s\n {4}output: .*evidence-write-attempt-1-1\.log\n {4}last lines:\n {6}acme check: write\.txt says nope/);
-  const action = run.state.actions[0];
-  assert.equal(action.status, 'failed');
-  assert.equal(action.lastFailure.kind, 'failed-evidence');
-  const outcomes = eventsOf(run.runDir, 'attempt.finished').map((event) => [event.payload.willRetry, event.payload.evidenceOutcome]);
-  assert.deepEqual(outcomes.map(([willRetry, outcome]) => [willRetry, outcome.failed, outcome.passed]), [[true, 1, 0], [false, 1, 0]]);
-  assert.equal(outcomes[1][1].why, second.why);
-  const finished = eventsOf(run.runDir, 'action.finished').at(-1).payload;
-  assert.equal(finished.failureKind, 'failed-evidence');
-  assert.equal(Object.hasOwn(finished, 'proof'), false);
-});
-
 test('stage 3: a failing check is the step\'s one gate retry, forced onto the same pool with the gate line, then the caller', async (t) => {
   const f = fixture(t);
   const seen = [];
@@ -248,9 +212,8 @@ test('stage 3: a failing check is the step\'s one gate retry, forced onto the sa
   assert.equal(seen[0].retriesAlready, 0);
   const [first, second] = run.state.attempts;
   assert.equal(run.state.attempts.length, 2, 'exactly one retry, never a third attempt');
-  // QA37 (0.37.0): the retried attempt failed its check; in a run under the
-  // failure rule it reads failed (willRetry true), never interrupted. The
-  // stage-2 run above keeps its saved label.
+  // QA37 (0.37.0): the retried attempt failed its check; it reads failed
+  // (willRetry true), never interrupted.
   assert.deepEqual([first.status, first.failureKind], ['failed', 'failed-evidence']);
   assert.deepEqual([second.status, second.failureKind], ['failed', 'failed-evidence']);
   assert.equal(second.pool, first.pool);
@@ -284,29 +247,6 @@ async function resumeWithAttempts(t, { runId, attempts, actionState, marker = nu
   if (marker) writeFileSync(join(runDir, 'features.json'), marker);
   return { f, runDir };
 }
-
-const priorAttempt = (over = {}) => ({
-  id: 'write-1', actionId: 'write', ordinal: 1, status: 'interrupted', pool: 'codex', model: 'gpt-5.6-luna',
-  startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z',
-  failureKind: 'failed-evidence', why: 'true → exit 1', changedFileCount: 1, changedFiles: ['write.txt'],
-  ...over,
-});
-
-test('evidenceRetryAvailable follows supersededAttempts: a kernel resume keeps the spent retry, a rerun grants a fresh one', async (t) => {
-  for (const [label, actionState, expected] of [['kernel resume', {}, false], ['rerun', { supersededAttempts: 1 }, true]]) {
-    const runId = expected ? 'wf-evrrun-abcdef' : 'wf-evkres-abcdef';
-    const { f } = await resumeWithAttempts(t, { runId, attempts: [priorAttempt()], actionState });
-    const seen = [];
-    await runV2AutonomousWorkflow({
-      bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
-      dependencies: {
-        refreshPools: async () => null,
-        dispatchV2Action: realDispatch({ seen, worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'ok\n') }),
-      },
-    });
-    assert.equal(seen[0].evidenceRetryAvailable, expected, label);
-  }
-});
 
 test('a resumed run keeps its marker: no proof on a step without evidence, and an extra key survives', async (t) => {
   const marker = `${JSON.stringify({ deliverableGate: 1, acmeFutureKey: 'kept' }, null, 2)}\n`;
@@ -430,7 +370,6 @@ test('a kernel signal during a check stores the attempt interrupted, and resume 
   assert.match(seen[0].taskText, /- Failure: interrupted — kernel stopped during evidence; the attempt runs again on resume/);
   assert.match(seen[0].taskText, /\n {2}- command `node --test tests\/write\.test\.js`: not run · stopped\n- Its checks were stopped before they finished; Bullswarm runs them again after this attempt\.\n/);
   assert.doesNotMatch(seen[0].taskText, /Fix the work so every evidence item passes/, 'F9: no check judged the work');
-  assert.equal(seen[0].evidenceRetryAvailable, true, 'a stop never spends the evidence retry');
   assert.equal(resumed.state.actions[0].status, 'succeeded');
   assert.equal(resumed.state.attempts[1].status, 'succeeded');
 });
