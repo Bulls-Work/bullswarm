@@ -1909,7 +1909,10 @@ export async function dispatchV2Action({
     onAttempt?.('corrected', clone(promisedRecord));
     promisedRecord = null;
   }
-  let why = noPoolWhy({ capableCount: capable.length, held, failureKind, strictPool, lane, effort });
+  const freeOff = capable.length ? [] : freeModelsOffPools(allPools, action, effort, {
+    preferredModel, strictPool, routeFilter, now: endAt,
+  }).filter((pool) => !failedProbes.has(pool.name) && onLane(pool)).map((pool) => pool.name);
+  let why = noPoolWhy({ capableCount: capable.length, held, failureKind, strictPool, lane, effort, freeOff });
   // A step no pool took records what ruled each enabled pool out, so its
   // result says why without re-deriving the pick (QA37).
   const ruledOut = last ? null : noPoolCandidates(allPools, action, effort, {
@@ -1947,6 +1950,18 @@ export async function dispatchV2Action({
 const STRATEGY_TIER_ORDER = ['low', 'medium', 'high'];
 
 /**
+ * The enabled pools that cannot take `effort` work only because free models
+ * are off for them (`strategy set-free never`): each is prepared again with
+ * free models allowed, and the ones that then qualify are returned.
+ */
+function freeModelsOffPools(allPools, action, effort, { preferredModel = null, strictPool = null, routeFilter = null, now } = {}) {
+  const opts = { preferredModel, strictPool, routeFilter, now, ignoreBurstGate: true };
+  return allPools.filter((pool) => pool.enabled !== false && pool.strategyFreeModels === 'never'
+    && !preparePools([pool], action, effort, opts).length
+    && preparePools([{ ...pool, strategyFreeModels: 'allow' }], action, effort, opts).length);
+}
+
+/**
  * What ruled each enabled pool out of a step no pool took:
  * [{pool, provider, excluded, tiers, inRoute, onLane}], in pool order. The
  * first reason that applies is named: the pin, the lane, a failed probe, the
@@ -1975,10 +1990,11 @@ function noPoolCandidates(allPools, action, effort, {
     else if (!ignoreBurstGate && windowSpent(pool, now)) excluded = 'a usage window is at its limit';
     else if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) excluded = poolCanRunModel(pool, preferredModel).reason;
     else if (preferredModel && planExcludes(pool, preferredModel)) excluded = `${preferredModel} is not in ${pool.name}'s plan`;
+    else if (!tiers.includes(effort) && freeModelsOffPools([pool], action, effort, { preferredModel, now }).length) excluded = `free models are off for ${pool.name}`;
     else if (!tiers.includes(effort)) excluded = `no model on the ${effort} tier for ${lane} work (has ${tiers.length ? tiers.join(', ') : 'none'})`;
     else excluded = heldText.get(pool.name) ?? 'capable, but no pick was made';
     return { pool: pool.name, provider, excluded, tiers, inRoute, onLane: lanes };
   });
 }
 
-export { classifyFailure as classifyV2DispatchFailure, preparePools as prepareV2DispatchPools, selectedModel as selectedV2DispatchModel, trackedStat as trackedDiffStatForTests };
+export { classifyFailure as classifyV2DispatchFailure, freeModelsOffPools as freeModelsOffV2DispatchPools, preparePools as prepareV2DispatchPools, selectedModel as selectedV2DispatchModel, trackedStat as trackedDiffStatForTests };

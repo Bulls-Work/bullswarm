@@ -15,7 +15,7 @@ import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/fore
 import { expectedMinutesFromSpendModel } from '../lib/assignments.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
-import { prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
+import { freeModelsOffV2DispatchPools, prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
 import { resolveRouteFilter, routeUnavailableWhy } from './step-route.js';
 import { poolCanRunModel } from '../lib/model-pin.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
@@ -44,7 +44,10 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
     && prepareV2DispatchPools(pools, action, effort, { now, preferredModel, ignoreBurstGate: true }).length) {
     return { why: routeUnavailableWhy(routeFilter, { lane, effort }), failureKind };
   }
-  return { why: capable.length ? routerWhy : noPoolWhy({ capableCount: 0, held, failureKind, lane, effort }), failureKind };
+  if (capable.length) return { why: routerWhy, failureKind };
+  const freeOff = freeModelsOffV2DispatchPools(pools, action, effort, { preferredModel, routeFilter, now })
+    .filter((pool) => (pool.lanes ?? [lane]).includes(lane)).map((pool) => pool.name);
+  return { why: noPoolWhy({ capableCount: 0, held, failureKind, lane, effort, freeOff }), failureKind };
 }
 
 /**

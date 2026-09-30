@@ -1381,6 +1381,18 @@ test('strategy set-free writes the every-pool and per-pool setting, show prints 
     again.strategy.lastReport = state.strategy.lastReport;
     saveState(f.dir, again);
     assert.equal(await shown(), 'free models: never (all pools)');
+    // A pool left with only free models for a tier is named under that tier.
+    const offState = loadState(f.dir);
+    offState.strategy.lastReport = {
+      ...state.strategy.lastReport,
+      suggestions: { low: { recommended: null, candidates: [], basis: 'chore capability first (free models are off)' } },
+      providerSuggestions: { echo: { low: { recommended: null, candidates: [], ineligible: 'free models are off for echo' } } },
+    };
+    saveState(f.dir, offState);
+    const tierLines = (await runStrategy(['show'], f.dir)).out.split('\n');
+    const low = tierLines.indexOf('  low: no classified model');
+    assert.notEqual(low, -1);
+    assert.equal(tierLines[low + 1], '    echo: free models are off for echo');
 
     assert.equal((await runStrategy(['set-free', 'allow', '--pool', 'command-code', '--yes'], f.dir)).code, 0);
     assert.deepEqual(loadState(f.dir).strategy.freeModelsByPool, { 'command-code': 'allow' });

@@ -1883,3 +1883,11 @@ test('dispatch: a pool whose free models are off is not offered a free model, an
   assert.deepEqual(prepareV2DispatchPools([freeOnly('allow')], action, 'medium').map((pool) => pool.name), ['alpha']);
   assert.deepEqual(prepareV2DispatchPools([freeOnly('never')], action, 'medium').map((pool) => pool.name), []);
 });
+
+test('dispatch: a step no pool takes because free models are off says so, in why and routeCandidates', async (t) => {
+  const pools = [planPool('alpha', { model: 'vendor/model-x:free', strategyFreeModels: 'never' })];
+  const { result, picked } = await planDispatch(t, pools, []);
+  assert.deepEqual(picked, []);
+  assert.equal(result.verdict.why, 'no eligible pool: no enabled pool has a model on the medium tier for analyze work; free models are off for alpha');
+  assert.deepEqual(result.routeCandidates, [{ pool: 'alpha', provider: result.routeCandidates[0].provider, excluded: 'free models are off for alpha' }]);
+});

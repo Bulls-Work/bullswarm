@@ -89,7 +89,7 @@ A gate's condition step must run before the gate, and a loop's must be one of it
 - A step passes by facts only: its worker ended cleanly, its deliverable was produced, its evidence passed, and its answer (when declared) matched the schema.
 - A failed step gets one automatic retry: a process failure on another eligible pool, a failed check (answer, evidence, deliverable) on the same pool with the failure attached. Then it comes back to you. A usage limit sends the step to you at once.
 - When only waiting gates or loops are left, the run parks with status `waiting` until you run `workflow continue`.
-- A v3 run's steps, gates and loops are never edited. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`). The one change a fragment may make to an existing step is `blocks: {"<new step id>": ["<existing step id>", ...]}`: those steps, which must not have started and must be in no loop, also wait for the new step.
+- A v3 run's steps, gates and loops are never edited. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`). The one change a fragment may make to an existing step is `blocks: {"<new step id>": ["<existing step id>", ...]}`: those steps, which must not have started and must be in no loop, also wait for the new step. A step already blocked behind a failed step stays blocked; `step accept` the failed step to release it.
 
 ### A v3 example
 
@@ -253,7 +253,7 @@ The box for an attempt is the first of these that applies:
 
 The box is resolved for each attempt, so a retry on another pool gets its own clock. A step whose report lists items under `## Not done` still succeeds. Its attempt records `returnedEarly` with the count and the items, the Step page reads `returned early · N not done` (and `box 20m · ran 34m` when the attempt ran past its box) and lists the stored items in the header, the selected Run timeline row and the Run live block list them too, `workflow watch` prints `◐ <step> returned early · N not done`, and the items are quoted to the verifiers that judge the requirements the step affects.
 
-A work task's paragraph also asks the worker to start a blocker it may not change with `outside:` (`- outside: tests/router.test.js fails on main before this change`). When a step fails `failed-evidence`, `not-produced` or `semantic` and its report lists such an item, its one automatic retry is skipped, because the same pool would hit the same blocker: the step comes back to you at once and its `why` ends `retry skipped: the worker reported a blocker outside this step: <first item>`. `schema` failures keep their correction retry and process failures their retry on another pool.
+A work task's paragraph also asks the worker to start a blocker it may not change with `outside:` (`- outside: tests/router.test.js fails on main before this change`). When a step fails `failed-evidence`, `not-produced` or `semantic` and its report lists such an item, its one automatic retry is skipped, because the same pool would hit the same blocker: the step comes back to you at once and its `why` ends `retry skipped: the worker reported a blocker outside this step: <first item>`, and the saved attempt lists every such item as `outsideBlockers`. `schema` failures keep their correction retry and process failures their retry on another pool.
 
 ## Verify rounds
 

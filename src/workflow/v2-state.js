@@ -90,6 +90,9 @@ const ATTEMPT_FIELDS = new Set([
   // that had no box (`timeBox: 0`, digests) and on every attempt recorded
   // before 0.35.2; `returnedEarly` is absent when nothing was left undone.
   'timeBox', 'returnedEarly',
+  // The `## Not done` items marked `outside:` that skipped a failed attempt's
+  // retry (0.38.1). Absent when the retry was not skipped for them.
+  'outsideBlockers',
   // The repository paths the diff snapshot attributed to this attempt (at
   // most 200; `changedFileCount` is the full count). Read by the repair
   // loop's carry-forward rule and the durable handoff. Absent on attempts
@@ -1073,6 +1076,8 @@ function validateAttempts(attempts, program) {
     if (attempt.bytes !== undefined) validateAttemptBytes(attempt.bytes, `state.attempts[${index}].bytes`);
     if (attempt.timeBox !== undefined) validateAttemptTimeBox(attempt.timeBox, `state.attempts[${index}].timeBox`);
     if (attempt.returnedEarly !== undefined) validateReturnedEarly(attempt.returnedEarly, `state.attempts[${index}].returnedEarly`);
+    if (attempt.outsideBlockers !== undefined && (!Array.isArray(attempt.outsideBlockers) || !attempt.outsideBlockers.length
+      || attempt.outsideBlockers.some((item) => typeof item !== 'string' || !item))) fail(`state.attempts[${index}].outsideBlockers must list non-empty strings`);
     if (attempt.changedFiles !== undefined && (!Array.isArray(attempt.changedFiles) || attempt.changedFiles.length > 200
       || attempt.changedFiles.some((file) => typeof file !== 'string' || !file))) fail(`state.attempts[${index}].changedFiles must list at most 200 paths`);
     if (attempt.deliverable !== undefined) validateAttemptDeliverable(attempt.deliverable, `state.attempts[${index}].deliverable`);

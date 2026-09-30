@@ -51,6 +51,13 @@ test('no pool with a model on the tier stays the tier reason, with kind unavaila
   assert.equal(result.why, 'no eligible pool: no enabled pool has a model on the low tier for analyze work');
 });
 
+test('a pool left with only free models while free models are off is named with that reason', async (t) => {
+  const pools = [connector('acme-1', { strategyAssignments: {}, model: 'vendor/model-x:free', strategyFreeModels: 'never' })];
+  const result = await preview(t, pools);
+  assert.equal(result.failureKind, 'unavailable');
+  assert.equal(result.why, 'no eligible pool: no enabled pool has a model on the low tier for analyze work; free models are off for acme-1');
+});
+
 test('a route that leaves no pool keeps the route reason, with kind unavailable', async (t) => {
   const result = await preview(t, [connector('acme-1')], step({ route: { pools: { avoid: ['acme-1'] } } }));
   assert.equal(result.failureKind, 'unavailable');

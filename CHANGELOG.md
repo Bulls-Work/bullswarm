@@ -7,15 +7,17 @@
   main before this change`); work tasks now ask for this. A step that fails
   `failed-evidence`, `not-produced` or `semantic` with such a line skips its
   one automatic retry and comes back to you at once, its `why` ending `retry
-  skipped: the worker reported a blocker outside this step: <item>`. `schema`
-  and process failures keep their retry.
+  skipped: the worker reported a blocker outside this step: <item>`; the saved
+  attempt lists every such item as `outsideBlockers`. `schema` and process
+  failures keep their retry.
 - workflow add: a fragment may carry `blocks: {"<new step id>": ["<existing
   step id>", ...]}` to make existing steps that have not started also wait for
   a step it adds, for example a fix in front of a report (then `step accept`
   the failed step). It is the one change a fragment may make to an existing
   step; a started step, a loop's step, a gate, a loop or a cycle is refused in
-  fragment words. The output prints `waits    step <id> now also waits for
-  <ids>`, and `--json` carries `waits`.
+  fragment words. A step already blocked behind a failed step stays blocked
+  (it is not reset and blocked again). The output prints `waits    step <id>
+  now also waits for <ids>`, and `--json` carries `waits`.
 - advisories: a new `suite-wider-than-files` advisory names a step that owns
   files but runs a command check naming none of them (a bare `npm test`),
   because a failure elsewhere in the suite would fail a step that cannot fix
@@ -38,8 +40,12 @@
   --yes` (and `set-free reset --pool <name>`) stops free models being
   suggested, applied or dispatched, for every pool or one; a pool's own
   setting wins. A pool left with only free models for a tier is out of that
-  tier with the reason `free models are off for <pool>`. A model you name
-  yourself is still allowed. `strategy show` prints a `free models:` line.
+  tier with the reason `free models are off for <pool>`: a step no pool can
+  take says it in its `why` and `routeCandidates`, `run --dry-run` says it
+  too, and `strategy show` prints it under the tier. A model you name
+  yourself is still allowed. `strategy show` prints a `free models:` line, and
+  the low tier's basis stops putting free models first when every pool has
+  them off.
 - providers: a connector may list `modelPlanSignatures`, the text its CLI
   prints when the subscription's plan does not include the requested model
   (Command Code: `MODEL_NOT_IN_PLAN`). A hit is the new failure kind

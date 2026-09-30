@@ -1471,6 +1471,8 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
       ranking: 'unranked',
       reason: 'new model: no family rule or model profile gives it a tier yet',
     })));
+  // Free models lead the low tier only where some pool may still run them.
+  const freeModelsFirst = pools.some((pool) => !freeModelsBanned(state.strategy, pool.name));
   for (const tier of tiers) {
     const context = TIER_CONTEXTS[tier];
     const candidates = [];
@@ -1515,7 +1517,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
         ? 'analysis/workflow-planning capability, then quality rank (the newest version wins inside a family), benchmarks only to break equal ranks, then live quota surplus and cost rank'
         : tier === 'medium'
           ? 'build/editing capability, then quality rank (the newest version wins inside a family), benchmarks only to break equal ranks, then live quota surplus, cost rank, and API price'
-          : 'chore capability and free models first, then quality rank (the newest version wins inside a family), benchmarks only to break equal ranks, then cost rank, live quota surplus, and API price',
+          : `chore capability${freeModelsFirst ? ' and free models first' : ' first (free models are off)'}, then quality rank (the newest version wins inside a family), benchmarks only to break equal ranks, then cost rank, live quota surplus, and API price`,
     };
   }
   return {

@@ -260,6 +260,7 @@ test('a failing check whose report names an `outside:` blocker skips the gate re
   assert.deepEqual([only.status, only.failureKind], ['failed', 'failed-evidence']);
   const why = 'echo "acme check: write.txt says nope" && grep -q ready write.txt → exit 1: acme check: write.txt says nope · retry skipped: the worker reported a blocker outside this step: check.sh fails on main before this change';
   assert.equal(only.why, why);
+  assert.deepEqual(only.outsideBlockers, ['check.sh fails on main before this change'], 'the saved attempt keeps the blocker list');
   const attemptFinished = eventsOf(run.runDir, 'attempt.finished').map((event) => event.payload);
   assert.deepEqual(attemptFinished.map((payload) => payload.willRetry), [false]);
   const finished = eventsOf(run.runDir, 'action.finished').at(-1).payload;

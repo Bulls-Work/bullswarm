@@ -1427,6 +1427,9 @@ test('free models never: the low tier picks the best non-free model, and an unse
   assert.equal(never.providerSuggestions.onlyfree.low.recommended, null);
   assert.equal(never.providerSuggestions.onlyfree.low.ineligible, 'free models are off for onlyfree');
   assert.equal(never.providerSuggestions.openrouter.low.recommended.model, 'openrouter/paid-mini');
+  // The low tier's basis no longer puts free models first when every pool has them off.
+  assert.match(unset.suggestions.low.basis, /^chore capability and free models first, /);
+  assert.match(never.suggestions.low.basis, /^chore capability first \(free models are off\), /);
 });
 
 test('free models never on one pool leaves every other pool\'s free models allowed', () => {

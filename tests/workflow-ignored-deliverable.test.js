@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { IGNORED_MAX_FILES, walkIgnoredEntries } from '../src/workflow/folder-walk.js';
 import { buildProgramWorkTask } from '../src/workflow/step-prompts.js';
+import { normalizeAttempt } from '../src/workflow/attempt-record.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -222,6 +223,10 @@ test('not-produced with an `outside:` blocker in the report: no gate retry, the 
   assert.equal(result.attempts[0].why, 'no file changed · retry skipped: the worker reported a blocker outside this step: tickets/T-1001.md is not in my files');
   assert.deepEqual(result.attempts[0].outsideBlockers, ['tickets/T-1001.md is not in my files']);
   assert.equal(result.verdict.why, result.attempts[0].why);
+  // The saved attempt (state.attempts) keeps every blocker, not only the one in why.
+  const saved = normalizeAttempt({ ...result.attempts[0], outsideBlockers: ['a is not mine', 'b is not mine'] }, { id: 'task-1', actionId: 'task', ordinal: 1 });
+  assert.deepEqual(saved.outsideBlockers, ['a is not mine', 'b is not mine']);
+  assert.equal(Object.hasOwn(normalizeAttempt({ status: 'failed' }, { id: 'task-1', actionId: 'task', ordinal: 1 }), 'outsideBlockers'), false);
 });
 
 test('the same report without the `outside:` prefix still gets the gate retry', async (t) => {

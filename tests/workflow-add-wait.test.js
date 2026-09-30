@@ -390,8 +390,13 @@ test('blocks on the steps behind a failed step: they stay blocked, and after ste
   });
   assert.equal(added.status, 'applied', JSON.stringify(added));
   assert.deepEqual(readState(run).program.actions.find((action) => action.id === 'integrate').dependsOn, ['tests', 'fix-tests']);
+  // Waiting for one more step leaves a blocked step blocked, never reset to pending.
+  assert.equal(statusOf(readState(run), 'integrate'), 'blocked');
   // The fix runs; integrate is still behind the failed tests.
   const fixed = await resume(f, run.runId, dispatch());
+  const blockedEvents = readEvents(run.runDir).filter((event) => event.type === 'action.finished'
+    && event.payload.actionId === 'integrate' && event.payload.status === 'blocked');
+  assert.equal(blockedEvents.length, 1, 'integrate is blocked once, not again after the revision');
   assert.deepEqual(seen, ['tests', 'fix-tests']);
   assert.equal(statusOf(fixed.state, 'fix-tests'), 'succeeded');
   assert.equal(statusOf(fixed.state, 'integrate'), 'blocked', 'blocks never unblocks a step behind a failed dependency');

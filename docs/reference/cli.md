@@ -713,7 +713,7 @@ bullswarm strategy set-free reset --pool openrouter
 | `--pool <name>` | set it for this pool only; a pool's own setting wins over the every-pool one | every pool |
 | `--yes` | required for `allow` and `never`, which change routing | none; exits 2 without it |
 
-Argument: `allow`, `never`, or `reset` (drops one pool's own setting; needs `--pool`, no `--yes`). Under `never` a pool whose tier has a non-free model switches to it; a pool left with only free models for a tier is out of that tier, with the reason `free models are off for <pool>`. A model you name yourself (a step's `model`, `--worker-model`) is still allowed. Writes `state.strategy.freeModels` / `freeModelsByPool` and invalidates the cached report; with autopilot on, its next check re-picks every rung. A usage mistake exits 2 and writes nothing.
+Argument: `allow`, `never`, or `reset` (drops one pool's own setting; needs `--pool`, no `--yes`). Under `never` a pool whose tier has a non-free model switches to it; a pool left with only free models for a tier is out of that tier, with the reason `free models are off for <pool>` (a step no pool can take names it in its `why` and `routeCandidates`, and `strategy show` prints it under the tier). A model you name yourself (a step's `model`, `--worker-model`) is still allowed. Writes `state.strategy.freeModels` / `freeModelsByPool` and invalidates the cached report; with autopilot on, its next check re-picks every rung. A usage mistake exits 2 and writes nothing.
 
 ### auto
 

@@ -46,13 +46,18 @@ export function noPoolFailureKind(capableCount, held) {
 
 /**
  * The reason no pool can take the step. `capableCount` counts the pools that
- * could run it were none at a limit; `held` the ones that cannot now.
+ * could run it were none at a limit; `held` the ones that cannot now;
+ * `freeOff` the pools that have the tier only through free models while
+ * free models are off for them.
  */
-export function noPoolWhy({ capableCount, held, failureKind, strictPool = null, lane, effort }) {
+export function noPoolWhy({ capableCount, held, failureKind, strictPool = null, lane, effort, freeOff = [] }) {
   if (!capableCount) {
+    // A pool whose only models for the tier are free, with free models off
+    // (`strategy set-free never`), is named with that reason.
+    const off = freeOff.length ? `; ${freeOff.map((name) => `free models are off for ${name}`).join('; ')}` : '';
     return strictPool
-      ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)`
-      : `no eligible pool: no enabled pool has a model on the ${effort} tier for ${lane} work`;
+      ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)${off}`
+      : `no eligible pool: no enabled pool has a model on the ${effort} tier for ${lane} work${off}`;
   }
   return held.length
     ? `${failureKind === 'quota' ? 'no pool with quota to spare' : 'no pool free'}: ${held.map((entry) => entry.text).join('; ')}`

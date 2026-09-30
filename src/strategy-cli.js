@@ -242,6 +242,11 @@ function render(report, reasoning = null, copies = [], pins = {}, free = null, n
     lines.push(`  ${tier}: ${recommended ? `${recommended.pool}/${recommended.model}${level}${note}` : 'no classified model'}`
       + `${why ? ` — ${why}` : ''}`);
     if (pin) lines.push(`    ${pinLine(tier, pin)}`);
+    // A pool left with only free models for the tier while free models are
+    // off for it: `    echo: free models are off for echo`.
+    for (const [pool, tiers] of Object.entries(report.providerSuggestions ?? {})) {
+      if (tiers?.[tier]?.ineligible) lines.push(`    ${pool}: ${tiers[tier].ineligible}`);
+    }
     // Another pool's own pick for this tier that is a fallback too: its rung
     // gets the level on apply, so it is named even when it is not best now.
     for (const [pool, tiers] of Object.entries(report.providerSuggestions ?? {})) {

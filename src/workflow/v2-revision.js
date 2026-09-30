@@ -379,6 +379,19 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
   for (const id of accepted) if (!keptIds.has(id)) issues.push(`step ${id} is changed by this revision; accept it on its own`);
   if (issues.length) return { ok: false, issues };
 
+  // A step that has not started whose one change is waiting for more steps
+  // (a `workflow add` fragment's `blocks`): nothing downstream consumed it,
+  // and a blocked one stays blocked instead of being reset and blocked again.
+  const withoutDeps = (action) => ({ ...action, dependsOn: [] });
+  const waitsOnly = amended.filter((id) => {
+    const before = stored.get(id);
+    const after = desired.find((action) => action.id === id);
+    return ['pending', 'ready', 'blocked'].includes(runtimeById.get(id).status)
+      && (before?.dependsOn ?? []).every((dependency) => after.dependsOn.includes(dependency))
+      && sameDefinition(withoutDeps(after), withoutDeps(before));
+  });
+  const waitsOnlyIds = new Set(waitsOnly);
+
   // Everything downstream of a changed step, over the revised graph.
   const dependents = new Map();
   for (const action of desired) for (const dependency of action.dependsOn) {
@@ -392,7 +405,7 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
   }
   const reached = new Set();
   // An accepted failed step now counts as succeeded: its blocked dependents run.
-  const queue = [...amended, ...restored, ...rerun, ...acceptances.filter((entry) => entry.kind === 'step').map((entry) => entry.step)];
+  const queue = [...amended.filter((id) => !waitsOnlyIds.has(id)), ...restored, ...rerun, ...acceptances.filter((entry) => entry.kind === 'step').map((entry) => entry.step)];
   while (queue.length) {
     for (const next of dependents.get(queue.shift()) ?? []) {
       if (reached.has(next)) continue;
@@ -425,6 +438,7 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
     },
     ...(appended ? { control: appended.control } : {}),
     ...(acceptances.length ? { acceptances } : {}),
+    ...(waitsOnly.length ? { waitsOnly } : {}),
     affected: [...new Set([...removed, ...amended, ...rerun, ...invalidated])],
     steeringIds,
     nextRevision: state.program.revision + 1,
@@ -452,8 +466,14 @@ export function applyV2Revision(state, planned, { request, at }) {
   const discardedEvidence = [];
   // Attempts made before this point belong to a superseded definition or a
   // discarded result; recovery never treats them as this step's completion.
+  const waitsOnly = new Set(planned.waitsOnly ?? []);
   for (const id of [...amended, ...restored, ...rerun, ...invalidated]) {
     const runtime = runtimeById.get(id);
+    // A blocked step that now also waits for an added step stays blocked.
+    if (waitsOnly.has(id) && runtime.status === 'blocked') {
+      runtime.programRevision = revision;
+      continue;
+    }
     if (previous.get(id)?.evidenceFor?.length) discardedEvidence.push(id);
     Object.assign(runtime, {
       status: 'pending', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [],

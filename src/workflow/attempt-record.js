@@ -68,6 +68,9 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     // under `## Not done` (time-box.js). Neither changes how the attempt ran.
     ...(record.timeBox !== undefined ? { timeBox: clone(record.timeBox) } : {}),
     ...(record.returnedEarly !== undefined ? { returnedEarly: clone(record.returnedEarly) } : {}),
+    // The `## Not done` items marked `outside:` that skipped the step's
+    // retry, every one (the why names only the first).
+    ...(Array.isArray(record.outsideBlockers) ? { outsideBlockers: [...record.outsideBlockers] } : {}),
     // What each declared check did (E20). Absent when the checks never ran
     // (E15): absence is the exact fact.
     ...(Array.isArray(record.evidenceResults) ? { evidenceResults: clone(record.evidenceResults) } : {}),
