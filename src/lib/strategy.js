@@ -8,6 +8,7 @@ import {
   compareVersions, generationFallback, modelRanking, versionLabelParts,
 } from './model-family.js';
 import { openRouterMetadata } from './openrouter-models.js';
+import { priceBandPick } from './price-band.js';
 import {
   isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel, suggestedReasoningLevel,
 } from './reasoning.js';
@@ -1073,6 +1074,8 @@ function candidateView(entry) {
     externalQuality: model.externalQuality ?? null,
     // A newest-generation stand-in for a stale family (see fallbackEntry).
     ...(entry.fallback ? { fallback: entry.fallback } : {}),
+    // The tier's pick inside its price band (see bandEntry).
+    ...(entry.priceBand ? { priceBand: entry.priceBand } : {}),
   };
 }
 
@@ -1083,10 +1086,11 @@ function candidateView(entry) {
  */
 function recommendedView(entry, withPool) {
   if (!entry) return null;
+  const standIn = entry.fallback ?? entry.priceBand ?? null;
   return {
     ...(withPool ? { pool: entry.pool } : {}),
     model: entry.model.id,
-    ...(entry.fallback ? { reasoning: entry.fallback.reasoning, why: entry.fallback.reason } : {}),
+    ...(standIn ? { reasoning: standIn.reasoning, why: standIn.reason } : {}),
   };
 }
 
@@ -1227,6 +1231,45 @@ function supportsContext(pool, context) {
   return lanes.includes(context.lane)
     && context.capabilities.every((capability) => capabilities.includes(capability));
 }
+/**
+ * A tier's pick inside its price band (price-band.js priceBandPick) as a
+ * ranked entry, or null when the connector does not opt in, a price is
+ * missing, or the pool's best candidate is already that model.
+ *
+ * Like a generation fallback it takes the standing of the candidate it
+ * replaces, one trailing key component above it, so other pools compare
+ * against the tier's usual standing. It runs at the connector's reasoning
+ * for the tier, which apply writes as that pool's rung level.
+ */
+function bandEntry(pool, connector, listed, eligible, tier, ranked) {
+  const found = priceBandPick(connector, listed, eligible, tier);
+  const replaced = ranked[0] ?? null;
+  if (!found || replaced?.model.id === found.model.id) return null;
+  const base = replaced?.effectiveKey
+    ?? tierKey({ ...found.model, qualityRank: found.reference.qualityRank }, pool, tier);
+  const reasoning = found.reasoning
+    ? suggestedReasoningLevel(connector, found.model, found.reasoning)
+    : { applied: null, clamped: false };
+  const entry = {
+    pool: pool.name,
+    poolView: pool,
+    model: found.model,
+    key: [...base, 1],
+    priceBand: {
+      generation: found.generation,
+      reference: found.reference.id,
+      price: found.price,
+      band: found.band,
+      replaces: replaced?.model.id ?? null,
+      reasoning: reasoning.applied,
+      reasoningClamped: reasoning.clamped,
+      reason: found.reason,
+    },
+  };
+  entry.effectiveKey = entry.key;
+  entry.inheritsFrom = null;
+  return entry;
+}
 
 export function buildStrategy({ connectors, pools, state, discoveries, openRouterCatalog = null }) {
   const rankedDiscoveries = enrichDiscoveries(discoveries, openRouterCatalog);
@@ -1256,9 +1299,15 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
       const candidates = rankCandidates(eligible
         .filter((model) => model.tier === tier)
         .map((model) => ({ pool: pool.name, model, key: tierKey(model, pool, tier) })));
-      const fallback = fallbackEntry(pool, pool.connector ?? pool, eligible, tier, candidates, listed);
+      const connector = pool.connector ?? pool;
+      const band = bandEntry(pool, connector, listed, eligible, tier, candidates);
+      const fallback = band ?? fallbackEntry(pool, connector, eligible, tier, candidates, listed);
       if (fallback) {
         fallbacks[pool.name][tier] = fallback;
+        // The band's pick may also be an ordinary candidate of the tier; it
+        // is listed once, as the pick.
+        if (band) candidates.splice(0, candidates.length,
+          ...candidates.filter((entry) => entry.model.id !== band.model.id));
         candidates.unshift(fallback);
       }
       providerSuggestions[pool.name][tier] = {
@@ -1299,6 +1348,11 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
         candidates.push({ pool: pool.name, poolView: pool, model, key: tierKey(model, pool, tier) });
       }
       const fallback = fallbacks[pool.name]?.[tier];
+      if (fallback?.priceBand) {
+        for (let i = candidates.length - 1; i >= 0; i -= 1) {
+          if (candidates[i].pool === pool.name && candidates[i].model.id === fallback.model.id) candidates.splice(i, 1);
+        }
+      }
       if (fallback) candidates.push({ ...fallback });
     }
     rankCandidates(candidates);
@@ -1346,6 +1400,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
       'OpenRouter agentic, coding, and intelligence indices only break ties between models of equal quality rank.',
       'A discovered model no family rule or profile classifies is listed under unranked and never recommended.',
       'Where a connector opts a tier into generationFallback and the family serving it has no model in the newest generation, that tier takes the next-lower family\'s newest-generation model at the declared reasoning level; a tier no family serves takes the best-ranked family\'s newest model the same way.',
+      'Where a connector opts into priceBand, each tier takes the best newest-generation model whose dated API price is no more than what the model serving that tier one generation back cost, at the tier\'s normal reasoning; without both prices the family order decides.',
       'API-equivalent prices may not match subscription quota debits.',
       'Unknown license value, token counters, pricing, or benchmarks remain null; Bullswarm does not invent them.',
     ],

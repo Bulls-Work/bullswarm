@@ -14,7 +14,7 @@ import { runWorkflowWatch } from './watch-cli.js';
 import { helpText } from '../help.js';
 import { flagErrors, removedFlagExit } from './workflow-flags.js';
 import { BULLSWARM_DIR, drivableRunRefusal } from './cli-run-lookup.js';
-import { pinnedPoolIssues, routePoolIssues, livePoolNames } from './cli-pool-checks.js';
+import { modelPoolIssues, pinnedPoolIssues, routePoolIssues, livePoolNames } from './cli-pool-checks.js';
 import { executeGoalDocument, launchDetachedGoal } from './cli-launch.js';
 import { buildNewGoalDocument } from './cli-goal-document.js';
 import {
@@ -179,6 +179,7 @@ export async function wfGoal(opts) {
       ...workspacePathIssues(previewed.program, doc.intent.cwd, { isolated: doc.config.settings.workspaceMode === 'isolated' }),
       ...pinnedPoolIssues(doc, previewed.program, pools),
       ...routePoolIssues(previewed.program.actions, pools, doc),
+      ...modelPoolIssues(previewed.program.actions, pools, doc),
     ];
     if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
     // The same lines `plan validate` prints, at the moment the program is

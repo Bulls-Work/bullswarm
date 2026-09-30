@@ -232,9 +232,9 @@
       "max"
     ],
     "defaults": {
-      "high": "xhigh",
-      "medium": "high",
-      "low": "medium"
+      "high": "high",
+      "medium": "medium",
+      "low": "low"
     }
   },
   "conversation": {
@@ -267,12 +267,12 @@
   "generationFallback": {
     "tiers": {
       "medium": {
-        "reasoning": "high",
-        "why": "one Grok line, lighter reasoning for lighter tiers"
+        "reasoning": "medium",
+        "why": "one Grok line, at each tier's own reasoning"
       },
       "low": {
-        "reasoning": "medium",
-        "why": "one Grok line, lighter reasoning for lighter tiers"
+        "reasoning": "low",
+        "why": "one Grok line, at each tier's own reasoning"
       }
     }
   },

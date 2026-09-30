@@ -243,6 +243,7 @@ export async function rerunV2Step({
     program: document.program,
     rerun: status === 'pending' ? [] : [stepId],
     steeringIds: [],
+    ...(avoided.length ? { avoidRoute: [stepId] } : {}),
   };
   const features = runFeatureFlags(readRunFeatures(resolved.runDir));
   const precheck = planV2Revision(state, body, { features });

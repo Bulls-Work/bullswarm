@@ -52,7 +52,7 @@ function inferredClaudeId(description) {
 /**
  * Normalize the initialize control response into stable model choices.
  * Claude currently returns aliases for some rows. For those rows the concrete
- * family/version is inferred from the CLI's own structured description and is
+ * family/version is inferred from the CLI's own display name or description and is
  * labelled as such; a literal full ID is never rewritten. The explicit [1m]
  * selector remains part of the model ID because it is meaningful to --model.
  */
@@ -70,7 +70,13 @@ export function parseClaudeModelDiscovery(output) {
     const value = typeof row?.value === 'string' ? row.value.trim() : '';
     if (!value) continue;
     const literal = value.startsWith('claude-');
-    const inferred = literal ? value.replace(/\[1m\]$/, '') : inferredClaudeId(row.description);
+    // An alias row names its model in displayName ("Opus 5.5") on current
+    // CLIs, in the description ("Sonnet 5.5 · …") on older ones and for
+    // `default`, whose displayName is "Default (recommended)".
+    const fromName = literal ? null : inferredClaudeId(row.displayName);
+    const inferred = literal
+      ? value.replace(/\[1m\]$/, '')
+      : fromName ?? inferredClaudeId(row.description);
     if (!inferred) continue;
     const context = value.endsWith('[1m]') ? '[1m]' : '';
     // `default` describes the base model; the separate explicit 1M row keeps
@@ -82,7 +88,7 @@ export function parseClaudeModelDiscovery(output) {
       id,
       displayName: typeof row.displayName === 'string' ? row.displayName : null,
       alias: literal ? null : value,
-      idSource: literal ? 'cli' : 'description-inferred',
+      idSource: literal ? 'cli' : fromName ? 'display-name-inferred' : 'description-inferred',
     });
   }
   if (!models.length) throw new Error('Claude Code initialize returned no usable models');

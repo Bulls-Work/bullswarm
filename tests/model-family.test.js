@@ -115,7 +115,7 @@ test('an exact row overrides one family field and keeps its own price; a family 
   assert.equal(modelRanking(fixture, 'gpt-7-nova').tier, null);
 });
 
-test('real prices: Opus 5.5 and Fable 5.1 carry their own rate-card lines, and new models none', () => {
+test('real prices: Opus 5.5, Fable 5.1 and the gpt-6 models carry their own rate-card lines, and new models none', () => {
   const claude = connector('claude-code');
   const price = (id) => modelRanking(claude, id).profile?.pricing ?? null;
   // platform.claude.com/docs/en/about-claude/pricing, read 2026-09-23.
@@ -127,10 +127,17 @@ test('real prices: Opus 5.5 and Fable 5.1 carry their own rate-card lines, and n
   assert.equal(price('claude-fable-5-1[1m]').cacheReadUsdPerMillion, 0.25);
   assert.equal(price('claude-fable-5').cacheReadUsdPerMillion, 1);
   assert.equal(price('claude-opus-5-6'), null);
+  // developers.openai.com/api/docs/pricing, read 2026-09-30; cache writes at
+  // 1.25x input per the prompt-caching guide.
   const codex = connector('codex');
-  for (const id of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
-    assert.equal(modelRanking(codex, id).profile, null, `${id} has no public rate card in the connector`);
-  }
+  const codexPrice = (id) => modelRanking(codex, id).profile?.pricing ?? null;
+  assert.deepEqual(codexPrice('gpt-6.1-sol'), {
+    inputUsdPerMillion: 2, cacheWriteUsdPerMillion: 2.5, cacheReadUsdPerMillion: 0.1, outputUsdPerMillion: 10,
+  });
+  assert.equal(codexPrice('gpt-6-astra').outputUsdPerMillion, 50);
+  assert.equal(codexPrice('gpt-6-sol').cacheReadUsdPerMillion, 0.2);
+  assert.equal(codexPrice('gpt-6-luna').inputUsdPerMillion, 0.1);
+  assert.equal(codexPrice('gpt-6.2-sol'), null, 'a new version gets no price');
 });
 
 test('provider validate accepts family rules and refuses a price or benchmark on one', () => {
@@ -173,6 +180,13 @@ test('provider validate accepts family rules and refuses a price or benchmark on
     assert.match(errors, /modelFamilies\[1\]\.match:/);
     assert.match(errors, /modelFamilies\[1\]\.tier: must be high, medium, low/);
     assert.match(errors, /modelFamilies\[1\]\.benchmark: belongs on an exact modelProfiles row/);
+
+    writeFileSync(join(dir, 'connector.json'), JSON.stringify({ ...pool([
+      { family: 'pro', match: '-pro$', tier: 'high', qualityRank: 3 },
+    ]), priceBand: 'yes' }));
+    const band = validateProvider(home, dir, loader);
+    assert.equal(band.ok, false);
+    assert.match(band.pools[0].errors.join('\n'), /priceBand: must be true or false/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

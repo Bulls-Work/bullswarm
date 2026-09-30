@@ -605,6 +605,33 @@ test('a v3 revision that changes only gates or loops is refused, never applied a
   assert.deepEqual(planV2Revision(state, dropped).issues, [V3_REVISE_REFUSED], 'a request without control would drop the gates and loops');
 });
 
+test('step rerun --avoid on a v3 run may change only the rerun step\'s pools route', () => {
+  const state = acceptedV3State();
+  const at = '2026-09-28T08:00:00.000Z';
+  const step = state.actions.find((action) => action.id === 'search-a');
+  Object.assign(step, { status: 'failed', attempts: 1, startedAt: at, finishedAt: at });
+  state.attempts.push({
+    id: 'search-a-1', actionId: 'search-a', ordinal: 1, status: 'failed', pool: 'acme-pool', model: 'acme-model',
+    startedAt: at, finishedAt: at, taskFile: '/tmp/task.md', outputFile: '/tmp/out.md', failureKind: 'failed-evidence', why: null, usage: null,
+  });
+  validateV2DurableState(state);
+  const avoiding = (id, change) => {
+    const request = structuredClone({ ...exportV2Plan(state), rerun: ['search-a'] });
+    const action = request.program.actions.find((entry) => entry.id === id);
+    change(action);
+    return request;
+  };
+  const avoid = (action) => { action.route = { ...(action.route ?? {}), pools: { avoid: ['acme-pool'] } }; };
+  // What `step rerun --avoid` sends: accepted, and the route is stored.
+  const ok = planV2Revision(state, { ...avoiding('search-a', avoid), avoidRoute: ['search-a'] });
+  assert.equal(ok.ok, true, JSON.stringify(ok.issues));
+  // The same edit without avoidRoute, on another step, or beyond the route, is refused.
+  assert.deepEqual(planV2Revision(state, avoiding('search-a', avoid)).issues, [V3_REVISE_REFUSED]);
+  assert.deepEqual(planV2Revision(state, { ...avoiding('search-b', avoid), avoidRoute: ['search-a'] }).issues, [V3_REVISE_REFUSED]);
+  const reprompted = avoiding('search-a', (action) => { avoid(action); action.prompt = 'something else'; });
+  assert.deepEqual(planV2Revision(state, { ...reprompted, avoidRoute: ['search-a'] }).issues, [V3_REVISE_REFUSED]);
+});
+
 test('an answer above the size cap is refused: nothing large is stored on the attempt, the step or the result', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-answer-cap-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

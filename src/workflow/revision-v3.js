@@ -40,12 +40,24 @@ function requestedControl(program, runtime) {
   try { return storedProgramV3(program, runtime).control; } catch { return null; }
 }
 
+// A step's pools route with the pool lists left out: `step rerun --avoid`
+// may change them on the step it reruns, and nothing else.
+function withoutPoolRoute(action) {
+  if (!action?.route?.pools) return action;
+  const { pools, ...route } = action.route;
+  const copy = { ...action, route };
+  if (!Object.keys(route).length) delete copy.route;
+  return copy;
+}
+
 /**
  * The revised steps of a v3 run, checked by the v3 validator, or `issues`.
  * Any step added, changed or removed is refused, and so is any change to the
- * run's gates and loops (a request that drops or edits one).
+ * run's gates and loops (a request that drops or edits one). The one change
+ * allowed is the pools route of a step named in `avoidRoute`, which only
+ * `step rerun --avoid` sends.
  */
-export function desiredActionsV3(state, program, runtime) {
+export function desiredActionsV3(state, program, runtime, { avoidRoute = [] } = {}) {
   const control = state.program.control ?? { gates: [], loops: [] };
   let desired;
   try {
@@ -54,7 +66,11 @@ export function desiredActionsV3(state, program, runtime) {
     return { issues: Array.isArray(error?.issues) ? error.issues : [error.message] };
   }
   const stored = state.program.actions;
-  const sameSteps = desired.length === stored.length && desired.every((action, index) => same(action, stored[index]));
+  const rerouted = new Set(avoidRoute);
+  const sameStep = (action, index) => (rerouted.has(action.id) && action.id === stored[index].id
+    ? same(withoutPoolRoute(action), withoutPoolRoute(stored[index]))
+    : same(action, stored[index]));
+  const sameSteps = desired.length === stored.length && desired.every(sameStep);
   return sameSteps && same(requestedControl(program, runtime), control) ? { desired } : { issues: [V3_REVISE_REFUSED] };
 }
 

@@ -399,6 +399,10 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
     }
   }
 
+  if (pool.priceBand !== undefined && typeof pool.priceBand !== 'boolean') {
+    errors.push('priceBand: must be true or false');
+  }
+
   const reasoning = pool.reasoning;
   if (reasoning !== undefined) {
     if ((reasoning?.flag === undefined) === (reasoning?.args === undefined)) {

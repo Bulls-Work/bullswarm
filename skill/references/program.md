@@ -40,6 +40,7 @@ Steps, gates and loops share one id space: an id is kebab-case and used once.
 | `lane` | no | `analyze` (reads; the default), `build` (changes files), `chore` (mechanical changes) |
 | `effort` | no | `high`, `medium`, `low`; default by lane: analyze medium, build medium, chore low; a chore step must be low |
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, or `default` (pass nothing); how hard the picked model thinks |
+| `model` | no | an exact model id; the step runs on that model, only on pools that list it (see Routing) |
 | `route` | no | `{pools: {use, avoid}, providers: {use, avoid}, independentOf: [step ids]}`: a hard filter applied before quota pacing |
 | `answer` | no | a JSON schema; see "Answers" |
 | `evidence` | no | up to 5 checks Bullswarm runs after the worker; see "Evidence" |
@@ -188,7 +189,13 @@ not counted as proven), and `finished · unproven` when it has neither.
 ## Routing and independence
 
 `lane` and `effort` choose the model tier; routing picks the pool with the most
-quota to spare among the pools that can run it. `route` narrows that first:
+quota to spare among the pools that can run it. A step that needs one exact
+model names it in `model`: only pools whose model discovery (`strategy
+refresh`) lists it stay eligible, quota still picks among them, and no other
+model is substituted. Validate refuses a model no enabled pool can run, and a
+step whose model has no free pool at its pick comes back to you. Use it only
+when the step needs that model; `effort` and `reasoning` cover the usual case
+and leave routing more pools to pace across. `route` narrows that first:
 `pools.use`/`pools.avoid` name pool ids, `providers.use`/`providers.avoid` name
 providers (claude-code, codex, grok, …), and `independentOf` names steps this
 step depends on (directly or through others) whose providers it must not use.

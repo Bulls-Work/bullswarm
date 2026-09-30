@@ -278,7 +278,7 @@ test('apply leaves a pin the user set alone, even once a refresh copies it into 
       allowedModels: selectedModelsForTier(saved, 'command-code', 'high'),
     }).model, 'gpt-5.6-sol');
     const shown = await runStrategy(['show'], f.dir);
-    assert.match(shown.out, /^ {2}high: \S+ \(best now\)$/m);
+    assert.match(shown.out, /^ {2}high: \S+.*\(best now\)/m);
     assert.match(shown.out, /^ {4}pinned to command-code\/gpt-5\.6-sol by you · high dispatches go there while it is available · strategy clear-assignment high removes it$/m);
     assert.match(shown.out, /medium: \S+.*\(best now; routing picks by spare quota\)/);
   } finally { f.cleanup(); }
@@ -622,8 +622,10 @@ test('strategy show and the setup screens name an unranked model instead of drop
 
 const CODEX_SIX = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'];
 
-async function codexFallbackReport(dir, ids = CODEX_SIX) {
-  const codex = loadConnectors(dir, { packaged: true }).codex;
+// These reports pin the generation fallback, so Codex's price band is off;
+// codexBandReport below keeps it on.
+async function codexFallbackReport(dir, ids = CODEX_SIX, { priceBand = false } = {}) {
+  const codex = { ...loadConnectors(dir, { packaged: true }).codex, priceBand };
   const discovery = await discoverConnectorModels(codex, {
     provider: { module: { discoverModels: async () => ({
       models: ids.map((id) => ({ id, reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] })),
@@ -671,6 +673,23 @@ test('apply writes the fallback reasoning into the codex medium rung, as set-run
   } finally { f.cleanup(); }
 });
 
+test('apply writes the price band\'s tier reasoning into the codex high and medium rungs', async () => {
+  const f = fixture();
+  try {
+    const report = await codexFallbackReport(f.dir, ['gpt-6.1-sol', ...CODEX_SIX], { priceBand: true });
+    const result = applyStrategyRecommendations(f.dir, report);
+    assert.deepEqual(result.rungs.codex, { high: 'gpt-6.1-sol', medium: 'gpt-6.1-sol', low: 'gpt-6-luna' });
+    assert.deepEqual(result.reasoning.written.map((entry) => [entry.tier, entry.level, entry.model]), [
+      ['high', 'high', 'gpt-6.1-sol'],
+      ['medium', 'medium', 'gpt-6.1-sol'],
+    ]);
+    const rows = (await rungRows(f.dir, { pool: 'codex' })).map((row) => [row.tier, row.model, row.reasoning.applied]);
+    assert.deepEqual(rows, [['high', 'gpt-6.1-sol', 'high'], ['medium', 'gpt-6.1-sol', 'medium'], ['low', 'gpt-6-luna', 'low']]);
+    const shown = await runStrategy(['show'], f.dir);
+    assert.match(shown.out, /medium: codex\/gpt-6\.1-sol · medium reasoning \(best now; routing picks by spare quota\) — gpt-6\.1-sol costs no more than gpt-5\.6-terra did on medium \(API \$12 vs \$14 per million tokens in \+ out\)/);
+  } finally { f.cleanup(); }
+});
+
 test('an explicit reasoning setting survives strategy apply', async () => {
   const f = fixture();
   try {
@@ -707,10 +726,11 @@ test('the setup review screen shows the fallback model, its reasoning, and why',
 // --- Grok's one model line, applied ---------------------------------------------
 
 const GROK_LISTED = 'Available models:\n  * grok-4.7 (default)\n  - grok-4.7-build-fast\n  - grok-4.6\n  - grok-4.5\n';
-const GROK_WHY = 'one Grok line, lighter reasoning for lighter tiers';
+const GROK_WHY = 'one Grok line, at each tier\'s own reasoning';
 
 async function grokAndCodexReport(dir) {
-  const { codex, grok } = loadConnectors(dir, { packaged: true });
+  const { grok } = loadConnectors(dir, { packaged: true });
+  const codex = { ...loadConnectors(dir, { packaged: true }).codex, priceBand: false };
   const pool = (connector) => ({
     name: connector.name, connector, enabled: true, pace: 0, costRank: connector.costRank,
     lanes: connector.lanes, capabilities: connector.capabilities,
@@ -726,7 +746,7 @@ async function grokAndCodexReport(dir) {
   });
 }
 
-test('apply gives every grok rung grok-4.7, with medium and low at the tier\'s lighter reasoning', async () => {
+test('apply gives every grok rung grok-4.7, each tier at its own reasoning', async () => {
   const f = fixture();
   try {
     // Enable grok explicitly, as fixture() does for codex: setup only enables
@@ -738,21 +758,21 @@ test('apply gives every grok rung grok-4.7, with medium and low at the tier\'s l
     const result = applyStrategyRecommendations(f.dir, await grokAndCodexReport(f.dir));
     assert.deepEqual(result.rungs.grok, { high: 'grok-4.7', medium: 'grok-4.7', low: 'grok-4.7' });
     assert.deepEqual(result.reasoning.written.filter((entry) => entry.pool === 'grok'), [
-      { pool: 'grok', tier: 'medium', level: 'high', model: 'grok-4.7', why: GROK_WHY },
-      { pool: 'grok', tier: 'low', level: 'medium', model: 'grok-4.7', why: GROK_WHY },
+      { pool: 'grok', tier: 'medium', level: 'medium', model: 'grok-4.7', why: GROK_WHY },
+      { pool: 'grok', tier: 'low', level: 'low', model: 'grok-4.7', why: GROK_WHY },
     ]);
     assert.deepEqual(loadState(f.dir).strategy.assignments, {});
     const rows = (await rungRows(f.dir, { pool: 'grok' })).map((row) => [row.tier, row.model, row.reasoning.applied, row.reasoning.source]);
     assert.deepEqual(rows, [
-      ['high', 'grok-4.7', 'xhigh', 'connector'],
-      ['medium', 'grok-4.7', 'high', 'recommendation'],
-      ['low', 'grok-4.7', 'medium', 'recommendation'],
+      ['high', 'grok-4.7', 'high', 'connector'],
+      ['medium', 'grok-4.7', 'medium', 'recommendation'],
+      ['low', 'grok-4.7', 'low', 'recommendation'],
     ]);
     // Best now stays with Codex; Grok's own rung is named under each tier.
     const shown = await runStrategy(['show'], f.dir);
     assert.match(shown.out, /medium: codex\/gpt-6-luna · max reasoning \(best now; routing picks by spare quota\)/);
-    assert.match(shown.out, /^ {4}grok rung: grok-4\.7 · high reasoning — one Grok line, lighter reasoning for lighter tiers$/m);
-    assert.match(shown.out, /^ {4}grok rung: grok-4\.7 · medium reasoning — one Grok line, lighter reasoning for lighter tiers$/m);
+    assert.match(shown.out, /^ {4}grok rung: grok-4\.7 · medium reasoning — one Grok line, at each tier's own reasoning$/m);
+    assert.match(shown.out, /^ {4}grok rung: grok-4\.7 · low reasoning — one Grok line, at each tier's own reasoning$/m);
     assert.doesNotMatch(shown.out, /build-fast/);
     assert.doesNotMatch(shown.out, /^unranked:/m);
   } finally { f.cleanup(); }

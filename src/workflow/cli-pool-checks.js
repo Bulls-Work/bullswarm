@@ -9,6 +9,7 @@ import { routeIssuesForPools } from './step-route.js';
 import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadPoolLabels } from '../lib/pool-labels.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
+import { poolCanRunModel } from '../lib/model-pin.js';
 
 // A pinned pool with no model on a step's tier fails that step within a second
 // as "no eligible pool". Say so before anything launches. A spent meter window
@@ -26,6 +27,32 @@ export function pinnedPoolIssues(doc, program, pools) {
     if (!capable.length) {
       issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
     }
+  });
+  return issues;
+}
+
+// A step's model (or the run's --worker-model) that no enabled pool can run
+// would fail at its pick. Say so before anything launches, with each pool's
+// reason. Meters are not read: a spent window resets.
+export function programNamesModel(actions, doc = null) {
+  const routing = doc?.config?.workerRouting ?? {};
+  return Boolean(routing.model ?? routing.preferredModel)
+    || (actions ?? []).some((action) => typeof action?.model === 'string');
+}
+
+export function modelPoolIssues(actions, pools, doc = null) {
+  if (!Array.isArray(pools)) return [];
+  const routing = doc?.config?.workerRouting ?? {};
+  const runModel = routing.model ?? routing.preferredModel ?? null;
+  const enabled = pools.filter((pool) => pool.enabled !== false);
+  const issues = [];
+  (actions ?? []).forEach((action, index) => {
+    const model = action?.model ?? runModel;
+    if (typeof model !== 'string' || !model) return;
+    const checks = enabled.map((pool) => ({ pool: pool.name, ...poolCanRunModel(pool, model) }));
+    if (checks.some((check) => check.ok)) return;
+    const why = checks.map((check) => check.reason).join('; ') || 'no pool is enabled';
+    issues.push(`steps[${index}] (${action.id}) asks for model ${model}, which no enabled pool can run: ${why}`);
   });
   return issues;
 }

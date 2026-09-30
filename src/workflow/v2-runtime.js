@@ -530,7 +530,8 @@ async function runV2Kernel({
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`) }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
       preferredPool: restart?.pool ?? state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
-      preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
+      // The step's own model outranks the run-wide pin.
+      preferredModel: action.model ?? state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
       strictPool: restart?.pool ?? state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
       // The program author's per-action override outranks the run-wide level.
       reasoningOverride: action.reasoning ?? null,

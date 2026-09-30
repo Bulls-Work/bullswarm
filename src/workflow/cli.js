@@ -12,7 +12,7 @@ import { resolvePoolId } from '../lib/pool-labels.js';
 import { workflowHelpPath, parseFlags, flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, legacyRunRefusal, legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
 import { isLegacyRunDir, resolveRunId } from './short-id.js';
-import { programRoutes, routePoolIssues, configuredPools } from './cli-pool-checks.js';
+import { modelPoolIssues, programNamesModel, programRoutes, routePoolIssues, configuredPools } from './cli-pool-checks.js';
 import { launchDetachedResume } from './cli-launch.js';
 import { wfPlan } from './cli-plan.js';
 import { wfGoal } from './cli-goal.js';
@@ -133,7 +133,10 @@ export async function cmdWorkflow(args, {
     case 'continue':
       return wfContinue(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume });
     case 'add':
-      return wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => (programRoutes(actions) ? routePoolIssues(actions, configuredPools(), doc, undefined, state, { recordedWork: true }) : []) });
+      return wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => [
+        ...(programRoutes(actions) ? routePoolIssues(actions, configuredPools(), doc, undefined, state, { recordedWork: true }) : []),
+        ...(programNamesModel(actions) ? modelPoolIssues(actions, configuredPools(), doc) : []),
+      ] });
     case 'wait':
       return wfWait(opts, { bullswarmDir, helpText, flagErrors });
     default: {
