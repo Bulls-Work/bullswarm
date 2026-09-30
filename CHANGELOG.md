@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.0 — The removals release: v3 only, saved runs view-only, less code
+
 - removed: the mechanisms program v3 replaced (0.37.0) no longer run. The
   preflight scout (`--scout`, `--no-scout`), the dispatched Workflow Planner
   (`--orchestrator`, `--orchestrator-model`, `--orchestrator-strict`,
