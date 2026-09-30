@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.3 — Blind reviews and a reorganized skill
+
 - steps: a v3 step may declare `"blindTo": ["<step id>", ...]`, naming steps
   that run before it (directly or through others). Its task still lists each
   named dependency, but without that step's output file or checked answer,
