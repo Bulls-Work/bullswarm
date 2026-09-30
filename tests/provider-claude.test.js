@@ -72,6 +72,34 @@ const CLAUDE_DISCOVERY_OUTPUT = `${JSON.stringify({
   },
 })}\n`;
 
+// Claude Code 2.1.285 names an alias row's model in displayName and keeps
+// the description for a tagline; only `default` still names it there.
+const CLAUDE_DISPLAY_NAME_OUTPUT = `${JSON.stringify({
+  type: 'control_response',
+  response: {
+    subtype: 'success',
+    request_id: 'bullswarm-model-discovery',
+    response: { models: [
+      { value: 'default', displayName: 'Default (recommended)', description: 'Sonnet 5.5 · Efficient for routine tasks' },
+      { value: 'opus', displayName: 'Opus 5.5', description: 'For complex work and everyday tasks' },
+      { value: 'claude-fable-5-1', displayName: 'Fable 5.1', description: 'For your toughest challenges' },
+      { value: 'sonnet', displayName: 'Sonnet 5.5', description: 'Most efficient for simpler tasks' },
+      { value: 'haiku', displayName: 'Haiku 4.5', description: 'Fastest for quick answers' },
+      { value: 'claude-sonnet-5', displayName: 'Sonnet 5', description: 'Efficient for routine tasks' },
+    ] },
+  },
+})}\n`;
+
+test('Claude discovery reads an alias row\'s model from its display name', () => {
+  assert.deepEqual(parseClaudeModelDiscovery(CLAUDE_DISPLAY_NAME_OUTPUT).map((model) => [model.id, model.alias, model.idSource]), [
+    ['claude-sonnet-5-5', 'default', 'description-inferred'],
+    ['claude-opus-5-5', 'opus', 'display-name-inferred'],
+    ['claude-fable-5-1', null, 'cli'],
+    ['claude-haiku-4-5', 'haiku', 'display-name-inferred'],
+    ['claude-sonnet-5', null, 'cli'],
+  ]);
+});
+
 test('Claude initialize discovery maps aliases, preserves 1M selectors, and sends no prompt', async () => {
   assert.deepEqual(parseClaudeModelDiscovery(CLAUDE_DISCOVERY_OUTPUT).map((model) => [model.id, model.idSource]), [
     ['claude-opus-5-5', 'description-inferred'],

@@ -120,6 +120,8 @@ export function createRevisionRequest(body, { source = 'cli', now = () => new Da
     ...(Array.isArray(body.accept) && body.accept.length ? { accept: clone(body.accept) } : {}),
     // `workflow add` (v3): an append-only revision.
     ...(body.append === true ? { append: true } : {}),
+    // `step rerun --avoid` (v3): the one step whose pools route may change.
+    ...(Array.isArray(body.avoidRoute) && body.avoidRoute.length ? { avoidRoute: [...body.avoidRoute] } : {}),
   };
 }
 
@@ -335,7 +337,9 @@ export function planV2Revision(state, request, { pendingSteeringIds = [], featur
   } else if (isV3Revision(state)) {
     const v3 = request.append === true
       ? appendedActionsV3(state, request.program, v2LiveProgramRuntime(state))
-      : desiredActionsV3(state, request.program, v2LiveProgramRuntime(state));
+      : desiredActionsV3(state, request.program, v2LiveProgramRuntime(state), {
+        avoidRoute: Array.isArray(request.avoidRoute) ? request.avoidRoute : [],
+      });
     if (v3.issues) issues.push(...v3.issues);
     else desired = v3.desired;
     if (request.append === true && !v3.issues) appended = v3;

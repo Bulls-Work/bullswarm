@@ -232,6 +232,8 @@
       "low": { "reasoning": "medium", "why": "optional plain reason shown with the suggestion" }
     }
   },
+  "$comment-priceBand": "Optional. true keeps each tier within its price one generation back: the tier takes the best-ranked newest-generation model whose dated API price (modelProfiles pricing, input + output) is no more than that of the model that served the tier in the generation before, at reasoning.defaults for the tier, and never one ranked below that model. With either price unknown, the family order and generationFallback decide.",
+  "priceBand": false,
   "modelProfiles": [
     {
       "match": "connector-owned regex",

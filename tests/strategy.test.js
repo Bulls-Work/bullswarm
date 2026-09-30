@@ -447,11 +447,15 @@ const CODEX_IDS = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt
 
 // Fixture benchmark numbers, not real results: they only make the 5.x models
 // look strongly benchmarked while the gpt-6 models have none.
+// The gpt-6 price rows are removed too, so these tests keep pinning the
+// family order against priced older models (the price band needs prices).
 function codexWithBenchmarkedFiveSix() {
   const codex = packagedConnector('codex');
-  codex.modelProfiles = codex.modelProfiles.map((row) => (row.match.includes('5\\.6')
-    ? { ...row, benchmark: { name: 'fixture', score: 99, source: 'fixture', updatedAt: '2026-09-01' } }
-    : row));
+  codex.modelProfiles = codex.modelProfiles
+    .filter((row) => !row.match.startsWith('^gpt-6'))
+    .map((row) => (row.match.includes('5\\.6')
+      ? { ...row, benchmark: { name: 'fixture', score: 99, source: 'fixture', updatedAt: '2026-09-01' } }
+      : row));
   return codex;
 }
 
@@ -611,6 +615,12 @@ test('an unknown model is reported as unranked and never recommended', async () 
 });
 
 // --- newest-generation fallback ----------------------------------------------
+// These tests pin the generation fallback itself, so they run the Codex
+// connector with its price band off; the band's own tests follow them.
+function familyOrderCodex() {
+  return { ...packagedConnector('codex'), priceBand: false };
+}
+
 // Owner decision: when the family serving medium has no model in the newest
 // generation, medium runs the next-lower family's newest model at deeper
 // reasoning. The real Codex connector opts medium in; high and low do not.
@@ -628,7 +638,7 @@ async function discoverWithLevels(connector, ids, levels = () => SIX_LEVELS) {
 }
 
 function codexReport(discovery, extra = {}) {
-  const codex = extra.connector ?? packagedConnector('codex');
+  const codex = extra.connector ?? familyOrderCodex();
   return buildStrategy({
     connectors: { codex }, pools: [poolFor(codex)], state: extra.state ?? {},
     discoveries: { codex: discovery },
@@ -636,7 +646,7 @@ function codexReport(discovery, extra = {}) {
 }
 
 test('Codex medium suggests gpt-6-luna at max reasoning while there is no gpt-6 terra', async () => {
-  const report = codexReport(await discoverWithLevels(packagedConnector('codex'), CODEX_IDS));
+  const report = codexReport(await discoverWithLevels(familyOrderCodex(), CODEX_IDS));
   const why = 'no gpt-6 terra yet, newest generation preferred';
   assert.deepEqual(report.providerSuggestions.codex.medium.recommended,
     { model: 'gpt-6-luna', reasoning: 'max', why });
@@ -657,7 +667,7 @@ test('Codex medium suggests gpt-6-luna at max reasoning while there is no gpt-6 
 });
 
 test('Codex medium returns to terra at the normal medium reasoning once a gpt-6 terra is discovered', async () => {
-  const codex = packagedConnector('codex');
+  const codex = familyOrderCodex();
   const report = codexReport(await discoverWithLevels(codex, [...CODEX_IDS, 'gpt-6-terra']));
   assert.deepEqual(report.providerSuggestions.codex.medium.recommended, { model: 'gpt-6-terra' });
   assert.deepEqual(report.suggestions.medium.recommended, { pool: 'codex', model: 'gpt-6-terra' });
@@ -670,7 +680,7 @@ test('Codex medium returns to terra at the normal medium reasoning once a gpt-6 
 });
 
 test('the fallback level clamps to the reasoning levels the model reports', async () => {
-  const codex = packagedConnector('codex');
+  const codex = familyOrderCodex();
   const suggested = async (levels) => codexReport(await discoverWithLevels(codex, CODEX_IDS,
     (id) => (id === 'gpt-6-luna' ? levels : SIX_LEVELS))).providerSuggestions.codex.medium;
   // Capped at max: `ultra` is never suggested.
@@ -686,7 +696,7 @@ test('the fallback level clamps to the reasoning levels the model reports', asyn
 });
 
 test('the fallback steps aside for a disabled model and needs a lower family in the newest generation', async () => {
-  const codex = packagedConnector('codex');
+  const codex = familyOrderCodex();
   const discovery = await discoverWithLevels(codex, CODEX_IDS);
   // The operator turned gpt-6-luna off for codex: no newest-generation luna.
   const disabled = codexReport(discovery, { state: { strategy: { disabledModels: { codex: ['gpt-6-luna'] } } } });
@@ -701,7 +711,7 @@ test('the fallback steps aside for a disabled model and needs a lower family in 
 });
 
 test('with the stale terra disabled, the stand-in keeps terra\'s standing across pools', async () => {
-  const codex = packagedConnector('codex');
+  const codex = familyOrderCodex();
   const claude = packagedConnector('claude-code');
   const report = buildStrategy({
     connectors: { codex, 'claude-code': claude },
@@ -725,7 +735,7 @@ test('with the stale terra disabled, the stand-in keeps terra\'s standing across
 });
 
 test('a tier is never pinned to a model the operator disabled for that pool', async () => {
-  const codex = packagedConnector('codex');
+  const codex = familyOrderCodex();
   const report = codexReport(await discoverWithLevels(codex, CODEX_IDS), {
     state: { strategy: { disabledModels: { codex: ['gpt-6-astra'] } } },
   });
@@ -753,7 +763,7 @@ test('Claude tiers are unchanged: Sonnet 5 is in the newest generation, so mediu
 });
 
 test('a Codex fallback keeps terra\'s standing against other pools on medium', async () => {
-  const codex = packagedConnector('codex');
+  const codex = familyOrderCodex();
   const claude = packagedConnector('claude-code');
   const report = buildStrategy({
     connectors: { codex, 'claude-code': claude },
@@ -768,6 +778,67 @@ test('a Codex fallback keeps terra\'s standing against other pools on medium', a
   // the stale terra right behind it and Claude after both.
   assert.deepEqual(report.suggestions.medium.candidates.map((c) => `${c.pool}/${c.model}`),
     ['codex/gpt-6-luna', 'codex/gpt-5.6-terra', 'claude-code/claude-sonnet-5']);
+});
+
+// --- price band ------------------------------------------------------------------
+// Owner decision (2026-09-30): a tier stays within what it cost one generation
+// back. gpt-6.1-sol costs $2 in / $10 out, less than gpt-5.6-sol ($4 / $20) did
+// on high and gpt-5.6-terra ($2 / $12) did on medium, so both tiers run it at
+// their normal reasoning; gpt-6-astra ($10 / $50) is above both.
+
+const BAND_IDS = ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', ...CODEX_IDS.filter((id) => id.startsWith('gpt-5'))];
+
+test('Codex high and medium run gpt-6.1-sol inside their price band, low keeps gpt-6-luna', async () => {
+  const codex = packagedConnector('codex');
+  const report = codexReport(await discoverWithLevels(codex, BAND_IDS), { connector: codex });
+  const provider = report.providerSuggestions.codex;
+  assert.deepEqual(provider.high.recommended, { model: 'gpt-6.1-sol', reasoning: 'high',
+    why: 'gpt-6.1-sol costs no more than gpt-5.6-sol did on high (API $12 vs $24 per million tokens in + out)' });
+  assert.deepEqual(provider.medium.recommended, { model: 'gpt-6.1-sol', reasoning: 'medium',
+    why: 'gpt-6.1-sol costs no more than gpt-5.6-terra did on medium (API $12 vs $14 per million tokens in + out)' });
+  assert.deepEqual(provider.low.recommended, { model: 'gpt-6-luna' });
+  assert.deepEqual(report.suggestions.high.recommended.model, 'gpt-6.1-sol');
+  // The pick is listed once, above the model whose standing it took.
+  const high = provider.high.candidates.map((c) => c.model);
+  assert.deepEqual(high.slice(0, 2), ['gpt-6.1-sol', 'gpt-6-astra']);
+  assert.equal(high.filter((id) => id === 'gpt-6.1-sol').length, 1);
+  assert.deepEqual(provider.high.candidates[0].priceBand, {
+    generation: 6, reference: 'gpt-5.6-sol', price: 12, band: 24, replaces: 'gpt-6-astra',
+    reasoning: 'high', reasoningClamped: false,
+    reason: provider.high.recommended.why,
+  });
+  // No generation fallback is needed on medium once the band found a model.
+  assert.equal(provider.medium.candidates.some((c) => c.fallback), false);
+  assert.match(report.caveats.join(' '), /priceBand/);
+});
+
+test('the price band decides nothing without prices, and never picks below the tier\'s old rank', async () => {
+  const codex = packagedConnector('codex');
+  // No gpt-6 price rows: the family order and the generation fallback decide.
+  const unpriced = { ...codex, modelProfiles: codex.modelProfiles.filter((row) => !row.match.startsWith('^gpt-6')) };
+  const plain = codexReport(await discoverWithLevels(unpriced, BAND_IDS), { connector: unpriced });
+  assert.deepEqual(plain.providerSuggestions.codex.high.recommended, { model: 'gpt-6-astra' });
+  assert.equal(plain.providerSuggestions.codex.medium.recommended.model, 'gpt-6-luna');
+  assert.equal(plain.providerSuggestions.codex.medium.recommended.reasoning, 'max');
+  // Only gpt-6-luna fits medium's band, and it ranks below terra: the
+  // generation fallback takes over, as before.
+  const lunaOnly = codexReport(await discoverWithLevels(codex, BAND_IDS), {
+    connector: codex,
+    state: { strategy: { disabledModels: { codex: ['gpt-6.1-sol', 'gpt-6-sol'] } } },
+  });
+  assert.equal(lunaOnly.providerSuggestions.codex.medium.recommended.reasoning, 'max');
+  assert.equal(lunaOnly.providerSuggestions.codex.medium.candidates[0].fallback.family, 'luna');
+});
+
+test('a reference model the operator disabled still sets its tier\'s band', async () => {
+  const codex = packagedConnector('codex');
+  const report = codexReport(await discoverWithLevels(codex, BAND_IDS), {
+    connector: codex,
+    state: { strategy: { disabledModels: { codex: ['gpt-5.6-terra'] } } },
+  });
+  const medium = report.providerSuggestions.codex.medium;
+  assert.equal(medium.recommended.model, 'gpt-6.1-sol');
+  assert.equal(medium.candidates[0].priceBand.reference, 'gpt-5.6-terra');
 });
 
 // --- Grok: one model line -------------------------------------------------------
@@ -889,7 +960,7 @@ test('Codex and Claude suggestions are unchanged with Grok alongside', async () 
   for (const tier of STRATEGY_TIERS) {
     assert.deepEqual(after.suggestions[tier].recommended, before.suggestions[tier].recommended, tier);
   }
-  assert.deepEqual(after.suggestions.medium.recommended, { pool: 'codex', model: 'gpt-6-luna', reasoning: 'max', why: 'no gpt-6 terra yet, newest generation preferred' });
+  assert.deepEqual(after.suggestions.medium.recommended, { pool: 'codex', model: 'gpt-6-sol', reasoning: 'medium', why: 'gpt-6-sol costs no more than gpt-5.6-terra did on medium (API $12 vs $14 per million tokens in + out)' });
   const grokMedium = after.suggestions.medium.candidates.find((c) => c.pool === 'grok');
   assert.deepEqual([grokMedium.model, grokMedium.fallback.reasoning], ['grok-4.7', 'high']);
   assert.equal(after.suggestions.medium.candidates.at(-1).pool, 'grok');

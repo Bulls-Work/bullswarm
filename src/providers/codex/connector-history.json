@@ -192,20 +192,25 @@
         "2576ee1967877ff4",
         "2e9708c22e73f191",
         "5128cebd18628c04",
-        "9cfcce15352e3c0f"
+        "9cfcce15352e3c0f",
+        "f17027bb9f929ac2"
       ],
       "items": [
         "0348c4b4486bcdc5",
         "1357b704df01f058",
         "1c078ef3f3fe1617",
+        "1f2da31f47c91e40",
         "21e3929ad17fad08",
+        "3027c0f623fe2904",
         "4646e93fd819f0a3",
         "49cfe207e2230007",
         "589647a6dfab0984",
         "8d06941331c10f6c",
         "b5a0ad4c8bbf056e",
+        "c01f0775c3fc1f0d",
         "c2556baf85b11632",
         "d0d009eed9683a76",
+        "d597302777542229",
         "d9bf102e294351b4",
         "ef0eb96b63936f14",
         "f70e317b4d99813a"
@@ -241,6 +246,12 @@
           "9fa22c25356d5e60"
         ]
       }
+    },
+    "priceBand": {
+      "absent": true,
+      "values": [
+        "b5bea41b6c623f7c"
+      ]
     },
     "quotaSignatures": {
       "absent": true,

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- strategy: a connector can opt into a price band (`priceBand: true`; Codex
+  does). Each tier then takes the best newest-generation model whose dated
+  API price is no more than what served that tier one generation back, at the
+  tier's normal reasoning. Codex now suggests gpt-6.1-sol for high (at high
+  reasoning) and medium (at medium), since it costs less than gpt-5.6-sol and
+  gpt-5.6-terra did; gpt-6-astra costs more than either. Without prices the
+  family order decides, as before.
+- codex: dated API prices for gpt-6-astra, gpt-6.1-sol, gpt-6-sol and
+  gpt-6-luna, with cache writes at 1.25x input as OpenAI's caching guide
+  states.
+- claude: model discovery reads an alias row's model from its display name
+  ("Opus 5.5"), as current Claude Code CLIs send it. Before, Opus 5.5, Sonnet
+  5.5 and Haiku 4.5 could go missing, so a tier fell back to an older model or
+  had none.
+- workflow step rerun: `--avoid <pool>` works on a program-v3 run. It was
+  refused as a step change; now the rerun step's pools route is the one
+  change allowed.
+
 ## 0.37.2 — Real-use fixes: goal column, v3 result, routed note
 
 - workflow runs: a goal that starts with a labelled folder ("Repo: <path>

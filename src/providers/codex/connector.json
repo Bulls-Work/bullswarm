@@ -307,8 +307,34 @@
       "medium": { "reasoning": "max" }
     }
   },
-  "$comment-modelProfiles": "Exact rows: dated prices, and gpt-5.3-codex, which belongs to no family. Tier and rank come from modelFamilies unless a row sets them.",
+  "$comment-priceBand": "Each tier takes the best newest-generation model whose dated API price is no more than what served the tier one generation back (src/lib/price-band.js).",
+  "priceBand": true,
+  "$comment-modelProfiles": "Exact rows: dated prices (gpt-6 rates from the API pricing page; cache writes at 1.25x input per the prompt-caching guide for GPT-5.6 and later), and gpt-5.3-codex, which belongs to no family. Tier and rank come from modelFamilies unless a row sets them.",
   "modelProfiles": [
+    {
+      "match": "^gpt-6-astra$",
+      "pricing": { "inputUsdPerMillion": 10, "cacheWriteUsdPerMillion": 12.5, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 },
+      "pricingSource": "https://developers.openai.com/api/docs/pricing",
+      "pricingUpdatedAt": "2026-09-30"
+    },
+    {
+      "match": "^gpt-6\\.1-sol$",
+      "pricing": { "inputUsdPerMillion": 2, "cacheWriteUsdPerMillion": 2.5, "cacheReadUsdPerMillion": 0.1, "outputUsdPerMillion": 10 },
+      "pricingSource": "https://developers.openai.com/api/docs/pricing",
+      "pricingUpdatedAt": "2026-09-30"
+    },
+    {
+      "match": "^gpt-6-sol$",
+      "pricing": { "inputUsdPerMillion": 2, "cacheWriteUsdPerMillion": 2.5, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 10 },
+      "pricingSource": "https://developers.openai.com/api/docs/pricing",
+      "pricingUpdatedAt": "2026-09-30"
+    },
+    {
+      "match": "^gpt-6-luna$",
+      "pricing": { "inputUsdPerMillion": 0.1, "cacheWriteUsdPerMillion": 0.125, "cacheReadUsdPerMillion": 0.01, "outputUsdPerMillion": 0.5 },
+      "pricingSource": "https://developers.openai.com/api/docs/pricing",
+      "pricingUpdatedAt": "2026-09-30"
+    },
     {
       "match": "^gpt-5\\.6-sol$",
       "pricing": {
