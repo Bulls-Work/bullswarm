@@ -1795,6 +1795,54 @@ test('the plan-refusal code in the agent\'s reply is not a plan refusal (W7)', a
   }
 });
 
+// A connector with no event stream has the agent's reply on stdout: an
+// error-shaped line in a completed reply is still the reply (review round 2:
+// such a line was recorded as the pool's plan fact).
+test('an error-shaped line in a stdout connector\'s completed reply is not a plan refusal', async () => {
+  const ctx = makeCtx();
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-reply-home-'));
+  try {
+    const reply = 'Done: the ticket is answered.\nError: the ticket quotes MODEL_NOT_IN_PLAN and the notes already explain it.';
+    const quoting = {
+      name: 'fixture-plan',
+      spawn: { cmd: [process.execPath, '-e', `console.log(${JSON.stringify(reply)})`] },
+      modelPlanSignatures: ['MODEL_NOT_IN_PLAN'],
+      outputExtraction: { strategy: 'stdout' },
+    };
+    const v = await watchOnce(quoting, 'Do the work.', ctx.dir, ctx.paths, {
+      timeoutSec: 60, home, poolName: 'fixture-plan', model: 'ok-model',
+    });
+    assert.notEqual(v.failureKind, 'model-not-in-plan', v.why);
+    const { loadState } = await import('../src/lib/state.js');
+    assert.equal(loadState(home).strategy?.planExcludedModels?.['fixture-plan'], undefined);
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a stdout connector\'s plan refusal on stderr is still model-not-in-plan', async () => {
+  const ctx = makeCtx();
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-stderr-home-'));
+  try {
+    const refusing = {
+      name: 'fixture-plan',
+      spawn: { cmd: [process.execPath, '-e', `process.stderr.write(${JSON.stringify(`${PLAN_REFUSAL}\n`)}); process.exit(1)`] },
+      modelPlanSignatures: ['MODEL_NOT_IN_PLAN'],
+      outputExtraction: { strategy: 'stdout' },
+    };
+    const v = await watchOnce(refusing, 'Do the work.', ctx.dir, ctx.paths, {
+      timeoutSec: 60, home, poolName: 'fixture-plan', model: 'ok-model',
+    });
+    assert.equal(v.failureKind, 'model-not-in-plan', v.why);
+    const { loadState } = await import('../src/lib/state.js');
+    assert.equal(loadState(home).strategy.planExcludedModels['fixture-plan'][0].model, 'ok-model');
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('a connector that declares no plan wording keeps the refusal a process failure', async () => {
   const ctx = makeCtx();
   try {

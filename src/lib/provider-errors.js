@@ -35,8 +35,9 @@ export function matchAuthSignature(connector, text) {
 // include that model", doctrine 3), matched on the provider's error channel:
 // the signature that matched, or null. As for auth, the line must read as a
 // provider failure (a provider error event, an error-shaped line, or a line
-// that opens with the signature after an optional HTTP status), because a
-// connector without an event stream has its reply on that channel too.
+// that opens with the signature after an optional HTTP status). The caller
+// passes the plan channel (run-delegate.js): stderr alone for a connector
+// without an event stream, whose stdout is the agent's reply.
 export function matchModelPlanSignature(connector, text) {
   const sigs = (Array.isArray(connector?.modelPlanSignatures) ? connector.modelPlanSignatures : [])
     .filter((s) => typeof s === 'string' && s.trim());

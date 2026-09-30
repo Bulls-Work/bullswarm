@@ -48,7 +48,10 @@
   them off.
 - providers: a connector may list `modelPlanSignatures`, the text its CLI
   prints when the subscription's plan does not include the requested model
-  (Command Code: `MODEL_NOT_IN_PLAN`). A hit is the new failure kind
+  (Command Code: `MODEL_NOT_IN_PLAN`). Only the provider's error output is
+  read: for a connector with no event stream that is stderr alone, so a
+  worker's reply that quotes the code, even on a line starting `Error:`, is
+  still a reply. A hit is the new failure kind
   `model-not-in-plan` (a process failure, labelled `model not in plan`): the
   step's retry goes to another pool, and `state.strategy.planExcludedModels`
   records the model for that pool. The pool keeps running its other models;

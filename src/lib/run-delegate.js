@@ -117,6 +117,10 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerRecords,
       ].filter(Boolean).join('\n');
     };
+    // The channel a plan refusal (`modelPlanSignatures`) is read on. A
+    // connector with no event stream has the agent's reply on stdout, so only
+    // its stderr is the provider's; an event stream keeps the two apart.
+    const planChannelText = () => (eventStreamed ? errorChannelText(true) : stderrCapture.tail(4000).trim());
     const attemptStream = resolveAttemptStream(connector, opts);
     const liveOutFile = opts.outFile ?? null;
     let lastLiveOutput = null;
@@ -307,6 +311,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerFailureAt,
         providerFailureText,
         errorChannel: errorChannelText(true),
+        planChannel: planChannelText(),
         spawnError: true,
         ...(workerNotStarted ? { workerNotStarted: true } : {}),
         ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
@@ -333,6 +338,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerFailureAt,
         providerFailureText,
         errorChannel: errorChannelText(true),
+        planChannel: planChannelText(),
         ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
     });

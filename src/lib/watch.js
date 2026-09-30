@@ -471,10 +471,12 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     : null;
   // The provider refused the model because this pool's plan does not include
   // it (the connector's `modelPlanSignatures`). Not a sign-in and not a limit:
-  // read only when neither of those matched.
+  // read only when neither of those matched, and never on the agent's reply
+  // (a connector with no event stream has it on stdout: `planChannel` is
+  // then stderr alone).
   const modelPlanHit = upstreamAuth || quotaFailure || fatalKind === 'auth'
     ? null
-    : matchModelPlanSignature(connector, errorChannel);
+    : matchModelPlanSignature(connector, obs.planChannel ?? errorChannel);
   // quota.js Q6 — the one rule for when a limit resets: the pool's own meter
   // at >= 95% on a running window, or a provider line that says a usage
   // window is spent AND names its reset. The decision (line, meter reading,
