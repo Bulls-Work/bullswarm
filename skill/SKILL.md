@@ -44,7 +44,7 @@ changes. Use `--task-file` for long text. Options you will use:
   to a file Bullswarm names, and the verdict carries the checked `answer` (a
   mismatch is failure kind `schema`).
 - `--no-retry`: one attempt. Without it the step gets its one automatic retry.
-- `--avoid-pool`, `--use-provider`, `--avoid-provider`: where it may run.
+- `--avoid-pool`, `--use-provider`, `--avoid-provider`, `--model`: routing.
 - `--timeout <seconds>`: kill the worker after that long (`timeout after
   <N>s`, failure kind `interrupted`; the retry still runs).
 

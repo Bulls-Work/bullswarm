@@ -174,6 +174,9 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       strategyModelTiers: state.strategy?.modelTiers ?? {},
       strategyConfiguredTiers: state.strategy?.configuredTiers ?? [],
       strategyDisabledModels: state.strategy?.disabledModels ?? {},
+      // What the last `strategy refresh` found this pool can run (model-pin.js).
+      discoveredModels: (state.strategy?.lastReport?.discoveries?.[name]?.models ?? [])
+        .map((model) => model?.id).filter((id) => typeof id === 'string' && id),
     };
     pools.push(pool);
   }

@@ -42,7 +42,7 @@ test('packaged connectors declare reasoning from their real CLIs', () => {
   assert.deepEqual(claude.reasoning, {
     flag: '--effort',
     levels: ['low', 'medium', 'high', 'xhigh', 'max'],
-    defaults: { high: 'xhigh', medium: 'high', low: 'medium' },
+    defaults: { high: 'high', medium: 'medium', low: 'low' },
     skipModels: ['^claude-haiku-'],
   });
   assert.deepEqual(codex.reasoning, {
@@ -106,15 +106,15 @@ test('each precedence layer wins over the next', () => {
   // Nothing configured: the connector's own default for the effort tier.
   assert.deepEqual(
     resolveReasoningLevel({ connector: claude, tier: 'high' }),
-    { requested: 'xhigh', applied: 'xhigh', source: 'connector', clamped: false },
-  );
-  assert.deepEqual(
-    resolveReasoningLevel({ connector: claude, tier: 'medium' }),
     { requested: 'high', applied: 'high', source: 'connector', clamped: false },
   );
   assert.deepEqual(
-    resolveReasoningLevel({ connector: claude, tier: 'low' }),
+    resolveReasoningLevel({ connector: claude, tier: 'medium' }),
     { requested: 'medium', applied: 'medium', source: 'connector', clamped: false },
+  );
+  assert.deepEqual(
+    resolveReasoningLevel({ connector: claude, tier: 'low' }),
+    { requested: 'low', applied: 'low', source: 'connector', clamped: false },
   );
 });
 
@@ -188,18 +188,18 @@ test('a connector with a reasoning block but no level for the tier passes nothin
 test('a model the connector marks as skipped gets no level', () => {
   assert.deepEqual(
     resolveReasoningLevel({ connector: claude, tier: 'low', model: 'claude-haiku-4-5' }),
-    { requested: 'medium', applied: null, source: 'skipped-model', clamped: false },
+    { requested: 'low', applied: null, source: 'skipped-model', clamped: false },
   );
   // A non-matching model on the same connector is unaffected.
   assert.equal(
     resolveReasoningLevel({ connector: claude, tier: 'high', model: 'claude-opus-5' }).applied,
-    'xhigh',
+    'high',
   );
   // A broken connector regex never blocks a dispatch (RS5).
   assert.equal(resolveReasoningLevel({
     connector: { ...claude, reasoning: { ...claude.reasoning, skipModels: ['([unclosed'] } },
     tier: 'high', model: 'claude-opus-5',
-  }).applied, 'xhigh');
+  }).applied, 'high');
 });
 
 // A connector whose CLI stops at high (the shape codex and command-code had
@@ -266,11 +266,11 @@ test('Codex discovered per-model reasoning levels refine the connector clamp', (
 test('a malformed level at any layer falls through instead of failing the dispatch', () => {
   assert.deepEqual(
     resolveReasoningLevel({ connector: claude, tier: 'high', runOverride: 'ludicrous' }),
-    { requested: 'xhigh', applied: 'xhigh', source: 'connector', clamped: false },
+    { requested: 'high', applied: 'high', source: 'connector', clamped: false },
   );
   assert.deepEqual(
     resolveReasoningLevel({ connector: claude, tier: 'high', strategy: { reasoning: { tiers: { high: 42 } } } }),
-    { requested: 'xhigh', applied: 'xhigh', source: 'connector', clamped: false },
+    { requested: 'high', applied: 'high', source: 'connector', clamped: false },
   );
   // No arguments at all: nothing to resolve, nothing thrown.
   assert.deepEqual(

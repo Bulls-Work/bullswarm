@@ -16,6 +16,16 @@
   ("Opus 5.5"), as current Claude Code CLIs send it. Before, Opus 5.5, Sonnet
   5.5 and Haiku 4.5 could go missing, so a tier fell back to an older model or
   had none.
+- claude, grok: each tier runs at its own reasoning level by default (high on
+  high, medium on medium, low on low), as Codex already did; it was one level
+  higher (xhigh, high, medium). A step's `reasoning` or `--reasoning` still
+  sets any level.
+- model: a v3 step may name an exact `model`, and `bullswarm run` takes
+  `--model`. Only pools whose model discovery lists it stay eligible, spare
+  quota picks among them, and no other model is substituted; validate, goal
+  and `workflow add` refuse a model no enabled pool can run, naming each
+  pool's reason. `--worker-model` now keeps the same promise: a pool that
+  does not list the pinned model is no longer picked for it.
 - workflow step rerun: `--avoid <pool>` works on a program-v3 run. It was
   refused as a step change; now the rerun step's pools route is the one
   change allowed.

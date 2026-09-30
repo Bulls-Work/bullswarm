@@ -17,6 +17,7 @@ import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
 import { resolveRouteFilter, routeUnavailableWhy } from './step-route.js';
+import { poolCanRunModel } from '../lib/model-pin.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
 
 /**
@@ -25,7 +26,12 @@ import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart 
  * spent first, then the route, then a missing tier model.
  */
 function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, routerWhy }) {
-  const capable = prepareV2DispatchPools(pools, action, effort, { now, routeFilter, ignoreBurstGate: true })
+  const preferredModel = action.model ?? null;
+  if (preferredModel && !pools.some((pool) => pool.enabled !== false && poolCanRunModel(pool, preferredModel).ok)) {
+    const reasons = pools.filter((pool) => pool.enabled !== false).map((pool) => poolCanRunModel(pool, preferredModel).reason);
+    return { why: `no pool can run ${preferredModel}: ${reasons.join('; ') || 'no pool is enabled'}`, failureKind: 'unavailable' };
+  }
+  const capable = prepareV2DispatchPools(pools, action, effort, { now, routeFilter, preferredModel, ignoreBurstGate: true })
     .filter((pool) => (pool.lanes ?? [lane]).includes(lane));
   const held = [];
   for (const pool of capable) {
@@ -35,7 +41,7 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
   const failureKind = noPoolFailureKind(capable.length, held);
   if (held.length) return { why: noPoolWhy({ capableCount: capable.length, held, failureKind, lane, effort }), failureKind };
   if (!capable.length && routeFilter
-    && prepareV2DispatchPools(pools, action, effort, { now, ignoreBurstGate: true }).length) {
+    && prepareV2DispatchPools(pools, action, effort, { now, preferredModel, ignoreBurstGate: true }).length) {
     return { why: routeUnavailableWhy(routeFilter, { lane, effort }), failureKind };
   }
   return { why: capable.length ? routerWhy : noPoolWhy({ capableCount: 0, held, failureKind, lane, effort }), failureKind };
@@ -58,7 +64,7 @@ export async function previewStepPick({ action, pools, bullswarmDir, coreState, 
     { lane, effort },
     { decisionLog: decisionLog.filter((entry) => entry?.failureKind !== 'stalled') },
   );
-  const prepared = prepareV2DispatchPools(pools, action, effort, { now, routeFilter });
+  const prepared = prepareV2DispatchPools(pools, action, effort, { now, routeFilter, preferredModel: action.model ?? null });
   // The kernel keeps a draining pool off a marked step unless the caller named it.
   const named = routeFilter?.usePools?.length === 1 ? routeFilter.usePools[0] : null;
   const viewed = attachForecast(prepared.map((pool) => ({ ...pool })), bullswarmDir, { now, decisionLog });
@@ -88,7 +94,7 @@ export async function previewStepPick({ action, pools, bullswarmDir, coreState, 
   }
   const pool = route.pick.connector;
   const connector = pool.connector ?? pool;
-  const model = selectedV2DispatchModel(pool, effort, null);
+  const model = selectedV2DispatchModel(pool, effort, action.model ?? null);
   const reasoning = resolveReasoningLevel({
     connector,
     tier: effort,

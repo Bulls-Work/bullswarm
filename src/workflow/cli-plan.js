@@ -26,7 +26,9 @@ import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { buildV3Contract } from './contract-v3.js';
 import { parseFlags, flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, legacyRunRefusal, loadV2RunState } from './cli-run-lookup.js';
-import { pinnedPoolIssues, programRoutes, routePoolIssues, configuredPools, livePoolNames } from './cli-pool-checks.js';
+import {
+  modelPoolIssues, pinnedPoolIssues, programNamesModel, programRoutes, routePoolIssues, configuredPools, livePoolNames,
+} from './cli-pool-checks.js';
 import { executeGoalDocument, launchDetachedResume, printGoalLaunchInstructions } from './cli-launch.js';
 import { buildNewGoalDocument } from './cli-goal-document.js';
 import {
@@ -171,10 +173,11 @@ async function planValidate(opts) {
   const workspaceIssues = workspacePathIssues(accepted.program, doc.intent.cwd, { isolated: doc.config.settings.workspaceMode === 'isolated' });
   const routing = doc.config?.workerRouting ?? {};
   const pinned = Boolean(routing.strictPool ?? routing.pool);
-  if (pinned || programRoutes(accepted.program.actions)) {
+  if (pinned || programRoutes(accepted.program.actions) || programNamesModel(accepted.program.actions, doc)) {
     const { pools } = await livePoolNames();
     if (pinned) workspaceIssues.push(...pinnedPoolIssues(doc, accepted.program, pools));
     workspaceIssues.push(...routePoolIssues(accepted.program.actions, pools, doc));
+    workspaceIssues.push(...modelPoolIssues(accepted.program.actions, pools, doc));
   }
   if (workspaceIssues.length) return refuseProgramInvalid(goal, opts, workspaceIssues, { message: 'program invalid against the contract (nothing launched)' });
   const next = goalNextCommands(goal, doc.intent.cwd, opts);

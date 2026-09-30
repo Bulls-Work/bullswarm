@@ -354,6 +354,7 @@ const runText = rich({
     { flag: '--prompt <text>', desc: 'pass the task text inline as one flag value' },
     { flag: '--effort <high|medium|low>', desc: 'override the effort tier used for model-tier routing', default: 'derived from --lane (analyze→medium, build→medium, chore→low)' },
     { flag: '--reasoning <low|medium|high|xhigh|max|default>', desc: "run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing and lets the delegate CLI's own configuration decide", default: 'strategy reasoning setting for the effort tier, else the connector default' },
+    { flag: '--model <model>', desc: "run on exactly this model: only pools whose last model discovery (strategy refresh) lists it stay eligible, spare quota picks among them, and nothing substitutes another model; with none able to run it the run comes back to you with each pool's reason. Prefer --effort, which lets routing choose the model", default: "the effort tier's model on the picked pool" },
     { flag: '--answer-schema <file>', desc: 'a JSON schema for a typed answer: the worker writes its answer as JSON to a file Bullswarm names, and the verdict carries `answer` and `answerCheck`; a mismatch is failure kind schema', default: 'none — no typed answer' },
     { flag: '--no-retry', desc: 'one attempt only; without it the step gets its one automatic retry (a usage limit is never retried)', default: 'off — one retry' },
     { flag: '--avoid-pool <pool,...>', desc: 'never route this task to these pools' },

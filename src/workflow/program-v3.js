@@ -44,7 +44,7 @@ const EFFORTS = new Set(['high', 'medium', 'low']);
 const PROGRAM_KEYS = new Set(['schemaVersion', 'defaults', 'steps', 'gates', 'loops']);
 const DEFAULT_KEYS = new Set(['lane', 'effort', 'reasoning', 'retry', 'timeBox']);
 const STEP_KEYS = new Set([
-  'id', 'prompt', 'dependsOn', 'phase', 'label', 'lane', 'effort', 'reasoning', 'route',
+  'id', 'prompt', 'dependsOn', 'phase', 'label', 'lane', 'effort', 'reasoning', 'model', 'route',
   'answer', 'evidence', 'deliverable', 'files', 'retry', 'timeBox',
 ]);
 // Present in the stored form; accepted on input only with the derived value.
@@ -398,6 +398,7 @@ export function normaliseProgramV3(input, runtime = {}) {
       affects: step.affects, ownedFiles: step.files, evidenceFor: [], lane: step.lane, effort: step.effort,
     };
     if (step.reasoning !== undefined) action.reasoning = step.reasoning;
+    if (step.raw.model !== undefined) action.model = step.raw.model;
     if (step.timeBox !== undefined) action.timeBox = step.timeBox;
     if (step.role !== undefined) action.role = step.role;
     if (step.deliverable !== undefined) action.deliverable = step.deliverable;
@@ -411,6 +412,7 @@ export function normaliseProgramV3(input, runtime = {}) {
       checked = validateActionProgram({ schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, actions: mapped }, {
         relaxedGraph: true, requireMandatoryEvidence: false, enforceMaxActions: false, enforceMaxParallel: false,
         ...runtime,
+        allowStepModel: true,
         requirements: Array.isArray(runtime.requirements) ? runtime.requirements : [{ id: requirementId, mandatory: false }],
       });
     } catch (error) {
@@ -443,6 +445,7 @@ export function normaliseProgramV3(input, runtime = {}) {
     out.lane = action.lane;
     out.effort = action.effort;
     if (action.reasoning !== undefined) out.reasoning = action.reasoning;
+    if (action.model !== undefined) out.model = action.model;
     if (action.timeBox !== undefined) out.timeBox = action.timeBox;
     out.retry = step.retry;
     out.files = [...action.ownedFiles];

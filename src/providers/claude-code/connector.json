@@ -169,7 +169,7 @@
   "reasoning": {
     "flag": "--effort",
     "levels": ["low", "medium", "high", "xhigh", "max"],
-    "defaults": { "high": "xhigh", "medium": "high", "low": "medium" },
+    "defaults": { "high": "high", "medium": "medium", "low": "low" },
     "skipModels": ["^claude-haiku-"]
   },
   "conversation": {

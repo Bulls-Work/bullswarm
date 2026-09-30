@@ -68,6 +68,7 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
   if (opts.reasoning != null && !isReasoningLevel(opts.reasoning)) {
     return { error: `--reasoning must be one of ${[...REASONING_LEVELS, REASONING_DEFAULT].join(', ')}` };
   }
+  if (missing(opts.model)) return { error: 'usage: --model requires a model id' };
   const timeoutSec = opts.timeout == null ? null : Number(opts.timeout);
   if (missing(opts.timeout) || (timeoutSec != null && !(Number.isFinite(timeoutSec) && timeoutSec > 0))) {
     return { error: '--timeout must be a number of seconds greater than 0' };
@@ -117,6 +118,7 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
     lane, effort, taskText,
     targetDir: resolve(opts['add-dir'] ?? cwd),
     reasoning: opts.reasoning ?? null,
+    model: opts.model ?? null,
     retry: opts['no-retry'] === true ? 0 : 1,
     route: Object.keys(route).length ? route : null,
     answer: answer === undefined ? null : answer,
@@ -143,6 +145,7 @@ export function runStepProgram(request) {
     lane: request.lane,
     effort: request.effort,
     retry: request.retry,
+    ...(request.model ? { model: request.model } : {}),
     ...(request.route ? { route: request.route } : {}),
     ...(request.answer != null ? { answer: request.answer } : {}),
   };

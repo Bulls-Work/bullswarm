@@ -1,4 +1,5 @@
 import { clone } from '../lib/clone.js';
+import { poolCanRunModel } from '../lib/model-pin.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -168,8 +169,12 @@ function preparePools(pools, action, effort, {
     const pinnedProvider = providerIdFromModel(preferredModel);
     if (pinnedProvider && connector.profile?.providerId
       && connector.profile.providerId !== pinnedProvider) continue;
+    // An exact model the caller asked for (a step's model, the run's pin)
+    // replaces the tier's model: a pool runs it only when it can say it
+    // runs that model (model-pin.js), whatever its tier selection holds.
+    if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) continue;
     const assignment = pool.strategyAssignments?.[effort] ?? null;
-    const modelPolicy = resolveDispatchModel(connector, effort, {
+    const modelPolicy = preferredModel ? { eligible: true, model: preferredModel, source: 'caller-model' } : resolveDispatchModel(connector, effort, {
       assignment,
       excludedModels: [
         ...(pool.strategyExcludedModels ?? []),
@@ -2262,6 +2267,7 @@ function noPoolCandidates(allPools, action, effort, {
     else if (!inRoute) excluded = `outside the route (${routeFilter.summary})`;
     else if (sharedWith.length) excluded = `shares provider ${provider} with ${sharedWith.join(', ')}`;
     else if (!ignoreBurstGate && windowSpent(pool, now)) excluded = 'a usage window is at its limit';
+    else if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) excluded = poolCanRunModel(pool, preferredModel).reason;
     else if (!tiers.includes(effort)) excluded = `no model on the ${effort} tier for ${lane} work (has ${tiers.length ? tiers.join(', ') : 'none'})`;
     else excluded = heldText.get(pool.name) ?? 'capable, but no pick was made';
     return { pool: pool.name, provider, excluded, tiers, inRoute, onLane: lanes };

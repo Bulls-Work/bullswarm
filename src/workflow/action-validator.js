@@ -1,6 +1,7 @@
 // Deterministic validation for the generic autonomous workflow V2 program.
 
 import { isReasoningLevel } from '../lib/reasoning.js';
+import { isModelId, MODEL_ID_MAX } from '../lib/model-pin.js';
 import {
   DELIVERABLE_TYPES, KIND_ROLES, ROLES,
   ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, STEP_EVIDENCE_TYPES, WRITING_DELIVERABLES,
@@ -50,7 +51,7 @@ const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning', 'timeBox', 'verif
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
   'kind', 'role', 'lane', 'effort', 'deliverable', 'evidence', 'evidenceFor', 'inputs', 'produces', 'reasoning',
-  'timeBox', 'route',
+  'timeBox', 'route', 'model',
 ]);
 // The soft time box, in whole minutes; 0 leaves the paragraph out. A guide
 // written into the task, never a limit the kernel enforces (time-box.js).
@@ -646,6 +647,11 @@ export function validateActionProgram(program, runtime = {}) {
     if (action.reasoning !== undefined && !isReasoningLevel(action.reasoning)) {
       issues.push(`${at}.reasoning must be low|medium|high|xhigh|max|default`);
     }
+    // Optional caller override: the exact model this step runs on. Only pools
+    // that can run it stay eligible (model-pin.js); nothing substitutes another.
+    if (action.model !== undefined && !isModelId(action.model)) {
+      issues.push(`${at}.model must be a model id (letters, digits, and . _ : / [ ] -), at most ${MODEL_ID_MAX} characters`);
+    }
     // Folded like effort, so `plan export` shows the box each step was given.
     if (action.timeBox !== undefined && !isTimeBox(action.timeBox)) {
       issues.push(`${at}.timeBox must be a whole number of minutes from 0 to ${TIME_BOX_MAX_MINUTES}`);
@@ -760,7 +766,8 @@ export function validateActionProgram(program, runtime = {}) {
     }
   }
 
-  const forbidden = ['type', 'verify', 'repair', 'fanout', 'pool', 'model', 'preferredPool', 'taskFile', 'timeoutSec', 'completion', 'decision', 'onError', 'phase', 'requiresCapabilities'];
+  // A v3 step may name its model (program-v3.js passes allowStepModel).
+  const forbidden = ['type', 'verify', 'repair', 'fanout', 'pool', ...(runtime.allowStepModel === true ? [] : ['model']), 'preferredPool', 'taskFile', 'timeoutSec', 'completion', 'decision', 'onError', 'phase', 'requiresCapabilities'];
   for (const action of rawActions) for (const field of forbidden) if (Object.hasOwn(action ?? {}, field)) {
     issues.push(field === 'timeoutSec'
       ? `actions[${rawActions.indexOf(action)}].timeoutSec is not allowed in V2; a time limit belongs on an evidence item (evidence[].timeoutSec)`
