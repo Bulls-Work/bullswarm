@@ -61,7 +61,7 @@ before doing anything. Their readers and stored formats are unchanged.
 5. Workflow dispatches honor the same guarantees as single runs, in
    `src/workflow/v2-dispatch.js`: `BULLSWARM_DEPTH` is checked and propagated
    (`assertDepthAllowed` and `childDepthEnv` in `dispatchV2Action`), pools at
-   a spent window are excluded (`preparePools`), and a sign-in failure is
+   a spent window are excluded (`preparePools`, in `dispatch-pools.js`), and a sign-in failure is
    failure kind `auth`: the step's retry skips every pool in the dead
    credential's group (`upstreamGroupOf`), a choice held for that dispatch
    only and never stored. A step's `route`, the run's pin and the step's

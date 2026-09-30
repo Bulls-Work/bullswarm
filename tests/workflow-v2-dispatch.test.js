@@ -7,8 +7,9 @@ import { dirname, join } from 'node:path';
 import {
   MARKED_THROTTLE_MAX_WAIT_MS,
   appliedStepRestart, classifyV2DispatchFailure, deliverableVerdict, dispatchV2Action, durableAttemptHandoff,
-  prepareV2DispatchPools, requestStepRestart, snapshotPossible, statDeliverablePaths, trackedDiffStatForTests,
+  prepareV2DispatchPools, requestStepRestart, snapshotPossible, statDeliverablePaths,
 } from '../src/workflow/v2-dispatch.js';
+import { trackedStat as trackedDiffStatForTests } from '../src/workflow/dispatch-snapshot.js';
 import { countRetries } from '../src/workflow/step-vocabulary.js';
 import { storedProgramV3 } from '../src/workflow/program-v3.js';
 import { resolveRouteFilter } from '../src/workflow/step-route.js';

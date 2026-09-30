@@ -5,21 +5,18 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { eventToolSummary,
-  eventKindSummary,
-  groupActivityTurns,
+import {
   normalizeAttemptUsage,
-  pairActivityEvents,
   parseAttemptStream,
-  reportLeadLines,
-  sharedFileRequests,
   stepClockText,
   stepPageModel,
-  toolCallUpdates,
-  toolKindsForPool,
-  toolSummaryText,
   turnCountsText,
 } from '../src/workflow/step-model.js';
+import { toolCallUpdates, pairActivityEvents } from '../src/workflow/step-model-pairs.js';
+import { reportLeadLines, sharedFileRequests } from '../src/workflow/step-model-report.js';
+import { toolKindsForPool } from '../src/workflow/step-model-tool-kinds.js';
+import { toolSummaryText, eventToolSummary } from '../src/workflow/step-model-tool-text.js';
+import { eventKindSummary, groupActivityTurns } from '../src/workflow/step-model-turns.js';
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
 import { taskStepModel } from '../src/workflow/task-step.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';

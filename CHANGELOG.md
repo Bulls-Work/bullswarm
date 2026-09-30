@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- internal: the three largest workflow files are split into one-concept
+  modules, with no behaviour change. `src/workflow/dashboard.js` goes from
+  3,613 lines to 2,002 plus 24 `dashboard-*.js` modules (1,837 lines);
+  `step-model.js` from 2,540 to 588 plus 18 `step-model-*.js` modules (2,213
+  lines); `v2-dispatch.js` from 2,039 to 1,191 plus 8 `dispatch-*.js` modules
+  (917 lines). Each old file still exports the names the product reads from
+  it; names only tests read are now imported from the module that holds them.
+
 ## 0.38.1 — Fewer wasted retries, honest no-pool reasons
 
 - no eligible pool: when a pool lacks a tier only because free models are

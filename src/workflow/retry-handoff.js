@@ -1,6 +1,6 @@
 // The prior-attempt block a retry's task carries: what the earlier attempt
 // did, how it ended, and (when it ran them) what its evidence checks showed.
-// Facts only, no I/O: v2-dispatch.js gathers the facts, handoffBlock writes them.
+// Facts only, no I/O: dispatch-handoff.js gathers the facts, handoffBlock writes them.
 
 /**
  * Fixed prior-attempt preamble appended to the task attempt N+1 receives after

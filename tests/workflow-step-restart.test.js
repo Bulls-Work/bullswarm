@@ -16,8 +16,9 @@ import { restartV2Step } from '../src/workflow/cli-step-verbs.js';
 import { appendEvent } from '../src/workflow/events.js';
 import {
   appliedStepRestart, clearStepRestart, markStepRestartApplied, readStepRestarts, requestStepRestart,
-  requeueRestartedStep, stepRestartPath,
+  requeueRestartedStep,
 } from '../src/workflow/v2-dispatch.js';
+import { stepRestartPath } from '../src/workflow/dispatch-restart.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RUN = 'wf-mu8thu2e-27c504';

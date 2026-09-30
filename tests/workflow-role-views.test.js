@@ -15,7 +15,7 @@ import {
 } from '../src/workflow/v2-outcome.js';
 import { runTimelineFacts } from '../src/workflow/run-model.js';
 import { deriveV2DependencyStages } from '../src/workflow/v2-presentation.js';
-import { actionRoleLabel } from '../src/workflow/dashboard.js';
+import { actionRoleLabel } from '../src/workflow/dashboard-status.js';
 import { stepPageModel } from '../src/workflow/step-model.js';
 import { renderStepPage } from '../src/workflow/step-view.js';
 
