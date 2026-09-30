@@ -1,7 +1,7 @@
 interface:
   display_name: "Bullswarm"
-  short_description: "Choose one agent or a verified workflow"
-  default_prompt: "Use $bullswarm to classify, preview, and execute this task with the smallest reliable agent setup."
+  short_description: "Delegate one task or a workflow you write"
+  default_prompt: "Use $bullswarm to choose one run or a workflow for this task, execute it, and check the result by facts."
 
 policy:
   allow_implicit_invocation: true

@@ -20,6 +20,19 @@
   answer with `checks` ({id, holds, evidence}) and `passed`, true only when
   every check holds. Find-then-check stays without `blindTo`, since a check
   works from the list the finder answered.
+- skill: reorganized for progressive disclosure. `skill/SKILL.md` is now the
+  short entry point a caller reads every time (25,122 bytes before, 12,198
+  after): choosing `bullswarm run` or a workflow, one command block for each,
+  a "Driving it well" playbook of ten rules from real runs, and a "Read this
+  when" index. The rare paths moved to a new `skill/references/recovery.md`
+  (15,988 bytes): the failure rule, needs-you blocks and their options, usage
+  limits and no free pool, rate-limit backoff, stale steps and `step restart`,
+  pause, resume and cancel, and a partial end, with the same real output.
+  `operations.md` drops what now lives there (54,517 bytes before, 44,792
+  after) and gains the watch modes and the real `add`, `wait` and `continue`
+  output; `program.md` gains a "Writing a program" section (18,536 bytes
+  before, 21,577 after). Every command, option and output line the old
+  entry point named is still in the skill.
 
 ## 0.38.2 — Three large files split into one-concept modules
 

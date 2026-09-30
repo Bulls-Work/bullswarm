@@ -1,10 +1,8 @@
 # Bullswarm operations reference
 
-There are exactly two ways to start work: `bullswarm run` for one bounded
-outcome (a one-step workflow), and `bullswarm workflow goal --program` for a
-program you write. Decide the shape yourself — there is no preview or
-classifier command. Read this reference only after that decision, when the
-task needs direct commands, workflow operation, or recovery.
+The full command surface for driving a run, after you chose its shape
+([SKILL.md](../SKILL.md)). Recovery (a step that needs you, usage limits,
+stale steps, pause, cancel, a partial end) is in [recovery.md](recovery.md).
 
 New programs are v3 (steps, phases, gates and loops): the first section is how
 you operate a v3 run. Since 0.38.0 a v2 program is refused, and a run an
@@ -52,6 +50,15 @@ step that may have acted (`not run again (act step, may have acted)`). A paused
 run stays paused. `--from-answer <step>` reads that step's current checked
 answer, which must itself be a fragment `{steps, gates?, loops?}`; read it with
 `wait` first.
+Added steps do not take the program's `defaults`: set `lane` and `effort` on
+each. A successful add (real output):
+
+```text
+✓ added to jcefns · revision 2 (applied directly; kernel relaunched)
+  reopened the completed run; its earlier result is archived
+  added    step check-first
+  wait     bullswarm workflow wait jcefns check-first
+```
 
 `blocks` is the one change a fragment may make to an existing step: `{"<new
 step id>": ["<existing step id>", ...]}` makes those existing steps also wait
@@ -76,12 +83,28 @@ an unknown id. `--json` gives per step `status`, `pool`, `model`,
 `carried: true` when the attempt changed nothing and an earlier attempt's work
 stands), `outputFile`, `failure`, and `answer` (or `answerErrors`); per gate or loop
 `status`, `since`, `note`, `round`, `maxRounds` and the `next` command.
+The human form prints a line for each loop the named ids wait behind, then
+each id (real output):
+
+```text
+✓ loop until-green passed · round 1 of 3
+⧖ gate ship waiting · Read the fix and decide whether to write CHANGES.md
+  continue bullswarm workflow continue m39i62 ship
+```
 
 **continue** writes a durable intent next to the run. A running kernel applies
 it; otherwise the command applies it, sets the run back to `running` and
 relaunches the kernel (`✓ gate approve passed in 98vx92; kernel relaunched`).
 Only a waiting gate or an out-of-rounds loop can be continued, and `--rounds`
 applies to a loop only.
+Before you continue you may add steps. A loop continued without `--rounds`
+lets the steps behind it run and reads `→ loop <loop> continued by the caller
+after N of N rounds (condition not met)`, never passed. Real output:
+
+```text
+✓ gate ship passed in m39i62; kernel relaunched
+  watch    bullswarm workflow watch m39i62 --until trouble
+```
 
 A watch prints gate and loop events on their own lines, and `--until trouble`
 wakes on the two that wait for you:
@@ -93,6 +116,17 @@ wakes on the two that wait for you:
 ✓ loop <loop> passed in round 2 of 3 · check's evidence passed
 ⧖ loop <loop> out of rounds (3 of 3) · check's evidence passed did not hold · continue: bullswarm workflow continue <shortId> <loop> --rounds <n>
 → loop <loop> continued by the caller after 3 of 3 rounds (condition not met)
+```
+
+A gate `ship` after the loop `until-green` wakes you like this (real output);
+the loop's line comes with the wake:
+
+```text
+✓ loop until-green passed in round 1 of 3 · check's evidence passed
+⧖ gate ship waiting · Read the fix and decide whether to write CHANGES.md · continue: bullswarm workflow continue m39i62 ship
+outcome: waiting
+waiting: gate ship · Read the fix and decide whether to write CHANGES.md
+next: bullswarm workflow continue m39i62 ship
 ```
 
 When only waiting gates or loops are left, the kernel exits and the run is
@@ -148,6 +182,14 @@ bullswarm workflow events --json <shortId> --after 0
 bullswarm workflow runs result <shortId> --json --summary
 ```
 
+Choose how close to watch:
+
+| Mode | Wakes you on | Command |
+|---|---|---|
+| Wake-ups only (the default choice) | a gate waiting, a loop out of rounds, a step that needs you (after its retry, or at once for a usage limit), a pause, a stale step, steering, the end; each loop that finished since the last wake is printed too, without waking | `bullswarm workflow watch <shortId> --until trouble` |
+| Every step | each finished step with its answer, loop rounds, plus every wake-up | `bullswarm workflow watch <shortId>` (or `--next` for one step at a time) |
+| Named steps | only the steps, gates or loops you name | `bullswarm workflow wait <shortId> <id...>` |
+
 Use the compact summary in the status loop. Read the full envelope with `--json` alone when the run is failed or partial, or before judging evidence.
 
 Watch without waste. Start one `bullswarm workflow watch <shortId> --until
@@ -198,10 +240,10 @@ run's watch output ends with `outcome: <status> · verified|not verified`,
 finishes" below); under `--jsonl` the `finished` object carries `verified`,
 `reason` and `handback`.
 
-Manage a live run (for a v3 run, add and continue are above):
+Manage a live run (for a v3 run, add and continue are above; pause is in
+[recovery.md](recovery.md)):
 
 ```bash
-bullswarm workflow pause   <shortId> [--now]                       # start nothing new; --now also stops running agents
 bullswarm workflow resume  <shortId> [--foreground|--watch]        # lift a pause, continue an interrupted run, or retry a finished one
 bullswarm workflow steer   <shortId> --message '<guidance>'        # guidance you act on, for example with workflow add
 bullswarm workflow cancel  <shortId> --json                        # cooperative; a run with no kernel is finalized here
@@ -411,65 +453,10 @@ the sentence above, otherwise `plan <verb> was removed in 0.38.0: …` naming
 v3 run's steps are never edited; extend one with `workflow add` (see the
 first section).
 
-## Operating a live run
+## Steering a live run
 
-### Pause and resume
-
-```bash
-bullswarm workflow pause  <shortId>          # drain: running agents finish, nothing new starts
-bullswarm workflow pause  <shortId> --now    # stop running agents too; they requeue
-bullswarm workflow resume <shortId>          # lift the pause and continue
-```
-
-A pause is an intent file the kernel honors at its next loop (`workflow.pause_requested`,
-then `workflow.paused`), after which the kernel exits and watchers print
-`outcome: paused`. Steps stopped by `--now` finish as cancelled with
-`failureKind: paused` and return to pending. While paused, add steps as often as
-needed with `workflow add`; only `resume` continues the run. `resume` before the kernel reached the
-pause withdraws the request (`workflow.unpaused`) and the run never stops.
-`cancel` on a paused run finalizes it inline. A pause on a finished run is
-refused.
-
-### Stale steps and `step restart`
-
-For each running attempt the watcher computes a stale score. It uses the
-attempt's persisted event stream (`stream-<step>-attempt-<n>.jsonl` and its
-`.tail` segment) and the modification times of the step's `ownedFiles`:
-
-| Signal | Fires when | Weight |
-|---|---|---|
-| quiet | no event for 10 minutes while no command is in flight (a command still running is excluded; without an event stream it is plain output silence) | 2 |
-| no file change | a step that writes (it owns files or is `build`, and is not a check) changed no file for 20 minutes while at least 5 commands ran | 1 |
-| repeat | the same command 3 times in a row with no file change between | 1 |
-| wall | running longer than 3× the router's expected minutes for its lane and effort (`routing.forecast.expectedMinutes`) | 1 |
-
-While Bullswarm runs a step's declared checks, only quiet counts, read from
-the checks' heartbeat (`no check heartbeat for <N>m`).
-
-At a score of 2 the watcher prints `⚠ <step> looks stale: <reasons>` once per
-attempt. The line wakes `--next` and `--until trouble`, and the human `next:`
-block adds `or restart: bullswarm workflow step restart <shortId> <step>`. The
-`attempt.stale` JSONL object carries `reasons`, `score` and `staleSince`.
-Nothing restarts automatically.
-
-`bullswarm workflow step restart <shortId> <step> [--pool <pool>] [--wait <seconds>] [--json]`
-writes `restart-<step>.json` next to the run. The live kernel applies it within
-about a second. It stops that step's running attempt only; the attempt ends
-`cancelled` with `failureKind: restarted`. The step goes straight back to
-pending, never through a terminal state, and the kernel emits `step.restarted`.
-The next attempt carries the stopped attempt's `## Prior attempt on this step`
-handoff block (pool, times, files changed, diff stat, output so far, last
-response events), the same block a mechanical retry carries. `--pool` pins
-that next attempt to one configured pool; when that pool cannot run the step,
-the step fails with no eligible pool rather than moving elsewhere. The intent
-file is removed once the next attempt starts, so a kernel that dies in between
-still hands off on resume. The command exits 1 and writes nothing when the run
-is finished, the step is not running, or the kernel is not running (`resume`
-restarts interrupted steps with their handoff). A step that finished before the
-kernel took the request is refused (`step.restart_refused`, exit 1). In a
-shared workspace the stopped attempt's edits stay. In an isolated one, its
-workspace is retained for review and the new attempt starts fresh with the
-handoff.
+Pause, resume, cancel and `step restart` (the answer to a `looks stale` line)
+are in [recovery.md](recovery.md).
 
 ### Steering in a caller-planned run
 
@@ -481,87 +468,8 @@ watch prints `steering not acted on`.
 
 ## Retries, usage limits and the needs-you block
 
-In new runs, each step gets one automatic retry in total. A process failure
-(crash, silence, sign-in failure, provider error, a worker that died at start)
-retries on another eligible pool (the same pool when it is the only one, except
-after a sign-in failure). After a sign-in failure the retry also skips every
-pool that shares that credential, for that step only; nothing is stored. A gate failure (`failed-evidence`, `not-produced`,
-`schema`, or `semantic`) retries on the same pool with the failure attached. A
-gate retry spends the same one-step budget. A started `act` step is never
-retried automatically; a check that could not run also comes straight back to
-you. Only dependents wait; unrelated steps keep running. Runs started earlier
-keep their saved rules.
-
-A usage limit ends the step: a spent 5-hour or weekly window, or no credit
-left. The step comes straight back to you as `quota`; nothing waits, moves to
-another pool or retries by itself. That holds for a limit notice that names
-no reset too (its block then prints `back at` only when every pool that can
-run the step is out and one of them has a known return). Bullswarm never
-remembers a spent or dead pool from one step to the next: nothing pauses or
-benches a pool. The pool's meter is read again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and
-later steps route on that reading: a window it shows at 100% keeps the pool
-out until that window resets. A short "too many requests" rate limit is not a usage
-limit: it backs off on the same pool at most twice (20 s, then 60 s, or the
-wait it names when that is at most 2 minutes), then comes back to you as
-`throttle`. One that names a longer wait comes back to
-you at once, with `back at` at the end of that wait. One whose pool is no
-longer free for the backoff (it reached its 5-hour, weekly or monthly limit,
-or is nearly spent) comes back to you at once too: as `quota`
-when that pool is out on a usage limit, with `back at` its return when that is
-known. A try after a backoff reads `· after a rate-limit backoff`, and the
-block's header counts the backoffs (`backed off twice`). When no
-pool that can run a step is free at its pick (each one is nearly spent, or at
-its 5-hour, weekly or monthly limit), the step comes back to you too: as
-`quota` when every reason is a usage limit, else as `unavailable`. Its `why`
-names each pool: `<pool> at its 5-hour limit until <time>`, `<pool> at its
-weekly limit until <time>` (or `monthly`), `<pool> nearly spent (forecast
-<n>%) until <time>`. A retry the step was promised
-(a process or gate retry, or a backoff) that finds no free pool keeps its own
-failure kind, except as above, and its `why` ends `· no retry: <pool>
-<reason>; …`. A pool about to run out before its window resets is never given
-a step it would push over. When another capable pool is free, routing picks
-it as usual.
-
-A saved run from 0.37.x may show a stopped dispatched planner or preflight
-scout (`✗ planner stopped · …`, `⚠ preflight scout stopped · …`, or a result
-reading `the workflow planner stopped on a usage limit: …`). 0.38.0 removed
-both, and the run is view-only: its `your call:` text was written when it
-finished, so start a new v3 run instead of following it.
-
-A `step rerun` or `resume` after a failure the pool caused (a sign-in failure,
-a provider error, a worker that died before answering) starts on another pool
-when one can take the step, and on the same pool only when none can; this
-changes nothing in the route. A usage limit is not one of these: a rerun after
-one is routed as usual, and `--avoid <pool>` keeps it off that pool.
-
-When the watch prints a needs-you block, choose one of its `your call` lines,
-run that command as printed, and relaunch the exact `next:` watch line:
-
-| Choice | What to do |
-|---|---|
-| Rerun elsewhere | Run `bullswarm workflow step rerun <id> <step> --avoid <last-pool>`; the pool stays excluded in the step's route |
-| Wait for it | Printed when a return time is known (after a usage limit, a rate limit that named a longer wait, or with no free pool): `after <time>: bullswarm workflow step rerun <id> <step>`. Run that rerun yourself once the `back at` time has passed |
-| Add steps | Run `bullswarm workflow add <id> --steps part.json` with a new step, then `bullswarm workflow wait <id> <added ids>`; a v3 run's steps are never edited |
-| Take over | Open the absolute `output:` path from the block and finish the work yourself |
-| Accept anyway | Run `bullswarm workflow step accept <id> <step> --reason "…"`; this records `choice`, never proof, and rerunning undoes it |
-
-When no other pool could run the step, the first line reads `retry here` with a
-plain `step rerun`. A review block names the check that judged the failing
-requirement; another check that failed one follows as `also judged by
-<check>:` with its own rerun and accept lines.
-
-After a usage limit a full watch prints `⚠ <step> usage limit on <pool> ·
-back to you` (the attempt carries no return time, so the line names none),
-then the needs-you block, which carries the return time as `back at <time>`
-when it is known. The block's
-`why` is the provider's limit notice, or, when no pool was free, every capable
-pool with its reason (`no pool with quota to spare: <pool> at its 5-hour limit
-until <time>; …`, or `no pool free: …`). When a return time is known, after
-any failure, it adds `back at <time>`: the failed pool's reset, the end of a
-rate limit's named wait, or, when no pool was free, the earliest known return
-among the pools that can run the step. With `--jsonl` these are `backAt` and
-`options.waitForIt`. Runs started earlier print no `back at`. To stop the
-whole run instead, run `bullswarm workflow cancel <id>`.
+The failure rule, the needs-you block and its options, usage limits, no free
+pool and rate-limit backoff are in [recovery.md](recovery.md).
 
 ## When a run finishes: the handback
 
@@ -591,7 +499,7 @@ carries none:
 A `failed-evidence` result means a declared command or schema check failed.
 Bullswarm retries once on the same pool with the check output attached; after
 the retry the step comes back to you in a needs-you block. Failed checks on `act` steps and checks that
-cannot run go to you without a retry. Signal deaths of checks are failures;
+cannot run go to you without a retry. Signal deaths of checks are failures (`killed by SIG…`);
 a kernel stop, pause or revision is not a failed check. Full output is saved
 in `evidence-<step>-attempt-<n>-<k>.log`. `workflow resume` does not rerun
 `failed-evidence`; fix or amend the step, or add a check step with its own
@@ -646,15 +554,6 @@ resume`; and relaunches the kernel. In new runs, gate failures such as
 accept`, or `workflow add`. A saved run that is not v3 is view-only and is
 never resumed. With nothing retryable, resume prints
 `nothing to retry`, lists the steps that need you, starts nothing, and exits 1.
-
-| Failure | What happens |
-|---|---|
-| `failed-evidence` | In a new run, it uses the step's one retry on the same pool with the check output attached; then the needs-you block returns it to you. An `act` step or a check that cannot run goes to you without a retry. `workflow resume` does not rerun it. Saved runs keep their old rules. |
-| Evidence killed by a signal | The check fails (`killed by SIG…`); a kernel stop, pause or revision is not a failed check. |
-| Evidence log | Full output is saved as `evidence-<step>-attempt-<n>-<k>.log`. |
-
-The silence cutoff is `BULLSWARM_WORKER_SILENCE_SEC` (default 3600). It
-measures silence, not run time: every byte a worker writes restarts it.
 
 A `--program` supplied at launch is kept as `initial-planner-response.json` in
 the run directory until applied, so an interruption before the kernel applies
@@ -835,30 +734,3 @@ bullswarm strategy inventory --json   # reasoning.tiers, .pools, .effective
 is what a run will send. `strategy configure --file <json> --yes` takes the
 same values as a `reasoning` section; an invalid section rejects the whole
 document and writes nothing.
-
-## Recovery and stopping rules
-
-- An auth signature is failure kind `auth`: the step's retry skips every pool
-  that shares that credential, for that step only. Nothing is stored, so a
-  later step can pick the pool again.
-- A provider usage limit is the distinct failure kind `quota`: the attempt is
-  killed at once. In a workflow started by this version and in a single
-  `bullswarm run`, the pool's meter is read again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and
-  a window it shows at 100% keeps the pool out of later steps until that
-  window resets. Nothing else is remembered about the pool. In a workflow
-  started by this version the step then comes back to you at once, with
-  `retryAfter` (its `back at` time) when the reset is known; nothing moves it
-  or waits for the reset. Runs started earlier move the action to a pool that
-  still has quota. Discussing usage limits in a report is not a usage limit.
-- A worker silent for `BULLSWARM_WORKER_SILENCE_SEC` (default 60 minutes) is
-  stopped as `stalled`. Shorter silence is evidence to inspect, not proof of a
-  hang. The watcher's `looks stale` line gives its reasons; restart that one
-  step with `bullswarm workflow step restart <shortId> <step>` rather than
-  cancelling the run.
-- `ownedFiles` naming a directory or a glob is refused at `plan validate` and
-  at launch, and so is a pinned pool that cannot run a step's lane and effort.
-  Both used to fail only after launch.
-- A step's answer that fails its schema, or evidence that fails, uses the
-  step's one retry, then the needs-you block hands it back. Nothing repairs on
-  its own: fixing until a check passes is a loop you declare.
-- Use cancellation only for a genuinely hung or no-longer-authorized run.

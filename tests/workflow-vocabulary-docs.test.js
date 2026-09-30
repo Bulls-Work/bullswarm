@@ -192,6 +192,9 @@ test('the example programs in both program references validate in program mode',
 // code first, then against the docs that state it.
 
 const flat = (path) => read(path).replace(/\s+/g, ' ');
+// The skill as a whole (0.38.3): the entry point SKILL.md and every reference.
+const SKILL_FILES = ['skill/SKILL.md', ...readdirSync(fileURLToPath(new URL('../skill/references/', import.meta.url))).filter((name) => name.endsWith('.md')).sort().map((name) => `skill/references/${name}`)];
+const skillWide = () => SKILL_FILES.map(flat).join(' ');
 const program = (actions) => ({ schemaVersion: 'bullswarm.workflow.program.v2', actions });
 function validate(actions) {
   const check = { id: 'verify', purpose: 'v', prompt: 'inspect', role: 'check', dependsOn: actions.map((action) => action.id), affects: [], ownedFiles: [], evidenceFor: ['requirement-1'] };
@@ -415,13 +418,13 @@ test('review steps and digests take no evidence, and the docs say where to put r
 
 test('the docs say where each check result is', () => {
   const where = /`(?:bullswarm workflow )?runs result <id> --json`[^.]* under `actions\[\]\.evidenceResults`/;
-  for (const path of ['skill/SKILL.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md', 'docs/guide/workflows.md', 'CHANGELOG.md']) {
+  for (const path of ['skill/references/program.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md', 'docs/guide/workflows.md', 'CHANGELOG.md']) {
     assert.match(flat(path), where, `${path}: result location`);
   }
-  for (const path of ['skill/SKILL.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md']) {
+  for (const path of ['skill/references/program.md', ...PROGRAM_REFERENCES, 'skill/references/operations.md']) {
     assert.match(flat(path), /`(?:bullswarm )?workflow action show <id> <step>`/, `${path}: action show`);
   }
-  assert.match(flat('skill/SKILL.md'), /`actions\[\]\.evidenceResults` \(`status`, `exit`, `tail`, `why`\)/);
+  assert.match(flat('skill/references/program.md'), /`actions\[\]\.evidenceResults` \(`status`, `exit`, `tail`, `why`\)/);
 });
 
 test('evidence not run: the docs name the display line and the null result field', () => {
@@ -431,9 +434,9 @@ test('evidence not run: the docs name the display line and the null result field
   // The display: the handback line and watch's failed line (E15).
   assert.match(read('src/workflow/v2-outcome.js'), /' · evidence not run'/);
   assert.match(read('src/workflow/watch-cli.js'), /' · evidence not run'/);
-  const skill = flat('skill/SKILL.md');
+  const skill = skillWide();
   assert.doesNotMatch(skill, /the result says `evidence not run`/);
-  assert.ok(skill.includes("If the worker fails first, no check runs: the step's handback line and watch's failed line read `evidence not run`, and the JSON has `evidenceResults: null`."));
+  assert.ok(skill.includes("If the worker fails first, no check runs: the step's handback line and watch's failed line read `evidence not run`, and the result has `evidenceResults: null`."));
   for (const path of PROGRAM_REFERENCES) assert.ok(evidenceSection(path).includes("If the worker fails first, no check runs: the step's handback line and watch's failed line read `evidence not run`, and the result has `evidenceResults: null`."), path);
   assert.ok(flat('docs/reference/result.md').includes('when the worker failed first and no check ran, the value is `null`, and the step\'s handback line reads `evidence not run`'));
 });
@@ -456,7 +459,7 @@ test('the Evidence section follows the act and digest paragraphs in both program
   const review = { ...step, id: 'verify', role: 'check', affects: [], evidenceFor: ['requirement-1'] };
   assert.equal(issuesOf([...writers, dg, merge, { ...review, dependsOn: ['a', 'b', 'c', 'merge'] }], { relaxedGraph: true, requirements: ['requirement-1'] }), '');
   assert.match(issuesOf([...writers, dg, merge, { ...review, dependsOn: ['a', 'b', 'c', 'dg', 'merge'] }], { relaxedGraph: true, requirements: ['requirement-1'] }), /must not depend on digest dg/);
-  for (const path of [...PROGRAM_REFERENCES, 'skill/SKILL.md', 'docs/guide/workflows.md']) {
+  for (const path of [...PROGRAM_REFERENCES, ...SKILL_FILES, 'docs/guide/workflows.md']) {
     assert.doesNotMatch(flat(path), /Evidence never depends on a digest/, `${path}: digest rule names review steps`);
   }
   assert.ok(flat('docs/reference/program.md').includes('No review step depends on a digest.'));
@@ -604,7 +607,7 @@ test('the docs carry the fix round: no-record JSONL, $ref targets, on-disk schem
       '`check by-product not restored: <paths>`',
     ]) assert.ok(section.includes(phrase), `${path}: ${phrase}`);
   }
-  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/observing.md']) {
+  for (const path of ['skill/references/recovery.md', 'docs/guide/observing.md']) {
     assert.ok(flat(path).includes("While Bullswarm runs a step's declared checks, only quiet counts, read from the checks' heartbeat"), path);
     assert.ok(flat(path).includes('no check heartbeat for <N>m'), path);
   }
@@ -651,7 +654,7 @@ function needsYouState(candidates, { v3 = false } = {}) {
 }
 
 test('the skill names the needs-you options renderNeedsYou prints, with the commands it prints', () => {
-  const skill = section('skill/SKILL.md', '### When a step needs you');
+  const skill = section('skill/references/recovery.md', '## When a step needs you');
   const event = { type: 'action.finished', committedAt: '2026-09-24T01:06:00.000Z', payload: { actionId: '<step>', status: 'failed', failureKind: 'process', why: 'exit 1' } };
   const render = (candidates) => {
     const facts = needsYouFacts(needsYouState(candidates, { v3: true }), event, { features: STAGE3_RUN_FEATURES });
@@ -672,7 +675,7 @@ test('the skill names the needs-you options renderNeedsYou prints, with the comm
   const v2 = blockOptions(renderNeedsYou(needsYouFacts(needsYouState(['<pool>', 'pool-b']), event, { features: STAGE3_RUN_FEATURES })));
   assert.deepEqual(v2.map(([label]) => label), ['rerun elsewhere', 'change the step', 'then edit it', 'take over', 'accept anyway']);
   // The review variant's extra check (v2) is named as printed in the operations reference.
-  assert.ok(flat('skill/references/operations.md').includes('`also judged by'));
+  assert.ok(flat('skill/references/recovery.md').includes('`also judged by'));
   assert.match(read('src/workflow/needs-you.js'), /`    also judged by \$\{other\.step\}:`/);
 });
 
@@ -722,8 +725,8 @@ function limitFacts({ stepId = '<step>', token = '<shortId>', failureKind = 'quo
 const THROTTLE_SENTENCE = 'backs off on the same pool at most twice (20 s, then 60 s, or the wait it names when that is at most 2 minutes), then comes back to you';
 
 test('the skill says a usage limit or no free pool comes back to you, with the back-at time and the options the block prints', () => {
-  const skill = section('skill/SKILL.md', '### A usage limit or no free pool');
-  const whole = flat('skill/SKILL.md');
+  const skill = section('skill/references/recovery.md', '## A usage limit or no free pool');
+  const whole = skillWide();
   // A usage limit: straight back to the caller, not retried, with its return time.
   const lines = renderNeedsYou(limitFacts({ v3: true }), { next: 'bullswarm workflow watch <shortId> --until trouble' });
   assert.match(lines[0], / <step> needs you · out of quota · not retried$/);
@@ -781,7 +784,7 @@ test('the skill says a usage limit or no free pool comes back to you, with the b
   // A process failure retries by itself, on the same pool when it is the only
   // one (except after a sign-in failure): the pages never say it always moves.
   const processRetry = 'A sign-in failure, a provider error or a worker that died at start still gets the step\'s one automatic retry by itself, on another free pool when there is one.';
-  for (const [path, text] of [['skill/SKILL.md', skill], ['docs/guide/workflows.md', flat('docs/guide/workflows.md')]]) {
+  for (const [path, text] of [['skill/references/recovery.md', skill], ['docs/guide/workflows.md', flat('docs/guide/workflows.md')]]) {
     assert.ok(text.includes(backoffLost), path);
     assert.ok(text.includes(processRetry), path);
     assert.ok(!text.includes('still moves to another free pool by itself'), path);
@@ -800,7 +803,7 @@ test('the workflows guide shows a usage limit\'s block exactly as renderNeedsYou
   assert.ok(text.includes('nothing reruns it for you'));
   assert.ok(text.includes('`bullswarm workflow cancel <id>`'));
   assert.ok(text.includes(`It ${THROTTLE_SENTENCE}`));
-  assert.ok(flat('skill/references/operations.md').includes(`it ${THROTTLE_SENTENCE}`));
+  assert.ok(flat('skill/references/recovery.md').includes(`It ${THROTTLE_SENTENCE}`));
   // back at: the earliest known return; a pool with none is skipped.
   assert.ok(text.includes('`back at` is then the earliest known return among those pools; a pool whose return is unknown is skipped.'));
   assert.ok(text.includes('A limit notice that names no reset ends the step too; its block then prints `back at` only when every pool that can run the step is out and one of them has a known return.'));
@@ -835,16 +838,15 @@ test('the watch pages give the usage-limit line and the needs-you JSONL fields t
   const stepFinished = stepEvents.find((event) => event.type === 'action.finished');
   assert.equal(stepFinished.payload.retryAfter, BACK_AT);
   assert.ok(renderNeedsYou(needsYouFacts(run.state, stepFinished, { token: '<id>', features: STAGE3_RUN_FEATURES })).includes(`  back at   ${BACK_AT}`));
-  assert.ok(flat('skill/references/operations.md').includes('After a usage limit a full watch prints `⚠ <step> usage limit on <pool> · back to you` (the attempt carries no return time, so the line names none), then the needs-you block, which carries the return time as `back at <time>` when it is known.'));
+  assert.ok(flat('skill/references/recovery.md').includes('After a usage limit a full watch prints `⚠ <step> usage limit on <pool> · back to you` (the attempt carries no return time, so the line names none), then the needs-you block, which carries the return time as `back at <time>` when it is known.'));
   assert.ok(flat('docs/guide/observing.md').includes('The attempt\'s event carries no return time, so the line reads `⚠ <actionId> usage limit on <pool> · back to you`; the needs-you block that follows carries the time instead, as its `back at <time>` line, when it is known.'));
   assert.ok(helpText(['workflow', 'watch']).replace(/\s+/g, ' ').includes('an `⚠ ... usage limit on <pool>` line, with `back at <time>` in it when the watch knows when the pool is back. In a run started by this version it ends `back to you` and a needs-you block follows: nothing waits for the pool or moves the step, and the block carries `back at <time>` and a `wait for it` rerun when the reset is known.'));
-  for (const text of [flat('skill/references/operations.md'), flat('docs/guide/observing.md'), helpText(['workflow', 'watch'])]) {
+  for (const text of [flat('skill/references/operations.md'), flat('skill/references/recovery.md'), flat('docs/guide/observing.md'), helpText(['workflow', 'watch'])]) {
     assert.ok(!text.includes('not paused') && !text.includes('pause deadline'), 'no page names a pause on the usage-limit line');
   }
   // A saved stage-3 attempt that promised a retry.
   assert.match(renderWatchEvent({ type: 'attempt.quota', actionId: '<step>', pool: '<pool>', until: null, willRetry: true, failureRule: true }), / · no retry spent$/);
-  const operations = flat('skill/references/operations.md');
-  assert.ok(operations.includes('`backAt` and `options.waitForIt`'));
+  assert.ok(flat('skill/references/recovery.md').includes('`backAt` and `options.waitForIt`'));
   const observing = flat('docs/guide/observing.md');
   assert.ok(observing.includes('the line ends `back to you`'));
   assert.ok(observing.includes('reads `no retry spent`'));
@@ -876,7 +878,7 @@ test('the pages give the try line a rate-limit backoff prints, and back at only 
   assert.ok(!renderNeedsYou(earlier).some((line) => line.startsWith('  back at') || line.includes('wait for it')));
   // A saved stage-3 run's move after a usage limit keeps its own words.
   assert.match(renderNeedsYou(needsYouFacts(tries('pool-b'), event, { token: '<shortId>', features: STAGE3_RUN_FEATURES })).find((line) => line.startsWith('  try 2 ')), / · moved after a usage limit$/);
-  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'skill/references/operations.md', 'docs/guide/observing.md']) {
+  for (const path of ['skill/references/recovery.md', 'docs/guide/workflows.md', 'docs/guide/observing.md']) {
     assert.ok(flat(path).includes('`· after a rate-limit backoff`'), path);
   }
   // A backoff is never the step's retry: the header counts the backoffs.
@@ -884,11 +886,11 @@ test('the pages give the try line a rate-limit backoff prints, and back at only 
   const twice = { ...tries('pool-a') };
   twice.attempts = [...twice.attempts, { ...twice.attempts[1], id: 'a3', ordinal: 3 }];
   assert.match(renderNeedsYou(needsYouFacts(twice, event, { token: '<shortId>', features: STAGE3_RUN_FEATURES }))[0], / <step> needs you · rate limited · backed off twice$/);
-  assert.ok(flat('skill/SKILL.md').includes('(`✗ <step> needs you · rate limited · backed off twice`)'));
+  assert.ok(flat('skill/references/recovery.md').includes('(`✗ <step> needs you · rate limited · backed off twice`)'));
   assert.ok(flat('docs/guide/workflows.md').includes('Its header reads `rate limited · backed off twice` (`once` after one backoff; a backoff is never counted as the retry)'));
-  assert.ok(flat('skill/references/operations.md').includes('the block\'s header counts the backoffs (`backed off twice`)'));
-  assert.ok(flat('skill/SKILL.md').includes('When a return time is known, for this or any other failure, the block prints `back at <time>`'));
-  assert.ok(flat('skill/references/operations.md').includes('Runs started earlier print no `back at`.'));
+  assert.ok(flat('skill/references/recovery.md').includes('the block\'s header counts the backoffs (`backed off twice`)'));
+  assert.ok(flat('skill/references/recovery.md').includes('When a return time is known, for this or any other failure, the block prints `back at <time>`'));
+  assert.ok(flat('skill/references/recovery.md').includes('Runs started earlier print no `back at`.'));
 });
 
 test('workflow capabilities states the failure rule the docs give', { timeout: 60_000 }, () => {
@@ -934,7 +936,7 @@ test('no skill page, guide, reference or help text describes a step that waits f
     'while a return time is known', 'moves the step by itself',
   ];
   const pages = [
-    'skill/SKILL.md', 'skill/references/operations.md', 'skill/references/program.md', 'docs/reference/program.md',
+    ...SKILL_FILES, 'docs/reference/program.md',
     'docs/guide/workflows.md', 'docs/guide/observing.md', 'docs/guide/routing.md', 'docs/reference/cli.md',
     'docs/reference/result.md', 'AGENTS.md',
   ];
@@ -959,7 +961,7 @@ test('no skill page, guide, reference or help text describes a step that waits f
 test('the pages give the limit rules the code applies: the last-mile reason, any spent window, a sign-in failure with nothing paused', async () => {
   const { BURST_BLOCK_PCT, windowSpent } = await import('../src/meters/framework.js');
   const pages = [
-    'skill/SKILL.md', 'skill/references/operations.md', 'skill/references/program.md', 'docs/reference/program.md',
+    ...SKILL_FILES, 'docs/reference/program.md',
     'docs/guide/workflows.md', 'docs/guide/observing.md', 'docs/guide/routing.md', 'docs/guide/concepts.md',
     'docs/reference/cli.md', 'docs/reference/result.md', 'docs/reference/configuration.md', 'AGENTS.md',
   ];
@@ -986,7 +988,7 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
   assert.equal(windowSpent({ meterSnapshot: { monthly: { utilization: 100, resets_at: resetsAt } } }, Date.parse('2026-09-25T00:00:00Z')).window, 'monthly');
   assert.ok(read('src/workflow/no-pool-why.js').includes('`at its ${spent.window} limit`'));
   assert.ok(read('src/workflow/v2-dispatch.js').includes('spentWindowPart(pool, endAt)'));
-  for (const path of ['skill/SKILL.md', 'skill/references/operations.md', 'docs/guide/workflows.md', 'docs/guide/routing.md']) {
+  for (const path of ['skill/references/recovery.md', 'docs/guide/workflows.md', 'docs/guide/routing.md']) {
     assert.ok(flat(path).includes('at its weekly limit until <time>'), `${path}: weekly limit`);
   }
   assert.ok(flat('CHANGELOG.md').includes('`<pool> at its weekly limit until <time>` (or `monthly`)'));
@@ -1028,7 +1030,7 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
   // A sign-in failure: the step's retry skips the dead credential's group,
   // for that step only; nothing is stored for the next step.
   assert.ok(flat('docs/guide/routing.md').includes('every pool in the same credential group (`credentialGroup` in the connector) is skipped for the rest of that step, so the retry never walks from one name to the next on the same dead credential. Nothing is stored: the next step routes as usual and can pick that pool again.'));
-  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md']) {
+  for (const path of ['skill/references/recovery.md', 'docs/guide/workflows.md']) {
     assert.ok(flat(path).includes('After a sign-in failure that retry skips every pool that shares the credential; nothing is stored, so a later step can pick that pool again.'), path);
   }
   // A single run writes three files: task, out, and one raw capture.
@@ -1080,7 +1082,7 @@ test('the skill and the result reference list the handback options formatV2Handb
   const lines = formatV2HandbackLines(summary);
   const printed = lines.slice(lines.indexOf('your call:') + 1).map((line) => line.slice(2, 11).trim());
   assert.deepEqual(printed, ['continue', 'retry', 'rerun', 'accept', 'rerun', 'accept', 'take over', 'restart']);
-  const finish = section('skill/SKILL.md', '### When it finishes');
+  const finish = section('skill/references/recovery.md', '## When it finishes');
   const result = flat('docs/reference/result.md');
   const operations = flat('skill/references/operations.md');
   // The skill documents a v3 run's options (0.37.0); the v2 ones stay in the references.
@@ -1103,16 +1105,16 @@ test('the skill and the result reference list the handback options formatV2Handb
   });
   assert.ok(!result.includes('`changeStep`'), 'no handback option is called changeStep');
   // The retry guidance stays with the retry row.
-  for (const path of ['skill/SKILL.md', 'docs/guide/workflows.md', 'docs/reference/result.md']) {
+  for (const path of ['skill/references/recovery.md', 'docs/guide/workflows.md', 'docs/reference/result.md']) {
     assert.ok(flat(path).includes('`nothing to retry`'), path);
   }
   assert.match(read('src/workflow/v2-outcome.js'), /its pool is back at \$\{entry\.retryAfter\}/);
-  assert.ok(flat('skill/SKILL.md').includes('`its pool is back at <time>`'));
+  assert.ok(flat('skill/references/recovery.md').includes('`its pool is back at <time>`'));
   // The needs-you options are not the end-of-run options (F33).
   assert.ok(!finish.includes('`rerun elsewhere`') && !finish.includes('`accept anyway`'));
   // Order: the needs-you block, a usage limit's block, the end of the run, the accept.
-  const skill = read('skill/SKILL.md');
-  const at = ['### When a step needs you', '### A usage limit or no free pool', '### When it finishes', '**An accept is a choice, never proof.**'].map((text) => skill.indexOf(text));
+  const skill = read('skill/references/recovery.md');
+  const at = ['## When a step needs you', '## A usage limit or no free pool', '## When it finishes', '**An accept is a choice, never proof.**'].map((text) => skill.indexOf(text));
   assert.ok(at.every((index, i) => index > 0 && (i === 0 || index > at[i - 1])), `skill order: ${at}`);
 });
 
@@ -1123,7 +1125,7 @@ test('an accept reads as the code prints it and the skill says it is a choice, n
   const proof = formatV2ProofLine({ proof: { proven: 0, byType: {}, unproven: 0, unprovenSteps: [], accepted: 1, acceptedSteps: ['<steps>'] } });
   assert.equal(proof, 'proof: 1 accepted by choice: <steps>');
   assert.equal(formatV2ProofLabel({ by: ['choice'] }), 'accepted by choice');
-  const skill = flat('skill/SKILL.md');
+  const skill = flat('skill/references/recovery.md');
   assert.ok(skill.includes('**An accept is a choice, never proof.**'));
   assert.ok(skill.includes('`N accepted by choice: <steps>`'));
   assert.ok(skill.includes('reads `accepted by choice`'));

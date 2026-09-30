@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,10 @@ import { fileURLToPath } from 'node:url';
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const read = (path) => readFileSync(join(repo, path), 'utf8');
 const V3 = 'bullswarm.workflow.program.v3';
-const DOCS = ['skill/SKILL.md', 'skill/references/program.md', 'skill/references/patterns.md'];
+const DOCS = ['skill/SKILL.md', 'skill/references/program.md', 'skill/references/patterns.md', 'skill/references/recovery.md'];
+// The skill as a whole: the entry point and every reference it links.
+const SKILL_FILES = ['skill/SKILL.md', ...readdirSync(join(repo, 'skill/references')).filter((name) => name.endsWith('.md')).sort().map((name) => `skill/references/${name}`)];
+const skillWide = () => SKILL_FILES.map((path) => read(path)).join('\n').replace(/\s+/g, ' ');
 
 // Each ```json block in order, with the ```text block that follows it before
 // the next json block when that text block starts with `validate`.
@@ -117,17 +120,24 @@ test('every v3 program in the public docs validates, and the validate output sho
   assert.equal(quoted, 2);
 });
 
-test('the skill stays shorter than the 0.36 skill (32.6K), and no longer than the 0.37.0 candidate QA37 graded (25,132 bytes)', () => {
+// 0.38.3 split the skill: SKILL.md is the entry point a caller reads every
+// time, and the rare paths are references it links (progressive disclosure).
+test('the skill entry point is at most 15,000 bytes, and links every reference', () => {
   const size = statSync(join(repo, 'skill/SKILL.md')).size;
   assert.ok(size < 32_600);
-  assert.ok(size <= 25_132, `SKILL.md is ${size} bytes`);
+  assert.ok(size <= 15_000, `SKILL.md is ${size} bytes`);
+  const skill = read('skill/SKILL.md');
+  for (const path of SKILL_FILES.slice(1)) assert.ok(skill.includes(`](${path.slice('skill/'.length)})`), `SKILL.md links ${path}`);
+  assert.match(skill, /## 6\. Read this when/);
+  assert.match(skill, /## 4\. Driving it well/);
 });
 
 // QA37: callers built a workflow for work one run holds (a 40-ticket triage,
 // a research brief) and did worse on turns, time and triage accuracy.
 test('the skill puts the run-or-workflow choice first, with the chunking rule, the loop rules and a foreground watch', () => {
-  const skill = read('skill/SKILL.md').replace(/\s+/g, ' ');
-  const choose = skill.slice(skill.indexOf('## 1. Choose the shape'), skill.indexOf('## 2. One step'));
+  const entry = read('skill/SKILL.md').replace(/\s+/g, ' ');
+  const choose = entry.slice(entry.indexOf('## 1. Choose the shape'), entry.indexOf('## 2. One step'));
+  const skill = skillWide();
   assert.match(choose, /One worker can hold the whole input and make one deliverable/);
   assert.match(choose, /Do not split an input into chunks unless one worker cannot hold it/);
   assert.match(choose, /--answer-schema/);
@@ -142,6 +152,8 @@ test('the skill puts the run-or-workflow choice first, with the chunking rule, t
   assert.match(guide, /--timeout/);
   assert.match(skill, /Never end your turn while a run you own is still running/);
   assert.match(skill, /`bullswarm workflow plan contract` \(no goal needed\)/);
+  // The watch rules are the entry point's: a caller needs them on every run.
+  for (const rule of [/run the watch in the foreground: it blocks until the wake/, /--until trouble --timeout 100/, /Never end your turn while a run you own is still running/]) assert.match(entry, rule);
 });
 
 test('the skill leads with v3 and mentions v2 only as old programs', () => {
@@ -152,7 +164,7 @@ test('the skill leads with v3 and mentions v2 only as old programs', () => {
   assert.ok(skill.includes('Old v2 programs (`bullswarm.workflow.program.v2`) still run'));
   assert.doesNotMatch(skill, /a run never waits/i);
   for (const removed of ['keepOnClaude', 'incumbent', '--no-caller']) {
-    for (const path of ['skill/SKILL.md', 'skill/references/program.md', 'skill/references/patterns.md', 'skill/references/operations.md']) {
+    for (const path of SKILL_FILES) {
       assert.ok(!read(path).includes(removed), `${path} names ${removed}`);
     }
   }
@@ -181,14 +193,15 @@ test('the plan contract example is the draft-critique program of patterns.md, an
   const block = /```json\n([\s\S]*?)\n```/.exec(section)[1];
   const documented = JSON.parse(block.replaceAll('/work/acme', '/abs/workspace'));
   assert.deepEqual(example, documented);
-  const skill = read('skill/SKILL.md');
-  const skillProgram = JSON.parse(/```json\n(\{\n  "schemaVersion": "bullswarm\.workflow\.program\.v3"[\s\S]*?)\n```/.exec(skill)[1]);
+  // The skill's draft-critique program is patterns.md 3 since 0.38.3 (the
+  // entry point shows a build and review); its critique rule is program.md's.
   const critique = (program) => program.steps.find((step) => step.id === 'critique').prompt;
   for (const sentence of ['List only problems a line of sources/ shows', 'Answer passed true when you list none.']) {
     assert.ok(critique(example).includes(sentence), sentence);
-    assert.ok(critique(skillProgram).includes(sentence), sentence);
+    assert.ok(critique(documented).includes(sentence), sentence);
   }
-  assert.equal(example.loops[0].maxRounds, skillProgram.loops[0].maxRounds);
+  assert.ok(skillWide().includes('A critique asks only for what the sources can show.'));
+  assert.equal(example.loops[0].maxRounds, documented.loops[0].maxRounds);
   assert.equal(example.loops[0].maxRounds, 2);
 });
 

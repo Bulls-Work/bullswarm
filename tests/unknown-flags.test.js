@@ -164,6 +164,7 @@ test('every command form README/SKILL/operations.md documents is accepted', () =
     'README.md',
     join('skill', 'SKILL.md'),
     join('skill', 'references', 'operations.md'),
+    join('skill', 'references', 'recovery.md'),
     join('docs', 'index.md'),
     ...pageDirs.flatMap((dir) =>
       readdirSync(join(ROOT, dir))

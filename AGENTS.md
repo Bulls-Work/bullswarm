@@ -123,7 +123,9 @@ bullswarm workflow runs delete <shortId> --yes
 ## Using bullswarm from another agent
 
 If you are an agent that wants to offload bounded work via bullswarm,
-read `skill/SKILL.md` — that's the agent-facing user guide. There are
+read `skill/SKILL.md` — that's the agent-facing user guide: a short entry
+point that links its references (`recovery.md`, `program.md`, `patterns.md`,
+`operations.md`, `providers.md`) for the rest. There are
 exactly two ways to start work, and the caller chooses the shape itself: one
 bounded outcome goes to `bullswarm run`; parallel territories, integration,
 or independent acceptance go to `bullswarm workflow goal` with a program you

@@ -283,6 +283,54 @@ pool. A usage limit (`quota`) comes back at once; a rate limit
 kill of `bullswarm run` reads `interrupted`. Only the failed step's dependents
 wait; other branches finish.
 
+## Writing a program
+
+Rules the fields above do not show on their own:
+
+- **A step passes by facts.** Its worker ended cleanly, its deliverable was
+  produced, its evidence passed, and its answer (when declared) matched the
+  schema. Declare an `answer` whenever you, a later step or a condition needs
+  data from the step; a dependent step is handed its dependencies' checked
+  answer files.
+- **One condition, no expressions and no else.** Anything more is your call,
+  with `workflow wait` and `workflow add`.
+- **Loops run every step in every round**, and read their condition when the
+  round is over. Put the deciding step last, and give every writer in the loop
+  work each round (rewrite the draft from the critique; do not put a revise
+  step after a critique that may pass the first time). When a loop's `until`
+  is the evidence form (`{"step": "check", "evidence": "passed"}`), a failed
+  check on that step reads as "not passed" and the loop goes on. With the
+  field form, a failed check fails the step as it would outside a loop.
+- **A critique asks only for what the sources can show.** A claim that
+  something is missing cannot cite a line, so a critique that demands one
+  never passes. Cap `maxRounds` at 2 unless a round is cheap, and decide up
+  front what you do when it runs out (continuing it is recorded as unmet).
+- **Gates stop only what is behind them.** Other branches keep running. When
+  only waiting gates or loops are left, the run parks with status `waiting`.
+- **Independent checks need a second provider.** With only one enabled,
+  validate and `workflow add` refuse `independentOf` (`… enable a pool of
+  another provider or drop independentOf`). The other provider needs a model
+  on the step's tier: a no-pool refusal names each pool's reason. A review of
+  a build step also takes `"blindTo": ["build"]` and numbered checks (see
+  "Reviews", and patterns.md 3).
+- **Shared folder.** All workers share one tree. Name each writer's exact
+  files in `files` (steps whose files overlap run one after the other) and
+  tell it to keep other workers' edits.
+- **Evidence: checks Bullswarm runs.** Add a command or schema check for
+  anything a machine can check (`"evidence": [{"type": "command", "cmd": "npm
+  test", "timeoutSec": 300}]`, at most 5 items). Run a check by hand before
+  launch, because fixing a wrong check reruns the worker.
+- **Steps that must not repeat.** Sending or publishing is `"deliverable":
+  "outward"` with `"retry": 0`; an outward step is never retried once its
+  worker started.
+- **Prompts are self-contained.** Nothing is substituted: name the absolute
+  workspace path, the outcome, the files, what to read from dependencies, and
+  the checks to run. Every task carries a soft time box (`timeBox` minutes, a
+  guide, never a timeout); a step that lists items under `## Not done` still
+  succeeds and reads `returned early · N not done`. A failed step whose report
+  lists `- outside: <blocker>` (something it may not change) skips its retry
+  (see "The failure rule").
+
 ## Enforced rules
 
 `plan validate`, `workflow goal` and `workflow add` refuse, with these
