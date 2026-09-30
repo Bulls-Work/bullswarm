@@ -456,6 +456,13 @@ test('a parked run can be cancelled (finalized at once) or paused (it parks agai
   assert.equal(out.status, 0, out.stdout + out.stderr);
   let state = JSON.parse(readFileSync(join(paused.runDir, 'state.json'), 'utf8'));
   assert.deepEqual([state.lifecycle.status, state.lifecycle.waitingFor], ['paused', undefined]);
+  // Watch hands a paused v3 run the supported recipe: resume, adding steps
+  // first if needed; never the removed plan export.
+  out = call('watch', paused.shortId);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /outcome: paused/);
+  assert.match(out.stdout, new RegExp(`next: bullswarm workflow resume ${paused.shortId} \\(add steps first with bullswarm workflow add ${paused.shortId} --steps <file\\.json>\\)`));
+  assert.doesNotMatch(out.stdout, /plan export|plan revise/);
   rmSync(join(paused.runDir, 'pause.json'));
   const again = await resume(f, paused.runId, fakeDispatch());
   assert.deepEqual(again.waiting.map((entry) => entry.id), ['approve']);

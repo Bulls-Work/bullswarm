@@ -1391,12 +1391,15 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       }
       if (snapshot.paused) {
         // An operator pause: the kernel exited and nothing starts until
-        // resume. The plan can still be revised while it is paused.
+        // resume. A v3 run can take added steps while it is paused; a saved
+        // v2 run keeps the wording it was written with.
         const runToken = snapshot.shortId ?? snapshot.runId;
         if (eventMode && jsonl) emitLine({ type: 'paused', reason: 'operator', mode: snapshot.paused.mode });
         else if (!jsonl) {
           output.write('outcome: paused\n');
-          output.write(`next: bullswarm workflow resume ${runToken} (revise first with bullswarm workflow plan export ${runToken} --out plan.json)\n`);
+          output.write(snapshot.programV3
+            ? `next: bullswarm workflow resume ${runToken} (add steps first with bullswarm workflow add ${runToken} --steps <file.json>)\n`
+            : `next: bullswarm workflow resume ${runToken} (revise first with bullswarm workflow plan export ${runToken} --out plan.json)\n`);
         }
         return 0;
       }
