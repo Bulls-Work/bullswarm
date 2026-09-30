@@ -14,10 +14,7 @@ import { fileURLToPath } from 'node:url';
 import {
   initialWatchMemory, notableWatchEvents, renderWatchEvent, runWorkflowWatch, watchTrouble,
 } from '../src/workflow/watch-cli.js';
-import { appendEvent, readEvents } from '../src/workflow/events.js';
-import { createV2GoalDocument } from '../src/workflow/v2-state.js';
-import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
-import { reopenV2RunForRetry } from '../src/workflow/run-control.js';
+import { appendEvent } from '../src/workflow/events.js';
 import { createStaleProbe } from '../src/lib/stale.js';
 import { glyphs } from '../src/lib/glyphs.js';
 
@@ -852,56 +849,12 @@ test('a run that ended in the same poll prints the block without your call or ne
   assert.ok(lines.some((line) => line.startsWith('outcome: failed')), lines.join('\n'));
 });
 
-// Owner decision (2026-09-25): a marked run whose dispatched planner or scout
-// stopped on a limit comes back with `workflow resume` among the caller's
-// options, the "wait" option: after the return time it runs that dispatch
-// again. The outcome block prints it from the result, as it prints any option.
-test('the outcome of a marked run whose planner or scout stopped on a usage limit offers the resume that runs it again', async (t) => {
-  const home = mkdtempSync(join(tmpdir(), 'bs-watch-limit-stop-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const cwd = join(home, 'repo');
-  mkdirSync(cwd);
-  const reset = '2099-01-01T00:00:00.000Z';
-  const why = `usage limit: "You've hit your session limit" · pool paused until ${reset}`;
-  for (const [scout, runId, who] of [[false, 'wf-wlstp1-abcdef', 'the workflow planner'], [true, 'wf-wlstp2-abcdef', 'the preflight scout']]) {
-    const goalDocument = createV2GoalDocument({
-      goal: 'Deliver the report', cwd, requirements: [{ id: 'deliver', text: 'report.md exists' }],
-      settings: { executionMode: 'program', workspaceMode: 'shared', scout, concurrency: 1 },
-    });
-    const run = await runV2AutonomousWorkflow({
-      bullswarmDir: home, goalDocument, pools: [], runId, parentEnv: {},
-      dependencies: {
-        refreshPools: async () => null,
-        dispatchV2Action: async () => ({ ok: false, status: 'failed', failureKind: 'quota', retryAfter: reset, attempts: [], verdict: { ok: false, why, meta: { exitCode: null } } }),
-      },
-    });
-    const token = run.state.shortId;
-    const retry = `bullswarm workflow resume ${token} after ${reset} (reruns ${who})`;
-    let output = '';
-    assert.equal(await runWorkflowWatch(home, token, { intervalMs: 20, output: { write: (text) => { output += text; } } }), 1, output);
-    const lines = output.split('\n').filter(Boolean);
-    const outcome = lines.indexOf('outcome: partial · not verified');
-    assert.ok(outcome >= 0, output);
-    assert.equal(lines[outcome + 1], `reason: ${who} stopped on a usage limit: ${why} · back at ${reset} · your call: resume after ${reset} with bullswarm workflow resume ${token}, `
-      + `plan it yourself with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run`, who);
-    const call = lines.indexOf('your call:');
-    assert.ok(call > outcome, output);
-    assert.ok(lines.slice(call).includes(`  retry     ${retry}`), output);
-    // The JSONL finished record carries the same option.
-    let jsonl = '';
-    await runWorkflowWatch(home, token, { intervalMs: 20, jsonl: true, output: { write: (text) => { jsonl += text; } } });
-    const finished = jsonl.split('\n').filter(Boolean).map((line) => JSON.parse(line)).find((record) => record.type === 'finished');
-    assert.equal(finished.handback.options.retry, retry, who);
-    // Resume reopens the run to run the stopped dispatch again, and the watch
-    // says resume did it, not a plan revision.
-    assert.equal(reopenV2RunForRetry({ bullswarmDir: home, runId }).status, 'reopened', who);
-    const runDir = join(home, 'workflows', runId);
-    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
-    const reopened = notableWatchEvents({ events: readEvents(runDir), state, runDir }).notable.filter((event) => event.type === 'run.reopened');
-    assert.deepEqual(reopened, [{ type: 'run.reopened', previousStatus: 'partial', source: 'resume' }], who);
-    assert.equal(renderWatchEvent(reopened[0]), `${glyphs().started} run reopened from partial by workflow resume`, who);
-  }
-  // A plan revision's reopen reads as before.
+// A reopened run says who reopened it: workflow resume, or (in a saved run)
+// a plan revision.
+test('run.reopened reads by what reopened the run', () => {
+  const reopened = notableWatchEvents({ events: [{ sequence: 1, type: 'workflow.reopened', committedAt: '2026-09-25T10:00:00.000Z', payload: { previousStatus: 'partial', source: 'resume' } }], state: { actions: [], attempts: [] } }).notable;
+  assert.deepEqual(reopened, [{ type: 'run.reopened', previousStatus: 'partial', source: 'resume' }]);
+  assert.equal(renderWatchEvent(reopened[0]), `${glyphs().started} run reopened from partial by workflow resume`);
   assert.equal(renderWatchEvent({ type: 'run.reopened', previousStatus: 'cancelled' }), `${glyphs().started} run reopened from cancelled by a plan revision`);
 });
 

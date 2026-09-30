@@ -1,7 +1,8 @@
 // `bullswarm workflow step accept` (stage 3 §2.8, D22, D23, D34): a CLI-built
-// plan revision that records a failed step, or a check's failing
-// requirements, as the caller's choice. The runs are real program runs driven
-// by the real kernel; only the worker dispatch is scripted.
+// plan revision that records a failed step as the caller's choice. The runs
+// are real v3 program runs driven by the real kernel; only the worker
+// dispatch is scripted. (Accepting a review's failing requirement went with
+// the review task in 0.38.0; saved runs keep showing it.)
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,10 +12,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { acceptV2Step, rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
-import { planV2Revision } from '../src/workflow/v2-revision.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
-import { callerDecision } from '../src/workflow/verify-rounds.js';
-import { createV2ResultEnvelope, formatV2ProofLine, stepProof, summarizeV2Result } from '../src/workflow/v2-outcome.js';
+import { formatV2ProofLine, stepProof, summarizeV2Result } from '../src/workflow/v2-outcome.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { readEvents } from '../src/workflow/events.js';
 import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
@@ -23,19 +22,6 @@ const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.j
 const LANES = ['analyze', 'build', 'chore'];
 const POOLS = ['pool-a', 'pool-b'].map((name) => ({ name, enabled: true, lanes: LANES, connector: { name, lanes: LANES } }));
 const REASON = 'the failing check is a known flaky upstream test';
-
-const work = (id, options = {}) => ({
-  id, purpose: `Deliver ${id}`, dependsOn: [], affects: ['deliver'], ownedFiles: [`${id}.txt`],
-  prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], ...options,
-});
-const check = (id, dependsOn, evidenceFor = ['deliver']) => ({
-  id, purpose: `Check ${id}`, dependsOn, affects: [], ownedFiles: [], prompt: 'Inspect the delivered files.',
-  lane: 'analyze', effort: 'low', evidenceFor, inputs: [], produces: [],
-});
-const initial = (actions, defaults = null) => ({
-  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
-  program: { schemaVersion: 'bullswarm.workflow.program.v2', ...(defaults ? { defaults } : {}), actions },
-});
 
 function fixture(t, requirements) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-accept-'));
@@ -50,9 +36,9 @@ function fixture(t, requirements) {
   return { root, workspace, bullswarmDir, goalDocument };
 }
 
-// Work steps fail as `failed-evidence` the times the script says; a check
-// step judges its requirements with the verdict `judge` gives (default passed).
-function scripted(script = {}, judge = () => 'passed') {
+// Work steps fail as `failed-evidence` the times the script says; a step
+// with an answer writes {passed: true} to the file its answer paragraph names.
+function scripted(script = {}) {
   const calls = [];
   const dispatch = async (options) => {
     const id = options.action.id;
@@ -64,17 +50,11 @@ function scripted(script = {}, judge = () => 'passed') {
     };
     writeFileSync(files.taskFile, options.taskText);
     options.onAttempt?.('started', record);
-    if (options.action.evidenceFor?.length) {
-      const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
-      writeFileSync(candidatePath, JSON.stringify({
-        schemaVersion: 'bullswarm.workflow.evidence.v2',
-        requirements: Object.fromEntries(options.action.evidenceFor.map((requirement) => {
-          const status = judge(id, requirement);
-          return [requirement, { status, evidence: [`judged ${requirement} ${status}`], concerns: status === 'passed' ? [] : [`${requirement} is not done`] }];
-        })),
-      }));
-      writeFileSync(files.outFile, 'evidence recorded');
-      const verdict = { ok: true, structured: options.outputValidator('prose'), outFile: files.outFile };
+    // The dispatcher appends the answer paragraph; it names this attempt's file.
+    if (options.answerBrief) {
+      writeFileSync(/to this file: (\S+)/.exec(options.answerBrief({ files }))[1], JSON.stringify({ passed: true }));
+      writeFileSync(files.outFile, 'answered');
+      const verdict = { ok: true, structured: options.outputValidator(''), outFile: files.outFile };
       Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString() });
       options.onAttempt?.('finished', record, verdict);
       return { ok: true, status: 'succeeded', attempts: [record], verdict };
@@ -115,22 +95,31 @@ const resumer = (f, ctl) => async (runId) => {
   return { resumed: true, status: finished.state?.lifecycle?.status ?? null };
 };
 
-// `build` failed its evidence; `docs` (depends on build) is blocked; `side`
-// succeeded; `check-side` passed its requirement.
-async function failedRun(t) {
-  const f = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }, { id: 'side-ok', text: 'The side file exists.' }]);
+// 0.38.0 (D1): only a run marked programFormat 3 is driven, so every test
+// runs on a v3 run: `build` (a writer) failed its evidence, `docs` (depends
+// on build) is blocked, `side` succeeded with its answer checked.
+async function failedV3Run(t) {
+  const goal = 'Deliver the requested files';
+  const f = fixture(t, implicitV3Requirements(goal));
   const ctl = scripted({ build: ['fail'] });
-  const runId = 'wf-accept-aaaaaa';
-  await start(f, runId, initial([
-    work('build'), work('docs', { dependsOn: ['build'] }), work('side', { affects: ['side-ok'] }), check('check-side', ['side'], ['side-ok']),
-  ]), ctl);
+  const runId = 'wf-acceptv-aaaaaa';
+  await start(f, runId, {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
+    program: { schemaVersion: 'bullswarm.workflow.program.v3', steps: [
+      { id: 'build', lane: 'build', files: ['build.txt'], prompt: 'Write build.txt.' },
+      { id: 'docs', prompt: 'Write docs.txt.', dependsOn: ['build'] },
+      { id: 'side', prompt: 'Report whether side.txt is needed.', answer: { type: 'object', required: ['passed'], properties: { passed: { type: 'boolean' } } } },
+    ] },
+  }, ctl);
+  assert.equal(JSON.parse(readFileSync(join(runDirOf(f, runId), 'features.json'), 'utf8')).programFormat, 3);
   const state = readState(f, runId);
-  assert.deepEqual(['build', 'docs', 'side', 'check-side'].map((id) => statusOf(state, id)), ['failed', 'blocked', 'succeeded', 'succeeded']);
+  assert.deepEqual(['build', 'docs', 'side'].map((id) => statusOf(state, id)), ['failed', 'blocked', 'succeeded']);
+  assert.deepEqual(runtimeOf(state, 'side').answer?.value, { passed: true });
   return { f, ctl, runId, token: state.shortId };
 }
 
 test('accept refuses with the §2.8 texts and exit codes, and writes nothing', async (t) => {
-  const { f, runId, token } = await failedRun(t);
+  const { f, runId, token } = await failedV3Run(t);
   const call = (options) => acceptV2Step({ bullswarmDir: f.bullswarmDir, token, reason: REASON, waitMs: 0, ...options });
   const cases = [
     [{ stepId: 'build', reason: undefined }, 2, '--reason is required: say why you accept it (it is recorded as evidence "choice")'],
@@ -140,10 +129,7 @@ test('accept refuses with the §2.8 texts and exit codes, and writes nothing', a
     [{ token: 'nosuch', stepId: 'build' }, 1, 'no run found for "nosuch"'],
     [{ stepId: 'nope' }, 1, `run ${token} has no step "nope"`],
     [{ stepId: 'side' }, 1, 'step side succeeded and no requirement it checks is failing; nothing to accept'],
-    [{ stepId: 'check-side' }, 1, 'step check-side succeeded and no requirement it checks is failing; nothing to accept'],
     [{ stepId: 'docs' }, 1, 'step docs is blocked by build; accept or rerun build first'],
-    [{ stepId: 'check-side', requirements: ['deliver'] }, 2, 'step check-side does not check deliver'],
-    [{ stepId: 'check-side', requirements: ['side-ok'] }, 2, 'requirement side-ok is not failing (passed); nothing to accept'],
   ];
   for (const [options, code, why] of cases) {
     const result = await call(options);
@@ -176,7 +162,7 @@ test('accept refuses with the §2.8 texts and exit codes, and writes nothing', a
 });
 
 test('accepting a failed step makes it succeeded by choice, its dependents run, and a rerun undoes it', async (t) => {
-  const { f, ctl, runId, token } = await failedRun(t);
+  const { f, ctl, runId, token } = await failedV3Run(t);
   const result = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', reason: REASON, waitMs: 0, relaunch: resumer(f, ctl) });
   assert.equal(result.code, 0, JSON.stringify(result));
   assert.deepEqual([result.status, result.kind, result.appliedBy, result.attemptId, result.failureKind], ['applied', 'step', 'offline', 'build-1', 'failed-evidence']);
@@ -215,44 +201,8 @@ test('accepting a failed step makes it succeeded by choice, its dependents run, 
   assert.equal(ctl.count('build'), 2);
 });
 
-test('accepting a review\'s failing requirement records it on the check and on verify-round-2, and it lapses when the work moves', async (t) => {
-  const f = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }]);
-  const ctl = scripted({}, () => 'failed');
-  const runId = 'wf-acceptr-bbbbbb';
-  await start(f, runId, initial([work('build'), check('check-build', ['build'])], { verifyRounds: 2 }), ctl);
-  let state = readState(f, runId);
-  const token = state.shortId;
-  assert.equal(state.ledger.requirements.deliver.status, 'failed');
-  assert.ok(callerDecision(state)?.requirements.some((entry) => entry.id === 'deliver'), 'the loop hands deliver to the caller');
-  const verifySteps = state.program.actions.filter((action) => action.evidenceFor.length).map((action) => action.id);
-  assert.ok(verifySteps.includes('verify-round-2'), verifySteps.join(', '));
-
-  for (const stepId of ['check-build', 'verify-round-2']) {
-    const result = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId, reason: REASON, waitMs: 0, relaunch: async () => null });
-    assert.equal(result.code, 0, JSON.stringify(result));
-    assert.deepEqual([result.status, result.kind, result.requirements, result.changes.accepted], ['applied', 'requirements', ['deliver'], [stepId]]);
-    state = readState(f, runId);
-    const runtime = runtimeOf(state, stepId);
-    assert.equal(runtime.status, 'succeeded');
-    assert.deepEqual(runtime.acceptance.requirements, [{ id: 'deliver', workRevision: state.ledger.requirements.deliver.workRevision }]);
-    assert.equal(runtime.acceptance.failureKind, null);
-    // No dependents change and verified never moves: a choice is not proof.
-    assert.deepEqual(result.dependents, []);
-    assert.equal(state.ledger.requirements.deliver.status, 'failed');
-    assert.equal(stepProof(state, state.program.actions.find((action) => action.id === 'build'))?.by?.includes('choice') ?? false, false, 'a requirement acceptance labels no step');
-    // Accepting it again on the same step has nothing left to accept.
-    const again = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId, reason: REASON, requirements: ['deliver'], waitMs: 0 });
-    assert.deepEqual([again.code, again.why], [2, 'requirement deliver is not failing (accepted); nothing to accept']);
-  }
-  assert.equal(callerDecision(state), null, 'callerDecision omits an accepted requirement');
-  // The acceptance lapses once the requirement's work revision moves.
-  const moved = JSON.parse(JSON.stringify(state));
-  moved.ledger.requirements.deliver.workRevision = 'work-9-99-build';
-  assert.ok(callerDecision(moved)?.requirements.some((entry) => entry.id === 'deliver'));
-});
-
 test('what the caller sees after an accept: the watch line, the result row and requirement field, and the summary', async (t) => {
-  const { f, ctl, runId, token } = await failedRun(t);
+  const { f, ctl, runId, token } = await failedV3Run(t);
   const accepted = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', reason: REASON, waitMs: 0, relaunch: resumer(f, ctl) });
   assert.equal(accepted.status, 'applied', JSON.stringify(accepted));
   const runDir = runDirOf(f, runId);
@@ -277,51 +227,10 @@ test('what the caller sees after an accept: the watch line, the result row and r
   const summary = summarizeV2Result(result, state, { runDir });
   assert.equal(summary.proof.byType.choice, 1);
   assert.deepEqual([summary.proof.accepted, summary.proof.acceptedSteps], [1, ['build']]);
-  assert.equal(summary.proof.proven, 1, 'only check-side is proven (by its review); build is a choice');
+  assert.equal(summary.proof.proven, 0, 'a choice is never proven');
+  assert.deepEqual([summary.proof.answerChecked, summary.proof.answerCheckedSteps], [1, ['side']], 'side is counted by its checked answer, apart from the choice');
   assert.match(formatV2ProofLine(summary), /1 accepted by choice: build/);
 });
-
-test('an accepted requirement shows on the result\'s requirement and never verifies it', async (t) => {
-  const f = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }]);
-  const ctl = scripted({}, () => 'failed');
-  const runId = 'wf-acceptq-cccccc';
-  await start(f, runId, initial([work('build'), check('check-build', ['build'])], { verifyRounds: 0 }), ctl);
-  const token = readState(f, runId).shortId;
-  const accepted = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'check-build', reason: REASON, waitMs: 0, relaunch: resumer(f, ctl) });
-  assert.equal(accepted.status, 'applied', JSON.stringify(accepted));
-  const runDir = runDirOf(f, runId);
-  const result = JSON.parse(readFileSync(join(runDir, 'result.json'), 'utf8'));
-  const deliver = result.requirements.find((requirement) => requirement.id === 'deliver');
-  assert.equal(deliver.status, 'failed');
-  assert.deepEqual({ ...deliver.accepted, at: typeof deliver.accepted.at }, { step: 'check-build', reason: REASON, at: 'string' });
-  assert.equal(result.verified, false, 'a choice is not proof');
-  assert.equal(result.callerDecision, null, 'callerDecision omits the accepted requirement');
-  const rendered = notableWatchEvents({ events: readEvents(runDir).filter((event) => event.type === 'step.accepted'), state: readState(f, runId) })
-    .notable.map((event) => renderWatchEvent(event));
-  assert.deepEqual(rendered, [`✓ deliver accepted by choice on check-build · "${REASON}"`]);
-});
-
-// 0.38.0 (D1): the CLI drives only a run marked programFormat 3, so the CLI
-// test runs on a v3 run: `build` failed its evidence, `docs` (depends on
-// build) is blocked, `side` succeeded.
-async function failedV3Run(t) {
-  const goal = 'Deliver the requested files';
-  const f = fixture(t, implicitV3Requirements(goal));
-  const ctl = scripted({ build: ['fail'] });
-  const runId = 'wf-acceptv-aaaaaa';
-  await start(f, runId, {
-    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
-    program: { schemaVersion: 'bullswarm.workflow.program.v3', steps: [
-      { id: 'build', prompt: 'Write build.txt.' },
-      { id: 'docs', prompt: 'Write docs.txt.', dependsOn: ['build'] },
-      { id: 'side', prompt: 'Write side.txt.' },
-    ] },
-  }, ctl);
-  assert.equal(JSON.parse(readFileSync(join(runDirOf(f, runId), 'features.json'), 'utf8')).programFormat, 3);
-  const state = readState(f, runId);
-  assert.deepEqual(['build', 'docs', 'side'].map((id) => statusOf(state, id)), ['failed', 'blocked', 'succeeded']);
-  return { f, ctl, runId, token: state.shortId };
-}
 
 test('the CLI prints the accept, and --json carries its shape', async (t) => {
   const { f, runId, token } = await failedV3Run(t);
@@ -352,7 +261,7 @@ test('the CLI prints the accept, and --json carries its shape', async (t) => {
 // --- Stage-3 fix round ---
 
 test('F25: the isolated-writer refusal names the retained workspace path', async (t) => {
-  const { f, runId, token } = await failedRun(t);
+  const { f, runId, token } = await failedV3Run(t);
   const runDir = runDirOf(f, runId);
   const retained = join(runDir, 'workspaces', 'build-attempt-1-mug000');
   for (const name of ['build-attempt-1-mug000', 'builder-attempt-3-zzz', 'side-attempt-1-abc']) mkdirSync(join(runDir, 'workspaces', name), { recursive: true });
@@ -363,73 +272,4 @@ test('F25: the isolated-writer refusal names the retained workspace path', async
   const refused = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', reason: REASON, waitMs: 0 });
   assert.deepEqual([refused.code, refused.why], [1,
     `run ${token} is isolated: build's work is in a retained workspace that was never merged back (${retained}); merge it yourself, then accept`]);
-});
-
-test('F21: a second requirement accept on the same check keeps the earlier acceptance\'s reason and time', async (t) => {
-  const f = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }, { id: 'extra', text: 'The extra file exists.' }]);
-  const ctl = scripted({}, () => 'failed');
-  const runId = 'wf-accept2-dddddd';
-  await start(f, runId, initial([work('build', { affects: ['deliver', 'extra'] }), check('check-build', ['build'], ['deliver', 'extra'])], { verifyRounds: 0 }), ctl);
-  const token = readState(f, runId).shortId;
-  const first = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'check-build', requirements: ['extra'], reason: 'extra is out of scope', waitMs: 0, relaunch: async () => null });
-  assert.equal(first.code, 0, JSON.stringify(first));
-  const state = readState(f, runId);
-  const firstAt = runtimeOf(state, 'check-build').acceptance.at;
-  const planned = planV2Revision(state, {
-    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: state.program.actions.map((action) => ({ ...action })) },
-    rerun: [], steeringIds: [], accept: [{ step: 'check-build', reason: 'the rest', requirements: null }],
-  });
-  assert.equal(planned.ok, true, JSON.stringify(planned.issues));
-  const [entry] = planned.acceptances;
-  assert.deepEqual(entry.accepted, ['deliver'], 'this accept accepts only deliver');
-  assert.deepEqual(entry.requirements.map((item) => [item.id, item.reason ?? null, item.at ?? null]), [
-    ['extra', 'extra is out of scope', firstAt],
-    ['deliver', null, null],
-  ]);
-  const second = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'check-build', reason: 'the rest', waitMs: 0, relaunch: async () => null });
-  assert.deepEqual([second.code, second.requirements], [0, ['deliver']], JSON.stringify(second));
-  const after = readState(f, runId);
-  const acceptance = runtimeOf(after, 'check-build').acceptance;
-  assert.deepEqual(acceptance.requirements.map((item) => item.id), ['extra', 'deliver']);
-  // Stored in state: the carried-forward entry keeps its own reason and time.
-  assert.deepEqual(acceptance.requirements.map((item) => [item.reason ?? null, item.at ?? null]), [['extra is out of scope', firstAt], [null, null]]);
-  assert.equal(acceptance.reason, 'the rest');
-  // The result reads each requirement's own accept.
-  const envelope = createV2ResultEnvelope(after, { features: {} });
-  const acceptedOf = (id) => envelope.requirements.find((item) => item.id === id).accepted;
-  assert.deepEqual([acceptedOf('extra').reason, acceptedOf('extra').at], ['extra is out of scope', firstAt]);
-  assert.deepEqual([acceptedOf('deliver').reason, acceptedOf('deliver').at], ['the rest', acceptance.at]);
-});
-
-test('F12: the accept a marked callerDecision suggests is one step accept takes', async (t) => {
-  // A check that failed its requirement: accept it on that check.
-  const f = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }]);
-  const ctl = scripted({}, () => 'failed');
-  const runId = 'wf-accepts-eeeeee';
-  await start(f, runId, initial([work('build'), check('check-build', ['build'])], { verifyRounds: 0 }), ctl);
-  const state = readState(f, runId);
-  const token = state.shortId;
-  const [entry] = callerDecision(state, { token, failureRule: true }).requirements;
-  const suggested = entry.next.match(/accept it \(bullswarm workflow step accept (\S+) (\S+) --requirement (\S+) --reason/);
-  assert.ok(suggested, entry.next);
-  assert.deepEqual(suggested.slice(1), [token, 'check-build', 'deliver']);
-  const taken = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: suggested[2], requirements: [suggested[3]], reason: REASON, waitMs: 0, relaunch: async () => null });
-  assert.equal(taken.code, 0, JSON.stringify(taken));
-
-  // The writer failed and its check never ran (D12): the text names the writer.
-  const g = fixture(t, [{ id: 'deliver', text: 'Deliver the requested files.' }, { id: 'side-ok', text: 'The side file exists.' }]);
-  const failing = scripted({ build: ['fail', 'fail'] }, (_id, requirement) => (requirement === 'side-ok' ? 'failed' : 'passed'));
-  const blockedId = 'wf-acceptb-ffffff';
-  await start(g, blockedId, initial([
-    work('build'), check('check-build', ['build']), work('side', { affects: ['side-ok'] }), check('check-side', ['side'], ['side-ok']),
-  ], { verifyRounds: 0 }), failing);
-  const blocked = readState(g, blockedId);
-  assert.deepEqual(['build', 'check-build'].map((id) => statusOf(blocked, id)), ['failed', 'blocked']);
-  const [pending] = callerDecision(blocked, { token: blocked.shortId, failureRule: true }).requirements;
-  assert.deepEqual([pending.id, pending.status, pending.evidence], ['deliver', 'pending', 'not judged: check-build is blocked by build (failed)']);
-  const writer = pending.next.match(/accept it \(bullswarm workflow step accept (\S+) (\S+) --reason/);
-  assert.ok(writer, pending.next);
-  assert.deepEqual(writer.slice(1), [blocked.shortId, 'build']);
-  const accepted = await acceptV2Step({ bullswarmDir: g.bullswarmDir, token: blocked.shortId, stepId: writer[2], reason: REASON, waitMs: 0, relaunch: async () => null });
-  assert.equal(accepted.code, 0, JSON.stringify(accepted));
 });

@@ -15,6 +15,7 @@ import {
 } from '../src/workflow/time-box.js';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { notableWatchEvents, renderWatchEvent } from '../src/workflow/watch-cli.js';
@@ -226,12 +227,9 @@ const connector = (name) => ({
 const REPORT = {
   build: '## Done\n- build.txt\n\n## Not done\n- the phone frame\n- the watch line\n\n## Suggested next step\n- finish the frames',
   unboxed: '## Done\n- unboxed.txt\n\n## Not done\n- none\n\n## Suggested next step\n- nothing',
-  // A digest quotes its sources: a `## Not done` line in it is a quotation,
-  // not the digest returning early.
-  condense: '## build\n- Not done (quoted): the phone frame\n\n## Not done\n- the phone frame (quoted from build)\n',
 };
 
-test('the kernel boxes every work and evidence task, records the box and the early return, and hands the not-done items to verify', async (t) => {
+test('the kernel boxes every step of a v3 program, records the box and the early return, and the dependent reads the report', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-timebox-kernel-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -243,44 +241,38 @@ test('the kernel boxes every work and evidence task, records the box and the ear
     cpSync(join(FIXTURE, 'workflows', run, 'state.json'), join(bullswarmDir, 'workflows', run, 'state.json'));
   }
   clearTimeBoxHistoryCache();
+  const goal = 'Deliver the requested files';
   const goalDocument = createV2GoalDocument({
-    goal: 'Deliver the requested files', cwd: workspace,
-    requirements: [{ id: 'deliver', text: 'Deliver the requested files.' }],
+    goal, cwd: workspace, requirements: implicitV3Requirements(goal),
     settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
   });
-  const work = (id, over = {}) => ({
-    id, purpose: `Deliver ${id}`, dependsOn: [], affects: ['deliver'], ownedFiles: [`${id}.txt`],
-    prompt: `Write ${id}.txt.`, kind: 'implement', evidenceFor: [], inputs: [], produces: [], ...over,
-  });
   const program = {
-    schemaVersion: 'bullswarm.workflow.program.v2',
-    actions: [
-      work('build'),
-      work('unboxed', { timeBox: 0, dependsOn: ['build'], ownedFiles: ['unboxed.txt', 'build.txt'] }),
-      { id: 'condense', purpose: 'Condense the build report', dependsOn: ['build'], affects: [], ownedFiles: [], prompt: 'Focus on what build delivered.', kind: 'digest', evidenceFor: [], inputs: [], produces: [] },
-      { id: 'verify', purpose: 'Check the delivery', dependsOn: ['build', 'unboxed'], affects: [], ownedFiles: [], prompt: 'Inspect the delivered files.', kind: 'adversarial-acceptance', evidenceFor: ['deliver'], inputs: [], produces: [] },
+    schemaVersion: 'bullswarm.workflow.program.v3',
+    steps: [
+      { id: 'build', lane: 'build', timeBox: 30, prompt: 'Write build.txt.' },
+      { id: 'unboxed', lane: 'build', timeBox: 0, dependsOn: ['build'], files: ['unboxed.txt', 'build.txt'], prompt: 'Write unboxed.txt.' },
+      {
+        id: 'check', dependsOn: ['build', 'unboxed'], prompt: 'Inspect the delivered files.',
+        answer: { type: 'object', required: ['passed'], properties: { passed: { type: 'boolean' } } },
+      },
     ],
   };
   const tasks = {};
   const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
   let clock = Date.parse('2026-09-21T02:04:37Z');
   // Stands in for the provider CLI: writes the task file as watchOnce does,
-  // then the report (work) or the evidence candidate (verify).
+  // then the report (work) or the answer (check).
   const worker = async (_connector, task, targetDir, files, opts) => {
     const id = opts.attemptId.replace(/-\d+$/, '');
     tasks[id] = task;
     writeFileSync(files.taskFile, task);
     const meta = { exitCode: 0, wallSec: id === 'build' ? 34 * 60 : 60 };
-    if (id === 'verify') {
-      const candidatePath = task.match(/exact durable path: '([^']+)'/)?.[1];
-      writeFileSync(candidatePath, JSON.stringify({
-        schemaVersion: 'bullswarm.workflow.evidence.v2',
-        requirements: { deliver: { status: 'passed', evidence: ['build.txt and unboxed.txt are present'], concerns: [] } },
-      }));
-      writeFileSync(files.outFile, 'evidence recorded');
-      return { ok: true, why: 'structured output validated', structured: opts.outputValidator('prose'), meta };
+    if (id === 'check') {
+      writeFileSync(/to this file: (\S+)/.exec(task)[1], JSON.stringify({ passed: true }));
+      writeFileSync(files.outFile, 'checked');
+      return { ok: true, why: 'structured output validated', structured: opts.outputValidator(''), meta };
     }
-    if (id !== 'condense') writeFileSync(join(targetDir, `${id}.txt`), 'done');
+    writeFileSync(join(targetDir, `${id}.txt`), 'done');
     writeFileSync(files.outFile, REPORT[id]);
     return { ok: true, why: 'ok', meta };
   };
@@ -303,12 +295,11 @@ test('the kernel boxes every work and evidence task, records the box and the ear
       }),
     },
   });
-  assert.equal(run.result.status, 'completed');
-  assert.equal(run.result.verified, true, 'an early return still succeeds, and the run still verifies');
+  assert.equal(run.result.status, 'completed', run.result.reason);
 
-  // Requirement 1: the paragraph closes the work task, from the fixture pair.
+  // Requirement 1: the paragraph closes the step's task, from its own box.
   const byAction = Object.fromEntries(run.state.attempts.map((attempt) => [attempt.actionId, attempt]));
-  assert.deepEqual(byAction.build.timeBox, { minutes: 30, wrapUpMinutes: 21, source: 'pair', n: 80, medianMinutes: 18.86, startClock: byAction.build.timeBox.startClock });
+  assert.deepEqual(byAction.build.timeBox, { minutes: 30, wrapUpMinutes: 21, source: 'program', n: null, medianMinutes: null, startClock: byAction.build.timeBox.startClock });
   const start = byAction.build.startedAt.slice(11, 19);
   assert.equal(byAction.build.timeBox.startClock, start);
   assert.ok(tasks.build.endsWith(timeBoxParagraph({ minutes: 30, startedAt: byAction.build.startedAt, timeZone: 'UTC' })), tasks.build.slice(-400));
@@ -317,38 +308,26 @@ test('the kernel boxes every work and evidence task, records the box and the ear
   // `timeBox: 0` leaves the paragraph out and records no box.
   assert.doesNotMatch(tasks.unboxed, /Time box:/);
   assert.equal(Object.hasOwn(byAction.unboxed, 'timeBox'), false);
-  // Evidence: (codex, adversarial-acceptance) has 3 in the fixture, so the
-  // kind's 22 decide: median 14.75 → 22.1 → 20.
-  assert.deepEqual([byAction.verify.timeBox.minutes, byAction.verify.timeBox.source, byAction.verify.timeBox.n], [20, 'kind', 22]);
-  // A digest task carries the paragraph like every other dispatched step:
-  // the (codex, digest) pair has 6 succeeded attempts in the fixture, median
-  // 3.96 → 5.94 → 5 → floor 10.
-  assert.deepEqual(
-    [byAction.condense.timeBox.minutes, byAction.condense.timeBox.wrapUpMinutes, byAction.condense.timeBox.source, byAction.condense.timeBox.n],
-    [10, 7, 'pair', 6],
-  );
-  assert.ok(tasks.condense.startsWith('Bullswarm digest action: condense'));
-  assert.ok(tasks.condense.endsWith(timeBoxParagraph({ minutes: 10, startedAt: byAction.condense.startedAt, timeZone: 'UTC' })), tasks.condense.slice(-400));
-  assert.match(tasks.condense, /Time box: 10 minutes, starting at \d{2}:\d{2}:\d{2}\./);
-  assert.equal(readFileSync(byAction.condense.taskFile, 'utf8'), tasks.condense);
-  assert.equal(byAction.condense.bytes.taskFile, Buffer.byteLength(tasks.condense));
-  assert.equal(Object.hasOwn(byAction.condense, 'returnedEarly'), false, 'a digest\'s quoted `## Not done` is not an early return');
-  assert.match(tasks.verify, /Time box: 20 minutes, starting at \d{2}:\d{2}:\d{2}\.[^\n]*finish the evidence preflight with what you have/);
+  // A v3 step has no kind, so the home's history has nothing to key it on:
+  // with no box of its own it gets the 20-minute fallback.
+  assert.deepEqual([byAction.check.timeBox.minutes, byAction.check.timeBox.source, byAction.check.timeBox.n], [20, 'fallback', null]);
+  assert.ok(tasks.check.endsWith(timeBoxParagraph({ minutes: 20, startedAt: byAction.check.startedAt, timeZone: 'UTC' })), tasks.check.slice(-400));
 
-  // Requirement 2: the build report's `## Not done` is recorded, reaches
-  // verify, and the event says it; `- none` is not an early return.
+  // Requirement 2: the build report's `## Not done` is recorded and the event
+  // says it; `- none` is not an early return. The step still succeeds, and the
+  // step after it reads the report, its `## Not done` included.
   assert.deepEqual(byAction.build.returnedEarly, { count: 2, items: ['the phone frame', 'the watch line'] });
   assert.equal(Object.hasOwn(byAction.unboxed, 'returnedEarly'), false);
-  assert.match(tasks.verify, /Steps that returned early \(their own `## Not done`, quoted; judge each requirement as the workspace stands\):\n- build · 2 not done: the phone frame; the watch line\n/);
+  assert.equal(run.state.actions.find((action) => action.id === 'build').status, 'succeeded');
+  assert.ok(tasks.check.includes(`"actionId":"build","outputFile":"${byAction.build.outputFile}"`), tasks.check);
   const events = readEvents(run.runDir);
   const finished = events.filter((event) => event.type === 'action.finished').map((event) => [event.payload.actionId, event.payload.returnedEarly ?? null]);
-  assert.deepEqual(finished.filter(([id]) => id !== 'condense'), [['build', { count: 2 }], ['unboxed', null]]);
-  assert.deepEqual(finished.find(([id]) => id === 'condense'), ['condense', null]);
+  assert.deepEqual(finished, [['build', { count: 2 }], ['unboxed', null], ['check', null]]);
   const lines = notableWatchEvents({ events, state: run.state, nowMs: clock }).notable
     .filter((event) => event.type === 'action.finished')
     .map((event) => renderWatchEvent(event, { now: clock }));
   assert.equal(lines.length, 3);
-  // A new run labels every step (E23): verify has not passed build's requirement yet.
-  assert.match(lines[0], /^(◐|-) build returned early · 2 not done · review pending$/);
+  // A step with no answer, evidence or deliverable proves nothing (E23).
+  assert.match(lines[0], /^(◐|-) build returned early · 2 not done · unproven$/);
   assert.equal(lines.filter((line) => /^(✓|\+) unboxed finished · /.test(line)).length, 1);
 });

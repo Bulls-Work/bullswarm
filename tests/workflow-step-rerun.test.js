@@ -31,15 +31,23 @@ const initial = (actions) => ({
   schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
   program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
 });
+// The same work step as a v3 program writes it.
+const workV3 = (id, options = {}) => ({ id, files: [`${id}.txt`], prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', ...options });
+const initialV3 = (steps) => ({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
+  program: { schemaVersion: 'bullswarm.workflow.program.v3', steps },
+});
 
-function fixture(t) {
+// 0.38.0 (D1) resumes only a run marked programFormat 3: `v3` gives the goal
+// the implicit requirement a v3 program needs.
+function fixture(t, { v3 = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-rerun-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
   const bullswarmDir = join(root, 'home');
   mkdirSync(workspace); mkdirSync(bullswarmDir);
   const goalDocument = createV2GoalDocument({
-    goal: 'Deliver the requested files', cwd: workspace, requirements,
+    goal: 'Deliver the requested files', cwd: workspace, requirements: v3 ? implicitV3Requirements('Deliver the requested files') : requirements,
     settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 3 },
   });
   return { root, workspace, bullswarmDir, goalDocument };
@@ -99,10 +107,12 @@ const runDirOf = (f, runId) => join(f.bullswarmDir, 'workflows', runId);
 const readState = (f, runId) => JSON.parse(readFileSync(join(runDirOf(f, runId), 'state.json'), 'utf8'));
 const statusOf = (state, id) => state.actions.find((action) => action.id === id)?.status;
 
+// Steps without a `purpose` are v3 steps (workV3) and launch a v3 program.
 function start(f, runId, actions, ctl) {
+  const v3 = actions.every((entry) => !Object.hasOwn(entry, 'purpose'));
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
-    initialPlannerResponse: initial(actions),
+    initialPlannerResponse: v3 ? initialV3(actions) : initial(actions),
     dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
   });
 }
@@ -124,11 +134,13 @@ async function until(predicate, { timeoutMs = 5000, what = 'condition' } = {}) {
 }
 
 // A finished partial run: `build` failed its evidence on pool-a, `docs`
-// (depends on build) is blocked, `side` succeeded.
-async function failedRun(t, { script = { build: ['fail'] }, runId = 'wf-rerun0-aaaaaa' } = {}) {
-  const f = fixture(t);
+// (depends on build) is blocked, `side` succeeded. `v3` launches it as a v3
+// program, the only kind a resume drives.
+async function failedRun(t, { script = { build: ['fail'] }, runId = 'wf-rerun0-aaaaaa', v3 = false } = {}) {
+  const f = fixture(t, { v3 });
   const ctl = scripted(script);
-  await start(f, runId, [work('build'), work('docs', { dependsOn: ['build'] }), work('side')], ctl);
+  const make = v3 ? workV3 : work;
+  await start(f, runId, [make('build'), make('docs', { dependsOn: ['build'] }), make('side')], ctl);
   const state = readState(f, runId);
   assert.equal(state.lifecycle.status, 'partial');
   assert.deepEqual(['build', 'docs', 'side'].map((id) => statusOf(state, id)), ['failed', 'blocked', 'succeeded']);
@@ -244,28 +256,26 @@ test('rerun under a --worker-pool pin checks independentOf against the work the 
   assert.deepEqual([ok.code, ok.status], [0, 'applied'], JSON.stringify(ok));
 });
 
-test('rerun --avoid amends the route, hands the failed attempt\'s handoff to the next attempt, and relaunches an offline run', async (t) => {
-  const { f, ctl, runId, token } = await failedRun(t);
+test('rerun hands the failed attempt\'s handoff to the next attempt, and relaunches an offline run', async (t) => {
+  const { f, ctl, runId, token } = await failedRun(t, { v3: true });
   const relaunched = [];
   const relaunch = async (id) => { relaunched.push(id); return resumer(f, ctl)(id); };
   const result = await rerunV2Step({
-    bullswarmDir: f.bullswarmDir, token, stepId: 'build', avoid: ['pool-b'], pools: POOLS, waitMs: 0, relaunch,
+    bullswarmDir: f.bullswarmDir, token, stepId: 'build', pools: POOLS, waitMs: 0, relaunch,
   });
   assert.equal(result.code, 0, JSON.stringify(result));
   assert.equal(result.status, 'applied');
   assert.equal(result.appliedBy, 'offline');
-  assert.deepEqual(result.avoid, ['pool-b']);
+  assert.deepEqual(result.avoid, []);
   assert.equal(result.handoffFrom, 'build-1');
   assert.deepEqual(result.handoff, { attemptId: 'build-1', failureKind: 'failed-evidence', pool: 'pool-a' });
-  assert.deepEqual(result.changes.amended, ['build']);
+  assert.deepEqual(result.changes.rerun, ['build']);
   assert.deepEqual(relaunched, [runId], 'an offline apply relaunches the kernel');
 
   const state = readState(f, runId);
   const record = state.revisions.at(-1);
   assert.equal(record.source, 'step-rerun');
-  assert.equal(record.summary, 'step rerun build avoiding pool-b (last attempt: failed-evidence on pool-a)');
-  // The route is durable: plan export shows it.
-  assert.deepEqual(exportV2Plan(state).program.actions.find((action) => action.id === 'build').route, { pools: { avoid: ['pool-b'] } });
+  assert.equal(record.summary, 'step rerun build (last attempt: failed-evidence on pool-a)');
   // The next attempt carried the failed attempt's handoff; the dependent ran.
   assert.equal(ctl.count('build'), 2);
   const second = ctl.calls.filter((call) => call.actionId === 'build')[1];
@@ -274,19 +284,33 @@ test('rerun --avoid amends the route, hands the failed attempt\'s handoff to the
   assert.deepEqual(['build', 'docs', 'side'].map((id) => statusOf(state, id)), ['succeeded', 'succeeded', 'succeeded']);
   assert.equal(state.lifecycle.status, 'completed');
   assert.deepEqual(readStepRestarts(runDirOf(f, runId)), [], 'the intent is gone once its attempt started');
-  // The budget belongs to the rerun's definition: retries before it no longer count.
+  // The budget belongs to the rerun: retries before it no longer count.
   assert.equal(countRetries(state, 'build'), 0);
 });
 
+test('rerun --avoid on a v3 run amends the step\'s route, and plan export shows it', async (t) => {
+  const { f, ctl, runId, token } = await failedRun(t, { v3: true });
+  const result = await rerunV2Step({
+    bullswarmDir: f.bullswarmDir, token, stepId: 'build', avoid: ['pool-b'], pools: POOLS, waitMs: 0, relaunch: resumer(f, ctl),
+  });
+  assert.equal(result.code, 0, JSON.stringify(result));
+  assert.deepEqual([result.status, result.avoid, result.handoffFrom], ['applied', ['pool-b'], 'build-1']);
+  assert.deepEqual(result.changes.amended, ['build']);
+  const state = readState(f, runId);
+  assert.equal(state.revisions.at(-1).summary, 'step rerun build avoiding pool-b (last attempt: failed-evidence on pool-a)');
+  assert.deepEqual(exportV2Plan(state).program.actions.find((action) => action.id === 'build').route, { pools: { avoid: ['pool-b'] } });
+  assert.deepEqual(['build', 'docs', 'side'].map((id) => statusOf(state, id)), ['succeeded', 'succeeded', 'succeeded']);
+});
+
 test('the rerun gets its one automatic retry again: a retry spent before it no longer counts', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, { v3: true });
   const runId = 'wf-rerunb-bbbbbb';
   const seen = [];
   let spent = false;
   const at = () => new Date().toISOString();
   const dispatch = async (options) => {
     const id = options.action.id;
-    seen.push({ id, retriesAlready: options.retriesAlready, failureRule: options.failureRule });
+    seen.push({ id, retriesAlready: options.retriesAlready });
     const attempt = (ordinal, pool, extra = {}) => {
       const files = options.paths(ordinal);
       writeFileSync(files.taskFile, options.taskText);
@@ -314,21 +338,21 @@ test('the rerun gets its one automatic retry again: a retry spent before it no l
     return { ok: true, status: 'succeeded', attempts: [done], verdict: { ok: true, outFile: done.outFile } };
   };
   const ctl = { dispatch };
-  await start(f, runId, [work('build'), work('docs', { dependsOn: ['build'] })], ctl);
+  await start(f, runId, [workV3('build'), workV3('docs', { dependsOn: ['build'] })], ctl);
   let state = readState(f, runId);
   assert.equal(statusOf(state, 'build'), 'failed');
   assert.deepEqual(state.attempts.filter((a) => a.actionId === 'build').map((a) => [a.id, a.retryOf ?? null]), [
     ['build-1', null], ['build-2', { attempt: 'build-1', how: 'other-pool' }],
   ]);
   assert.equal(countRetries(state, 'build'), 1, 'the retry is spent');
-  assert.deepEqual(seen[0], { id: 'build', retriesAlready: 0, failureRule: true });
+  assert.deepEqual(seen[0], { id: 'build', retriesAlready: 0 });
 
   const token = state.shortId;
   const result = await rerunV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', pools: POOLS, waitMs: 0, relaunch: resumer(f, ctl) });
   assert.equal(result.status, 'applied', JSON.stringify(result));
   const rerun = seen.filter((call) => call.id === 'build');
   assert.equal(rerun.length, 2);
-  assert.deepEqual(rerun[1], { id: 'build', retriesAlready: 0, failureRule: true }, 'the rerun\'s dispatch has its whole budget back');
+  assert.deepEqual(rerun[1], { id: 'build', retriesAlready: 0 }, 'the rerun\'s dispatch has its whole budget back');
   state = readState(f, runId);
   assert.deepEqual(['build', 'docs'].map((id) => statusOf(state, id)), ['succeeded', 'succeeded']);
   assert.equal(countRetries(state, 'build'), 0);
@@ -348,7 +372,7 @@ test('a rerun after a failure its pool caused tells the dispatcher to start else
     { label: 'then work', fails: [['pool-a', 'provider', {}], ['pool-b', 'failed-evidence', { changedFileCount: 1 }]], leaves: ['pool-a'] },
   ];
   for (const [index, { label, fails, leaves }] of cases.entries()) {
-    const f = fixture(t);
+    const f = fixture(t, { v3: true });
     const runId = `wf-rerunp-${'abcdef0'[index].repeat(6)}`;
     const seen = [];
     let failed = false;
@@ -380,7 +404,7 @@ test('a rerun after a failure its pool caused tells the dispatcher to start else
       return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
     };
     const ctl = { dispatch };
-    await start(f, runId, [work('build')], ctl);
+    await start(f, runId, [workV3('build')], ctl);
     const token = readState(f, runId).shortId;
     const result = await rerunV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'build', pools: POOLS, waitMs: 0, relaunch: resumer(f, ctl) });
     assert.equal(result.status, 'applied', JSON.stringify(result));
@@ -391,8 +415,8 @@ test('a rerun after a failure its pool caused tells the dispatcher to start else
   }
 });
 
-test('rerun without --avoid is a plain rerun; a succeeded step gets no handoff; a pending step only amends its route', async (t) => {
-  const { f, ctl, runId, token } = await failedRun(t);
+test('rerun without --avoid is a plain rerun; a succeeded step gets no handoff', async (t) => {
+  const { f, ctl, runId, token } = await failedRun(t, { v3: true });
   const relaunch = resumer(f, ctl);
   const side = await rerunV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'side', pools: POOLS, waitMs: 0, relaunch });
   assert.equal(side.status, 'applied', JSON.stringify(side));
@@ -402,7 +426,11 @@ test('rerun without --avoid is a plain rerun; a succeeded step gets no handoff; 
   const sideCalls = ctl.calls.filter((call) => call.actionId === 'side');
   assert.equal(sideCalls.length, 2);
   assert.doesNotMatch(sideCalls[1].taskText, /## Prior attempt on this step/);
+});
 
+// A paused run is revised directly and never relaunched, so this needs no resume.
+test('rerun --avoid on a pending step of a paused run only amends its route', async (t) => {
+  const { f, runId, token } = await failedRun(t);
   // A pending step: only the route changes; nothing reruns and no intent is written.
   const path = join(runDirOf(f, runId), 'state.json');
   const paused = readState(f, runId);

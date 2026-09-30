@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { reviseV2Program } from '../src/workflow/run-control.js';
 import { dispatchV2Action, readStepRestarts, requestStepRestart, stepRestartPath } from '../src/workflow/v2-dispatch.js';
@@ -29,8 +30,16 @@ const initial = (actions) => ({
   schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
   program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
 });
+// The same steps as a v3 program writes them.
+const workV3 = (id, options = {}) => ({ id, files: [`${id}.txt`], prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', ...options });
+const initialV3 = (steps) => ({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
+  program: { schemaVersion: 'bullswarm.workflow.program.v3', steps },
+});
 
-function fixture(t) {
+// `v3`: the goal carries the implicit requirement a v3 program needs
+// (0.38.0 resumes only v3 runs).
+function fixture(t, { v3 = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-restart-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -38,7 +47,7 @@ function fixture(t) {
   mkdirSync(workspace); mkdirSync(bullswarmDir);
   const goalDocument = createV2GoalDocument({
     goal: 'Deliver the requested files', cwd: workspace,
-    requirements: [{ id: 'deliver', text: 'Deliver the requested files.' }],
+    requirements: v3 ? implicitV3Requirements('Deliver the requested files') : [{ id: 'deliver', text: 'Deliver the requested files.' }],
     settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 3 },
   });
   return { workspace, bullswarmDir, goalDocument };
@@ -97,9 +106,10 @@ async function until(predicate, what, timeoutMs = 5000) {
   }
 }
 
+// Steps without a `purpose` are v3 steps and launch a v3 program.
 const start = (f, runId, actions, ctl) => runV2AutonomousWorkflow({
   bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
-  initialPlannerResponse: initial(actions),
+  initialPlannerResponse: actions.every((entry) => !Object.hasOwn(entry, 'purpose')) ? initialV3(actions) : initial(actions),
   dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
 });
 
@@ -373,17 +383,18 @@ test('step accept through the live kernel and through an offline apply: step.acc
 });
 
 // F22 (D32, P3): reopening a cancelled run with a single-step verb.
-const actStep = (id) => work(id, { role: 'act', lane: 'analyze', deliverable: 'outward', ownedFiles: [] });
+// An act step: a v3 outward step.
+const actStep = (id, options = {}) => ({ id, prompt: `Send ${id}.`, lane: 'analyze', deliverable: 'outward', ...options });
 const cancelRun = (runDir) => writeFileSync(join(runDir, 'cancellation.json'), JSON.stringify({ requested: true, requestedAt: new Date().toISOString(), reason: 'caller cancelled' }));
 const statuses = (runDir) => Object.fromEntries(readState(runDir).actions.map((action) => [action.id, action.status]));
 
 test('step rerun on a cancelled run never runs again an act step the cancellation stopped after its worker started: it stays cancelled and is listed (F22)', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, { v3: true });
   const ctl = controller();
   for (const id of ['sendit', 'other2', 'other3']) ctl.hold(id);
   const runId = 'wf-f22rr-abcdef';
   const runDir = join(f.bullswarmDir, 'workflows', runId);
-  const kernel = start(f, runId, [actStep('sendit'), work('other2'), work('other3')], ctl);
+  const kernel = start(f, runId, [actStep('sendit'), workV3('other2'), workV3('other3')], ctl);
   const cancelled = await guarded(runDir, kernel, async () => {
     await until(() => ['sendit', 'other2', 'other3'].every((id) => ctl.count(id) === 1), 'all three workers started');
     cancelRun(runDir);
@@ -419,7 +430,7 @@ test('step rerun on a cancelled run never runs again an act step the cancellatio
 });
 
 test('step accept on a cancelled run keeps a started act step cancelled too; an act step cancelled before any worker of it started is requeued (F22)', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, { v3: true });
   const ctl = controller();
   const failing = new Set(['broken']);
   const dispatch = async (options) => {
@@ -439,7 +450,7 @@ test('step accept on a cancelled run keeps a started act step cancelled too; an 
   // stops it before any worker of it ran.
   const kernel = runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
-    initialPlannerResponse: initial([work('broken'), actStep('sendit'), { ...actStep('later'), dependsOn: ['sendit'] }]),
+    initialPlannerResponse: initialV3([workV3('broken'), actStep('sendit'), actStep('later', { dependsOn: ['sendit'] })]),
     dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
   });
   const cancelled = await guarded(runDir, kernel, async () => {
@@ -465,48 +476,4 @@ test('step accept on a cancelled run keeps a started act step cancelled too; an 
   assert.equal(ctl.count('later'), 0, 'blocked behind the cancelled act step');
   assert.deepEqual(statuses(runDir), { broken: 'succeeded', sendit: 'cancelled', later: 'blocked' });
   assert.equal(resumed.result.status, 'partial');
-});
-
-test('a second requirement accept on the same check: its step.accepted names only the requirement it added (F21)', async (t) => {
-  const f = fixture(t);
-  const goalDocument = createV2GoalDocument({
-    goal: 'Deliver alpha and beta', cwd: f.workspace,
-    requirements: [{ id: 'alpha', text: 'alpha.txt is right' }, { id: 'beta', text: 'beta.txt is right' }],
-    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
-  });
-  const ctl = controller();
-  const dispatch = async (options) => {
-    if (!options.action.evidenceFor.length) return ctl.dispatch(options);
-    const files = options.paths(1);
-    const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
-    writeFileSync(candidatePath, JSON.stringify({ schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: Object.fromEntries(options.action.evidenceFor.map((id) => [id, { status: 'failed', evidence: [`${id}.txt is wrong`], concerns: [] }])) }));
-    const record = { ordinal: 1, pool: 'fixture', model: 'fixture-model', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
-    options.onAttempt?.('started', record);
-    writeFileSync(files.outFile, 'judged');
-    Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString() });
-    const verdict = { ok: true, structured: options.outputValidator('prose'), outFile: files.outFile };
-    options.onAttempt?.('finished', record, verdict);
-    return { ok: true, status: 'succeeded', attempts: [record], verdict };
-  };
-  const runId = 'wf-f21acc-abcdef';
-  const runDir = join(f.bullswarmDir, 'workflows', runId);
-  const planned = initial([
-    work('build', { affects: ['alpha', 'beta'] }),
-    work('check', { dependsOn: ['build'], affects: [], ownedFiles: [], lane: 'analyze', evidenceFor: ['alpha', 'beta'] }),
-  ]);
-  planned.program.defaults = { verifyRounds: 0 };
-  const run = await runV2AutonomousWorkflow({
-    bullswarmDir: f.bullswarmDir, goalDocument, pools: [], runId, initialPlannerResponse: planned,
-    dependencies: { dispatchV2Action: dispatch, controlPollMs: 10 },
-  });
-  assert.deepEqual(Object.values(run.state.ledger.requirements).map((entry) => entry.status), ['failed', 'failed']);
-  for (const id of ['alpha', 'beta']) {
-    const accepted = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token: runId, stepId: 'check', reason: `${id} is fine for now`, requirements: [id], waitMs: 0 });
-    assert.deepEqual([accepted.code, accepted.status, accepted.requirements], [0, 'applied', [id]], id);
-  }
-  const events = readEvents(runDir).filter((event) => event.type === 'step.accepted').map((event) => event.payload);
-  assert.deepEqual(events, [
-    { actionId: 'check', reason: 'alpha is fine for now', requirements: ['alpha'] },
-    { actionId: 'check', reason: 'beta is fine for now', requirements: ['beta'] },
-  ]);
 });

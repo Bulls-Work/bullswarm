@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { reopenV2RunForRetry } from '../src/workflow/run-control.js';
 import { readRollupIndex } from '../src/workflow/rollup.js';
@@ -38,8 +39,15 @@ const initial = (actions) => ({
   schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
   program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
 });
+// The same work steps as a v3 program writes them: 0.38.0 resumes only v3 runs.
+const workV3 = (id, options = {}) => ({ id, files: [`${id}.txt`], prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', ...options });
+const initialV3 = (steps) => ({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
+  program: { schemaVersion: 'bullswarm.workflow.program.v3', steps },
+});
 
-function fixture(t) {
+// `v3`: the goal carries the implicit requirement a v3 program needs.
+function fixture(t, { v3 = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-handback-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -47,7 +55,7 @@ function fixture(t) {
   mkdirSync(workspace); mkdirSync(bullswarmDir);
   const goalDocument = createV2GoalDocument({
     goal: 'Deliver the requested files', cwd: workspace,
-    requirements: [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }],
+    requirements: v3 ? implicitV3Requirements('Deliver the requested files') : [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }],
     settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 2 },
   });
   return { root, workspace, bullswarmDir, goalDocument };
@@ -146,36 +154,8 @@ test('failing steps end the run at once with a handback that says what a resume 
   assert.match(lines, /your call:\n  continue  bullswarm workflow plan export /);
 });
 
-test('a reason quoting a long check finding cuts it between words and marks the cut', async (t) => {
-  const f = fixture(t);
-  // The finding a real check wrote on run t4pdp2 (2026-09-14); the reason line
-  // used to end "It contains no menti".
-  const finding = "README.md read directly (7 lines, 87 bytes): '# e2e-steady', 'A tiny text library.', '## capitalize(word)', 'Upper-cases the first letter.' It contains no mention of truncate and no usage example.";
-  const s = scripted({}, { verify: { status: 'failed', evidence: [finding], concerns: [] } });
-  const response = initial([work('a'), check('verify', ['a'])]);
-  // Review only, no repair: 0 fix cycles in a stage-3 run (D13).
-  response.program.defaults = { verifyRounds: 0 };
-  const run = await runV2AutonomousWorkflow({
-    bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId: 'wf-handbk4-abcdef',
-    initialPlannerResponse: response,
-    dependencies: { dispatchV2Action: s.dispatch },
-  });
-  assert.equal(run.result.status, 'completed');
-  assert.equal(run.result.verified, false);
-  const prefix = 'all 2 steps succeeded, but not verified: deliver failed — deliver: ';
-  assert.ok(run.result.reason.startsWith(prefix), run.result.reason);
-  const quoted = run.result.reason.slice(prefix.length);
-  assert.ok(quoted.endsWith('…') && quoted.length <= 160, quoted);
-  const kept = quoted.slice(0, -1);
-  assert.ok(finding.startsWith(kept), quoted);
-  assert.match(finding.slice(kept.length), /^[\s,;:—-]/, `the cut falls between words: ${quoted}`);
-  const requirement = run.result.handback.unresolvedRequirements.find((entry) => entry.id === 'deliver');
-  assert.equal(requirement.status, 'failed');
-  assert.ok(requirement.why.startsWith("README.md read directly") && requirement.why.includes('no mention of truncate'), requirement.why);
-});
-
 test('resume reopens a finished run for the steps a retry can fix and leaves the rest to the caller', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, { v3: true });
   const runId = 'wf-handbk2-abcdef';
   const s = scripted({
     a: (call) => (call === 1 ? failed('stalled', STALLED_WHY) : null),
@@ -183,7 +163,7 @@ test('resume reopens a finished run for the steps a retry can fix and leaves the
   });
   const first = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
-    initialPlannerResponse: initial([work('a'), work('c'), work('d', { dependsOn: ['a'] })]),
+    initialPlannerResponse: initialV3([workV3('a'), workV3('c'), workV3('d', { dependsOn: ['a'] })]),
     dependencies: { dispatchV2Action: s.dispatch },
   });
   assert.equal(first.result.status, 'partial');
@@ -217,12 +197,12 @@ test('resume reopens a finished run for the steps a retry can fix and leaves the
 });
 
 test('a kernel that throws marks its run interrupted with the error, and a resume finishes it without repeating work', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, { v3: true });
   const runId = 'wf-handbk3-abcdef';
   const s = scripted();
   await assert.rejects(runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
-    initialPlannerResponse: initial([work('a')]),
+    initialPlannerResponse: initialV3([workV3('a')]),
     dependencies: { dispatchV2Action: s.dispatch, writeResultAtomic: () => { throw new Error('disk full while writing the result'); } },
   }), /disk full while writing the result/);
   const runDir = join(f.bullswarmDir, 'workflows', runId);

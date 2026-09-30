@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, exist
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { processIdentity } from '../src/workflow/v2-process.js';
@@ -12,8 +13,10 @@ import { processIdentity } from '../src/workflow/v2-process.js';
 const runtimeUrl = new URL('../src/workflow/v2-runtime.js', import.meta.url).href;
 const cli = resolve('bin/bullswarm.js');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const action = { id: 'write', purpose: 'Write the requested files', dependsOn: [], affects: ['deliver'], ownedFiles: ['a.txt', 'b.txt'], prompt: 'Write the requested files.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [] };
-const program = { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write both files.', program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [action] } };
+// 0.38.0 resumes only v3 runs, so every run here is a v3 program.
+const step = { id: 'write', files: ['a.txt', 'b.txt'], prompt: 'Write the requested files.', lane: 'build', effort: 'low' };
+const programOf = (steps) => ({ schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write both files.', program: { schemaVersion: 'bullswarm.workflow.program.v3', steps } });
+const program = programOf([step]);
 function fixture(t, workspaceMode = 'shared') {
   const root = mkdtempSync(join(tmpdir(), 'bs-v2-recovery-'));
   const home = join(root, 'home'); const cwd = join(root, 'repo');
@@ -24,7 +27,7 @@ function fixture(t, workspaceMode = 'shared') {
     const git = (...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
     git('init', '-q'); git('add', '.'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'seed');
   }
-  const goal = createV2GoalDocument({ goal: 'Write both files', cwd, requirements: [{ id: 'deliver', text: 'Files are written' }], settings: { scout: false, plannerMode: 'caller', executionMode: 'program', workspaceMode } });
+  const goal = createV2GoalDocument({ goal: 'Write both files', cwd, requirements: implicitV3Requirements('Write both files'), settings: { scout: false, plannerMode: 'caller', executionMode: 'program', workspaceMode } });
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return { root, home, cwd, goal };
 }
@@ -81,9 +84,9 @@ await runV2AutonomousWorkflow({ bullswarmDir: ${JSON.stringify(f.home)}, goalDoc
 
 test('operator cancellation survives a kernel persist between request and cancellation poll', async (t) => {
   const f = fixture(t);
-  const second = { ...action, id: 'later', dependsOn: ['write'], ownedFiles: ['later.txt'] };
+  const second = { ...step, id: 'later', dependsOn: ['write'], files: ['later.txt'] };
   const seen = [];
-  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.home, goalDocument: f.goal, initialPlannerResponse: { ...program, program: { ...program.program, actions: [action, second] } },
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.home, goalDocument: f.goal, initialPlannerResponse: programOf([step, second]),
     dependencies: { dispatchV2Action: async (options) => {
       seen.push(options.action.id);
       const files = options.paths(1);

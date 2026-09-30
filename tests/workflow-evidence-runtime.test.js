@@ -16,7 +16,9 @@ import { pauseV2Run, unpauseV2Run } from '../src/workflow/run-control.js';
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
 import { handoffBlock } from '../src/workflow/retry-handoff.js';
 import { dispatchV2Action, requestStepRestart } from '../src/workflow/v2-dispatch.js';
-import { STAGE3_RUN_FEATURES, readRunFeatures } from '../src/workflow/run-features.js';import { formatV2ProofLabel, v2RetryPlan } from '../src/workflow/v2-outcome.js';
+import { STAGE3_RUN_FEATURES, readRunFeatures, withProgramFormat } from '../src/workflow/run-features.js';
+import { formatV2ProofLabel, v2RetryPlan } from '../src/workflow/v2-outcome.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { staleScore } from '../src/lib/stale.js';
 
 const REQUIREMENT = { id: 'deliver', text: 'Deliver the requested files and validate them.' };
@@ -34,7 +36,8 @@ function gitRepo(workspace) {
   execFileSync('git', ['-C', workspace, '-c', 'user.name=Acme Dev', '-c', 'user.email=dev@example.com', 'commit', '-qm', 'seed']);
 }
 
-function fixture(t, settings = {}) {
+// `v3`: the goal carries the implicit requirement a v3 program needs.
+function fixture(t, settings = {}, { v3 = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-evidence-runtime-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -43,7 +46,8 @@ function fixture(t, settings = {}) {
   mkdirSync(bullswarmDir, { recursive: true });
   gitRepo(workspace);
   const goalDocument = createV2GoalDocument({
-    goal: 'Deliver the requested files', cwd: workspace, requirements: [REQUIREMENT],
+    goal: 'Deliver the requested files', cwd: workspace,
+    requirements: v3 ? implicitV3Requirements('Deliver the requested files') : [REQUIREMENT],
     settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1, ...settings },
   });
   return { root, workspace, bullswarmDir, goalDocument };
@@ -59,6 +63,14 @@ const program = (actions) => ({
   schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write and check.',
   program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
 });
+
+// The same step as a v3 program writes it. 0.38.0 resumes only v3 runs.
+const stepV3 = (over = {}) => ({ id: 'write', files: ['write.txt'], prompt: 'Write write.txt.', lane: 'build', effort: 'low', ...over });
+const programV3 = (steps) => ({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write and check.',
+  program: { schemaVersion: 'bullswarm.workflow.program.v3', steps },
+});
+const V3_FEATURES = withProgramFormat(STAGE3_RUN_FEATURES, { v3: true });
 
 // The real dispatch with a fake worker. `worker` edits the workspace it is
 // handed; `runStepEvidence` replaces the real runner only where a test needs
@@ -87,10 +99,11 @@ function realDispatch({ worker = null, runStepEvidence = null, seen = [] } = {})
   };
 }
 
-function launch(f, { runId, actions, dispatch, dependencies = {} }) {
+// `steps` launches a v3 program (f from fixture(t, settings, { v3: true })).
+function launch(f, { runId, actions, steps, dispatch, dependencies = {} }) {
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId, parentEnv: {},
-    initialPlannerResponse: program(actions),
+    initialPlannerResponse: steps ? programV3(steps) : program(actions),
     dependencies: { refreshPools: async () => null, dispatchV2Action: dispatch, ...dependencies },
   });
 }
@@ -208,7 +221,6 @@ test('stage 3: a failing check is the step\'s one gate retry, forced onto the sa
     dispatch: realDispatch({ seen, worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'nope\n') }),
   });
   assert.deepEqual(readRunFeatures(run.runDir), { ...STAGE3_RUN_FEATURES });
-  assert.equal(seen[0].failureRule, true);
   assert.equal(seen[0].retriesAlready, 0);
   const [first, second] = run.state.attempts;
   assert.equal(run.state.attempts.length, 2, 'exactly one retry, never a third attempt');
@@ -233,51 +245,42 @@ test('stage 3: a failing check is the step\'s one gate retry, forced onto the sa
   assert.equal(result.handback.unfinished[0].retries, 1);
 });
 
-async function resumeWithAttempts(t, { runId, attempts, actionState, marker = null, evidence = [{ type: 'command', cmd: 'true' }] }) {
-  const f = fixture(t);
+// A v3 run on disk, interrupted with `attempts`, for the kernel to resume.
+async function resumeWithAttempts(t, { runId, attempts, actionState, marker, evidence = [{ type: 'command', cmd: 'true' }] }) {
+  const f = fixture(t, {}, { v3: true });
   const runDir = join(f.bullswarmDir, 'workflows', runId);
   mkdirSync(runDir, { recursive: true });
   let state = createV2State(f.goalDocument, { runId, shortId: runId.slice(3, 9) });
-  state = acceptCallerPlannerResponse(state, program([step({ ...(evidence ? { evidence } : {}) })]), { boundary: 'initial', runDir }).state;
+  state = acceptCallerPlannerResponse(state, programV3([stepV3({ ...(evidence ? { evidence } : {}) })]), { boundary: 'initial', runDir }).state;
   Object.assign(state.actions[0], { status: 'interrupted', attempts: attempts.length, startedAt: '2026-09-24T10:00:00.000Z', ...actionState });
   state.attempts = attempts;
   state.lifecycle.status = 'interrupted';
   writeFileSync(join(runDir, 'goal.json'), JSON.stringify(f.goalDocument));
   writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
-  if (marker) writeFileSync(join(runDir, 'features.json'), marker);
+  writeFileSync(join(runDir, 'features.json'), marker);
   return { f, runDir };
 }
 
-test('a resumed run keeps its marker: no proof on a step without evidence, and an extra key survives', async (t) => {
-  const marker = `${JSON.stringify({ deliverableGate: 1, acmeFutureKey: 'kept' }, null, 2)}\n`;
-  const { f, runDir } = await resumeWithAttempts(t, { runId: 'wf-evmark-abcdef', attempts: [], marker, evidence: null });
-  const seen = [];
-  const run = await runV2AutonomousWorkflow({
-    bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-evmark-abcdef', pools: [], parentEnv: {},
-    dependencies: {
-      refreshPools: async () => null,
-      dispatchV2Action: realDispatch({ seen, worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'ok\n') }),
-    },
-  });
-  assert.equal(run.state.actions[0].status, 'succeeded');
-  assert.equal(seen[0].legacyGate, true);
-  assert.equal(readFileSync(join(runDir, 'features.json'), 'utf8'), marker, 'never rewritten');
-  assert.deepEqual(readRunFeatures(runDir), { deliverableGate: 1, acmeFutureKey: 'kept' });
-  const finished = eventsOf(runDir, 'action.finished').at(-1).payload;
-  assert.equal(finished.status, 'succeeded');
-  assert.equal(Object.hasOwn(finished, 'proof'), false);
-
-  // The same unmarked run with a step that declares evidence is labelled.
-  const { f: g, runDir: evidenceDir } = await resumeWithAttempts(t, { runId: 'wf-evmrk2-abcdef', attempts: [] });
-  await runV2AutonomousWorkflow({
-    bullswarmDir: g.bullswarmDir, resumeRunId: 'wf-evmrk2-abcdef', pools: [], parentEnv: {},
-    dependencies: {
-      refreshPools: async () => null,
-      dispatchV2Action: realDispatch({ worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'ok\n') }),
-    },
-  });
-  assert.equal(existsSync(join(evidenceDir, 'features.json')), false);
-  assert.deepEqual(eventsOf(evidenceDir, 'action.finished').at(-1).payload.proof, { by: ['command'], reviewPending: false });
+test('a resumed run keeps its marker, an extra key included, and labels every step by its proof', async (t) => {
+  for (const [runId, evidence, by] of [['wf-evmark-abcdef', null, []], ['wf-evmrk2-abcdef', undefined, ['command']]]) {
+    const marker = `${JSON.stringify({ ...V3_FEATURES, acmeFutureKey: 'kept' }, null, 2)}\n`;
+    const { f, runDir } = await resumeWithAttempts(t, { runId, attempts: [], marker, evidence });
+    const seen = [];
+    const run = await runV2AutonomousWorkflow({
+      bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], parentEnv: {},
+      dependencies: {
+        refreshPools: async () => null,
+        dispatchV2Action: realDispatch({ seen, worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'ok\n') }),
+      },
+    });
+    assert.equal(run.state.actions[0].status, 'succeeded');
+    assert.equal(seen[0].legacyGate, true);
+    assert.equal(readFileSync(join(runDir, 'features.json'), 'utf8'), marker, 'never rewritten');
+    assert.deepEqual(readRunFeatures(runDir), { ...V3_FEATURES, acmeFutureKey: 'kept' });
+    const finished = eventsOf(runDir, 'action.finished').at(-1).payload;
+    assert.equal(finished.status, 'succeeded');
+    assert.deepEqual(finished.proof, { by, reviewPending: false }, runId);
+  }
 });
 
 test('an isolated run checks the copy before integration and rewrites the workspace path in cmd', async (t) => {
@@ -324,7 +327,7 @@ test('an isolated run whose check fails never integrates', async (t) => {
 });
 
 test('a kernel signal during a check stores the attempt interrupted, and resume hands it on', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   const runId = 'wf-evsig1-abcdef';
   const before = new Set(process.listeners('SIGTERM'));
   const signalKernel = kernelSignalFrom(before);
@@ -338,7 +341,7 @@ test('a kernel signal during a check stores the attempt interrupted, and resume 
   };
   const first = await launch(f, {
     runId,
-    actions: [step({ evidence: [{ type: 'command', cmd: 'node --test tests/write.test.js' }] })],
+    steps: [stepV3({ evidence: [{ type: 'command', cmd: 'node --test tests/write.test.js' }] })],
     dispatch: realDispatch({ runStepEvidence: stubRunner, worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'ok\n') }),
   });
   assert.equal(first.state.lifecycle.status, 'interrupted');
@@ -445,7 +448,7 @@ test("onAttempt('corrected') stores failed and the new why, emits corrected, and
 });
 
 test('a kernel that dies after the receipt recovers the check results on resume (E31)', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   const runId = 'wf-evrcpt-abcdef';
   const runDir = join(f.bullswarmDir, 'workflows', runId);
   const snapshot = join(f.root, 'snapshot');
@@ -457,7 +460,7 @@ test('a kernel that dies after the receipt recovers the check results on resume 
   };
   await launch(f, {
     runId,
-    actions: [step({ evidence: [{ type: 'command', cmd: 'test -s write.txt' }] })],
+    steps: [stepV3({ evidence: [{ type: 'command', cmd: 'test -s write.txt' }] })],
     dispatch: realDispatch({ worker: ({ targetDir }) => writeFileSync(join(targetDir, 'write.txt'), 'ok\n') }),
     dependencies: { writeCompletionReceipt: writeThenDie },
   });
@@ -562,9 +565,10 @@ test('a handoff whose checks were all stopped says they run again, never "fix th
   assert.doesNotMatch(block, /Fix the work/);
 });
 
-// An act step: its worker sends (counted), and its read-back check runs after.
-const announce = (over = {}) => step({
-  id: 'announce', purpose: 'Announce the release', role: 'act', lane: 'analyze', ownedFiles: [],
+// An act step (a v3 outward step): its worker sends (counted), and its
+// read-back check runs after.
+const announce = (over = {}) => ({
+  id: 'announce', deliverable: 'outward', lane: 'analyze',
   prompt: 'Post the release announcement.', evidence: [{ type: 'command', cmd: 'grep -q SENT outbox.txt' }], ...over,
 });
 const stoppedRun = (items) => ({
@@ -600,14 +604,14 @@ async function resumeCounting(f, runId, count) {
 }
 
 test('a kernel signal during an act step\'s checks sends it to the caller, and resume never runs its worker again (F14)', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   const runId = 'wf-evacts-abcdef';
   const signalKernel = kernelSignalFrom(new Set(process.listeners('SIGTERM')));
   let sends = 0;
   const count = () => { sends += 1; };
   const first = await launch(f, {
     runId,
-    actions: [announce()],
+    steps: [announce()],
     dispatch: realDispatch({
       worker: count,
       runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
@@ -629,13 +633,13 @@ test('a kernel signal during an act step\'s checks sends it to the caller, and r
 });
 
 test('pause --now during an act step\'s checks sends it to the caller, and unpause + resume never run its worker again (F14)', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   const runId = 'wf-evactp-abcdef';
   let sends = 0;
   const count = () => { sends += 1; };
   const first = await launch(f, {
     runId,
-    actions: [announce()],
+    steps: [announce()],
     dispatch: realDispatch({
       worker: count,
       runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
@@ -662,13 +666,13 @@ test('pause --now during an act step\'s checks sends it to the caller, and unpau
 });
 
 test('a step restart during an act step\'s checks is refused: the step goes to the caller and its worker never runs again (F14)', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   const runId = 'wf-evactr-abcdef';
   const runDir = join(f.bullswarmDir, 'workflows', runId);
   let sends = 0;
   const run = await launch(f, {
     runId,
-    actions: [announce()],
+    steps: [announce()],
     dispatch: realDispatch({
       worker: () => { sends += 1; },
       runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
@@ -695,12 +699,12 @@ test('a step restart during an act step\'s checks is refused: the step goes to t
 });
 
 test('workflow cancel during an act step\'s checks sends it to the caller, so workflow resume never runs its worker again (F14)', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   const runId = 'wf-evactc-abcdef';
   let sends = 0;
   const run = await launch(f, {
     runId,
-    actions: [announce()],
+    steps: [announce()],
     dispatch: realDispatch({
       worker: () => { sends += 1; },
       runStepEvidence: async (items, { shouldCancel, onEvidence }) => {
@@ -717,15 +721,15 @@ test('workflow cancel during an act step\'s checks sends it to the caller, so wo
 });
 
 test('a kernel that dies during an act step\'s checks leaves it for the caller on resume; other steps still rerun (F14)', async (t) => {
-  for (const [label, action, runId] of [['act', announce(), 'wf-evactd-abcdef'], ['build', step({ evidence: [{ type: 'command', cmd: 'test -s write.txt' }] }), 'wf-evbldd-abcdef']]) {
-    const f = fixture(t);
+  for (const [label, action, runId] of [['act', announce(), 'wf-evactd-abcdef'], ['build', stepV3({ evidence: [{ type: 'command', cmd: 'test -s write.txt' }] }), 'wf-evbldd-abcdef']]) {
+    const f = fixture(t, {}, { v3: true });
     const runDir = join(f.bullswarmDir, 'workflows', runId);
     const snapshot = join(f.root, 'snapshot');
     let sends = 0;
     const count = ({ targetDir }) => { sends += 1; writeFileSync(join(targetDir, 'write.txt'), 'ok\n'); };
     await launch(f, {
       runId,
-      actions: [action],
+      steps: [action],
       dispatch: realDispatch({
         worker: count,
         // The run directory exactly as a kernel killed while its first check

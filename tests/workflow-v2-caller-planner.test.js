@@ -1,8 +1,10 @@
 // Caller-as-planner: the invoking agent authors the program directly and the
 // kernel never dispatches a Workflow Planner process. Runtime-level tests use
-// the fake dispatcher on stored v2 programs; CLI-level tests drive the real
-// binary against a local deterministic connector with v3 programs (0.38.0
-// launches nothing else) so no planner task can ever reach a worker.
+// the fake dispatcher, on v3 programs wherever a run is driven or resumed
+// (0.38.0 drives nothing else) and on stored v2 programs for the validator and
+// bookkeeping; CLI-level tests drive the real binary against a local
+// deterministic connector with v3 programs so no planner task can ever reach
+// a worker.
 
 import { test } from 'node:test';
 import { loadProviders } from '../src/lib/providers.js';
@@ -14,7 +16,9 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
-import { createV2GoalDocument, deserializeV2DurableState } from '../src/workflow/v2-state.js';
+import { createV2DurableState, createV2GoalDocument, deserializeV2DurableState } from '../src/workflow/v2-state.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
+import { STAGE3_RUN_FEATURES, withProgramFormat } from '../src/workflow/run-features.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { reviseV2Program } from '../src/workflow/run-control.js';
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
@@ -46,14 +50,30 @@ const envelope = () => ({
   summary: 'Write the report and independently inspect it.', program: program(),
 });
 
-function setup(settings = {}) {
+// The same two steps as a v3 program: the check reports by its answer.
+const v3Envelope = () => ({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write the report and inspect it.',
+  program: {
+    schemaVersion: 'bullswarm.workflow.program.v3',
+    steps: [
+      { id: 'write-report', files: ['report.md'], prompt: 'Write READY to report.md.', lane: 'build', effort: 'low' },
+      {
+        id: 'inspect-report', dependsOn: ['write-report'], prompt: 'Inspect report.md.', lane: 'analyze', effort: 'low',
+        answer: { type: 'object', required: ['ready'], properties: { ready: { type: 'boolean' } } },
+      },
+    ],
+  },
+});
+
+// `v3`: the goal carries the implicit requirement a v3 program needs.
+function setup(settings = {}, { v3 = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-v2-caller-'));
   const bullswarmDir = join(root, 'home');
   const workspace = join(root, 'repo');
   mkdirSync(bullswarmDir); mkdirSync(workspace);
   const goal = createV2GoalDocument({
-    goal: 'Deliver a correct report', cwd: workspace, requirements: [requirement],
-    settings: { scout: false, concurrency: 2, maxExpansionRounds: 1, plannerMode: 'caller', ...settings },
+    goal: 'Deliver a correct report', cwd: workspace, requirements: v3 ? implicitV3Requirements('Deliver a correct report') : [requirement],
+    settings: { scout: false, concurrency: 2, maxExpansionRounds: 1, plannerMode: 'caller', ...(v3 ? { executionMode: 'program', workspaceMode: 'shared' } : {}), ...settings },
   });
   return { root, bullswarmDir, workspace, goal, cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
@@ -85,6 +105,11 @@ function fakeDispatch(handler) {
 function evidenceHandler({ status = 'passed', concerns = [] } = {}) {
   return async (options, _calls, files) => {
     if (options.action.id === 'workflow-planner') throw new Error('caller-planner mode must never dispatch a planner');
+    if (options.answerBrief) {
+      writeFileSync(/to this file: (\S+)/.exec(options.answerBrief({ files }))[1], JSON.stringify({ ready: status === 'passed' }));
+      writeFileSync(files.outFile, 'inspected report.md');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: options.outputValidator(''), outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
     if (options.action.evidenceFor?.length) {
       const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
       const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: Object.fromEntries(options.action.evidenceFor.map((id) => [id, { status, evidence: [`${id} inspected`], concerns }])) };
@@ -142,16 +167,16 @@ test('bare programs are wrapped into a planner response; foreign documents are r
   assert.throws(() => normalizeCallerPlannerResponse('not an object'), V2PlannerValidationError);
 });
 
-test('a caller-supplied initial program runs to a kernel-verified result with zero planner or scout dispatches', async () => {
-  const f = setup();
+test('a caller-supplied initial program runs to a completed result with zero planner or scout dispatches', async () => {
+  const f = setup({}, { v3: true });
   try {
     const dispatch = fakeDispatch(evidenceHandler());
     const result = await runV2AutonomousWorkflow({
       bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller1-abcdef',
-      initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
+      initialPlannerResponse: v3Envelope(), dependencies: { dispatchV2Action: dispatch },
     });
-    assert.equal(result.result.status, 'completed');
-    assert.equal(result.result.verified, true);
+    assert.equal(result.result.status, 'completed', result.result.reason);
+    assert.deepEqual(result.state.actions.find((action) => action.id === 'inspect-report').answer.value, { ready: true });
     assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report']);
     assert.equal(result.state.planner.turns, 1);
     assert.equal(result.state.planner.attempts.length, 0, 'no planner process ran');
@@ -192,61 +217,6 @@ test('an invalid initial program finishes at once and hands the issues back with
     assert.ok(handed.payload.issues.some((issue) => /has no evidence action/.test(issue)));
     assert.equal(events.at(-1).type, 'workflow.finished');
     assert.equal(existsSync(join(result.runDir, 'initial-planner-response.json')), false, 'a rejected program is never replayed by a resume');
-  } finally { f.cleanup(); }
-});
-
-test('a gap finishes the run and hands it back; resume changes nothing', async () => {
-  const f = setup();
-  try {
-    // First evidence fails the requirement so the kernel consolidates a gap.
-    let evidenceStatus = 'failed';
-    const dispatch = fakeDispatch(async (options, calls, files) => evidenceHandler({ status: evidenceStatus })(options, calls, files));
-    const finished = await runV2AutonomousWorkflow({
-      bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller3-abcdef',
-      initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
-    });
-    assert.equal(finished.result.status, 'partial');
-    assert.equal(finished.result.verified, false);
-    assert.match(finished.result.reason, /^requirements are still open and no step is left to run: .*report-correct=failed/);
-    assert.deepEqual(
-      finished.result.handback.unresolvedRequirements.map((entry) => [entry.id, entry.status, entry.why]),
-      [['report-correct', 'failed', 'report-correct inspected']],
-    );
-    assert.deepEqual(finished.result.handback.unfinished, []);
-    assert.equal(finished.state.planner.awaiting, null);
-    assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report']);
-    assert.equal(readEvents(finished.runDir).filter((event) => event.type === 'planner.awaiting_caller').length, 0);
-
-    // Resuming a finished run with nothing to retry returns its result and dispatches nothing.
-    const again = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller3-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.deepEqual(again.result, finished.result);
-    assert.equal(dispatch.calls(), 2);
-
-  } finally { f.cleanup(); }
-});
-
-test('caller mode without a program scouts first, then finishes and hands the scout report back', async () => {
-  const f = setup({ scout: true });
-  try {
-    const scoutReport = [
-      'TREE:\n- report.md', 'MANIFEST:\n- Node.js', 'TEST STATUS:\n- tests pass',
-      'UNITS OF WORK:\n- report-unit', 'SHARED FILES:\n- none', 'RISKS:\n- none',
-      'Additional repository facts '.repeat(8), '["report-unit"]',
-    ].join('\n');
-    const dispatch = fakeDispatch(async (options, _calls, files) => {
-      if (options.action.id !== 'preflight-scout') throw new Error(`unexpected dispatch ${options.action.id}`);
-      writeFileSync(files.outFile, scoutReport);
-      const structured = options.outputValidator(scoutReport);
-      return { ok: true, status: 'succeeded', verdict: { ok: true, structured, outFile: files.outFile, meta: { exitCode: 0 } } };
-    });
-    const finished = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller5-abcdef', dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(dispatch.calls(), 1);
-    assert.equal(finished.result.status, 'partial');
-    assert.equal(finished.state.planner.awaiting, null);
-    const scoutFile = finished.state.preflight.scout.outputFile;
-    assert.match(readFileSync(scoutFile, 'utf8'), /UNITS OF WORK/);
-    assert.ok(finished.result.reason.startsWith(`no program to run (the scout report is at ${scoutFile}). Add steps with bullswarm workflow plan revise `), finished.result.reason);
-
   } finally { f.cleanup(); }
 });
 
@@ -474,38 +444,27 @@ test('CLI: an invalid --program is rejected synchronously and nothing is launche
 });
 
 test('a caller program supplied at launch survives an interruption before the initial boundary', async () => {
-  const f = setup({ scout: true });
+  const f = setup({}, { v3: true });
   try {
-    const scoutReport = [
-      'TREE:\n- report.md', 'MANIFEST:\n- Node.js', 'TEST STATUS:\n- tests pass',
-      'UNITS OF WORK:\n- report-unit', 'SHARED FILES:\n- none', 'RISKS:\n- none',
-      'Additional repository facts '.repeat(8), '["report-unit"]',
-    ].join('\n');
-    let crashScout = true;
-    const dispatch = fakeDispatch(async (options, calls, files) => {
-      if (options.action.id === 'preflight-scout') {
-        if (crashScout) throw new Error('simulated host interruption during the scout');
-        writeFileSync(files.outFile, scoutReport);
-        const structured = options.outputValidator(scoutReport);
-        return { ok: true, status: 'succeeded', verdict: { ok: true, structured, outFile: files.outFile, meta: { exitCode: 0 } } };
-      }
-      return evidenceHandler()(options, calls, files);
-    });
-    await assert.rejects(runV2AutonomousWorkflow({
-      bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-callera-abcdef',
-      initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
-    }), /simulated host interruption/);
-    const runDir = join(f.bullswarmDir, 'workflows', 'wf-callera-abcdef');
-    assert.ok(existsSync(join(runDir, 'initial-planner-response.json')), 'the unapplied program is kept in the run directory');
-    crashScout = false;
-    // The resume carries no program; the kernel recovers it instead of pausing.
-    const resumed = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-callera-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(resumed.result.status, 'completed');
+    // The run directory as a kernel killed right after it kept the caller's
+    // program leaves it: the program is on disk, no planner turn happened.
+    const runId = 'wf-callera-abcdef';
+    const runDir = join(f.bullswarmDir, 'workflows', runId);
+    mkdirSync(runDir, { recursive: true });
+    const state = createV2DurableState(f.goal, { runId, shortId: 'callra' });
+    state.lifecycle.status = 'interrupted';
+    writeFileSync(join(runDir, 'goal.json'), JSON.stringify(f.goal));
+    writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
+    writeFileSync(join(runDir, 'features.json'), JSON.stringify(withProgramFormat(STAGE3_RUN_FEATURES, { v3: true })));
+    writeFileSync(join(runDir, 'initial-planner-response.json'), JSON.stringify(v3Envelope()));
+    const dispatch = fakeDispatch(evidenceHandler());
+    // The resume carries no program; the kernel recovers it instead of handing back.
+    const resumed = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], dependencies: { dispatchV2Action: dispatch } });
+    assert.equal(resumed.result.status, 'completed', resumed.result.reason);
     assert.equal(resumed.state.planner.turns, 1);
     assert.equal(resumed.state.planner.attempts.length, 0);
-    assert.ok(!dispatch.seen().includes('workflow-planner'));
-    assert.deepEqual(dispatch.seen().filter((id) => id !== 'preflight-scout'), ['write-report', 'inspect-report']);
-    assert.equal(readEvents(runDir).filter((event) => event.type === 'planner.awaiting_caller').length, 0);
+    assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report']);
+    assert.equal(readEvents(runDir).filter((event) => event.type === 'planner.handed_back').length, 0);
   } finally { f.cleanup(); }
 });
 
@@ -985,16 +944,11 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
     writeFileSync(join(workspace, 'README.md'), 'acme\n');
     spawnSync('git', ['-C', workspace, 'add', '.']);
     spawnSync('git', ['-C', workspace, '-c', 'user.name=Acme Dev', '-c', 'user.email=dev@example.com', 'commit', '-qm', 'seed']);
-    const ids = ['slow', 'crash', 'gate', 'after'];
     const goal = createV2GoalDocument({
-      goal: 'Deliver four files', cwd: workspace,
-      requirements: ids.map((id) => ({ id: `${id}-done`, text: `${id}.txt is delivered` })),
+      goal: 'Deliver four files', cwd: workspace, requirements: implicitV3Requirements('Deliver four files'),
       settings: { executionMode: 'program', plannerMode: 'caller', workspaceMode: 'shared', scout: false, concurrency: 1 },
     });
-    const stepOf = (id, over = {}) => ({
-      id, purpose: `Deliver ${id}.txt`, dependsOn: [], affects: [`${id}-done`], ownedFiles: [`${id}.txt`],
-      prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], ...over,
-    });
+    const stepOf = (id, over = {}) => ({ id, files: [`${id}.txt`], prompt: `Write ${id}.txt.`, lane: 'build', effort: 'low', ...over });
     const actions = [
       stepOf('slow', { route: { pools: { use: ['pool-a'] } } }),
       stepOf('crash'),
@@ -1046,11 +1000,11 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
     const runId = 'wf-s3e2e-abcdef';
     const first = await runV2AutonomousWorkflow({
       bullswarmDir, goalDocument: goal, pools: [], runId, parentEnv: {},
-      initialPlannerResponse: { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Four files.', program: { schemaVersion: 'bullswarm.workflow.program.v2', actions } },
+      initialPlannerResponse: { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Four files.', program: { schemaVersion: 'bullswarm.workflow.program.v3', steps: actions } },
       dependencies,
     });
     const runDir = first.runDir;
-    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
+    assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller', programFormat: 3 });
     assert.equal(first.result.status, 'partial');
     const attemptsOf = (state, id) => state.attempts.filter((attempt) => attempt.actionId === id);
     const events = readEvents(runDir);
@@ -1128,73 +1082,4 @@ test('stage 3 end to end: gate retry then the caller, process retry elsewhere, a
     assert.ok(readEvents(runDir).some((event) => event.type === 'step.accepted' && event.payload.actionId === 'gate'));
     assert.equal(attemptsOf(second.state, 'gate').length, 2, 'accepting never reruns the step');
   } finally { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
-});
-
-// A finished run a kernel leaves when its dispatched planner or scout hit a
-// usage limit (the dispatcher's usage-limit rules, faked here). That kernel
-// runs in its own process, which exits, as a real one does: a relaunched
-// kernel refuses a run whose recorded kernel is still alive.
-function stopInChildKernel(f, { runId, scout, stoppedId, reset, why }) {
-  const goal = createV2GoalDocument({
-    goal: GOAL, cwd: f.target,
-    requirements: [{ id: 'requirement-1', text: 'Create done.txt containing exactly caller-complete followed by a newline.' }],
-    settings: { executionMode: 'program', workspaceMode: 'shared', scout, concurrency: 1 },
-  });
-  const kernel = [
-    `const { runV2AutonomousWorkflow } = await import(${JSON.stringify(join(REPO, 'src', 'workflow', 'v2-runtime.js'))});`,
-    'const seen = [];',
-    `const stopped = await runV2AutonomousWorkflow({ bullswarmDir: ${JSON.stringify(f.home)}, goalDocument: ${JSON.stringify(goal)}, pools: [], runId: ${JSON.stringify(runId)}, parentEnv: {},`,
-    '  dependencies: { refreshPools: async () => null, dispatchV2Action: async (options) => {',
-    '    seen.push([options.action.id, options.usageLimitsToCaller]);',
-    `    return { ok: false, status: 'failed', failureKind: 'quota', retryAfter: ${JSON.stringify(reset)}, attempts: [], verdict: { ok: false, why: ${JSON.stringify(why)}, meta: { exitCode: null } } };`,
-    '  } } });',
-    'process.stdout.write(JSON.stringify({ seen, token: stopped.state.shortId, status: stopped.result.status, reason: stopped.result.reason }));',
-  ].join('\n');
-  const child = spawnSync(process.execPath, ['--input-type=module', '-e', kernel], { cwd: REPO, encoding: 'utf8', timeout: 30_000 });
-  assert.equal(child.status, 0, child.stderr);
-  const stopped = JSON.parse(child.stdout);
-  assert.deepEqual(stopped.seen, [[stoppedId, true]]);
-  assert.equal(stopped.status, 'partial');
-  return stopped;
-}
-
-test('CLI, marked: after the Workflow Planner stopped on a usage limit, the saved reason still names resume, and resume refuses the run as view-only', async () => {
-  const f = cliFixture();
-  try {
-    // A reset still ahead, so resume says the planner can stop the same way.
-    const reset = '2099-01-01T00:00:00.000Z';
-    const why = `no pool with quota to spare: caller-agent paused for quota until ${reset}`;
-    const { token, reason } = stopInChildKernel(f, { runId: 'wf-plstop-abcdef', scout: false, stoppedId: 'workflow-planner', reset, why });
-    assert.equal(reason, `the workflow planner stopped on a usage limit: ${why} · back at ${reset} · your call: `
-      + `resume after ${reset} with bullswarm workflow resume ${token}, plan it yourself with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run`);
-
-    // 0.38.0 (D1): the run is v2, so it is view-only. The saved reason above
-    // stays as it was written; resume refuses and writes nothing.
-    const statePath = join(f.home, 'workflows', 'wf-plstop-abcdef', 'state.json');
-    const before = readFileSync(statePath, 'utf8');
-    const resumed = cli(f, ['workflow', 'resume', token]);
-    assert.deepEqual([resumed.status, resumed.stdout, resumed.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
-    assert.equal(readFileSync(statePath, 'utf8'), before, 'a refused resume writes nothing');
-    assert.equal(existsSync(join(f.target, 'done.txt')), false, 'no planner or step ran');
-  } finally { f.cleanup(); }
-});
-
-test('CLI, marked: after the preflight scout stopped on a usage limit, resume --json refuses the run as view-only', async () => {
-  const f = cliFixture();
-  try {
-    // A reset already passed: no note, only what runs again.
-    const reset = '2026-01-01T00:00:00.000Z';
-    const why = `usage limit: "You've hit your session limit" · pool paused until ${reset}`;
-    const { token, reason } = stopInChildKernel(f, { runId: 'wf-scstop-abcdef', scout: true, stoppedId: 'preflight-scout', reset, why });
-    assert.ok(reason.startsWith(`the preflight scout stopped on a usage limit: ${why} · back at ${reset} · your call: resume after ${reset} with bullswarm workflow resume ${token}, `), reason);
-
-    // 0.38.0 (D1): the run is v2, so it is view-only: resume refuses and writes nothing.
-    const runDir = join(f.home, 'workflows', 'wf-scstop-abcdef');
-    const before = readFileSync(join(runDir, 'state.json'), 'utf8');
-    const resumed = cli(f, ['workflow', 'resume', token, '--json']);
-    assert.equal(resumed.status, 2, resumed.stderr || resumed.stdout);
-    assert.deepEqual(JSON.parse(resumed.stdout), { viewOnly: true, verb: 'resume', runId: 'wf-scstop-abcdef', shortId: token, dir: runDir, message: viewOnlyRunLine(token) });
-    assert.equal(readFileSync(join(runDir, 'state.json'), 'utf8'), before, 'a refused resume writes nothing');
-    assert.equal(JSON.parse(before).preflight.scout.status, 'failed');
-  } finally { f.cleanup(); }
 });

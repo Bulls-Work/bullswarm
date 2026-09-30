@@ -14,6 +14,8 @@ import { v2RunnerLiveness } from '../src/workflow/short-id.js';
 import { captureWorkspaceStatus } from '../src/workflow/workspace-report.js';
 import { queueSteering } from '../src/workflow/steering.js';
 import { validateV2PlannerResponse } from '../src/workflow/v2-planner.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
+import { STAGE3_RUN_FEATURES, withProgramFormat } from '../src/workflow/run-features.js';
 
 const cli = resolve('bin/bullswarm.js');
 const action = (id, options = {}) => ({
@@ -21,12 +23,20 @@ const action = (id, options = {}) => ({
   prompt: `Implement ${id} and run its focused checks.`, lane: 'build', effort: 'low',
   evidenceFor: [], inputs: [], produces: [], ...options,
 });
-const program = (actions, defaults = null) => ({
+const program = (actions) => ({
   schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Execute the graph and return its results.',
-  program: { schemaVersion: 'bullswarm.workflow.program.v2', actions, ...(defaults ? { defaults } : {}) },
+  program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
 });
 
-function fixture(t, settings = {}) {
+// `v3`: the goal carries the implicit requirement a v3 program needs.
+// The same step and program in v3 form: 0.38.0 resumes only v3 runs.
+const stepV3 = (id, options = {}) => ({ id, files: [`${id}.txt`], prompt: `Implement ${id} and run its focused checks.`, lane: 'build', effort: 'low', ...options });
+const programV3 = (steps) => ({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Execute the graph and return its results.',
+  program: { schemaVersion: 'bullswarm.workflow.program.v3', steps },
+});
+
+function fixture(t, settings = {}, { v3 = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-program-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -34,7 +44,7 @@ function fixture(t, settings = {}) {
   mkdirSync(workspace); mkdirSync(bullswarmDir);
   const goalDocument = createV2GoalDocument({
     goal: 'Deliver the requested files', cwd: workspace,
-    requirements: [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }],
+    requirements: v3 ? implicitV3Requirements('Deliver the requested files') : [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }],
     settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 2, ...settings },
   });
   return { root, workspace, bullswarmDir, goalDocument };
@@ -58,10 +68,12 @@ function dispatcher(handler) {
   };
 }
 
-function run(f, actions, handler, dependencies = {}, defaults = null) {
+// `actions` in v3 form (stepV3) launch a v3 program.
+function run(f, actions, handler, dependencies = {}) {
+  const v3 = actions.every((entry) => !Object.hasOwn(entry, 'purpose'));
   return runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [],
-    initialPlannerResponse: program(actions, defaults),
+    initialPlannerResponse: v3 ? programV3(actions) : program(actions),
     dependencies: {
       dispatchV2Action: dispatcher(handler),
       captureWorkspaceManifest: () => { throw new Error('shared program must never scan a manifest'); },
@@ -159,30 +171,9 @@ test('a thrown worker error is an action failure; siblings finish, dependents sk
   assert.equal(readEvents(result.runDir).at(-1).type, 'workflow.finished');
 });
 
-test('negative evidence is reported without an automatic gap round or a verified claim', async (t) => {
-  const f = fixture(t);
-  const result = await run(f, [action('write'), action('inspect', {
-    dependsOn: ['write'], affects: [], ownedFiles: [], evidenceFor: ['deliver'], lane: 'analyze',
-  })], async (options) => {
-    if (options.action.id !== 'inspect') return;
-    const candidate = options.taskText.match(/exact durable path: '([^']+)'/)[1];
-    writeFileSync(candidate, JSON.stringify({
-      schemaVersion: 'bullswarm.workflow.evidence.v2',
-      requirements: { deliver: { status: 'failed', evidence: ['The gate found an unfinished item.'], concerns: ['Needs another edit.'] } },
-    }));
-    return { verdict: { ok: true, structured: options.outputValidator('') } };
-  }, {}, { verifyRounds: 0 });
-  assert.equal(result.result.status, 'completed');
-  assert.equal(result.result.verified, false);
-  assert.equal(result.result.requirements[0].status, 'failed');
-  assert.equal(result.result.gaps.requirements[0].status, 'failed');
-  assert.equal(result.state.planner.turns, 1);
-  assert.equal(result.state.planner.awaiting, null);
-});
-
 test('resuming a completed program returns its durable result without rerunning workers', async (t) => {
-  const f = fixture(t);
-  const first = await run(f, [action('write')], async () => {});
+  const f = fixture(t, {}, { v3: true });
+  const first = await run(f, [stepV3('write')], async () => {});
   const resumed = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, resumeRunId: first.runId, pools: [],
     dependencies: { dispatchV2Action: () => { throw new Error('must not dispatch'); } },
@@ -241,12 +232,12 @@ test('cancellation drains active workers, retains their files, and cancels queue
 });
 
 test('recovery skips successful actions and retries only the interrupted action in the original shared tree', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   const runId = 'wf-recovery-abcdef';
   const runDir = join(f.bullswarmDir, 'workflows', runId);
   mkdirSync(runDir, { recursive: true });
   let state = createV2State(f.goalDocument, { runId, shortId: 'rec123' });
-  state = acceptCallerPlannerResponse(state, program([action('done'), action('interrupted', { dependsOn: ['done'] })]), { boundary: 'initial', runDir }).state;
+  state = acceptCallerPlannerResponse(state, programV3([stepV3('done'), stepV3('interrupted', { dependsOn: ['done'] })]), { boundary: 'initial', runDir }).state;
   const outFile = join(runDir, 'done.md');
   writeFileSync(outFile, 'Durable first result');
   Object.assign(state.actions[0], { status: 'succeeded', outputFile: outFile });
@@ -254,6 +245,7 @@ test('recovery skips successful actions and retries only the interrupted action 
   state.lifecycle.status = 'running';
   writeFileSync(join(runDir, 'goal.json'), JSON.stringify(f.goalDocument));
   writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
+  writeFileSync(join(runDir, 'features.json'), JSON.stringify(withProgramFormat(STAGE3_RUN_FEATURES, { v3: true })));
   const seen = [];
   const resumed = await runV2AutonomousWorkflow({
     bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [],
@@ -284,18 +276,6 @@ test('workspace inventory handles literal bracket, whitespace and newline paths 
   });
   assert.equal(result.result.status, 'completed');
   assert.ok(result.result.workspace.warnings.length);
-});
-
-test('a failed optional scout does not stop an already authored program', async (t) => {
-  const f = fixture(t, { scout: true });
-  const seen = [];
-  const result = await run(f, [action('write')], async (options) => {
-    seen.push(options.action.id);
-    if (options.action.id === 'preflight-scout') return { ok: false, status: 'failed', failureKind: 'provider', verdict: { ok: false, why: 'scout unavailable' } };
-  });
-  assert.deepEqual(seen, ['preflight-scout', 'write']);
-  assert.equal(result.state.preflight.scout.status, 'failed');
-  assert.equal(result.result.status, 'completed');
 });
 
 test('explicit isolation keeps strict ownership and reports rejection as a partial program', async (t) => {
@@ -426,9 +406,9 @@ test('caller steering never waits for siblings or holds the finish; a run that f
 });
 
 test('resume recovers an already published program result after interrupted final state persistence', async (t) => {
-  const f = fixture(t);
+  const f = fixture(t, {}, { v3: true });
   let runId;
-  await assert.rejects(run(f, [action('write')], async () => {}, {
+  await assert.rejects(run(f, [stepV3('write')], async () => {}, {
     writeResultAtomic: (path, result) => {
       runId = result.runId;
       writeFileSync(path, JSON.stringify(result));

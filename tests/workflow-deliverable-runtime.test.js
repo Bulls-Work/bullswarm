@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { acceptCallerPlannerResponse } from '../src/workflow/caller-planner.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
+import { STAGE3_RUN_FEATURES, withProgramFormat } from '../src/workflow/run-features.js';
 import { buildProgramWorkTask } from '../src/workflow/step-prompts.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { CHECKER_PATH } from '../src/workflow/evidence-runner.js';
@@ -204,7 +206,12 @@ function gitRepo(workspace) {
   execFileSync('git', ['-C', workspace, '-c', 'user.name=Acme Dev', '-c', 'user.email=dev@example.com', 'commit', '-qm', 'seed']);
 }
 
-async function resumeBuild(t, { marker = false, prior = null, runId = 'wf-gate01-abcdef' } = {}) {
+// The marker a v3 launch writes; a resume never rewrites it (E23).
+const V3_MARKER = `${JSON.stringify(withProgramFormat(STAGE3_RUN_FEATURES, { v3: true }), null, 2)}\n`;
+
+// A v3 run on disk with one build step, resumed by the kernel with a worker
+// that changes nothing.
+async function resumeBuild(t, { prior = null, runId = 'wf-gate01-abcdef' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-gate-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -212,9 +219,9 @@ async function resumeBuild(t, { marker = false, prior = null, runId = 'wf-gate01
   mkdirSync(workspace, { recursive: true });
   mkdirSync(bullswarmDir, { recursive: true });
   gitRepo(workspace);
+  const goal = 'Deliver the requested files';
   const goalDocument = createV2GoalDocument({
-    goal: 'Deliver the requested files', cwd: workspace,
-    requirements: [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }],
+    goal, cwd: workspace, requirements: implicitV3Requirements(goal),
     settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
   });
   const runDir = join(bullswarmDir, 'workflows', runId);
@@ -223,12 +230,8 @@ async function resumeBuild(t, { marker = false, prior = null, runId = 'wf-gate01
   state = acceptCallerPlannerResponse(state, {
     schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write the file.',
     program: {
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [{
-        id: 'write', purpose: 'Deliver write', dependsOn: [], affects: ['deliver'], ownedFiles: ['write.txt'],
-        prompt: 'Implement write and run its focused checks.', lane: 'build', effort: 'low',
-        evidenceFor: [], inputs: [], produces: [],
-      }],
+      schemaVersion: 'bullswarm.workflow.program.v3',
+      steps: [{ id: 'write', files: ['write.txt'], prompt: 'Implement write and run its focused checks.', lane: 'build', effort: 'low' }],
     },
   }, { boundary: 'initial', runDir }).state;
   if (prior) {
@@ -239,7 +242,7 @@ async function resumeBuild(t, { marker = false, prior = null, runId = 'wf-gate01
   }
   writeFileSync(join(runDir, 'goal.json'), JSON.stringify(goalDocument));
   writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
-  if (marker) writeFileSync(join(runDir, 'features.json'), `${JSON.stringify({ deliverableGate: 1 }, null, 2)}\n`);
+  writeFileSync(join(runDir, 'features.json'), V3_MARKER);
   const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
   const seen = [];
   const run = await runV2AutonomousWorkflow({
@@ -321,29 +324,20 @@ test('a new run writes features.json with stage 2\'s keys plus failureRule 1 and
   assert.deepEqual(JSON.parse(readFileSync(join(result.runDir, 'features.json'), 'utf8')), { deliverableGate: 1, proofLabels: 1, failureRule: 1, reviewPlacement: 'caller' });
 });
 
-test('resuming without the marker lets an unchanged build step pass', async (t) => {
-  const { run, seen } = await resumeBuild(t, { marker: false, runId: 'wf-legacy-abcdef' });
-  assert.equal(seen[0].legacyGate, false);
-  assert.equal(run.state.attempts[0].status, 'succeeded');
-  assert.equal(run.state.attempts[0].failureKind, null);
-  assert.equal(Object.hasOwn(run.state.attempts[0], 'deliverable'), false);
-  assert.equal(run.result.status, 'completed');
-});
-
-test('resuming a marked run fails an unchanged build step as not-produced', async (t) => {
-  const { run, seen, runDir } = await resumeBuild(t, { marker: true, runId: 'wf-marked-abcdef' });
-  // A stage-1 marker is never rewritten by a resume (E23).
-  assert.equal(readFileSync(join(runDir, 'features.json'), 'utf8'), `${JSON.stringify({ deliverableGate: 1 }, null, 2)}\n`);
+test('resuming a v3 run fails an unchanged build step as not-produced', async (t) => {
+  const { run, seen, runDir } = await resumeBuild(t, { runId: 'wf-marked-abcdef' });
+  // The marker is never rewritten by a resume (E23).
+  assert.equal(readFileSync(join(runDir, 'features.json'), 'utf8'), V3_MARKER);
   assert.equal(seen[0].legacyGate, true);
   assert.equal(run.state.attempts[0].status, 'failed');
   assert.equal(run.state.attempts[0].failureKind, 'not-produced');
   assert.equal(run.state.attempts[0].why, 'no file changed');
-  assert.equal(Object.hasOwn(run.state.attempts[0], 'deliverable'), false);
+  // A v3 build step declares `files`: the gate recorded that nothing was produced.
+  assert.deepEqual(run.state.attempts[0].deliverable, { type: 'files', gated: true, produced: false });
 });
 
 test('a resume after an interrupted attempt that wrote files passes', async (t) => {
   const { run, seen } = await resumeBuild(t, {
-    marker: true,
     runId: 'wf-carry1-abcdef',
     prior: {
       id: 'write-1', actionId: 'write', ordinal: 1, status: 'running',

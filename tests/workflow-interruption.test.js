@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listAssignments } from '../src/lib/assignments.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { readEvents } from '../src/workflow/events.js';
 
@@ -76,22 +77,19 @@ setTimeout(() => process.stdout.write('never reached'), 30000);
     incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
   }));
 
+  const goalText = 'Append the required line to a.txt';
   const goal = createV2GoalDocument({
-    goal: 'Append the required line to a.txt',
+    goal: goalText,
     cwd,
-    requirements: [{ id: 'deliver', text: 'a.txt carries the appended line' }],
+    requirements: implicitV3Requirements(goalText),
     settings: { scout: false, plannerMode: 'caller', executionMode: 'program', workspaceMode: 'shared' },
   });
   const program = {
     schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program',
     summary: 'Append one line to the owned file.',
     program: {
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [{
-        id: 'append', purpose: 'Append the required line to a.txt', dependsOn: [],
-        affects: ['deliver'], ownedFiles: ['a.txt'], prompt: 'Append the required line to a.txt.',
-        lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
-      }],
+      schemaVersion: 'bullswarm.workflow.program.v3',
+      steps: [{ id: 'append', files: ['a.txt'], prompt: 'Append the required line to a.txt.', lane: 'build', effort: 'low' }],
     },
   };
   writeFileSync(driver, `

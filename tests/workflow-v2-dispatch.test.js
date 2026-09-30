@@ -14,7 +14,6 @@ import { storedProgramV3 } from '../src/workflow/program-v3.js';
 import { resolveRouteFilter } from '../src/workflow/step-route.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { handoffBlock } from '../src/workflow/retry-handoff.js';
-import { readEvents } from '../src/workflow/events.js';
 import { runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import { listAssignments } from '../src/lib/assignments.js';
@@ -3836,114 +3835,5 @@ test('a sign-in failure through the real watcher skips its credential group and 
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('usage limits to the caller, through the kernel: the planner stops on its first pool, never moving to the other', async () => {
-  for (const [label, runFeatures, runId] of [['marked', undefined, 'wf-ulkrn1-abcdef']]) {
-    const root = mkdtempSync(join(tmpdir(), 'bs-limits-kernel-'));
-    try {
-      const home = join(root, 'home');
-      const workspace = join(root, 'repo');
-      mkdirSync(home); mkdirSync(workspace);
-      const goalDocument = createV2GoalDocument({
-        goal: 'Deliver the report', cwd: workspace, requirements: [{ id: 'deliver', text: 'report.md exists' }],
-        settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, concurrency: 1 },
-      });
-      const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
-      const pools = ['luna-1', 'luna-2'].map((name) => connector(name, { strategyAssignments: { high: { pool: name, model: 'gpt-5.6-luna' } } }));
-      const calls = [];
-      const run = await runV2AutonomousWorkflow({
-        bullswarmDir: home, goalDocument, pools: [], runId, parentEnv: {},
-        dependencies: {
-          refreshPools: async () => null,
-          ...(runFeatures ? { runFeatures } : {}),
-          dispatchV2Action: (options) => dispatchV2Action({
-            ...options, pools,
-            dependencies: {
-              // Every pool is out of quota.
-              watchOnce: async (pool) => {
-                calls.push(pool.name);
-                return quotaVerdict();
-              },
-              loadState: () => structuredClone(core),
-              saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
-              sleep: async () => { throw new Error('slept'); },
-            },
-          }),
-        },
-      });
-      assert.equal(run.result.status, 'partial', label);
-      assert.equal(calls.length, 1, 'no move to the free pool');
-      assert.deepEqual(run.state.planner.attempts.map((attempt) => [attempt.pool, attempt.status, attempt.failureKind]), [[calls[0], 'failed', 'quota']]);
-      const back = new Date(QUOTA_RESET).toISOString();
-      assert.equal(run.result.reason, `the workflow planner stopped on a usage limit: ${quotaVerdict().why} · back at ${back}`
-        + ` · your call: resume after ${back} with bullswarm workflow resume ${run.state.shortId}`
-        + `, plan it yourself with bullswarm workflow plan revise ${run.state.shortId} --program <file.json>, or start a new run`);
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  }
-});
-
-test('usage limits to the caller, through the kernel: a planner or scout backoff whose pool\'s meter reads its window at the limit by the replay is corrected once, counted once, and ends the run', async () => {
-  const cases = [
-    { who: 'planner', scout: false, runId: 'wf-ulkrn3-abcdef', attempts: (state) => state.planner.attempts, finished: 'planner.attempt_finished', done: 'planner.finished', reason: 'the workflow planner' },
-    { who: 'scout', scout: true, runId: 'wf-ulkrn4-abcdef', attempts: (state) => state.preflight.scout.attempts, finished: 'preflight.scout_attempt_finished', done: 'preflight.scout_finished', reason: 'the preflight scout' },
-  ];
-  for (const entry of cases) {
-    const root = mkdtempSync(join(tmpdir(), 'bs-limits-kernel-'));
-    try {
-      const home = join(root, 'home');
-      const workspace = join(root, 'repo');
-      mkdirSync(home); mkdirSync(workspace);
-      const goalDocument = createV2GoalDocument({
-        goal: 'Deliver the report', cwd: workspace, requirements: [{ id: 'deliver', text: 'report.md exists' }],
-        settings: { executionMode: 'program', workspaceMode: 'shared', scout: entry.scout, concurrency: 1 },
-      });
-      const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
-      const until = Date.now() + 60 * 60_000;
-      const calls = [];
-      const slept = [];
-      let spentNow = false;
-      const view = (name) => connector(name, {
-        strategyAssignments: { low: { pool: name, model: 'gpt-5.6-luna' }, high: { pool: name, model: 'gpt-5.6-luna' } },
-        ...(spentNow && name === calls[0] ? { fiveHourUsedPct: 100, fiveHourResetsAt: new Date(until).toISOString() } : {}),
-      });
-      const pools = ['luna-1', 'luna-2'].map(view);
-      const throttled = transientVerdict({ meta: { exitCode: 1, wallSec: 0.2, usage: { tokens: { totalKnown: 10 } } } });
-      const run = await runV2AutonomousWorkflow({
-        bullswarmDir: home, goalDocument, pools: [], runId: entry.runId, parentEnv: {},
-        dependencies: {
-          // The meter read after the backoff finds the pool's window spent.
-          refreshPools: async () => (spentNow ? ['luna-1', 'luna-2'].map(view) : null),
-          dispatchV2Action: (options) => dispatchV2Action({
-            ...options, pools,
-            dependencies: {
-              watchOnce: async (pool) => {
-                calls.push(pool.name);
-                return calls.length === 1 ? throttled : good;
-              },
-              loadState: () => structuredClone(core),
-              saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
-              sleep: async (ms) => { slept.push(ms); spentNow = true; },
-            },
-          }),
-        },
-      });
-      const pool = calls[0];
-      const iso = new Date(until).toISOString();
-      const why = `${throttled.why} · no retry: ${pool} at its 5-hour limit until ${iso}`;
-      assert.deepEqual(calls, [pool], `${entry.who}: no replay on the spent pool and no move to the free one`);
-      assert.deepEqual(slept, [20_000], entry.who);
-      assert.equal(run.result.status, 'partial', entry.who);
-      assert.deepEqual(entry.attempts(run.state).map((attempt) => [attempt.pool, attempt.status, attempt.failureKind, attempt.why]), [[pool, 'failed', 'throttle', why]], entry.who);
-      const events = readEvents(join(home, 'workflows', entry.runId));
-      assert.equal(events.filter((event) => event.type === entry.finished).length, 1, `${entry.who}: the correction is not a second finished attempt`);
-      assert.equal(run.state.usage.total, 10, `${entry.who}: the corrected attempt adds no usage`);
-      assert.deepEqual(events.filter((event) => event.type === entry.done).map((event) => [event.payload.failureKind, event.payload.retryAfter]), [['quota', iso]], entry.who);
-      assert.equal(events.filter((event) => event.type === 'planner.started').length, entry.scout ? 0 : 1, entry.who);
-      assert.equal(run.result.reason, `${entry.reason} stopped on a usage limit: ${why} · back at ${iso}`
-        + ` · your call: resume after ${iso} with bullswarm workflow resume ${run.state.shortId}`
-        + `, plan it yourself with bullswarm workflow plan revise ${run.state.shortId} --program <file.json>, or start a new run`, entry.who);
-    } finally { rmSync(root, { recursive: true, force: true }); }
   }
 });
