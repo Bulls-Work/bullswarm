@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.2 — Three large files split into one-concept modules
+
 - internal: the three largest workflow files are split into one-concept
   modules, with no behaviour change. `src/workflow/dashboard.js` goes from
   3,613 lines to 2,002 plus 24 `dashboard-*.js` modules (1,837 lines);
