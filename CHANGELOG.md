@@ -5,8 +5,9 @@
 - no eligible pool: when a pool lacks a tier only because free models are
   off for it, or because its plan was seen not to include the tier's model,
   the reason now says so (`free models are off for <pool>`, `<pool> has no
-  <tier>-tier model its plan includes (plan excludes <models>)`), also under
-  a step's route and in `run --dry-run`. Before, a routed step read only `no
+  <tier>-tier model its plan includes (plan excludes <models>)`, or `<model>
+  is not in <pool>'s plan` for a model the step names), also under a step's
+  route and in `run --dry-run`. Before, a routed step read only `no
   enabled pool left has a model on the <tier> tier`.
 - dispatch: a worker can mark a blocker it may not change by starting a `##
   Not done` line with `outside:` (`- outside: tests/router.test.js fails on
@@ -55,8 +56,9 @@
 - providers: a connector may list `modelPlanSignatures`, the text its CLI
   prints when the subscription's plan does not include the requested model
   (Command Code: `MODEL_NOT_IN_PLAN`). Only the provider's error output is
-  read: for a connector with no event stream that is stderr alone, so a
-  worker's reply that quotes the code, even on a line starting `Error:`, is
+  read: stderr, and on an event stream the records the provider flags as
+  errors (read even when the worker exits 0), so a worker's reply that quotes
+  the code, even on a line starting `Error:` or in a clean final record, is
   still a reply. A hit is the new failure kind
   `model-not-in-plan` (a process failure, labelled `model not in plan`): the
   step's retry goes to another pool, and `state.strategy.planExcludedModels`

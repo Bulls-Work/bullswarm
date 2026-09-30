@@ -1842,6 +1842,30 @@ test('a clean event-stream turn that quotes the plan code is not a plan refusal'
   }
 });
 
+test('an event-stream plan refusal is read even when the worker exits 0', async () => {
+  const shipped = JSON.parse(readFileSync(join(REPO_ROOT, 'providers/contrib/command-code/connector.json'), 'utf8'));
+  const records = [
+    { type: 'error', error: { message: '403 MODEL_NOT_IN_PLAN: Model X available in Provider and above plans' } },
+    { type: 'result', subtype: 'error', finalText: '403 MODEL_NOT_IN_PLAN: Model X available in Provider and above plans', stopReason: 'error' },
+  ];
+  for (const record of records) {
+    const ctx = makeCtx();
+    const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-exit0-home-'));
+    try {
+      const refusing = { ...shipped, spawn: { ...shipped.spawn, cmd: [process.execPath, '-e', `console.log(${JSON.stringify(JSON.stringify(record))})`, '{taskFile}'] } };
+      const v = await watchOnce(refusing, 'Do the work.', ctx.dir, ctx.paths, {
+        timeoutSec: 60, home, poolName: 'command-code', model: 'model-x',
+      });
+      assert.equal(v.failureKind, 'model-not-in-plan', `${record.type}: ${v.why}`);
+      const { loadState } = await import('../src/lib/state.js');
+      assert.equal(loadState(home).strategy.planExcludedModels['command-code'][0].model, 'model-x');
+    } finally {
+      ctx.cleanup();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
 test('a stdout connector\'s plan refusal on stderr is still model-not-in-plan', async () => {
   const ctx = makeCtx();
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-stderr-home-'));

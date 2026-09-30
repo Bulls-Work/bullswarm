@@ -471,16 +471,17 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     : null;
   // The provider refused the model because this pool's plan does not include
   // it (the connector's `modelPlanSignatures`). Not a sign-in and not a limit:
-  // read only when neither of those matched, and never on the agent's reply
-  // (a connector with no event stream has it on stdout: `planChannel` is
-  // then stderr alone).
-  // And only for an attempt that failed (a non-zero exit, or a failure the
-  // provider's own stream declared): a worker that finished its turn cleanly
-  // may quote the words in its answer, on any channel, and that is a reply.
+  // read only when neither of those matched, and never on the agent's reply.
+  // `planChannel` holds only what the provider wrote as a failure (stderr,
+  // and on an event stream the records it flags as errors;
+  // run-delegate.js planChannelText), so a refusal is read whatever the exit
+  // code and a clean reply that quotes the code is not. An observation
+  // without it falls back to the error channel, only for a failed attempt.
   const attemptFailed = (obs.exitCode != null && obs.exitCode !== 0) || Boolean(obs.providerFailureType);
-  const modelPlanHit = !attemptFailed || upstreamAuth || quotaFailure || fatalKind === 'auth'
+  const planChannel = obs.planChannel ?? (attemptFailed ? errorChannel : '');
+  const modelPlanHit = upstreamAuth || quotaFailure || fatalKind === 'auth'
     ? null
-    : matchModelPlanSignature(connector, obs.planChannel ?? errorChannel);
+    : matchModelPlanSignature(connector, planChannel);
   // quota.js Q6 — the one rule for when a limit resets: the pool's own meter
   // at >= 95% on a running window, or a provider line that says a usage
   // window is spent AND names its reset. The decision (line, meter reading,

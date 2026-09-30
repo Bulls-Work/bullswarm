@@ -177,8 +177,10 @@ export function isProviderErrorRecord(value, declared = []) {
  * error lines are kept as well, because an upstream body is a machine record
  * of a failure whatever it reads like. Only complete lines that parse as JSON
  * objects are read, so an agent's prose cannot enter the error channel (W7).
+ * With `failuresOnly`, a terminal record that does not flag an error (a
+ * clean `result` carrying the agent's reply) is left out too.
  */
-export function providerErrorRecords(text, declared = [], { agentText = '' } = {}) {
+export function providerErrorRecords(text, declared = [], { agentText = '', failuresOnly = false } = {}) {
   const types = declaredFailureSet(declared);
   const kept = [];
   for (const line of String(text ?? '').split(/\r?\n/)) {
@@ -187,6 +189,7 @@ export function providerErrorRecords(text, declared = [], { agentText = '' } = {
     let value;
     try { value = JSON.parse(trimmed); } catch { continue; }
     const failure = isProviderErrorRecord(value, types);
+    if (failuresOnly && !failure) continue;
     if (!failure && !TERMINAL_RECORD_TYPE.test(typeof value?.type === 'string' ? value.type : '')) {
       continue;
     }

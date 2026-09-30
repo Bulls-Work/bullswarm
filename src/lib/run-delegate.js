@@ -117,10 +117,19 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         providerRecords,
       ].filter(Boolean).join('\n');
     };
-    // The channel a plan refusal (`modelPlanSignatures`) is read on. A
-    // connector with no event stream has the agent's reply on stdout, so only
-    // its stderr is the provider's; an event stream keeps the two apart.
-    const planChannelText = () => (eventStreamed ? errorChannelText(true) : stderrCapture.tail(4000).trim());
+    // The channel a plan refusal (`modelPlanSignatures`) is read on: what the
+    // provider itself wrote as a failure. A connector with no event stream
+    // has the agent's reply on stdout, so only its stderr is the provider's;
+    // on an event stream, stderr and the records the provider flags as errors
+    // (never a clean terminal record, which mirrors the agent's reply), so a
+    // refusal is read whatever the exit code and a reply quoting the code is
+    // not.
+    const planChannelText = () => (eventStreamed
+      ? [
+        stderrCapture.tail(4000),
+        providerErrorRecords(stdoutCapture.text(), declaredFailureTypes, { failuresOnly: true }),
+      ].filter(Boolean).join('\n').trim()
+      : stderrCapture.tail(4000).trim());
     const attemptStream = resolveAttemptStream(connector, opts);
     const liveOutFile = opts.outFile ?? null;
     let lastLiveOutput = null;

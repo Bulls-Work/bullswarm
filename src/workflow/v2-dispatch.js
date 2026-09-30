@@ -1974,7 +1974,10 @@ function planExcludedOffPools(allPools, action, effort, { preferredModel = null,
     && preparePools([{ ...pool, strategyPlanExcludedModels: [] }], action, effort, opts).length);
 }
 
-function planOffText(pool, effort) {
+// A caller's exact model the plan excludes is named as that model, never as
+// a missing tier.
+function planOffText(pool, effort, preferredModel = null) {
+  if (preferredModel && planExcludes(pool, preferredModel)) return `${preferredModel} is not in ${pool.name}'s plan`;
   return `${pool.name} has no ${effort}-tier model its plan includes (plan excludes ${planExcludedIds(pool).join(', ')})`;
 }
 
@@ -1988,7 +1991,7 @@ function tierOffReasons(allPools, action, effort, opts, keep = () => true) {
   const plan = new Set(planExcludedOffPools(allPools, action, effort, opts).filter(keep).map((pool) => pool.name));
   return allPools.flatMap((pool) => {
     if (free.has(pool.name)) return [`free models are off for ${pool.name}`];
-    if (plan.has(pool.name)) return [planOffText(pool, effort)];
+    if (plan.has(pool.name)) return [planOffText(pool, effort, opts.preferredModel)];
     return [];
   });
 }
@@ -2023,7 +2026,7 @@ function noPoolCandidates(allPools, action, effort, {
     else if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) excluded = poolCanRunModel(pool, preferredModel).reason;
     else if (preferredModel && planExcludes(pool, preferredModel)) excluded = `${preferredModel} is not in ${pool.name}'s plan`;
     else if (!tiers.includes(effort) && freeModelsOffPools([pool], action, effort, { preferredModel, now }).length) excluded = `free models are off for ${pool.name}`;
-    else if (!tiers.includes(effort) && planExcludedOffPools([pool], action, effort, { preferredModel, now }).length) excluded = planOffText(pool, effort);
+    else if (!tiers.includes(effort) && planExcludedOffPools([pool], action, effort, { preferredModel, now }).length) excluded = planOffText(pool, effort, preferredModel);
     else if (!tiers.includes(effort)) excluded = `no model on the ${effort} tier for ${lane} work (has ${tiers.length ? tiers.join(', ') : 'none'})`;
     else excluded = heldText.get(pool.name) ?? 'capable, but no pick was made';
     return { pool: pool.name, provider, excluded, tiers, inRoute, onLane: lanes };
