@@ -4,9 +4,7 @@
 import { appendEvent } from './events.js';
 import { initializeNewActions } from './v2-state.js';
 import { applyV2PlannerResponse } from './v2-planner.js';
-import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { deliverSteering } from './steering.js';
-import { ensureVerifyLoop } from './verify-rounds.js';
 
 // Apply a planner response that did not come from a dispatched planner
 // process (a caller-authored program), from the runtime's initial-program
@@ -29,7 +27,6 @@ export function acceptCallerPlannerResponse(state, response, { boundary, runDir,
     onEvent?.(event);
   }
   if (boundary === 'gaps') next.budget.expansions += 1;
-  ensureVerifyLoop(next, response, runFeatureFlags(readRunFeatures(runDir)));
   initializeNewActions(next);
   const accepted = next.planner.lastDecision;
   if (accepted.kind === 'exhausted') {

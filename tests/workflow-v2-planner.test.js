@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2GoalDocument, createV2State, serializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
 import {
-  V2PlannerValidationError, V2_PROGRAM_EXAMPLE, V2_PROGRAM_ACTION_FIELDS, V2_ROLE_PROGRAM_EXAMPLE, applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt,
-  buildPlannerPreflight, createV2PlannerContext, readPlannerCandidate, plannerCorrectionRequest,
-  v2PlannerContractRules, validateV2PlannerResponse,
+  V2PlannerValidationError, V2_PROGRAM_EXAMPLE, V2_PROGRAM_ACTION_FIELDS, V2_ROLE_PROGRAM_EXAMPLE,
+  applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt, readPlannerCandidate, v2PlannerContractRules,
+  validateV2PlannerResponse,
 } from '../src/workflow/v2-planner.js';
 import { KIND_DEFAULTS } from '../src/workflow/action-validator.js';
 import {
@@ -45,28 +45,6 @@ test('accepts a complete generic program and applies it without mutating prior s
   assert.equal(validateV2DurableState(next), true);
 });
 
-test('V2 planning targets never reject an essential wider or longer program', () => {
-  const targetState = createV2State(createV2GoalDocument({
-    goal: 'Create and check report.md', cwd: '/tmp/repo',
-    settings: { concurrency: 1, maxActions: 1, maxAgents: 1, maxExpansionRounds: 1 },
-    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
-  }), { runId: 'wf-target-abcdef', shortId: 'tgt234' });
-  const accepted = validateV2PlannerResponse(response(), targetState);
-  const next = applyV2PlannerResponse(targetState, accepted);
-  assert.equal(next.program.actions.length, 2);
-  assert.equal(validateV2DurableState(next), true);
-  const context = createV2PlannerContext(next);
-  assert.deepEqual(context.targets, {
-    advisoryOnly: true,
-    actions: 1, actionsUsed: 2, actionsRemaining: -1,
-    agents: 1, agentsUsed: 0, agentsRemaining: 1,
-    expansionRounds: 1, expansionRoundsUsed: 0, expansionRoundsRemaining: 1,
-  });
-  assert.equal(context.execution.concurrency, 1);
-  assert.ok(!('limits' in context));
-  assert.match(buildV2PlannerPrompt(context), /advisory planning targets, never execution ceilings/i);
-});
-
 test('later program revisions can supersede earlier evidence without invalidating history', () => {
   const first = applyV2PlannerResponse(state(), response());
   const expansion = {
@@ -91,27 +69,6 @@ test('planner cannot declare completion/failure or use retired action concepts',
   assert.throws(() => validateV2PlannerResponse({ ...response(), completion: { when: 'all-ok' } }, state()), (error) => error.issues.some((issue) => issue.includes('completion')));
 });
 
-test('explicit read-only intent rejects mutating planner actions before dispatch', () => {
-  const readOnly = createV2State(createV2GoalDocument({
-    goal: 'Read-only: inspect the report and return findings without changing files',
-    cwd: '/tmp/repo', requirements: [{ id: 'report-ready', text: 'Report is inspected' }],
-    constraints: { workspaceMutation: 'forbidden' },
-    settings: { concurrency: 2, maxActions: 6, maxExpansionRounds: 1 },
-  }), { runId: 'wf-readonly-abcdef', shortId: 'roa234' });
-  assert.throws(
-    () => validateV2PlannerResponse(response(), readOnly),
-    (error) => error.issues.some((issue) => issue.includes('goal forbids workspace mutation')),
-  );
-
-  const inspectOnly = response();
-  inspectOnly.program.actions[0] = {
-    ...inspectOnly.program.actions[0], ownedFiles: [], affects: [], produces: ['report'],
-    prompt: 'Inspect without modifying files and return the report as action output.',
-  };
-  assert.equal(validateV2PlannerResponse(inspectOnly, readOnly).kind, 'program');
-  assert.match(buildV2PlannerPrompt(createV2PlannerContext(readOnly)), /deterministically read-only/i);
-});
-
 test('exhausted is allowed only at a real consolidated gap boundary', () => {
   const exhausted = { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'exhausted', summary: 'No bounded action remains.', reason: 'The external service is unavailable.' };
   assert.throws(() => validateV2PlannerResponse(exhausted, state()), /problem/);
@@ -121,45 +78,6 @@ test('exhausted is allowed only at a real consolidated gap boundary', () => {
   const next = applyV2PlannerResponse(planned, exhausted, { boundary: 'gaps' });
   assert.equal(next.planner.status, 'completed');
   assert.equal(next.planner.lastDecision.kind, 'exhausted');
-});
-
-test('context and prompt contain compact gaps and forbid planner authority', () => {
-  const initial = createV2PlannerContext(state(), { scout: 'TREE: report.md absent\n["write-report"]' });
-  assert.equal(initial.boundary, 'initial');
-  const prompt = buildV2PlannerPrompt(initial);
-  assert.match(prompt, /kernel, not you, decides completion and failure/i);
-  assert.match(prompt, /acceptance-independent/);
-  assert.match(prompt, /tests for behavior introduced by another action/);
-  assert.match(prompt, /disconnected helpers, no-op assertions/i);
-  assert.match(prompt, /transition matrix for every affected level and input/i);
-  assert.match(prompt, /text already present before the input is vacuous/i);
-  assert.match(prompt, /node --test-timeout=60000 --test/);
-  assert.match(prompt, /forbid raw `node --test`/);
-  assert.match(prompt, /beyond 60 seconds or twice that baseline/i);
-  assert.match(prompt, /open-handle or unresolved-async defect/i);
-  assert.match(prompt, /coherent acceptance slices, not merely by shared files/i);
-  assert.match(prompt, /Do not collapse an entire multi-requirement feature/i);
-  assert.match(prompt, /single long requirement may be affected by several ordered actions/i);
-  assert.match(prompt, /Do not merge scout units merely because they share a requirement ID/i);
-  assert.match(prompt, /Every exact ID in context\.scoutUnits is a kernel-required work action/i);
-  assert.match(prompt, /Goal requirements outrank the current implementation/i);
-  assert.match(prompt, /narrow\/mobile/i);
-  assert.match(prompt, /affects means the action directly owns and delivers a bounded acceptance slice/i);
-  assert.match(prompt, /merely editing a supporting test/i);
-  assert.match(prompt, /Requirement context never expands ownedFiles/i);
-  assert.match(prompt, /final acceptance unit must remain a mutation-capable action/i);
-  assert.match(prompt, /Do not turn that unit into tests-only regression work/i);
-  assert.deepEqual(initial.scoutUnits, ['write-report']);
-  assert.match(prompt, /kernel exclusively supplies and validates the evidence output contract/i);
-  assert.match(prompt, /Choose lane from the action itself/i);
-  assert.match(prompt, /Medium is the default/i);
-  assert.match(prompt, /High is exceptional/i);
-  assert.match(prompt, /Do not choose high merely because an action uses analyze/i);
-  assert.match(prompt, /exact file comparison or formatting update = low/i);
-  assert.match(prompt, /ordinary scoped feature plus focused test = medium/i);
-  assert.match(prompt, /choosing an architecture across subsystems = high/i);
-  assert.match(prompt, /reviewer, verify, repair/);
-  assert.ok(!prompt.includes('actionLedger'));
 });
 
 test('initial planning cannot absorb or omit an exact scout work unit', () => {
@@ -172,24 +90,6 @@ test('initial planning cannot absorb or omit an exact scout work unit', () => {
     (error) => error instanceof V2PlannerValidationError
       && error.issues.some((issue) => /missing exact scout work actions: separate-footer-contract/.test(issue)),
   );
-});
-
-test('a planner response must be a schema-valid object and corrections are bounded', () => {
-  assert.equal(validateV2PlannerResponse(response(), state()).kind, 'program');
-  let error;
-  try { validateV2PlannerResponse('not json', state()); } catch (caught) { error = caught; }
-  assert.ok(error instanceof V2PlannerValidationError);
-  assert.equal(plannerCorrectionRequest(error, { attempt: 1, maxCorrections: 1 }).allowed, true);
-  assert.equal(plannerCorrectionRequest(error, { attempt: 2, maxCorrections: 1 }).allowed, false);
-});
-
-test('planner preflight is deterministic and safely quotes paths', () => {
-  const preflight = buildPlannerPreflight("/tmp/state with '$dollar'.json", 'gaps', '/tmp/planner candidate.json', '/tmp/check planner.js');
-  assert.match(preflight, /check-v2-plan|check planner/);
-  assert.match(preflight, /--boundary gaps/);
-  assert.match(preflight, /--value '\/tmp\/planner candidate\.json'/);
-  assert.match(preflight, /do not copy, reproduce, or retype the JSON/i);
-  assert.doesNotMatch(preflight, /--state \/tmp\/state with/);
 });
 
 test('runtime consumes an exact durable planner candidate instead of response prose', () => {
@@ -258,17 +158,6 @@ test('the planning contract documents the per-action reasoning override and echo
     settings: { executionMode: 'program', plannerMode: 'caller' },
   }));
   assert.deepEqual([bare.reasoning.worker, bare.reasoning.planner], [null, null]);
-});
-
-test('every planner rule set states the reasoning field once', () => {
-  for (const executionMode of ['program', 'verified']) {
-    const rules = v2PlannerContractRules({ executionMode });
-    const matches = rules.filter((rule) => rule.includes('`reasoning` field'));
-    assert.equal(matches.length, 1, `executionMode ${executionMode} rules mention reasoning ${matches.length} time(s)`);
-  }
-  // The dispatched planner prompt renders the same rulebook.
-  const prompt = buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null }));
-  assert.match(prompt, /optional per-action `reasoning` field \(low\|medium\|high\|xhigh\|max\|default\)/);
 });
 
 test('program planner guidance keeps writer inputs, slices and delivery explicit', () => {
@@ -340,24 +229,6 @@ test('the planning contract documents kind, its derived table, program defaults,
   }
 });
 
-test('every planner rule set states the kind field once, and the example still validates', () => {
-  for (const executionMode of ['program', 'verified']) {
-    const rules = v2PlannerContractRules({ executionMode });
-    assert.equal(rules.filter((rule) => rule.includes('`kind` field')).length, 1, executionMode);
-  }
-  assert.match(buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null })), /optional per-action `kind` field/);
-  // The example must be a program the kernel would actually accept.
-  const exampleState = createV2State(createV2GoalDocument({
-    goal: 'Fix the parser', cwd: '/tmp/repo', settings: { concurrency: 2 },
-    requirements: [{ id: 'requirement-1', text: 'The parser handles trailing commas' }],
-  }), { runId: 'wf-examp-abcdef', shortId: 'exa234' });
-  const accepted = validateV2PlannerResponse(clone(V2_PROGRAM_EXAMPLE), exampleState);
-  assert.deepEqual(
-    accepted.program.actions.map((action) => [action.id, action.kind, action.lane, action.effort]),
-    [['fix-parser', 'implement', 'build', 'medium'], ['check-parser', 'check', 'analyze', 'medium']],
-  );
-});
-
 test('accepting a program records its advisories on the run state without changing acceptance', () => {
   const writers = ['one', 'two', 'three'].map((name) => ({
     id: `write-${name}`, purpose: `Write ${name}`, dependsOn: [], affects: ['report-ready'],
@@ -425,19 +296,6 @@ test('the planning contract teaches timeBox and verifyRounds and says where the 
   assert.ok(!contract.rules.some((rule) => /Repairs or further investigation belong in an explicitly authored follow-up program\.$/.test(rule) && rule.includes('result status describes')));
   // Authors still may not invent repair fields.
   assert.ok(contract.rules.some((rule) => /Do not invent provider, model, timeout, phase, repair, or retry fields/.test(rule)));
-});
-
-test('every planner rule set states the time box once, and only program runs state the repair loop', () => {
-  for (const executionMode of ['program', 'verified']) {
-    const rules = v2PlannerContractRules({ executionMode });
-    assert.equal(rules.filter((rule) => rule.includes('`timeBox` field')).length, 1, executionMode);
-    assert.equal(rules.filter((rule) => rule.includes('the kernel adds one fix step')).length, executionMode === 'program' ? 1 : 0, executionMode);
-  }
-  const verifiedPrompt = buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null }));
-  assert.match(verifiedPrompt, /optional per-action `timeBox` field/);
-  assert.match(verifiedPrompt, /reviewer, verify, repair/);
-  const programPrompt = buildV2PlannerPrompt(createV2PlannerContext(programState(), { scout: null }));
-  assert.match(programPrompt, /the kernel adds one fix step \(`repair-1`\)/);
 });
 
 test('a program may carry timeBox and verifyRounds, and still cannot declare repair steps', () => {
@@ -547,21 +405,6 @@ test('the verified-mode contract has no role vocabulary, and keeps its kind exam
   assert.equal(rules.filter((rule) => /`role` field|`deliverable` field|`act` step/.test(rule)).length, 0);
   // The verified example still uses kinds and never a role.
   assert.deepEqual(V2_PROGRAM_EXAMPLE.program.actions.map((action) => [action.kind, 'role' in action]), [['implement', false], ['check', false]]);
-});
-
-test('every planner rule set states the kind field exactly once, and the role rules never claim it', () => {
-  for (const executionMode of ['program', 'verified']) {
-    for (const workspaceMode of ['shared', 'isolated']) {
-      const rules = v2PlannerContractRules({ executionMode, workspaceMode });
-      assert.equal(rules.filter((rule) => rule.includes('`kind` field')).length, 1, `${executionMode}/${workspaceMode}`);
-    }
-  }
-  const program = v2PlannerContractRules({ executionMode: 'program' });
-  const kindIndex = program.findIndex((rule) => rule.includes('`kind` field'));
-  assert.ok(program[kindIndex + 1].includes('`role` field'));
-  assert.ok(program[kindIndex + 2].includes('`deliverable` field'));
-  // The dispatched program-mode prompt renders the same role rules.
-  assert.match(buildV2PlannerPrompt(createV2PlannerContext(programState(), { scout: null })), /optional per-action `role` field/);
 });
 
 test('E29 permits caller evidence and refuses it from a dispatched planner', () => {

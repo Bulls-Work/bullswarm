@@ -9,11 +9,8 @@ import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS, SCHEMA_MAX_SCHEMA_BY
 import { readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import { deriveV2PresentationStages, deriveV2DependencyStages, deriveV2LiveStages } from './v2-presentation.js';
-import { extractScoutUnitIds } from './goal.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { REASONING_LEVELS } from '../lib/reasoning.js';
 import { PROGRAM_V3_SCHEMA_VERSION, isProgramV3, programV3AcceptanceIssues, storedProgramV3 } from './program-v3.js';
@@ -217,46 +214,6 @@ export function readPlannerCandidate(candidatePath, state, options = {}) {
         : [`validated planner candidate unavailable: ${error.message}`],
     };
   }
-}
-
-export function createV2PlannerContext(state, { scout = null, steering = [], correction = null, boundary = null } = {}) {
-  validateV2DurableState(state);
-  const plannerBoundary = boundary ?? (state.program.actions.length ? 'gaps' : 'initial');
-  const actionStates = new Map(state.actions.map((action) => [action.id, action]));
-  return {
-    schemaVersion: 'bullswarm.workflow.planner-context.v2',
-    boundary: plannerBoundary,
-    intent: clone(state.intent),
-    targets: {
-      advisoryOnly: true,
-      actions: Number(state.config.settings.maxActions ?? 100),
-      actionsUsed: state.program.actions.length,
-      actionsRemaining: Number(state.config.settings.maxActions ?? 100) - state.program.actions.length,
-      agents: Number(state.config.settings.maxAgents ?? 30),
-      agentsUsed: Number(state.budget.agents ?? 0),
-      agentsRemaining: Number(state.config.settings.maxAgents ?? 30) - Number(state.budget.agents ?? 0),
-      expansionRounds: Number(state.config.settings.maxExpansionRounds ?? 2),
-      expansionRoundsUsed: Number(state.budget.expansions ?? 0),
-      expansionRoundsRemaining: Number(state.config.settings.maxExpansionRounds ?? 2) - Number(state.budget.expansions ?? 0),
-    },
-    execution: {
-      concurrency: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 1,
-      mode: state.config.settings.executionMode ?? 'verified',
-      workspaceMode: state.config.settings.workspaceMode ?? 'shared',
-    },
-    knownActions: state.program.actions.map((action) => ({
-      id: action.id, purpose: action.purpose, dependsOn: clone(action.dependsOn),
-      affects: clone(action.affects), evidenceFor: clone(action.evidenceFor),
-      ownedFiles: clone(action.ownedFiles), produces: clone(action.produces ?? []),
-      status: actionStates.get(action.id)?.status ?? 'pending',
-    })),
-    freshPassedRequirements: Object.values(state.ledger.requirements).filter((requirement) => requirement.status === 'passed').map((requirement) => requirement.id),
-    gaps: plannerBoundary === 'gaps' ? consolidateV2Gaps(state) : null,
-    scout: scout == null ? null : String(scout),
-    scoutUnits: extractScoutUnitIds(scout),
-    steering: Array.isArray(steering) ? steering.map(String) : [],
-    correction: correction == null ? null : clone(correction),
-  };
 }
 
 // `kind` is the one field that says what an action IS; lane and effort are
@@ -663,35 +620,4 @@ export function applyV2PlannerResponse(state, response, options = {}) {
   else next.presentation.stages.push(...(isProgramWorkflow(next) ? deriveV2DependencyStages : deriveV2PresentationStages)(accepted.program.actions, revision));
   next.lifecycle.status = 'running';
   return next;
-}
-
-export function plannerCorrectionRequest(error, { attempt, maxCorrections = 1 } = {}) {
-  if (!(error instanceof V2PlannerValidationError)) throw new TypeError('planner correction requires V2PlannerValidationError');
-  if (!Number.isInteger(attempt) || attempt < 1 || !Number.isInteger(maxCorrections) || maxCorrections < 0) throw new TypeError('invalid planner correction bounds');
-  return {
-    allowed: attempt <= maxCorrections,
-    attempt,
-    maxCorrections,
-    issues: [...error.issues],
-    instruction: attempt <= maxCorrections
-      ? 'Return one corrected full V2 planner response. Do not discuss the errors.'
-      : 'Planner correction allowance exhausted; do not dispatch workers.',
-  };
-}
-
-export function buildPlannerPreflight(statePath, boundary = 'initial', candidatePath, checkerPath = null) {
-  if (typeof statePath !== 'string' || !statePath) throw new TypeError('statePath must be a non-empty string');
-  if (!['initial', 'gaps', 'steering'].includes(boundary)) throw new TypeError('boundary must be initial|gaps|steering');
-  if (typeof candidatePath !== 'string' || !candidatePath) throw new TypeError('candidatePath must be a non-empty string');
-  const checker = checkerPath ?? fileURLToPath(new URL('../../bin/check-v2-plan.js', import.meta.url));
-  const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;
-  const command = `${shellQuote(process.execPath)} ${shellQuote(checker)} --state ${shellQuote(statePath)} --boundary ${boundary} --value ${shellQuote(candidatePath)}`;
-  return [
-    'MANDATORY V2 PLANNER DELIVERY before replying:',
-    `1. Write only your complete planner response JSON to this exact durable path: ${shellQuote(candidatePath)}`,
-    `2. Run: ${command}`,
-    '3. If it exits non-zero, fix the candidate and rerun until it exits zero.',
-    '4. Leave the validated candidate file in place. Bullswarm reads that exact file; do not copy, reproduce, or retype the JSON in your response.',
-    '5. End your response with only a short confirmation that the durable planner candidate validated.',
-  ].join('\n');
 }

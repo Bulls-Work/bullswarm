@@ -1,7 +1,7 @@
 // What a kernel starting on an existing run repairs first (reconcileResume):
 // completion receipts written without their attempt, attempts a dead kernel
 // left running (an act step that died in its checks goes to the caller), and
-// interrupted steps, planner turns and scouts, which run again.
+// interrupted steps, which run again.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -88,12 +88,6 @@ export function reconcileResume(state, at, runDir) {
       if (attempt[field] == null) attempt[field] = value;
     }
   }
-  for (const attempt of state.planner.attempts) if (attempt.status === 'running') {
-    attempt.status = 'interrupted';
-    attempt.finishedAt = at;
-    attempt.failureKind = 'interrupted';
-    attempt.why = 'runner stopped before the planner turn reached a durable terminal state';
-  }
   for (const action of state.actions) if (['running', 'waiting', 'interrupted'].includes(action.status)) {
     if (toCaller.has(action.id)) {
       Object.assign(action, { status: 'failed', finishedAt: at, lastFailure: { kind: 'failed-evidence', message: toCaller.get(action.id) } });
@@ -114,15 +108,6 @@ export function reconcileResume(state, at, runDir) {
     action.lastFailure = { kind: 'interrupted', message: 'retrying mechanically after durable resume' };
   }
   if (state.planner.status === 'running') state.planner.status = 'pending';
-  if (state.preflight.scout.status === 'running') {
-    state.preflight.scout.status = 'pending';
-    state.preflight.scout.finishedAt = null;
-    state.preflight.scout.lastFailure = { kind: 'interrupted', message: 'retrying preflight after durable resume' };
-    for (const attempt of state.preflight.scout.attempts) if (attempt.status === 'running') {
-      attempt.status = 'interrupted'; attempt.finishedAt = at; attempt.failureKind = 'interrupted';
-      attempt.why = 'runner stopped before the preflight reached a durable terminal state';
-    }
-  }
   clearWaitingFor(state); // a parked v3 run (gates-loops.js) runs again
   if (!V2_TERMINAL_STATUSES.has(state.lifecycle.status)) state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
   return [...toCaller].map(([actionId, why]) => ({ actionId, why }));

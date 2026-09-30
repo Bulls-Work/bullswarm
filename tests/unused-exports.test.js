@@ -38,7 +38,17 @@ const TEST_SEAMS = {
   // live in files later slices own (S4: v2-planner.js and its test, S5:
   // v2-revision.js), which delete them.
   'src/workflow/v2-revision.js': ['normalizeRevisionInput', 'REVISION_CHANGE_KINDS'],
-  'src/workflow/v2-planner.js': ['buildV2PlannerContract'],
+  // 0.38.0 S4 removed the preflight scout, the dispatched planner, the review
+  // task and the repair loop from the kernel, their only product readers.
+  // These stay because a test outside S4's files reads them (goal, deliverable
+  // and caller-planner tests), or because they live in a file a later slice
+  // owns; S6 deletes each one with the test that reads it.
+  'src/workflow/v2-planner.js': ['buildV2PlannerContract', 'buildV2PlannerPrompt', 'readPlannerCandidate'],
+  'src/workflow/goal.js': ['scoutPrompt'],
+  'src/workflow/evidence-output.js': ['buildEvidencePreflight', 'readEvidenceCandidate'],
+  'src/workflow/ledger.js': ['applyEvidence'],
+  'src/workflow/run-features.js': ['repairLoopApplies'],
+  'src/workflow/step-route.js': ['inheritedRepairRoute', 'inheritedVerifyRoute'],
 };
 
 const WORD = /[A-Za-z0-9_$]/;

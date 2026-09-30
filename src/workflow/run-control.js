@@ -16,7 +16,7 @@ import {
 import { actionDefinition, deserializeV2DurableState, statePath, writeRunState } from './v2-state.js';
 import { V2_TERMINAL_STATUSES } from './status.js';
 import { appendRollupIndex, bullswarmDirOfRun, readRollup, rollupPath, rollupRecord } from './rollup.js';
-import { v2LimitStoppedDispatch, v2RetryPlan } from './v2-outcome.js';
+import { v2RetryPlan } from './v2-outcome.js';
 import { clearStepRestart, readStepRestarts } from './v2-dispatch.js';
 import { roleOf } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
@@ -25,7 +25,6 @@ import { deriveV2LiveStages } from './v2-presentation.js';
 import { peekSteering } from './steering.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { acquireKernelLease } from './v2-process.js';
-import { applyRevisionLoopBudget } from './verify-rounds.js';
 
 // D20: a `step rerun` writes its applied restart intent before it submits the
 // revision. When that revision is rejected, the intent must not outlive it:
@@ -108,15 +107,9 @@ function commitRevisionUnderLease(runDir, request, { now }) {
     return { status: 'rejected', record: state.revisions.at(-1), state, reopened: null };
   }
   const previousStatus = state.lifecycle.status;
-  const hadActions = state.program.actions.length > 0;
   const committed = commitV2Revision(state, planned, { request, runDir, at });
-  applyRevisionLoopBudget(state, request, hadActions, features);
   let reopened = null;
   if (V2_TERMINAL_STATUSES.has(previousStatus)) {
-    // A caller's plan replaces what a planner or scout stopped on a limit
-    // would have given: `workflow resume` no longer runs either again.
-    delete state.planner.limitStop;
-    delete state.preflight.scout.limitStop;
     const resultFile = state.lifecycle.resultFile ?? join(runDir, 'result.json');
     const archived = join(runDir, `result-before-revision-${state.program.revision}.json`);
     const hadResult = existsSync(resultFile);
@@ -175,10 +168,6 @@ function commitRevisionUnderLease(runDir, request, { now }) {
  * again: steps that never ran or were stopped, steps whose failure a retry can
  * fix (no pool, a spent pool, a crashed or silent worker), and the steps
  * blocked behind them. Steps the caller has to change first stay as they are.
- * In a marked run, a Workflow Planner or preflight scout whose stop on a
- * usage limit, a rate limit that did not clear, or no free pool ended the run
- * runs again too (v2LimitStoppedDispatch; resuming after the pool is back is
- * the caller's "wait"): its id leads `requeued`, and `dispatch` names it.
  * Resolves {status: reopened | nothing-to-retry | not-finished | live, ...};
  * only `reopened` changes the run.
  */
@@ -191,9 +180,7 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
     if (!V2_TERMINAL_STATUSES.has(state.lifecycle.status)) return { status: 'not-finished', state };
     const plan = v2RetryPlan(state);
     const steps = isProgramWorkflow(state) ? plan.rerun : [];
-    const stopped = state.lifecycle.status === 'partial' && runFeatureFlags(readRunFeatures(runDir)).failureRule
-      ? v2LimitStoppedDispatch(state) : null;
-    if (!steps.length && !stopped) return { status: 'nothing-to-retry', state, needsCaller: plan.needsCaller };
+    if (!steps.length) return { status: 'nothing-to-retry', state, needsCaller: plan.needsCaller };
     const at = now();
     const previousStatus = state.lifecycle.status;
     const resultFile = state.lifecycle.resultFile ?? join(runDir, 'result.json');
@@ -206,21 +193,8 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
     if (state.cancellation.requested) state.cancellation = { requested: false, requestedAt: null, reason: null };
     rmSync(join(runDir, 'cancellation.json'), { force: true });
     if (['completed', 'cancelled', 'failed'].includes(state.planner.status)) state.planner.status = 'waiting';
-    // The stopped dispatch goes back to where the relaunched kernel runs it
-    // before anything else: the scout to pending, the planner to waiting with
-    // the steering its stopped turn took handed back to its next turn. Their
-    // earlier attempts stay on record; the next attempt's ordinal follows them.
-    if (stopped?.id === 'preflight-scout') {
-      Object.assign(state.preflight.scout, { status: 'pending', finishedAt: null, lastFailure: null });
-      delete state.preflight.scout.limitStop;
-    } else if (stopped?.id === 'workflow-planner') {
-      const handedBack = new Set(state.planner.limitStop.steeringIds);
-      if (handedBack.size) state.steering = (state.steering ?? []).filter((entry) => !handedBack.has(entry.id));
-      delete state.planner.limitStop;
-    }
-    const requeuedSteps = steps.length ? [...plan.rerun, ...plan.blocked] : [];
-    const requeued = [...(stopped ? [stopped.id] : []), ...requeuedSteps];
-    const retrying = new Set(requeuedSteps);
+    const requeued = [...plan.rerun, ...plan.blocked];
+    const retrying = new Set(requeued);
     for (const action of state.actions) {
       if (!retrying.has(action.id) || action.status === 'pending') continue;
       // Earlier attempts stay on record but never count as this step's
@@ -231,13 +205,12 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
       });
       rmSync(join(runDir, `completion-${action.id}.json`), { force: true });
     }
-    if (requeuedSteps.length) state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
+    state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
     const archivedResult = hadResult ? archived : null;
     appendEvent(runDir, state, 'workflow.reopened', { previousStatus, source: 'resume', archivedResult, requeued });
     writeRunState(runDir, state);
     return {
       status: 'reopened', state, previousStatus, requeued, archivedResult, needsCaller: plan.needsCaller,
-      ...(stopped ? { dispatch: { id: stopped.id, who: stopped.who, retryAfter: stopped.retryAfter } } : {}),
     };
   } finally { lease.release(); }
 }

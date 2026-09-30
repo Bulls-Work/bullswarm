@@ -4,11 +4,9 @@
 import { statSync } from 'node:fs';
 import { dependencyInputBytes } from './step-prompts.js';
 
-// The requirement texts a task file embeds verbatim: `affects` for work,
-// `evidenceFor` for evidence, none for a kernel-owned digest.
-export function embeddedRequirementBytes(state, action, { evidence = false, digest = false } = {}) {
-  if (digest) return 0;
-  const ids = evidence ? action.evidenceFor ?? [] : action.affects ?? [];
+// The requirement texts a task file embeds verbatim: the step's `affects`.
+export function embeddedRequirementBytes(state, action) {
+  const ids = action.affects ?? [];
   return state.intent.requirements
     .filter((item) => ids.includes(item.id))
     .reduce((total, item) => total + Buffer.byteLength(String(item.text ?? ''), 'utf8'), 0);
@@ -26,10 +24,10 @@ export function embeddedRequirementBytes(state, action, { evidence = false, dige
  * was written. The three parts are measured independently, so `kernel` is
  * floored at 0 rather than reporting a negative remainder.
  */
-export function attemptBytes(state, action, taskText, { evidence = false, digest = false } = {}) {
+export function attemptBytes(state, action, taskText) {
   const taskFile = Buffer.byteLength(taskText, 'utf8');
   const authorPrompt = Buffer.byteLength(String(action.prompt ?? ''), 'utf8');
-  const requirements = embeddedRequirementBytes(state, action, { evidence, digest });
+  const requirements = embeddedRequirementBytes(state, action);
   return {
     taskFile,
     authorPrompt,
