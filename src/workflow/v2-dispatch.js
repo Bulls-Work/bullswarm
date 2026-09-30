@@ -1,5 +1,5 @@
 import { clone } from '../lib/clone.js';
-import { poolCanRunModel } from '../lib/model-pin.js';
+import { modelBaseId, poolCanRunModel } from '../lib/model-pin.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -108,8 +108,11 @@ function planExcludedIds(pool) {
     .filter(Boolean);
 }
 
+// A context-window selector (`[1m]`) runs the same model, so the plan's
+// refusal of the base id covers it (model-pin.js modelBaseId).
 function planExcludes(pool, model) {
-  return planExcludedIds(pool).includes(String(model ?? '').trim().toLowerCase());
+  const wanted = String(model ?? '').trim().toLowerCase();
+  return planExcludedIds(pool).some((id) => id === wanted || modelBaseId(id) === modelBaseId(wanted));
 }
 
 function classifyFailure(verdict, pool = null) {

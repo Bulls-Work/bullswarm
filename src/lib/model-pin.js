@@ -23,7 +23,8 @@ export function isModelId(value) {
 
 // Trailing `[...]` selectors (a context-window variant such as `[1m]`) choose
 // how a model runs, not which model it is.
-const base = (id) => String(id ?? '').trim().replace(/(?:\[[^\]]*\])+$/, '').toLowerCase();
+export const modelBaseId = (id) => String(id ?? '').trim().replace(/(?:\[[^\]]*\])+$/, '').toLowerCase();
+const base = modelBaseId;
 
 /** The model ids this pool is known to run, and where the list came from. */
 function knownModels(pool) {

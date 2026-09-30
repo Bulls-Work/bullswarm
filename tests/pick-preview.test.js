@@ -76,6 +76,9 @@ test('a pinned model the plan excludes is named as that model, not as a missing 
   const result = await preview(t, pools, step({ model: 'acme-7', route: { pools: { avoid: ['initech-1'] } } }));
   assert.match(result.why, /; acme-7 is not in acme-1's plan$/);
   assert.doesNotMatch(result.why, /has no low-tier model its plan includes/);
+  // A context-window selector runs the same model: the plan's refusal covers it.
+  const selector = await preview(t, pools, step({ model: 'acme-7[1m]', route: { pools: { avoid: ['initech-1'] } } }));
+  assert.match(selector.why, /; acme-7\[1m\] is not in acme-1's plan$/);
 });
 
 test('a route that leaves no pool keeps the route reason, with kind unavailable', async (t) => {
