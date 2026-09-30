@@ -1821,6 +1821,27 @@ test('an error-shaped line in a stdout connector\'s completed reply is not a pla
   }
 });
 
+// Review round 3: an event-stream connector whose worker finished its turn
+// cleanly (a success result record, exit 0) and quotes the code in its answer.
+test('a clean event-stream turn that quotes the plan code is not a plan refusal', async () => {
+  const ctx = makeCtx();
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-stream-home-'));
+  try {
+    const line = JSON.stringify({ type: 'result', subtype: 'success', finalText: 'Done: the ticket is answered.\nError: the ticket quotes MODEL_NOT_IN_PLAN and the notes already explain it.', stopReason: 'end_turn' });
+    const shipped = JSON.parse(readFileSync(join(REPO_ROOT, 'providers/contrib/command-code/connector.json'), 'utf8'));
+    const clean = { ...shipped, spawn: { ...shipped.spawn, cmd: [process.execPath, '-e', `console.log(${JSON.stringify(line)})`, '{taskFile}'] } };
+    const v = await watchOnce(clean, 'Do the work.', ctx.dir, ctx.paths, {
+      timeoutSec: 60, home, poolName: 'command-code', model: 'ok-model',
+    });
+    assert.notEqual(v.failureKind, 'model-not-in-plan', v.why);
+    const { loadState } = await import('../src/lib/state.js');
+    assert.equal(loadState(home).strategy?.planExcludedModels?.['command-code'], undefined);
+  } finally {
+    ctx.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('a stdout connector\'s plan refusal on stderr is still model-not-in-plan', async () => {
   const ctx = makeCtx();
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-plan-stderr-home-'));

@@ -474,7 +474,11 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // read only when neither of those matched, and never on the agent's reply
   // (a connector with no event stream has it on stdout: `planChannel` is
   // then stderr alone).
-  const modelPlanHit = upstreamAuth || quotaFailure || fatalKind === 'auth'
+  // And only for an attempt that failed (a non-zero exit, or a failure the
+  // provider's own stream declared): a worker that finished its turn cleanly
+  // may quote the words in its answer, on any channel, and that is a reply.
+  const attemptFailed = (obs.exitCode != null && obs.exitCode !== 0) || Boolean(obs.providerFailureType);
+  const modelPlanHit = !attemptFailed || upstreamAuth || quotaFailure || fatalKind === 'auth'
     ? null
     : matchModelPlanSignature(connector, obs.planChannel ?? errorChannel);
   // quota.js Q6 — the one rule for when a limit resets: the pool's own meter
