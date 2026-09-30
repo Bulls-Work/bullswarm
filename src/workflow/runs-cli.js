@@ -15,14 +15,14 @@ import { withV2Cancellation } from './v2-cancellation.js';
 // resolver in short-id.js maps both to the run directory.
 //
 // Legacy (pre-0.27.0 authored-graph) runs are read-only history: they list as
-// one row marked `legacy`, `show`/`result` refuse them with a single line and
-// exit 2, and `delete` still removes the directory.
+// one row marked `legacy`, `show`/`result` print the short summary their own
+// files support (legacyRunSummary), and `delete` still removes the directory.
 
 import { existsSync, rmSync, readFileSync } from 'node:fs';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
-import { BULLSWARM_DIR } from './cli-run-lookup.js';
+import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
+import { BULLSWARM_DIR, legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
 import { appendRollupIndex, readRollup, rollupIndexPath, writeLegacyRollup, writeRunRollup } from './rollup.js';
 import { readGoalProject } from './goal.js';
 import { goalColumnText } from './goal-column.js';
@@ -53,13 +53,13 @@ function jsonOut(obj, opts) {
 }
 function err(msg, code = 1) { console.error(msg); return code; }
 
-// Every command that would drive a legacy run answers with the same sentence
-// and the same exit code, so a script never has to parse a special case.
-function refuseLegacy({ runId, shortId, runDir }, opts) {
-  const message = legacyRunLine({ shortId, runId, runDir });
-  if (opts.json || opts.summary) console.log(JSON.stringify({ legacy: true, runId, shortId: shortId ?? null, dir: runDir, message }, null, 2));
-  else console.error(message);
-  return 2;
+// `show` and `result` of a legacy run print the same bounded summary: what
+// its files recorded, with minutes and cost it never measured left unknown.
+function showLegacy(resolved, opts) {
+  const summary = legacyRunSummary(resolved);
+  if (opts.json || opts.summary) jsonOut(summary, opts);
+  else console.log(legacySummaryLines(summary).join('\n'));
+  return 0;
 }
 
 // `alias` is the help root the caller actually typed: the top-level `runs`
@@ -288,7 +288,7 @@ function runsShow(idToken, opts) {
   const { runId, runDir } = resolved;
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
-  if (isLegacyRunDir(runDir)) return refuseLegacy(resolved, opts);
+  if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
   const state = withV2Cancellation(readJsonSafe(statePath), runDir);
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
@@ -365,7 +365,7 @@ function runsResult(idToken, opts) {
   if (!resolved) return err(`no run found for "${idToken}"`);
 
   const { runId, runDir } = resolved;
-  if (isLegacyRunDir(runDir)) return refuseLegacy(resolved, opts);
+  if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
   const state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json')), runDir);
   const ongoing = isOngoing(runDir, state);
   const liveness = v2RunnerLiveness(state, { runDir });

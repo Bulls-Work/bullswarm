@@ -4,12 +4,13 @@ import { withV2Cancellation } from './v2-cancellation.js';
 // event and silence while work is merely in progress. `--once` and `--classic`
 // switch to the transition-plus-heartbeat stream instead. This is intentionally
 // distinct from the full-screen TUI and the machine-oriented events replay
-// API. Legacy (pre-0.27.0 authored-graph) runs cannot be watched at all —
-// nothing drives them — so the watcher refuses them with a single line.
+// API. Legacy (pre-0.27.0 authored-graph) runs have nothing to follow —
+// nothing drives them — so the watcher prints their short summary and stops.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, legacyRunLine, readKernelStderrTail } from './short-id.js';
+import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, readKernelStderrTail } from './short-id.js';
+import { legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
 import { glyphs } from '../lib/glyphs.js';
 import { withPoolLabels } from '../lib/pool-labels.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
@@ -267,9 +268,8 @@ async function resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs
       if (!resolved) throw new Error(`no run found for "${token}"`);
       // The grace window is spent and there is still no state.json: by the one
       // rule every other reader uses (isLegacyRunDir) that directory is legacy
-      // history, so hand it back and let the caller's legacy guard answer with
-      // the same sentence the other driving verbs print. Reporting a missing
-      // file here would jump the guard and exit 1 instead of 2.
+      // history, so hand it back and let the caller print its legacy summary.
+      // Reporting a missing file here would jump that and exit 1.
       return resolved;
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(50, intervalMs))));
@@ -1162,11 +1162,12 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   }
   const resolved = await resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs);
   const statePath = join(resolved.runDir, 'state.json');
-  // Nothing drives a legacy run, so there is nothing to watch: say so once and
-  // stop, before any polling loop or output stream is set up.
+  // Nothing drives a legacy run, so there is nothing to follow: print its
+  // summary once and stop, before any polling loop or output stream is set up.
   if (isLegacyRunDir(resolved.runDir)) {
-    output.write(`${legacyRunLine({ shortId: resolved.shortId, runId: resolved.runId, runDir: resolved.runDir })}\n`);
-    return 2;
+    const summary = legacyRunSummary(resolved);
+    output.write(jsonl ? `${JSON.stringify(summary)}\n` : `${legacySummaryLines(summary).join('\n')}\n`);
+    return 0;
   }
   const untilMode = until === 'outcome' || until === 'trouble';
   // --next follows the run until something happens, so it never degrades to a

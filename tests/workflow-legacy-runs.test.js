@@ -3,8 +3,9 @@
 // 0.27.0 removed the authored-graph executor. A run directory whose state.json
 // lacks `schemaVersion: 'bullswarm.workflow.state.v2'` — or that has no
 // state.json at all — is a legacy run: it lists as one row marked `legacy`,
-// every driving verb refuses it with exactly one line and exit 2, `delete`
-// still removes it, and nothing ever writes into it.
+// every verb that would act on it refuses it with exactly one line and exit 2,
+// show/result/watch/tui print a short summary ending with that line (0.38.0,
+// D3), `delete` still removes it, and nothing ever writes into it.
 //
 // The synthetic state below has the shape of a real one; the recorded example
 // this was written from is `.build-inputs/legacy-run/state.json`.
@@ -17,6 +18,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { isLegacyRunState, isLegacyRunDir, legacyRunLine, listRuns, isOngoing } from '../src/workflow/short-id.js';
 import { dashboardRows, dashboardJson, renderDetails, requestCancel } from '../src/workflow/dashboard.js';
+import { viewOnlyRunLine } from '../src/workflow/cli-run-lookup.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -182,26 +184,50 @@ test('runs list marks the legacy row and leaves the V2 row alone', () => {
   } finally { f.cleanup(); }
 });
 
-test('every driving verb refuses a legacy run with one line, exit 2, and no writes', () => {
+test('a legacy run: cancel and action show keep the legacy line, the driving verbs print the view-only line, both exit 2 and write nothing', () => {
   const f = fixture();
   try {
     const before = inventory(f.legacyDir);
     const line = LEGACY_LINE(f.legacyDir);
+    // 0.38.0 (D1): resume and steer answer every run that is not a v3 run with
+    // the view-only sentence; the verbs that act on a legacy run keep its line.
     const commands = [
-      ['workflow', 'runs', 'show', LEGACY_SHORT_ID],
-      ['workflow', 'runs', 'result', LEGACY_SHORT_ID],
-      ['workflow', 'watch', LEGACY_SHORT_ID],
-      ['workflow', 'cancel', LEGACY_SHORT_ID],
-      ['workflow', 'resume', LEGACY_SHORT_ID],
-      ['workflow', 'steer', LEGACY_SHORT_ID, 'do something else'],
-      ['workflow', 'action', 'show', LEGACY_SHORT_ID, 'step-one'],
-      ['workflow', 'tui', LEGACY_SHORT_ID],
+      [['workflow', 'cancel', LEGACY_SHORT_ID], line],
+      [['workflow', 'action', 'show', LEGACY_SHORT_ID, 'step-one'], line],
+      [['workflow', 'tui', LEGACY_SHORT_ID, '--cancel'], line],
+      [['workflow', 'resume', LEGACY_SHORT_ID], viewOnlyRunLine(LEGACY_SHORT_ID)],
+      [['workflow', 'steer', LEGACY_SHORT_ID, 'do something else'], viewOnlyRunLine(LEGACY_SHORT_ID)],
     ];
-    for (const argv of commands) {
+    for (const [argv, expected] of commands) {
       const result = cli(f.home, argv);
       const printed = `${result.stdout}${result.stderr}`.trim();
       assert.equal(result.status, 2, `${argv.join(' ')}: exit ${result.status}\n${printed}`);
-      assert.equal(printed, line, `${argv.join(' ')} printed:\n${printed}`);
+      assert.equal(printed, expected, `${argv.join(' ')} printed:\n${printed}`);
+      assert.deepEqual(inventory(f.legacyDir), before, `${argv.join(' ')} wrote into the run directory`);
+    }
+  } finally { f.cleanup(); }
+});
+
+// D3: show, result, watch and tui print a legacy run's short summary, ending
+// with its one line, and exit 0.
+test('show, result, watch and tui print a legacy run\'s summary ending with its one line, exit 0, and write nothing', () => {
+  const f = fixture();
+  try {
+    const before = inventory(f.legacyDir);
+    for (const argv of [
+      ['workflow', 'runs', 'show', LEGACY_SHORT_ID],
+      ['workflow', 'runs', 'result', LEGACY_SHORT_ID],
+      ['workflow', 'watch', LEGACY_SHORT_ID],
+      ['workflow', 'tui', LEGACY_SHORT_ID],
+    ]) {
+      const result = cli(f.home, argv);
+      assert.equal(result.status, 0, `${argv.join(' ')}: exit ${result.status}\n${result.stdout}${result.stderr}`);
+      assert.equal(result.stderr, '', argv.join(' '));
+      const lines = result.stdout.trim().split('\n');
+      assert.equal(lines[0], `# run  ${LEGACY_RUN_ID}  (${LEGACY_SHORT_ID})  legacy`, argv.join(' '));
+      assert.ok(lines.includes('# goal  smoke-two-step'), `${argv.join(' ')}:\n${result.stdout}`);
+      assert.ok(lines.includes('# status  completed'), `${argv.join(' ')}:\n${result.stdout}`);
+      assert.equal(lines.at(-1), LEGACY_LINE(f.legacyDir), argv.join(' '));
       assert.deepEqual(inventory(f.legacyDir), before, `${argv.join(' ')} wrote into the run directory`);
     }
   } finally { f.cleanup(); }
@@ -210,9 +236,9 @@ test('every driving verb refuses a legacy run with one line, exit 2, and no writ
 // watch resolves its run through a grace window (a freshly launched detached
 // run may not have written state.json yet), so it used to report the missing
 // file and exit 1 on the 80-odd pre-0.27.0 directories that hold only a
-// workflow.json. The legacy guard decides first now, whether the directory
+// workflow.json. The legacy check decides first now, whether the directory
 // carries a V1 state.json or no state.json at all.
-test('watch refuses a legacy run with the same one line and exit 2 with or without a state.json', () => {
+test('watch prints a legacy run\'s summary and exits 0 with or without a state.json', () => {
   const f = fixture({ orphan: true });
   try {
     const beforeLegacy = inventory(f.legacyDir);
@@ -222,19 +248,20 @@ test('watch refuses a legacy run with the same one line and exit 2 with or witho
     // (a) a legacy directory whose state.json is an authored-graph state.
     const withState = cli(f.home, ['workflow', 'watch', LEGACY_SHORT_ID]);
     const withStatePrinted = `${withState.stdout}${withState.stderr}`.trim();
-    assert.equal(withState.status, 2, `exit ${withState.status}\n${withStatePrinted}`);
-    assert.equal(withStatePrinted, LEGACY_LINE(f.legacyDir));
+    assert.equal(withState.status, 0, `exit ${withState.status}\n${withStatePrinted}`);
+    assert.equal(withStatePrinted.split('\n').at(-1), LEGACY_LINE(f.legacyDir));
     assert.deepEqual(inventory(f.legacyDir), beforeLegacy, 'watch wrote into the legacy run directory');
 
     // (b) a legacy directory with no state.json at all — the line names the
     // runId, because such a directory never recorded a shortId.
     const withoutState = cli(f.home, ['workflow', 'watch', 'wf-orphan-000001']);
     const withoutStatePrinted = `${withoutState.stdout}${withoutState.stderr}`.trim();
-    assert.equal(withoutState.status, 2, `exit ${withoutState.status}\n${withoutStatePrinted}`);
+    assert.equal(withoutState.status, 0, `exit ${withoutState.status}\n${withoutStatePrinted}`);
     assert.equal(
-      withoutStatePrinted,
+      withoutStatePrinted.split('\n').at(-1),
       legacyRunLine({ shortId: null, runId: 'wf-orphan-000001', runDir: f.orphanDir }),
     );
+    assert.match(withoutStatePrinted, /^# run {2}wf-orphan-000001 {2}\(no shortId\) {2}legacy$/m);
     assert.doesNotMatch(withoutStatePrinted, /has no state\.json/);
     assert.deepEqual(inventory(f.orphanDir), beforeOrphan, 'watch wrote into the state-less run directory');
 
@@ -245,7 +272,7 @@ test('watch refuses a legacy run with the same one line and exit 2 with or witho
   } finally { f.cleanup(); }
 });
 
-test('--json refusals carry the machine form and still exit 2', () => {
+test('--json: the refusals carry their machine form and exit 2; the summaries keep the refusal\'s keys and exit 0', () => {
   const f = fixture();
   try {
     const expected = {
@@ -253,17 +280,34 @@ test('--json refusals carry the machine form and still exit 2', () => {
       dir: f.legacyDir, message: LEGACY_LINE(f.legacyDir),
     };
     for (const argv of [
-      ['workflow', 'runs', 'show', LEGACY_SHORT_ID, '--json'],
-      ['workflow', 'runs', 'result', LEGACY_SHORT_ID, '--json'],
       ['workflow', 'cancel', LEGACY_SHORT_ID, '--json'],
-      ['workflow', 'tui', LEGACY_SHORT_ID, '--json'],
       ['workflow', 'action', 'show', LEGACY_SHORT_ID, 'step-one', '--json'],
-      ['workflow', 'steer', LEGACY_SHORT_ID, 'stop', '--json'],
-      ['workflow', 'resume', LEGACY_SHORT_ID, '--json'],
     ]) {
       const result = cli(f.home, argv);
       assert.equal(result.status, 2, `${argv.join(' ')}: ${result.stderr}`);
       assert.deepEqual(JSON.parse(result.stdout), expected, argv.join(' '));
+    }
+    for (const [verb, argv] of [
+      ['steer', ['workflow', 'steer', LEGACY_SHORT_ID, 'stop', '--json']],
+      ['resume', ['workflow', 'resume', LEGACY_SHORT_ID, '--json']],
+    ]) {
+      const result = cli(f.home, argv);
+      assert.equal(result.status, 2, `${argv.join(' ')}: ${result.stderr}`);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        viewOnly: true, verb, runId: LEGACY_RUN_ID, shortId: LEGACY_SHORT_ID,
+        dir: f.legacyDir, message: viewOnlyRunLine(LEGACY_SHORT_ID),
+      }, argv.join(' '));
+    }
+    for (const argv of [
+      ['workflow', 'runs', 'show', LEGACY_SHORT_ID, '--json'],
+      ['workflow', 'runs', 'result', LEGACY_SHORT_ID, '--json'],
+      ['workflow', 'tui', LEGACY_SHORT_ID, '--json'],
+    ]) {
+      const result = cli(f.home, argv);
+      assert.equal(result.status, 0, `${argv.join(' ')}: ${result.stderr}`);
+      const summary = JSON.parse(result.stdout);
+      assert.deepEqual(Object.fromEntries(Object.keys(expected).map((key) => [key, summary[key]])), expected, argv.join(' '));
+      assert.deepEqual([summary.goal, summary.status, summary.cost], ['smoke-two-step', 'completed', null], argv.join(' '));
     }
   } finally { f.cleanup(); }
 });

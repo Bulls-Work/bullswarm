@@ -514,9 +514,16 @@ test('I12: workflow resume resolves through the shortId resolver', () => {
     const bogus = run(wf('resume', 'zzzzzz', '--json'), { home });
     assert.notEqual(bogus.status, 0, 'expected bogus shortId to fail');
     assert.match(bogus.stdout + bogus.stderr, /no run found for "zzzzzz"/);
-    // A resolvable V2 run with no durable goal.json cannot be resumed either,
+    // A run with no programFormat 3 marker was started by an earlier
+    // Bullswarm: resume answers it as view-only (0.38.0), exit 2.
+    v2Run(home, { runId: 'wf-viewonly', shortId: 'vwq234' });
+    const viewOnly = run(wf('resume', 'vwq234'), { home });
+    assert.equal(viewOnly.status, 2);
+    assert.match(viewOnly.stderr, /^run vwq234 was started by an earlier Bullswarm and is view-only; /);
+    // A resolvable v3 run with no durable goal.json cannot be resumed either,
     // but it is named by its runId rather than reported as missing.
     v2Run(home, { runId: 'wf-resumable', shortId: 'rsm234' });
+    writeFileSync(join(home, 'workflows', 'wf-resumable', 'features.json'), JSON.stringify({ programFormat: 3 }));
     const known = run(wf('resume', 'rsm234', '--json'), { home });
     assert.equal(known.status, 1);
     assert.match(known.stderr, /cannot resume wf-resumable/);

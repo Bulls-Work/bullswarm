@@ -15,6 +15,7 @@ import { planV2Revision } from '../src/workflow/v2-revision.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { callerDecision } from '../src/workflow/verify-rounds.js';
 import { createV2ResultEnvelope, formatV2ProofLine, stepProof, summarizeV2Result } from '../src/workflow/v2-outcome.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { readEvents } from '../src/workflow/events.js';
 import { notableWatchEvents, renderWatchEvent, watchTrouble } from '../src/workflow/watch-cli.js';
 
@@ -300,8 +301,30 @@ test('an accepted requirement shows on the result\'s requirement and never verif
   assert.deepEqual(rendered, [`✓ deliver accepted by choice on check-build · "${REASON}"`]);
 });
 
+// 0.38.0 (D1): the CLI drives only a run marked programFormat 3, so the CLI
+// test runs on a v3 run: `build` failed its evidence, `docs` (depends on
+// build) is blocked, `side` succeeded.
+async function failedV3Run(t) {
+  const goal = 'Deliver the requested files';
+  const f = fixture(t, implicitV3Requirements(goal));
+  const ctl = scripted({ build: ['fail'] });
+  const runId = 'wf-acceptv-aaaaaa';
+  await start(f, runId, {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
+    program: { schemaVersion: 'bullswarm.workflow.program.v3', steps: [
+      { id: 'build', prompt: 'Write build.txt.' },
+      { id: 'docs', prompt: 'Write docs.txt.', dependsOn: ['build'] },
+      { id: 'side', prompt: 'Write side.txt.' },
+    ] },
+  }, ctl);
+  assert.equal(JSON.parse(readFileSync(join(runDirOf(f, runId), 'features.json'), 'utf8')).programFormat, 3);
+  const state = readState(f, runId);
+  assert.deepEqual(['build', 'docs', 'side'].map((id) => statusOf(state, id)), ['failed', 'blocked', 'succeeded']);
+  return { f, ctl, runId, token: state.shortId };
+}
+
 test('the CLI prints the accept, and --json carries its shape', async (t) => {
-  const { f, runId, token } = await failedRun(t);
+  const { f, runId, token } = await failedV3Run(t);
   // A paused run is revised directly and not relaunched, so the binary can run it.
   const path = join(runDirOf(f, runId), 'state.json');
   const state = readState(f, runId);

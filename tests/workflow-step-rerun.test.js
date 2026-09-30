@@ -16,6 +16,7 @@ import { appliedStepRestart, readStepRestarts, requestStepRestart } from '../src
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
 import { exportV2Plan } from '../src/workflow/v2-revision.js';
 import { countRetries } from '../src/workflow/step-vocabulary.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
 const requirements = [{ id: 'deliver', text: 'Deliver the requested files.' }];
@@ -500,8 +501,38 @@ test('a queued rerun that an older kernel rejects prints the pause, run again, r
   assert.equal(readStepRestarts(runDir).length, 1, 'a queued rerun keeps its intent for the kernel');
 });
 
+// 0.38.0 (D1): the CLI drives only a run marked programFormat 3, so the CLI
+// test runs on a v3 run with the same shape as failedRun: `build` failed its
+// evidence, `docs` (depends on build) is blocked, `side` succeeded.
+async function failedV3Run(t) {
+  const f = fixture(t);
+  f.goalDocument = createV2GoalDocument({
+    goal: 'Deliver the requested files', cwd: f.workspace, requirements: implicitV3Requirements('Deliver the requested files'),
+    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 3 },
+  });
+  const ctl = scripted({ build: ['fail'] });
+  const runId = 'wf-rerunv-aaaaaa';
+  await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goalDocument, pools: [], runId,
+    initialPlannerResponse: {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Initial plan.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v3', steps: [
+        { id: 'build', prompt: 'Write build.txt.' },
+        { id: 'docs', prompt: 'Write docs.txt.', dependsOn: ['build'] },
+        { id: 'side', prompt: 'Write side.txt.' },
+      ] },
+    },
+    dependencies: { dispatchV2Action: ctl.dispatch, controlPollMs: 10 },
+  });
+  assert.equal(JSON.parse(readFileSync(join(runDirOf(f, runId), 'features.json'), 'utf8')).programFormat, 3);
+  const state = readState(f, runId);
+  assert.equal(state.lifecycle.status, 'partial');
+  assert.deepEqual(['build', 'docs', 'side'].map((id) => statusOf(state, id)), ['failed', 'blocked', 'succeeded']);
+  return { f, ctl, runId, token: state.shortId };
+}
+
 test('the CLI prints the applied rerun, and --json carries the §2.7 shape', async (t) => {
-  const { f, runId, token } = await failedRun(t);
+  const { f, runId, token } = await failedV3Run(t);
   // A paused run is revised directly and not relaunched, so the binary can run it.
   const path = join(runDirOf(f, runId), 'state.json');
   const state = readState(f, runId);

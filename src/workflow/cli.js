@@ -10,7 +10,8 @@ import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { cmdReprice } from './reprice.js';
 import { resolvePoolId } from '../lib/pool-labels.js';
 import { workflowHelpPath, parseFlags, flagErrors } from './workflow-flags.js';
-import { BULLSWARM_DIR, legacyRunRefusal } from './cli-run-lookup.js';
+import { BULLSWARM_DIR, legacyRunRefusal, legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
+import { isLegacyRunDir, resolveRunId } from './short-id.js';
 import { programRoutes, routePoolIssues, configuredPools } from './cli-pool-checks.js';
 import { launchDetachedResume } from './cli-launch.js';
 import { wfPlan } from './cli-plan.js';
@@ -86,10 +87,14 @@ export async function cmdWorkflow(args, {
     case 'tui':
       try {
         {
+          // A legacy run shows its summary; cancelling one is refused.
           const token = opts.rest[0] ?? opts.show;
-          if (token) {
-            const legacy = legacyRunRefusal(token, { json: Boolean(opts.json) });
-            if (legacy !== null) return legacy;
+          const resolved = token ? resolveRunId(bullswarmDir, token) : null;
+          if (resolved && isLegacyRunDir(resolved.runDir)) {
+            if (opts.cancel) return legacyRunRefusal(token, { json: Boolean(opts.json) });
+            const summary = legacyRunSummary(resolved);
+            console.log(opts.json ? JSON.stringify(summary, null, 2) : legacySummaryLines(summary).join('\n'));
+            return 0;
           }
         }
         if (opts.overview) {

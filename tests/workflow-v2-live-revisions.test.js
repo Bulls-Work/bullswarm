@@ -22,6 +22,7 @@ import { peekSteering, queueSteering } from '../src/workflow/steering.js';
 import { projectV2DependencyStages } from '../src/workflow/v2-presentation.js';
 import { ACTION_KINDS, KIND_ROLES } from '../src/workflow/action-validator.js';
 import { validateV2PlannerResponse } from '../src/workflow/v2-planner.js';
+import { viewOnlyRunLine } from '../src/workflow/cli-run-lookup.js';
 
 const BIN = resolve(new URL('..', import.meta.url).pathname, 'bin', 'bullswarm.js');
 const requirements = [{ id: 'deliver', text: 'Deliver the requested files and validate them.' }];
@@ -432,7 +433,7 @@ test('state validation: removed steps require an applied revision, and a paused 
   assert.throws(() => validateV2DurableState(pausedWithoutRecord), /paused requires state.pause/);
 });
 
-test('CLI: plan export writes an editable document; plan revise refuses no-op and unknown rerun ids; pause refuses a finished run', async (t) => {
+test('CLI: plan export writes an editable document; plan revise refuses no-op and unknown rerun ids; pause refuses a v2 run as view-only', async (t) => {
   const f = fixture(t);
   const ctl = controller();
   const done = await start(f, 'wf-cli10a-abcdef', [work('a'), work('b', { dependsOn: ['a'] })], ctl);
@@ -458,9 +459,9 @@ test('CLI: plan export writes an editable document; plan revise refuses no-op an
   assert.match(JSON.parse(unknown.stdout).issues.join(' '), /rerun names "ghost"/);
   assert.equal(readState(f, done.runId).lifecycle.status, 'completed', 'a refused revision leaves the run untouched');
 
+  // 0.38.0 (D1): a v2 run is view-only, so pause refuses it before it reads its status.
   const pause = cli('workflow', 'pause', token);
-  assert.equal(pause.status, 1);
-  assert.match(pause.stderr, /already terminal/);
+  assert.deepEqual([pause.status, pause.stdout, pause.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
   const help = cli('workflow', 'plan', 'revise', '--help');
   assert.equal(help.status, 0);
   assert.match(help.stdout, /--rerun <id,\.\.\.>/);

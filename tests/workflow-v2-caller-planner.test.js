@@ -27,6 +27,7 @@ import { rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { createRevisionRequest, exportV2Plan, normalizeRevisionInput } from '../src/workflow/v2-revision.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { queueSteering } from '../src/workflow/steering.js';
+import { viewOnlyRunLine } from '../src/workflow/cli-run-lookup.js';
 import {
   buildV2PlannerContract, buildV2PlannerPrompt, normalizeCallerPlannerResponse,
   v2PlannerContractRules, V2PlannerValidationError,
@@ -989,8 +990,11 @@ test('CLI legacy recovery: steering queued while paused shows in plan show and i
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
     const { shortId: token, runId } = launchLegacyGoal(f, programPath);
+    // 0.38.0 (D1): the steer verb refuses a v2 run as view-only and writes
+    // nothing, so the steering is queued the way that verb used to queue it.
     const steer = cli(f, ['workflow', 'steer', token, '--message', 'Create the file with a single write.']);
-    assert.equal(steer.status, 0, steer.stderr);
+    assert.deepEqual([steer.status, steer.stderr], [2, `${viewOnlyRunLine(token)}\n`]);
+    queueSteering(f.home, token, 'Create the file with a single write.');
     const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
     assert.equal(show.status, 0, show.stderr);
     const request = JSON.parse(show.stdout);
@@ -1193,7 +1197,7 @@ test('CLI legacy recovery: workflow cancel finalizes a paused caller run and is 
   } finally { f.cleanup(); }
 });
 
-test('CLI legacy recovery: workflow resume is the verb form of goal --resume and refuses planning flags', () => {
+test('CLI legacy recovery: workflow resume refuses planning flags, and refuses a run an older version left waiting as view-only', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
@@ -1209,23 +1213,17 @@ test('CLI legacy recovery: workflow resume is the verb form of goal --resume and
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /no run found/);
 
-    // Resuming a run an older version left waiting finishes it and hands the
-    // decision back, dispatching nothing new.
+    // 0.38.0 (D1): a run an older version left waiting is view-only. resume
+    // refuses it and writes nothing; workflow cancel is what finishes it.
+    const runDir = join(f.home, 'workflows', runId);
+    const before = readFileSync(join(runDir, 'state.json'), 'utf8');
     const resumed = cli(f, ['workflow', 'resume', token, '--foreground', '--json']);
-    assert.equal(resumed.status, 1, resumed.stderr || resumed.stdout);
-    const result = JSON.parse(resumed.stdout);
-    assert.equal(result.status, 'partial');
-    assert.match(result.reason, /^requirements are still open and no step is left to run/);
-    assert.deepEqual(result.handback.unresolvedRequirements.map((entry) => entry.id), ['requirement-1']);
-    const state = JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'state.json'), 'utf8'));
-    assert.equal(state.planner.turns, 1);
-    assert.equal(state.planner.awaiting, null);
-    assert.equal(state.attempts.length, 2, 'finishing a held run dispatches nothing');
-    // Resume on the finished run has nothing a retry fixes: it says so and relaunches nothing.
+    assert.equal(resumed.status, 2, resumed.stderr || resumed.stdout);
+    assert.deepEqual(JSON.parse(resumed.stdout), { viewOnly: true, verb: 'resume', runId, shortId: token, dir: runDir, message: viewOnlyRunLine(token) });
     const retry = cli(f, ['workflow', 'resume', token]);
-    assert.equal(retry.status, 1, retry.stdout);
-    assert.match(retry.stderr, /nothing to retry in \S+ \(partial\)/);
-    assert.equal(JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'state.json'), 'utf8')).lifecycle.status, 'partial');
+    assert.deepEqual([retry.status, retry.stdout, retry.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
+    assert.equal(readFileSync(join(runDir, 'state.json'), 'utf8'), before, 'a refused resume writes nothing');
+    assert.equal(JSON.parse(before).lifecycle.status, 'waiting');
   } finally { f.cleanup(); }
 });
 
@@ -1678,16 +1676,16 @@ test('CLI: evidence end to end — a passing check, a same-pool retry after a fa
     });
     assert.equal(events.some((event) => event.payload?.actionId === 'check-create-done' && Object.hasOwn(event.payload, 'proof')), false, 'a review step is never labelled');
 
-    // runs result prints the same proof line; resume has nothing a retry fixes and names the step.
+    // runs result prints the same proof line. 0.38.0 (D1): this is a v2 run,
+    // so resume refuses it as view-only and relaunches nothing.
     const token = envelope.shortId ?? runId;
     const resultText = cli(f, ['workflow', 'runs', 'result', token]);
     assert.equal(resultText.status, 1, resultText.stderr); // a partial result exits 1
     assert.match(resultText.stdout, /^# proof {2}3 steps proven \(command 3, schema 1, review 1\) · 1 finished · unproven: survey-done$/m);
     const resumed = cli(f, ['workflow', 'resume', token, '--json']);
-    assert.equal(resumed.status, 1, resumed.stderr || resumed.stdout);
+    assert.equal(resumed.status, 2, resumed.stderr || resumed.stdout);
     const refusal = JSON.parse(resumed.stdout);
-    assert.equal(refusal.status, 'nothing-to-retry');
-    assert.deepEqual(refusal.needsCaller.map((entry) => [entry.id, entry.failureKind]), [['always-fails', 'failed-evidence']]);
+    assert.deepEqual([refusal.viewOnly, refusal.verb, refusal.runId, refusal.message], [true, 'resume', runId, viewOnlyRunLine(token)]);
     assert.equal(JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).attempts.length, state.attempts.length, 'resume relaunched nothing');
   } finally { f.cleanup(); }
 });
@@ -1884,25 +1882,6 @@ function stopInChildKernel(f, { runId, scout, stoppedId, reset, why }) {
   return stopped;
 }
 
-// The fixture worker, with a Workflow Planner that writes the caller's
-// program as its validated candidate (the shared fixture's planner refuses).
-function planningWorker(f) {
-  const response = { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Create done.txt and inspect it.', program: cliProgram() };
-  const worker = join(f.root, 'caller-worker.mjs');
-  const source = readFileSync(worker, 'utf8').replace(
-    'if (task.includes("single logical Workflow Planner for Bullswarm autonomous V2")) {\n  process.stderr.write("PLANNER DISPATCHED IN CALLER MODE"); process.exit(9);\n}',
-    [
-      'if (task.includes("single logical Workflow Planner for Bullswarm autonomous V2")) {',
-      '  const candidate = task.match(/exact durable path: \'([^\']*candidate-workflow-planner-turn-\\d+\\.json)\'/)[1];',
-      `  writeFileSync(candidate, ${JSON.stringify(JSON.stringify(response))});`,
-      '  process.stdout.write("The durable planner candidate validated.");',
-      '}',
-    ].join('\n'),
-  );
-  assert.ok(source.includes('candidate-workflow-planner-turn'), 'the planner branch was replaced');
-  writeFileSync(worker, source);
-}
-
 async function finishedState(f, runId) {
   const statePath = join(f.home, 'workflows', runId, 'state.json');
   let state = null;
@@ -1917,10 +1896,9 @@ async function finishedState(f, runId) {
   return state;
 }
 
-test('CLI, marked: after the Workflow Planner stopped on a usage limit, resume reopens the run and runs the planner again; the run completes with its program', async () => {
+test('CLI, marked: after the Workflow Planner stopped on a usage limit, the saved reason still names resume, and resume refuses the run as view-only', async () => {
   const f = cliFixture();
   try {
-    planningWorker(f);
     // A reset still ahead, so resume says the planner can stop the same way.
     const reset = '2099-01-01T00:00:00.000Z';
     const why = `no pool with quota to spare: caller-agent paused for quota until ${reset}`;
@@ -1928,48 +1906,34 @@ test('CLI, marked: after the Workflow Planner stopped on a usage limit, resume r
     assert.equal(reason, `the workflow planner stopped on a usage limit: ${why} · back at ${reset} · your call: `
       + `resume after ${reset} with bullswarm workflow resume ${token}, plan it yourself with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run`);
 
+    // 0.38.0 (D1): the run is v2, so it is view-only. The saved reason above
+    // stays as it was written; resume refuses and writes nothing.
+    const statePath = join(f.home, 'workflows', 'wf-plstop-abcdef', 'state.json');
+    const before = readFileSync(statePath, 'utf8');
     const resumed = cli(f, ['workflow', 'resume', token]);
-    assert.equal(resumed.status, 0, resumed.stderr || resumed.stdout);
-    const lines = resumed.stdout.split('\n');
-    assert.equal(lines[0], `✓ reopened the partial run ${token}; running again: the workflow planner`);
-    assert.equal(lines[1], `  note: the workflow planner stopped with its pool back at ${reset}; run before then, it can fail the same way again`);
-    assert.match(resumed.stdout, new RegExp(`workflow ${token} resumed independently`));
-
-    const state = await finishedState(f, 'wf-plstop-abcdef');
-    assert.equal(state.lifecycle.status, 'completed');
-    assert.deepEqual(state.planner.attempts.map((attempt) => [attempt.turn, attempt.status, attempt.pool]), [[1, 'succeeded', 'caller-agent']]);
-    assert.deepEqual(state.actions.map((action) => [action.id, action.status]), [['create-done', 'succeeded'], ['check-create-done', 'succeeded']]);
-    assert.equal(Object.hasOwn(state.planner, 'limitStop'), false);
-    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
-    const reopened = readEvents(join(f.home, 'workflows', 'wf-plstop-abcdef')).filter((event) => event.type === 'workflow.reopened').map((event) => event.payload);
-    assert.deepEqual(reopened.map((payload) => [payload.source, payload.requeued]), [['resume', ['workflow-planner']]]);
+    assert.deepEqual([resumed.status, resumed.stdout, resumed.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
+    assert.equal(readFileSync(statePath, 'utf8'), before, 'a refused resume writes nothing');
+    assert.equal(existsSync(join(f.target, 'done.txt')), false, 'no planner or step ran');
   } finally { f.cleanup(); }
 });
 
-test('CLI, marked: resume --json after the preflight scout stopped on a usage limit lists the scout in requeued; the run scouts, plans and completes', async () => {
+test('CLI, marked: after the preflight scout stopped on a usage limit, resume --json refuses the run as view-only', async () => {
   const f = cliFixture();
   try {
-    planningWorker(f);
     // A reset already passed: no note, only what runs again.
     const reset = '2026-01-01T00:00:00.000Z';
     const why = `usage limit: "You've hit your session limit" · pool paused until ${reset}`;
     const { token, reason } = stopInChildKernel(f, { runId: 'wf-scstop-abcdef', scout: true, stoppedId: 'preflight-scout', reset, why });
     assert.ok(reason.startsWith(`the preflight scout stopped on a usage limit: ${why} · back at ${reset} · your call: resume after ${reset} with bullswarm workflow resume ${token}, `), reason);
 
+    // 0.38.0 (D1): the run is v2, so it is view-only: resume refuses and writes nothing.
+    const runDir = join(f.home, 'workflows', 'wf-scstop-abcdef');
+    const before = readFileSync(join(runDir, 'state.json'), 'utf8');
     const resumed = cli(f, ['workflow', 'resume', token, '--json']);
-    assert.equal(resumed.status, 0, resumed.stderr || resumed.stdout);
-    const launch = JSON.parse(resumed.stdout);
-    assert.equal(launch.action, 'goal-resumed');
-    assert.deepEqual(Object.keys(launch.reopened), ['previousStatus', 'requeued', 'archivedResult']);
-    assert.deepEqual([launch.reopened.previousStatus, launch.reopened.requeued], ['partial', ['preflight-scout']]);
-    assert.ok(existsSync(launch.reopened.archivedResult));
-
-    const state = await finishedState(f, 'wf-scstop-abcdef');
-    assert.equal(state.lifecycle.status, 'completed');
-    assert.equal(state.preflight.scout.status, 'succeeded');
-    assert.ok(readFileSync(state.preflight.scout.outputFile, 'utf8').includes('UNITS OF WORK'));
-    assert.deepEqual(state.planner.attempts.map((attempt) => attempt.status), ['succeeded']);
-    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
+    assert.equal(resumed.status, 2, resumed.stderr || resumed.stdout);
+    assert.deepEqual(JSON.parse(resumed.stdout), { viewOnly: true, verb: 'resume', runId: 'wf-scstop-abcdef', shortId: token, dir: runDir, message: viewOnlyRunLine(token) });
+    assert.equal(readFileSync(join(runDir, 'state.json'), 'utf8'), before, 'a refused resume writes nothing');
+    assert.equal(JSON.parse(before).preflight.scout.status, 'failed');
   } finally { f.cleanup(); }
 });
 
@@ -1993,9 +1957,8 @@ test('CLI, marked: after the Workflow Planner stopped on a usage limit, plan rev
     assert.equal(state.planner.attempts.length, 0, 'no planner was dispatched after the revise');
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
 
-    // The caller's plan replaced the stopped turn: resume has nothing to retry.
+    // 0.38.0 (D1): the revised run is still a v2 run, so resume refuses it as view-only.
     const again = cli(f, ['workflow', 'resume', token]);
-    assert.equal(again.status, 1, again.stdout);
-    assert.match(again.stderr, new RegExp(`nothing to retry in ${token} \\(completed\\)`));
+    assert.deepEqual([again.status, again.stdout, again.stderr], [2, '', `${viewOnlyRunLine(token)}\n`]);
   } finally { f.cleanup(); }
 });

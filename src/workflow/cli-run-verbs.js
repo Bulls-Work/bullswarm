@@ -3,18 +3,17 @@
 
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveRunId } from './short-id.js';
-import { isProgramV3 } from './program-v3.js';
+import { resolveRunId, v2RunnerLiveness } from './short-id.js';
+import { isProgramV3Run, readRunFeatures } from './run-features.js';
 import { validateV2GoalDocument } from './v2-state.js';
 import { runV2AutonomousWorkflow } from './v2-runtime.js';
 import { pauseV2Run, reopenV2RunForRetry, unpauseV2Run } from './run-control.js';
-import { isProgramWorkflow } from './execution-policy.js';
 import { requestCancel } from './dashboard.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { queueSteering } from './steering.js';
 import { helpText, usageLine } from '../help.js';
 import { flagErrors } from './workflow-flags.js';
-import { BULLSWARM_DIR, legacyRunRefusal, loadV2RunState } from './cli-run-lookup.js';
+import { BULLSWARM_DIR, drivableRunRefusal, legacyRunRefusal, loadV2RunState } from './cli-run-lookup.js';
 import { livePoolNames } from './cli-pool-checks.js';
 import { executeGoalDocument, launchDetachedResume, printGoalLaunchInstructions } from './cli-launch.js';
 
@@ -24,8 +23,8 @@ export async function wfPause(opts) {
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'pause'])}`); return 2; }
-  const legacy = legacyRunRefusal(token, opts);
-  if (legacy !== null) return legacy;
+  const viewOnly = drivableRunRefusal(token, opts, 'pause');
+  if (viewOnly !== null) return viewOnly;
   let run;
   try { run = loadV2RunState(token); }
   catch (err) { console.error(`✗ ${err.message}`); return 1; }
@@ -38,7 +37,7 @@ export async function wfPause(opts) {
   const payload = {
     action: 'pause', runId: run.runId, shortId: run.state.shortId ?? null, status: outcome.status, mode,
     already: outcome.already, appliedBy: outcome.appliedBy, running: outcome.status === 'pausing' ? running : [],
-    next: { resume: `bullswarm workflow resume ${id}`, ...(isProgramV3(run.state.program) ? { add: `bullswarm workflow add ${id} --steps part.json` } : { export: `bullswarm workflow plan export ${id} --out plan.json` }) },
+    next: { resume: `bullswarm workflow resume ${id}`, add: `bullswarm workflow add ${id} --steps part.json` },
   };
   if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return 0; }
   if (outcome.status === 'paused') console.log(`✓ workflow ${id} ${outcome.already ? 'was already' : 'is'} paused; nothing new starts until: ${payload.next.resume}`);
@@ -46,7 +45,7 @@ export async function wfPause(opts) {
     console.log(`✓ pause requested for ${id}; nothing new starts. ${running.length} running step${running.length === 1 ? '' : 's'} ${mode === 'now' ? 'being stopped' : 'finish first'}${running.length ? ` (${running.join(', ')})` : ''}`);
     console.log(`  watch    bullswarm workflow watch ${id} --next`);
   } else console.log(`workflow ${id} reached ${outcome.status} before the pause took effect`);
-  console.log(payload.next.add ? `  add      ${payload.next.add}` : `  revise   ${payload.next.export}, then bullswarm workflow plan revise ${id} --program plan.json`);
+  console.log(`  add      ${payload.next.add}`);
   return 0;
 }
 
@@ -78,16 +77,21 @@ export async function wfCancel(opts) {
     catch (err) { console.error(`✗ ${err.message}`); return 1; }
   }
   // A caller-planner run paused at a boundary, or a run stopped by workflow
-  // pause, has no kernel alive to honor the request; finalize it here. The
-  // kernel reads the cancellation at the top of its loop and records the
-  // cancelled result without dispatching.
-  if (requested.planner?.awaiting || ['paused', 'waiting'].includes(requested.lifecycle?.status)) {
+  // pause, has no kernel alive to honor the request; finalize it here. So is a
+  // view-only run whose kernel stopped, since resume refuses it. The kernel
+  // reads the cancellation at the top of its loop and records the cancelled
+  // result without dispatching.
+  const viewOnly = !isProgramV3Run(readRunFeatures(resolvedRun.runDir));
+  const parked = requested.planner?.awaiting || ['paused', 'waiting'].includes(requested.lifecycle?.status);
+  const noKernel = !parked && viewOnly && !v2RunnerLiveness(requested, { runDir: resolvedRun.runDir }).alive;
+  if (parked || noKernel) {
     let finished;
     try {
       const doc = JSON.parse(readFileSync(join(resolvedRun.runDir, 'goal.json'), 'utf8'));
       finished = await runV2AutonomousWorkflow({ bullswarmDir: BULLSWARM_DIR(), goalDocument: doc, pools: [], resumeRunId: state.runId });
     } catch (err) {
-      console.error(`✗ cancellation recorded for ${id} but it could not be finalized here: ${err.message}; run bullswarm workflow resume ${id} --foreground to finalize`);
+      const finalize = viewOnly ? `bullswarm workflow cancel ${id}` : `bullswarm workflow resume ${id} --foreground`;
+      console.error(`✗ cancellation recorded for ${id} but it could not be finalized here: ${err.message}; run ${finalize} to finalize`);
       return 1;
     }
     const payload = {
@@ -96,14 +100,23 @@ export async function wfCancel(opts) {
       result: `bullswarm workflow runs result ${id} --json`,
     };
     if (opts.json) console.log(JSON.stringify(payload, null, 2));
-    else console.log(`✓ workflow ${id} ${state.lifecycle?.status === 'waiting' ? 'was waiting at a gate or loop' : 'was paused for its caller planner'}; cancelled and finalized (${payload.status}); result: ${payload.result}`);
+    else {
+      const was = noKernel ? 'had no kernel running' : state.lifecycle?.status === 'waiting' ? 'was waiting at a gate or loop' : 'was paused for its caller planner';
+      console.log(`✓ workflow ${id} ${was}; cancelled and finalized (${payload.status}); result: ${payload.result}`);
+    }
     return 0;
   }
+  // A view-only run is never resumed: if its kernel stops before it records
+  // the cancellation, this cancel, run again, finalizes it.
   const payload = {
     action: 'cancel', runId: state.runId, shortId: state.shortId ?? null, alreadyFinished: false, finalized: false,
     status: requested.lifecycle?.status ?? state.lifecycle?.status,
-    note: 'cooperative: the running kernel stops at its next safe checkpoint; an interrupted kernel records the cancelled result on its next resume',
-    next: { watch: `bullswarm workflow watch ${id}`, resume: `bullswarm workflow resume ${id} --foreground --json` },
+    note: viewOnly
+      ? 'cooperative: the running kernel stops at its next safe checkpoint; if it stops first, run this cancel again to finalize the run'
+      : 'cooperative: the running kernel stops at its next safe checkpoint; an interrupted kernel records the cancelled result on its next resume',
+    next: viewOnly
+      ? { watch: `bullswarm workflow watch ${id}`, cancel: `bullswarm workflow cancel ${id} --json` }
+      : { watch: `bullswarm workflow watch ${id}`, resume: `bullswarm workflow resume ${id} --foreground --json` },
   };
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
   else {
@@ -126,23 +139,19 @@ function reopenFinishedRun(resolvedRun, opts) {
   if (outcome.status === 'live') { console.error(`✗ a kernel is still finishing ${id}; watch it with bullswarm workflow watch ${id} --next`); return 1; }
   if (outcome.status === 'not-finished') return null;
   if (outcome.status === 'nothing-to-retry') {
-    const program = isProgramWorkflow(current);
     const payload = {
       action: 'resume', status: 'nothing-to-retry', runId: resolvedRun.runId, shortId: resolvedRun.shortId ?? null,
       runStatus: current.lifecycle.status, needsCaller: outcome.needsCaller ?? [],
       next: {
         result: `bullswarm workflow runs result ${id} --json --summary`,
-        ...(program && isProgramV3(current.program)
-          ? { add: `bullswarm workflow add ${id} --steps part.json`, rerun: `bullswarm workflow step rerun ${id} <step>` }
-          : program ? { revise: `bullswarm workflow plan export ${id} --out plan.json, then bullswarm workflow plan revise ${id} --program plan.json --rerun <step ids>` } : {}),
+        add: `bullswarm workflow add ${id} --steps part.json`, rerun: `bullswarm workflow step rerun ${id} <step>`,
       },
     };
     if (opts.json) console.log(JSON.stringify(payload, null, 2));
     else {
       console.error(`✗ nothing to retry in ${id} (${current.lifecycle.status}): no step stopped for a reason a plain retry fixes; nothing was relaunched`);
       for (const entry of payload.needsCaller) console.error(`  ${entry.id}  ${entry.status}${entry.failureKind ? ` (${entry.failureKind})` : ''}`);
-      if (payload.next.revise) console.error(`  change the plan: ${payload.next.revise}`);
-      if (payload.next.add) console.error(`  add steps: ${payload.next.add}\n  rerun a step: ${payload.next.rerun}`);
+      console.error(`  add steps: ${payload.next.add}\n  rerun a step: ${payload.next.rerun}`);
       console.error(`  result: ${payload.next.result}`);
     }
     return 1;
@@ -175,11 +184,11 @@ export async function wfResume(opts) {
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'resume'])}`); return 2; }
   if (opts.watch && (opts.foreground || opts.json)) { console.error('✗ --watch cannot combine with --foreground or --json'); return 2; }
   if (opts.program || opts.orchestrator !== undefined || opts['strict-orchestrator'] !== undefined || opts.scout || opts['suggested-plan'] !== undefined || opts.isolation !== undefined) {
-    console.error(`✗ a resumed run keeps its durable planner mode and routing; to change its plan use: bullswarm workflow plan revise ${token} --program <file.json>`);
+    console.error(`✗ a resumed run keeps its durable planner mode and routing; to add steps use: bullswarm workflow add ${token} --steps <file.json>`);
     return 2;
   }
-  const legacy = legacyRunRefusal(token, opts);
-  if (legacy !== null) return legacy;
+  const viewOnly = drivableRunRefusal(token, opts, 'resume');
+  if (viewOnly !== null) return viewOnly;
   const resolvedRun = resolveRunId(BULLSWARM_DIR(), token);
   if (!resolvedRun) { console.error(`✗ no run found for "${token}"`); return 1; }
   const durableGoalPath = join(resolvedRun.runDir, 'goal.json');
@@ -236,8 +245,8 @@ export function wfSteer(opts) {
     console.error(`usage: ${usageLine(['workflow', 'steer'])}`);
     return 2;
   }
-  const legacy = legacyRunRefusal(token, opts);
-  if (legacy !== null) return legacy;
+  const viewOnly = drivableRunRefusal(token, opts, 'steer');
+  if (viewOnly !== null) return viewOnly;
   try {
     const result = queueSteering(BULLSWARM_DIR(), token, message);
     const payload = {

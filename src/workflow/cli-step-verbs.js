@@ -18,7 +18,7 @@ import { helpText, usageLine } from '../help.js';
 import { changeStepHint, rerunStepHint } from './step-change-hint.js';
 import { loadPoolLabels, withPoolLabels } from '../lib/pool-labels.js';
 import { flagErrors } from './workflow-flags.js';
-import { BULLSWARM_DIR, legacyRunRefusal } from './cli-run-lookup.js';
+import { BULLSWARM_DIR, drivableRunRefusal } from './cli-run-lookup.js';
 import { routePoolIssues, configuredPools } from './cli-pool-checks.js';
 import { launchDetachedResume } from './cli-launch.js';
 
@@ -392,7 +392,7 @@ function printStepRerun(result, token) {
     const names = result.leaves.join(', ');
     console.log(`  pool     starts on another pool than ${names} when one can take it (the step failed there on the pool); ${result.leaves.length === 1 ? 'that pool' : 'those'} only if none can`);
   }
-  if (result.avoid.length) console.log(`  route    ${routeSummary(result.route)} · kept for later reruns; to remove it, export the plan, edit the route, then plan revise`);
+  if (result.avoid.length) console.log(`  route    ${routeSummary(result.route)} · kept for later reruns; to run it another way: bullswarm workflow add ${id} --steps part.json with a new step (a v3 run's steps are never edited)`);
   if (result.paused) console.log(`  resume   bullswarm workflow resume ${id}`);
   else console.log(`  watch    ${result.next.watch}`);
 }
@@ -449,8 +449,8 @@ export async function wfStep(opts) {
   if (flagExit !== null) return flagExit;
   const [, token, stepId] = opts.rest;
   if (!STEP_VERBS.includes(verb) || !token || !stepId) { console.error(`usage: ${usageLine(STEP_VERBS.includes(verb) ? path : ['workflow', 'step', 'restart'])}`); return 2; }
-  const legacy = legacyRunRefusal(token, opts);
-  if (legacy !== null) return legacy;
+  const viewOnly = drivableRunRefusal(token, opts, `step ${verb}`);
+  if (viewOnly !== null) return viewOnly;
   const waitSec = opts.wait == null ? (verb === 'restart' ? 60 : 120) : Number(opts.wait);
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
   if (verb === 'rerun') {
