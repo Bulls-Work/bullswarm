@@ -25,6 +25,7 @@ import { v3LaunchInstruction } from '../src/workflow/gates-loops.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from '../src/workflow/needs-you.js';
 import { readEvents } from '../src/workflow/events.js';
 import { v2V3Fixtures } from './fixtures/program-v3-fixtures.mjs';
+import { removeSettled } from './fixtures/settled-cleanup.mjs';
 
 const cli = resolve('bin/bullswarm.js');
 const V3 = 'bullswarm.workflow.program.v3';
@@ -674,7 +675,7 @@ test('a detached v3 launch says where the run stops for you and points to workfl
     try { if (['waiting', 'completed', 'partial', 'failed'].includes(JSON.parse(readFileSync(statePath, 'utf8')).lifecycle.status)) break; } catch { /* mid-write */ }
     await new Promise((done) => setTimeout(done, 50));
   }
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => removeSettled(root, { homes: [home] }));
   const token = launched.shortId ?? launched.runId;
   assert.equal(launched.observe.add, `bullswarm workflow add ${token} --steps part.json`);
   assert.equal(Object.hasOwn(launched.observe, 'plan'), false);
@@ -711,7 +712,8 @@ test('advisories ride inside the JSON in --json mode and print once, on stderr, 
       await new Promise((done) => setTimeout(done, 50));
     }
   };
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // The detached kernels keep writing after their runs settle.
+  t.after(() => removeSettled(root, { homes: [home] }));
 
   const json = run('goal', 'Write the acme docs', '--cwd', workspace, '--program', plan, '--json');
   assert.equal(json.status, 0, json.stdout + json.stderr);
