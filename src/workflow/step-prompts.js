@@ -12,8 +12,12 @@ import { previousRoundBlock } from './gates-loops.js';
 import { enforcesOwnership, isProgramWorkflow } from './execution-policy.js';
 
 function dependencyArtifacts(state, action) {
+  // A v3 step's blindTo (0.38.3): a dependency it must judge by its work alone
+  // is still listed, without its output file or checked answer.
+  const blind = new Set(Array.isArray(action.blindTo) ? action.blindTo : []);
   return action.dependsOn.map((id) => {
     const runtime = actionState(state, id);
+    if (blind.has(id)) return { actionId: id, artifactIds: clone(runtime?.artifactIds ?? []), blind: true };
     const declared = actionDefinition(state, id);
     const entry = { actionId: id, outputFile: runtime?.outputFile ?? null, artifactIds: clone(runtime?.artifactIds ?? []), ...dependencyAnswerField(state, declared, runtime) };
     // A digest already condensed other actions' outputs. Name those sources
@@ -126,6 +130,11 @@ function deliverableBriefLine(action, targetDir) {
     : line;
 }
 
+// blindTo: the steps whose own account this step judges without.
+function blindLine(ids) {
+  return `You judge the work of ${ids.join(', ')} without ${ids.length === 1 ? 'its' : 'their'} own account of it: you are not handed ${ids.length === 1 ? 'its' : 'their'} output or answer, so do not look for them. Judge from the workspace and the other inputs you are given.`;
+}
+
 // `privateWorkspace`: the step runs in an isolated copy of its own (E5); the
 // copy is never the caller's workspace, so that is the default test.
 export function buildProgramWorkTask(state, action, targetDir, runDir = null, { privateWorkspace = targetDir !== state.intent.cwd } = {}) {
@@ -157,6 +166,7 @@ export function buildProgramWorkTask(state, action, targetDir, runDir = null, { 
     'Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Do not commit unless the user explicitly requires it.',
     'Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file requests. An integration action applies those requests, reconciles the combined work, and runs the repository acceptance gates.',
     `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}`,
+    ...(action.blindTo?.length ? [blindLine(action.blindTo)] : []),
     ...state.intent.requirements.filter((item) => action.affects.includes(item.id)).map((item) => `Requirement context (${item.id}): ${item.text}`),
     'Deliver only your action purpose. Exercise observable behavior and run the focused checks; report exact validation and anything unfinished. Do not claim success based only on editing files or unrelated green tests.',
     ...(deliverableLine ? [deliverableLine] : []),

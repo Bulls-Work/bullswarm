@@ -68,8 +68,7 @@ a readiness problem.
 | Loop | steps that repeat until one step's answer (or evidence) says stop, at most `maxRounds` (1-5) | an entry in `loops`: `{id, steps, until, maxRounds}` |
 
 A program that researches in parallel, rewrites a brief until an independent
-critique passes, waits for you, then publishes (`plan validate` accepts it: 5
-steps, 1 gate, 1 loop):
+critique passes, waits for you, then publishes (`plan validate` accepts it):
 
 ```json
 {
@@ -123,12 +122,12 @@ slices, and a triage (usually one run).
 - **Gates stop only what is behind them.** Other branches keep running. When
   only waiting gates or loops are left, the run parks with status `waiting`.
 - **Independent checks.** `route.independentOf` names steps this step depends
-  on (directly or through others) whose provider it must not use, so a check
-  independent of `find` also depends on `find`. It needs a second provider:
-  with only one enabled, validate and `workflow add` refuse it (`every enabled
-  pool that could run it … uses that provider; enable a pool of another
-  provider or drop independentOf`). The other provider needs a model on the
-  step's tier: a no-pool refusal names each pool's reason.
+  on (directly or through others) whose provider it must not use. It needs a
+  second provider: with only one enabled, validate and `workflow add` refuse
+  it (`… enable a pool of another provider or drop independentOf`). The other
+  provider needs a model on the step's tier: a no-pool refusal names each
+  pool's reason. A review of a build step also takes `"blindTo": ["build"]`
+  (not handed the builder's own account) and numbered checks (patterns.md 3).
 - **Shared folder.** All workers share one tree. Name each writer's exact
   files in `files` (steps whose files overlap run one after the other) and tell
   it to keep other workers' edits.

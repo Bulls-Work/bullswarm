@@ -44,6 +44,7 @@ Steps, gates and loops share one id space: an id is kebab-case and used once.
 | `effort` | no | `high`, `medium`, `low`; default by lane: analyze medium, build medium, chore low; a chore step must be low |
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, or `default` (pass nothing): how hard the picked model thinks |
 | `route` | no | `{pools: {use, avoid}, providers: {use, avoid}, independentOf: [step ids]}`: a hard filter applied before quota pacing; `independentOf` names steps this step depends on (directly or through others) whose providers it must not use |
+| `blindTo` | no | step ids this step depends on (directly or through others) whose output file and checked answer it is not handed, in its task or a loop's `Previous round` block; the dependency still orders it. Use it on a review of a build step; leave it off a check that must read the list it checks |
 | `answer` | no | a JSON schema: the worker writes its final answer as JSON to a file Bullswarm names (at most 256 KiB), and that file is checked; a mismatch is failure kind `schema`; the checked answer goes to dependent steps, conditions, `workflow wait`, `watch` and `runs result` |
 | `evidence` | no | up to 5 checks Bullswarm runs after the worker, as in [Evidence](#evidence-command-and-schema) |
 | `deliverable` | no | `files`, `report`, `data`, `media`, `outward`, or `{type, paths}` (default `files` for build and chore, `report` for analyze without an answer, none for analyze with an answer); not produced is failure kind `not-produced` |

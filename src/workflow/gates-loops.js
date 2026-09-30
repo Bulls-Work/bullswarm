@@ -700,15 +700,18 @@ export function previousRoundBlock(state, action) {
     `## Previous round (loop ${loop.id}, now round ${record.round} of ${record.maxRounds})`,
     `The loop runs its steps again because ${describeCondition(loop.until)} did not hold after round ${record.round - 1}. What its steps produced in round ${record.round - 1}:`,
   ];
+  // A step blind to another (blindTo) sees that it ran, its status and its
+  // evidence (Bullswarm's own facts), never its answer or output file.
+  const blind = new Set(Array.isArray(action.blindTo) ? action.blindTo : []);
   for (const stepId of loop.steps) {
     const attempt = previousAttempt(state, stepId);
     if (!attempt) { lines.push(`- ${stepId}: did not run`); continue; }
     lines.push(`- ${stepId} (attempt ${attempt.id}, ${attempt.status})`);
-    if (attempt.answer && attempt.answer.value !== undefined && attempt.answer.value !== null) {
+    if (!blind.has(stepId) && attempt.answer && attempt.answer.value !== undefined && attempt.answer.value !== null) {
       lines.push(`  - answer: ${cut(JSON.stringify(attempt.answer.value), ANSWER_SHOWN_CHARS)}`);
     }
     lines.push(...evidenceLines(attempt.evidenceResults));
-    if (attempt.outputFile) lines.push(`  - output: ${attempt.outputFile}`);
+    if (!blind.has(stepId) && attempt.outputFile) lines.push(`  - output: ${attempt.outputFile}`);
   }
   lines.push('Use this to make this round succeed where the last one did not.');
   return lines.join('\n');

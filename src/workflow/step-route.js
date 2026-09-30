@@ -142,6 +142,35 @@ function normalizeIndependentOf(raw, at, issues, { program, actionIndex, evidenc
   return ids.length ? ids : undefined;
 }
 
+/**
+ * A v3 step's `blindTo` (0.38.3): upstream steps whose own account of their
+ * work (output file and checked answer) this step is not handed. Checked like
+ * route.independentOf: unique ids of steps that run before this one. Returns
+ * the sorted ids, or undefined when empty or refused.
+ */
+export function normalizeBlindTo(raw, at, issues, { program = null, actionIndex = -1, knownActions = [] } = {}) {
+  if (raw === undefined) return undefined;
+  const where = `${at}.blindTo`;
+  if (!Array.isArray(raw) || !raw.every((id) => typeof id === 'string' && ID_RE.test(id))) {
+    issues.push(`${where} must be an array of step ids`);
+    return undefined;
+  }
+  for (const id of new Set(raw.filter((item, index) => raw.indexOf(item) !== index))) issues.push(`${where} names "${id}" twice`);
+  const ids = sortedUnique(raw);
+  const actions = Array.isArray(program?.actions) ? program.actions : [];
+  const self = isObject(actions[actionIndex]) ? actions[actionIndex].id : null;
+  const known = new Set([...(knownActions ?? []), ...actions]
+    .filter((action) => isObject(action) && typeof action.id === 'string')
+    .map((action) => action.id));
+  const ancestors = typeof self === 'string' ? ancestorsOf(self, dependencyGraph(program, knownActions)) : new Set();
+  for (const id of ids) {
+    if (id === self) issues.push(`${where} cannot name the step itself`);
+    else if (!known.has(id)) issues.push(`${where} names "${id}", which is not a step in this program`);
+    else if (!ancestors.has(id)) issues.push(`${where} names "${id}", which does not run before this step; add it to dependsOn (directly or through another step)`);
+  }
+  return ids.length ? ids : undefined;
+}
+
 const joined = (values) => values.join(', ');
 
 /**

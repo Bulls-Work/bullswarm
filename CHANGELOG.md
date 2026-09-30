@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- steps: a v3 step may declare `"blindTo": ["<step id>", ...]`, naming steps
+  that run before it (directly or through others). Its task still lists each
+  named dependency, but without that step's output file or checked answer,
+  and a loop's `Previous round` block leaves out that step's answer and output
+  (it still says the step ran, its status and its evidence); the step waits
+  for it as before. Use it on a review of a build step: in a real run a
+  builder's answer explained a deviation away with a credible reason and the
+  reviewer passed with no findings, while the same reviewer without the
+  answer caught it. Validate and `workflow add` refuse a non-array, an unknown
+  id, a step that does not run before it, or the step itself, like
+  `route.independentOf`, which is unchanged: it still only picks the provider.
+  `plan validate` prints `blind to <ids>` on the step's line.
+- docs: the review and critique examples in `patterns.md` and `program.md`
+  are strict: the contract as numbered checks, any difference a finding even
+  when it looks harmless, intended or justified (the caller decides), and an
+  answer with `checks` ({id, holds, evidence}) and `passed`, true only when
+  every check holds. Find-then-check stays without `blindTo`, since a check
+  works from the list the finder answered.
+
 ## 0.38.2 — Three large files split into one-concept modules
 
 - internal: the three largest workflow files are split into one-concept

@@ -80,8 +80,8 @@ export function desiredActionsV3(state, program, runtime, { avoidRoute = [] } = 
 //
 // `workflow add` sends a revision request with `append: true` whose program is
 // the run's exported program followed by the caller's fragment. It may add
-// steps, gates and loops and name existing ids in dependsOn and
-// route.independentOf; it never removes or reruns what is there, and changes
+// steps, gates and loops and name existing ids in dependsOn,
+// route.independentOf and blindTo; it never removes or reruns what is there, and changes
 // an existing step in one way only: the fragment's `blocks`
 // ({newStepId: [existing step ids]}) appends a step it adds to the dependsOn
 // of existing steps that have not started, are in no loop and would form no

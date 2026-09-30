@@ -80,6 +80,9 @@ validate (find and the checks as one program):
 3. `bullswarm workflow add <run> --steps checks.json`, then `bullswarm
    workflow wait <run> check-f1 check-f2`, and report the confirmed ones.
 
+The checks are not blind to `find` (no `blindTo`): a check works from what
+`find` listed, so hiding `find`'s answer would hide the list it checks.
+
 `independentOf` needs a second provider. With one provider enabled, `workflow
 add` refuses the fragment and changes nothing (real output):
 
@@ -146,9 +149,11 @@ publish once. Submit once; you are woken at `approve`. About 2-3 caller turns.
       "answer": { "type": "object", "required": ["claims"], "properties": { "claims": { "type": "array", "items": { "type": "string" } } } } },
     { "id": "draft", "phase": "writing", "dependsOn": ["search-a", "search-b"], "lane": "build", "files": ["brief.md"],
       "prompt": "In /work/acme, write brief.md from the claims your dependencies answered. From round 2 on, fix the problems the previous critique listed." },
-    { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "route": { "independentOf": ["draft"] },
-      "prompt": "In /work/acme, check every claim in brief.md against sources/. List only problems a line of sources/ shows (quote it); a claim that something is missing from sources/ is not a problem. Answer passed true when you list none.",
-      "answer": { "type": "object", "required": ["passed", "problems"], "properties": { "passed": { "type": "boolean" }, "problems": { "type": "array", "items": { "type": "string" } } } } },
+    { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "route": { "independentOf": ["draft"] }, "blindTo": ["draft"],
+      "prompt": "In /work/acme, check brief.md against this contract: 1. every claim in brief.md is stated by a line of sources/; 2. no claim in brief.md contradicts a line of sources/; 3. every number and date in brief.md is as sources/ gives it. Any difference from the contract is a problem, even if it looks harmless, intended or justified by the author: the caller decides. List only problems a line of sources/ shows (quote it); a claim that something is missing from sources/ is not a problem. Record each check as holds true or false with its evidence. Answer passed true when you list none. passed is true only when every check holds.",
+      "answer": { "type": "object", "required": ["checks", "passed", "problems"], "properties": {
+        "checks": { "type": "array", "items": { "type": "object", "required": ["id", "holds", "evidence"], "properties": { "id": { "type": "string" }, "holds": { "type": "boolean" }, "evidence": { "type": "string" } } } },
+        "passed": { "type": "boolean" }, "problems": { "type": "array", "items": { "type": "string" } } } } },
     { "id": "post", "phase": "publish", "dependsOn": ["approve"], "deliverable": "outward", "retry": 0,
       "prompt": "Publish /work/acme/brief.md to the acme wiki, and list the page you created." }
   ],
@@ -163,7 +168,7 @@ validate:
   search-a                 analyze/medium answer
   search-b                 analyze/medium answer
   draft                    build/medium deliverable=files after search-a, search-b
-  critique                 analyze/medium answer after draft route: independent of draft
+  critique                 analyze/medium answer after draft route: independent of draft blind to draft
   post                     analyze/medium deliverable=outward after approve
   gate approve             after polish · waits for you · Read brief.md and decide whether to publish it
   loop polish              steps draft, critique · until critique.passed is true · at most 2 rounds
@@ -175,6 +180,15 @@ have nothing to change when the first critique passes, and fail. `post` has
 `retry: 0` and an `outward` deliverable, so it never runs twice. Read
 `brief.md` when the watch wakes you at `approve`, then `bullswarm workflow
 continue <run> approve`, or cancel the run.
+
+The critique is strict on purpose. It states its contract as numbered checks,
+counts every difference as a problem even when the writer had a reason, and
+records each check with its evidence, so passing means every check held.
+`blindTo: ["draft"]` keeps the draft step's own answer and report out of the
+critique's task (and out of its Previous round block): it judges `brief.md`
+itself, and a convincing reason in the writer's report cannot talk it out of a
+problem. That matters most on a large change. `route.independentOf` is a
+separate choice: it picks another provider, and hides nothing.
 
 The critique asks only for what the sources can show: a critique that wants a
 citation for "the sources do not say X" can never pass. Two rounds are

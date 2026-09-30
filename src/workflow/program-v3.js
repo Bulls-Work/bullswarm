@@ -44,7 +44,7 @@ const EFFORTS = new Set(['high', 'medium', 'low']);
 const PROGRAM_KEYS = new Set(['schemaVersion', 'defaults', 'steps', 'gates', 'loops']);
 const DEFAULT_KEYS = new Set(['lane', 'effort', 'reasoning', 'retry', 'timeBox']);
 const STEP_KEYS = new Set([
-  'id', 'prompt', 'dependsOn', 'phase', 'label', 'lane', 'effort', 'reasoning', 'model', 'route',
+  'id', 'prompt', 'dependsOn', 'phase', 'label', 'lane', 'effort', 'reasoning', 'model', 'route', 'blindTo',
   'answer', 'evidence', 'deliverable', 'files', 'retry', 'timeBox',
 ]);
 // Present in the stored form; accepted on input only with the derived value.
@@ -404,6 +404,7 @@ export function normaliseProgramV3(input, runtime = {}) {
     if (step.deliverable !== undefined) action.deliverable = step.deliverable;
     if (step.raw.evidence !== undefined) action.evidence = step.raw.evidence;
     if (step.raw.route !== undefined) action.route = step.raw.route;
+    if (step.raw.blindTo !== undefined) action.blindTo = step.raw.blindTo;
     return action;
   });
   let checked = null;
@@ -413,6 +414,7 @@ export function normaliseProgramV3(input, runtime = {}) {
         relaxedGraph: true, requireMandatoryEvidence: false, enforceMaxActions: false, enforceMaxParallel: false,
         ...runtime,
         allowStepModel: true,
+        allowBlindTo: true,
         requirements: Array.isArray(runtime.requirements) ? runtime.requirements : [{ id: requirementId, mandatory: false }],
       });
     } catch (error) {
@@ -455,6 +457,7 @@ export function normaliseProgramV3(input, runtime = {}) {
     if (action.deliverable !== undefined) out.deliverable = clone(action.deliverable);
     if (action.evidence !== undefined) out.evidence = clone(action.evidence);
     if (action.route !== undefined) out.route = clone(action.route);
+    if (action.blindTo !== undefined) out.blindTo = [...action.blindTo];
     if (step.answer !== undefined) out.answer = step.answer;
     out.evidenceFor = [];
     out.inputs = [];
@@ -520,6 +523,7 @@ export function stepV3Facts(action) {
     ...(action.label !== undefined ? { label: action.label } : {}),
     ...(action.phase !== undefined ? { phase: action.phase } : {}),
     retry: action.retry, files: [...(action.files ?? [])],
+    ...(action.blindTo?.length ? { blindTo: [...action.blindTo] } : {}),
     ...(action.answer !== undefined ? { answer: clone(action.answer) } : {}),
   };
 }

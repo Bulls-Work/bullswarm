@@ -4411,7 +4411,7 @@ test('Runs and Home show single-task ledger rows, and Enter opens task detail', 
     const homeText = plain(lastFrame(session.output));
     // Home leads with the finished task's own card and keeps the live task in
     // its running band.
-    assert.match(homeText, /Home · Today · \d+ Sep · top 1 runs/);
+    assert.match(homeText, /Home · Today · \d+ [A-Z][a-z]{2} · top 1 runs/);
     assert.match(homeText, /live-task/);
     const runs = session.press('r');
     assert.match(plain(runs), /hed-task/);
@@ -4444,7 +4444,7 @@ test('Enter on a Home today workflow row opens that run', async () => {
     const before = plain(lastFrame(session.output));
     // The Today band is the three cards; the cursor starts on the first one
     // and Enter opens that run on the Run page.
-    assert.match(before, /Home · Today · \d+ Sep · top 3 runs/);
+    assert.match(before, /Home · Today · \d+ [A-Z][a-z]{2} · top 3 runs/);
     assert.match(before, /unified-shell/);
     const run = session.press('\r');
     assert.match(frameHeader(run), /^ [●✓✗] (?:aaa111|bbb222|zzz999) · /);
@@ -4452,7 +4452,7 @@ test('Enter on a Home today workflow row opens that run', async () => {
     // Esc comes back to Home with the band intact.
     session.press(ESC_KEY);
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
-    assert.match(plain(lastFrame(session.output)), /Home · Today · \d+ Sep · top 3 runs/);
+    assert.match(plain(lastFrame(session.output)), /Home · Today · \d+ [A-Z][a-z]{2} · top 3 runs/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });

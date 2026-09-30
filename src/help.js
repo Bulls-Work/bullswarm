@@ -1661,8 +1661,8 @@ const workflowContinueText = rich({
 const workflowAddText = rich({
   usage: 'bullswarm workflow add <runId> (--steps <file.json> | --from-answer <step>) [--summary <text>] [--wait <seconds>] [--json]',
   purpose: 'Append to a v3 run. The fragment is a JSON object {steps, gates?, loops?} written like the same '
-    + 'lists of a v3 program; its items may name the run\'s existing steps, gates and loops in dependsOn and '
-    + 'route.independentOf (a step it must be independent of has to run before it, so depend on it too). '
+    + 'lists of a v3 program; its items may name the run\'s existing steps, gates and loops in dependsOn, '
+    + 'route.independentOf and blindTo (a step named there has to run before it, so depend on it too). '
     + 'Nothing the run has changes: an id the run already has, a new loop around an existing step, or any '
     + 'change to an existing step is refused, except blocks: {"<new step id>": ["<existing step id>", ...]} '
     + 'makes existing steps that have not started (and are in no loop) also wait for a step the fragment '

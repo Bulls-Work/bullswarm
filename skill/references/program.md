@@ -44,6 +44,7 @@ Steps, gates and loops share one id space: an id is kebab-case and used once.
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, or `default` (pass nothing); how hard the picked model thinks |
 | `model` | no | an exact model id; the step runs on that model, only on pools that list it (see Routing) |
 | `route` | no | `{pools: {use, avoid}, providers: {use, avoid}, independentOf: [step ids]}`: a hard filter applied before quota pacing |
+| `blindTo` | no | step ids this step depends on (directly or through others) whose output file and checked answer it is not handed; see "Reviews" |
 | `answer` | no | a JSON schema; see "Answers" |
 | `evidence` | no | up to 5 checks Bullswarm runs after the worker; see "Evidence" |
 | `deliverable` | no | `files`, `report`, `data`, `media`, `outward`, or `{type, paths}`; see "Deliverables" |
@@ -115,9 +116,52 @@ an unsupported keyword is refused at validate (`steps[0].answer: unsupported
 keyword "patternProperties" at #`). A mismatch is failure kind `schema`, and
 the step's one retry runs on the same pool with the errors attached. The
 checked answer is stored on the attempt and the step, handed to dependent
-steps (their task names the answer file beside the dependency's output), read
+steps (their task names the answer file beside the dependency's output,
+unless the dependent is `blindTo` that step), read
 by conditions, and printed by `workflow wait`, `watch` and `runs result`. An
 `analyze` step with an answer has no deliverable unless you declare one.
+
+## Reviews
+
+A review is an ordinary step with an `answer`. Write it strictly: state the
+contract as numbered checks, say that any difference from the contract is a
+finding even if it looks harmless, intended or justified by the author (you
+decide, not the reviewer), and have it record each check as `holds` true or
+false with its evidence. `passed` is true only when every check holds.
+
+`blindTo` names upstream steps whose own account of their work the step must
+not read: their output file and checked answer are left out of its task, and
+out of a loop's `Previous round` block (which still says they ran, their
+status and their evidence). The dependency still orders the step. Put it on a
+review of a build step: a builder's answer can explain a deviation away with
+a credible reason, and a reviewer that reads it tends to accept it, most of
+all on a large change. It names steps like `route.independentOf` does (steps
+this one depends on, directly or through others), and is separate from it:
+`independentOf` picks another provider and hides nothing. Leave `blindTo` off
+a check that works from another step's list (find, then check each finding):
+hiding that answer would hide what it checks.
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    { "id": "build", "lane": "build", "files": ["src/csv-writer.js", "tests/csv-writer.test.js"],
+      "prompt": "In /work/acme, add src/csv-writer.js: writeCsv(rows) returns RFC 4180 CSV text. Add its tests in tests/csv-writer.test.js." },
+    { "id": "review", "dependsOn": ["build"], "blindTo": ["build"],
+      "prompt": "In /work/acme, review src/csv-writer.js and tests/csv-writer.test.js against this contract: 1. src/csv-writer.js exports writeCsv(rows), which returns a string; 2. a field holding a comma, a quote or a line break is quoted, and a quote inside it is doubled; 3. every line ends with CRLF; 4. the tests cover checks 2 and 3. Any difference from the contract is a finding, even if it looks harmless, intended or justified by the author: the caller decides. Record each check as holds true or false, with the line that shows it as evidence. Answer passed true only when every check holds. Change no file.",
+      "answer": { "type": "object", "required": ["checks", "passed"], "properties": {
+        "checks": { "type": "array", "items": { "type": "object", "required": ["id", "holds", "evidence"], "properties": { "id": { "type": "string" }, "holds": { "type": "boolean" }, "evidence": { "type": "string" } } } },
+        "passed": { "type": "boolean" } } } }
+  ]
+}
+```
+
+```text
+validate:
+✓ program v3 valid: 2 steps, 0 gates, 0 loops (nothing launched)
+  build                    build/medium deliverable=files
+  review                   analyze/medium answer after build blind to build
+```
 
 ## Deliverables
 
@@ -259,7 +303,9 @@ messages:
   `steps[0].retry must be 0 or 1`
 - an independence the graph cannot give: `steps[1].route.independentOf names
   "a", which does not run before this step; add it to dependsOn (directly or
-  through another step)`
+  through another step)`; the same for `blindTo`: `steps[1].blindTo
+  names "a", which does not run before this step; …`, `steps[1].blindTo
+  cannot name the step itself`, `steps[1].blindTo must be an array of step ids`
 - a directory or glob in `files`: `steps[0].files[0] must name one exact file,
   not a directory or glob ("src/")`
 - lane mismatches: `steps[0] analyze actions must not own workspace files; use

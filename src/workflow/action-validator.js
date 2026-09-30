@@ -7,7 +7,7 @@ import {
   ROLE_DEFAULT_DELIVERABLE, ROLE_DELIVERABLES, STEP_EVIDENCE_TYPES, WRITING_DELIVERABLES,
   deliverableTypeOf, laneFitsDeliverable, roleRouting,
 } from './step-vocabulary.js';
-import { normalizeRoute } from './step-route.js';
+import { normalizeBlindTo, normalizeRoute } from './step-route.js';
 
 export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, STEP_EVIDENCE_TYPES };
 
@@ -630,7 +630,10 @@ export function validateActionProgram(program, runtime = {}) {
       issues.push(`${at} must be an object`);
       return;
     }
-    for (const key of Object.keys(raw)) if (!ACTION_FIELDS.has(key)) issues.push(`${at}.${key} is not allowed`);
+    // blindTo is a v3 step option (program-v3.js passes allowBlindTo).
+    for (const key of Object.keys(raw)) {
+      if (!ACTION_FIELDS.has(key) && !(key === 'blindTo' && runtime.allowBlindTo === true)) issues.push(`${at}.${key} is not allowed`);
+    }
     const action = clone(raw);
     if (!hasId(action.id)) issues.push(`${at}.id must be a valid kebab-case ID`);
     else if (allIds.has(action.id)) issues.push(`${at}.id "${action.id}" is duplicated`);
@@ -749,6 +752,11 @@ export function validateActionProgram(program, runtime = {}) {
     });
     if (route) action.route = route;
     else delete action.route;
+    const blindTo = runtime.allowBlindTo === true
+      ? normalizeBlindTo(action.blindTo, at, issues, { program, actionIndex: index, knownActions })
+      : undefined;
+    if (blindTo) action.blindTo = blindTo;
+    else delete action.blindTo;
     const roleLaneOnWrongEvidence = roleKnown && action.role !== 'check' && !laneGiven;
     if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze' && !roleLaneOnWrongEvidence) {
       issues.push(`${at} evidence actions must use lane analyze`);
