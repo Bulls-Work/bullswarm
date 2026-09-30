@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- removed: the mechanisms program v3 replaced (0.37.0) no longer run. The
+  preflight scout (`--scout`, `--no-scout`), the dispatched Workflow Planner
+  (`--orchestrator`, `--orchestrator-model`, `--orchestrator-strict`,
+  `--strict-orchestrator`, `--suggested-plan`, `--planner-reasoning`), the
+  caller-planner gap turn (`workflow plan show`, `workflow plan submit`),
+  whole-plan revise (`workflow plan export`, `workflow plan revise`),
+  `workflow plan contract --v2`, the v2 repair loop (`defaults.verifyRounds`),
+  the kernel-written digest and review tasks, and goal requirement
+  extraction are gone. For one release each removed flag and verb exits 2
+  with one sentence naming its replacement: a first step your later steps
+  depend on instead of the scout; a program you write, or a step whose answer
+  is a list of steps appended with `workflow add --from-answer`, instead of
+  the planner; `workflow add` and `workflow step rerun` instead of revise.
+- v2 programs: a `bullswarm.workflow.program.v2` is refused by
+  `workflow goal --program` and `workflow plan validate` with exit 2, before
+  any run folder exists: `bullswarm.workflow.program.v2 is no longer accepted
+  for a new run; write a program.v3 (bullswarm workflow plan contract) and
+  check it (bullswarm workflow plan validate --program <file.json>)`.
+- saved runs: only a run marked `programFormat: 3` is driven. A run an
+  earlier Bullswarm started (v2 and every earlier format, legacy included)
+  is view-only: `workflow resume`, `goal --resume`, `pause`, `steer`,
+  `step rerun`/`accept`/`restart` and the removed plan verbs exit 2 with
+  `run <id> was started by an earlier Bullswarm and is view-only; start a new
+  run: …` and change nothing (`workflow add` gives the same sentence with
+  exit 1); the kernel refuses to resume one too. `workflow cancel` still finalizes a v2 run left live. Every saved run
+  stays listed, shown and counted as before (`runs list --all`, `show`,
+  `result`, `--summary`, `watch`, the dashboard, `stats`, History), and a
+  saved repair-loop run keeps its recorded `next` text.
+- legacy runs: `workflow runs show`, `runs result`, `watch` and `tui` on a
+  run from before 0.27 print a bounded read-only summary built from its saved
+  files instead of refusing; minutes or cost the files do not hold stay
+  unknown.
+- dispatch: every step follows the one failure rule: one automatic retry,
+  then the caller; a usage limit goes straight to the caller; a transient
+  rate limit backs off on its own pool only. The rules older runs used are
+  gone with those runs' execution.
+- `workflow capabilities` no longer lists `actionRoles` or the dispatched
+  planner mode; roles and kinds stay only as the reader of saved v2 runs.
+- The text judge (`judgeContent`) stays: `pools probe`, `health` and
+  `contentUsableDespiteExit` in `bullswarm run --json` still use it.
+
 ## 0.37.3 — Price-band model picks, tier-level reasoning, per-step model
 
 - strategy: a connector can opt into a price band (`priceBand: true`; Codex

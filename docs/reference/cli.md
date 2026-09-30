@@ -824,24 +824,24 @@ Self-heals: if `~/.bullswarm` is not yet configured, runs the same auto-setup as
 
 ## workflow
 
-Plan, execute, observe, and audit durable multi-agent workflows with the single V2 action/evidence engine. With no command on a TTY, opens the unified full-screen workflow home. Non-interactive callers receive this help text instead.
+Plan, execute, observe, and audit durable multi-agent workflows of steps, phases, gates and loops. With no command on a TTY, opens the unified full-screen workflow home. Non-interactive callers receive this help text instead.
 
 ```bash
 # Author plan.json from `workflow plan contract`, then launch.
 bullswarm workflow goal "1. Fix the parser. 2. Verify it." --cwd . --program plan.json
 ```
 
-Legacy authored-graph runs are read-only; driving commands fail closed before dispatch. Goal dispatches real coding-agent CLI processes and writes durable state under `~/.bullswarm/workflows/<runId>/`. How to author a program is in [Workflows](/guide/workflows); the JSON fields are in [Workflow program](/reference/program).
+Only a v3 run is driven. A run an earlier Bullswarm started (v2, earlier formats, legacy) is view-only: `runs`, `show`, `result`, `watch` and the dashboard keep reading it, and resume, `goal --resume`, pause, steer and `step rerun`/`accept`/`restart` exit 2 with `run <id> was started by an earlier Bullswarm and is view-only; start a new run: bullswarm workflow goal "<goal>" --cwd <run folder> --program <file.json>`. Goal dispatches real coding-agent CLI processes and writes durable state under `~/.bullswarm/workflows/<runId>/`. How to author a program is in [Workflows](/guide/workflows); the JSON fields are in [Workflow program](/reference/program).
 
 ### goal
 
-Run an autonomous V2 goal end to end. Pass the program you authored (`--program`) and the kernel validates it against the exact requirements, schedules the dependency graph in a shared workspace, and returns every action result. File territories guide coordination; exact-file enforcement and worktree copying require `--isolation`. Completion means all actions succeeded; verified separately reports requirement evidence. There are no automatic gap rounds.
+Run a program you wrote, end to end. Write it from `workflow plan contract` (a v3 program: steps, phases, gates and loops) and check it with `workflow plan validate`; goal validates it again (exit 2 with the issues and nothing launched when invalid), launches it detached and prints its short id. Steps start when their dependencies finish, up to `--concurrency` at once, in one shared folder (file lists guide scheduling; exact-file enforcement and worktree copies need `--isolation`). A step passes by facts: a clean exit, its deliverable produced, its evidence passed and its answer matching its schema. A failed step gets one automatic retry, then comes back to you; a usage limit comes back at once. A gate stops the steps behind it until you run `workflow continue`; a loop repeats its steps until its condition holds, and waits for you like a gate when its rounds run out. Add steps at any time with `workflow add`. When nothing more can run the run finishes, and its result hands back every unfinished step and unread steering with your options; a completed v3 run hands nothing back.
 
-Without a program the command refuses (exit 2, nothing launched) unless `--scout` or `--orchestrator` is given. `--scout` alone surveys the repository and finishes partial with the scout report. `--orchestrator` dispatches a Workflow Planner agent instead of planning yourself. A run never waits for its caller: when nothing more can run on its own it finishes and hands back what is left.
+A `bullswarm.workflow.program.v2` is refused before any run folder exists (exit 2): `bullswarm.workflow.program.v2 is no longer accepted for a new run; write a program.v3 (bullswarm workflow plan contract) and check it (bullswarm workflow plan validate --program <file.json>)`. Without a program the command refuses the same way and prints the next commands; to survey first, make the survey your first step.
 
-In a run started by this version the dispatched planner and the scout follow the steps' usage-limit rule: a usage limit, a rate limit still there after its short backoff, or no free pool stops it and tells you, with no move to another pool, and a nearly spent pool is never given to it. The watch prints `✗ planner stopped · <label> on <pool> · back at <time>` for the planner, and the run finishes `partial` with `the workflow planner stopped on a usage limit: <why> · back at <time> · your call: resume after <time> with bullswarm workflow resume <shortId>, plan it yourself with bullswarm workflow plan revise <shortId> --program <file.json>, or start a new run` (`the preflight scout stopped on a usage limit: …` for a scout with no program after it; `bullswarm workflow resume <shortId> once a pool is free` when no return time is known). After the `back at` time, `resume` runs the stopped planner or scout again and prints `✓ reopened the partial run <shortId>; running again: the workflow planner` (or `the preflight scout`); before then it can stop the same way, and resume adds a `note:` saying so. `plan revise` with your own program and a new run stay the other choices. A scout before your own program lets the run go on without its report, `watch` prints `⚠ preflight scout stopped · …`, and `resume` does not run that scout again. Any other planner failure still prints `× planning attempt rejected · <why>`. A sign-in failure, a provider error or a worker that died at start still moves the planner or the scout to another pool.
+The flags 0.38.0 removed (`--scout`, `--no-scout`, `--orchestrator`, `--orchestrator-model`, `--orchestrator-strict`, `--strict-orchestrator`, `--suggested-plan`, `--planner-reasoning`) exit 2 with one sentence, for example `--scout was removed in 0.38.0: make the survey the first step of your program and have the steps that need it depend on it`. The planner flags name their replacement: write the program yourself, or add a step whose answer is a list of steps and append them with `workflow add <runId> --from-answer <step>`.
 
-Launches independently by default. `--resume <shortId|runId>` resumes a V2 run and is mutually exclusive with new goal text.
+Launches independently by default. `--resume <shortId|runId>` resumes a v3 run and is mutually exclusive with new goal text; a run an earlier Bullswarm started is view-only and exits 2 before dispatch.
 
 A duplicate launch is refused before anything is validated or started: when an ongoing run in the same `--cwd` already has this goal text, the command exits 2 with that run's `shortId`, its age, and the command to watch it. `--json` prints `{"error":"duplicate-goal","shortId":…,"runId":…,"startedAt":…,"next":{"watch":…,"again":…}}`. Pass `--again` to start the second copy anyway.
 
@@ -857,33 +857,25 @@ bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --progra
 | `--watch` | immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with `--detach`, `--foreground`, `--json`, `--resume`, or `--request` | off |
 | `--foreground` | keep execution attached to this terminal instead of detaching | off (detaches into a background process) |
 | `--json` | print the launch/report document as JSON | human-readable launch instructions |
-| `--program <file.json>` | planner-response envelope or bare `bullswarm.workflow.program.v2` document; validated before anything launches (exit 2 with the issues when invalid) | required unless `--scout` or `--orchestrator` is given |
+| `--program <file.json>` | your program: a bare `bullswarm.workflow.program.v3` document, or one inside a `bullswarm.workflow.planner-response.v2` envelope; a `bullswarm.workflow.program.v2` is refused; validated before anything launches (exit 2 with the issues and nothing launched when invalid) | required |
 | `--summary <text>` | one-line summary recorded for a bare `--program` document | derived from the action purposes |
-| `--scout` | with `--program`: run the kernel scout first and hand its units as advisory context; alone: survey, then finish partial with the scout report | off |
-| `--orchestrator <auto\|pool>` | dispatch a Workflow Planner agent at every planning boundary: `auto` lets the kernel route it, a pool name prefers that pool and falls back when it is already quota-gated or unavailable at the pick; in a run started by this version a usage limit it hits while it plans stops the run instead | off (you are the planner) |
-| `--orchestrator-model <model\|auto>` | with `--orchestrator`: pin the exact model used by the dispatched planner; only pools that can guarantee it remain eligible | `auto` (effort-tier strategy or connector default) |
-| `--orchestrator-strict` | with `--orchestrator <pool>`: require exactly that pool; fails if it is unavailable rather than silently substituting | off |
-| `--strict-orchestrator <pool>` | deprecated alias for `--orchestrator <pool> --orchestrator-strict` | off |
-| `--suggested-plan <text>` | with `--orchestrator`: persist a caller-imagined conceptual execution shape for the dispatched planner | none |
-| `--worker-pool <pool\|auto>` | pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool | `auto` (normal routing) |
-| `--worker-model <model\|auto>` | pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible | `auto` |
-| `--worker-reasoning <level>` | run-wide reasoning depth for every non-planner dispatch: `low\|medium\|high\|xhigh\|max`, or `default`; a per-action `reasoning` field outranks this; clamped to the picked connector | the configured strategy level, else the connector default |
-| `--planner-reasoning <level>` | with `--orchestrator`: the same run-wide reasoning depth for every dispatched Workflow Planner turn | the configured strategy level, else the connector default |
-| `--max-agents <n>` | soft planning target for total scout, planner, work, evidence, and correction dispatches; essential work may exceed it | `30` |
+| `--worker-pool <pool\|auto>` | pin every dispatch, work and evidence steps alike, to one pool | `auto` (normal routing) |
+| `--worker-model <model\|auto>` | pin the exact model for every dispatch; only pools that can guarantee it remain eligible | `auto` |
+| `--worker-reasoning <level>` | run-wide reasoning depth for every dispatch: `low\|medium\|high\|xhigh\|max`, or `default`; a per-action `reasoning` field outranks this; clamped to the picked connector | the configured strategy level, else the connector default |
+| `--max-agents <n>` | soft planning target for total work, evidence, and correction dispatches; essential work may exceed it | `30` |
 | `--max-expansion-rounds <n>` | legacy planning target retained for compatibility; new programs do not generate gap rounds | `2` |
-| `--max-actions <n>` | soft planning target for total actions across planner revisions; essential actions may exceed it | `100` |
-| `--no-scout` | with `--orchestrator`: skip the read-only repository reconnaissance before the dispatched planner creates its first program | the scout runs first for a dispatched planner |
+| `--max-actions <n>` | soft planning target for total steps, added steps included; essential steps may exceed it | `100` |
 | `--concurrency <n>` | max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap | `4` |
 | `--retry-attempts <0..3>` | automatic retries per step before it comes back to you; a process failure retries elsewhere, a gate failure retries on the same pool with its failure attached | `1` |
-| `--resume <shortId\|runId>` | resume a V2 autonomous run; old autonomous runs fail closed before dispatch | starts a new goal |
+| `--resume <shortId\|runId>` | resume a v3 run; a run an earlier Bullswarm started is view-only and exits 2 before dispatch | starts a new goal |
 | `--detach` | rarely needed — explicitly requests the default independent-launch behavior; cannot combine with `--watch` | the default launch already detaches |
 | `--again` | start another copy even when an ongoing run already has the same goal text in the same `--cwd`; only a new launch is checked, never `--resume` or the internal `--request` relaunch | off (a duplicate of an ongoing goal is refused) |
 
-Workers keep their edits even when their action fails. Failed dependencies skip downstream actions and independent branches finish. Saved V2 runs keep their original completion and isolation policy when resumed.
+Workers keep their edits even when their action fails. Failed dependencies skip downstream actions and independent branches finish. A resumed v3 run keeps its original completion and isolation policy.
 
 ### plan
 
-You are the Workflow Planner. `contract` prints the planning contract for a goal before any run exists; `validate` checks a program against that contract without launching; `export` and `revise` change the plan of a live or finished run. `show` and `submit` answer only a run an older version left waiting for its caller. Launch the initial program with `workflow goal --program`.
+You write the program. `contract` prints the v3 format before any run exists; `validate` checks a program without launching. Launch it with `workflow goal --program` and extend the run with `workflow add`.
 
 ```bash
 # Print the contract, then dry-run a program, then launch with the same goal text.
@@ -891,16 +883,18 @@ bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd 
 bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json
 ```
 
+`plan show`, `plan submit`, `plan export` and `plan revise` were removed in 0.38.0. For one release each exits 2 with one sentence: `plan show`/`plan submit` say runs no longer wait for a caller program and point to `workflow add`; `plan export`/`plan revise` say a v3 run's steps are never edited and point to `workflow add` and `workflow step rerun`. On a run an earlier Bullswarm started they print the view-only sentence instead.
+
 ### plan contract
 
-Print everything a caller planner needs to author a valid initial program: requirement IDs, read-only constraints, planning rules, generic action fields, validation, the response envelope, and one worked example.
+Print everything you need to write a v3 program (`bullswarm.workflow.program.v3`) for a goal: the step, gate and loop fields, the one condition form a gate's `when` and a loop's `until` use, the evidence checks Bullswarm runs after a step, the rules the kernel keeps, one worked example that validates, and the validate and launch commands.
 
-The goal is optional for the v3 contract: `bullswarm workflow plan contract` alone prints it with `goal: null` and `'<goal>'` in the validate and launch lines. `--v2` needs the goal, because its requirement IDs come from the goal text.
+The goal is optional: `bullswarm workflow plan contract` alone prints the contract with `goal: null` and `'<goal>'` in the validate and launch lines. `--v2` was removed in 0.38.0 and exits 2 with `--v2 was removed in 0.38.0: bullswarm workflow plan contract prints the v3 format; bullswarm.workflow.program.v2 is no longer accepted for a new run`.
 
 ```bash
 # The v3 format; no goal needed.
 bullswarm workflow plan contract
-# Derive requirement IDs from numbered clauses and print the contract as JSON.
+# The same contract with the goal and --cwd filled into its commands.
 bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json
 ```
 
@@ -914,16 +908,15 @@ bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd 
 | `--max-expansion-rounds <n>` | advisory gap-round target recorded in the contract settings | `2` |
 | `--concurrency <n>` | execution concurrency recorded in the contract settings | `4` |
 | `--retry-attempts <0..3>` | automatic retries per step recorded in the contract settings | `1` |
-| `--scout` | describe a kernel scout ahead of your program and retain the flag in launch guidance | off for a caller-authored program |
 | `--worker-pool <pool\|auto>` | pin the worker pool the contract echoes back | `auto` |
 | `--worker-model <model\|auto>` | pin the worker model the contract echoes back | `auto` |
 | `--worker-reasoning <level>` | run-wide worker thinking level the contract echoes back | the strategy setting for the action effort tier |
 
-Read-only. Rejects launch-only and dispatched-planner flags (`--program`, `--orchestrator*`) so the contract cannot silently describe a different run.
+Read-only. Rejects the launch-only `--program` so the contract cannot silently describe a different run.
 
 ### plan validate
 
-Check a program you authored against the exact contract a launch would enforce, without creating a run. Exit 0 prints the accepted actions and the launch line; exit 2 prints every validator issue.
+Check a program you authored against the exact contract a launch would enforce, without creating a run. Exit 0 prints the accepted steps and the launch line; exit 2 prints every validator issue. A `bullswarm.workflow.program.v2` is refused (exit 2), as a launch refuses it.
 
 ```bash
 # Same validator as workflow goal --program; nothing is launched.
@@ -932,12 +925,11 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--program <file.json>` | planner response envelope or bare `bullswarm.workflow.program.v2` document | required |
+| `--program <file.json>` | a bare `bullswarm.workflow.program.v3` document, or one inside a planner response envelope | required |
 | `--cwd <dir>` | working directory the goal will execute in (must exist) | current directory |
 | `--summary <text>` | one-line summary recorded for a bare program document | derived from the action purposes |
 | `--json` | print the acceptance document (`{action: "plan-valid", requirements, program, next}`) or the refusal (`{error: "program-invalid", issues, next}`) | human summary |
 | `--isolation` | validate against strict per-worker worktree isolation | off (shared workspace) |
-| `--scout` | validate against a run that scouts before your program | off for a caller-authored program |
 | `--worker-pool <pool\|auto>` | pin the worker pool the preview routes with | `auto` |
 | `--worker-model <model\|auto>` | pin the worker model the preview routes with | `auto` |
 | `--worker-reasoning <level>` | run-wide worker thinking level for the preview | the strategy setting for the action effort tier |
@@ -948,78 +940,6 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 | `--retry-attempts <0..3>` | automatic retries per step for the previewed run | `1` |
 
 Read-only. Exit 0 valid, 2 invalid, 1 bad cwd.
-
-### plan show
-
-For a run an older version left waiting for its caller (current versions never wait), print the durable planner request it left. Exits 1 when the run is not waiting for a submission.
-
-```bash
-# Print the pending planner request of a waiting run.
-bullswarm workflow plan show ab12cd --json
-```
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--json` | print the full request document | compact human summary |
-
-Never changes run state, except it may rewrite the request document so it lists steering queued since the pause (`requestRefreshed: true`).
-
-### plan submit
-
-Submit your planner response to a run an older version left waiting. Current versions never wait; change a current run with `plan revise`. `--exhausted` records that no useful bounded action remains (gaps boundary only).
-
-```bash
-# Accept a follow-up program and relaunch the waiting kernel.
-bullswarm workflow plan submit ab12cd --program plan-2.json --watch
-```
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--program <file.json>` | planner response or bare program with the new actions only | none |
-| `--exhausted` | declare that no further useful bounded action exists; valid only at a gaps boundary | off |
-| `--reason <text>` | required with `--exhausted` | none |
-| `--summary <text>` | one-line summary recorded for a bare program document | derived from the action purposes |
-| `--foreground` | resume the kernel attached to this terminal; combines with `--json` | off (detaches) |
-| `--watch` | detach, then follow until terminal or paused; cannot combine with `--foreground` or `--json` | off |
-| `--json` | print the acceptance and relaunch document (or, with `--foreground`, the final result) | human summary plus operating commands |
-
-A rejected program exits 2 and leaves the run untouched. A run with a pending cancellation refuses every submission.
-
-### plan export
-
-Write the live plan of a program-mode run as an editable revision document: every action still in the plan, `baseRevision`, and pending steering ids. Works while agents run, while paused, or after the run finished.
-
-```bash
-# Write the live plan so you can edit it and pass it to plan revise.
-bullswarm workflow plan export ab12cd --out plan.json
-```
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--out <file.json>` | write the revision document to this file and print a status summary | print the revision document itself on stdout |
-| `--json` | print `{programRevision, status, actions[] with each status, pendingSteering, document\|out, next}` | the document (no `--out`) or a human summary (`--out`) |
-
-Read-only for the run; `--out` writes only the named file.
-
-### plan revise
-
-Replace the plan of a program-mode run with the complete program you want now. The kernel compares it with the live plan by action id: a new id is added; an unchanged action keeps its result or keeps running; a changed action is stopped if running and starts over; an action missing from the program is removed; ids in `--rerun` discard their finished result and run again; every step depending on a changed or rerun step runs again too. A finished run is reopened; a paused run stays paused until resume.
-
-```bash
-# Apply an edited export, and rerun one finished step.
-bullswarm workflow plan revise ab12cd --program plan.json --rerun write-docs --summary "Docs must cover the new flag"
-```
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--program <file.json>` | the whole desired program: a document from `plan export`, a bare program, or a planner response envelope | required |
-| `--rerun <id,...>` | comma-separated action ids whose finished results are discarded so they run again (merged with the document's `rerun` list) | none |
-| `--summary <text>` | why the plan changed, recorded on the revision and shown by watch | the document summary, else `Plan revision <n>` |
-| `--base-revision <n>` | refuse the revision if the run is no longer at program revision n | the document's `baseRevision`; none for a bare program |
-| `--wait <seconds>` | how long to wait for a running kernel to apply or reject it; `0` returns once it is queued | `120` |
-| `--json` | print `{status: applied\|rejected\|queued, programRevision, changes, appliedBy, reopened, relaunch}` | human summary of the changes |
-
-An invalid program, an unknown rerun id, a stale base revision, or a revision that changes nothing exits 2 and leaves the run untouched. Files a stopped agent already changed stay in the workspace.
 
 ### pause
 
@@ -1035,11 +955,11 @@ bullswarm workflow pause ab12cd
 | `--now` | stop running agents instead of letting them finish, and wait up to 60s for the pause to take effect | off (running agents finish) |
 | `--json` | print `{status: paused\|pausing, mode, appliedBy, next}` | one human line |
 
-Writes `pause.json` in the run directory. Refuses a terminal run. `--now` stops agents mid-step; files they already changed stay in the workspace.
+Writes `pause.json` in the run directory. Refuses a terminal run, and a view-only run (exit 2). `--now` stops agents mid-step; files they already changed stay in the workspace.
 
 ### cancel
 
-Stop a run. A running kernel is asked to stop cooperatively at its next safe checkpoint (active workers are never killed mid-write). A run with no kernel alive is finalized here and now. A plan revision can still reopen a cancelled run.
+Stop a run. A running kernel is asked to stop cooperatively at its next safe checkpoint (active workers are never killed mid-write). A run with no kernel alive is finalized here and now, a v2 run left live included. `workflow add` can still reopen a cancelled v3 run.
 
 ```bash
 # Request cooperative cancellation.
@@ -1054,7 +974,7 @@ Idempotent: an already-terminal run reports `alreadyFinished` and exits 0.
 
 ### resume
 
-Resume a V2 run with its durable planner mode and routing. On a finished run (`completed`, `partial`, or `cancelled`) resume is a retry: it reopens pending and cancelled steps, failed steps whose failure kind a retry fixes, and the steps blocked behind them. In a run started by this version where a usage limit or no free pool stopped the dispatched planner or the scout and ended the run, it runs that planner or scout again first (`running again: the workflow planner`); run it after the `back at` time, or it can stop the same way. A scout the run went on without (one before your own program) is not run again. With nothing retryable it prints `nothing to retry`, starts nothing, and exits 1.
+Resume a v3 run with its durable routing. On a finished run (`completed`, `partial`, or `cancelled`) resume is a retry: it reopens pending and cancelled steps, failed steps whose failure kind a retry fixes, and the steps blocked behind them. A run an earlier Bullswarm started is view-only: resume exits 2 with the view-only sentence and dispatches nothing. With nothing retryable it prints `nothing to retry`, starts nothing, and exits 1.
 
 ```bash
 # Retry a partial run once the handback's retryAfter time has passed.
@@ -1067,7 +987,7 @@ bullswarm workflow resume ab12cd --json
 | `--watch` | detach, then follow until terminal or paused; cannot combine with `--foreground` or `--json` | off |
 | `--json` | print the relaunch document (or, with `--foreground`, the final result or pause document) | human launch instructions |
 
-`--program`, `--orchestrator`, `--scout`, and `--suggested-plan` are rejected here (use `plan revise` to change the plan). In a new run, `failed-evidence` and `not-produced` stay failed: use `step rerun`, `step accept`, or `plan revise`. Saved runs keep their original resume rules.
+`--program` is rejected here (add steps with `workflow add`). `failed-evidence` and `not-produced` stay failed: use `step rerun`, `step accept`, or `workflow add`.
 
 ### reindex
 
@@ -1218,7 +1138,7 @@ Interactive mode and the snapshot views are read-only. `--cancel` writes `cancel
 
 ### watch
 
-Follow one run (v2 or v3) by printing one attach line, then one line per notable event (in a v3 run, its gate and loop lines too), staying silent while work is merely in progress. Plain `workflow watch <runId>` follows until the outcome (a terminal status, a v3 run parked `waiting` at a gate or loop, a caller-planner wait, or an operator pause). `--until trouble` also wakes at a gate waiting or a loop out of rounds. `--next` prints no attach line and returns after the first notable event, or immediately at a pause or terminal status. Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and `--since`. A legacy authored-graph run cannot be watched: the watcher prints the legacy line and exits 2 before polling.
+Follow one run (v2 or v3) by printing one attach line, then one line per notable event (in a v3 run, its gate and loop lines too), staying silent while work is merely in progress. Plain `workflow watch <runId>` follows until the outcome (a terminal status, a v3 run parked `waiting` at a gate or loop, a caller-planner wait, or an operator pause). `--until trouble` also wakes at a gate waiting or a loop out of rounds. `--next` prints no attach line and returns after the first notable event, or immediately at a pause or terminal status. Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and `--since`. A legacy authored-graph run has nothing to follow: the watcher prints its bounded read-only summary once and exits 0.
 
 ```bash
 # Print the next notable event and exit; relaunch until outcome reports pause or terminal.
@@ -1236,7 +1156,7 @@ bullswarm workflow watch ab12cd --until trouble
 | `--heartbeat <seconds>` | print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1 | off in event mode, `60` with `--classic` |
 | `--stall-after <seconds>` | report a running agent as silent after this many seconds without activity; must be >= 1 | `300` |
 | `--next` | print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status | off (follows until terminal or pause) |
-| `--until <outcome\|trouble>` | print only trouble and outcome lines, plus one line per v3 loop that finished (not a wake-up); `trouble` exits for a needs-you block (a usage limit or no free pool is one), a review needing you, a rejected revision, a planner or scout stopped on a usage limit, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
+| `--until <outcome\|trouble>` | print only trouble and outcome lines, plus one line per v3 loop that finished (not a wake-up); `trouble` exits for a needs-you block (a usage limit or no free pool is one), a review needing you, a rejected revision, a gate waiting or a loop out of rounds, pause, stale step, or steering; blocked dependents are listed inside the needs-you block | off |
 | `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark |
 | `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall does not fire again | report every agent silent past `--stall-after` at attach |
 | `--jsonl` | emit one JSON object per line instead of human text; every object carries `sequence`; the `next:` relaunch line is not printed | off (human text) |
@@ -1264,7 +1184,10 @@ bullswarm workflow step rerun ab12cd write-report --avoid pool-a,pool-b
 A pending step accepts `--avoid` to amend its route without running it. A
 running step needs `step restart`; a blocked step needs its failed dependency
 resolved first. `failed-evidence` and `not-produced` are not rerun by
-`workflow resume`. The command checks that some capable pool remains.
+`workflow resume`. The command checks that some capable pool remains. On a
+view-only run (one an earlier Bullswarm started) it exits 2 with the
+view-only sentence and changes nothing; so do `step accept` and
+`step restart`.
 
 ### step accept
 
@@ -1325,7 +1248,7 @@ Read-only.
 
 ### steer
 
-Queue free-text guidance for a running goal's next orchestration checkpoint, without interrupting the currently active step. In a caller-planned program run the guidance never halts work: watch prints it at once, and the caller acts on it with `plan export` and `plan revise`. A run that finishes before anyone acts on it lists it as steering not acted on.
+Queue free-text guidance for a running goal's next orchestration checkpoint, without interrupting the currently active step. In a caller-planned program run the guidance never halts work: watch prints it at once, and the caller acts on it, for example with `workflow add`. A run that finishes before anyone acts on it lists it as steering not acted on.
 
 ```bash
 # Queue guidance. The active worker is unaffected.
@@ -1337,7 +1260,7 @@ bullswarm workflow steer ab12cd --message "Focus only on the auth module"
 | `--message <guidance>` | the guidance text; if omitted, all words after `<runId>` are joined and used instead | required, in one of the two forms |
 | `--json` | machine-readable confirmation | human-readable confirmation line |
 
-Refuses if the run is already terminal, and refuses a legacy authored-graph run with the legacy line and exit 2.
+Refuses if the run is already terminal, and refuses a view-only run (one an earlier Bullswarm started) with the view-only sentence and exit 2.
 
 ### action show
 
@@ -1405,7 +1328,7 @@ bullswarm workflow runs --all --since 7d
 
 ### runs show
 
-Show one run's durable state and status summary.
+Show one run's durable state and status summary. On a legacy run (from before 0.27) it prints a bounded read-only summary built from the run's saved files; minutes or cost the files do not hold stay unknown. `runs result` does the same.
 
 ```bash
 # Human-readable state and report for one run.

@@ -7,7 +7,7 @@ description: The plan.json fields and rules that workflow plan validate and work
 
 After this page you can author a `plan.json` that `bullswarm workflow plan validate` accepts, and know which field or rule would make launch exit 2.
 
-`plan.json` is the program `bullswarm workflow goal --program` executes. New programs are v3 (`bullswarm.workflow.program.v3`): steps, with phases as labels, gates and loops. Old v2 programs (`bullswarm.workflow.program.v2`, with actions, roles, kinds and requirement IDs) still validate, run and replay as before; they are described from [v2 programs](#v2-programs) on. How to plan a goal is in [Workflows](/guide/workflows).
+`plan.json` is the program `bullswarm workflow goal --program` executes. New programs are v3 (`bullswarm.workflow.program.v3`): steps, with phases as labels, gates and loops. Old v2 programs (`bullswarm.workflow.program.v2`, with actions, roles, kinds and requirement IDs) are refused since 0.38.0, before any run folder exists; runs they started are view-only and still list, show, replay and count as before. They are described from [v2 programs](#v2-programs) on, so you can read a saved run. How to plan a goal is in [Workflows](/guide/workflows).
 
 Validate a file against the running kernel before launch. Exit 2 lists the `issues`; fix the file yourself. Exit 0 prints each step, gate and loop and the launch line.
 
@@ -15,10 +15,9 @@ Validate a file against the running kernel before launch. Exit 2 lists the `issu
 # The v3 format, its rules and an example that validates, as JSON (the goal is optional).
 bullswarm workflow plan contract
 bullswarm workflow plan contract "Make the acme tests pass" --cwd /abs/path/to/acme --json
-
-# The v2 contract: requirement IDs derived from the goal, rules, schema, example.
-bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --v2 --json
 ```
+
+A v2 program given to `workflow goal --program` or `plan validate` exits 2 with `bullswarm.workflow.program.v2 is no longer accepted for a new run; write a program.v3 (bullswarm workflow plan contract) and check it (bullswarm workflow plan validate --program <file.json>)`. `plan contract --v2` was removed in 0.38.0 and exits 2 with one sentence.
 
 ## Program v3
 
@@ -90,7 +89,7 @@ A gate's condition step must run before the gate, and a loop's must be one of it
 - A step passes by facts only: its worker ended cleanly, its deliverable was produced, its evidence passed, and its answer (when declared) matched the schema.
 - A failed step gets one automatic retry: a process failure on another eligible pool, a failed check (answer, evidence, deliverable) on the same pool with the failure attached. Then it comes back to you. A usage limit sends the step to you at once.
 - When only waiting gates or loops are left, the run parks with status `waiting` until you run `workflow continue`.
-- A v3 run's steps, gates and loops are never edited: `plan revise` may only rerun steps. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`).
+- A v3 run's steps, gates and loops are never edited. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`).
 
 ### A v3 example
 
@@ -134,7 +133,7 @@ $ bullswarm workflow plan validate "Count and publish" --cwd=/private/tmp/v37fix
 
 ## v2 programs
 
-Everything from here on describes v2 programs (`bullswarm.workflow.program.v2`). Fetch the v2 contract (`plan contract --v2`) only when an issue names an unknown field, role, kind, deliverable, or `schemaVersion`, which can only happen after an upgrade this page has not followed.
+Everything from here on describes v2 programs (`bullswarm.workflow.program.v2`), so you can read a run one started. Since 0.38.0 a new run refuses a v2 program, and a saved v2 run is view-only: nothing below runs again. The dispatched planner, the preflight scout, the verify loop, the kernel-written digest and review tasks, and `plan export`/`plan revise` that this part names were removed in 0.38.0; a saved run still shows what they did. Present-tense rules below say how those runs were planned, dispatched and judged.
 
 ## Program
 

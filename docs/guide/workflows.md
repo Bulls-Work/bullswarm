@@ -22,23 +22,18 @@ Reach for a workflow instead when the work splits into parallel territories, whe
 
 The calling agent writes the program. The **kernel** is Bullswarm's own runtime, not an agent: it validates the graph, applies each step's route, schedules dependencies, retries each step once, and computes the result.
 
-Start from the contract. It prints the program v3 format (`bullswarm.workflow.contract.v3`: the step, gate and loop fields, the rules, and an example that validates) as JSON. `--v2` prints the contract of old v2 programs instead, with the requirement IDs derived from your goal:
+Start from the contract. It prints the program v3 format (`bullswarm.workflow.contract.v3`: the step, gate and loop fields, the rules, and an example that validates) as JSON:
 
 ```bash
 # the v3 program format, its rules and an example that validates
 bullswarm workflow plan contract "Make the acme tests pass" --cwd /abs/path/to/acme --json
-
-# the v2 contract: requirement IDs, rules, schema and an example for this goal
-bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd /abs/path/to/repo --v2 --json
 ```
 
-`workflow goal` never plans on your behalf unless you ask for it by name: with no `--program`, `--scout`, or `--orchestrator` it exits 2, launches nothing, and prints the three commands that come next.
+`workflow goal` never plans on your behalf: with no `--program` it exits 2, launches nothing, and prints the commands that come next. To survey first, make the survey the first step and have the steps that need it depend on it. To have an agent plan, give a step an answer that is a list of steps and append them with `bullswarm workflow add <run> --from-answer <step>`. The preflight scout (`--scout`) and the dispatched Workflow Planner (`--orchestrator`) were removed in 0.38.0; their flags exit 2 with one sentence naming that replacement.
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `--program <file.json>` | the program you authored (v3, or an old v2 one); validated against its contract before launch, then executed with zero planner or scout dispatches | required unless `--scout` or `--orchestrator` is given |
-| `--scout` | the kernel surveys the repository first and hands you advisory findings to plan from | off |
-| `--orchestrator auto\|<pool>` | dispatch a Workflow Planner agent at every planning boundary instead of planning yourself | off (you are the planner) |
+| `--program <file.json>` | the v3 program you authored; validated against its contract before launch, then executed. A v2 program is refused (exit 2) before any run folder exists | required |
 | `--isolation` | per-worker worktrees and strict exact-file ownership checks | off (shared workspace, advisory territories) |
 | `--concurrency <n>` | maximum parallel dispatches | 4 |
 | `--retry-attempts <0..3>` | automatic retries per step before it comes back to you | 1 |
@@ -167,15 +162,19 @@ What moves a waiting run:
 | give a loop out of rounds more rounds | `bullswarm workflow continue <run> <loop> --rounds <1-5>` (without `--rounds` the steps behind it run, and the loop is recorded as `continued-unmet`) |
 | add work that depends on an answer | `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when the step's answer is itself a fragment `{steps, gates?, loops?}`), then `bullswarm workflow wait <run> <added ids>` |
 
-A v3 run's steps, gates and loops are never edited: `plan revise` on a v3 run
-accepts only reruns. `workflow add` appends steps, gates and loops without
+A v3 run's steps, gates and loops are never edited. `workflow add` appends steps, gates and loops without
 changing anything the run has, and reopens a finished run.
 
 ## v2 programs
 
 The rest of this page describes v2 programs (`bullswarm.workflow.program.v2`):
-actions with requirement IDs, roles and kinds, and a review loop. They still
-validate, run and replay as before; write new work in v3.
+actions with requirement IDs, roles and kinds, and a review loop. Since 0.38.0
+a new run refuses a v2 program, and a run an earlier Bullswarm started is
+view-only: it still lists, shows, replays and counts as before, but resume,
+pause, steer and the step verbs exit 2 with `run <id> was started by an
+earlier Bullswarm and is view-only; start a new run: …`. What follows explains
+what such a saved run shows; the planner, scout, repair loop and plan revise it
+names no longer run.
 
 ## Decompose into actions with exact-file territories
 
@@ -343,33 +342,12 @@ bullswarm workflow goal "1. Add --since to runs list. 2. Document it in README. 
 
 ## Steer a live run
 
-The plan is never frozen. In a v3 run you add steps with `workflow add` (above), and `plan revise` only reruns steps. In a v2 run, export the live plan, edit it into the whole program you want from now on — add, change, or delete actions — and revise:
+The plan is never frozen: you add steps with `workflow add` (above), and a step runs again with `workflow step rerun`. A v3 run's steps are never changed or removed. `plan export` and `plan revise`, which replaced a v2 run's whole plan, were removed in 0.38.0; they exit 2 with one sentence naming `workflow add` and `step rerun`.
 
-```bash
-# write the live plan as an editable revision document
-bullswarm workflow plan export ab12cd --out plan.json
-
-# apply your edited program; --rerun redoes finished steps, --summary says why
-bullswarm workflow plan revise ab12cd --program plan.json --rerun write-docs --summary "Docs must cover the new flag"
-```
-
-The kernel matches the file to the live plan by action id within about a second, even while agents are running:
-
-| In your file | What happens |
-| --- | --- |
-| a new id | added; runs once its dependencies succeed |
-| an action left exactly as exported | kept: a finished result is reused, a running agent keeps going |
-| an action with any field changed | amended: a running agent is stopped and the step starts over |
-| an unchanged id listed in `rerun` | its finished result is discarded and it runs again |
-| an action you deleted | removed: stopped if running, never run again, reported as `removed` |
-| anything depending on an amended or rerun step | runs again, because its inputs change |
-
-`revise` checks before it writes: an invalid program, an unknown rerun id, a revision that changes nothing, or a plan that moved since your export (`baseRevision`) exits 2 and leaves the run untouched. Files a stopped step already edited stay in the tree, so plan a repair step when that matters.
-
-`workflow pause <shortId>` starts nothing new while running agents finish (`--now` stops them and reruns them after resume); revisions apply while paused, and only `workflow resume <shortId>` continues the run. Steering is the softer form: `workflow steer <shortId> --message "<guidance>"` queues guidance for the caller, and a run that finishes before anyone acts on it lists it as `steering not acted on`.
+`workflow pause <shortId>` starts nothing new while running agents finish (`--now` stops them and reruns them after resume); `workflow add` applies while paused, and only `workflow resume <shortId>` continues the run. Steering is the softer form: `workflow steer <shortId> --message "<guidance>"` queues guidance for the caller, and a run that finishes before anyone acts on it lists it as `steering not acted on`.
 
 ::: warning
-A revision never lifts a pause, and a finished run that gets revised is reopened and finishes again. Revising is for changing the plan, not for restarting work you dislike.
+An addition never lifts a pause, and a finished run that gets an addition is reopened and finishes again.
 :::
 
 ## When a run finishes
@@ -378,16 +356,18 @@ A v2 run never waits for its caller: when nothing more can happen on its own it 
 
 | Option | When it fits | What to do |
 | --- | --- | --- |
-| continue | the plan needs a fix, a new step, or a step redone | `bullswarm workflow plan export <shortId> --out plan.json`, edit it, then `bullswarm workflow plan revise <shortId> --program plan.json` (`--rerun <step ids>` runs finished steps again) |
-| retry | a step stopped for a reason a retry fixes: a crashed or silent worker, a usage limit, or no pool free; or a usage limit or no free pool stopped the planner or scout and ended the run | `bullswarm workflow resume <shortId>`; it reruns exactly those steps and the steps blocked behind them, and that stopped planner or scout first |
+| add | the plan needs a fix or a new step | `bullswarm workflow add <shortId> --steps part.json`, then `bullswarm workflow wait <shortId> <added ids>` |
+| retry | a step stopped for a reason a retry fixes: a crashed or silent worker, a usage limit, or no pool free | `bullswarm workflow resume <shortId>`; it reruns exactly those steps and the steps blocked behind them |
 | rerun | a step failed in a run started by this version | `bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]` runs it again with its last attempt's handoff |
 | accept | you choose to keep a failed step as it is | `bullswarm workflow step accept <shortId> <step> --reason "…"`: recorded as your choice, never proof |
 | take over | the rest is small, or needs something only you have | do it yourself; `bullswarm workflow runs result <shortId> --json` names every step's output |
 | restart | the goal or the approach was wrong | start a new run: `bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>` |
 
-`retry` appears only when a step is retryable, or, in a run started by this version, when a usage limit or no free pool stopped the planner or scout and ended the run; then it reads `bullswarm workflow resume <shortId> after <time> (reruns the workflow planner)` (`the preflight scout` for the scout; no `after <time>` when no return time is known). When nothing is retryable, `resume` prints `nothing to retry`, starts nothing and exits 1. A step with a known return time shows `its pool is back at <time>`; resuming before then can fail it again (at once when no other pool is free). `rerun` and `accept` appear only in runs started by this version that have a failed step.
+`retry` appears only when a step is retryable. When nothing is retryable, `resume` prints `nothing to retry`, starts nothing and exits 1. A step with a known return time shows `its pool is back at <time>`; resuming before then can fail it again (at once when no other pool is free). `rerun` and `accept` appear only when a step failed.
 
-When the review loop left a requirement failing in a run started by this version, `your call:` also offers the check that judged it: `rerun` is `bullswarm workflow step rerun <shortId> <check> --avoid <pool>` (it judges again on another pool), and `accept` is `bullswarm workflow step accept <shortId> <check> --requirement <id> --reason "…"`. An accepted requirement then reads `requirement <id>: failed · accepted by choice "<reason>"`: it stays failed and the run stays not verified.
+A saved run that is not v3 is view-only: its `your call:` lines were written when it finished and may name `plan export`/`plan revise`, `workflow resume` of a stopped planner or scout, or a check to rerun. Those commands now exit 2 on it; start a new v3 run instead.
+
+When the review loop left a requirement failing in a saved v2 run, its `your call:` also offered the check that judged it: `rerun` is `bullswarm workflow step rerun <shortId> <check> --avoid <pool>` (it judges again on another pool), and `accept` is `bullswarm workflow step accept <shortId> <check> --requirement <id> --reason "…"`. An accepted requirement reads `requirement <id>: failed · accepted by choice "<reason>"`: it stays failed and the run stays not verified.
 
 ## The failure rule and needs-you block
 
@@ -397,10 +377,13 @@ start) retries on another eligible pool; a gate failure retries on the same
 pool with the failure attached. A started `act` step is never retried
 automatically. A usage limit is never retried, moved or waited out: the step
 comes back to you (see below). Only dependents wait; unrelated steps keep
-running. Saved runs keep their original rules.
+running. Saved runs show the rules they ran under.
 
 When a step needs you, the watch gives one block with the failure, each try,
-steps still running, dependents waiting on it, and four commands. For example:
+steps still running, dependents waiting on it, and four commands. The examples
+below are the block a saved v2 run printed; a v3 run's block offers
+`add steps` (`bullswarm workflow add <id> --steps <file.json>`) and
+`then wait` in place of `change the step` and `then edit it`. For example:
 
 ```text
 ✗ variants needs you · command evidence failed after 1 retry
@@ -513,38 +496,14 @@ The same pool runs it only when nothing else can. Unlike `--avoid`, this
 changes nothing in the step's route. A usage limit is not one of these: a rerun
 after one is routed as usual, so add `--avoid <pool>` to keep it off that pool.
 
-A dispatched planner (`--orchestrator`) and the preflight scout (`--scout`, or
-the scout before a dispatched planner) follow the same rule: a usage limit, a
-rate limit still there after its short backoff, or no free pool stops it and
-tells you; it never moves to another pool by itself. A sign-in failure, a
-provider error or a worker that died at start still moves it to another pool.
-When the planner stops, the watch prints `✗ planner stopped · out of quota on
-<pool> · back at <time>` (`rate limited` or `no eligible pool` in place of
-`out of quota`, `no pool` when none was picked), `--until trouble` wakes on
-it, and the run finishes `partial` with this reason:
-
-```text
-the workflow planner stopped on a usage limit: <why> · back at <time> · your call: resume after <time> with bullswarm workflow resume <id>, plan it yourself with bullswarm workflow plan revise <id> --program <file.json>, or start a new run
-```
-
-It reads `stopped: no pool free` when a pool was out for a reason that is not a
-usage limit, or when no pool can run it at all. It drops `back at` when no
-return time is known, and then reads `bullswarm workflow resume <id> once a
-pool is free` in place of `resume after <time> with …`. A scout with no program after it (`--scout` alone, or before a
-dispatched planner) ends the run the same way, as `the preflight scout stopped
-on a usage limit: …`. After the `back at` time, `bullswarm workflow resume
-<id>` runs the stopped planner or scout again: it prints `✓ reopened the
-partial run <id>; running again: the workflow planner` (or `the preflight
-scout`), and the run goes on from there. Before then it can stop the same way,
-and resume adds `note: the workflow planner stopped with its pool back at
-<time>; run before then, it can fail the same way again`. `plan revise` with
-your own program and a new run stay the other choices: `plan revise` reopens
-the run and runs your program instead. With your program (`--program --scout`) the run goes on
-without the report, and the watch prints `⚠ preflight scout stopped · out of
-quota on <pool> · back at <time> · the run continues without its report`;
-resume does not run that scout again. Runs
-started by an earlier version keep moving the planner and the scout to another
-pool.
+A run saved by 0.37.x may have ended `partial` with `the workflow planner
+stopped on a usage limit: …` or `the preflight scout stopped on a usage limit:
+…`, and its watch may show `✗ planner stopped · …` or `⚠ preflight scout
+stopped · …`. 0.38.0 removed the dispatched planner and the preflight scout
+(the pinned-pool exemption above applies only to those saved runs), and such a
+run is view-only: its `your call` text names `workflow resume` and
+`plan revise`, which now exit 2 on it. Start a new run with a program you
+write instead.
 
 ```bash
 # the compact result: status, verified (v2), reason, every action with a v3 step's answer, usage, and next

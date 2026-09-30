@@ -151,8 +151,8 @@ slices, and a triage (usually one run).
   guide, never a timeout); a step that lists items under `## Not done` still
   succeeds and reads `returned early · N not done`.
 
-Old v2 programs (`bullswarm.workflow.program.v2`) still run as before; write
-new work in v3.
+Old v2 programs (`bullswarm.workflow.program.v2`) still run? No: since 0.38.0
+a new run refuses them, and runs they started are view-only.
 
 ### Validate, then launch
 
@@ -409,5 +409,4 @@ paused or completed, so always read the returned status.
 
 [operations.md](references/operations.md) covers the details: add and wait,
 continue, reruns and accepts, pause and resume, watch flags, the handback
-fields, routing diagnosis, and old v2 runs (plan revise, the verify loop, the
-scout and a dispatched planner).
+fields, routing diagnosis, and reading view-only saved runs.

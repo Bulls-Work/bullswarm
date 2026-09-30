@@ -50,7 +50,7 @@ Pace compares a pool with itself: **surplus = elapsed% − used%** of its own su
 
 ## The 5-hour window
 
-The rolling 5-hour window never paces — it only protects the last mile. A recorded reading at 100% (`BURST_BLOCK_PCT`) means the pool is at its limit until the window resets, and the same holds for a weekly or monthly reading at 100%: such a pool is never picked. The 75% (`FIVE_HOUR_NEAR_LIMIT_PCT`) line is no longer a cutoff: when another eligible pool is behind pace, a near-limit pool is ordered after it; when no such alternative exists, the near-limit pool remains selectable. A forecast above 100% is also selectable, ordered last. If the provider refuses the run at the wall, that attempt ends as a usage limit: in a workflow started by this version nothing retries it and the step comes back to you, and a single `bullswarm run` exits 1. Only a workflow started by an earlier version still moves that attempt to another pool.
+The rolling 5-hour window never paces — it only protects the last mile. A recorded reading at 100% (`BURST_BLOCK_PCT`) means the pool is at its limit until the window resets, and the same holds for a weekly or monthly reading at 100%: such a pool is never picked. The 75% (`FIVE_HOUR_NEAR_LIMIT_PCT`) line is no longer a cutoff: when another eligible pool is behind pace, a near-limit pool is ordered after it; when no such alternative exists, the near-limit pool remains selectable. A forecast above 100% is also selectable, ordered last. If the provider refuses the run at the wall, that attempt ends as a usage limit: in a workflow started by this version nothing retries it and the step comes back to you, and a single `bullswarm run` exits 1. A workflow started by an earlier version moved that attempt to another pool; such a run is view-only since 0.38.0.
 
 The change follows the 2026-09-10 observation that `claude-code:acme` was at 81% with 23 minutes left (92.3% of its 5-hour window elapsed). The old guard sent a high-tier task to another account, while 34% of acme's weekly quota expired in the remaining 13% of that week. The last-mile rule lets the task use that quota; the risk it takes is one attempt that may stop at the wall and come back to the caller.
 
@@ -114,7 +114,7 @@ otherwise it says `no retry left`.
 In new runs, Bullswarm does not move a review away from a writer on its own.
 Place it with the step's optional `route`; `route` is a hard filter before
 quota pacing. Use `independentOf` to avoid providers that worked on named
-upstream steps, or use `"writers"` on a check with `evidenceFor`. Use
+upstream steps. Use
 `providers.use` / `providers.avoid` to select provider families, or
 `pools.use` / `pools.avoid` for exact pool ids. Accounts served by one provider
 count as one family. A route that leaves no free pool sends the step back to
@@ -122,15 +122,15 @@ you at once, as no eligible pool or with each pool's reason; it never waits.
 
 ```json
 {
-  "schemaVersion": "bullswarm.workflow.program.v2",
-  "actions": [
-    { "id": "write-docs", "role": "produce", "purpose": "Write docs", "dependsOn": [], "affects": ["requirement-1"], "ownedFiles": ["README.md"], "evidenceFor": [], "prompt": "Write README.md." },
-    { "id": "review-docs", "role": "check", "purpose": "Review docs", "dependsOn": ["write-docs"], "affects": [], "ownedFiles": [], "evidenceFor": ["requirement-1"], "route": { "independentOf": ["write-docs"] }, "prompt": "Check README.md against the requirement." }
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    { "id": "write-docs", "lane": "build", "files": ["README.md"], "prompt": "Write README.md." },
+    { "id": "review-docs", "dependsOn": ["write-docs"], "route": { "independentOf": ["write-docs"] }, "prompt": "Check README.md and report what is wrong with it." }
   ]
 }
 ```
 
-Saved runs keep the former automatic writer avoidance, including its independence
+Saved runs show the former automatic writer avoidance, including its independence
 tie-breaker and urgency waiver. A selected gate retry says `pinned to <pool>
 (the same pool (gate retry))`; a manual restart says `pinned to <pool> (step
 restart)`. Route constraints appear as `route: <summary>` in the reason.
@@ -147,7 +147,7 @@ Before this, a pinned evidence step read `evidence step: only the writer pool co
 
 ## Expiring-soon urgency
 
-A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) is ranked on urgency — its surplus divided by the fraction of the window still to run — instead of on the surplus alone. While any urgent pool can still spend its quota, it is the only one selectable, which is how a pool with two hours left beats a pool with three days left. A pool forecast at or above 95% of its pacing window *and* ahead of the window's own clock (forecast above the elapsed share) is `draining` and goes last; a pool at 96% with 98% of its month gone is spending at its own pace, not draining, and keeps its quota in play until the reset. In a workflow started by this version a `draining` pool does not go last: it is never given a step, the dispatched planner or the preflight scout, even as the only pool left, unless you pinned it. The work goes to another pool that can run it, or comes back to you with `<pool> nearly spent (forecast <n>%) until <time>` in its `why`.
+A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) is ranked on urgency — its surplus divided by the fraction of the window still to run — instead of on the surplus alone. While any urgent pool can still spend its quota, it is the only one selectable, which is how a pool with two hours left beats a pool with three days left. A pool forecast at or above 95% of its pacing window *and* ahead of the window's own clock (forecast above the elapsed share) is `draining` and goes last; a pool at 96% with 98% of its month gone is spending at its own pace, not draining, and keeps its quota in play until the reset. In a workflow started by this version a `draining` pool does not go last: it is never given a step, the dispatched planner or the preflight scout, even as the only pool left, unless you pinned it. (0.38.0 removed the dispatched planner and the preflight scout, so that part applies to runs saved by 0.37.x.) The work goes to another pool that can run it, or comes back to you with `<pool> nearly spent (forecast <n>%) until <time>` in its `why`.
 
 ## In-flight load
 
@@ -202,21 +202,17 @@ finds no free pool keeps its own failure and ends its `why` with `· no retry:
 <pool> <reason>; …`. When another pool that can run the step is free, routing
 picks it as usual.
 
-The dispatched Workflow Planner (`--orchestrator`) and the preflight scout
-(`--scout`, or the scout before a dispatched planner) follow the same rule: a
-usage limit, a rate limit still there after its short backoff, or no free pool
-at the pick stops it and tells you, with no move to another pool. The run
-finishes with `the workflow planner stopped on a usage limit: …` (or `the
-preflight scout stopped on a usage limit: …`) and your call: after its `back
-at` time, `workflow resume` runs it again. A scout that ran before your own
-program lets the run go on without its report. A sign-in
-failure, a provider error or a worker that died at start still moves the
-planner or the scout to another pool.
+A run saved by 0.37.x may end with `the workflow planner stopped on a usage
+limit: …` or `the preflight scout stopped on a usage limit: …`. 0.38.0 removed
+the dispatched planner and the preflight scout, and such a run is view-only:
+start a new run with a program you write instead of resuming it.
 
 A single `bullswarm run` makes one attempt: a usage limit ends it with exit 1,
-with no retry and no move. Workflows started by an earlier version keep their
-rules: a usage limit moves the attempt to another pool, and a throttle retries
-the same pool and then moves, as below.
+with no retry and no move. Workflows started by an earlier version followed
+older rules: a usage limit moved the attempt to another pool, and a throttle
+retried the same pool and then moved, as below. Since 0.38.0 such a run is
+view-only, so those rules only explain what its saved record shows; every run
+Bullswarm drives follows the rules for a workflow started by this version.
 
 ## Throttles and exhausted windows
 

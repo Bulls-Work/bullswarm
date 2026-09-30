@@ -14,31 +14,27 @@ The core is being redesigned around facts-only mechanics, four mandatory
 principles, caller-chosen options and a pattern library, for any kind of work
 rather than code only. The design, the decisions taken and the staged build
 plan are in `docs/design/redesign-mechanics-principles-options.md`, and draft
-pattern cards are in `docs/design/patterns/`. Build in the plan's stage order.
-The doctrine below stays in force until the stage that changes an item lands.
-The redesign rewords items 1, 5, 6 and 7, and each stage updates this file.
-Stage 1 (step vocabulary) has landed: program-mode steps may state a role and a
-deliverable, each kind belongs to one role and keeps its exact routing, and
-the no-op gate is now 'declared deliverable not produced' (failure kind
-`not-produced`), measured over the whole step. Stage 2 (evidence v1) has landed:
-program steps may declare command and schema `evidence` that the kernel runs
-after the worker, a failure is `failed-evidence` with one same-pool retry, and
-finished steps in new runs are labelled `proven by …` or `finished · unproven`.
-Stage 3 (failure rule and routing constraints) has landed: one automatic retry
-per step, then the caller; a usage limit goes straight to the caller, from a
-step, the dispatched planner or the preflight scout alike; the
-needs-you block with `step rerun --avoid` and `step accept`; the per-step
-`route`; `verifyRounds` counts fixes (default 1); reviews are placed only by
-route. Runs started earlier keep their rules (`features.json`).
-0.37.0 (program v3, the generic model) has landed: a step is a run, and a
+pattern cards are in `docs/design/patterns/`. Each release updates this file.
+
+0.37.0 (program v3, the generic model) landed: a step is a run, and a
 workflow composes steps, phases, gates and loops. `bullswarm run` is a
-one-step workflow. New programs are `bullswarm.workflow.program.v3`: a step
-passes by facts (clean exit, deliverable produced, evidence passed, answer
-matching its schema), a gate waits for `workflow continue`, a loop reruns its
-steps until one condition holds (at most 5 rounds), and new work is added
-with `workflow add`, never by editing the run's steps. v3 reports facts per
-step and has no requirement IDs, `evidenceFor` or `verifyRounds`. v2 programs
-and saved runs keep running and replaying as before.
+one-step workflow. A step passes by facts (clean exit, deliverable produced,
+evidence passed, answer matching its schema), a gate waits for
+`workflow continue`, a loop reruns its steps until one condition holds (at
+most 5 rounds), and new work is added with `workflow add`, never by editing
+the run's steps. v3 reports facts per step and has no requirement IDs,
+`evidenceFor` or `verifyRounds`.
+
+0.38.0 (the removals release, `docs/design/0.38.0-removals.md`) deleted the
+mechanisms v3 replaced: the preflight scout, the dispatched planner
+(`--orchestrator`), the caller-planner gap turn (`plan show`/`plan submit`),
+whole-plan revise (`plan export`/`plan revise`), the v2 repair loop, the
+kernel-written digest and review tasks, and the old dispatch rules. New
+programs are `bullswarm.workflow.program.v3` only; a v2 program is refused
+before a run folder exists. Only a run marked `programFormat: 3` is driven.
+Every other saved run (v2, stage 1-3, legacy) is view-only: it stays
+listable, showable and countable, and every driving command refuses it
+before doing anything. Their readers and stored formats are unchanged.
 
 ## Non-negotiable doctrine
 
@@ -76,34 +72,31 @@ and saved runs keep running and replaying as before.
    pool inside a run; only a transient rate limit backs off on the same pool,
    at most twice (20 s, then 60 s, or a named wait of at most 2 minutes), then
    goes to the caller.
-   Only a failed step's dependents wait. The dispatched planner and the
-   preflight scout follow the same usage-limit rule (`usageLimitsToCaller` in
-   `dispatchV2Action`): they stop and the run tells the caller, with no
-   automatic move to another pool.
-6. Review is a caller option, recorded as a fact. A step naming requirements
-   in `evidenceFor` is dispatched under the evidence contract and judges them
-   from the durable artifact. Where it runs is the caller's choice through
-   `route` (`independentOf`, `providers`, `pools`); Bullswarm never moves a
-   review on its own, and records who reviewed (pool, model, provider) and
-   whether that provider also wrote the work. A caller's `step accept` is
-   recorded as evidence `choice` and never makes a requirement verified.
-   Runs started before this rule keep automatic writer avoidance (R12/R13).
-7. New goal workflows are caller-planned programs in a shared workspace.
-   `bullswarm workflow goal --program` executes the graph; `--orchestrator`
-   explicitly delegates planning. File territories are advisory scheduling
-   hints. In a v3 program (the format for new work) a check is an ordinary
-   step, and fixing until it passes is a loop the caller declares (`loops`,
-   `until` one condition, `maxRounds` 1-5); a loop out of rounds or a gate
-   waits for the caller (`workflow continue`), and a failed step goes to the
-   caller through the watcher's needs-you block: rerun elsewhere, add steps
-   (`workflow add`), take over, or accept anyway. v3 validate refuses
-   `defaults.verifyRounds`. In a v2 program a failed check gets one fix step
-   and one re-review (`defaults.verifyRounds`, default 1, 0-3), then the
-   caller, and `verified` separately records requirement evidence.
-   `--isolation` opts into strict per-worker worktrees. Saved V2 runs
-   preserve their original semantics (`features.json`).
-8. Historical authored-graph runs remain visible as read-only `legacy` rows.
-   Their executor was removed in 0.27.0; driving commands fail closed before
+   Only a failed step's dependents wait.
+6. Review is a caller option, recorded as a fact. A check is an ordinary
+   step with an `answer` and/or `evidence`, and it passes by facts only.
+   Where it runs is the caller's choice through `route` (`independentOf`,
+   `providers`, `pools`); Bullswarm never moves a review on its own, and
+   records who reviewed (pool, model, provider) and whether that provider
+   also wrote the work. A caller's `step accept` is recorded as evidence
+   `choice`. Saved v2 runs keep showing their requirement verdicts
+   (`evidenceFor`, `verified`) as they were recorded.
+7. New goal workflows are caller-planned v3 programs in a shared workspace.
+   `bullswarm workflow goal --program` executes the graph; the caller writes
+   the plan (or a step whose answer is a list of steps, appended with
+   `workflow add --from-answer`). File territories are advisory scheduling
+   hints. A check is an ordinary step, and fixing until it passes is a loop
+   the caller declares (`loops`, `until` one condition, `maxRounds` 1-5); a
+   loop out of rounds or a gate waits for the caller (`workflow continue`),
+   and a failed step goes to the caller through the watcher's needs-you
+   block: rerun elsewhere, add steps (`workflow add`), take over, or accept
+   anyway. v3 validate refuses `defaults.verifyRounds`. `--isolation` opts
+   into strict per-worker worktrees. A saved run that is not v3 is view-only
+   (0.38.0): its original semantics are kept for display (`features.json`),
+   and nothing drives it again.
+8. Historical authored-graph runs remain visible as read-only `legacy` rows,
+   and `runs show`/`result`/`watch` print a bounded summary of them. Their
+   executor was removed in 0.27.0; driving commands fail closed before
    dispatch and historical run directories remain untouched.
 
 ## Development

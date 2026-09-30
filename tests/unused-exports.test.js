@@ -33,16 +33,17 @@ const TEST_SEAMS = {
   'src/lib/pool-labels.js': ['clearPoolLabelCache'], // a test rewrites a home's label file
   'src/workflow/time-box.js': ['clearTimeBoxHistoryCache'], // a test rewrites a home's history
   'src/workflow/v2-state.js': ['createV2State'], // the tests' name for createV2DurableState
-  // 0.38.0 S2 removed plan revise and plan contract --v2, their only product
-  // readers. normalizeRevisionInput is loaded by the replay tool; the other two
-  // live in files later slices own (S4: v2-planner.js and its test, S5:
-  // v2-revision.js), which delete them.
+  // 0.38.0 removed plan revise and plan contract --v2, their only product
+  // readers. normalizeRevisionInput stays at its path because the saved-run
+  // replay tool loads it (with exportV2Plan and planV2Revision) to re-check a
+  // saved run's revision. REVISION_CHANGE_KINDS has no reader left; it goes
+  // when v2-revision.js is next edited.
   'src/workflow/v2-revision.js': ['normalizeRevisionInput', 'REVISION_CHANGE_KINDS'],
-  // 0.38.0 S4 removed the preflight scout, the dispatched planner, the review
+  // 0.38.0 removed the preflight scout, the dispatched planner, the review
   // task and the repair loop from the kernel, their only product readers.
-  // These stay because a test outside S4's files reads them (goal, deliverable
-  // and caller-planner tests), or because they live in a file a later slice
-  // owns; S6 deletes each one with the test that reads it.
+  // Each one below is still read by a test (the v2 planner, caller-planner,
+  // deliverable, goal, evidence-output, ledger, outcome, role-view, program-v3
+  // and step-route tests); it goes together with the test cases that read it.
   'src/workflow/v2-planner.js': ['buildV2PlannerContract', 'buildV2PlannerPrompt', 'readPlannerCandidate'],
   'src/workflow/goal.js': ['scoutPrompt'],
   'src/workflow/evidence-output.js': ['buildEvidencePreflight', 'readEvidenceCandidate'],

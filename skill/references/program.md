@@ -14,7 +14,9 @@ Check a file before launch with `bullswarm workflow plan validate '<goal>'
 --cwd=<abs-dir> --program=<abs-path>`. Exit 2 lists `issues` (fix them
 yourself); exit 0 prints each step, gate and loop and the launch line. Old v2
 programs (`bullswarm.workflow.program.v2`, with `actions`, roles, kinds and
-requirement IDs) still run; `plan contract --v2` prints their contract.
+requirement IDs) are refused since 0.38.0, before any run folder exists, and a
+run an earlier Bullswarm started is view-only: it stays listed, shown and
+counted, but nothing drives it again.
 
 ## Program
 
@@ -50,7 +52,7 @@ Steps, gates and loops share one id space: an id is kebab-case and used once.
 | `timeBox` | no | whole minutes 0-240: the soft time box written into the task (0 leaves it out); a guide, never a timeout |
 
 `purpose`, `affects`, `evidenceFor`, `kind`, `role`, `inputs`, `produces` and
-`defaults.verifyRounds` belong to v2 programs and are refused
+`defaults.verifyRounds` belonged to v2 programs and are refused
 (`steps[0].kind is not a v3 field`). A check is an ordinary step with an
 `answer` and/or `evidence`.
 
