@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- release: 0.38.4 was tagged but never published to npm (a test read only the `## Unreleased` changelog section, which the release empties); 0.38.5 ships 0.38.4's changes. The docs site builds again: three wrapped lines that began with a `<placeholder>` were read as HTML.
+
 ## 0.38.4 — plan validate --try-checks
 
 - plan validate: `--try-checks` runs each step's command check once, now,

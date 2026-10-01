@@ -233,9 +233,9 @@ test('the skill and changelog describe --try-checks and accept inside a loop', (
     assert.match(flat, /let it run out of rounds \(`maxRounds`\), then `(bullswarm )?workflow continue <shortId> <loop>`/);
   }
   const changelog = readFileSync('CHANGELOG.md', 'utf8');
-  const unreleased = changelog.slice(changelog.indexOf('## Unreleased'), changelog.indexOf('\n## ', changelog.indexOf('## Unreleased') + 1));
-  assert.match(unreleased, /^- plan validate: `--try-checks`/m);
-  assert.match(unreleased, /^- docs: `workflow step accept` on a failed step inside a loop/m);
+  // The whole changelog: a release dates `## Unreleased` and leaves it empty.
+  assert.match(changelog, /^- plan validate: `--try-checks`/m);
+  assert.match(changelog, /^- docs: `workflow step accept` on a failed step inside a loop/m);
 });
 
 const oneStepCmd = (cmd) => ({ schemaVersion: V3, steps: [{ id: 'build', prompt: 'Build acme.', evidence: [{ type: 'command', cmd }] }] });

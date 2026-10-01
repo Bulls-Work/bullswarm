@@ -264,8 +264,8 @@ A real run on grok, parked at its gate, on the Run page at 120 columns:
   continued without more rounds reads `→ continued by the caller after N of
   max rounds (condition not met)`: it never passed. Each attempt of a
   loop step says its round (`write · round 2`).
-- **A gate row** heads the phase of the steps behind it and reads `waits after
-  <steps>`, `waiting for you · <note>` with its `continue` command, `passed ·
+- **A gate row** heads the phase of the steps behind it and reads
+  `waits after <steps>`, `waiting for you · <note>` with its `continue` command, `passed ·
   continued by the caller`, or `skipped · <condition> does not hold` when its
   `when` condition did not hold.
 - **Answers.** `answer {…}` is the checked answer (it matched the step's schema);

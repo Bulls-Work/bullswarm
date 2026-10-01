@@ -198,8 +198,8 @@ well: as `quota` when every reason is a usage limit, else as `unavailable`. Its
 spare: pool-a at its 5-hour limit until <time>; pool-b at its weekly limit
 until <time>`, and `back at` is the earliest known return among them. A retry
 the step was promised (after a crash, a sign-in failure or a failed gate) that
-finds no free pool keeps its own failure and ends its `why` with `· no retry:
-<pool> <reason>; …`. When another pool that can run the step is free, routing
+finds no free pool keeps its own failure and ends its `why` with
+`· no retry: <pool> <reason>; …`. When another pool that can run the step is free, routing
 picks it as usual.
 
 A run saved by 0.37.x may end with `the workflow planner stopped on a usage
