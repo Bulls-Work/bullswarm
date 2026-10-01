@@ -24,9 +24,9 @@ import {
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
 import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
-import { declaredDeliverable, declaredEvidence, failureClassOf, roleOf } from './step-vocabulary.js';
+import { REFUSAL_TEXT, declaredDeliverable, declaredEvidence, deliverableTypeOf, failureClassOf, roleOf } from './step-vocabulary.js';
 import { poolPassesRoute, routeUnavailableWhy } from './step-route.js';
-import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
+import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, signInPart, spentWindowPart } from './no-pool-why.js';
 import { isV3Step } from './program-v3.js';
 import {
   evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope,
@@ -39,7 +39,7 @@ import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
 } from './dispatch-snapshot.js';
 import { deliverableVerdict, gateBaselinePaths } from './dispatch-deliverable.js';
-import { durableHandoff, lastResponseEvents } from './dispatch-handoff.js';
+import { durableHandoff, lastResponseEvents, streamShowsWork } from './dispatch-handoff.js';
 import { noPoolCandidates, tierOffReasons } from './dispatch-no-pool.js';
 
 export { workerSilenceTimeoutSec } from './dispatch-silence.js';
@@ -73,6 +73,14 @@ function cutChars(text, limit) {
 // still sat out on the same pool. A longer one goes to the caller, told when
 // the provider said to try again.
 export const MARKED_THROTTLE_MAX_WAIT_MS = 2 * 60_000;
+
+// A refusal at start (a sign-in failure, or a model the plan does not
+// include, before any work) is picked again at once and never spends the
+// step's one retry, at most this many times per step (counted from its
+// stored attempts, so a resume does not reset it).
+export const MAX_REFUSAL_REPICKS = 3;
+const REFUSAL_KINDS = new Set(['auth', 'model-not-in-plan']);
+const REFUSAL_LANES = new Set(['analyze', 'build', 'chore']);
 
 function classifyFailure(verdict, pool = null) {
   if (verdict?.ok) return null;
@@ -239,6 +247,9 @@ export async function dispatchV2Action({
   // Counted retries (`retryOf.how` other-pool or same-pool) the step's current
   // definition already started, so a kernel resume never refunds the budget.
   retriesAlready = 0,
+  // Refusal re-picks (`retryOf.how` refused) the step already made, so a
+  // resume never resets the bound.
+  refusalsAlready = 0,
   // step-route.js resolveRouteFilter: a hard filter on every pool list (D18).
   routeFilter = null,
   // Who pinned `strictPool` (D30): null reads `--worker-pool`.
@@ -343,6 +354,21 @@ export async function dispatchV2Action({
     { lane: action.lane ?? 'chore', effort },
     { decisionLog: spendDecisionLog },
   );
+  // The models a pool refused as not in its plan during this step, as
+  // {pool, model}. Laid on every pool list the step picks from, a refreshed
+  // one included (a refresher's cached list may predate the plan record), so
+  // a refused model is never picked again on that pool in this step.
+  const refusedModels = [];
+  const withRefusedModels = (list) => (refusedModels.length ? list.map((candidate) => {
+    const refused = refusedModels.filter((entry) => entry.pool === candidate.name);
+    return refused.length ? {
+      ...candidate,
+      strategyPlanExcludedModels: [
+        ...(Array.isArray(candidate.strategyPlanExcludedModels) ? candidate.strategyPlanExcludedModels : []),
+        ...refused.map((entry) => ({ model: entry.model })),
+      ],
+    } : candidate;
+  }) : list);
   // The unfiltered list, kept current across refreshes.
   let allPools = pools;
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
@@ -410,6 +436,8 @@ export async function dispatchV2Action({
   // provider said to try again after a wait too long to sit out.
   const retryBudget = Math.max(0, (Number(maxMechanicalRetries) || 0) - (Number(retriesAlready) || 0));
   let retriesStarted = 0;
+  // Refusal re-picks the step already made, counted from its stored attempts.
+  let refusalRepicks = Math.max(0, Number(refusalsAlready) || 0);
   let pendingRetry = null;
   let promisedRecord = null;
   const leftAfterProcessFailure = new Set();
@@ -435,7 +463,7 @@ export async function dispatchV2Action({
       try { refreshed = await refreshPools({ force: forceRefresh }); }
       catch { refreshed = null; }
       forceRefresh = false;
-      if (Array.isArray(refreshed) && refreshed.length) allPools = refreshed;
+      if (Array.isArray(refreshed) && refreshed.length) allPools = withRefusedModels(refreshed);
     }
     // The pick's pool list, rebuilt from the live picture every time
     // (prepare() re-reads the meters). A gate retry is forced onto its
@@ -614,7 +642,9 @@ export async function dispatchV2Action({
     const retryOf = pendingRetry
       ? {
         attempt: pendingRetry.attempt,
-        how: pendingRetry.how === 'wait' ? 'wait' : pool.name === pendingRetry.pool ? 'same-pool' : 'other-pool',
+        how: pendingRetry.how === 'wait' || pendingRetry.how === 'refused'
+          ? pendingRetry.how
+          : pool.name === pendingRetry.pool ? 'same-pool' : 'other-pool',
       }
       : null;
     const record = {
@@ -642,7 +672,7 @@ export async function dispatchV2Action({
     };
     attempts.push(record);
     tried.add(pool.name);
-    if (retryOf && retryOf.how !== 'wait') retriesStarted += 1;
+    if (retryOf && retryOf.how !== 'wait' && retryOf.how !== 'refused') retriesStarted += 1;
     pendingRetry = null;
     promisedRecord = null;
     gatePin = null;
@@ -855,6 +885,30 @@ export async function dispatchV2Action({
     // this dispatch, a refresh included (`deadGroups`).
     const deadGroup = kind === 'auth' ? upstreamGroupOf(pool) : null;
     if (deadGroup) deadGroups.add(deadGroup);
+    // A refusal at start: the provider refused the sign-in or the model before
+    // the worker changed a file or made a tool call. It did no work, so the
+    // pick is made again at once with the new fact applied, and the step's
+    // one retry stays for a real failure. Only for an analyze, build or
+    // chore step with a retry: never an act step (D32) or an outward one,
+    // and never when the stream cannot be read (no proof of no work).
+    const refusalAtStart = !verdict.ok && REFUSAL_KINDS.has(kind)
+      && Number(maxMechanicalRetries) > 0
+      && REFUSAL_LANES.has(action.lane ?? 'chore')
+      && roleOf(action) !== 'act'
+      && deliverableTypeOf(action.deliverable) !== 'outward'
+      && snapshot.ok && snapshot.changedFiles.length === 0
+      && streamShowsWork(streamFile, pool.name) === false;
+    const refusedAtStart = refusalAtStart && refusalRepicks < MAX_REFUSAL_REPICKS;
+    if (!verdict.ok && kind === 'model-not-in-plan') {
+      // The plan record (watch.js) excludes the model for later dispatches;
+      // the step lays it on every list it picks from, so the same pool may
+      // run another model of the tier but never this one again.
+      const refusedModel = verdict.planModel ?? record.model;
+      if (refusedModel) {
+        refusedModels.push({ pool: pool.name, model: refusedModel });
+        allPools = withRefusedModels(allPools);
+      }
+    }
     // The pools that can take work now, read live once for what follows this
     // failure.
     let liveNow = null;
@@ -910,7 +964,20 @@ export async function dispatchV2Action({
         : !tried.has(candidate.name)));
       const others = pickableNow.filter((candidate) => candidate.name !== pool.name);
       const soleCandidate = pickableNow.length === 1 && pickableNow[0].name === pool.name;
-      if (roleOf(action) === 'act' && !workerNeverStarted(verdict)) {
+      // A refusal at start picks again among the pools free now: for a dead
+      // sign-in, outside its credential group; for a model the plan does not
+      // include, the same pool too (with another model of the tier).
+      const refusalPicks = refusedAtStart
+        ? pickableLive().filter((candidate) => (candidate.name === pool.name
+          ? kind === 'model-not-in-plan'
+          : !tried.has(candidate.name) && !leftAfterProcessFailure.has(candidate.name)))
+        : [];
+      if (refusalPicks.length) {
+        next = { how: 'refused' };
+      } else if (refusalAtStart && !refusedAtStart) {
+        // Out of refusal re-picks: the caller, with each refused try listed.
+        next = null;
+      } else if (roleOf(action) === 'act' && !workerNeverStarted(verdict)) {
         // D32: once its worker started, an act step may have acted.
         next = null;
       } else if (kind === 'failed-evidence' && evidenceRun?.checkFault) {
@@ -967,6 +1034,7 @@ export async function dispatchV2Action({
       usage: clone(verdict.meta?.usage ?? null),
       wallSec: verdict.meta?.wallSec ?? null,
       willRetry: willRecover,
+      ...(next?.how === 'refused' ? { refusedAtStart: true } : {}),
       ...(quotaNext ? { quotaNext } : {}),
       outputFile: files.outFile,
       ...(outputBytes != null ? { outputBytes } : {}),
@@ -1029,6 +1097,15 @@ export async function dispatchV2Action({
     if (!next) break;
     pendingRetry = { attempt: `${action.id}-${ordinal}`, pool: pool.name, how: next.how };
     promisedRecord = record;
+    if (next.how === 'refused') {
+      // The refused try did no work: the next pick gets the same task, no
+      // handoff, and the step's retry budget is untouched.
+      refusalRepicks += 1;
+      if (kind === 'model-not-in-plan') tried.delete(pool.name);
+      else leftAfterProcessFailure.add(pool.name);
+      fallbackWhy = `picked again: ${pool.name} refused at start (${REFUSAL_TEXT[kind]})`;
+      continue;
+    }
     if (failureClassOf(kind) === 'process' && !next.replay) leftAfterProcessFailure.add(pool.name);
     if (next.correction) {
       // `schema`: today's same-conversation correction, now the step's one
@@ -1112,6 +1189,8 @@ export async function dispatchV2Action({
       if (lastReset == null) parts.push(['out of quota', null, true]);
       else if (lastReset > endAt) parts.push(['out of quota', lastReset, true]);
     }
+    const signIn = signInPart(pool);
+    if (signIn) parts.push(signIn);
     const spent = spentWindowPart(pool, endAt);
     if (spent) parts.push(spent);
     if (draining.has(pool.name)) parts.push(drainingPart(draining.get(pool.name)));

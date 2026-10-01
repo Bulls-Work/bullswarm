@@ -27,7 +27,7 @@ import {
   appliedStepRestart, clearStepRestart, dispatchV2Action, durableAttemptHandoff, markStepRestartApplied,
   readStepRestarts, requeueRestartedStep,
 } from './v2-dispatch.js';
-import { countRetries, declaredEvidence, poolCausedPools, roleOf } from './step-vocabulary.js';
+import { countRefusalRepicks, countRetries, declaredEvidence, poolCausedPools, roleOf } from './step-vocabulary.js';
 import { resolveRouteFilter } from './step-route.js';
 import { rewriteEvidenceCwd } from './evidence-runner.js';
 import { EVIDENCE_RUNNING_NOTE, evidenceRunning } from '../lib/stale.js';
@@ -543,6 +543,8 @@ async function runV2Kernel({
       // One automatic retry per step, counted from stored `retryOf` facts so
       // a kernel resume neither refunds nor spends it.
       retriesAlready: countRetries(state, action.id, runtime.supersededAttempts ?? 0),
+      // The refusal re-pick bound is the step's too (MAX_REFUSAL_REPICKS).
+      refusalsAlready: countRefusalRepicks(state, action.id, runtime.supersededAttempts ?? 0),
       // The step's route (D18): a hard filter on every pool list, in every run
       // where it is present.
       routeFilter: resolveRouteFilter(state, action, pools),

@@ -13,7 +13,12 @@ a needs-you block. A process failure (crash, silence, sign-in failure
 (failure kind `auth`), provider error, a worker that died at start) retries on another eligible pool
 (the same pool when it is the only one, except after a sign-in failure). After
 a sign-in failure the retry also skips every pool that shares that credential,
-for that step only; nothing is stored. A gate failure (`failed-evidence`,
+for that step only; nothing is stored. A refusal at start (a sign-in failure
+or a model the plan does not include, before any work) is picked again at once
+and does not use the step's one retry (at most 3 times per step; never for an
+`act` or `outward` step or `retry: 0`). A pool whose latest meter reading is a
+sign-in failure reads `sign-in failed (meter read 401)` and is out of picks
+until a later reading succeeds. A gate failure (`failed-evidence`,
 `not-produced`, `schema`, or `semantic`) retries on the same pool with the
 failure attached; a gate retry spends the same one-step budget. A failed
 check or deliverable whose report lists `- outside: <blocker>` under

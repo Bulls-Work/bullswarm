@@ -18,7 +18,7 @@ import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { tierOffV2DispatchReasons, prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
 import { resolveRouteFilter, routeUnavailableWhy } from './step-route.js';
 import { poolCanRunModel } from '../lib/model-pin.js';
-import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, spentWindowPart } from './no-pool-why.js';
+import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, signInPart, spentWindowPart } from './no-pool-why.js';
 
 /**
  * Why no pool was picked, as dispatchV2Action says it for a marked step that
@@ -35,7 +35,7 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
     .filter((pool) => (pool.lanes ?? [lane]).includes(lane));
   const held = [];
   for (const pool of capable) {
-    const parts = [spentWindowPart(pool, now), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
+    const parts = [signInPart(pool), spentWindowPart(pool, now), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
     if (parts.length) held.push(heldEntry(pool.name, parts));
   }
   const failureKind = noPoolFailureKind(capable.length, held);

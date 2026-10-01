@@ -57,6 +57,9 @@ before doing anything. Their readers and stored formats are unchanged.
    price, not a spent or dead pool: the pool stays pickable with its other
    models, and the record ends when the subscription changes or the operator
    turns the model back on (`src/lib/strategy.js`).
+   A pool whose latest meter reading is a sign-in failure (a 401, or a 403
+   its provider calls an auth error) is out of picks until a later reading
+   succeeds; it is that latest reading, not a remembered state.
    Recursion depth is core-owned via env (`BULLSWARM_DEPTH`).
 5. Workflow dispatches honor the same guarantees as single runs, in
    `src/workflow/v2-dispatch.js`: `BULLSWARM_DEPTH` is checked and propagated
@@ -67,7 +70,12 @@ before doing anything. Their readers and stored formats are unchanged.
    only and never stored. A step's `route`, the run's pin and the step's
    capability tier are hard filters applied before pace ranks what is left. The failure rule is one automatic retry per step (a
    process failure on another eligible pool, a gate failure on the same pool
-   with the failure attached), then the caller. An `act` step is never retried
+   with the failure attached), then the caller. A refusal at start (a sign-in
+   failure or a model the plan does not include, before any file change or
+   tool call) is picked again at once and does not use the step's one retry,
+   at most 3 times per step, only for an analyze, build or chore step with a
+   retry (never an `act` or `outward` step, nor one with `retry: 0`).
+   An `act` step is never retried
    once its worker started. A usage limit (a spent 5-hour or weekly window, or
    no credit left) ends the step and sends it to the caller: no wait, no
    automatic move, no retry. The pool's meter is re-read after it

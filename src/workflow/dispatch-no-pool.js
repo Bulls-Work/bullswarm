@@ -5,7 +5,7 @@ import { poolCanRunModel } from '../lib/model-pin.js';
 import { LANES, modelFamilyOf } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
 import { poolPassesRoute } from './step-route.js';
-import { planExcludedIds, planExcludes, preparePools } from './dispatch-pools.js';
+import { meterSignInDead, meterSignInText, planExcludedIds, planExcludes, preparePools } from './dispatch-pools.js';
 
 const STRATEGY_TIER_ORDER = ['low', 'medium', 'high'];
 
@@ -82,6 +82,7 @@ export function noPoolCandidates(allPools, action, effort, {
     else if (failedProbes.has(pool.name)) excluded = 'failed its probe';
     else if (!inRoute) excluded = `outside the route (${routeFilter.summary})`;
     else if (sharedWith.length) excluded = `shares provider ${provider} with ${sharedWith.join(', ')}`;
+    else if (meterSignInDead(pool)) excluded = meterSignInText(pool);
     else if (!ignoreBurstGate && windowSpent(pool, now)) excluded = 'a usage window is at its limit';
     else if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) excluded = poolCanRunModel(pool, preferredModel).reason;
     else if (preferredModel && planExcludes(pool, preferredModel)) excluded = `${preferredModel} is not in ${pool.name}'s plan`;

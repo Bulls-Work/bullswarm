@@ -9,6 +9,7 @@
 
 import { basename } from 'node:path';
 import { finiteOrNull } from '../lib/num.js';
+import { REFUSAL_TEXT, wasRefusedAtStart } from './step-vocabulary.js';
 import { routeSummary } from './step-route.js';
 import { returnedEarlyItems, returnedEarlyText, timeBoxText } from './time-box.js';
 import { costRows } from './step-model-cost.js';
@@ -46,7 +47,9 @@ function attemptCountText(attempts, selected) {
   const ordinal = finiteOrNull(selected?.ordinal) ?? (total ? 1 : null);
   if (ordinal == null) return null;
   // A gate retry (stage-3 D5) ran on the same pool with the failure attached.
-  const retry = selected?.retryOf?.how === 'same-pool' ? ' · same pool, failure attached' : '';
+  const retry = wasRefusedAtStart(selected, attempts)
+    ? ` · refused at start: ${REFUSAL_TEXT[selected.failureKind] ?? selected.failureKind ?? 'refused'} · picked again`
+    : selected?.retryOf?.how === 'same-pool' ? ' · same pool, failure attached' : '';
   return `${total > 1 ? `attempt ${ordinal} of ${total}` : `attempt ${ordinal} of ${total || 1}`}${retry}`;
 }
 

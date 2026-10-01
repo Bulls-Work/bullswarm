@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- pick: a pool whose latest meter read was refused for its sign-in (HTTP 401, or a 403 its provider calls an auth error) is out of the pick with the reason `sign-in failed (meter read 401)`, however old its cached numbers are, and `bullswarm pools` and the strategy preview show it as not ready (no tier's route). Nothing is remembered beyond that reading: when its hold ends the next pick reads again, and a successful read makes the pool pickable. A 429 or a network error on the meter read changes nothing.
+- retry: a refusal at start (failure kind `auth` or `model-not-in-plan` with no file changed and no tool call) is picked again at once and does not use the step's one automatic retry: a dead sign-in skips that credential's pools, a model the plan does not include lets the same pool run another model of the tier. At most 3 such re-picks per step, counted from its stored attempts so a resume does not reset them; only for an analyze, build or chore step with a retry, never an `act` or `outward` step; any tool-call record in the stream counts as work whatever its name (a codex `mcp_tool_call`, any Claude Code tool, MCP tools included), an empty stream is no work, and a missing or unreadable one is not a refusal; the needs-you try line and the step page read `refused at start: sign-in failed · picked again`.
+
 ## 0.38.6 — no import cycles
 
 - internal: no module under `src/` imports itself back through its imports any more (13 import cycles removed by moving four small helpers into their own files; `reprice`'s command-line part is now `src/workflow/reprice-cli.js`). Behaviour is unchanged; a new test fails if a cycle comes back.

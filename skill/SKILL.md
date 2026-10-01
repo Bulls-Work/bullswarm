@@ -177,7 +177,11 @@ Lessons from real runs; each holds for this version.
    `ok: true` and `proven by command` mean the checks passed, not that the
    work is right; `answer checked` is a well-formed claim.
 10. **Retries are for flakes.** The one automatic retry covers a crash or a
-    failed check. A worker whose check or deliverable failed and whose report
+    failed check. A refusal at start (a sign-in failure or a model the plan
+    does not include, before any work) is picked again and does not use it.
+    A pool whose meter read says the sign-in failed is out of picks until a
+    later read succeeds.
+    A worker whose check or deliverable failed and whose report
     lists `- outside: <blocker>` under `## Not done` comes back at once. Fix
     the cause with `workflow add` rather than rerunning the same step.
 

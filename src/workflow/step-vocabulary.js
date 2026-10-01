@@ -263,7 +263,26 @@ export const NEEDS_YOU_LABELS = Object.freeze({
 
 // `attempt.retryOf.how` (D3): why the dispatcher started this attempt after an
 // earlier one. The step's retry budget counts the first two, never `wait`.
-export const RETRY_FACTS = Object.freeze(['other-pool', 'same-pool', 'wait']);
+// How a refusal at start reads on a try line, by failure kind.
+export const REFUSAL_TEXT = Object.freeze({
+  auth: 'sign-in failed',
+  'model-not-in-plan': 'model not in plan',
+});
+// `refused`: a pick made again after a refusal at start (a sign-in failure or
+// a model the plan does not include, before any work); never counted.
+export const RETRY_FACTS = Object.freeze(['other-pool', 'same-pool', 'wait', 'refused']);
+
+/**
+ * Whether a stored attempt was a refusal at start: one of the step's attempts
+ * is its refusal re-pick (`retryOf.how` refused naming it). Read from that
+ * successor, so the attempt keeps no field of its own for it.
+ */
+export function wasRefusedAtStart(attempt, attempts) {
+  if (!attempt) return false;
+  return (attempts ?? []).some((other) => other?.retryOf?.how === 'refused'
+    && (attempt.id != null ? other.retryOf.attempt === attempt.id
+      : other.actionId === attempt.actionId && other.ordinal === attempt.ordinal + 1));
+}
 const COUNTED_RETRY_FACTS = new Set(['other-pool', 'same-pool']);
 
 /** Whether the dispatcher started this attempt as a counted retry (D3). */
@@ -284,6 +303,22 @@ export function countRetries(state, stepId, supersededAttempts) {
   for (const attempt of state?.attempts ?? []) {
     if (attempt?.actionId !== stepId || !(attempt.ordinal > superseded)) continue;
     if (isCountedRetry(attempt)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Refusal re-picks the step's current definition has made: its attempts after
+ * `supersededAttempts` whose `retryOf.how` is `refused`. Read from the stored
+ * attempts, so a resume or restart neither resets nor refunds the bound.
+ */
+export function countRefusalRepicks(state, stepId, supersededAttempts) {
+  const superseded = Number.isInteger(supersededAttempts) ? supersededAttempts
+    : (state?.actions ?? []).find((action) => action?.id === stepId)?.supersededAttempts ?? 0;
+  let count = 0;
+  for (const attempt of state?.attempts ?? []) {
+    if (attempt?.actionId !== stepId || !(attempt.ordinal > superseded)) continue;
+    if (attempt.retryOf?.how === 'refused') count += 1;
   }
   return count;
 }

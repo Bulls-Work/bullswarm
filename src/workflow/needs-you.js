@@ -8,7 +8,7 @@
 // the state (retries are the attempts minus one when no `retryOf` fact exists).
 
 import { glyphs } from '../lib/glyphs.js';
-import { countRetries, declaredEvidence, NEEDS_YOU_LABELS, roleOf } from './step-vocabulary.js';
+import { countRetries, declaredEvidence, NEEDS_YOU_LABELS, REFUSAL_TEXT, roleOf, wasRefusedAtStart } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { formatDuration } from './format-duration.js';
 import { isProgramV3 } from './program-v3.js';
@@ -239,6 +239,7 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
         id: attempt.id ?? `${stepId}-${attempt.ordinal}`, pool: attempt.pool ?? null, model: attempt.model ?? null,
         durationSec: durationSecOf(attempt), files: filesOf(attempt),
         ...(how ? { retryOf: how } : {}), ...(handoff ? { handoff: true } : {}),
+        ...(wasRefusedAtStart(attempt, attempts) ? { refused: REFUSAL_TEXT[attempt.failureKind] ?? attempt.failureKind ?? 'refused' } : {}),
       };
     }),
     ...neighbours(state, stepId),
@@ -367,6 +368,11 @@ function evidenceLines(item) {
 }
 
 function tryLine(attempt, index, attempts) {
+  // A refusal at start did no work: no file count, and it says it was picked again.
+  if (attempt.refused) {
+    return `  try ${index + 1}  ${attempt.pool ?? '?'} · ${attempt.model ?? '?'} · ${formatDuration(attempt.durationSec)}`
+      + ` · refused at start: ${attempt.refused} · picked again`;
+  }
   const tail = `${formatDuration(attempt.durationSec)} · ${plural(attempt.files, 'file')}`;
   if (attempt.retryOf === 'same-pool') return `  try ${index + 1}  same pool, failure attached · ${tail}`;
   // A handoff to the pool that just failed is the same-pool retry's own.

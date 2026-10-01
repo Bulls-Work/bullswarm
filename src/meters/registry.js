@@ -59,6 +59,16 @@ export function meterErrorText(error) {
   return message.length > 80 ? `${message.slice(0, 77)}…` : message;
 }
 
+/**
+ * Whether a failed meter read says the pool's sign-in is dead: an HTTP 401,
+ * or an error its provider marked `signInFailed` (a 403 whose body or code is
+ * an auth error, in the provider's own wording). A 429 or a network error is
+ * not one.
+ */
+export function meterSignInFailed(error) {
+  return error?.signInFailed === true || Number(error?.status) === 401;
+}
+
 function holdUntilOf(hold) {
   const failedAt = Date.parse(hold?.failed_at);
   const retryAfterMs = Number(hold?.retry_after_ms);
@@ -74,6 +84,7 @@ function errorFromHold(hold) {
   // still expose the same status even though Error objects are not serializable.
   if (/^\d+$/.test(reason)) error.status = Number(reason);
   if (typeof hold?.code === 'string' && hold.code) error.code = hold.code;
+  if (hold?.sign_in_failed === true || error.status === 401) error.signInFailed = true;
   error.retryAfterMs = Number.isFinite(Number(hold?.retry_after_ms))
     ? Number(hold.retry_after_ms)
     : null;
@@ -91,6 +102,7 @@ function holdForError(error, nowMs) {
     failed_at: new Date(nowMs).toISOString(),
     retry_after_ms: retry,
     reason,
+    ...(meterSignInFailed(error) ? { sign_in_failed: true } : {}),
   };
 }
 
@@ -98,6 +110,7 @@ function decorateError(error, hold, holdUntil) {
   if (error && (typeof error === 'object' || typeof error === 'function')) {
     error.holdUntil = holdUntil;
     error.meterError = typeof hold?.reason === 'string' ? hold.reason : meterErrorText(error);
+    if (hold?.sign_in_failed === true) error.signInFailed = true;
   }
   return error;
 }
@@ -142,6 +155,7 @@ function staleResult(cached, nowMs, error, holdUntil, reason) {
     error,
     meterError,
     holdUntil,
+    ...(meterSignInFailed(error) ? { signInFailed: true } : {}),
     ageMs,
     ...paceSnapshot(cached, nowMs),
   }, cached);
@@ -455,6 +469,7 @@ export async function getAllMeterReadings(poolNames, opts = {}) {
           error: err,
           meterError: err?.meterError ?? meterErrorText(err),
           holdUntil: Number.isFinite(err?.holdUntil) ? err.holdUntil : null,
+          ...(meterSignInFailed(err) ? { signInFailed: true } : {}),
           pacing: null,
           burstGate: false,
           windows: {},

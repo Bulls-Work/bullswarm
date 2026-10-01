@@ -91,7 +91,7 @@ test('NEEDS_YOU_LABELS is the §2.5 label table and covers every failure kind', 
 });
 
 test('RETRY_FACTS is the retryOf.how enum', () => {
-  assert.deepEqual(RETRY_FACTS, ['other-pool', 'same-pool', 'wait']);
+  assert.deepEqual(RETRY_FACTS, ['other-pool', 'same-pool', 'wait', 'refused']);
   assert.equal(Object.isFrozen(RETRY_FACTS), true);
 });
 

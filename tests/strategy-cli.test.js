@@ -1483,3 +1483,16 @@ test('strategy show names a model a pool\'s plan refused, and include-model forg
     assert.equal(await line(), 'not in plan: command-code: claude-fable-5-1 (strategy include-model <model> clears it)');
   } finally { f.cleanup(); }
 });
+
+test('the strategy preview shows no pool whose meter read says its sign-in failed as a tier\'s route', () => {
+  const report = {
+    capturedAt: new Date().toISOString(), discoveries: {},
+    suggestions: { high: { requirements: { lane: 'analyze', capabilities: ['strong-analysis', 'workflow-planning'] } } },
+  };
+  const dead = reasoningPool('pool-a', null, { pace: 40, meterSignInFailed: true, meterError: '401' });
+  const live = reasoningPool('pool-b', null, { pace: 1 });
+  assert.equal(strategyInventory({ pools: [dead, live], state: {}, report }).routes.high.pool, 'pool-b');
+  const none = strategyInventory({ pools: [dead], state: {}, report }).routes.high;
+  assert.equal(none.pool, null);
+  assert.match(none.reason, /pool-a sign-in failed \(meter read 401\)/);
+});

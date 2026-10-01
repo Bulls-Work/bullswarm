@@ -138,12 +138,33 @@ const SEVEN_DAY_SECONDS = 7 * 24 * 60 * 60;
 const REFRESH_BUFFER_MS = 5 * 60_000;
 
 export class CodexMeterError extends Error {
-  constructor(message, code, { status = null, retryAfterMs = null } = {}) {
+  constructor(message, code, { status = null, retryAfterMs = null, signInFailed = false } = {}) {
     super(message);
     this.code = code; // no_auth | api_key_only | http | parse | network
     this.status = status;
     this.retryAfterMs = retryAfterMs;
+    // A dead sign-in, which keeps the pool out of the pick while this reading
+    // holds (registry.js meterSignInFailed): a 401, or a 403 whose body says
+    // the token is the problem (codexAuthRefusal).
+    if (status === 401 || signInFailed === true) this.signInFailed = true;
   }
+}
+
+// The usage endpoint's own words for a refused token. A 403 carrying one of
+// them is a dead sign-in; any other 403 (an edge or WAF block, say) is an
+// ordinary meter error.
+const AUTH_REFUSAL = /token_revoked|revoked|invalid[_ ]?(access[_ ]?)?token|token[_ ]?(is[_ ]?)?(invalid|expired)|expired[_ ]?token|unauthori[sz]ed|invalid_api_key|not[_ ]authenticated|authentication/i;
+
+export function codexAuthRefusal(body) {
+  if (body == null) return false;
+  const words = [];
+  const collect = (value, depth = 0) => {
+    if (depth > 3 || value == null) return;
+    if (typeof value === 'string') words.push(value);
+    else if (typeof value === 'object') for (const key of ['code', 'error', 'detail', 'message', 'type']) collect(value[key], depth + 1);
+  };
+  collect(body);
+  return words.some((word) => AUTH_REFUSAL.test(word));
 }
 
 function authPath({ env = process.env, home = os.homedir() } = {}) {
@@ -376,7 +397,7 @@ export async function fetchCodexUsage({ pool = 'codex', env, home } = {}) {
     throw new CodexMeterError(
       `Codex usage returned HTTP ${status}`,
       status === 401 || status === 403 ? 'no_auth' : 'http',
-      { status, retryAfterMs },
+      { status, retryAfterMs, signInFailed: status === 403 && codexAuthRefusal(body) },
     );
   }
 

@@ -199,6 +199,10 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
         ? reading.meterError
         : shortMeterError(reading.error);
       p.meterHoldUntil = Number.isFinite(reading.holdUntil) ? reading.holdUntil : null;
+      // The latest meter read said the sign-in is dead (a 401, or an auth
+      // 403): the pool is out of every pick until a read succeeds
+      // (dispatch-pools.js meterSignInDead). Nothing outlives that reading.
+      if (reading.signInFailed === true) p.meterSignInFailed = true;
       p.quotaRefusal = reading.quotaRefusal ?? reading.snapshot?.quota_refusal ?? null;
       if (p.quotaRefusal && typeof p.quotaRefusal === 'object') {
         p.quotaRefusedAt = p.quotaRefusal.refusedAt ?? p.quotaRefusal.refused_at ?? null;

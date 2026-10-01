@@ -7,6 +7,7 @@
 // reason, so a spent pool never reads as a missing tier model.
 
 import { windowSpent } from '../meters/framework.js';
+import { meterSignInDead, meterSignInText } from './dispatch-pools.js';
 
 function toMs(value) {
   if (value == null || value === '') return null;
@@ -18,6 +19,11 @@ function toMs(value) {
 export function spentWindowPart(pool, at) {
   const spent = windowSpent(pool, at);
   return spent ? [`at its ${spent.window} limit`, toMs(spent.resetsAt), true] : null;
+}
+
+/** A pool whose latest meter read says its sign-in is dead, as a held reason, or null. */
+export function signInPart(pool) {
+  return meterSignInDead(pool) ? [meterSignInText(pool), null, false] : null;
 }
 
 /** A pool the forecast says would run out mid-step (`{ until, forecast }`) as a held reason. */

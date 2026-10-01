@@ -24,6 +24,18 @@ export function planExcludes(pool, model) {
   return planExcludedIds(pool).some((id) => id === wanted || modelBaseId(id) === modelBaseId(wanted));
 }
 
+// The pool's latest meter read said its sign-in is dead (a 401, or a 403 its
+// provider called an auth error; config.js meterSignInFailed). It is out of
+// this pick however old its cached numbers are, and back as soon as a read
+// succeeds: nothing is remembered beyond that reading (doctrine 4).
+export function meterSignInDead(pool) {
+  return pool?.meterSignInFailed === true;
+}
+
+export function meterSignInText(pool) {
+  return `sign-in failed (meter read ${pool?.meterError || 'auth'})`;
+}
+
 function providerIdFromModel(model) {
   if (typeof model !== 'string') return null;
   const slash = model.indexOf('/');
@@ -43,7 +55,7 @@ export function preparePools(pools, action, effort, {
 } = {}) {
   const available = [];
   for (const pool of pools) {
-    if (pool.enabled === false || (!ignoreBurstGate && windowSpent(pool, now))) continue;
+    if (pool.enabled === false || (!ignoreBurstGate && (windowSpent(pool, now) || meterSignInDead(pool)))) continue;
     if (routeFilter && !poolPassesRoute(pool, routeFilter)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its

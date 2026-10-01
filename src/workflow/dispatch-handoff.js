@@ -5,6 +5,9 @@ import { isAbsolute, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { handoffBlock } from './retry-handoff.js';
 import { fileBytes } from './dispatch-attempt-files.js';
+import { parseAttemptStream } from './step-model-stream.js';
+import { withToolKinds } from './step-model-tool-kinds.js';
+import { ENVELOPE_KINDS, eventIsError, eventIsResponse, eventIsTool, eventIsUnnamedCapture } from './step-model-events.js';
 
 export function lastResponseEvents(streamFile, limit = 3) {
   if (!streamFile) return [];
@@ -27,6 +30,32 @@ export function lastResponseEvents(streamFile, limit = 3) {
   } catch {
     return [];
   }
+}
+
+// A tool-call record of any name or kind: whatever the Step page lists as a
+// tool row (a declared kind or `other`, so a codex mcp_tool_call or any
+// Claude Code tool_use counts), less the records that are no call at all: a
+// response, an end-of-run envelope, an error, a capture with no name.
+function eventIsToolCall(event) {
+  if (eventIsTool(event)) return true;
+  return !eventIsResponse(event)
+    && !ENVELOPE_KINDS.has(String(event?.kind ?? '').trim().toLowerCase())
+    && !eventIsError(event)
+    && !eventIsUnnamedCapture(event);
+}
+
+// Whether an attempt's event stream shows work: any tool-call record.
+// true: work seen; false: a readable stream with no tool call; null: the
+// stream is missing, unreadable or not structured, so nothing is known.
+export function streamShowsWork(streamFile, pool = null) {
+  if (!streamFile) return null;
+  let parsed;
+  try { parsed = parseAttemptStream(streamFile); } catch { return null; }
+  // An empty stream file is readable and holds no tool call: both refusals of
+  // the incident this rule exists for (a 401, a model not in the plan) left one.
+  if (!parsed.available || parsed.plainText) return null;
+  if (!parsed.events.length && parsed.parseErrors > 0) return null;
+  return withToolKinds(parsed.events, pool).some(eventIsToolCall);
 }
 
 function durableArtifactPath(runDir, path) {

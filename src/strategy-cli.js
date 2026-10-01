@@ -19,6 +19,7 @@ import {
   connectorReasoningLevels, isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel,
 } from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
+import { meterSignInDead, meterSignInText } from './workflow/dispatch-pools.js';
 import { attachForecast, inflightPenaltyFrom } from './lib/forecast.js';
 import { expectedMinutesFor } from './lib/spend.js';
 import { helpText, usageLine } from './help.js';
@@ -703,7 +704,9 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
     const context = report.suggestions?.[tier]?.requirements
       ?? { lane: TIER_LANES[tier], capabilities: [] };
     const assignment = state.strategy?.assignments?.[tier] ?? null;
-    const candidates = pools.map((pool) => ({
+    // The same exclusion as a dispatch (dispatch-pools.js preparePools): a
+    // pool whose latest meter read says its sign-in failed is no tier's route.
+    const candidates = pools.filter((pool) => !meterSignInDead(pool)).map((pool) => ({
       ...pool,
       modelPolicy: resolveDispatchModel(pool.connector ?? pool, tier, {
         assignment,
@@ -736,7 +739,9 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
       ? { pool: assignment.pool, model: assignment.model, source: assignment.source ?? null }
       : null;
     if (!route.pick) {
-      routes[tier] = { lane: context.lane, pool: null, model: null, reasoning: null, pin, reason: route.why };
+      const dead = pools.filter((pool) => meterSignInDead(pool)).map((pool) => `${pool.name} ${meterSignInText(pool)}`);
+      const reason = dead.length ? `${route.why}; ${dead.join('; ')}` : route.why;
+      routes[tier] = { lane: context.lane, pool: null, model: null, reasoning: null, pin, reason };
       continue;
     }
     const picked = route.pick.connector;

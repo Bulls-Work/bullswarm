@@ -24,6 +24,7 @@ import {
 } from './lib/pool-labels.js';
 import { NO_CALLER_NOTICE, runStepProgram, runStepRequest } from './lib/run-step.js';
 import { normaliseProgramV3 } from './workflow/program-v3.js';
+import { meterSignInDead, meterSignInText } from './workflow/dispatch-pools.js';
 import { previewStepPick } from './workflow/pick-preview.js';
 import { runOneStep } from './workflow/run-one-step.js';
 import { runVerdictJson, runVerdictLines } from './workflow/run-verdict.js';
@@ -107,6 +108,9 @@ export function meterSourceLabel(pool, nowMs = Date.now()) {
  */
 export function poolStatusText(p) {
   if (!p.enabled) return 'disabled';
+  // A dead sign-in seen by the latest meter read: not pickable, whatever the
+  // cached numbers say (dispatch-pools.js meterSignInDead).
+  if (meterSignInDead(p)) return `not ready · ${meterSignInText(p)}`;
   const burst = p.burstGate ? ' BURST-GATED' : '';
   const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
   return `ready${burst}${nearLimit}`;
