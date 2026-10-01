@@ -113,8 +113,12 @@ otherwise it says `no retry left`.
 
 In new runs, Bullswarm does not move a review away from a writer on its own.
 Place it with the step's optional `route`; `route` is a hard filter before
-quota pacing. Use `independentOf` to avoid providers that worked on named
-upstream steps. Use
+quota pacing. By default a review needs no route: leave it to quota pacing and
+make it strict with `blindTo` and numbered checks. Add `independentOf`, which
+avoids providers that worked on named upstream steps, only for your own reason
+(you want a different model family's view, the owner asked, a compliance rule);
+another provider may still serve the same model, so name `providers` or
+`pools` when the model family matters. Use
 `providers.use` / `providers.avoid` to select provider families, or
 `pools.use` / `pools.avoid` for exact pool ids. Accounts served by one provider
 count as one family. A route that leaves no free pool sends the step back to
@@ -125,7 +129,7 @@ you at once, as no eligible pool or with each pool's reason; it never waits.
   "schemaVersion": "bullswarm.workflow.program.v3",
   "steps": [
     { "id": "write-docs", "lane": "build", "files": ["README.md"], "prompt": "Write README.md." },
-    { "id": "review-docs", "dependsOn": ["write-docs"], "route": { "independentOf": ["write-docs"] }, "prompt": "Check README.md and report what is wrong with it." }
+    { "id": "review-docs", "dependsOn": ["write-docs"], "blindTo": ["write-docs"], "prompt": "Check README.md against: 1. every command it shows exists; 2. every flag it names is documented. Any difference is a finding. Change no file." }
   ]
 }
 ```

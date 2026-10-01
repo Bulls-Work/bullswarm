@@ -137,7 +137,7 @@ review of a build step: a builder's answer can explain a deviation away with
 a credible reason, and a reviewer that reads it tends to accept it, most of
 all on a large change. It names steps like `route.independentOf` does (steps
 this one depends on, directly or through others), and is separate from it:
-`independentOf` picks another provider and hides nothing. Leave `blindTo` off
+`independentOf` is an opt-in that picks another provider and hides nothing. Leave `blindTo` off
 a check that works from another step's list (find, then check each finding):
 hiding that answer would hide what it checks.
 
@@ -259,9 +259,16 @@ and leave routing more pools to pace across. `route` narrows that first:
 `pools.use`/`pools.avoid` name pool ids, `providers.use`/`providers.avoid` name
 providers (claude-code, codex, grok, …), and `independentOf` names steps this
 step depends on (directly or through others) whose providers it must not use.
-A route that leaves no free pool sends the step back to you at once. With a
-single provider enabled, an `independentOf` route cannot be served, and
-validate and `workflow add` refuse it.
+A route that leaves no free pool sends the step back to you at once.
+
+`independentOf` is an opt-in, not the default for a review: add it only for your
+own reason (you want a different model family's view, the owner asked for it, a
+compliance rule). It keeps the step off the providers that did the named work,
+but another provider may still serve the same model, so name `providers` or
+`pools` when the model family matters. Without it, Bullswarm places the review
+by quota like any step, and `blindTo` plus numbered checks is what makes it hold. With a single
+provider enabled, an `independentOf` route cannot be served, and validate and
+`workflow add` refuse it.
 
 ## The failure rule
 
@@ -307,8 +314,8 @@ Rules the fields above do not show on their own:
   front what you do when it runs out (continuing it is recorded as unmet).
 - **Gates stop only what is behind them.** Other branches keep running. When
   only waiting gates or loops are left, the run parks with status `waiting`.
-- **Independent checks need a second provider.** With only one enabled,
-  validate and `workflow add` refuse `independentOf` (`… enable a pool of
+- **Opting into `independentOf` needs a second provider.** With only one
+  enabled, validate and `workflow add` refuse `independentOf` (`… enable a pool of
   another provider or drop independentOf`). The other provider needs a model
   on the step's tier: a no-pool refusal names each pool's reason. A review of
   a build step also takes `"blindTo": ["build"]` and numbered checks (see

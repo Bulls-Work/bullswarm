@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- guidance: a review is now placed by quota like any step, kept honest by `blindTo` and numbered checks; `route.independentOf` is documented as an opt-in for when you want another provider (which may still serve the same model). Examples in the skill, the docs and `plan contract` no longer use it. No behaviour change.
+
 ## 0.38.6 — no import cycles
 
 - internal: no module under `src/` imports itself back through its imports any more (13 import cycles removed by moving four small helpers into their own files; `reprice`'s command-line part is now `src/workflow/reprice-cli.js`). Behaviour is unchanged; a new test fails if a cycle comes back.

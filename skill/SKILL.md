@@ -66,8 +66,8 @@ unless dispatch reports a readiness problem.
 | Gate | the run stops there and waits for you, or only when an answer says so | an entry in `gates`: `{id, dependsOn, when?, note?}` |
 | Loop | steps that repeat until one step's answer (or evidence) says stop, at most `maxRounds` (1-5) | an entry in `loops`: `{id, steps, until, maxRounds}` |
 
-A build, then a strict review by another provider that does not read the
-builder's own account (playbook rule 6):
+A build, then a strict review that does not read the builder's own account
+(playbook rule 6):
 
 ```json
 {
@@ -76,7 +76,7 @@ builder's own account (playbook rule 6):
     { "id": "build", "lane": "build", "files": ["src/csv-writer.js", "tests/csv-writer.test.js"],
       "prompt": "In /work/acme, add src/csv-writer.js: writeCsv(rows) returns RFC 4180 CSV text. Add its tests in tests/csv-writer.test.js.",
       "evidence": [{ "type": "command", "cmd": "node --test tests/csv-writer.test.js", "timeoutSec": 300 }] },
-    { "id": "review", "dependsOn": ["build"], "route": { "independentOf": ["build"] }, "blindTo": ["build"],
+    { "id": "review", "dependsOn": ["build"], "blindTo": ["build"],
       "prompt": "In /work/acme, review src/csv-writer.js against: 1. a field holding a comma, a quote or a line break is quoted, and a quote inside it is doubled; 2. every line ends with CRLF. Any difference is a finding, even if justified by the author. Record each check as holds true or false with its evidence. Answer passed true only when every check holds. Change no file.",
       "answer": { "type": "object", "required": ["checks", "passed"], "properties": {
         "checks": { "type": "array", "items": { "type": "object", "required": ["id", "holds", "evidence"], "properties": { "id": { "type": "string" }, "holds": { "type": "boolean" }, "evidence": { "type": "string" } } } },
@@ -89,7 +89,7 @@ builder's own account (playbook rule 6):
 validate:
 ✓ program v3 valid: 2 steps, 0 gates, 0 loops (nothing launched)
   build                    build/medium deliverable=files evidence=command
-  review                   analyze/medium answer after build route: independent of build blind to build
+  review                   analyze/medium answer after build blind to build
   checks   not run · add --try-checks to run each command check once now against the current tree (it may take time and must not change files)
 ```
 
@@ -161,10 +161,14 @@ Lessons from real runs; each holds for this version.
 6. **Reviews that hold.** State the contract as numbered checks, make any
    difference a finding even when the author justifies it, have it record
    `holds` and evidence per check with `passed` true only when every check
-   holds, route it `independentOf` the author, and add `blindTo` the author:
-   a builder's credible reason talks a reviewer who reads it out of a real
-   finding. Keep the brief consistent with the repository's own rules: a
-   brief that contradicts a repo test cannot pass honestly.
+   holds, and add `blindTo` the author: a builder's credible reason talks a
+   reviewer who reads it out of a real finding. Let Bullswarm place the review
+   by quota as for any step; add `route.independentOf` only for your own
+   reason (another model family's view, the owner asked, a compliance rule),
+   knowing another provider may still serve the same model, so name
+   `providers`/`pools` when the model family matters. Keep the brief consistent
+   with the repository's own rules: a brief that contradicts a repo test cannot
+   pass honestly.
 7. **Plan ahead, add later.** Declare the steps, gates and loops you can see.
    Where the next part depends on an answer (one check per finding, one build
    step per slice), stop there and add it with `workflow add` when the answer

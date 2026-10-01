@@ -239,3 +239,21 @@ test('the live guides teach no removed mechanism as current behaviour', () => {
   assert.ok(observing.includes('0.38.0 removed the preflight scout and the dispatched planner, so these lines come only from a run saved by 0.37.x'));
   assert.ok(observing.includes('`addSteps` (`workflow add <id> --steps part.json`, then `workflow wait <id> <added ids>`) in a v3 run'));
 });
+
+// Owner decision 2026-10-01: a review is placed by quota with blindTo and a
+// strict prompt; route.independentOf is an opt-in the caller adds for its own reason.
+test('default review examples carry no independentOf, and the opt-in is stated in SKILL.md and program.md', async () => {
+  const { buildV3Contract } = await import('../src/workflow/contract-v3.js');
+  const jsonBlocks = (path) => [...read(path).matchAll(/```json\n([\s\S]*?)```/g)].map((match) => match[1]);
+  assert.ok(jsonBlocks('skill/SKILL.md').length > 0);
+  for (const block of jsonBlocks('skill/SKILL.md')) assert.ok(!block.includes('independentOf'), 'SKILL.md example');
+  // Every patterns.md example is a default review/critique/check.
+  for (const block of jsonBlocks('skill/references/patterns.md')) assert.ok(!block.includes('independentOf'), 'patterns.md example');
+  const example = buildV3Contract({ goal: 'x', cwd: '/work/acme', next: {} }).example;
+  assert.ok(!JSON.stringify(example).includes('independentOf'), 'contract example');
+  for (const path of ['skill/SKILL.md', 'skill/references/program.md']) {
+    const text = read(path).replace(/\s+/g, ' ');
+    assert.match(text, /add `route\.independentOf` only for your own reason|`independentOf` is an opt-in, not the default for a review/, `${path}: opt-in sentence`);
+    assert.match(text, /another provider may still serve the same model/, `${path}: same-model caveat`);
+  }
+});
