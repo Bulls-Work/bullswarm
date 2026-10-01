@@ -10,37 +10,13 @@ import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { v2RunnerLiveness } from './short-id.js';
 import { cut, rule, seriesColor } from './dash-kit.js';
-import {
-  agentDetailLines,
-  clamp,
-  clockText,
-  compactUsage,
-  dimLine,
-  dimText,
-  durationText,
-  formatBytes,
-  inverseText,
-  joinPanels,
-  panelCell,
-  panelWindow,
-  reasoningText,
-  renderPanel,
-  strong,
-  SIDEBAR_WIDTH,
-  selectLine,
-  stateFinishedAt,
-  stateStatus,
-  statusIcon,
-  TERMINAL_ACTIONS,
-  tokenText,
-  timelineText,
-  tint,
-  truncate,
-  visibleLength,
-  workflowPanelModel,
-  workflowStatusIcon,
-  wrapLines,
-} from './dashboard.js';
+import { agentDetailLines, wrapLines } from './dashboard-agent-detail.js';
+import { clamp } from './dashboard-clamp.js';
+import { clockText, compactUsage, durationText, formatBytes, reasoningText, tokenText } from './dashboard-value-text.js';
+import { dimLine, joinPanels, panelCell, panelWindow, renderPanel, SIDEBAR_WIDTH, selectLine, timelineText } from './dashboard-panels.js';
+import { dimText, inverseText, strong, tint, truncate, visibleLength } from './dashboard-ansi.js';
+import { stateFinishedAt, stateStatus, TERMINAL_ACTIONS } from './dashboard-run-state.js';
+import { statusIcon, workflowStatusIcon } from './dashboard-status.js';
 import {
   planStageBoxParts,
   activeMinutesText,
@@ -52,7 +28,7 @@ import {
   runClockText,
   runHeaderFacts,
   runSpendFacts,
-  runTimelineFacts,
+  runTimelineFacts, workflowPanelModel,
 } from './run-model.js';
 import { stepPageModel, turnCountsText } from './step-model.js';
 import { returnedEarlyItems, returnedEarlyText } from './time-box.js';

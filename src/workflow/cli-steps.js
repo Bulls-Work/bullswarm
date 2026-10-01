@@ -36,7 +36,7 @@ import { workspacePathIssues } from './v2-planner.js';
 import { acquireKernelLease } from './v2-process.js';
 import { reviseV2Program } from './run-control.js';
 import { deserializeV2DurableState, serializeV2DurableState } from './v2-state.js';
-import { formatDuration } from './watch-cli.js';
+import { formatDuration } from './format-duration.js';
 
 function readState(runDir) {
   return deserializeV2DurableState(readFileSync(join(runDir, 'state.json'), 'utf8'));

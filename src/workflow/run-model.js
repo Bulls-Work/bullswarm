@@ -9,7 +9,8 @@ import { formatMoney } from '../lib/usage-basis.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { kernelRepairActionIds, loopStageLabel } from './legacy-verification.js';
-import { clamp, clockAt } from './dashboard.js';
+import { clamp } from './dashboard-clamp.js';
+import { clockAt } from './dashboard-value-text.js';
 import {
   MEASURED_TOKEN_SOURCES, aggregateAttemptUsage, attemptInterval, attemptUsage, attemptWorkerMinutes, attemptsUnion,
   stateAttempts,

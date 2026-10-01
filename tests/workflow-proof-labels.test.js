@@ -332,7 +332,7 @@ test('presentation: runs show, the step page and the dashboard read an accepted 
   const { deriveV2DependencyStages } = await import('../src/workflow/v2-presentation.js');
   const { stepPageModel } = await import('../src/workflow/step-model.js');
   const { renderStepPage } = await import('../src/workflow/step-view.js');
-  const { statusIcon } = await import('../src/workflow/dashboard.js');
+  const { statusIcon } = await import('../src/workflow/dashboard-status.js');
   const { stepStatusLabel } = await import('../src/workflow/dashboard-status.js');
   const state = createV2State(createV2GoalDocument({
     goal: 'Ship the acme widget', cwd: '/tmp/acme', settings: { concurrency: 2, workspaceMode: 'shared', executionMode: 'program' },

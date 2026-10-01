@@ -5,7 +5,7 @@
 // comes from step-model.js; a missing field prints as a dash, never as prose.
 
 import { cut, periodToggle, rule, seriesColor } from './dash-kit.js';
-import { blank, dimText, inverseText, strong, tint, visibleLength } from './dashboard.js';
+import { blank, dimText, inverseText, strong, tint, visibleLength } from './dashboard-ansi.js';
 import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { stepClockText, turnCountsText } from './step-model.js';
 

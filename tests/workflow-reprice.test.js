@@ -13,7 +13,8 @@ import {
 } from '../src/workflow/v2-state.js';
 import { createV2ResultEnvelope } from '../src/workflow/v2-outcome.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
-import { cmdReprice, repriceRuns, REPRICE_RETENTION_CAVEAT } from '../src/workflow/reprice.js';
+import { repriceRuns, REPRICE_RETENTION_CAVEAT } from '../src/workflow/reprice.js';
+import { cmdReprice } from '../src/workflow/reprice-cli.js';
 
 const FIXTURE_DIR = new URL('./fixtures/transcripts/', import.meta.url).pathname;
 

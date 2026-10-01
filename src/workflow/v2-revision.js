@@ -38,7 +38,7 @@ import * as v2State from './v2-state.js';
 import { v2LiveProgramRuntime, validateV2DurableState } from './v2-state.js';
 import { revisedVerifyRounds } from './legacy-verification.js';
 import { appendedActionsV3, desiredActionsV3, exportedProgramV3, isV3Revision } from './revision-v3.js';
-import { controlReachEdges } from './gates-loops.js';
+import { controlReachEdges } from './control-nodes.js';
 
 export const V2_REVISION_SCHEMA_VERSION = 'bullswarm.workflow.revision.v1';
 const PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';

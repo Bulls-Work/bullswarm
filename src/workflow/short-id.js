@@ -19,14 +19,9 @@ import { withV2Cancellation } from './v2-cancellation.js';
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { isLegacyRunState } from './legacy-run-state.js';
 
-// The one predicate every reader uses to tell an authored-graph run from a V2
-// one. 0.27.0 removed the authored-graph executor, so a run directory whose
-// state.json lacks the V2 schemaVersion — or that has no state.json at all —
-// is history: readable, listable, deletable, never driven.
-export function isLegacyRunState(state) {
-  return state?.schemaVersion !== 'bullswarm.workflow.state.v2';
-}
+export { isLegacyRunState };
 
 // Whether the run directory at `runDir` holds a legacy run. A state.json that
 // exists but will not parse is a torn read, not a legacy run: the writer is

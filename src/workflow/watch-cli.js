@@ -21,6 +21,7 @@ import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLabel,
 import { createStaleProbe } from '../lib/stale.js';
 import { declaredEvidence, NEEDS_YOU_LABELS } from './step-vocabulary.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
+import { formatDuration } from './format-duration.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { answerSummaryOf } from './answers.js';
@@ -44,20 +45,11 @@ function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
 }
 
+export { formatDuration };
+
 function secondsBetween(start, finish = new Date().toISOString()) {
   const value = (Date.parse(finish) - Date.parse(start)) / 1000;
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
-}
-
-export function formatDuration(seconds) {
-  if (!Number.isFinite(seconds)) return '?';
-  const total = Math.max(0, Math.round(seconds));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const secs = total % 60;
-  if (hours) return `${hours}h${String(minutes).padStart(2, '0')}m`;
-  if (minutes) return `${minutes}m${String(secs).padStart(2, '0')}s`;
-  return `${secs}s`;
 }
 
 function compactTokens(value) {

@@ -8,7 +8,9 @@ import { dayKey } from './history.js';
 import { historyLines, runTableLayout, runTableLines } from './history-view.js';
 import { taskIdentity } from './home-model.js';
 import { rule } from './dash-kit.js';
-import { dimText, meterAnsi, pushView, stateStatus, workflowRunLabel } from './dashboard.js';
+import { dimText, meterAnsi } from './dashboard-ansi.js';
+import { pushView } from './dashboard-frame.js';
+import { stateStatus, workflowRunLabel } from './dashboard-run-state.js';
 
 function isWaitingWorkflow(state) {
   const value = String(stateStatus(state) ?? '').toLowerCase();

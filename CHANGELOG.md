@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- internal: no module under `src/` imports itself back through its imports any more (13 import cycles removed by moving four small helpers into their own files; `reprice`'s command-line part is now `src/workflow/reprice-cli.js`). Behaviour is unchanged; a new test fails if a cycle comes back.
+
 ## 0.38.5 — plan validate --try-checks (0.38.4 republished)
 
 - release: 0.38.4 was tagged but never published to npm (a test read only the `## Unreleased` changelog section, which the release empties); 0.38.5 ships 0.38.4's changes. The docs site builds again: three wrapped lines that began with a `<placeholder>` were read as HTML.

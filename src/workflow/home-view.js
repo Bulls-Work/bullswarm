@@ -39,25 +39,13 @@ import {
   todayRows,
   verifyRoundLabel,
 } from './home-model.js';
-import {
-  ageText,
-  blank,
-  dimText,
-  meterAnsi,
-  minutesText,
-  moneyText,
-  planProgress,
-  planStripParts,
-  PERIOD_ITEMS,
-  pushColumns,
-  runEconomics,
-  stateStartedAt,
-  strong,
-  tint,
-  visibleLength,
-  workflowRunLabel,
-  wrapLines,
-} from './dashboard.js';
+import { ageText, minutesText, moneyText } from './dashboard-value-text.js';
+import { blank, dimText, meterAnsi, strong, tint, visibleLength } from './dashboard-ansi.js';
+import { planProgress, planStripParts, runEconomics } from './run-model.js';
+import { PERIOD_ITEMS } from './dashboard-pages.js';
+import { pushColumns } from './dashboard-frame.js';
+import { stateStartedAt, workflowRunLabel } from './dashboard-run-state.js';
+import { wrapLines } from './dashboard-agent-detail.js';
 import { attemptMetric, tokenSourceOf } from './metrics.js';
 import { taskAttempt } from './metrics-legacy.js';
 import { apiMoney, formatMoney } from '../lib/usage-basis.js';

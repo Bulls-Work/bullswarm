@@ -24,12 +24,7 @@ import { readRollups, rollupIndexPath } from './rollup.js';
 import { loadState } from '../lib/state.js';
 import { listTasks, taskKey } from '../lib/tasks.js';
 import { filterDashboardRows } from './runs-view.js';
-import {
-  workflowPanelModel,
-  planProgress,
-  planStripParts,
-  runEconomics,
-} from './run-model.js';
+import { workflowPanelModel } from './run-model.js';
 import {
   renderWorkflowOverviewPanel,
   workflowTimelineLines,
@@ -55,18 +50,9 @@ import { requestCancel } from './dashboard-cancel.js';
 import { dashboardRows, activeDashboardRows, detailRow } from './dashboard-rows.js';
 import { renderDetails } from './dashboard-details.js';
 import { renderDashboardPage } from './dashboard-render.js';
-export { dimText, tint, truncate, visibleLength, meterAnsi, blank, strong, inverseText } from './dashboard-ansi.js';
-export { clamp } from './dashboard-clamp.js';
-export { reasoningText, clockText, formatBytes, durationText, moneyText, minutesText, compactUsage, tokenText, ageText, clockAt } from './dashboard-value-text.js';
-export { stateStatus, stateStartedAt, stateFinishedAt, TERMINAL_ACTIONS, workflowRunLabel } from './dashboard-run-state.js';
-export { statusIcon, workflowStatusIcon } from './dashboard-status.js';
-export { SIDEBAR_WIDTH, renderPanel, joinPanels, panelWindow, panelCell, dimLine, selectLine, timelineText } from './dashboard-panels.js';
-export { pushView, pushColumns } from './dashboard-frame.js';
-export { PERIOD_ITEMS } from './dashboard-pages.js';
 export { requestCancel } from './dashboard-cancel.js';
 export { dashboardRows } from './dashboard-rows.js';
 export { readLicencePerDay, writeClipboard, activeDashboardRows, renderDetails };
-export { agentDetailLines, taskPreview, outcomePreview, wrapLines } from './dashboard-agent-detail.js';
 export { renderDashboardPage } from './dashboard-render.js';
 
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -1991,12 +1977,8 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
   return { action: 'list', count: runs.length, runs };
 }
 
-// Home and Runs view modules consume these shell-owned primitives. Keeping the
-// compatibility exports here lets existing Step/CLI callers retain their
-// dashboard import path while page-specific functions move out of this file.
+// Callers that read the run panel through the dashboard keep this import
+// path; the page modules import it from run-model.js, the module that owns it.
 export {
   workflowPanelModel,
-  runEconomics,
-  planProgress,
-  planStripParts,
 };

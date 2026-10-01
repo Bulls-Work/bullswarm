@@ -29,7 +29,7 @@ import {
   reconcilePricing, reconcileRunState, RECONCILE_MAX_TRIES, RECONCILE_READER_VERSION,
   scheduleReconcile,
 } from '../src/workflow/reconcile.js';
-import { cmdReprice } from '../src/workflow/reprice.js';
+import { cmdReprice } from '../src/workflow/reprice-cli.js';
 
 const FIXTURES = new URL('./fixtures/transcripts/', import.meta.url).pathname;
 const CODEX_ID = '01a0ba3c-3045-7013-928b-53a20891542b';

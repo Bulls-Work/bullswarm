@@ -10,13 +10,9 @@ import { join } from 'node:path';
 
 // These imports are the extraction seam used by dashboard.js. They are used
 // only for compatibility fields; the rich model below does its own shaping.
-import {
-  workflowPanelModel,
-  reasoningText,
-  taskPreview,
-  outcomePreview,
-  runEconomics,
-} from './dashboard.js';
+import { workflowPanelModel, runEconomics } from './run-model.js';
+import { reasoningText } from './dashboard-value-text.js';
+import { taskPreview, outcomePreview } from './dashboard-agent-detail.js';
 import { finiteOrNull } from '../lib/num.js';
 import { attemptInterval, unionIntervals } from './metrics.js';
 import { attemptAnswerFact } from './v3-display.js';

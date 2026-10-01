@@ -10,7 +10,7 @@
 import { glyphs } from '../lib/glyphs.js';
 import { countRetries, declaredEvidence, NEEDS_YOU_LABELS, roleOf } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
-import { formatDuration } from './watch-cli.js';
+import { formatDuration } from './format-duration.js';
 import { isProgramV3 } from './program-v3.js';
 
 const LINE_CHARS = 160;

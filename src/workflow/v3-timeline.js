@@ -5,7 +5,8 @@
 // its timeline is unchanged.
 
 import { cut } from './dash-kit.js';
-import { clockText, dimText, tint, visibleLength } from './dashboard.js';
+import { clockText } from './dashboard-value-text.js';
+import { dimText, tint, visibleLength } from './dashboard-ansi.js';
 import { attemptAnswerFact, attemptRounds, controlRowsByStage } from './v3-display.js';
 import { isOneStepRun, isV3State } from './v3-phases.js';
 

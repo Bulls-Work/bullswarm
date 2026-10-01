@@ -7,7 +7,7 @@ import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
 import { wfAdd, wfContinue, wfWait } from './cli-steps.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
-import { cmdReprice } from './reprice.js';
+import { cmdReprice } from './reprice-cli.js';
 import { resolvePoolId } from '../lib/pool-labels.js';
 import { workflowHelpPath, parseFlags, flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, legacyRunRefusal, legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
