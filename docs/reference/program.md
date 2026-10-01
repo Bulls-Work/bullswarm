@@ -220,7 +220,13 @@ If a route leaves no free pool, the step comes back to you at once: as no
 eligible pool when no pool passes the route, else with each pool's reason. It
 never waits for one.
 
-For example, a check can use `route: { "independentOf": ["write-docs"] }`.
+`independentOf` is an opt-in, not the default for a review: add it only for
+your own reason (you want a different model family's view, the owner asked, a
+compliance rule). Another provider may still serve the same model, so name
+`providers` or `pools` when the model family matters. Without it, Bullswarm
+places the review by quota like any step; `blindTo` plus numbered checks is what
+makes it hold. For example, a check you want elsewhere can use
+`route: { "independentOf": ["write-docs"] }`.
 
 `independentOf` names an earlier dependency, so include that step in
 `dependsOn` directly or through another step. Pool lists use configured pool

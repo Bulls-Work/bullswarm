@@ -50,18 +50,18 @@ validate:
 
 1. Launch, then `bullswarm workflow wait <run> find`: it prints the findings.
 2. Write one check per finding into `checks.json` and add them. Each check
-   depends on `find` and runs on another provider than `find` did:
+   depends on `find`:
 
 ```json
 {
   "steps": [
     {
-      "id": "check-f1", "dependsOn": ["find"], "route": { "independentOf": ["find"] },
+      "id": "check-f1", "dependsOn": ["find"],
       "prompt": "In /work/acme, try to reproduce this claimed bug with a concrete input: src/parse.js drops the last field of a quoted line. Change no file.",
       "answer": { "type": "object", "required": ["confirmed", "repro"], "properties": { "confirmed": { "type": "boolean" }, "repro": { "type": "string" } } }
     },
     {
-      "id": "check-f2", "dependsOn": ["find"], "route": { "independentOf": ["find"] },
+      "id": "check-f2", "dependsOn": ["find"],
       "prompt": "In /work/acme, try to reproduce this claimed bug with a concrete input: src/sum.js counts an empty line as zero. Change no file.",
       "answer": { "type": "object", "required": ["confirmed", "repro"], "properties": { "confirmed": { "type": "boolean" }, "repro": { "type": "string" } } }
     }
@@ -73,8 +73,8 @@ validate:
 validate (find and the checks as one program):
 ✓ program v3 valid: 3 steps, 0 gates, 0 loops (nothing launched)
   find                     analyze/medium answer
-  check-f1                 analyze/medium answer after find route: independent of find
-  check-f2                 analyze/medium answer after find route: independent of find
+  check-f1                 analyze/medium answer after find
+  check-f2                 analyze/medium answer after find
 ```
 
 3. `bullswarm workflow add <run> --steps checks.json`, then `bullswarm
@@ -83,8 +83,8 @@ validate (find and the checks as one program):
 The checks are not blind to `find` (no `blindTo`): a check works from what
 `find` listed, so hiding `find`'s answer would hide the list it checks.
 
-`independentOf` needs a second provider. With one provider enabled, `workflow
-add` refuses the fragment and changes nothing (real output):
+If you opt in with `route.independentOf` and only one provider is enabled,
+`workflow add` refuses the fragment and changes nothing (real output):
 
 ```text
 ✗ nothing added to jcefns (run unchanged)
@@ -150,7 +150,7 @@ publish once. Submit once; you are woken at `approve`. About 2-3 caller turns.
       "answer": { "type": "object", "required": ["claims"], "properties": { "claims": { "type": "array", "items": { "type": "string" } } } } },
     { "id": "draft", "phase": "writing", "dependsOn": ["search-a", "search-b"], "lane": "build", "files": ["brief.md"],
       "prompt": "In /work/acme, write brief.md from the claims your dependencies answered. From round 2 on, fix the problems the previous critique listed." },
-    { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "route": { "independentOf": ["draft"] }, "blindTo": ["draft"],
+    { "id": "critique", "phase": "writing", "dependsOn": ["draft"], "blindTo": ["draft"],
       "prompt": "In /work/acme, check brief.md against this contract: 1. every claim in brief.md is stated by a line of sources/; 2. no claim in brief.md contradicts a line of sources/; 3. every number and date in brief.md is as sources/ gives it. Any difference from the contract is a problem, even if it looks harmless, intended or justified by the author: the caller decides. List only problems a line of sources/ shows (quote it); a claim that something is missing from sources/ is not a problem. Record each check as holds true or false with its evidence. Answer passed true when you list none. passed is true only when every check holds.",
       "answer": { "type": "object", "required": ["checks", "passed", "problems"], "properties": {
         "checks": { "type": "array", "items": { "type": "object", "required": ["id", "holds", "evidence"], "properties": { "id": { "type": "string" }, "holds": { "type": "boolean" }, "evidence": { "type": "string" } } } },
@@ -169,7 +169,7 @@ validate:
   search-a                 analyze/medium answer
   search-b                 analyze/medium answer
   draft                    build/medium deliverable=files after search-a, search-b
-  critique                 analyze/medium answer after draft route: independent of draft blind to draft
+  critique                 analyze/medium answer after draft blind to draft
   post                     analyze/medium deliverable=outward after approve
   gate approve             after polish · waits for you · Read brief.md and decide whether to publish it
   loop polish              steps draft, critique · until critique.passed is true · at most 2 rounds
@@ -189,7 +189,8 @@ records each check with its evidence, so passing means every check held.
 critique's task (and out of its Previous round block): it judges `brief.md`
 itself, and a convincing reason in the writer's report cannot talk it out of a
 problem. That matters most on a large change. `route.independentOf` is a
-separate choice: it picks another provider, and hides nothing.
+separate opt-in: it picks another provider, hides nothing, and may still serve
+the same model.
 
 The critique asks only for what the sources can show: a critique that wants a
 citation for "the sources do not say X" can never pass. Two rounds are

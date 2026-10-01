@@ -35,7 +35,9 @@ not have. They may depend on existing steps, gates and loops (a loop's steps
 only through the loop id); a new loop may not take in an existing step.
 Nothing the run has changes: the append-only check refuses any request that
 would. The fragment is checked by the same validator as a program, plus the
-route precheck against the pools you have, and a refusal changes nothing:
+route precheck against the pools you have, and a refusal changes nothing. If
+you opted into `route.independentOf` on a check, this is what you see when only
+one provider can serve it:
 
 ```text
 ✗ nothing added to jcefns (run unchanged)
