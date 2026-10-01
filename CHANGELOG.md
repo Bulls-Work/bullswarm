@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.4 — plan validate --try-checks
+
 - plan validate: `--try-checks` runs each step's command check once, now,
   against the current tree, the way a step runs it (same shell, folder,
   environment and timeout), and prints one `try` line per check with its exit
