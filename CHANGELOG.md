@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.6 — no import cycles
+
 - internal: no module under `src/` imports itself back through its imports any more (13 import cycles removed by moving four small helpers into their own files; `reprice`'s command-line part is now `src/workflow/reprice-cli.js`). Behaviour is unchanged; a new test fails if a cycle comes back.
 
 ## 0.38.5 — plan validate --try-checks (0.38.4 republished)
