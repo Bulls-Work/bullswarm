@@ -123,7 +123,7 @@ export function buildV3Contract({ goal, cwd, next, workerReasoning = null }) {
         timeoutSec: { default: EVIDENCE_DEFAULT_TIMEOUT_SEC, max: EVIDENCE_MAX_TIMEOUT_SEC },
         schemaKeywords: [...SCHEMA_ASSERTED_KEYWORDS], schemaIgnored: [...SCHEMA_IGNORED_KEYWORDS],
         schemaFormats: ['json', 'jsonl'], outputFile: '$output', env: [...EVIDENCE_ENV_KEYS], checker: CHECKER_PATH,
-        note: 'checks are read-only: a check that changes the deliverable fails; the answer schema and a schema check accept the same keywords',
+        note: 'checks are read-only: a check that changes the deliverable fails; the answer schema and a schema check accept the same keywords; workflow plan validate --try-checks runs each command check once against the current tree before launch (only for checks safe to run now; a check that reads $output is not tried)',
       },
       notV3: 'purpose, affects, evidenceFor, kind, role, inputs, produces and defaults.verifyRounds belong to v2 programs; a check is an ordinary step with an answer and/or evidence',
     },

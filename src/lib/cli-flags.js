@@ -146,7 +146,7 @@ const TABLE = {
     'concurrency', 'retry-attempts',
   ],
   'workflow plan validate': [
-    'program', 'cwd', 'summary', 'json', 'isolation', 'worker-pool',
+    'program', 'cwd', 'summary', 'json', 'try-checks', 'isolation', 'worker-pool',
     'worker-model', 'worker-reasoning', 'max-agents', 'max-actions',
     'max-expansion-rounds', 'concurrency', 'retry-attempts',
   ],

@@ -108,6 +108,7 @@ bullswarm workflow plan validate "Make the acme tests pass" --cwd=/private/tmp/v
 ✓ program v3 valid: 2 steps, 0 gates, 1 loop (nothing launched)
   fix                      build/medium deliverable=files
   check                    analyze/medium evidence=command answer after fix
+  checks   not run · add --try-checks to run each command check once now against the current tree (it may take time and must not change files)
   loop until-green         steps fix, check · until check's evidence passed · at most 3 rounds
   launch   bullswarm workflow goal 'Make the acme tests pass' --cwd /private/tmp/v37fix/acme --program /private/tmp/v37fix/loop.json --json
 ```

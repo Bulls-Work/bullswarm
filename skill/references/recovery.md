@@ -236,7 +236,11 @@ finishes: the handback").
 **An accept is a choice, never proof.** `step accept` lets the step's
 dependents run, and the step reads `accepted by choice` and is counted apart
 in the proof line (`N accepted by choice: <steps>`). Report it as your
-decision, never as verification.
+decision, never as verification. `step accept` on a failed step inside a
+loop does not end the loop (the next round still starts); to stop a loop
+early let it run out of rounds (`maxRounds`), then
+`bullswarm workflow continue <shortId> <loop>`, which is recorded as
+condition not met.
 
 ## Other stopping rules
 

@@ -20,6 +20,7 @@ import {
   goalNextCommands, refuseProgramInvalid, loadCallerProgram, previewValidateInitialProgram, printAdvisories,
   ProgramV2RefusedError, refuseProgramV2,
 } from './cli-program-checks.js';
+import { CHECKS_NOT_RUN_LINE, commandCheckCount, tryCommandChecks, tryLine } from './plan-try-checks.js';
 
 // Flags that only make sense on a launch have no meaning for the read-only
 // planning commands.
@@ -149,6 +150,11 @@ async function planValidate(opts) {
   }
   if (workspaceIssues.length) return refuseProgramInvalid(goal, opts, workspaceIssues, { message: 'program invalid against the contract (nothing launched)' });
   const next = goalNextCommands(goal, doc.intent.cwd, opts);
+  // Command checks run only when the caller asks (--try-checks): a check may
+  // be slow, cost money or touch the network. Their results never change the
+  // exit code.
+  const commands = commandCheckCount(accepted.program.actions);
+  const tried = commands && opts['try-checks'] ? await tryCommandChecks(accepted.program.actions, { cwd: doc.intent.cwd }) : null;
   const payload = {
     action: 'plan-valid',
     requirements: doc.intent.requirements,
@@ -173,6 +179,7 @@ async function planValidate(opts) {
     // valid program so a caller can read it without probing for the key.
     advisories: programAdvisories(accepted.program, { requirements: null })
       .map((item) => ({ ...item, message: v3IssueWording(item.message) })),
+    ...(commands ? { checks: tried ? { tried: true, results: tried } : { tried: false, commands } } : {}),
     next: { launch: next.launch },
   };
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
@@ -180,7 +187,11 @@ async function planValidate(opts) {
     const control = programControl(accepted.program);
     const count = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
     console.log(`✓ program v3 valid: ${count(payload.program.actions.length, 'step')}, ${count(control.gates.length, 'gate')}, ${count(control.loops.length, 'loop')} (nothing launched)`);
-    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.answer ? ' answer' : ''}${action.dependsOn.length ? ` after ${action.dependsOn.join(', ')}` : ''}${action.route ? ` route: ${routeSummary(action.route)}` : ''}${action.blindTo?.length ? ` blind to ${action.blindTo.join(', ')}` : ''}`);
+    for (const action of payload.program.actions) {
+      console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.deliverable ? ` deliverable=${action.deliverable.type}${action.deliverable.paths?.length ? `:${action.deliverable.paths.join(',')}` : ''}` : ''}${action.evidence ? ` evidence=${action.evidence.map((item) => item.type).join(',')}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.answer ? ' answer' : ''}${action.dependsOn.length ? ` after ${action.dependsOn.join(', ')}` : ''}${action.route ? ` route: ${routeSummary(action.route)}` : ''}${action.blindTo?.length ? ` blind to ${action.blindTo.join(', ')}` : ''}`);
+      for (const result of tried ?? []) if (result.step === action.id) console.log(tryLine(result));
+    }
+    if (commands && !tried) console.log(CHECKS_NOT_RUN_LINE);
     for (const line of controlSummaryLines(control)) console.log(line);
     printAdvisories(payload.advisories);
     console.log(`  launch   ${next.launch}`);

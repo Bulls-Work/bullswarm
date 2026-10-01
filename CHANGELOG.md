@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- plan validate: `--try-checks` runs each step's command check once, now,
+  against the current tree, the way a step runs it (same shell, folder,
+  environment and timeout), and prints one `try` line per check with its exit
+  and last output line (or `timed out after <n>s`) and the names of any files
+  it changed, ignored files and folders outside git included. A check that
+  exits non-zero or times out also prints the last 20 lines of its output,
+  indented under the try line, so the error is visible. A check that reads the step's output is not tried, and the results never
+  change the exit code. Without the flag validate still runs nothing; when the
+  program has command checks it now says so (`checks   not run · add
+  --try-checks …`, and `checks: {tried: false, commands}` in `--json`). Use it
+  for checks that are safe to run now: a missing module or command on a `try`
+  line means the check itself is wrong.
+- docs: `workflow step accept` on a failed step inside a loop does not end the
+  loop; to stop a loop early let it run out of rounds, then
+  `workflow continue <run> <loop>` (recorded as condition not met).
+
 ## 0.38.3 — Blind reviews and a reorganized skill
 
 - steps: a v3 step may declare `"blindTo": ["<step id>", ...]`, naming steps

@@ -90,6 +90,7 @@ validate:
 ✓ program v3 valid: 2 steps, 0 gates, 0 loops (nothing launched)
   build                    build/medium deliverable=files evidence=command
   review                   analyze/medium answer after build route: independent of build blind to build
+  checks   not run · add --try-checks to run each command check once now against the current tree (it may take time and must not change files)
 ```
 
 Keep the goal in a file and pass it as `"$(cat goal.txt)"` to both commands,
@@ -121,7 +122,11 @@ it a `--timeout` under your tool's time limit (`--until trouble --timeout 100`
 for 2 minutes). A restart without `--after` attaches at the newest event and
 skips wakes in between. Never end your turn while a run you own is still
 running. At a gate: `bullswarm workflow continue <shortId> <gate>`; a loop out
-of rounds takes `--rounds <1-5>`. `watch --until trouble` also wakes on
+of rounds takes `--rounds <1-5>`. `workflow step accept` on a failed step
+inside a loop does not end the loop (the next round still starts); to stop a
+loop early let it run out of rounds (`maxRounds`), then
+`workflow continue <shortId> <loop>`, recorded as condition not met.
+`watch --until trouble` also wakes on
 `steering received` (a person left guidance: decide what it means and add
 steps).
 
@@ -145,9 +150,12 @@ Lessons from real runs; each holds for this version.
    the other. Give each writer its own files and tell it to keep other
    workers' edits; keep a breaking rename in one step, not parallel with its
    consumers, which would build against the old name.
-5. **Checks are facts.** Put anything a machine can say in `evidence`, and
-   run each check by hand before launch: fixing a wrong check reruns the
-   worker. Workers share one tree, so a later step can undo what an earlier
+5. **Checks are facts.** Put anything a machine can say in `evidence`. When
+   the checks are safe to run now (not ones that write, deploy, call paid
+   services or take long), run `bullswarm workflow plan validate … --try-checks`
+   before launch and read each `try` line: an error such as a missing module
+   or command means the check itself is wrong, and fixing a wrong check later
+   reruns the worker. Workers share one tree, so a later step can undo what an earlier
    step's check proved; put the final check where nothing runs after it
    (after integration, or on the step a gate waits behind).
 6. **Reviews that hold.** State the contract as numbered checks, make any

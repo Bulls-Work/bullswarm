@@ -122,6 +122,7 @@ validate:
 ✓ program v3 valid: 2 steps, 0 gates, 1 loop (nothing launched)
   fix                      build/medium deliverable=files
   check                    analyze/medium evidence=command answer after fix
+  checks   not run · add --try-checks to run each command check once now against the current tree (it may take time and must not change files)
   loop until-green         steps fix, check · until check's evidence passed · at most 3 rounds
 ```
 
@@ -258,6 +259,7 @@ validate (plan and the added steps as one program):
   slice-writer             build/medium deliverable=files after pick-slices
   slice-command            build/medium deliverable=files after pick-slices
   check                    analyze/medium deliverable=report evidence=command after slice-writer, slice-command
+  checks   not run · add --try-checks to run each command check once now against the current tree (it may take time and must not change files)
   gate pick-slices         after plan · waits for you · Read the slices, add one build step per slice and a check, then continue
 ```
 

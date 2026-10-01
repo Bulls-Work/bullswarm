@@ -1090,18 +1090,19 @@ const workflowPlanText = rich({
 });
 
 const workflowPlanValidateText = rich({
-  usage: 'bullswarm workflow plan validate "<goal>" --program <file.json> [--cwd <dir>] [--summary <text>] [--json]',
+  usage: 'bullswarm workflow plan validate "<goal>" --program <file.json> [--cwd <dir>] [--summary <text>] [--try-checks] [--json]',
   purpose: 'Check a program you authored against the exact contract a launch would enforce, without '
     + 'creating a run: the same validator and the same preview state as '
     + 'workflow goal --program. Exit 0 prints the accepted actions and the launch line; exit 2 prints '
     + 'every validator issue so you can fix the file and re-run. A bullswarm.workflow.program.v2 is refused '
-    + '(exit 2), as a launch refuses it.',
+    + '(exit 2), as a launch refuses it. Command checks are not run unless you add --try-checks.',
   args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal' }],
   options: [
     { flag: '--program <file.json>', desc: 'a bare bullswarm.workflow.program.v3 document, or one inside a planner response envelope', default: 'required' },
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in (must exist)', default: 'current directory' },
     { flag: '--summary <text>', desc: 'one-line summary recorded for a bare program document', default: 'derived from the action purposes' },
-    { flag: '--json', desc: 'print the acceptance document ({action: "plan-valid", requirements, program, next}) or the refusal ({error: "program-invalid", issues, next}) as JSON', default: 'human summary' },
+    { flag: '--try-checks', desc: 'run each step\'s command check once now, in --cwd, the way a step runs it, and print a try line per check (exit, last output line when it passes, and any files it changed; a check that fails or times out also shows the last 20 lines of its output); a check that reads the step\'s output is not tried. Only for checks that are safe to run now: it may take time, touch the network or cost money, and a check that writes changes your tree (nothing is restored). The results never change the exit code', default: 'off (checks are counted, not run)' },
+    { flag: '--json', desc: 'print the acceptance document ({action: "plan-valid", requirements, program, checks?, next}) or the refusal ({error: "program-invalid", issues, next}) as JSON', default: 'human summary' },
     { flag: '--isolation', desc: 'validate against strict per-worker worktree isolation', default: 'off (shared workspace)' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the preview routes with', default: 'auto (routing decides per action)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the worker model the preview routes with', default: 'auto' },
@@ -1112,8 +1113,14 @@ const workflowPlanValidateText = rich({
     { flag: '--concurrency <n>', desc: 'execution concurrency for the previewed run', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached)', default: '1' },
   ],
-  safety: ['read-only — nothing is launched, dispatched, or written; the exit code is the verdict (0 valid, 2 invalid, 1 bad cwd)'],
-  examples: [{ cmd: 'bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json' }],
+  safety: [
+    'read-only without --try-checks — nothing is launched, dispatched, or written; the exit code is the verdict (0 valid, 2 invalid, 1 bad cwd)',
+    'with --try-checks it runs your command checks in --cwd (never a worker, never in the run home); whatever they do, they do: use it only for checks that are safe to run now',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json' },
+    { cmd: 'bullswarm workflow plan validate "Fix the parser" --cwd . --program plan.json --try-checks', note: 'a missing module or command on a try line means the check itself is wrong' },
+  ],
   next: 'bullswarm workflow goal "<same goal>" --cwd <dir> --program plan.json once it validates.',
 });
 

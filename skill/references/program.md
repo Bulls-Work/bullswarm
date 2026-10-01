@@ -318,8 +318,11 @@ Rules the fields above do not show on their own:
   tell it to keep other workers' edits.
 - **Evidence: checks Bullswarm runs.** Add a command or schema check for
   anything a machine can check (`"evidence": [{"type": "command", "cmd": "npm
-  test", "timeoutSec": 300}]`, at most 5 items). Run a check by hand before
-  launch, because fixing a wrong check reruns the worker.
+  test", "timeoutSec": 300}]`, at most 5 items). Try the checks before
+  launch with `bullswarm workflow plan validate … --try-checks` when they are
+  safe to run now (it runs each command check once in the workspace and
+  prints a `try` line; a check that reads `$output` is not tried), because
+  fixing a wrong check reruns the worker.
 - **Steps that must not repeat.** Sending or publishing is `"deliverable":
   "outward"` with `"retry": 0`; an outward step is never retried once its
   worker started.
