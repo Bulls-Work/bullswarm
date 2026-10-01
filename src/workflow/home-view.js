@@ -1139,7 +1139,8 @@ function homeDetails(model, opts, body) {
       // since 0.35): the coverage counts and the subscription side are named
       // on the card above and in the period band, and at 140 columns the full
       // pair was cut mid-word (`sub unkno…`) on every row.
-      money: money.apiSlotText ?? blank(),
+      // The phone's cell is shorter still: the phrase alone, never its counts.
+      money: narrow ? String(money.apiSlotText ?? blank()).split(' · ')[0] : money.apiSlotText ?? blank(),
     };
   });
   const durationWidth = Math.max(

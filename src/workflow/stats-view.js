@@ -344,18 +344,16 @@ function outcomeRows(outcomes) {
   ];
 }
 function proofOutcomeRows(outcomes) {
+  // Short values: this panel shares one label column with three others, and
+  // a long value here cuts every pool and project name in all four. Home's
+  // Steps line spells the counts out.
   const proof = outcomes.proof;
-  const steps = [
-    proof.proven ? `${proof.proven} proven` : null,
-    proof.answerChecked ? `${proof.answerChecked} checked` : null,
-    proof.accepted ? `${proof.accepted} accepted` : null,
-    proof.unproven ? `${proof.unproven} unproven` : null,
-  ].filter(Boolean).join(' · ');
+  const steps = (proof.proven ?? 0) + (proof.answerChecked ?? 0) + (proof.accepted ?? 0) + (proof.unproven ?? 0);
   const runs = finite(outcomes.runs);
   const fully = finite(outcomes.fullyProven);
   return [
-    { id: 'proof', label: 'Steps', value: proof.proven, valueText: steps || 'no steps', missingReason: 'proof not recorded' },
-    { id: 'fully-proven', label: 'Fully proven', value: fully, valueText: fully == null || runs == null ? null : `${fully} of ${runs} runs`, share: runs ? fully / runs : null, total: runs, missingReason: 'proof not recorded' },
+    { id: 'proof', label: 'Proven', value: proof.proven, valueText: `${proof.proven}/${steps} steps`, missingReason: 'proof not recorded' },
+    { id: 'fully-proven', label: 'All proven', value: fully, valueText: fully == null || runs == null ? null : `${fully}/${runs} runs`, missingReason: 'proof not recorded' },
   ];
 }
 function licenceRows(table) {
