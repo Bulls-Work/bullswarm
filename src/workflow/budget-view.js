@@ -1,6 +1,7 @@
 import { cut } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 import { formatMoney } from '../lib/usage-basis.js';
+import { isStaleSample } from './budget-model.js';
 import { refusalResetKnown } from '../meters/framework.js';
 import { honestApiTotalText } from './spend-facts.js';
 
@@ -262,7 +263,9 @@ export function budgetLines(budget, { width = 120, ansi = true, nowMs = Date.now
     const name = String(row?.name ?? 'pool');
     const status = refusalStatus(row, nowMs);
     const heading = status ? `${name} · ${status}` : name;
-    lines.push(cut(ansi ? `${BOLD}${heading}${RESET}` : heading, cols));
+    // An old reading is said on the pool it belongs to, not on the page.
+    const age = isStaleSample(row, nowMs) && row.sampleAgeText ? ` · meter read ${row.sampleAgeText}` : '';
+    lines.push(cut(`${ansi ? `${BOLD}${heading}${RESET}` : heading}${age ? paint(age, METER_COLORS.amber, ansi) : ''}`, cols));
     lines.push(...windowLines(row, metrics, ansi).map((line) => cut(line, cols)));
     const plan = planLine(row, ansi);
     if (plan) lines.push(cut(plan, cols));

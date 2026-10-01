@@ -67,6 +67,15 @@ function capturedAtOf(pools, sampledAt = null) {
   return times[0]?.value ?? null;
 }
 
+/** A meter read longer ago than this is named as old on its own pool. */
+export const STALE_SAMPLE_MS = 60 * 60 * 1000;
+
+/** Whether one Budget row's meter reading is older than STALE_SAMPLE_MS. */
+export function isStaleSample(row, now = Date.now()) {
+  const captured = parseIso(row?.sampledAt);
+  return captured != null && now - captured > STALE_SAMPLE_MS;
+}
+
 function sampleAgeText(sampledAt, now) {
   const captured = parseIso(sampledAt);
   if (captured == null) return null;
@@ -699,6 +708,14 @@ export function budgetModel(pools, {
     timeZone: localTimeZone(),
     sampledAt,
     sampleAgeText: sampleAgeText(sampledAt, at),
+    // The header's age is the newest reading: one pool whose meter has not
+    // answered in hours must not make every fresh meter read as old. That
+    // pool says so on its own heading (budget-view.js).
+    freshestSampleAgeText: (() => {
+      const times = rows.map((row) => parseIso(row.sampledAt)).filter((ms) => ms != null);
+      return times.length ? sampleAgeText(new Date(Math.max(...times)).toISOString(), at) : null;
+    })(),
+    staleSamples: rows.filter((row) => isStaleSample(row, at)).map((row) => row.name),
     rows,
     totals,
     notes,

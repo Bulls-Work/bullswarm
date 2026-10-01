@@ -12,12 +12,12 @@ Totals 15 workflows · 2816.02 worker-minutes · ≥$299.87 · sub unknown (no p
       │ █████████████████████████████                               █████████████████████████████ │  grok-4.6                               2h35m 5.5%  grok-4.6                        10 attempts 6.7%
 1000  ┤ █████████████████████████████                               █████████████████████████████ │  openrouter/stealth/union-alpha         2h54m 6.2%  openrouter/stealth/union-alpha   4 attempts 2.7%
       │ █████████████████████████████                               █████████████████████████████ │
-      │ █████████████████████████████                               █████████████████████████████ │  ── Model verified / ok ──────────────────────────  ── Cost availability ───────────────────────────
-500   ┤ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇                               ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ │  gpt-5.6-luna                     9 verified 69.2%  Cost                             — per-pool only
-      │ ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ │  claude-opus-5                    8 verified 72.7%
-      │ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ │  gpt-5.6-sol                      8 verified 72.7%
-0     ┼Fri                           Sat                           Sun                            │  grok-4.6                         5 verified 71.4%
-                                                                                                  │  openrouter/stealth/union-alpha      0 verified 0%
+      │ █████████████████████████████                               █████████████████████████████ │  ── Model fully proven ───────────────────────────  ── Cost availability ───────────────────────────
+500   ┤ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇                               ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ │  gpt-5.6-luna                       9 proven 69.2%  Cost                             — per-pool only
+      │ ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ │  claude-opus-5                      8 proven 72.7%
+      │ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ │  gpt-5.6-sol                        8 proven 72.7%
+0     ┼Fri                           Sat                           Sun                            │  grok-4.6                           5 proven 71.4%
+                                                                                                  │  openrouter/stealth/union-alpha        0 proven 0%
 Legend  ● gpt-5.6-luna  ● claude-opus-5  ● gpt-5.6-sol  ● grok-4.6  ● openrouter/stealth/union-alpha
 Basis · cost per pool, not per model; model cost is not measured.
 Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 66 of 149 attempts recorded no price.
@@ -57,4 +57,4 @@ Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 
 
 
 
- [ ?.help ] [ quit ]
+ [ ? help ] [ quit ]

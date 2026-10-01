@@ -6,7 +6,11 @@ import { pushView } from './dashboard-frame.js';
 /** Budget: every pool's licence meter, its money and what still fits. */
 function budgetPage(model, opts, body) {
   const { width } = opts;
-  const sampled = model.budget?.sampleAgeText ? ` · sampled ${model.budget.sampleAgeText}` : '';
+  const budget = model.budget ?? null;
+  const stale = budget?.staleSamples?.length ?? 0;
+  const sampled = budget?.freshestSampleAgeText
+    ? ` · meters read ${budget.freshestSampleAgeText}${stale ? ` · ${stale} older` : ''}`
+    : budget?.sampleAgeText ? ` · sampled ${budget.sampleAgeText}` : '';
   if (!model.budget) {
     body.push(dimText(' reading the pool meters…', width));
     if (opts.budgetPool) body.push(dimText(` selected pool · ${opts.budgetPool}`, width));

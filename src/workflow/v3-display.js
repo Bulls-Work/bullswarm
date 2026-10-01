@@ -33,7 +33,7 @@ function gateFacts(state, gate, record, token) {
       return { glyph: g.waiting, role: 'waiting', text: `gate ${gate.id} · waiting for you${note}`, command: continueCommand(token, { id: gate.id, type: 'gate' }) };
     case 'passed':
       return record.reason === 'when-false'
-        ? { glyph: g.ok, role: 'skipped', text: `gate ${gate.id} · skipped · ${when ?? 'its condition'} does not hold` }
+        ? { glyph: g.ok, role: 'skipped', text: `gate ${gate.id} · skipped · condition not met: ${when ?? 'its condition'}` }
         : { glyph: g.ok, role: 'passed', text: `gate ${gate.id} · passed · continued by the caller` };
     case 'blocked':
       return { glyph: g.blocked, role: 'blocked', text: `gate ${gate.id} · blocked · ${record.reason ?? 'a dependency did not succeed'}` };

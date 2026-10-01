@@ -125,7 +125,7 @@ test('gates and loops are rows placed in the phase they head or close', () => {
   assert.equal(otherGate.text, 'gate approve · passed · continued by the caller');
   other.program.control.gates[0].when = { step: 'count', field: 'short', equals: false };
   other.controlNodes[1] = { id: 'approve', type: 'gate', status: 'passed', at: null, reason: 'when-false' };
-  assert.equal(controlRows(other)[1].text, 'gate approve · skipped · count.short is false does not hold');
+  assert.equal(controlRows(other)[1].text, 'gate approve · skipped · condition not met: count.short is false');
   other.controlNodes = [{ id: 'polish', type: 'loop', status: 'pending', at: null, round: 2, maxRounds: 3 }];
   assert.equal(controlRows(other)[0].text, "loop polish · round 2 of 3 · until check's evidence passed · round 1: did not hold");
 });
@@ -277,7 +277,7 @@ test('Home: a waiting card and running row name the gate and command; a v3 card 
 test('Stats and Home count one-step runs as runs, apart from workflows', () => {
   assert.equal(runCountText(3, 0), '3 workflows');
   assert.equal(runCountText(1, 1), '1 run');
-  assert.equal(runCountText(8, 3), '3 runs · 5 workflows');
+  assert.equal(runCountText(8, 3), '8 runs (3 one-step · 5 workflows)');
   const single = JSON.parse(readFileSync(join(SINGLE, 'rollup.json'), 'utf8'));
   assert.equal(single.oneStep, true);
   assert.equal(single.programFormat, 3);
@@ -291,7 +291,7 @@ test('Stats and Home count one-step runs as runs, apart from workflows', () => {
   delete gatedRollup.oneStep;
   const mixed = dashboardModel(null, { rollups: [single, gatedRollup], nowMs: NOW, usage: { pools: [], assignments: [] }, days: [] });
   const mixedHome = renderDashboardPage(mixed, { page: 'home', width: 200, height: 200, nowMs: NOW }).lines.map(visible).join('\n');
-  assert.match(mixedHome, /Runs: 1 · workflows 1(?! · verified)/, 'no verification figure for v3 workflows');
+  assert.match(mixedHome, /Runs: 2 · 1 one-step · 1 workflow(?! · verified)/, 'no verification figure for v3 workflows');
   assert.doesNotMatch(home, /Workflows: 1/);
   const stats = renderDashboardPage(model, { page: 'stats', width: 200, height: 120, nowMs: NOW }).lines.map(visible).join('\n');
   assert.match(stats, /\b1 run\b/);
@@ -312,7 +312,7 @@ test('Home: the verified share is of the v2 workflows it sits beside, never of o
   assert.equal(isOneStepRecord(task), true);
   const model = dashboardModel(null, { rollups: [task, flow], nowMs: NOW, usage: { pools: [], assignments: [] }, days: [] });
   const home = renderDashboardPage(model, { page: 'home', width: 200, height: 200, nowMs: NOW }).lines.map(visible).join('\n');
-  assert.match(home, /Runs: 1 · workflows 1 · verified 1 \(100%\)/, 'one verified workflow out of one');
+  assert.match(home, /Runs: 2 · 1 one-step · 1 workflow · verified 1 \(100%\)/, 'one verified workflow out of one');
 });
 
 test('workflow runs --json lists what a parked run waits at (the mod reads it)', () => {

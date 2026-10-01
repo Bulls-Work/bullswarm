@@ -57,4 +57,4 @@ Home · Today · 20 Sep · top 3 runs (active first)
  codex            ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░  75%
  claude-code      ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   8%
  grok             ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   6%
- [Top] [End] [?.Help]
+ [Top] [End] [? Help]

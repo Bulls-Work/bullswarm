@@ -28,12 +28,12 @@ gpt-5.6-sol                    ▓▒▒▒▒▒ 15 attempts 10.1%
 grok-4.6                       ▏▒▒▒▒▒  10 attempts 6.7%
 openrouter/stealth/union-alpha ▏▒▒▒▒▒   4 attempts 2.7%
 
-── Model verified / ok ────────────────────────────────
-gpt-5.6-luna                    ▓▓▒▒▒▒ 9 verified 69.2%
-claude-opus-5                   ▓▓▒▒▒▒ 8 verified 72.7%
-gpt-5.6-sol                     ▓▓▒▒▒▒ 8 verified 72.7%
-grok-4.6                        ▓▒▒▒▒▒ 5 verified 71.4%
-openrouter/stealth/union-alpha  ▒▒▒▒▒▒    0 verified 0%
+── Model fully proven ─────────────────────────────────
+gpt-5.6-luna                    ▓▓▒▒▒▒   9 proven 69.2%
+claude-opus-5                   ▓▓▒▒▒▒   8 proven 72.7%
+gpt-5.6-sol                     ▓▓▒▒▒▒   8 proven 72.7%
+grok-4.6                        ▓▒▒▒▒▒   5 proven 71.4%
+openrouter/stealth/union-alpha  ▒▒▒▒▒▒      0 proven 0%
 
 ── Cost availability ──────────────────────────────────
 Cost                                    — per-pool only
@@ -57,4 +57,4 @@ Money · $ measured · ≈ transcript-summed · ~ estimated…
 
 
 
- [Top] [End] [?.Help]
+ [Top] [End] [? Help]

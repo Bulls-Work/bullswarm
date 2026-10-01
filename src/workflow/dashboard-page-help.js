@@ -52,7 +52,7 @@ function helpPage(model, opts, body) {
   body.push('');
   body.push(rule('clicks', null, width));
   row('tab · period', 'the tab row opens a page · the toggle sets the period');
-  row('tile', narrow ? 'a today number opens its chart' : "a today number opens its chart in Stats › Trends");
+  row('chart', narrow ? 'Home spend chart opens Stats' : 'the Home spend chart opens Stats › Spending');
   row('bar', 'a breakdown bar opens its Stats tab · a trend bar opens its day');
   row('pool', 'a pool name or meter opens Budget on it');
   row('step', 'a plan glyph or step row opens the step');
@@ -64,13 +64,14 @@ function helpPage(model, opts, body) {
   body.push(rule('other', null, width));
   row('e · c · y', 'edit the fleet · stop this workflow · y confirms it');
   row('/ · a · i', 'filter · active/all · install (on Runs)');
-  row('o · v · t', 'planner · technical · phases (on Run) · Stats By Pool/By Model');
+  row('v', narrow ? 'Stats: By Pool · By Model' : 'Stats Spending: By Pool · By Model');
+  row('o · v · t', narrow ? 'Run: v2 planner · technical · phases' : 'Run: planner · technical (v2 runs) · phases (under 100)');
   row('v · t · f', narrow ? 'Step: overview · detail · filter · follow' : 'Step: overview · detail (the activity-rule toggle) · filter · follow');
+  row('a · o · p', narrow ? 'Step: attempts · outcome · prompt' : 'Step: jump to attempts · outcome · prompt');
   row(DASHBOARD_KEYS.copy.keys, 'copy the screen · OSC 52, else pbcopy/wl-copy');
   row(DASHBOARD_KEYS.detach.keys, 'quit to the shell; workflows keep running');
   row('under 100', 'Fleet leaves the tab row until f opens it');
-  row('under 100', 'the nav tail is [Top] [End] [?.Help]');
-  row('rebound', 'r was refresh · b was back · Tab was workflows');
+  row('under 100', 'the nav tail is [Top] [End] [? Help]');
   integrationLines(model, opts, body);
   return ' bullswarm · help';
 }

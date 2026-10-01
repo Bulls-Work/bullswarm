@@ -26,6 +26,7 @@ import { cut, rule } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 import { TOKEN_SOURCE_RANK, tokenSourceOf, worstTokenSource } from './metrics.js';
 import { waitingFacts } from './v3-display.js';
+import { isFullyProven } from './stats-model.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
@@ -427,6 +428,9 @@ function resultMark(run) {
 
 function markRole(mark, run) {
   if (unfinishedRun(run)) return run.running || run.ongoing ? 'cyan' : 'red';
+  // A v3 run that finished with a step unproven or accepted by choice keeps
+  // its ✓ (it did finish) in amber; green is every step proven or checked.
+  if (mark === glyphs().ok && run?.proof && !isFullyProven(run)) return 'amber';
   if (mark === glyphs().ok) return 'green';
   if (mark === glyphs().fail) return 'red';
   return 'dim';
@@ -591,7 +595,13 @@ function tableRowModel(record, nowMs = Date.now()) {
     time: minutes == null ? recordedTime ?? '—' : minutesText(minutes),
     timeFallback: fallback,
     cost: compactMoney(cost),
-    start: clock(task ? taskStartTime(record) : record?.startedAt ?? record?.state?.lifecycle?.startedAt) ?? '—',
+    // The clock the row is filed and ordered by: a finished run's finish
+    // (dayRows sorts on it, and the day it falls on is the row's day), a run
+    // still going its start. Printing the start under a finish-ordered day
+    // put 23:48 under Fri 2 Oct, out of order with the rows around it.
+    start: clock(task
+      ? (record?.endedAt ?? record?.finishedAt ?? taskStartTime(record))
+      : unfinishedRun(record) ? (record?.startedAt ?? record?.state?.lifecycle?.startedAt) : (runTime(record) ?? record?.state?.lifecycle?.startedAt)) ?? '—',
     action: task
       ? { kind: 'task', taskId: taskKey(record) }
       : { kind: 'run', runId: runId(record) || shortId(record) || '—' },
@@ -600,6 +610,11 @@ function tableRowModel(record, nowMs = Date.now()) {
         : Math.max(0, cost?.facts?.unmeasured ?? (cost.value == null ? 1 : 0)),
     costInfo: cost,
   };
+}
+
+/** `3/3 steps` as `3/3`, for a table too narrow for the word. */
+function compactKind(kind) {
+  return String(kind ?? '').replace(/ steps$/, '');
 }
 
 function tableLayout(rows, width) {
@@ -621,10 +636,21 @@ function tableLayout(rows, width) {
     + (layout.showKind ? 2 + layout.kind : 0)
     + 2 + layout.time + 2 + layout.cost
     + (layout.showStart ? 2 + layout.start : 0);
-  // The description is the only elastic cell. It contracts first; once it
-  // reaches its useful floor, columns disappear in the specified order.
+  // The description is the only elastic cell, and the one a row is read
+  // for: it keeps 30% of the row. Short of that the project
+  // narrows to 10 and `3/3 steps` to `3/3` first, then columns go in order.
+  // At 80 the goal kept 9 cells while the project kept 18.
+  // A phone (under 70) keeps its own layout: the 10-cell floor, columns
+  // dropped in order, the project kept whole.
+  const phone = cols < 70;
+  const floor = phone ? 10 : Math.max(10, Math.floor(cols * 0.3));
+  if (!phone && cols - fixed() - 2 < floor) {
+    layout.project = Math.min(layout.project, 10);
+    layout.compactKind = true;
+    layout.kind = Math.min(layout.kind, Math.max(4, ...rows.map((row) => visible(compactKind(row.kind)).length)));
+  }
   for (const key of ['showStart', 'showKind', 'showProject']) {
-    if (cols - fixed() >= 10) break;
+    if (phone ? cols - fixed() >= 10 : cols - fixed() - 2 >= floor) break;
     layout[key] = false;
   }
   layout.what = Math.max(0, cols - fixed() - 2);
@@ -653,7 +679,8 @@ export function runTableLines(records, {
     ];
     if (layout.showProject) parts.push('  ', cell(row.project, layout.project, ansi));
     if (layout.what > 0) parts.push('  ', cell(row.what, layout.what, ansi, { role: row.whatFallback || row.what === '—' ? 'dim' : null }));
-    if (layout.showKind) parts.push('  ', cell(row.kind, layout.kind, ansi, { align: 'right', role: row.kind === '—' ? 'dim' : null }));
+    const kind = layout.compactKind ? compactKind(row.kind) : row.kind;
+    if (layout.showKind) parts.push('  ', cell(kind, layout.kind, ansi, { align: 'right', role: row.kind === '—' ? 'dim' : null }));
     parts.push(
       '  ', cell(row.time, layout.time, ansi, { align: 'right', role: row.timeFallback || row.time === '—' ? 'dim' : null }),
       '  ', cell(row.cost, layout.cost, ansi, { align: 'right', role: 'dim' }),

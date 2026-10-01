@@ -23,5 +23,6 @@ export function runCountText(total, oneStep = 0) {
   const single = Math.max(0, Math.min(total, Number(oneStep) || 0));
   if (!single) return counted(total, 'workflow');
   if (single === total) return counted(total, 'run');
-  return `${counted(single, 'run')} · ${counted(total - single, 'workflow')}`;
+  // The total first, as Home says it: `56 runs (43 one-step · 13 workflows)`.
+  return `${counted(total, 'run')} (${single} one-step · ${counted(total - single, 'workflow')})`;
 }

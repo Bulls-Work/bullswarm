@@ -50,11 +50,11 @@ Home · Today · 20 Sep 2026 · top 3 runs (active first)
  Your 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work
 
 ── recent ───────────────────────────────────────────────────────────────────────────────────────────────── history › ──
- ✓ rensha   project-b · sample goal for rensha nostrud lorem…  59m · at least $9.52 api · 6 unmeasured · s…   13h47m ago
- ✓ euqrni   project-a · sample goal for euqrni minim labore …  1h56m · ≈ $9.76 api summed · sub unknown (n…   13h58m ago
- ✓ rw3dhi   project-a · sample goal for rw3dhi lorem sed sin…  1h38m · ≈ $16.16 api summed · sub unknown (…   15h17m ago
- ✓ g6d6q2   project-b · sample goal for g6d6q2 laborum ex id…  6h01m · at least $86.79 api · 4 unmeasured …   15h20m ago
- ✓ va7k9a   project-a · sample goal for va7k9a proident fugi…  2h46m · at least $15.27 api · 6 unmeasured …   15h56m ago
+ ✓ rensha   project-b · sample goal for rensha nostrud lorem nostr…     59m · at least $9.52 · 6 unmeasured   13h47m ago
+ ✓ euqrni   project-a · sample goal for euqrni minim labore magna …                         1h56m · ≈ $9.76   13h58m ago
+ ✓ rw3dhi   project-a · sample goal for rw3dhi lorem sed sint ipsu…                        1h38m · ≈ $16.16   15h17m ago
+ ✓ g6d6q2   project-b · sample goal for g6d6q2 laborum ex id occae…  6h01m · at least $86.79 · 4 unmeasured   15h20m ago
+ ✓ va7k9a   project-a · sample goal for va7k9a proident fugiat fug…  2h46m · at least $15.27 · 6 unmeasured   15h56m ago
 
 
- [ ?.help ] [ quit ]
+ [ ? help ] [ quit ]

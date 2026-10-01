@@ -145,7 +145,8 @@ export function honestApiTotalText(facts, { api = 'api', whole = null, counts = 
     if (coverage && (whole == null || whole === 'api unknown')) return `api unknown${coverage}`;
     return whole ?? `api unknown${coverage}`;
   }
-  if (lowerBound) return `at least ${formatMoney(amount)}${api == null ? '' : ` ${api}`}${coverage}`;
+  // A lower bound of nothing is `$0`, never the `$0.000` a priced zero reads.
+  if (lowerBound) return `at least ${amount === 0 ? '$0' : formatMoney(amount)}${api == null ? '' : ` ${api}`}${coverage}`;
   return whole ?? (api == null ? formatMoney(amount) : `${formatMoney(amount)} ${api}`);
 }
 

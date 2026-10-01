@@ -333,16 +333,41 @@ function outcomeRows(outcomes) {
   const longest = finite(outcomes.longestDurationMinutes ?? outcomes.maxActiveMinutes);
   return [
     { id: 'status', label: 'Status', value: statuses.length ? statusTotal : null, valueText: statusText, missingReason: 'status not recorded' },
+    // A v3 period says its proof (rollup.js proofCounts); only a period of
+    // v2 runs alone keeps the verified and requirements rows it had.
+    ...(outcomes.proof ? proofOutcomeRows(outcomes) : [
     { id: 'verified', label: 'Verified', value: finite(outcomes.verified), valueText: finite(outcomes.verified) == null ? null : `${outcomes.verified} verified`, share: outcomes.verifiedShare, total: outcomes.verifiedTotal, missingReason: 'verification not recorded' },
     { id: 'requirements', label: 'Requirements', value: finite(outcomes.requirementsPassed), valueText: finite(outcomes.requirementsPassed) != null && finite(outcomes.requirementsTotal) != null ? `${outcomes.requirementsPassed}/${outcomes.requirementsTotal} passed` : null, share: outcomes.requirementsShare, total: outcomes.requirementsTotal, missingReason: 'requirements not recorded' },
+    ]),
     { id: 'median-run', label: 'Median run', value: median, unit: 'minutes', valueText: median == null ? null : `${minuteText(median)} median${spanNote}`, missingReason: 'duration not recorded' },
     { id: 'longest-run', label: 'Longest run', value: longest, unit: 'minutes', valueText: longest == null ? null : `${minuteText(longest)} maximum${spanNote}`, missingReason: 'duration not recorded' },
+  ];
+}
+function proofOutcomeRows(outcomes) {
+  const proof = outcomes.proof;
+  const steps = [
+    proof.proven ? `${proof.proven} proven` : null,
+    proof.answerChecked ? `${proof.answerChecked} checked` : null,
+    proof.accepted ? `${proof.accepted} accepted` : null,
+    proof.unproven ? `${proof.unproven} unproven` : null,
+  ].filter(Boolean).join(' · ');
+  const runs = finite(outcomes.runs);
+  const fully = finite(outcomes.fullyProven);
+  return [
+    { id: 'proof', label: 'Steps', value: proof.proven, valueText: steps || 'no steps', missingReason: 'proof not recorded' },
+    { id: 'fully-proven', label: 'Fully proven', value: fully, valueText: fully == null || runs == null ? null : `${fully} of ${runs} runs`, share: runs ? fully / runs : null, total: runs, missingReason: 'proof not recorded' },
   ];
 }
 function licenceRows(table) {
   return rowsOf(table).map((row) => {
     const used = finite(row?.live?.usedPct);
-    const reset = row?.live?.resetsAt ? `reset ${String(row.live.resetsAt).slice(0, 10)}` : null;
+    // `reset 17 Oct`, not `reset 2026-10-17`: this panel shares one label
+    // column with three others, and its longer value cut every pool name in
+    // all four (`claude-c…w`).
+    const resetMs = Date.parse(row?.live?.resetsAt ?? '');
+    const reset = Number.isFinite(resetMs)
+      ? `reset ${new Date(resetMs).getDate()} ${new Date(resetMs).toLocaleString('en-GB', { month: 'short' })}`
+      : row?.live?.resetsAt ? `reset ${String(row.live.resetsAt).slice(0, 10)}` : null;
     return { id: rowName(row), label: rowName(row), fullLabel: rowName(row), value: used, valueText: used == null ? null : `${used}%${reset ? ` · ${reset}` : ''}`, missingReason: 'meter unavailable' };
   });
 }
@@ -555,7 +580,7 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
   const poolAttempts = panelRows(poolTable, 'attempts', 'attempts');
   const modelMinutes = panelRows(modelTable, 'minutes', 'minutes', { shareField: 'minutesShare' });
   const modelAttempts = panelRows(modelTable, 'attempts', 'attempts');
-  const modelVerified = panelRows(modelTable, 'verified', 'runs', { shareField: 'verifiedShare', valueText: (_row, value) => `${value} verified` });
+  const modelVerified = panelRows(modelTable, 'proven', 'runs', { shareField: 'provenShare', valueText: (_row, value) => `${value} proven` });
   const projectRuns = panelRows(projectTable, 'runs', 'runs');
   const projectMinutes = panelRows(projectTable, 'minutes', 'minutes', { shareField: 'minutesShare' });
   const projectSpend = panelRows(projectTable, 'apiEquivalentUsd', 'usd');
@@ -575,7 +600,7 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
     panel('Pool spend', poolSpend, tab, 'spend', period, 'usd', null, poolKind), panel('Pool worker-minutes', poolMinutes, tab, 'minutes', period, 'minutes', null, poolKind), panel('Pool attempts', poolAttempts, tab, 'attempts', period, 'attempts', null, poolKind), panel('Licence / reset history', licenceRows(poolTable), tab, 'percent', period, 'percent', null, poolKind),
   ];
   if (tab === 'model') return [
-    panel('Model worker-minutes', modelMinutes, tab, 'minutes', period, 'minutes', null, 'model'), panel('Model attempts', modelAttempts, tab, 'attempts', period, 'attempts', null, 'model'), panel('Model verified / ok', modelVerified, tab, 'verified', period, 'runs', null, 'model'), panel('Cost availability', modelCostRows(modelTable), tab, 'spend', period, 'usd', null, 'model'),
+    panel('Model worker-minutes', modelMinutes, tab, 'minutes', period, 'minutes', null, 'model'), panel('Model attempts', modelAttempts, tab, 'attempts', period, 'attempts', null, 'model'), panel('Model fully proven', modelVerified, tab, 'verified', period, 'runs', null, 'model'), panel('Cost availability', modelCostRows(modelTable), tab, 'spend', period, 'usd', null, 'model'),
   ];
   return [
     panel('Project runs', projectRuns, tab, 'runs', period, 'runs', null, 'project'), panel('Project worker-minutes', projectMinutes, tab, 'minutes', period, 'minutes', null, 'project'), panel('Project API-equivalent', projectSpend, tab, 'spend', period, 'usd', null, 'project'), panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count'),

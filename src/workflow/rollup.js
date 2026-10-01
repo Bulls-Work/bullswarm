@@ -38,6 +38,7 @@ import {
 } from './metrics.js';
 import { readLegacyTaskRecords } from './metrics-legacy.js';
 import { isOneStepRun, isV3State } from './v3-phases.js';
+import { summarizeV2Result } from './v2-outcome.js';
 
 export const ROLLUP_SCHEMA_VERSION = 'bullswarm.workflow.rollup.v1';
 
@@ -111,6 +112,25 @@ function requirementTotals(state, result) {
  * @param {object|null} result  the stable result envelope, when one exists
  * @param {{project?: string|null, cwd?: string|null, now?: number}} [options]
  */
+/**
+ * A v3 run's proof as step counts: what the end-of-run proof line says
+ * (`proof: 2 steps proven · 1 accepted by choice`), so the dashboard can say
+ * it without reading the run again. Null for a v2 run, an unfinished run, or a
+ * result that cannot be summarised.
+ */
+export function proofCounts(state, result) {
+  if (!isV3State(state) || !result || !Array.isArray(result.actions)) return null;
+  let proof;
+  try { proof = summarizeV2Result(result, state).proof; } catch { return null; }
+  if (!proof) return { proven: 0, accepted: 0, answerChecked: 0, unproven: 0 };
+  return {
+    proven: proof.proven ?? 0,
+    accepted: proof.accepted ?? 0,
+    answerChecked: proof.answerChecked ?? 0,
+    unproven: proof.unproven ?? 0,
+  };
+}
+
 export function rollupRecord(state, result, { project = null, cwd, now = Date.now() } = {}) {
   const lifecycle = state?.lifecycle ?? {};
   const recordedCwd = cwd !== undefined ? cwd : (state?.intent?.cwd ?? null);
@@ -143,6 +163,7 @@ export function rollupRecord(state, result, { project = null, cwd, now = Date.no
   // Keep the legacy token ledger alongside the richer v2 aggregate. The
   // explicit cost/coverage fields are authoritative for all new views.
   usage.total = state?.usage?.total ?? (usage.tokens ?? 0);
+  const proof = proofCounts(state, result);
   usage.byPool = state?.usage?.byPool && typeof state.usage.byPool === 'object'
     ? { ...state.usage.byPool }
     : {};
@@ -188,6 +209,7 @@ export function rollupRecord(state, result, { project = null, cwd, now = Date.no
     // A v3 run says so, and a one-step run (`bullswarm run`) says that too;
     // a v2 rollup keeps its exact keys.
     ...(isV3State(state) ? { programFormat: 3, ...(isOneStepRun(state) ? { oneStep: true } : {}) } : {}),
+    ...(proof ? { proof } : {}),
   };
 }
 
@@ -493,5 +515,23 @@ export function readRollups(bullswarmDir, { since = null, until = null, limit = 
     return true;
   });
   records.sort((a, b) => (recordTimeMs(b) ?? 0) - (recordTimeMs(a) ?? 0));
-  return Number.isInteger(limit) && limit > 0 ? records.slice(0, limit) : records;
+  const kept = Number.isInteger(limit) && limit > 0 ? records.slice(0, limit) : records;
+  return kept.map((record) => withRecordedProof(bullswarmDir, record));
+}
+
+// A v3 run indexed before 0.38.8 has no `proof`. It is read once from the
+// run's own state and result and kept for the process, so the dashboard's 1 s
+// refresh reads nothing twice and nothing on disk is rewritten.
+const proofMemo = new Map();
+
+function withRecordedProof(bullswarmDir, record) {
+  if (record?.programFormat !== 3 || record.proof || !record.finishedAt || !record.runId) return record;
+  const key = `${bullswarmDir}\0${record.runId}`;
+  if (!proofMemo.has(key)) {
+    const runDir = join(bullswarmDir, 'workflows', record.runId);
+    const state = readJsonSafe(join(runDir, 'state.json'), null);
+    proofMemo.set(key, state ? proofCounts(state, readJsonSafe(join(runDir, 'result.json'), null)) : null);
+  }
+  const proof = proofMemo.get(key);
+  return proof ? { ...record, proof } : record;
 }

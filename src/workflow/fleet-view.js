@@ -131,15 +131,26 @@ function poolBlurb(pool, nowMs) {
   ].filter(Boolean).join(' · ');
 }
 
-function laneGroups(pools, rungs) {
+function laneGroups(pools, rungs, picks = {}) {
   const groups = [];
   for (const tier of STRATEGY_TIERS) {
     const rows = pools
       .map((pool) => ({ sub: pool.name, pool, rung: rungFor(rungs, pool, tier) }))
       .filter(({ rung }) => modelOf(rung));
-    if (rows.length) groups.push({ title: tier, blurb: LANE_BLURB[tier] ?? '', rows });
+    if (rows.length) groups.push({ title: tier, blurb: LANE_BLURB[tier] ?? '', rows, pick: picks?.[tier] ?? null });
   }
   return groups;
+}
+
+/**
+ * `next pick → codex · <why>`: the pool a step of this tier would go to right
+ * now (usage-view.js fleetPicks), or why none can start.
+ */
+function pickLine(pick, width, ansi) {
+  if (!pick) return null;
+  const why = pick.why ? ` · ${String(pick.why).replace(/\s+/g, ' ')}` : '';
+  if (!pick.pool) return fit(`  ${painted(`next pick · none can start${why}`, METER_COLORS.amber, ansi)}`, width, ansi);
+  return fit(`  ${painted('next pick →', METER_COLORS.dim, ansi)} ${painted(pick.pool, METER_COLORS.green, ansi)}${painted(`${pick.lane ? ` · ${pick.lane} lane` : ''}${why}`, METER_COLORS.dim, ansi)}`, width, ansi);
 }
 
 function providerGroups(pools, rungs, nowMs) {
@@ -161,7 +172,7 @@ function providerGroups(pools, rungs, nowMs) {
 export function fleetLines(
   pools,
   rungs,
-  { width = 120, by = 'lane', nowMs = Date.now(), ansi = true } = {},
+  { width = 120, by = 'lane', nowMs = Date.now(), ansi = true, picks = {} } = {},
 ) {
   const cols = widthOf(width);
   const lines = [];
@@ -170,7 +181,7 @@ export function fleetLines(
   const byLane = by === 'provider' ? 'provider' : 'lane';
   const groups = byLane === 'provider'
     ? providerGroups(visible, rungs, nowMs)
-    : laneGroups(visible, rungs);
+    : laneGroups(visible, rungs, picks);
   const sideBySide = cols >= 200;
 
   // `tabsRow` owns the same 1-based region arithmetic as every other page.
@@ -215,6 +226,8 @@ export function fleetLines(
         ? ` ${painted(`· ${group.blurb}`, METER_COLORS.dim, ansi)}`
         : ''}`;
       lines.push(fit(heading, cols, ansi));
+      const next = pickLine(group.pick, cols, ansi);
+      if (next) lines.push(next);
       for (const row of group.rows) {
         const sub = String(row.sub ?? '');
         const model = shortModel(modelOf(row.rung));
@@ -232,6 +245,8 @@ export function fleetLines(
       ? ` ${painted(`· ${group.blurb}`, METER_COLORS.dim, ansi)}`
       : ''}`;
     out.push(fit(heading, width, ansi));
+    const next = pickLine(group.pick, width, ansi);
+    if (next) out.push(next);
     const subWidth = Math.max(16, ...group.rows.map((row) => String(row.sub ?? '').length + 1));
     for (const row of group.rows) {
       const sub = String(row.sub ?? '').padEnd(subWidth).slice(0, subWidth);
@@ -246,7 +261,7 @@ export function fleetLines(
   if (sideBySide && byLane === 'lane') {
     // The 200-column frame shows both compositions at once: by lane on the
     // left, by provider beside it, neither one capped below the frame width.
-    const laneLines = laneGroups(visible, rungs).map((group) => groupLines(group, Math.floor(cols / 2) - 2, ansi));
+    const laneLines = laneGroups(visible, rungs, picks).map((group) => groupLines(group, Math.floor(cols / 2) - 2, ansi));
     const providerLines = providerGroups(visible, rungs, nowMs).map((group) => groupLines(group, Math.floor(cols / 2) - 2, ansi));
     const left = laneLines.flat();
     const right = providerLines.flat();

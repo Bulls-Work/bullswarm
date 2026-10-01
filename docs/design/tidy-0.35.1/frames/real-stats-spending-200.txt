@@ -57,4 +57,4 @@ History · the requested period is longer than the retained rollups.
 
 
 
- [ ?.help ] [ quit ]
+ [ ? help ] [ quit ]

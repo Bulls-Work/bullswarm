@@ -269,13 +269,26 @@ function dominantOf(record, by) {
 // ---------------------------------------------------------------- row tables
 
 function newRow(name) {
-  return { name, runs: 0, workflowsCompleted: 0, verified: 0, durations: [], entries: [] };
+  return { name, runs: 0, workflowsCompleted: 0, verified: 0, proven: 0, durations: [], entries: [] };
+}
+
+/**
+ * A run whose every step is backed: a v2 run verified, or a v3 run with no
+ * step unproven or accepted by choice and at least one proven or checked.
+ */
+export function isFullyProven(record) {
+  if (record?.verified === true) return true;
+  const proof = record?.proof;
+  if (!proof || typeof proof !== 'object') return false;
+  return (finite(proof.unproven) ?? 0) === 0 && (finite(proof.accepted) ?? 0) === 0
+    && (finite(proof.proven) ?? 0) + (finite(proof.answerChecked) ?? 0) > 0;
 }
 
 function countRun(row, record) {
   row.runs += 1;
   if (isDeliveredWorkflowStatus(record?.status)) row.workflowsCompleted += 1;
   if (record?.verified === true) row.verified += 1;
+  if (isFullyProven(record)) row.proven += 1;
   const duration = durationOf(record);
   if (duration) row.durations.push(duration);
 }
@@ -377,6 +390,8 @@ function finishRows(rows, { rankBy = 'attempts' } = {}) {
       okShare: row.runs ? share(row.workflowsCompleted, row.runs) : null,
       verified: row.verified,
       verifiedShare: row.runs ? share(row.verified, row.runs) : null,
+      proven: row.proven,
+      provenShare: row.runs ? share(row.proven, row.runs) : null,
       minutesShare: share(money.minutes, totalMinutes),
     };
     // The entries travel with the row, out of its JSON shape, so the table
@@ -982,6 +997,21 @@ function heatCells(records, now) {
   };
 }
 
+/**
+ * The period's v3 proof, as step counts summed over the runs that carry one
+ * (rollup.js proofCounts), or null when none does: the new engine's answer
+ * to "was it verified", replacing a share no v3 run can have.
+ */
+export function proofTotals(records) {
+  const withProof = records.filter((record) => record?.proof && typeof record.proof === 'object');
+  if (!withProof.length) return null;
+  const total = { runs: withProof.length, proven: 0, accepted: 0, answerChecked: 0, unproven: 0 };
+  for (const { proof } of withProof) {
+    for (const key of ['proven', 'accepted', 'answerChecked', 'unproven']) total[key] += finite(proof[key]) ?? 0;
+  }
+  return total;
+}
+
 /** A v2 workflow (not a v3 run, not a one-step run): what Home's verified share is of. */
 function isVerifiableWorkflow(record) {
   return !isV3Record(record) && !isOneStepRecord(record);
@@ -1009,6 +1039,7 @@ function keyValues(records) {
     // one-step run is counted apart from workflows, so it is left out of both.
     verifiableRuns: records.filter(isVerifiableWorkflow).length,
     verifiedRuns: records.filter((record) => isVerifiableWorkflow(record) && record?.verified === true).length,
+    proof: proofTotals(records),
     activeDays: days.size,
     favouritePool: top(pools, 'attempts'),
     busiestProject: top(projects, 'runs'),
@@ -1088,6 +1119,9 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
     requirementsPassed,
     requirementsTotal,
     requirementsShare: share(requirementsPassed, requirementsTotal),
+    proof: proofTotals(records),
+    fullyProven: records.filter(isFullyProven).length,
+    runs: records.length,
     medianDurationMinutes: summary.medianMinutes,
     longestDurationMinutes: summary.longestMinutes,
     durationRuns: summary.durationRuns,

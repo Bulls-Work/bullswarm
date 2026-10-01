@@ -854,19 +854,33 @@ function recentDurationText(record) {
 }
 
 /**
- * `Workflows: 5 · verified 2 (40%)`, with the one-step runs named apart:
- * `Runs: 3 · workflows 5 · verified 2 (40%)`, or `Runs: 3` alone.
+ * `Runs: 56 · 43 one-step · 13 workflows`: the total first, then its two
+ * kinds, so the figure and the sentence under it name the same number. A v2
+ * verified share follows only when no run in the period carries a v3 proof
+ * (proofFigure says that instead): one old run must not read as "0% verified".
  */
-function runsFigure(total, oneStep, verified, verifiable = total) {
+function runsFigure(total, oneStep, verified, verifiable = total, { proof = null } = {}) {
   const single = Math.max(0, Math.min(total, Number(oneStep) || 0));
   const count = (value) => tint(String(value), 'orange');
-  // Only a v2 workflow can be verified, so the share is of those; with none
-  // in the period the figure says nothing about verification.
-  const share = verifiable ? shareText(verified / verifiable) : null;
-  const verdict = verifiable ? ` · verified ${count(verified)}${share ? ` (${share})` : ''}` : '';
+  const share = verifiable && !proof ? shareText(verified / verifiable) : null;
+  const verdict = verifiable && !proof ? ` · verified ${count(verified)}${share ? ` (${share})` : ''}` : '';
   if (!single) return `Workflows: ${strong(count(total))}${verdict}`;
   if (single === total) return `Runs: ${strong(count(total))}`;
-  return `Runs: ${strong(count(single))} · workflows ${count(total - single)}${verdict}`;
+  const workflows = total - single;
+  return `Runs: ${strong(count(total))} · ${count(single)} one-step · ${count(workflows)} workflow${workflows === 1 ? '' : 's'}${verdict}`;
+}
+
+/** `Steps: 15 proven · 8 answer checked · 1 accepted · 30 unproven`, the proof line's words. */
+function proofFigure(proof, { plain = false } = {}) {
+  if (!proof) return null;
+  const count = (value) => (plain ? String(value) : tint(String(value), 'orange'));
+  const parts = [
+    proof.proven ? `${count(proof.proven)} proven` : null,
+    proof.answerChecked ? `${count(proof.answerChecked)} answer checked` : null,
+    proof.accepted ? `${count(proof.accepted)} accepted by choice` : null,
+    proof.unproven ? `${count(proof.unproven)} unproven` : null,
+  ].filter(Boolean);
+  return parts.length ? `Steps: ${parts.join(' · ')}` : null;
 }
 
 function summaryBand(body, model, opts) {
@@ -901,7 +915,7 @@ function summaryBand(body, model, opts) {
   const named = (row) => (row?.name ? String(row.name) : blank());
   const figures = [
     [
-      runsFigure(runs, keys.oneStepRuns ?? 0, verified, keys.verifiableRuns ?? runs),
+      runsFigure(runs, keys.oneStepRuns ?? 0, verified, keys.verifiableRuns ?? runs, { proof: keys.proof ?? null }),
       `Busiest project: ${tint(named(keys.busiestProject), 'orange')}${keys.busiestProject ? ` (${keys.busiestProject.runs})` : ''}`,
     ],
     [
@@ -942,6 +956,14 @@ function summaryBand(body, model, opts) {
       { rows: [...spentRows(widths ? spentWidth : even), median] },
     ].map((cell, index) => (widths ? { ...cell, width: widths[index] } : cell)), { width: cells, gap });
   }
+  // The period's proof gets the whole row: in a third of it the counts were cut.
+  const proofRow = proofFigure(keys.proof ?? null, { plain: true });
+  if (proofRow) {
+    const [label, ...parts] = proofRow.split(/(?<=^Steps:) | · /);
+    for (const [index, line] of joinedLines(parts, Math.max(8, width - 1 - label.length - 1)).entries()) {
+      body.push(` ${index ? ' '.repeat(label.length) : label} ${tint(line, 'orange')}`);
+    }
+  }
   body.push('');
   const sentence = apiPart && !apiPart.includes('api unknown')
     ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${apiPart} of API-equivalent work`
@@ -966,7 +988,11 @@ function activeRunLines(model, opts, body, title = 'running') {
   const { width, narrow, nowMs } = opts;
   const tasks = Array.isArray(model.tasks?.inflight) ? model.tasks.inflight : [];
   body.push('');
-  body.push(rule(title, null, width));
+  // A run parked at a gate or loop waits on the reader: the rule says how
+  // many, so it is seen before the rows are read. The rows keep their order,
+  // which is the nav's, so 1–9 still open the run they number.
+  const needYou = model.runs.filter((run) => waitingFacts(run.state)).length;
+  body.push(rule(needYou ? `${title} · ${tint(`${needYou} need${needYou === 1 ? 's' : ''} you`, 'amber')}` : title, null, width));
   if (!model.runs.length && !tasks.length) {
     body.push(dimText(title === 'running'
       ? ' nothing running right now'
@@ -1109,10 +1135,11 @@ function homeDetails(model, opts, body) {
     return {
       record,
       duration: recentDurationText(record),
-      // The phone has one short cell for the duration and the money, so it
-      // keeps the API phrase alone (`at least $9.52`); the counts it belongs
-      // to are named on the card above and in the period band below.
-      money: narrow ? money.apiSlotText ?? blank() : money.text ?? blank(),
+      // One short money phrase at every width (`at least $9.52`, the phone's
+      // since 0.35): the coverage counts and the subscription side are named
+      // on the card above and in the period band, and at 140 columns the full
+      // pair was cut mid-word (`sub unkno…`) on every row.
+      money: money.apiSlotText ?? blank(),
     };
   });
   const durationWidth = Math.max(
@@ -1137,7 +1164,7 @@ function homeDetails(model, opts, body) {
       { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
     ], { width }), { kind: 'run', runId: record.runId });
   }
-  if (narrow) body.push(dimText(' ≈ API-equivalent estimates · click tiles for charts', width));
+  if (narrow) body.push(dimText(' ≈ API-equivalent estimates · the spend chart opens Stats', width));
   return ' bullswarm · home';
 }
 

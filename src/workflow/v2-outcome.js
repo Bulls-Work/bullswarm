@@ -5,7 +5,8 @@ import { scheduleV2Actions } from './v2-scheduler.js';
 import { NOT_JUDGED_STATUS, verifyLoopResult } from './legacy-verification.js';
 import { validateV2DurableState } from './v2-state.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
-import { aggregateAttemptUsage } from './rollup.js';
+// metrics.js, not rollup.js: rollup.js reads this module's proof summary.
+import { aggregateAttemptUsage } from './metrics.js';
 import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';

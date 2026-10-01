@@ -4,7 +4,11 @@
 // Run model projections. The shell imports these functions and re-exports the
 // compatibility helpers that existing Step and CLI callers use.
 
+import { join } from 'node:path';
 import { finiteOrNull } from '../lib/num.js';
+import { readJsonSafe } from '../lib/fsjson.js';
+import { formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
+import { isV3State } from './v3-phases.js';
 import { formatMoney } from '../lib/usage-basis.js';
 import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
@@ -680,11 +684,15 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
       // A succeeded attempt whose report listed `## Not done` items says so
       // after its duration; a phone has no room there and gives it a row.
       const early = returnedEarlyText(attempt);
-      const right = early && !phone ? `${duration} · ${early}` : duration;
+      // A failed attempt the caller then accepted: the ✗ stays (its check did
+      // fail) and the row says what made the step count anyway.
+      const accepted = acceptedAttemptText(model.state, attempt);
+      const tail = [accepted, early].filter(Boolean).join(' · ');
+      const right = tail && !phone ? `${duration} · ${tail}` : duration;
       const selected = selectedActionId === attempt.actionId;
       push(paintTimelineAttempt(alignRight(left, right, safeWidth), {
         ...attempt, glyph,
-      }, { phone, duration, early: phone ? null : early }), {
+      }, { phone, duration, early: phone ? null : (tail || null) }), {
         segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId, milestone: true,
       });
       if (early && phone) {
@@ -741,6 +749,34 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
 }
 
 /** `✓ Phase 2 · Build`: the phase's glyph, number and the name its kinds give it. */
+// One proof line per finished run, read once: the result does not change.
+const proofLines = new Map();
+
+function runProofLine(row) {
+  const state = row?.state;
+  const runDir = row?.runDir;
+  if (!isV3State(state) || !state?.lifecycle?.finishedAt || typeof runDir !== 'string') return null;
+  const key = `${runDir}\0${state.lifecycle.finishedAt}`;
+  if (!proofLines.has(key)) {
+    let line = null;
+    try {
+      const result = readJsonSafe(join(runDir, 'result.json'), null);
+      if (result && Array.isArray(result.actions)) line = formatV2ProofLine(summarizeV2Result(result, state, { runDir }));
+    } catch { line = null; }
+    proofLines.set(key, line);
+  }
+  return proofLines.get(key);
+}
+
+function acceptedAttemptText(state, attempt) {
+  if (!attempt || ['running', 'succeeded', 'completed', 'success'].includes(attempt.status)) return null;
+  const action = (state?.actions ?? []).find((entry) => entry.id === attempt.actionId);
+  const acceptance = action?.status === 'succeeded' ? action.acceptance : null;
+  if (!acceptance || typeof acceptance !== 'object' || Array.isArray(acceptance.requirements)) return null;
+  if (acceptance.attemptId && attempt.id && acceptance.attemptId !== attempt.id) return null;
+  return 'check failed · accepted by choice';
+}
+
 function phaseTitle(phase) {
   return `${phase.glyph} Phase ${phase.index + 1}${phase.kindName ? ` · ${phase.kindName}` : ''}`;
 }
@@ -1287,7 +1323,7 @@ function spendSplitRows(head, tokens, counts, width) {
  *  meter reading` rather than a cut-off sentence. */
 function planCoverageText(spend, room) {
   const short = `${spend.planMeter} with a meter reading`;
-  const full = `${spend.planMeter} attempts with a meter reading · ${spend.planUnmetered} without`;
+  const full = `${spend.planMeter} attempt${Number(spend.planMeter) === 1 ? '' : 's'} with a meter reading · ${spend.planUnmetered} without`;
   if (visibleLength(full) <= room) return full;
   return visibleLength(short) <= room ? short : full;
 }
@@ -1419,6 +1455,9 @@ function runPage(model, opts, body) {
     for (const line of shown) body.push(cut(` ${line}`, width));
   }
   if (phone && clock) body.push(cut(` ${dimCell(clock)}`, width));
+  // A finished v3 run says its proof line here, as `runs result` prints it.
+  const proof = runProofLine(row);
+  if (proof) body.push(cut(` ${dimCell('proof')}  ${proof.replace(/^proof: /, '')}`, width));
   for (const command of waiting?.commands ?? []) body.push(cut(` ${dimCell('next:')} ${command}`, width));
   if (!phone) {
     const project = headerFacts.project ?? '—';

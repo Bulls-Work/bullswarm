@@ -49,12 +49,12 @@ Home · Today · 20 Sep 2026 · top 3 runs (active first)
  [38;2;169;156;240mYour 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work[0m
 
 ── recent ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── history › ──
- [38;2;182;189;115m✓[0m [1mrensha[22m   project-b · sample goal for rensha nostrud lorem nostrud mollit labore labore laboris qui dolore ullamco in ex consequat minim a…  59m · at least $9.52 api · 6 unmeasured · s…   [2m13h47m ago[0m
- [38;2;182;189;115m✓[0m [1meuqrni[22m   project-a · sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore laborum excepteur laboris …  1h56m · ≈ $9.76 api summed · sub unknown (n…   [2m13h58m ago[0m
- [38;2;182;189;115m✓[0m [1mrw3dhi[22m   project-a · sample goal for rw3dhi lorem sed sint ipsum lorem laborum mollit magna voluptate amet est culpa amet in officia duis…  1h38m · ≈ $16.16 api summed · sub unknown (…   [2m15h17m ago[0m
- [38;2;182;189;115m✓[0m [1mg6d6q2[22m   project-b · sample goal for g6d6q2 laborum ex id occaecat consequat ad elit consequat nulla ut laboris non consequat aliquip dui…  6h01m · at least $86.79 api · 4 unmeasured …   [2m15h20m ago[0m
- [38;2;182;189;115m✓[0m [1mva7k9a[22m   project-a · sample goal for va7k9a proident fugiat fugiat tempor exercitation sint aliquip ipsum commodo consectetur minim molli…  2h46m · at least $15.27 api · 6 unmeasured …   [2m15h56m ago[0m
+ [38;2;182;189;115m✓[0m [1mrensha[22m   project-b · sample goal for rensha nostrud lorem nostrud mollit labore labore laboris qui dolore ullamco in ex consequat minim aute ad…     59m · at least $9.52 · 6 unmeasured   [2m13h47m ago[0m
+ [38;2;182;189;115m✓[0m [1meuqrni[22m   project-a · sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore laborum excepteur laboris elit c…                         1h56m · ≈ $9.76   [2m13h58m ago[0m
+ [38;2;182;189;115m✓[0m [1mrw3dhi[22m   project-a · sample goal for rw3dhi lorem sed sint ipsum lorem laborum mollit magna voluptate amet est culpa amet in officia duis quis …                        1h38m · ≈ $16.16   [2m15h17m ago[0m
+ [38;2;182;189;115m✓[0m [1mg6d6q2[22m   project-b · sample goal for g6d6q2 laborum ex id occaecat consequat ad elit consequat nulla ut laboris non consequat aliquip duis temp…  6h01m · at least $86.79 · 4 unmeasured   [2m15h20m ago[0m
+ [38;2;182;189;115m✓[0m [1mva7k9a[22m   project-a · sample goal for va7k9a proident fugiat fugiat tempor exercitation sint aliquip ipsum commodo consectetur minim mollit ex o…  2h46m · at least $15.27 · 6 unmeasured   [2m15h56m ago[0m
 
 
 
- [ [4m?[24m.help ] [ [4mq[24muit ]
+ [ [4m?[24m help ] [ [4mq[24muit ]

@@ -157,10 +157,12 @@ test('History renders finished single tasks beside workflows with fixed duration
     const row = view.lines.find((line) => line.includes('task-001'));
     assert.ok(row, `${width}: task row missing`);
     assert.match(text, /0 runs · 1 task/);
-    assert.match(row, /Build th…|Build the aligned Runs table/);
+    assert.match(row, /Build th[a-z ]*…|Build the aligned Runs table/);
     assert.match(row, /task/);
     assert.match(row, /2m/);
-    assert.match(row, /\d{2}:40/);
+    // The finish (11:42), the clock the day files the row by. At 55 the goal
+    // keeps 30% of the row and the clock column gives way first (0.38.8).
+    if (width >= 120) assert.match(row, /\d{2}:42/);
     assert.equal(view.regions.filter((region) => region.action.kind === 'task').length, 1);
     assert.ok(view.lines.every((line) => visible(line).length <= width), `${width}: task row overran frame`);
   }
@@ -304,7 +306,9 @@ test('Runs money is cents-only, including lower bounds and sub-cent estimates', 
 test('legacy anonymous tasks derive start and describe known lane, pool and cwd project', () => {
   const endedAt = '2026-09-18T03:05:07.960Z';
   const durationMs = 19 * 60_000;
-  const expectedDate = new Date(Date.parse(endedAt) - durationMs);
+  // A finished task shows its finish (0.38.8); the derived start is only
+  // the fallback for a task with no finish on record.
+  const expectedDate = new Date(Date.parse(endedAt));
   const expectedClock = `${String(expectedDate.getHours()).padStart(2, '0')}:${String(expectedDate.getMinutes()).padStart(2, '0')}`;
   const task = {
     kind: 'task', id: null, taskText: null, lane: 'build', pool: 'codex',

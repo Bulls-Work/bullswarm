@@ -26,7 +26,7 @@ function dimCell(value) {
 function statusColor(status) {
   const value = String(status ?? '').toLowerCase();
   if (['succeeded', 'success', 'completed', 'complete', 'done', 'verified'].includes(value)) return 'green';
-  if (['running', 'started', 'start', 'in_progress', 'in-progress', 'queued'].includes(value)) return 'amber';
+  if (['running', 'started', 'start', 'in_progress', 'in-progress', 'queued', 'accepted by choice'].includes(value)) return 'amber';
   if (['failed', 'failure', 'error', 'interrupted', 'cancelled', 'canceled', 'blocked'].includes(value)) return 'red';
   if (value.startsWith('verified by the workflow')) return 'green';
   if (value.startsWith('not verified')) return 'red';
@@ -184,13 +184,18 @@ function alignRight(left, right, width) {
 
 /**
  * The design's layout numbers: two columns at 160+ (left = width − 68, right
- * 65) and at 120 (right 40), stacking like the phone when the left column
- * would drop under 72.
+ * 65), and between 115 and 160 a right column that grows with the width
+ * (40 up to 120, 53 at 140) while the left keeps at least 77 and 60% of the
+ * row, where a fixed 40 cut every result path and cost line at 140. Under
+ * that it stacks like the phone.
  */
 export function stepLayout(width) {
   const cols = Math.max(20, Number(width) || 120);
   if (cols >= 160) return { twoColumn: true, left: cols - 68, right: 65, phone: false };
-  if (cols - 43 >= 72) return { twoColumn: true, left: cols - 43, right: 40, phone: false };
+  if (cols - 43 >= 72) {
+    const right = Math.min(65, Math.max(40, cols - 3 - Math.max(77, Math.round(cols * 0.6))));
+    return { twoColumn: true, left: cols - 3 - right, right, phone: false };
+  }
   return { twoColumn: false, left: cols, right: cols, phone: true };
 }
 

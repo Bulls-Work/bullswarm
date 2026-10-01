@@ -544,7 +544,8 @@ test('H6/H7: legacy and unfinished rows render with their marks at 120 and 55 co
         assert.match(text, /stop01\s+repo\s+died before it delivered.*30m/);
         // A pre-0.35 record keeps its wall fallback in the time cell without
         // putting the old `span` prose back into the row.
-        assert.match(text, /000001\s+—\s+smoke-two-step.*2m.*09:00/);
+        // The clock is the finish the day is filed by (0.38.8), not the start.
+        assert.match(text, /000001\s+—\s+smoke-two-step.*2m.*09:02/);
       }
     }
     // A goal long enough to fill the row leaves the identity and fixed

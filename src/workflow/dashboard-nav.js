@@ -27,7 +27,7 @@ function pageTabs(page, width) {
  *
  * A run's digit sits inside its button (`[ 1.aaa111 ]`) and a label's key
  * letter is underlined, so the keys read off the nav. Below 100 columns the
- * tail is the phone layout's `[Top] [End] [?.Help]`; the run buttons keep the
+ * tail is the phone layout's `[Top] [End] [? Help]`; the run buttons keep the
  * left and drop from the end when they do not fit.
  */
 function navParts(model, { page, width, selectedRunId, stepView = 'overview', stepDetail = false }) {
@@ -40,7 +40,9 @@ function navParts(model, { page, width, selectedRunId, stepView = 'overview', st
     const at = /^[a-z]$/.test(item.key ?? '') ? item.label.toLowerCase().indexOf(item.key) : -1;
     const label = at >= 0
       ? `${item.label.slice(0, at)}${underline(item.label[at])}${item.label.slice(at + 1)}`
-      : item.key ? `${underline(item.key)}.${item.label}` : item.label;
+      // A run's digit joins its id (`1.aaa111`); a symbol key stands apart
+      // from its word (`? help`), where `?.help` read as a typo.
+      : item.key ? `${underline(item.key)}${/^\d$/.test(item.key) ? '.' : ' '}${item.label}` : item.label;
     return item.tight ? `[${mark}${label}]` : `[ ${mark}${label} ]`;
   };
   // Colour rules: the footer hints are meta, so their prose is dim; the

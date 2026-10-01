@@ -10,6 +10,8 @@ import { listAssignments } from '../lib/assignments.js';
 import { rungsFor } from '../lib/strategy.js';
 import { finiteOrNull } from '../lib/num.js';
 import { getAllMeterReadings } from '../meters/registry.js';
+import { previewStepPick } from './pick-preview.js';
+import { poolLabel, withPoolLabels } from '../lib/pool-labels.js';
 import { guessedRefusalWindow } from '../meters/framework.js';
 import { attachForecast } from '../lib/forecast.js';
 import { loadState } from '../lib/state.js';
@@ -129,7 +131,8 @@ export function meterBar(usedPct, elapsedPct, width, { ansi = true } = {}) {
 }
 
 /**
- * `slow +36pp` (quota to spare), `hot −20pp` (running ahead of the window)
+ * `slow +36pp` (quota to spare), `fast −20pp` (running ahead of the window; the
+ * Budget page's word too)
  * or `on track ±5pp`, with the colour that reads for it. No elapsed mark
  * means no pace: an empty word and the track colour.
  */
@@ -138,7 +141,7 @@ export function paceWord(usedPct, elapsedPct) {
   const pp = Math.round(elapsedPct - usedPct);
   const signed = `${pp >= 0 ? '+' : '−'}${String(Math.abs(pp))}pp`;
   if (pp >= 15) return { text: `slow ${signed}`, color: METER_COLORS.amber };
-  if (pp <= -15) return { text: `hot ${signed}`, color: METER_COLORS.red };
+  if (pp <= -15) return { text: `fast ${signed}`, color: METER_COLORS.red };
   return { text: `on track ${signed}`, color: METER_COLORS.green };
 }
 
@@ -297,6 +300,48 @@ export async function loadUsage(bullswarmDir, nowMs = Date.now()) {
   const capturedAt = capturedAtOf(pools);
   attachPacing(pools, bullswarmDir, { nowMs, capturedAt });
   return { pools, assignments, rungs, capturedAt };
+}
+
+/**
+ * About a second of forecasting (the router's spend model, per pool), so the
+ * dashboard asks only while Fleet is open, and at most once a minute.
+ *
+ * The router's pick right now for a step of each tier, as `bullswarm run
+ * --dry-run` would make it (pick-preview.js): no probe, no ledger entry, no
+ * decision log. A high or medium step is previewed on the build lane, a low
+ * one on chore, the lanes those tiers are written for. Keyed by tier:
+ * `{ pool, model, why }`, or `{ pool: null, why }` when nothing can start.
+ */
+export const FLEET_PICK_LANES = Object.freeze({ high: 'build', medium: 'build', low: 'chore' });
+
+export async function loadFleetPicks(bullswarmDir, nowMs = Date.now()) {
+  let built;
+  try {
+    built = await buildPoolsLive(bullswarmDir, nowMs, { getReadings: getAllMeterReadings });
+  } catch {
+    built = buildPools(bullswarmDir, nowMs);
+  }
+  return fleetPicks(bullswarmDir, built.pools, built.state, nowMs);
+}
+
+async function fleetPicks(bullswarmDir, pools, state, nowMs) {
+  const out = {};
+  for (const [effort, lane] of Object.entries(FLEET_PICK_LANES)) {
+    try {
+      const preview = await previewStepPick({
+        action: { id: `fleet-${effort}`, lane, effort },
+        pools, bullswarmDir, coreState: state, targetDir: bullswarmDir, now: nowMs,
+      });
+      // The page names pools by their labels (pool-labels.json), so the pick does too.
+      const why = preview.why ? withPoolLabels(String(preview.why), bullswarmDir) : null;
+      out[effort] = preview.ok
+        ? { lane, pool: poolLabel(preview.pick.pool, bullswarmDir), model: preview.pick.model ?? null, why }
+        : { lane, pool: null, why };
+    } catch {
+      // A preview that cannot be made says nothing; Fleet draws as before.
+    }
+  }
+  return out;
 }
 
 const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/;

@@ -11,7 +11,7 @@ import { listRuns, resolveRunId, isLegacyRunDir, legacyRunLine } from './short-i
 import { readEvents } from './events.js';
 import { glyphs } from '../lib/glyphs.js';
 import { integrationStatus, installIntegration } from '../integrate.js';
-import { loadUsage, parseMouse } from './usage-view.js';
+import { loadFleetPicks, loadUsage, parseMouse } from './usage-view.js';
 // The 0.33.0 pages: the render kit, the two aggregation models, and the four
 // view modules each territory owns. The shell composes them and owns no
 // arithmetic of its own beyond laying the lines out.
@@ -37,6 +37,7 @@ import { openSetupTui as openSetupControlCentre } from '../setup.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepModel } from './task-step.js';
 import { withPoolLabels } from '../lib/pool-labels.js';
+import { isV3Record } from './v3-phases.js';
 // The one-concept modules this file was split into (0.38.2). dashboard.js
 // keeps the TUI loop and the JSON entry points, and re-exports the names the
 // product reads from it.
@@ -112,6 +113,7 @@ export function dashboardModel(row, {
   runs = null, usage = null, integration = null, installResult = null, nowMs = Date.now(),
   rollups = null, days = null, prices = null, period = '7d', budgetPeriod = 'week',
   metric = 'runs', meterHistory = null, tasks = null, task = null, taskRoot = null, taskRunsDir = null,
+  fleetPicks = null,
 } = {}) {
   const pools = usage?.pools ?? [];
   const records = rollups ?? [];
@@ -125,6 +127,7 @@ export function dashboardModel(row, {
     pools,
     assignments: usage?.assignments ?? [],
     rungs: usage?.rungs ?? [],
+    picks: fleetPicks ?? {},
     capturedAt: usage?.capturedAt ?? null,
     integration,
     installResult,
@@ -437,6 +440,20 @@ export async function runDashboard(bullswarmDir, {
       return paint();
     });
   };
+  // Fleet's `next pick` lines: asked only while Fleet is open, once a minute.
+  let fleetPicks = {};
+  let fleetPicksAt = 0;
+  let fleetPicksInFlight = false;
+  const FLEET_PICKS_EVERY_MS = 60_000;
+  const readFleetPicks = () => {
+    if (ui.page !== 'fleet' || fleetPicksInFlight || Date.now() - fleetPicksAt < FLEET_PICKS_EVERY_MS) return;
+    fleetPicksInFlight = true;
+    loadFleetPicks(bullswarmDir).then((picks) => {
+      fleetPicks = picks ?? {};
+      fleetPicksAt = Date.now();
+      if (ui.page === 'fleet') paint();
+    }, () => { fleetPicksAt = Date.now(); }).finally(() => { fleetPicksInFlight = false; });
+  };
   const readIntegration = () => {
     try { integration = integrationStatus({ homeDir }); } catch (err) { message = `agent integration unavailable: ${err.message}`; }
   };
@@ -581,13 +598,14 @@ export async function runDashboard(bullswarmDir, {
         period: ui.period, now: Date.now(), rollups,
       });
     }
+    readFleetPicks();
     const model = dashboardModel(row, {
       runs: activeRuns,
       tasks,
       task,
       taskRunsDir: join(bullswarmDir, 'runs'),
       usage, integration, installResult, rollups, days, prices,
-      period: ui.period, metric: ui.metric, meterHistory,
+      period: ui.period, metric: ui.metric, meterHistory, fleetPicks,
     });
     // The overview's latest-turns window slides while the reader follows the
     // step; once they stop, it stays where the last frame left it.
@@ -606,6 +624,17 @@ export async function runDashboard(bullswarmDir, {
   // A render error must never kill the TUI or strand the terminal in
   // alt-screen raw mode (crash observed 2026-08-29 at detailRow via the
   // repaint timer). Show the error in the message line and keep running.
+  // Whether the run the Run page shows is a v3 run, asked once per run.
+  const v3ByRun = new Map();
+  const selectedRunIsV3 = () => {
+    if (!selectedRunId) return false;
+    if (!v3ByRun.has(selectedRunId)) {
+      let v3 = false;
+      try { v3 = isV3Record(detailRow(bullswarmDir, selectedRunId)); } catch { v3 = false; }
+      v3ByRun.set(selectedRunId, v3);
+    }
+    return v3ByRun.get(selectedRunId);
+  };
   const paint = () => {
     try { return paintUnsafe(); } catch (err) {
       message = `display error: ${err.message}`;
@@ -1868,6 +1897,12 @@ export async function runDashboard(bullswarmDir, {
       if (panelScroll) { ui.timelineSelection = null; ui.detailScroll = Math.max(0, ui.detailScroll - 8); return paint(); }
       bodyScroll += 8;
       if (!runPageOpen) loadMoreHistory();
+      return paint();
+    }
+    // A v3 run has no planner: `o` and `v` opened a v2 drilldown that read
+    // "Session · pending" on a finished v3 run. They say so instead.
+    if ((key === 'o' || key === 'v') && runPageOpen && selectedRunIsV3()) {
+      message = 'A v3 run has no planner: every step is on this page · Enter opens one';
       return paint();
     }
     if (key === 'o' && runPageOpen) {

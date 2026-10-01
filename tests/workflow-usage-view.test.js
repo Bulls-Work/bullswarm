@@ -183,7 +183,7 @@ test('meterBar keeps the truecolour cells and the white mark', () => {
 
 test('paceWord switches at 15 points either way', () => {
   assert.deepEqual(paceWord(35, 50), { text: 'slow +15pp', color: METER_COLORS.amber });
-  assert.deepEqual(paceWord(50, 35), { text: 'hot −15pp', color: METER_COLORS.red });
+  assert.deepEqual(paceWord(50, 35), { text: 'fast −15pp', color: METER_COLORS.red });
   assert.deepEqual(paceWord(40, 45), { text: 'on track +5pp', color: METER_COLORS.green });
   assert.deepEqual(paceWord(45, 40), { text: 'on track −5pp', color: METER_COLORS.green });
   assert.deepEqual(paceWord(20, 34), { text: 'on track +14pp', color: METER_COLORS.green });

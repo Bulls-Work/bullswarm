@@ -49,12 +49,12 @@ Home · Today · 20 Sep 2026 · top 3 runs (active first)
  Your 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work
 
 ── recent ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── history › ──
- ✓ rensha   project-b · sample goal for rensha nostrud lorem nostrud mollit labore labore laboris qui dolore ullamco in ex consequat minim a…  59m · at least $9.52 api · 6 unmeasured · s…   13h47m ago
- ✓ euqrni   project-a · sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore laborum excepteur laboris …  1h56m · ≈ $9.76 api summed · sub unknown (n…   13h58m ago
- ✓ rw3dhi   project-a · sample goal for rw3dhi lorem sed sint ipsum lorem laborum mollit magna voluptate amet est culpa amet in officia duis…  1h38m · ≈ $16.16 api summed · sub unknown (…   15h17m ago
- ✓ g6d6q2   project-b · sample goal for g6d6q2 laborum ex id occaecat consequat ad elit consequat nulla ut laboris non consequat aliquip dui…  6h01m · at least $86.79 api · 4 unmeasured …   15h20m ago
- ✓ va7k9a   project-a · sample goal for va7k9a proident fugiat fugiat tempor exercitation sint aliquip ipsum commodo consectetur minim molli…  2h46m · at least $15.27 api · 6 unmeasured …   15h56m ago
+ ✓ rensha   project-b · sample goal for rensha nostrud lorem nostrud mollit labore labore laboris qui dolore ullamco in ex consequat minim aute ad…     59m · at least $9.52 · 6 unmeasured   13h47m ago
+ ✓ euqrni   project-a · sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore laborum excepteur laboris elit c…                         1h56m · ≈ $9.76   13h58m ago
+ ✓ rw3dhi   project-a · sample goal for rw3dhi lorem sed sint ipsum lorem laborum mollit magna voluptate amet est culpa amet in officia duis quis …                        1h38m · ≈ $16.16   15h17m ago
+ ✓ g6d6q2   project-b · sample goal for g6d6q2 laborum ex id occaecat consequat ad elit consequat nulla ut laboris non consequat aliquip duis temp…  6h01m · at least $86.79 · 4 unmeasured   15h20m ago
+ ✓ va7k9a   project-a · sample goal for va7k9a proident fugiat fugiat tempor exercitation sint aliquip ipsum commodo consectetur minim mollit ex o…  2h46m · at least $15.27 · 6 unmeasured   15h56m ago
 
 
 
- [ ?.help ] [ quit ]
+ [ ? help ] [ quit ]

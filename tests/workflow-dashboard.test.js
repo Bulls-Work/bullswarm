@@ -1221,13 +1221,13 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
     assert.match(frameHeader(page('help')), /^ bullswarm · help/);
 
     // One button per ongoing run, then help and quit, the current run marked.
-    assert.deepEqual(navButtons(page('home')), ['● aaa111', 'bbb222', '?.help', 'quit']);
+    assert.deepEqual(navButtons(page('home')), ['● aaa111', 'bbb222', '? help', 'quit']);
     // Run v2's footer is `[ back ] [ ● 1.<id> ]` plus the page's own hints, so
     // the sibling-run, help and quit buttons give their cells to the hint text.
     assert.deepEqual(navButtons(page('run')), ['back', '● aaa111']);
     assert.match(plain(page('run')).split('\n').at(-1), /Enter open step · p plan boxes · Space follow · \? help/);
-    assert.deepEqual(navButtons(page('budget')), ['aaa111', 'bbb222', '?.help', 'quit']);
-    assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', '● ?.help', 'quit']);
+    assert.deepEqual(navButtons(page('budget')), ['aaa111', 'bbb222', '? help', 'quit']);
+    assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', '● ? help', 'quit']);
     // Step keeps only the way out and its selected-run context; its hints are
     // plain text in the sticky footer rather than extra shell buttons.
     assert.deepEqual(navButtons(page('step')), ['back', '● aaa111']);
@@ -1247,13 +1247,13 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
     });
     assert.equal(
       plain(narrowThree.lines.at(-1)),
-      ' [ ● 1.aaa111 ] [ +2 more ] [Top] [End] [?.Help] ',
+      ' [ ● 1.aaa111 ] [ +2 more ] [Top] [End] [? Help] ',
     );
     const wideThree = renderDashboardPage(threeModel, {
       page: 'runs', width: 200, height: 30, rows: threeRows, allRows: threeRows,
       selectedRunId: 'wf-alpha',
     });
-    assert.deepEqual(navButtons(wideThree.lines.join('\n')), ['● aaa111', 'bbb222', 'ccc333', '?.help', 'quit']);
+    assert.deepEqual(navButtons(wideThree.lines.join('\n')), ['● aaa111', 'bbb222', 'ccc333', '? help', 'quit']);
 
     // One active run is the existing footer, byte-for-byte.
     const oneModel = dashboardModel(row, {
@@ -1265,7 +1265,7 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
       page: 'runs', width: 55, height: 30, rows: [row], allRows: [row],
       selectedRunId: 'wf-alpha',
     });
-    assert.equal(plain(one.lines.at(-1)), ' [ ● 1.aaa111 ] [Top] [End] [?.Help] ');
+    assert.equal(plain(one.lines.at(-1)), ' [ ● 1.aaa111 ] [Top] [End] [? Help] ');
 
     for (const name of DASHBOARD_PAGE_NAMES) {
       const frame = renderDashboardPage(model, {
@@ -1303,7 +1303,7 @@ test('every nav button is prefixed by its underlined key, and digits open runs i
     const key = (text) => `\x1b[4m${text}\x1b[24m`;
     assert.ok(nav.includes(`[ ● ${key('1')}.aaa111 ]`), 'the current run carries 1. inside its button');
     assert.ok(nav.includes(`[ ${key('2')}.bbb222 ]`), 'the second run carries 2. inside its button');
-    assert.ok(nav.includes(`[ ${key('?')}.help ]`), 'help underlines its ?');
+    assert.ok(nav.includes(`[ ${key('?')} help ]`), 'help underlines its ?');
     assert.ok(nav.includes(`[ ${key('q')}uit ]`), 'quit underlines its q');
     // b is Budget now, so the way back out of a step carries no key letter.
     const step = renderDashboardPage(model, {
@@ -1395,7 +1395,7 @@ test('at 55 columns Fleet leaves the tab row and the nav tail is [Top] [End] [He
     // Fleet only leaves below 38 columns.
     assert.deepEqual(tabNames(narrow.lines.join('\n')), ['Home', 'Runs', 'Budget', 'Stats', 'Fleet']);
     const nav = plain(narrow.lines.at(-1));
-    assert.match(nav, /\[Top\] \[End\] \[\?\.Help\]\s*$/);
+    assert.match(nav, /\[Top\] \[End\] \[\? Help\]\s*$/);
     assert.doesNotMatch(nav, /\[ quit \]/);
     // Fleet comes back the moment it is the page being read.
     const fleet = renderDashboardPage(model, { page: 'fleet', width: 54, height: 26, rows, allRows: rows });
@@ -1405,7 +1405,7 @@ test('at 55 columns Fleet leaves the tab row and the nav tail is [Top] [End] [He
     assert.deepEqual(tail.map((region) => region.action.kind).slice(-3), ['top', 'end', 'page']);
     // And the Help page says which layout the reader is looking at.
     const help = plain(renderDashboardPage(model, { page: 'help', width: 54, height: 60 }).lines.join('\n'));
-    assert.match(help, /\[Top\] \[End\] \[\?\.Help\]/);
+    assert.match(help, /\[Top\] \[End\] \[\? Help\]/);
     assert.match(help, /Fleet leaves the tab row/);
   } finally { cleanup(); }
 });
@@ -2097,7 +2097,7 @@ test('the Help page names every key, and the keys the nav buttons carry open the
     for (const name of Object.keys(DASHBOARD_KEYS)) {
       assert.ok(help.includes(DASHBOARD_KEYS[name].keys), `the help page lost ${name} (${DASHBOARD_KEYS[name].keys})`);
     }
-    for (const text of ['tile', 'bar', 'wheel', 'y confirms it', 'r was refresh', 'OSC 52']) {
+    for (const text of ['chart', 'bar', 'wheel', 'y confirms it', 'a · o · p', 'OSC 52']) {
       assert.ok(help.includes(text), `the help page lost ${text}`);
     }
     // And at 55 columns every row of it fits the 54 the frame paints.

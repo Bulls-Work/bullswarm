@@ -8,7 +8,7 @@ import { FLEET_TABS } from './dashboard-pages.js';
 function fleetPage(model, opts, body) {
   const { width } = opts;
   const by = FLEET_TABS.includes(opts.fleetBy) ? opts.fleetBy : 'lane';
-  const view = fleetLines(model.pools, model.rungs, { width, by, nowMs: opts.nowMs, ansi: meterAnsi() });
+  const view = fleetLines(model.pools, model.rungs, { width, by, nowMs: opts.nowMs, ansi: meterAnsi(), picks: model.picks ?? {} });
   const before = body.lines.length;
   pushView(body, view);
   // fleet-view records its own sub-tab and `[ edit ]` regions, so the shell

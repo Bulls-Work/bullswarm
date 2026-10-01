@@ -66,6 +66,11 @@ function stepPresentation({
 } = {}) {
   const execution = verdict?.execution ?? {};
   const running = execution.status === 'running';
+  // A step whose check failed and that the caller accepted is not a plain
+  // success: the header and result say the choice, as the proof line does.
+  const acceptedByChoice = execution.succeeded === true && action?.acceptance && typeof action.acceptance === 'object'
+    && !Array.isArray(action.acceptance.requirements);
+  const statusWord = acceptedByChoice ? 'accepted by choice' : execution.status ?? 'unknown';
   // A v3 step is judged by facts (its answer, evidence, deliverable), never
   // by the run's implicit requirement: it has no verification verdict.
   const verification = verificationSummary(v3 ? [] : requirements);
@@ -100,7 +105,7 @@ function stepPresentation({
       state: execution.succeeded ? 'ok' : execution.terminal ? 'fail' : 'running',
       actionId: identity?.actionId ?? null,
       shortId: identity?.shortId ?? null,
-      status: execution.status ?? 'unknown',
+      status: statusWord,
       succeeded: execution.succeeded === true,
       running,
       verdictText,
@@ -147,7 +152,7 @@ function stepPresentation({
     },
     result: {
       running,
-      title: execution.status ?? 'unknown',
+      title: statusWord,
       verification,
       verdictText,
       attemptNumber: finiteOrNull(selected?.ordinal),
