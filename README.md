@@ -116,5 +116,10 @@ Each provider describes how to launch its CLI, read its quota, list its models a
 - [Authoring workflows](https://bulls-work.github.io/bullswarm/guide/workflows)
 - [The dashboard](https://bulls-work.github.io/bullswarm/guide/gallery) and [observing runs](https://bulls-work.github.io/bullswarm/guide/observing)
 - [Provider reference](https://bulls-work.github.io/bullswarm/reference/providers)
-- Contributing: [open an issue](https://github.com/Bulls-Work/bullswarm/issues) or [submit a pull request](https://github.com/Bulls-Work/bullswarm/pulls)
 - [MIT licence](LICENSE)
+
+## Reporting a problem or contributing
+
+Bullswarm is open source and gets better through the cases people hit in real use. If you are a person or an agent and you find a real bug or gap in Bullswarm itself, an [issue](https://github.com/Bulls-Work/bullswarm/issues) or a [pull request](https://github.com/Bulls-Work/bullswarm/pulls) is welcome. Nobody is expected to send one.
+
+If you are an agent, check with the person you work for before you post anything. Issues on this repo are public, so leave out task text, file paths, repo or project names, account names, keys and anything else from the person's work. The Bullswarm version, the command, and the error line are usually enough.

@@ -91,3 +91,7 @@ For the CLI surface itself, [CLI reference](/reference/cli) lists every verb and
 - [Concepts](/guide/concepts) — the vocabulary every other page assumes.
 - [Run one task](/guide/run) — the full `bullswarm run` surface.
 - [Cost and usage](/guide/cost) — the basis behind every token and dollar field.
+
+## Found a problem?
+
+Bullswarm is open source, and [issues](https://github.com/Bulls-Work/bullswarm/issues) and pull requests are welcome. Sending one is optional. Issues are public, so leave out anything from your own work (task text, paths, project or account names, keys). If an agent wants to report something, it should ask its human first.

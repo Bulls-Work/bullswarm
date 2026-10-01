@@ -215,3 +215,4 @@ unfinished and your options: see recovery.md.
 | copying a workflow: find then check, fix until green, draft to publish, parallel slices, triage | [patterns.md](references/patterns.md) |
 | `workflow add` and `blocks`, `wait`, `continue`, watch modes and flags, handback fields, routing and reasoning diagnosis, view-only saved runs | [operations.md](references/operations.md) |
 | adding a provider | [providers.md](references/providers.md) |
+| you are sure you found a bug or gap in Bullswarm itself and want to tell us | [README "Reporting a problem"](https://github.com/Bulls-Work/bullswarm#reporting-a-problem-or-contributing): it is optional, ask your human first, and the repo is public |
