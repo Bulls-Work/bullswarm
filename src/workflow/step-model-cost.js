@@ -27,12 +27,9 @@ function apiAmountIsExact(api, tokenSource) {
 }
 
 /** Why an attempt has no API price, in the words the owner can act on. */
-function unpricedReason(api, tokens, { short = false } = {}) {
-  if (finiteOrNull(tokens?.totalKnown) == null) return short ? 'not priced · no tokens' : 'not priced · no token counts recorded';
-  if (textOrNull(api?.basis) === 'unknown:no-rate-card') {
-    return short ? 'not priced · no rate card'
-      : 'not priced · no rate card for this model yet (bullswarm workflow reprice fills it in)';
-  }
+function unpricedReason(api, tokens) {
+  if (finiteOrNull(tokens?.totalKnown) == null) return 'not priced · no token counts';
+  if (textOrNull(api?.basis) === 'unknown:no-rate-card') return 'not priced · no rate card';
   return 'not priced';
 }
 
@@ -161,13 +158,14 @@ function costRows(moneyInput, { running = false, attempts = [], selected = null 
         // to the desk layout where they fit.
         phoneText: measuring
           ? 'measured when the attempt finishes'
-          : explicit == null ? unpricedReason(api, tokens, { short: true }) : [totalText ? `${totalText} tokens` : null, apiBasisWords(api.basis, api.rateCard, pool, { short: true })].filter(Boolean).join(' · '),
+          : explicit == null ? unpricedReason(api, tokens) : [totalText ? `${totalText} tokens` : null, apiBasisWords(api.basis, api.rateCard, pool, { short: true })].filter(Boolean).join(' · '),
         unknown: explicit == null,
       },
       {
         label: `${multiplePools ? 'plans' : pool ?? 'pool'}${multiplePools ? '' : ' plan'}`,
         // A plan amount is a share of an account-wide meter: always `≈`.
-        amount: stepMoneyText(subscription.usd, { estimated: true }),
+        // A basis with no reading (`unknown:*`) has no amount to show.
+        amount: String(subscription.basis ?? '').startsWith('unknown') ? '—' : stepMoneyText(subscription.usd, { estimated: true }),
         headline: planHeadline,
         details: planDetails,
         phoneText: planPhone,

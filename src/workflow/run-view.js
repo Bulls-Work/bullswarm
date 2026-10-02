@@ -73,7 +73,7 @@ function dimCounts(value) {
 function paintMoney(value) {
   const text = String(value ?? '');
   if (!text) return text;
-  const prefix = text.match(/^(at least |[≈~](?: )?|—)/)?.[1] ?? '';
+  const prefix = text.match(/^(≥|[≈~](?: )?|—)/)?.[1] ?? '';
   const rest = text.slice(prefix.length);
   const prefixPaint = prefix ? dimCell(prefix.trimEnd()) + (prefix.endsWith(' ') ? ' ' : '') : '';
   return `${prefixPaint}${rest && rest !== '—' ? strong(rest) : rest ? dimCell(rest) : ''}`;
@@ -1256,14 +1256,6 @@ function spendHead(label, amount, { gap = 1 } = {}) {
   return `${text}${amount == null || amount === '' ? '' : `${' '.repeat(gap)}${paintMoney(amount)}`}`;
 }
 
-/**
- * One row whose second field opens at the detail column: the amount, then the
- * split or the coverage words it belongs to.
- */
-function spendDetailRow(head, tail, width) {
-  const opener = `${head}${' '.repeat(Math.max(0, Math.max(SPEND_DETAIL_COLUMN, visibleLength(head) + SPEND_DETAIL_GAP) - visibleLength(head)))}`;
-  return cut(`${opener}${tail ? dimCell(tail) : ''}`, width);
-}
 
 /** A pool's name in the split: the vendor-qualified suffix, as `acme` is. */
 function spendPoolName(name) {
@@ -1278,17 +1270,6 @@ function spendPoolToken(entry) {
   return `${paintPool(spendPoolName(entry.pool))} ${paintMoney(money)}`;
 }
 
-/**
- * The counts that qualify a split, in the phone form's own words: how many of
- * the run's attempts were estimated and how many recorded nothing at all. A
- * running attempt is the live block's news, not the split's.
- */
-function spendSplitCounts(spend) {
-  return [
-    spend.estimated ? `${spend.estimated} estimated` : null,
-    spend.unmeasured ? `${spend.unmeasured} unpriced` : null,
-  ].filter(Boolean).join(' · ');
-}
 
 /**
  * The pool split flowed from the detail column: the amount row opens it, the
@@ -1318,26 +1299,16 @@ function spendSplitRows(head, tokens, counts, width) {
   return rows;
 }
 
-/** `<n> attempts with a meter reading · <n> without`, shortened when the row
- *  cannot hold the whole phrase — the 55-column record reads `<n> with a
- *  meter reading` rather than a cut-off sentence. */
-function planCoverageText(spend, room) {
-  const short = `${spend.planMeter} with a meter reading`;
-  const full = `${spend.planMeter} attempt${Number(spend.planMeter) === 1 ? '' : 's'} with a meter reading · ${spend.planUnmetered} without`;
-  if (visibleLength(full) <= room) return full;
-  return visibleLength(short) <= room ? short : full;
-}
 
 function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
   const lines = [paintRule(rule(`spend · ${spend.coverageText}`, null, width))];
-  const suffix = spend.suffix ? `  ${dimCell(spend.suffix)}` : '';
+  const suffix = '';
   const pools = spend.pools.filter((entry) => entry.apiKnownSubtotalUsd != null);
   if (phone) {
     // The phone has one row per fact: the amount with its own coverage words,
     // then the plan row the width can hold whole.
     lines.push(cut(`${spendHead('API price', spend.apiText, { gap: 0 })}${suffix}`, width));
-    const head = spendHead('plan share', spend.plansText, { gap: 0 });
-    lines.push(cut(`${head}   ${dimCell(planCoverageText(spend, Math.max(0, width - visibleLength(head) - 3)))}`, width));
+    lines.push(cut(spendHead('plan share', spend.plansText, { gap: 0 }), width));
     return lines;
   }
   const head = spendHead('API price', spend.apiText);
@@ -1346,13 +1317,11 @@ function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
     // amount in the block's own label column and the coverage words after it.
     lines.push(cut(`${head}${suffix}`, width));
   } else {
-    for (const row of spendSplitRows(head, pools.map(spendPoolToken), spendSplitCounts(spend), width)) {
+    for (const row of spendSplitRows(head, pools.map(spendPoolToken), '', width)) {
       lines.push(cut(row, width));
     }
   }
-  const plansHead = spendHead('plan share', spend.plansText);
-  const column = Math.max(SPEND_DETAIL_COLUMN, visibleLength(plansHead) + SPEND_DETAIL_GAP);
-  lines.push(spendDetailRow(plansHead, planCoverageText(spend, Math.max(0, width - column)), width));
+  lines.push(cut(spendHead('plan share', spend.plansText), width));
   return lines;
 }
 

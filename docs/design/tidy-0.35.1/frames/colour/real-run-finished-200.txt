@@ -8,7 +8,7 @@
 
 [2m──[0m [2mlast finished[0m · [1mverify[22m · [38;2;127;191;168mclaude-code[0m · claude-opus-5 · reasoning xhigh · tier high · [2m20m27s[0m · [2m3 turns · 179 events[0m  │ [2m──[0m spend · 5 of 5 attempts priced [2m─────────────────────────────────────────────[0m
  [38;2;233;200;128m▶[0m 3  [2m06:01[0m  sample report for verify-1 quis id labore irure deserunt et incididunt consequat et minim in ea cillum    │  [2mAPI price[0m   [1m$9.76[22m             [38;2;127;191;168mclaude-code[0m [1m$6.78[22m · [38;2;127;163;224mcodex[0m [1m$2.98[22m
-            cillum cupidatat ea nisi nisi duis officia est sed nostrud dolore elit ea aliqua in aute culpa quis…       │  [2mplan share[0m  [2m—[0m                 [2m0 attempts with a meter reading · 5 without[0m
+            cillum cupidatat ea nisi nisi duis officia est sed nostrud dolore elit ea aliqua in aute culpa quis…       │  [2mplan share[0m  [2m—[0m
  [2mEnter → the step page · following[0m [38;2;233;200;128m●[0m                                                                                   │
 
 [2m──[0m timeline · 5 phases · 5 attempts · Enter on a step opens it [2m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m

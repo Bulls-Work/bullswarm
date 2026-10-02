@@ -105,17 +105,17 @@ test('Credits stay attached to the monthly row, while plan and disabled lines re
   assert.equal(result.lines[5], 'disabled: echo');
 });
 
-test('the pool spend line reads at least its recorded subtotal, and a whole amount plainly', () => {
+test('the pool spend line reads ≥ its recorded subtotal, and a whole amount plainly', () => {
   // The facts object is the Run spend block's own (`spendFacts`), so the view
   // only has to word it — never to re-derive the money.
   const partial = budgetLines(budget({
     apiFacts: {
-      apiText: 'at least $36.30', unmeasured: 12, running: 0,
+      apiText: '≥$36.30', unmeasured: 12, running: 0,
       suffix: '5 estimated · 12 unpriced', apiKnownSubtotalUsd: 36.3,
     },
     tokenSource: 'transcript-summed',
   }), { width: 120, ansi: false });
-  assert.match(partial.lines.join('\n'), /^spent at least \$36\.30 api · 12 unpriced$/m);
+  assert.match(partial.lines.join('\n'), /^spent ≥\$36\.30 api$/m);
 
   const whole = budgetLines(budget({
     apiFacts: {

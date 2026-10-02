@@ -536,7 +536,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     subscription,
     apiEquivalentUsd: round(apiEquivalentUsd, 6),
     apiKnownSubtotalUsd: round(apiKnownSubtotalUsd, 6),
-    // The pool's spend through the Run spend block's own helper: `at least $X`
+    // The pool's spend through the Run spend block's own helper: `≥$X`
     // with the coverage when the period holds attempts nobody priced.
     apiFacts: spendFacts({
       attempts,

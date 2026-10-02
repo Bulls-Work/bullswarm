@@ -2,12 +2,11 @@
 //
 // Home, Stats, Budget and the Runs list all print money over scopes that may
 // hold attempts nobody priced: a run, a day, a pool, a period. The Run page's
-// spend block has answered exactly that shape since 0.35.1 — `at least $X`
-// with the `<n> estimated · <n> running · <n> unmeasured` suffix — through
+// spend block has answered exactly that shape since 0.35.1 — `≥$X` — through
 // `runSpendFacts`, which stays the single implementation. This module adds no
 // arithmetic of its own: it only feeds that helper a rollup-shaped usage
 // aggregate, so no page can grow a second, quieter vocabulary for a partial
-// total (`≈` where `at least` is the truth, or a dash where a subtotal was
+// total (`≈` where `≥` is the truth, or a dash where a subtotal was
 // recorded).
 //
 // A caller with real attempts (the Run page itself) keeps calling
@@ -113,43 +112,29 @@ export function recordSpendFacts(record, attempts = null) {
 }
 
 /**
- * `at least $299.87 api · 66 unmeasured` — the one-line shape requirement 4
- * names, for surfaces that print one money phrase rather than the Run page's
- * two-column spend block.
- *
- * A whole scope keeps the caller's own label (`whole`: Home's
- * `≈ $9.52 api summed`, `~ $4.00 api estimated`, or a bare amount), so the
- * existing estimate words survive. A scope that includes unmeasured or running
- * attempts reads `at least $X` with the Run block's own coverage suffix —
- * `at least $207.88 api · 53 estimated · 66 unmeasured`. A scope with no
- * recorded amount reads `api unknown` plus that suffix: never a guessed dollar
- * figure beside the unknown. `api` may be null where the surface's own column
- * already says API; `counts: 'unmeasured'` narrows the suffix to the classes a
- * narrow cell can hold (`at least $207.88 · 12 unmeasured`).
+ * One money phrase for a scope: the caller's own whole-scope label (`whole`)
+ * when every attempt was priced, `≥$X api` when some were left out or are
+ * still running, `not priced` when a finished scope priced nothing, and a dash
+ * while a live one has no amount yet — never a guessed dollar figure. `api`
+ * may be null where the surface's own column already says API.
  */
-export function honestApiTotalText(facts, { api = 'api', whole = null, counts = 'full' } = {}) {
+export function honestApiTotalText(facts, { api = 'api', whole = null } = {}) {
   if (!facts) return whole ?? 'api unknown';
   const amount = finite(facts.apiKnownSubtotalUsd);
+  // A lower bound is the `≥` glyph alone; the page that owns the scope says
+  // how many attempts it leaves out.
   const lowerBound = facts.unmeasured > 0 || facts.running > 0;
-  const countText = counts === 'unmeasured'
-    ? [
-      facts.running > 0 ? `${facts.running} running` : null,
-      facts.unmeasured > 0 ? `${facts.unmeasured} unpriced` : null,
-    ].filter(Boolean).join(' · ')
-    : counts === 'none' ? '' : String(facts.suffix ?? '');
-  const coverage = lowerBound && countText ? ` · ${countText}` : '';
   if (amount == null) {
     // Nothing was priced. Keep the caller's own label when it still names a
     // whole-scope amount (a v1 rollup carries `costUsd` without coverage
-    // counts); otherwise the honest answer is unknown, with the count.
-    if (coverage && (whole == null || whole === 'api unknown')) {
-      // Finished attempts with no price at all: say so, not a bare unknown.
-      return facts.running > 0 ? `api unknown${coverage}` : 'not priced';
+    // counts); otherwise a finished scope is `not priced` and a live one a dash.
+    if (lowerBound && (whole == null || whole === 'api unknown')) {
+      return facts.running > 0 ? '—' : 'not priced';
     }
-    return whole ?? `api unknown${coverage}`;
+    return whole ?? 'api unknown';
   }
   // A lower bound of nothing is `$0`, never the `$0.000` a priced zero reads.
-  if (lowerBound) return `at least ${amount === 0 ? '$0' : formatMoney(amount)}${api == null ? '' : ` ${api}`}${coverage}`;
+  if (lowerBound) return `≥${amount === 0 ? '$0' : formatMoney(amount)}${api == null ? '' : ` ${api}`}`;
   return whole ?? (api == null ? formatMoney(amount) : `${formatMoney(amount)} ${api}`);
 }
 

@@ -221,7 +221,7 @@ function moneyText(rowOrValue, tokenSource = null, options = {}) {
   };
   // The whole-scope label: the strict amount with its own basis words, or the
   // recorded subtotal marked `≈`. A partial scope replaces it with the Run
-  // spend block's own lower bound and coverage (`at least $X · N unmeasured`).
+  // spend block's own lower bound and coverage (`≥$X`).
   const pair = formatMoneyPair({
     api: { usd: money && !money.partial ? money.usd : null, tokenSource: row.tokenSource ?? tokenSource },
     subscription,
@@ -509,7 +509,7 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
   // byte estimate, and a day whose attempts were only partly priced is a
   // lower bound, marked in the Run spend block's own words. The mark also
   // sizes `columnBars`' tick gutter, so a marked chart keeps its whole label
-  // (`at least $160.00`).
+  // (`≥$X`).
   const partial = sourceBuckets.some((bucket) => bucket.partial);
   const unpriced = sourceBuckets.reduce((sum, bucket) => {
     const attempts = finite(bucket.attempts);
@@ -619,7 +619,7 @@ function coverageNote(table) {
   const priced = finite(totals?.pricedAttempts);
   const unmeasured = attempts == null || priced == null ? 0 : Math.max(0, attempts - priced);
   const total = attempts ?? 0;
-  return `Money · API price at published rates · ~ estimated from text size · ≥ some attempts unpriced; ${total - unmeasured} of ${total} attempts priced.`;
+  return `Money · ${total - unmeasured} of ${total} attempts priced`;
 }
 
 /**

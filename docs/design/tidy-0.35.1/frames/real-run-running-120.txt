@@ -7,8 +7,8 @@
  [✓ 1 home-extraction] → [✓ 2 runs-extraction] → [✓ 3 run-extraction] → [▶ 4 integrate 0/1] → [○ 5 verify]
 
 ── live · integrate · codex · gpt-5.6… │ ── spend · 3 of 4 attempts priced ─────────────────────────────────────────────
- ▶ 4  05:37  sample response for       │  API price   at least $1.77    codex $1.77
-            integrate-1 … · 7 commands │  plan share  —                 0 attempts with a meter reading · 4 without
+ ▶ 4  05:37  sample response for       │  API price   ≥$1.77            codex $1.77
+            integrate-1 … · 7 commands │  plan share  —
  Enter → the step page · following ●   │
 
 ── timeline · 5 phases · 4 attempts · Enter on a step opens it ─────────────────────────────────────────────────────────

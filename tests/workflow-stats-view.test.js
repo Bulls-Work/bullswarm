@@ -501,7 +501,7 @@ test('a pool row shows the recorded subtotal instead of the missing-total reason
   assert.match(text, new RegExp(`codex[^\\n]*≥\\$${sub} 50%`), 'the partial pool prints its recorded subtotal');
   assert.doesNotMatch(text, /codex [^\n]*cost not recorded/);
   // The page says once what a subtotal is, in the same words.
-  assert.match(text, /Money · API price at published rates · ~ estimated from text size · ≥ some attempts unpriced; 2 of 3 attempts priced\./);
+  assert.match(text, /Money · 2 of 3 attempts priced/);
   // The whole-scope pool keeps the strict form and no coverage prose.
   assert.match(text, /acme[^\n]*\$[\d.]+ 50%/);
 });
@@ -524,7 +524,7 @@ test('a day whose attempts were only partly priced draws its recorded subtotal',
   const chart = view.lines.slice(5, 20).map(visible);
   assert.ok(chart.some((line) => /[█▇▆▅▄▃▂▁]/.test(line)), 'the partial day has a bar');
   assert.match(chart.join('\n'), /≥\$[\d]+/, 'a partly priced axis uses the lower-bound mark');
-  assert.match(chart.join('\n'), /≥ bars leave 1 unpriced attempt out/);
+  assert.match(chart.join('\n'), /1 unpriced/);
   const column = view.regions.find((region) => region.action.payload?.kind === 'column');
   assert.ok(column, 'the day is a hit region');
   assert.equal(column.action.payload.partial, true);
@@ -631,7 +631,7 @@ test('a selected chart bar labels the row under the axis inside the chart column
       assert.equal(end, chartBody, `${width}: a long readout is not clamped to the chart width`);
     }
     const idleText = visible(idle.lines[readout.readoutRow] ?? '');
-    assert.match(idleText.slice(0, chartBody).trim(), /^(?:≥ bars leave \d+ unpriced attempts? out)?$/, `${width}: idle under-axis row is the one chart footnote`);
+    assert.match(idleText.slice(0, chartBody).trim(), /^(?:\d+ unpriced)?$/, `${width}: idle under-axis row is the one chart footnote`);
     assert.ok(hovered.lines.some((line) => visible(line).startsWith('Legend')), `${width}: hovering must not hide the legend`);
     assert.equal(hovered.lines.length, idle.lines.length, `${width}: hovering must not add a row`);
     const leftWidth = chartColumnWidth(width);

@@ -8,7 +8,7 @@
 
 ── last finished · verify · claude-co… │ ── spend · 5 of 5 attempts priced ─────────────────────────────────────────────
  ▶ 3  06:01  sample report for verify… │  API price   $9.76             claude-code $6.78 · codex $2.98
-            quis id labore irure…      │  plan share  —                 0 attempts with a meter reading · 5 without
+            quis id labore irure…      │  plan share  —
  Enter → the step page · following ●   │
 
 ── timeline · 5 phases · 5 attempts · Enter on a step opens it ─────────────────────────────────────────────────────────

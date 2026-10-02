@@ -90,7 +90,7 @@ test('round measures: the union of attempt intervals, pools in start order, and 
   const [phase] = roundPhases(state);
   assert.deepEqual(phase, { kind: 'verify', round: 1, steps: ['verify', 'verify-b'], judged: 2, failed: ['alpha'], wallMinutes: 15, pools: ['codex', 'grok'], apiUsd: 0.3, unmeasured: 0, cost: '$0.30' });
   state.attempts[1].usage = null;
-  assert.deepEqual([roundPhases(state)[0].cost, roundPhases(state)[0].unmeasured], ['at least $0.20 · 1 unpriced', 1]);
+  assert.deepEqual([roundPhases(state)[0].cost, roundPhases(state)[0].unmeasured], ['≥$0.20', 1]);
   state.attempts[0].usage = null;
   assert.deepEqual([roundPhases(state)[0].cost, roundPhases(state)[0].apiUsd], ['—', null], 'nothing priced is a dash, never $0');
 });

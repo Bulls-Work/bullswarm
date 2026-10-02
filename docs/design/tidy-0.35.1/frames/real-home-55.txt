@@ -1,10 +1,10 @@
  Home  Runs  Budget  Stats  Fleet
- bullswarm · home · 1–57/88
+ bullswarm · home · 1–57/86
 Home · Today · 20 Sep · top 3 runs (active first)
 ┌─ sample goal for rensha nostrud lorem nostrud moll…─┐
 │ project-b · completed · verified                    │
 │ 58m37s active of 58m38s · steps 9/9                 │
-│ API at least $9.52 · 6 unpriced · subscription —    │
+│ API ≥$9.52 · subscription —                         │
 └─────────────────────────────────────────────────────┘
 ┌─ sample goal for euqrni minim labore magna eiusmod…─┐
 │ project-a · completed · verified                    │
@@ -24,7 +24,7 @@ Home · Today · 20 Sep · top 3 runs (active first)
  codex                 964.5  ≥36.30        25
  command-code              —       —         —
  grok                   76.2   21.17         0
- ≈ plan share · ~ estimated · ≥ partly priced
+ ≈ ~ estimate · ≥ partly priced
 
 ── running ────────────────────────────────────────────
  nothing running right now
@@ -51,7 +51,7 @@ Home · Today · 20 Sep · top 3 runs (active first)
        │                         ████  ████  ████
     $0 ┼──────────────────────────────────────────
          Mon   Tue   Wed   Thu   Fri   Sat   Sun
- ≥ bars leave 66 unpriced attempts out
+ 66 unpriced
 
  by pool · share of agent minutes
  codex            ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░  75%

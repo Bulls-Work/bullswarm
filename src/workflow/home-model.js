@@ -259,7 +259,7 @@ function recordMoneyInput(record) {
 /**
  * A money pair whose API side says what it is. The whole amount when every
  * attempt was priced (`≈ $9.52 api summed` while the priced attempts are
- * estimates); `at least $X api · N unmeasured` when the scope holds attempts
+ * estimates); `≥$X` when the scope holds attempts
  * nobody priced — the Run spend block's own words, through its own helper;
  * `api unknown`, with its unmeasured count, when nothing recorded an amount.
  */
@@ -271,7 +271,7 @@ function moneyPairText(input) {
 /**
  * The pair as its two sides, each already honest.
  *
- * `apiText` is the money phrase (`at least $9.52 api · 3 unmeasured`);
+ * `apiText` is the money phrase (`≥$X`);
  * `apiSlotText` is the same phrase for a surface whose own label already
  * says API (a card's `API …` slot); `subscriptionText` is unchanged.
  */
@@ -288,13 +288,13 @@ function moneyPairParts(input) {
   // The whole-scope label: the pair's own words for a complete amount, or the
   // subtotal the record really holds, marked `≈`.
   const wholeApi = money?.partial
-    ? apiMoneyText(money, null, input?.tokens ?? null, { coverage: false })
+    ? apiMoneyText(money, null, input?.tokens ?? null)
     : (separator < 0 ? pair : pair.slice(0, separator));
   const facts = input?.facts ?? null;
   if (!facts) return { apiText: wholeApi, apiSlotText: wholeApi, subscriptionText };
   // A card's slot is the amount with its own estimate glyph, and the whole
   // honest phrase when a partial total has coverage words to carry.
-  const glyph = wholeApi.startsWith('at least ') ? 'at least ' : wholeApi.startsWith('~ ') ? '~ ' : '';
+  const glyph = wholeApi.startsWith('≥') ? '≥' : wholeApi.startsWith('~ ') ? '~ ' : '';
   const amount = finiteOrNull(money?.usd ?? input?.api?.usd);
   const slotWhole = amount == null ? null : `${glyph}${formatMoney(amount, input?.tokens ?? null)}`;
   return {
@@ -639,7 +639,7 @@ function todayLicenceRows(model, today, nowMs) {
         apiUnknown: { value: row.apiUnknown, enumerable: false },
         subscriptionUnknown: { value: row.subscriptionUnknown, enumerable: false },
         // The API side of the row through the Run spend block's own helper:
-        // `at least $X` with its coverage when attempts went unpriced. A row
+        // `≥$X` with its coverage when attempts went unpriced. A row
         // whose entries never recorded the coverage counts keeps its whole
         // amount unqualified, the way it always read.
         apiFacts: {

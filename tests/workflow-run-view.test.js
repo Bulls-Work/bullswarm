@@ -437,22 +437,21 @@ test('the spend block draws the record\u2019s columns, and the 55-column form st
   const wide = runSpendLinesV2(spend, 79, { phone: false });
   // The amount opens the split on the API row, the pools that do not fit keep
   // the same column under it, and the run's own counts close the last row.
-  assert.match(visible(wide[1]), /^ API price   at least \$92\.25 {3}claude-code \$55\.56 · acme \$22\.55 · codex \$11\.45$/);
+  assert.match(visible(wide[1]), /^ API price   ≥\$92\.25 +claude-code \$55\.56 · acme \$22\.55 · codex \$11\.45$/);
   assert.equal(visible(wide[1]).indexOf('claude-code'), 31);
-  assert.match(visible(wide[2]), /^ {31}grok \$2\.68 · command-code ≈\$0\.01 \(6 estimated\)$/);
+  assert.match(visible(wide[2]), /^ {31}grok \$2\.68 · command-code ≈\$0\.01$/);
   assert.equal(visible(wide[2]).indexOf('grok'), 31);
   // `claude-code:acme` is the qualified name of one pool: the split says
   // `acme`, the way the record's own row does.
   assert.doesNotMatch(wide.join('\n'), /claude-code:acme/);
-  assert.match(visible(wide[3]), /^ plan share  at least \$1\.99 {4}17 attempts with a meter reading · 9 without$/);
-  assert.equal(visible(wide[3]).indexOf('17 attempts'), 31);
+  assert.match(visible(wide[3]), /^ plan share  ≥\$1\.99$/);
   assert.ok(wide.every((line) => visible(line).length <= 79), wide.join('\n'));
 
   // The 55-column form is the record's two short rows: the amount keeps its
   // own coverage words, and the meter phrase shortens rather than cutting off.
   const phone = runSpendLinesV2(spend, 54, { phone: true });
-  assert.equal(visible(phone[1]), ' API price  at least $92.25  6 estimated · 1 running');
-  assert.equal(visible(phone[2]), ' plan share at least $1.99   17 with a meter reading');
+  assert.equal(visible(phone[1]), ' API price  ≥$92.25');
+  assert.equal(visible(phone[2]), ' plan share ≥$1.99');
   assert.ok(phone.every((line) => visible(line).length <= 54));
 
   // The real euqrni run: two priced pools share the amount's own row, and the
@@ -461,8 +460,7 @@ test('the spend block draws the record\u2019s columns, and the 55-column form st
   const realLines = runSpendLinesV2(runSpendFacts(real), 79, { phone: false });
   assert.match(visible(realLines[1]), /^ API price   \$9\.76 {13}claude-code \$6\.78 · codex \$2\.98$/);
   assert.equal(visible(realLines[1]).indexOf('claude-code'), 31);
-  assert.match(visible(realLines[2]), /^ plan share  — {17}0 attempts with a meter reading · 5 without$/);
-  assert.equal(visible(realLines[2]).indexOf('0 attempts'), 31);
+  assert.match(visible(realLines[2]), /^ plan share  —$/);
 });
 
 test('the phone plan strip counts real phases, not their steps', () => {

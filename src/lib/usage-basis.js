@@ -155,17 +155,14 @@ export function apiMoney(row) {
   };
 }
 
-/** The API side of a money pair, with a subtotal's coverage in words. */
-export function apiMoneyText(money, tokenSource = null, tokens = null, { coverage = true } = {}) {
+/** The API side of a money pair; a subtotal over the priced attempts reads `≥`. */
+export function apiMoneyText(money, tokenSource = null, tokens = null) {
   if (!money) return 'api unknown';
   if (!money.partial) {
     return formatMoneyPair({ api: { usd: money.usd, tokenSource }, subscription: null, tokens })
       .split(' · ')[0];
   }
-  const priced = coverage && money.priced != null && money.attempts != null
-    ? ` · ${money.priced}/${money.attempts} priced`
-    : '';
-  return `at least ${formatMoney(money.usd, tokens)} api${priced}`;
+  return `≥${formatMoney(money.usd, tokens)} api`;
 }
 
 /**

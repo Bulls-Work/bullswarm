@@ -8,7 +8,7 @@
 
 ── last finished · verify · claude-code · claude-opus-5 · reasoning xhigh · tier high · 20m27s · 3 turns · 179 events  │ ── spend · 5 of 5 attempts priced ─────────────────────────────────────────────
  ▶ 3  06:01  sample report for verify-1 quis id labore irure deserunt et incididunt consequat et minim in ea cillum    │  API price   $9.76             claude-code $6.78 · codex $2.98
-            cillum cupidatat ea nisi nisi duis officia est sed nostrud dolore elit ea aliqua in aute culpa quis…       │  plan share  —                 0 attempts with a meter reading · 5 without
+            cillum cupidatat ea nisi nisi duis officia est sed nostrud dolore elit ea aliqua in aute culpa quis…       │  plan share  —
  Enter → the step page · following ●                                                                                   │
 
 ── timeline · 5 phases · 5 attempts · Enter on a step opens it ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

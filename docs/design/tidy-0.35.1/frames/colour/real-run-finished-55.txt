@@ -14,7 +14,7 @@
 
 [2m──[0m spend · 5 of 5 attempts priced [2m─────────────────────[0m
  [2mAPI price[0m  [1m$9.76[22m
- [2mplan share[0m [2m—[0m   [2m0 with a meter reading[0m
+ [2mplan share[0m [2m—[0m
 
 [2m──[0m timeline · 5 phases · 5 attempts [2m───────────────────[0m
 [2m──[0m Preflight

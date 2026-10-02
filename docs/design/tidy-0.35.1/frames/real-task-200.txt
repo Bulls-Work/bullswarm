@@ -16,7 +16,7 @@
                                                                                                                                      │  excepteur consequat ad ipsum deserunt labore irure do consequat…
                                                                                                                                      │
                                                                                                                                      │ ── cost ─────────────────────────────────────────────────────────
-                                                                                                                                     │  API price   —       not priced · no token counts recorded
+                                                                                                                                     │  API price   —       not priced · no token counts
                                                                                                                                      │  codex plan  —       no API cost to price
                                                                                                                                      │              $100/mo · weekly window
 

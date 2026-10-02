@@ -133,8 +133,8 @@ test('Home money shows a partly-priced run as the recorded subtotal, not a dash'
   assert.deepEqual(info.apiCoverage, { priced: 3, attempts: 9 });
   // Six of the nine attempts were never priced, so the subtotal is a lower
   // bound and reads in the Run spend block's own words.
-  assert.match(recordMoneyPair(partial).text, /^at least \$9\.52 api \u00b7 6 unpriced \u00b7 /);
-  assert.equal(recordMoneyPair(partial).apiSlotText, 'at least $9.52 · 6 unpriced');
+  assert.match(recordMoneyPair(partial).text, /^≥\$9\.52 api \u00b7 /);
+  assert.equal(recordMoneyPair(partial).apiSlotText, '≥$9.52');
   // The suffix names only the classes the record can prove: this usage block
   // never said how many of its three priced attempts were measured, so none
   // of them is claimed as an estimate.

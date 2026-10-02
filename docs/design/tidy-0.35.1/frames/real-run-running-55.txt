@@ -14,8 +14,8 @@
  Enter → the step page · following ●
 
 ── spend · 3 of 4 attempts priced ─────────────────────
- API price  at least $1.77  1 running
- plan share —   0 with a meter reading
+ API price  ≥$1.77
+ plan share —
 
 ── timeline · 5 phases · 4 attempts ───────────────────
 ── Preflight

@@ -582,9 +582,10 @@ function usageSource(attempt) {
 
 function amountText(value, { approximate = false, lowerBound = false } = {}) {
   if (value == null) return '—';
-  const rendered = formatMoney(value);
+  // A zero is `$0`, never the `$0.000` an unknown-token zero reads.
+  const rendered = Number(value) === 0 ? '$0' : formatMoney(value);
   if (rendered === '-') return '—';
-  return `${lowerBound ? 'at least ' : approximate ? '≈ ' : ''}${rendered}`;
+  return `${lowerBound ? '≥' : approximate ? '≈ ' : ''}${rendered}`;
 }
 
 /** Honest partial API/plan subtotals and coverage counts for the Spend block. */

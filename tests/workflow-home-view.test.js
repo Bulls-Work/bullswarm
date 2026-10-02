@@ -253,7 +253,7 @@ test('Home Today band: three stacked cards on the left half, the licence table o
         `${width}: ${name} is not painted in its pool colour`);
     }
     // A dim legend under the table names the glyphs.
-    assert.ok(bandRaw.some((line) => line.includes('\x1b[2m') && visible(line).includes('≈ plan share')), `${width}: no legend`);
+    assert.ok(bandRaw.some((line) => line.includes('\x1b[2m') && visible(line).includes('≈ ~ estimate')), `${width}: no legend`);
   }
 });
 
@@ -394,7 +394,7 @@ test('Home spend chart: one bar a day for seven days from a $0 axis, whole-dolla
       assert.equal(/[▁-█]/.test(chart[baseRow][columnOf(name)] ?? ' '), drawn, `${width}: ${name} bar\n${chart.join('\n')}`);
     }
     // One dim line under the chart says what the bars leave out.
-    assert.equal(left[dayRow + 1].trim(), '≥ bars leave 66 unpriced attempts out', `${width}`);
+    assert.equal(left[dayRow + 1].trim(), '66 unpriced', `${width}`);
   }
 });
 
@@ -444,7 +444,7 @@ test('Home at every width from 110 to 260: the halves and gutter add up to the p
     const leftEnd = band.findLastIndex((line) => line.slice(0, half).trim());
     const rightEnd = band.findLastIndex((line) => line.slice(right).trim());
     assert.equal(leftEnd, rightEnd, `${width}: the chart and the breakdowns end on different rows\n${band.join('\n')}`);
-    assert.match(band[leftEnd], /^ ≥ bars leave 66 unpriced attempts out/, `${width}`);
+    assert.match(band[leftEnd], /^ 66 unpriced/, `${width}`);
 
     // The Today band's licence table and the summary band cut nothing.
     const today = lines.slice(lines.findIndex((line) => line.startsWith('Home · Today')), lines.findIndex((line) => line.startsWith('── running')));
@@ -452,10 +452,10 @@ test('Home at every width from 110 to 260: the halves and gutter add up to the p
     const figuresBand = lines.slice(summary, lines.findIndex((line) => line.startsWith('── recent')));
     assert.ok(figuresBand.every((line) => !line.includes('…')), `${width}: the summary is cut\n${figuresBand.join('\n')}`);
     const figuresText = figuresBand.join('\n');
-    assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unpriced/, `${width}\n${figuresText}`);
+    assert.match(figuresText, /Spent: ≥\$299\.87 api/, `${width}\n${figuresText}`);
     assert.match(figuresText, /sub unknown \(no plan price\)/, `${width}\n${figuresText}`);
     if (width >= 190) {
-      assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unpriced · sub unknown \(no plan price\)/, `${width}: Spent wraps at a width that holds it\n${figuresText}`);
+      assert.match(figuresText, /Spent: ≥\$299\.87 api · sub unknown \(no plan price\)/, `${width}: Spent wraps at a width that holds it\n${figuresText}`);
     }
   }
 });
@@ -674,8 +674,8 @@ test('Home shows a partly-priced period as the subtotal the rollups really hold'
   // unknown, so the page states the recorded subtotal as the lower bound it
   // is, in the Run spend block's own words, rather than the `api unknown`
   // this data used to print.
-  assert.match(text, /Spent: at least \$299\.87 api · 66 unpriced/);
-  assert.match(text, /recorded at least \$299\.87 api · 66 unpriced of API-equivalent work/);
+  assert.match(text, /Spent: ≥\$299\.87 api/);
+  assert.match(text, /in this period: ≥\$299\.87 at API prices/);
   assert.doesNotMatch(text, /recorded no API-equivalent estimate/);
 
   // All three recorded days are charted — 18 and 20 Sep are subtotals — so the
@@ -685,14 +685,14 @@ test('Home shows a partly-priced period as the subtotal the rollups really hold'
   assert.match(band, /~\$200 ┤/, band);
   assert.match(band, /\$0 ┼/, band);
   assert.doesNotMatch(band, /at least/, band);
-  assert.match(band, /≥ bars leave 66 unpriced attempts out/, band);
+  assert.match(band, /66 unpriced/, band);
   assert.equal((band.match(/████/g) ?? []).length > 0, true);
 
   // A pool whose attempts were only partly priced shows the subtotal, marked
   // `≈`, and the count of attempts it leaves out.
   assert.match(text, /codex +964\.5 +(— +)?≥36\.30 +25\b/);
   // A run with no strict total shows its own recorded lower bound on its card.
-  assert.match(text, /API at least \$9\.52 · 6 unpriced/);
+  assert.match(text, /API ≥\$9\.52 · subscription/);
 });
 
 test('Home recent lists finished runs only: a reopened or live run sits in running, whatever its failed steps', () => {

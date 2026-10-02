@@ -3605,8 +3605,8 @@ test('a run with no recorded estimate and no measured rate paints blanks, not ze
     // coverage that produced it, in words — never a manufactured zero. The
     // label column is ten cells, so the amount opens one cell after it.
     assert.match(text, /── spend · 0 of \d+ attempts priced ─/);
-    assert.match(text, /API price {3}—\s+\d+ (?:running|unpriced)/);
-    assert.match(text, /plan share {2}—\s+0 attempts with a meter reading · \d+ without/);
+    assert.match(text, /API price {3}—/);
+    assert.match(text, /plan share {2}—$/m);
     // Rules 4 and 7: the licence bars, the `so far` block and the ETA row all
     // left this page, so none of their words survive.
     assert.doesNotMatch(text, /free model · no licence meter/);
@@ -3997,8 +3997,8 @@ test('Home today band and every live step keep their rows readable on a phone', 
       // spend chart's `$0` baseline is the axis origin, exact by definition.
       for (const match of line.replace(/\$0 ┼/, '   ┼').matchAll(/\$(?=\s?\d)/g)) {
         // A figure carries its basis: an estimate glyph, or the spend block's
-        // own `at least` where the scope holds attempts nobody priced.
-        assert.match(line.slice(Math.max(0, match.index - 10), match.index), /[≈~]\s*$|at least\s*$/, line);
+        // own `≥` where the scope holds attempts nobody priced.
+        assert.match(line.slice(Math.max(0, match.index - 10), match.index), /[≈~≥]\s*$/, line);
       }
     }
   } finally { f.cleanup(); }

@@ -14,7 +14,7 @@
 
 ── spend · 5 of 5 attempts priced ─────────────────────
  API price  $9.76
- plan share —   0 with a meter reading
+ plan share —
 
 ── timeline · 5 phases · 5 attempts ───────────────────
 ── Preflight

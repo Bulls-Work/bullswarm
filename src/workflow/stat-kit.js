@@ -92,7 +92,7 @@ export function slotLabelLine(slots, { cell, weekly = false, room }) {
 
 export function spendFootnote(unpriced) {
   const count = Math.max(0, Math.trunc(Number(unpriced)) || 0);
-  return count ? `≥ bars leave ${count} unpriced attempt${count === 1 ? '' : 's'} out` : null;
+  return count ? `${count} unpriced` : null;
 }
 
 /** The dashboard-wide compact money cell. */

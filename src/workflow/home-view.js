@@ -128,7 +128,7 @@ function cardLines(card, width, { task = false } = {}) {
     ? `${card.steps.done}/${card.steps.total}` : '—';
   const money = card.money ?? recordMoneyPair(card.record ?? {});
   // Each slot is the pair's own wording — the whole amount with its estimate
-  // glyph, or `at least $X · N unmeasured` when the run holds attempts that
+  // glyph, or `≥$X` when the run holds attempts that
   // were never priced. The card never re-derives an amount of its own.
   const api = cardMoneySlot(money.apiSlotText ?? money.apiText);
   const subscription = cardMoneySlot(money.subscriptionText);
@@ -390,7 +390,7 @@ function licenceTableLines(rows, width) {
   if (totals) {
     lines.push({ text: paintRow(kept.map((column) => (column.key === 'pool' ? 'total' : totals[column.text] ?? ''))) });
   }
-  const legend = ['≈ plan share', '~ estimated', '≥ partly priced', `${blank()} not measured`, 'a pool row opens Budget'];
+  const legend = ['≈ ~ estimate', '≥ partly priced'];
   let legendText = ` ${legend.join(' · ')}`;
   while (visibleLength(legendText) > width && legend.length > 1) {
     legend.pop();
@@ -898,7 +898,7 @@ function summaryBand(body, model, opts) {
   // draws three bars.
   const totals = projects?.totals ?? null;
   // The period's spend through the Run spend block's own helper: a partial
-  // scope reads `at least $X api · N unmeasured`, a whole one keeps its
+  // scope reads `≥$X`, a whole one keeps its
   // provider/estimate words. It can never say `unknown` while the chart
   // above it draws three bars.
   const spentFacts = spendFacts({
@@ -966,9 +966,8 @@ function summaryBand(body, model, opts) {
     }
   }
   body.push('');
-  const sentence = apiPart && !apiPart.includes('api unknown')
-    ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${apiPart} of API-equivalent work`
-    : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
+  const priced = apiPart && !/api unknown|not priced/.test(apiPart);
+  const sentence = `Your ${runs} run${runs === 1 ? '' : 's'} in this period: ${priced ? `${apiPart.replace(/ api(?= ·|$)/, '')} at API prices` : 'not priced'}`;
   // Wrapped, not cut: a phone would otherwise cut the amount it states.
   for (const line of wrapLines([sentence], Math.max(8, width - 1))) body.push(` ${tint(line, 'purple')}`);
 }
@@ -1028,9 +1027,8 @@ function activeRunLines(model, opts, body, title = 'running') {
       (sum, pool) => (pool.sharePct == null ? sum : (sum ?? 0) + pool.sharePct),
       null,
     );
-    // A live run's own attempts answer for the money: `at least $X api · N
-    // unmeasured` while some attempt has no price yet, through the Run spend
-    // block's helper.
+    // A live run's own attempts answer for the money: `≥$X` while some
+    // attempt has no price yet, through the Run spend block's helper.
     const pair = moneyText(economics);
     const liveFacts = recordSpendFacts(run);
     const money = [honestApiTotalText(liveFacts, { whole: pair.split(' · ')[0] }), ...pair.split(' · ').slice(1)].join(' · ');
@@ -1129,14 +1127,14 @@ function homeDetails(model, opts, body) {
   // no active interval) beside its money, so the desktop cell is wider than
   // the bare duration it replaced rather than five columns of truncated money.
   // A partly-priced run's total also has to fit the coverage that makes it a
-  // lower bound (`at least $X · N unmeasured`), so the cell takes the width
+  // lower bound (`≥$X`), so the cell takes the width
   // its own five records need, bounded so the goal keeps its own column.
   const recentCells = recent.map((record) => {
     const money = recordMoneyPair(record);
     return {
       record,
       duration: recentDurationText(record),
-      // One short money phrase at every width (`at least $9.52`, the phone's
+      // One short money phrase at every width (`≥$X`, the phone's
       // since 0.35): the coverage counts and the subscription side are named
       // on the card above and in the period band, and at 140 columns the full
       // pair was cut mid-word (`sub unkno…`) on every row.
@@ -1166,7 +1164,7 @@ function homeDetails(model, opts, body) {
       { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
     ], { width }), { kind: 'run', runId: record.runId });
   }
-  if (narrow) body.push(dimText(' $ = API price at published rates · the spend chart opens Stats', width));
+  if (narrow) body.push(dimText(' the spend chart opens Stats', width));
   return ' bullswarm · home';
 }
 

@@ -1,10 +1,10 @@
  [7m[4mH[24mome[0m  [4mR[24muns  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
- bullswarm · home · 1–57/88
+ bullswarm · home · 1–57/86
 Home · Today · 20 Sep · top 3 runs (active first)
 ┌─ sample goal for rensha nostrud lorem nostrud moll…─┐
 │ project-b · completed · verified                    │
 │ 58m37s active of 58m38s · steps 9/9                 │
-│ API at least $9.52 · 6 unpriced · subscription —    │
+│ API ≥$9.52 · subscription —                         │
 └─────────────────────────────────────────────────────┘
 ┌─ sample goal for euqrni minim labore magna eiusmod…─┐
 │ project-a · completed · verified                    │
@@ -24,7 +24,7 @@ Home · Today · 20 Sep · top 3 runs (active first)
  [38;2;127;163;224mcodex[0m                 964.5  ≥36.30        25
  [38;2;155;196;232mcommand-code[0m              [2m—[0m       [2m—[0m         [2m—[0m
  [38;2;182;189;115mgrok[0m                   76.2   21.17         0
-[2m ≈ plan share · ~ estimated · ≥ partly priced[0m
+[2m ≈ ~ estimate · ≥ partly priced[0m
 
 ── running ────────────────────────────────────────────
 [2m nothing running right now[0m
@@ -51,7 +51,7 @@ Home · Today · 20 Sep · top 3 runs (active first)
        [2m│[0m                         [38;2;143;199;207m████[0m  [38;2;143;199;207m████[0m  [38;2;143;199;207m████[0m
     $0 [2m┼──────────────────────────────────────────[0m
          Mon   Tue   Wed   Thu   Fri   Sat   Sun
-[2m ≥ bars leave 66 unpriced attempts out[0m
+[2m 66 unpriced[0m
 
 [2m by pool · share of agent minutes[0m
  codex            [38;2;127;163;224m▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░[0m  75%

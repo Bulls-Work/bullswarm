@@ -30,7 +30,7 @@
  after  step-model
 
 ── cost ───────────────────────────────────────────────
- API price  —       not priced · no tokens
+ API price  —       not priced · no token counts
  codex plan —       no API cost · $100/mo weekly
 
 

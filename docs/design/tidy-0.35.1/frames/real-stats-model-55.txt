@@ -40,7 +40,7 @@ Cost                                    — per-pool only
 Legend  ● gpt-5.6-luna  ● claude-opus-5  ● gpt-5.6-sol
 ● grok-4.6  ● openrouter/stealth/union-alpha
 Basis · cost per pool, not per model; model cost is no…
-Money · API price at published rates · ~ estimated fro…
+Money · 83 of 149 attempts priced
 
 
 

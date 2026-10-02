@@ -49,7 +49,7 @@ function subscriptionBasisWords(basis, pool, { short = false } = {}) {
   // Every plan amount is this attempt's share of an account-wide meter.
   if (code === 'observed:meter-delta') return `share of the ${name} meter's move`;
   if (code === 'observed:meter-ledger') return `share of the ${name} meter ledger`;
-  if (code === 'calibrated:usd-per-pct') return `estimated from the ${name} meter's $ per %`;
+  if (code === 'calibrated:usd-per-pct') return `from the ${name} meter`;
   if (code === 'provider-reported') return 'provider-reported';
   if (code === 'aggregate') return 'summed across attempts';
   if (code === 'unknown') return 'no meter reading';

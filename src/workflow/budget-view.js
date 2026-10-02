@@ -190,7 +190,7 @@ function planLine(row, ansi) {
 
 /**
  * The pool's recorded spend, in the Run spend block's own words: the whole
- * amount at its usage basis, `at least $X api · N unmeasured` when the period
+ * amount at its usage basis, `≥$X` when the period
  * holds attempts nobody priced, or a dash when nothing was recorded — never a
  * figure beside that dash.
  */
@@ -202,7 +202,7 @@ function spendLine(row, ansi) {
   // A pool nobody ran this period spent nothing to price: say that, not
   // `api unknown`.
   const idle = facts && amount == null && !(Number(facts.attempts) > 0);
-  const text = idle ? '— · no Bullswarm runs in 7 days' : facts ? honestApiTotalText(facts, { whole, counts: 'unmeasured' }) : null;
+  const text = idle ? '—' : facts ? honestApiTotalText(facts, { whole }) : null;
   return paint(`spent ${text ?? '—'}`, METER_COLORS.dim, ansi);
 }
 

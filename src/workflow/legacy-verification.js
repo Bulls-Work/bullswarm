@@ -271,7 +271,7 @@ function attemptApiUsd(attempt) {
 /**
  * Wall minutes (the union of the attempts' intervals, so parallel steps count
  * once), pools in start order, the priced API subtotal and the cost text in
- * the Run spend block's vocabulary: `$X`, `at least $X · N unmeasured`, and a
+ * the Run spend block's vocabulary: `$X`, `≥$X`, and a
  * dash when nothing was priced.
  */
 function phaseFacts(state, attempts) {
@@ -296,9 +296,8 @@ function phaseFacts(state, attempts) {
     else if (usd == null) unmeasured += 1;
     if (usd != null) apiUsd = (apiUsd ?? 0) + usd;
   }
-  const counts = [running ? `${running} running` : null, unmeasured ? `${unmeasured} unpriced` : null].filter(Boolean).join(' · ');
   const cost = apiUsd == null ? '—'
-    : (running || unmeasured) ? `at least ${formatMoney(apiUsd)}${counts ? ` · ${counts}` : ''}`
+    : (running || unmeasured) ? `≥${formatMoney(apiUsd)}`
       : formatMoney(apiUsd);
   return {
     wallMinutes: windows.length ? Math.round(total / 6_000) / 10 : null,
