@@ -11,6 +11,7 @@
 - dashboard: Home's running rule counts the runs waiting on you (`running · 1 needs you`).
 - dashboard: on a v3 run, `o` and `v` say the run has no planner instead of opening the v2 planner panel (`Session · pending` on a finished run). Help matches the keys: Step's `a · o · p` are listed, `t` is the Run phase list under 100 columns, the spend chart opens Stats › Spending (there is no Trends tab), the old rebinding note is gone, and the help button reads `? help`.
 - dashboard: the Step page's right column grows between 120 and 160 columns (53 at 140, was 40); Stats' licence panel says `reset 17 Oct`, so the shared label column no longer cuts every pool name; Home's recent rows show one money phrase (`at least $9.25 · 1 unmeasured`, the phrase alone under 100 columns) instead of a cut pair; Stats' licence reset date is the local day, as Budget says it; Home's pace word is `fast` as on Budget (JSON `paceWord` unchanged); `1 attempt with a meter reading`; a lower bound of nothing reads `at least $0`; a skipped gate reads `skipped · condition not met: review.passed is false`.
+- dashboard: a pool's slice of a Stats spend bar is its known subtotal when one of its attempts went unpriced, as the bar itself is; its whole slice was dropped and drawn as `unallocated` (2 Oct: $41.87 of $45.97).
 - docs: README, the guide and the skill say briefly that issues and pull requests are welcome, optional, public, and that an agent asks its human first.
 
 ## 0.38.7 — honest reviews by default; dead sign-ins and instant refusals no longer cost a retry

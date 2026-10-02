@@ -9,9 +9,9 @@ Totals 15 workflows · 2816.02 worker-minutes · ≥$299.8…
 ~$200  ┤             ▁▁▁▁
        │             ████
        │ ▂▂▂▂        ████
-~$100  ┤ ████        ▄▄▄▄
-       │ ▆▆▆▆        ████
-       │ ▁▁▁▁  ▄▄▄▄  ▂▂▂▂
+~$100  ┤ ████        ▅▅▅▅
+       │ ▆▆▆▆        ▄▄▄▄
+       │ ▃▃▃▃  ▄▄▄▄  ▁▁▁▁
 $0     ┼Fri   Sat   Sun
  ~ bars leave 66 unpriced attempts out
 
@@ -40,7 +40,7 @@ Verified      ▓▓▓▓▒▒                  10 verified 66.7%
 Requirements  ▓▓▓▓▓▒                 78/86 passed 90.7%
 Median run    ▓▓▓▓▓▓                       1h45m median
 Longest run   ▓▓▓▓▓▓                      6h41m maximum
-Legend  ● claude-code:acme  ● grok  ● codex  ● claude-…
+Legend  ● claude-code:acme  ● claude-code  ● codex  ● …
 ● unallocated
 Basis · the recorded API-equivalent estimate per pool.
 Money · $ measured · ≈ transcript-summed · ~ estimated…

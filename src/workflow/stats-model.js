@@ -524,8 +524,15 @@ function metricSegments(record, metric, segmentBy) {
   if (metric === 'spend') {
     // Cost is recorded per pool only; there is no per-model figure to split.
     if (segmentBy === 'model') return [];
+    // A pool with an unpriced attempt has no strict total, but the day's bar
+    // is drawn from the known subtotal (a lower bound). Its slice is that same
+    // subtotal; taking the strict total dropped the slice, and its money was
+    // drawn as `unallocated` (all of claude-code:w's, on 2 Oct 2026).
     return [...groupEntries(recordEntries(record, { by: 'pool' }))]
-      .map(([name, entries]) => ({ name, value: sumEntries(entries).apiUsd }))
+      .map(([name, entries]) => {
+        const sum = sumEntries(entries);
+        return { name, value: sum.apiUsd ?? sum.apiKnownSubtotalUsd };
+      })
       .filter((segment) => segment.value != null);
   }
   return [...groupEntries(recordEntries(record, { by: segmentBy === 'pool' ? 'pool' : 'model' }))]
