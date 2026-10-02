@@ -14,6 +14,7 @@
 - dashboard: a pool's slice of a Stats spend bar is its known subtotal when one of its attempts went unpriced, as the bar itself is; its whole slice was dropped and drawn as `unallocated` (2 Oct: $41.87 of $45.97).
 - pricing: `claude-sonnet-5-5` has a price row ($2 input, $2.50 / $4 cache writes, $0.20 cache reads, $10 output per million, from Anthropic's pricing page on 2026-10-02); 34 attempts in a week had recorded no API-equivalent price although Claude Code reported one. `bullswarm workflow reprice --apply` prices the runs already recorded. A new test pins every dispatched Claude model's row to the published rates.
 - pricing: `scripts/check-rate-cards.mjs` compares each attempt's rate-card price with the cost its CLI reported, read only. On the owner's home it agrees for 161 of 165 Claude attempts (a resumed attempt is compared with its session's total, which is what Claude Code reports); grok's CLI reports 0.34x the published xAI price, so Bullswarm keeps the published one.
+- mcp: the server exits only after its last reply has been written out. A reply larger than a pipe's 64 KB buffer (`bullswarm_pools` crossed it with this release's price rows) was cut off before its end when the client had already closed its input, so the call never answered.
 - docs: README, the guide and the skill say briefly that issues and pull requests are welcome, optional, public, and that an agent asks its human first.
 
 ## 0.38.7 — honest reviews by default; dead sign-ins and instant refusals no longer cost a retry

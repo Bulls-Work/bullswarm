@@ -50,7 +50,10 @@ let inputClosed = false;
 let pendingCalls = 0;
 
 function exitWhenDrained() {
-  if (inputClosed && pendingCalls === 0) process.exit(0);
+  // Exit once stdout has flushed: a reply over a pipe's 64 KB buffer is still
+  // being written when the last call settles, and exiting at once cut it off
+  // before its newline (the pools reply crossed 64 KB in 0.38.8).
+  if (inputClosed && pendingCalls === 0) process.stdout.write('', () => process.exit(0));
 }
 
 async function callTool(name, args) {
