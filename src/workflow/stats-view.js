@@ -516,8 +516,11 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
     const priced = finite(bucket.priced);
     return sum + (attempts != null && priced != null ? Math.max(0, attempts - priced) : 0);
   }, 0);
+  // `~` when a bucket holds a byte estimate, `≥` when it leaves attempts
+  // unpriced; provider-reported and transcript-summed counts print plainly.
+  const estimatedSource = (source) => source == null || source === 'unknown' || String(source).startsWith('estimated:');
   const mark = info.unit === 'usd'
-    ? partial || sourceBuckets.some((bucket) => bucket.tokenSource !== 'provider-reported') ? '~' : ''
+    ? sourceBuckets.some((bucket) => estimatedSource(bucket.tokenSource)) ? '~' : partial ? '≥' : ''
     : '';
   const chartArgs = {
     title,
@@ -616,7 +619,7 @@ function coverageNote(table) {
   const priced = finite(totals?.pricedAttempts);
   const unmeasured = attempts == null || priced == null ? 0 : Math.max(0, attempts - priced);
   const total = attempts ?? 0;
-  return `Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; ${unmeasured} of ${total} attempts recorded no price.`;
+  return `Money · API price at published rates · ~ estimated from text size · ≥ some attempts unpriced; ${total - unmeasured} of ${total} attempts priced.`;
 }
 
 /**

@@ -20,7 +20,7 @@ Totals 15 workflows · 2816.02 worker-minutes · ≥$299.87 · sub unknown (no p
                                                           │  unio…alpha        0 proven 0%
 Legend  ● gpt-5.6-luna  ● claude-opus-5  ● gpt-5.6-sol  ● grok-4.6  ● openrouter/stealth/union-alpha
 Basis · cost per pool, not per model; model cost is not measured.
-Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 66 of 149 attempts recorded no price.
+Money · API price at published rates · ~ estimated from text size · ≥ some attempts unpriced; 83 of 149 attempts priced.
 
 
 

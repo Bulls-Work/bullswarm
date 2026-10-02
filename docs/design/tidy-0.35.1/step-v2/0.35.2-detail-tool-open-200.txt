@@ -17,7 +17,7 @@
               arguments —                                                                                                            │  Enter on task: full text 2.4 KB · kernel wrapper 5.1 KB
               result —                                                                                                               │
               summary                                                                                                                │ ── cost ─────────────────────────────────────────────────────────
-                sample command for step-model-1 do duis sed incididunt commodo enim labore reprehenderit tempor nostrud officia      │  API rate    $0.96   36.0M tokens · OpenAI rate card, 20 Sep
+                sample command for step-model-1 do duis sed incididunt commodo enim labore reprehenderit tempor nostrud officia      │  API price   $0.96   36.0M tokens · OpenAI rate card, 20 Sep
                 eiusmod laborum in lorem magna irure elit exercitation reprehenderit                                                 │              35.2M cache read · 713k input · 58k output
             01:51:28  $ sample command for step-model-1 tempor ea id quis qui enim exercitation in ea commodo proident aliquip       │              37k reasoning
             01:51:34  $ sample command for step-model-1 ea ipsum et ex dolore veniam sit culpa enim nulla magna aliquip adipiscing … │  codex plan  —       no meter reading for this attempt

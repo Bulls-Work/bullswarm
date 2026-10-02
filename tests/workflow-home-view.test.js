@@ -122,7 +122,7 @@ test('a single task card prices the task from its one attempt (metrics.js), usag
     },
   });
   const lines = cardLines(measured, 90, { task: true }).map(visible).join('\n');
-  assert.match(lines, /API \$3\.79 · subscription 2% wk \$0\.14 sub/);
+  assert.match(lines, /API \$3\.79 · subscription 2% wk ≈ \$0\.14 sub/);
 
   // An older row names its amount beside the usage rather than inside it.
   const rowAmount = taskCardModel({
@@ -244,16 +244,16 @@ test('Home Today band: three stacked cards on the left half, the licence table o
       assert.equal(row[apiEnd - 3], '.', `${width}: ${name} API decimal\n${header}\n${row}`);
       assert.doesNotMatch(row, /\$/, `${width}: a cell repeats the unit\n${row}`);
     }
-    assert.match(tableRows.find((line) => line.startsWith(' codex ')), /^ codex +964\.5 +(— +)?≈36\.30 +25( +—)?$/);
+    assert.match(tableRows.find((line) => line.startsWith(' codex ')), /^ codex +964\.5 +(— +)?≥36\.30 +25( +—)?$/);
     // The total row sums every column each pool knows.
-    assert.match(tableRows.find((line) => line.startsWith(' total ')), /^ total +1270\.4 +≈171\.30 +26$/);
+    assert.match(tableRows.find((line) => line.startsWith(' total ')), /^ total +1270\.4 +≥171\.30 +26$/);
     // Pool names wear the same colour the `by pool` bars do.
     for (const name of pools) {
       assert.ok(bandRaw.some((line) => line.includes(`${rgbEscape(seriesColor(name))}${name}\x1b[0m`)),
         `${width}: ${name} is not painted in its pool colour`);
     }
     // A dim legend under the table names the glyphs.
-    assert.ok(bandRaw.some((line) => line.includes('\x1b[2m') && visible(line).includes('≈ ~ estimates')), `${width}: no legend`);
+    assert.ok(bandRaw.some((line) => line.includes('\x1b[2m') && visible(line).includes('≈ plan share')), `${width}: no legend`);
   }
 });
 
@@ -271,7 +271,7 @@ test('Home licence table puts a dim dash in unknown cells and drops the least us
   const text = wide.map((line) => visible(line.text));
   assert.match(text[1], /^ pool +agent min +weekly quota +API \$ +plan \$$/);
   // A known share draws its bar in the pool's colour and its pace-estimate glyph.
-  assert.match(text[2], /^ claude-code +248\.1 +▏?░+ ≈2\.9% +108\.68 +2\.63$/);
+  assert.match(text[2], /^ claude-code +248\.1 +▏?░+ ≈2\.9% +108\.68 +≈2\.63$/);
   // Unknown cells are a dim dash; a fraction of a cent keeps its estimate glyph.
   assert.match(text[3], /^ codex +— +— +~<0\.01 +—$/);
   assert.ok(wide[3].text.includes('\x1b[2m—\x1b[0m'), 'the unknown cells are not dim');
@@ -394,7 +394,7 @@ test('Home spend chart: one bar a day for seven days from a $0 axis, whole-dolla
       assert.equal(/[▁-█]/.test(chart[baseRow][columnOf(name)] ?? ' '), drawn, `${width}: ${name} bar\n${chart.join('\n')}`);
     }
     // One dim line under the chart says what the bars leave out.
-    assert.equal(left[dayRow + 1].trim(), '~ bars leave 66 unpriced attempts out', `${width}`);
+    assert.equal(left[dayRow + 1].trim(), '≥ bars leave 66 unpriced attempts out', `${width}`);
   }
 });
 
@@ -444,7 +444,7 @@ test('Home at every width from 110 to 260: the halves and gutter add up to the p
     const leftEnd = band.findLastIndex((line) => line.slice(0, half).trim());
     const rightEnd = band.findLastIndex((line) => line.slice(right).trim());
     assert.equal(leftEnd, rightEnd, `${width}: the chart and the breakdowns end on different rows\n${band.join('\n')}`);
-    assert.match(band[leftEnd], /^ ~ bars leave 66 unpriced attempts out/, `${width}`);
+    assert.match(band[leftEnd], /^ ≥ bars leave 66 unpriced attempts out/, `${width}`);
 
     // The Today band's licence table and the summary band cut nothing.
     const today = lines.slice(lines.findIndex((line) => line.startsWith('Home · Today')), lines.findIndex((line) => line.startsWith('── running')));
@@ -452,10 +452,10 @@ test('Home at every width from 110 to 260: the halves and gutter add up to the p
     const figuresBand = lines.slice(summary, lines.findIndex((line) => line.startsWith('── recent')));
     assert.ok(figuresBand.every((line) => !line.includes('…')), `${width}: the summary is cut\n${figuresBand.join('\n')}`);
     const figuresText = figuresBand.join('\n');
-    assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unmeasured/, `${width}\n${figuresText}`);
+    assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unpriced/, `${width}\n${figuresText}`);
     assert.match(figuresText, /sub unknown \(no plan price\)/, `${width}\n${figuresText}`);
     if (width >= 190) {
-      assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unmeasured · sub unknown \(no plan price\)/, `${width}: Spent wraps at a width that holds it\n${figuresText}`);
+      assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unpriced · sub unknown \(no plan price\)/, `${width}: Spent wraps at a width that holds it\n${figuresText}`);
     }
   }
 });
@@ -564,12 +564,12 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     assert.equal(measured.weeklyShare, 1.5, 'only the run\'s own attributed drop counts');
     assert.equal(measured.shareSamples, 1);
     // The table's cells: a measured share has no estimate glyph, and the
-    // partly-priced API subtotal keeps its `≈` with the attempt it leaves out.
+    // partly-priced API subtotal reads `≥` with the attempt it leaves out.
     const cellsOf = (row) => {
       const cells = licenceCells(row);
       return [cells.minutesText, cells.quotaText, cells.apiText, cells.unpricedText, cells.planText];
     };
-    assert.deepEqual(cellsOf(measured), ['60.0', '1.5%', '≈12.00', '1', null]);
+    assert.deepEqual(cellsOf(measured), ['60.0', '1.5%', '≥12.00', '1', null]);
 
     // The same pool with no ledger attributed to it: the pace estimate, named
     // as the estimate it is.
@@ -577,7 +577,7 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     const pace = shareRow(shareModel());
     assert.equal(pace.shareBasis, 'pace');
     assert.equal(Math.round(pace.weeklyShare * 100) / 100, 1.2);
-    assert.deepEqual(cellsOf(pace), ['60.0', '≈1.2%', '≈12.00', '1', null]);
+    assert.deepEqual(cellsOf(pace), ['60.0', '≈1.2%', '≥12.00', '1', null]);
 
     // A pure-rollup render (no live pool list — the committed frames) never
     // reads a ledger it was not handed, even with a home in the environment.
@@ -593,7 +593,7 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     const noPools = shareRow(shareModel({ pools: [] }));
     assert.equal(noPools.shareBasis, null, 'a render without a meter list consults no ledger');
     assert.equal(noPools.weeklyShare, null);
-    assert.deepEqual(cellsOf(noPools), ['60.0', null, '≈12.00', '1', null]);
+    assert.deepEqual(cellsOf(noPools), ['60.0', null, '≥12.00', '1', null]);
 
     // A pool whose rate was never measured, with no ledger either, keeps the
     // dash: no third basis, and never a guessed number beside the unknown.
@@ -603,7 +603,7 @@ test('Home window-share shows the ledger drop when one exists, the labelled pace
     }));
     assert.equal(unrated.shareBasis, null);
     assert.equal(unrated.weeklyShare, null);
-    assert.deepEqual(cellsOf(unrated), ['60.0', null, '≈12.00', '1', null]);
+    assert.deepEqual(cellsOf(unrated), ['60.0', null, '≥12.00', '1', null]);
 
     // A monthly ledger is not the weekly column's measurement: refused, so the
     // row falls back to its own window's pace estimate rather than relabelling
@@ -674,8 +674,8 @@ test('Home shows a partly-priced period as the subtotal the rollups really hold'
   // unknown, so the page states the recorded subtotal as the lower bound it
   // is, in the Run spend block's own words, rather than the `api unknown`
   // this data used to print.
-  assert.match(text, /Spent: at least \$299\.87 api · 66 unmeasured/);
-  assert.match(text, /recorded at least \$299\.87 api · 66 unmeasured of API-equivalent work/);
+  assert.match(text, /Spent: at least \$299\.87 api · 66 unpriced/);
+  assert.match(text, /recorded at least \$299\.87 api · 66 unpriced of API-equivalent work/);
   assert.doesNotMatch(text, /recorded no API-equivalent estimate/);
 
   // All three recorded days are charted — 18 and 20 Sep are subtotals — so the
@@ -685,14 +685,14 @@ test('Home shows a partly-priced period as the subtotal the rollups really hold'
   assert.match(band, /~\$200 ┤/, band);
   assert.match(band, /\$0 ┼/, band);
   assert.doesNotMatch(band, /at least/, band);
-  assert.match(band, /~ bars leave 66 unpriced attempts out/, band);
+  assert.match(band, /≥ bars leave 66 unpriced attempts out/, band);
   assert.equal((band.match(/████/g) ?? []).length > 0, true);
 
   // A pool whose attempts were only partly priced shows the subtotal, marked
   // `≈`, and the count of attempts it leaves out.
-  assert.match(text, /codex +964\.5 +(— +)?≈36\.30 +25\b/);
+  assert.match(text, /codex +964\.5 +(— +)?≥36\.30 +25\b/);
   // A run with no strict total shows its own recorded lower bound on its card.
-  assert.match(text, /API at least \$9\.52 · 6 unmeasured/);
+  assert.match(text, /API at least \$9\.52 · 6 unpriced/);
 });
 
 test('Home recent lists finished runs only: a reopened or live run sits in running, whatever its failed steps', () => {

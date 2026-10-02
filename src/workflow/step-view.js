@@ -86,7 +86,7 @@ function paintMoney(value) {
 function paintCostLabel(label) {
   const text = String(label ?? '');
   if (!text) return text;
-  if (text === 'API rate') return dimCell(text);
+  if (text === 'API price') return dimCell(text);
   const match = /^(.*?)( plan)?$/.exec(text);
   if (match?.[2]) return `${tint(match[1], seriesColor(match[1]))}${dimCell(match[2])}`;
   if (text === 'plans') return dimCell(text);

@@ -75,11 +75,11 @@ function apiLabel(api, tokenSource = null, tokens = null) {
   );
   const source = tokenSource ?? api?.tokenSource ?? null;
   if (amount === '-') return 'api unknown';
-  if (source === 'transcript-summed') return `≈ ${amount} api summed`;
   if (source === 'estimated:utf8-bytes/4') return `~ ${amount} api estimated`;
   if (source === 'unknown') return 'api unknown';
-  // A canonical API block without a source hint is still a dated local rate
-  // card result; provider-reported is the only measured glyph available.
+  // Provider-reported and transcript-summed counts are both the provider's
+  // own token counts (a transcript sums its per-request records), priced at
+  // the dated rate card: exact arithmetic, so neither carries a glyph.
   return `${amount} api`;
 }
 
@@ -117,7 +117,9 @@ function subscriptionLabel(subscription, tokens = null) {
     }
     return basis.startsWith('unknown:') ? 'sub unknown (no meter/calibration)' : 'sub unknown';
   }
-  const prefix = basis === 'calibrated:usd-per-pct' ? '≈ ' : '';
+  // Every subscription amount is a share of an account-wide meter split
+  // across the attempts that ran under it: an estimate, whatever its basis.
+  const prefix = amount === '$0' ? '' : '≈ ';
   const quota = Number.isFinite(pct) && label ? `${pct}% ${label} ` : '';
   return `${quota}${prefix}${amount} sub`;
 }
@@ -163,7 +165,7 @@ export function apiMoneyText(money, tokenSource = null, tokens = null, { coverag
   const priced = coverage && money.priced != null && money.attempts != null
     ? ` · ${money.priced}/${money.attempts} priced`
     : '';
-  return `≈ ${formatMoney(money.usd, tokens)} api${priced}`;
+  return `at least ${formatMoney(money.usd, tokens)} api${priced}`;
 }
 
 /**
@@ -196,8 +198,7 @@ export function formatUsageBasis(usageOrSource = {}, costValue = undefined) {
   const rendered = formatMoney(amount, usage?.tokens);
 
   if (rendered === '-') return 'cost unknown';
-  if (tokenSource === 'provider-reported') return `$ ${rendered.slice(1)}`;
-  if (tokenSource === 'transcript-summed') return `≈ ${rendered} summed`;
+  if (tokenSource === 'provider-reported' || tokenSource === 'transcript-summed') return `$ ${rendered.slice(1)}`;
   if (tokenSource === 'estimated:utf8-bytes/4') return `~ ${rendered} estimated`;
   return 'cost unknown';
 }

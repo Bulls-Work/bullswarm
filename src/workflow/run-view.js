@@ -1245,8 +1245,8 @@ function runLiveLinesV2(live, width, { phone = width < 100, runFollow = true, no
 // The spend block's two labels are one 10-cell column, and on the desktop the
 // amount opens a second field at a fixed column so the per-pool split starts
 // under the first pool on every continuation row it wraps onto.
-const SPEND_LABEL_WIDTH = 10;
-const SPEND_DETAIL_COLUMN = 30;
+const SPEND_LABEL_WIDTH = 11;
+const SPEND_DETAIL_COLUMN = 31;
 const SPEND_DETAIL_GAP = 3;
 
 /** `╴<label>╴╴<amount>` — the label column the spend block is read down. */
@@ -1286,7 +1286,7 @@ function spendPoolToken(entry) {
 function spendSplitCounts(spend) {
   return [
     spend.estimated ? `${spend.estimated} estimated` : null,
-    spend.unmeasured ? `${spend.unmeasured} unmeasured` : null,
+    spend.unmeasured ? `${spend.unmeasured} unpriced` : null,
   ].filter(Boolean).join(' · ');
 }
 
@@ -1335,12 +1335,12 @@ function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
   if (phone) {
     // The phone has one row per fact: the amount with its own coverage words,
     // then the plan row the width can hold whole.
-    lines.push(cut(`${spendHead('API rate', spend.apiText, { gap: 0 })}${suffix}`, width));
-    const head = spendHead('plans', spend.plansText, { gap: 0 });
+    lines.push(cut(`${spendHead('API price', spend.apiText, { gap: 0 })}${suffix}`, width));
+    const head = spendHead('plan share', spend.plansText, { gap: 0 });
     lines.push(cut(`${head}   ${dimCell(planCoverageText(spend, Math.max(0, width - visibleLength(head) - 3)))}`, width));
     return lines;
   }
-  const head = spendHead('API rate', spend.apiText);
+  const head = spendHead('API price', spend.apiText);
   if (!pools.length) {
     // Nothing was priced, so there is no split to flow: the row keeps the
     // amount in the block's own label column and the coverage words after it.
@@ -1350,7 +1350,7 @@ function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
       lines.push(cut(row, width));
     }
   }
-  const plansHead = spendHead('plans', spend.plansText);
+  const plansHead = spendHead('plan share', spend.plansText);
   const column = Math.max(SPEND_DETAIL_COLUMN, visibleLength(plansHead) + SPEND_DETAIL_GAP);
   lines.push(spendDetailRow(plansHead, planCoverageText(spend, Math.max(0, width - column)), width));
   return lines;
@@ -1430,7 +1430,7 @@ function runPage(model, opts, body) {
     status === 'running'
       ? (headerFacts.startedClock ? `since ${headerFacts.startedClock} HKT` : null)
       : headerFacts.startedClock && headerFacts.finishedClock ? `${headerFacts.startedClock} → ${headerFacts.finishedClock} HKT` : null,
-    phone ? `${headerFacts.attempts} attempts` : null,
+    phone ? `${headerFacts.attempts} attempt${headerFacts.attempts === 1 ? '' : 's'}` : null,
     !phone && width >= 160 ? headerFacts.dateText : null,
   ].filter(Boolean).join(' · ');
   const paintedRunStatus = waiting
@@ -1462,7 +1462,7 @@ function runPage(model, opts, body) {
   if (!phone) {
     const project = headerFacts.project ?? '—';
     const cwd = headerFacts.cwd ?? '—';
-    const attemptsLabel = `${dimCell(`${headerFacts.attempts} attempts`)}  ${paintAttemptMix(headerFacts)}`;
+    const attemptsLabel = `${dimCell(`${headerFacts.attempts} attempt${headerFacts.attempts === 1 ? '' : 's'}`)}  ${paintAttemptMix(headerFacts)}`;
     body.push(cut(alignRight(` ${attemptsLabel}`, dimCell(`project ${project} · ${cwd}`), width), width));
   }
   body.push('');
@@ -1538,7 +1538,7 @@ function runPage(model, opts, body) {
     : false;
   const timelineCounts = oneStep
     ? `${timeline.attempts} attempt${timeline.attempts === 1 ? '' : 's'}`
-    : `${timeline.phases} phases · ${timeline.attempts} attempts`;
+    : `${timeline.phases} phase${timeline.phases === 1 ? '' : 's'} · ${timeline.attempts} attempt${timeline.attempts === 1 ? '' : 's'}`;
   body.push(paintRule(rule(`timeline · ${timelineCounts}${phone ? '' : ' · Enter on a step opens it'}`, null, width)));
   const timelineStart = body.lines.length;
   for (const line of timeline.lines) {

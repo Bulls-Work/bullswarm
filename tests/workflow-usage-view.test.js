@@ -383,7 +383,7 @@ test('usage money rows use the shared API/subscription pair and mark estimates',
     tokenSource: 'provider-reported',
     subscription: { usd: 0.10349075975359343, deltaPct: 1.5, window: 'weekly', basis: 'observed:meter-delta' },
   });
-  assert.equal(observed, '$0.61 api · 1.5% wk $0.10 sub');
+  assert.equal(observed, '$0.61 api · 1.5% wk ≈ $0.10 sub');
 
   const estimated = formatMoneyPair({
     api: { usd: 1.23 }, tokenSource: 'estimated:utf8-bytes/4', subscription: null,

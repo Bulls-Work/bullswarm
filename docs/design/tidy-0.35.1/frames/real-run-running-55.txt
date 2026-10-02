@@ -13,9 +13,9 @@
             7 commands
  Enter → the step page · following ●
 
-── spend · 3 of 4 attempts measured ───────────────────
- API rate  at least $1.77  1 running
- plans     —   0 with a meter reading
+── spend · 3 of 4 attempts priced ─────────────────────
+ API price  at least $1.77  1 running
+ plan share —   0 with a meter reading
 
 ── timeline · 5 phases · 4 attempts ───────────────────
 ── Preflight

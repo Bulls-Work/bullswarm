@@ -13,9 +13,9 @@
             [2m7 commands[0m
  [2mEnter → the step page · following[0m [38;2;233;200;128m●[0m
 
-[2m──[0m spend · 3 of 4 attempts measured [2m───────────────────[0m
- [2mAPI rate[0m  [2mat least[0m [1m$1.77[22m  [2m1 running[0m
- [2mplans[0m     [2m—[0m   [2m0 with a meter reading[0m
+[2m──[0m spend · 3 of 4 attempts priced [2m─────────────────────[0m
+ [2mAPI price[0m  [2mat least[0m [1m$1.77[22m  [2m1 running[0m
+ [2mplan share[0m [2m—[0m   [2m0 with a meter reading[0m
 
 [2m──[0m timeline · 5 phases · 4 attempts [2m───────────────────[0m
 [2m──[0m Preflight

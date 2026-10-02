@@ -296,7 +296,7 @@ function phaseFacts(state, attempts) {
     else if (usd == null) unmeasured += 1;
     if (usd != null) apiUsd = (apiUsd ?? 0) + usd;
   }
-  const counts = [running ? `${running} running` : null, unmeasured ? `${unmeasured} unmeasured` : null].filter(Boolean).join(' · ');
+  const counts = [running ? `${running} running` : null, unmeasured ? `${unmeasured} unpriced` : null].filter(Boolean).join(' · ');
   const cost = apiUsd == null ? '—'
     : (running || unmeasured) ? `at least ${formatMoney(apiUsd)}${counts ? ` · ${counts}` : ''}`
       : formatMoney(apiUsd);

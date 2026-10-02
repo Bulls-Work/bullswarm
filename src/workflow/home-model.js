@@ -294,7 +294,7 @@ function moneyPairParts(input) {
   if (!facts) return { apiText: wholeApi, apiSlotText: wholeApi, subscriptionText };
   // A card's slot is the amount with its own estimate glyph, and the whole
   // honest phrase when a partial total has coverage words to carry.
-  const glyph = wholeApi.startsWith('≈ ') ? '≈ ' : wholeApi.startsWith('~ ') ? '~ ' : '';
+  const glyph = wholeApi.startsWith('at least ') ? 'at least ' : wholeApi.startsWith('~ ') ? '~ ' : '';
   const amount = finiteOrNull(money?.usd ?? input?.api?.usd);
   const slotWhole = amount == null ? null : `${glyph}${formatMoney(amount, input?.tokens ?? null)}`;
   return {

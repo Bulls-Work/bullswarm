@@ -54,11 +54,11 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   // Stats uses the page-wide compact money glyph and states its meaning and
   // coverage exactly once below the chart.
   assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Totals .*≥\$299\.87/);
-  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Money · \$ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 66 of 149 attempts recorded no price\./);
+  assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /Money · API price at published rates · ~ estimated from text size · ≥ some attempts unpriced; 83 of 149 attempts priced\./);
   // Home's own totals line keeps the spend block's words; the chart under it
   // marks its axis `~` from $0, in whole dollars, and never says `at least`.
   const home200 = frames.get('real-home-200.txt');
-  assert.match(home200.join('\n'), /Spent: at least \$299\.87 api · 66 unmeasured/);
+  assert.match(home200.join('\n'), /Spent: at least \$299\.87 api · 66 unpriced/);
   const chart200 = home200.slice(home200.findIndex((line) => line.includes('spent per day')),
     home200.findIndex((line) => line.includes('Workflows:')));
   assert.match(chart200.join('\n'), /~\$200 ┤/);
@@ -91,20 +91,20 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   const phaseRule = run200.find((line) => line.startsWith('── ✓ Phase 1 · Mechanical · home-extraction '));
   assert.match(phaseRule, / · 1\/1$/, phaseRule);
   const spendRows = run200
-    .filter((line) => line.includes('API rate') || /│ {2}plans /.test(line))
+    .filter((line) => line.includes('API price') || /│ {2}plan share /.test(line))
     .map((line) => line.slice(line.indexOf('│') + 2));
   // The 79-column spend cell: the amount opens the split at the record's own
   // column, and the meter coverage starts there under it.
-  assert.match(spendRows[0], /^ API rate   at least \$1\.77 {4}codex \$1\.77$/);
-  assert.equal(spendRows[0].indexOf('codex'), 30);
-  assert.match(spendRows[1], /^ plans      — {17}0 attempts with a meter reading · 4 without$/);
-  assert.equal(spendRows[1].indexOf('0 attempts'), 30);
+  assert.match(spendRows[0], /^ API price   at least \$1\.77 {4}codex \$1\.77$/);
+  assert.equal(spendRows[0].indexOf('codex'), 31);
+  assert.match(spendRows[1], /^ plan share  — {17}0 attempts with a meter reading · 4 without$/);
+  assert.equal(spendRows[1].indexOf('0 attempts'), 31);
 
   // 55 columns: the spend block stays the record's two short rows, with the
   // meter phrase shortened rather than cut off.
   const run55 = frames.get('real-run-running-55.txt').join('\n');
-  assert.match(run55, /^ API rate  at least \$1\.77  1 running$/m);
-  assert.match(run55, /^ plans     —   0 with a meter reading$/m);
+  assert.match(run55, /^ API price  at least \$1\.77  1 running$/m);
+  assert.match(run55, /^ plan share —   0 with a meter reading$/m);
 });
 
 // Requirement 5: the same screens are kept a second time with their SGR codes,

@@ -1030,7 +1030,7 @@ test('the real step’s presentation reads the report, the diff, the turns and t
   assert.equal(task.bytes.taskFile, 5109);
 
   // Cost: two rows of plain words over the finite codes, and the closing line.
-  assert.equal(cost.rows[0].label, 'API rate');
+  assert.equal(cost.rows[0].label, 'API price');
   assert.equal(cost.rows[0].amount, '$0.96');
   assert.equal(cost.rows[0].headline, '36.0M tokens · OpenAI rate card, 20 Sep');
   assert.deepEqual(cost.rows[0].details, ['35.2M cache read', '713k input', '58k output', '37k reasoning']);

@@ -17,10 +17,10 @@ Totals 15 workflows · 2816.02 worker-minutes · ≥$299.87 · sub unknown (no p
        │ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                               ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁│  project-b    ▓▓▒▒▒▒                  4 runs 26.7%  Verified     ▓▓▓▓▒▒            10 verified 66.7%
        │ ▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁│  project-c    ▏▒▒▒▒▒                    1 run 6.7%  Requirements ▓▓▓▓▓▒           78/86 passed 90.7%
 $0     ┼Fri                           Sat                           Sun                           │                                                     Median run   ▓▓▓▓▓▓                 1h45m median
- ~ bars leave 66 unpriced attempts out                                                            │                                                     Longest run  ▓▓▓▓▓▓                6h41m maximum
+ ≥ bars leave 66 unpriced attempts out                                                            │                                                     Longest run  ▓▓▓▓▓▓                6h41m maximum
 Legend  ● claude-code:acme  ● claude-code  ● codex  ● grok  ● unallocated
 Basis · the recorded API-equivalent estimate per pool.
-Money · $ measured · ≈ transcript-summed · ~ estimated · ≥ lower bound; 66 of 149 attempts recorded no price.
+Money · API price at published rates · ~ estimated from text size · ≥ some attempts unpriced; 83 of 149 attempts priced.
 History · the requested period is longer than the retained rollups.
 
 

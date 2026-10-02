@@ -528,11 +528,12 @@ function taskDescriptionFallback(task) {
 
 function compactMoney(info) {
   const amount = finite(info?.known ?? info?.value);
-  if (amount == null) return '—';
+  // A finished run whose attempts were all left unpriced says so; a dash is
+  // kept for a run that is still measuring or recorded no attempts at all.
+  if (amount == null) return (info?.facts?.unmeasured ?? 0) > 0 && !((info?.facts?.running ?? 0) > 0) ? 'unpriced' : '—';
   const lowerBound = (info?.facts?.unmeasured ?? 0) > 0 || (info?.facts?.running ?? 0) > 0;
   const prefix = lowerBound ? '≥'
-    : info?.tokenSource === 'provider-reported' ? ''
-      : info?.tokenSource === 'transcript-summed' ? '≈' : '~';
+    : info?.tokenSource === 'provider-reported' || info?.tokenSource === 'transcript-summed' ? '' : '~';
   const money = amount > 0 && amount < 0.01 ? '<$0.01' : `$${amount.toFixed(2)}`;
   return `${prefix}${money}`;
 }
@@ -756,7 +757,7 @@ export function historyLines(days, { width = 120, ansi = true, nowMs = Date.now(
       value: amount,
       tokenSource: source ?? tokenSourceOf(day?.tokenSource, amount),
       facts: { unmeasured: unpriced, running: 0 },
-    });
+    }).replace(/^unpriced$/, '—'); // the day's own `N unpriced` follows
     const title = bold(dateLabel(day.date), ansi);
     const moneyText = money === '—' ? tint(money, 'dim', ansi) : tint(money, 'orange', ansi);
     const unpricedText = unpriced ? `${unpriced} unpriced` : '';

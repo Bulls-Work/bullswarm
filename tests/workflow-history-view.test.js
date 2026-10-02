@@ -170,7 +170,7 @@ test('History renders finished single tasks beside workflows with fixed duration
 test('History labels provider, transcript, estimated and unknown daily spend bases', () => {
   const cases = [
     ['provider-reported', /\$1\.23/],
-    ['transcript-summed', /≈\$1\.23/],
+    ['transcript-summed', /(?<![≈~])\$1\.23/],
     ['estimated:utf8-bytes\/4', /~\$1\.23/],
     ['unknown', /~\$1\.23/],
   ];
@@ -262,7 +262,7 @@ test('Runs shares one column layout across active and two loaded days', () => {
   assert.equal(new Set(rendered.map((line, index) => line.indexOf(descriptions[index]))).size, 1, rendered.join('\n'));
   const times = ['1m', '12m', '10m'];
   assert.equal(new Set(rendered.map((line, index) => line.indexOf(times[index]) + times[index].length)).size, 1, rendered.join('\n'));
-  const costs = ['$0.32', '≈$4.01', '$138.12'];
+  const costs = ['$0.32', '$4.01', '$138.12'];
   assert.equal(new Set(rendered.map((line, index) => line.indexOf(costs[index]) + costs[index].length)).size, 1, rendered.join('\n'));
   assert.equal(new Set(rendered.map((line) => line.length - 5)).size, 1, rendered.join('\n'));
 });
@@ -296,7 +296,7 @@ test('Runs money is cents-only, including lower bounds and sub-cent estimates', 
   const lines = historyLines([{ date: '2026-09-21', rows }], { width: 200, ansi: false }).lines;
   const text = lines.join('\n');
   assert.match(text, /\$0\.32/);
-  assert.match(text, /≈\$4\.01/);
+  assert.match(text, /(?<!≈)\$4\.01/);
   assert.match(text, /≥\$138\.12/);
   assert.match(text, /~<\$0\.01/);
   assert.match(lines[0], /≥\$142\.45/);

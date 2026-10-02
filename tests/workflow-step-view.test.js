@@ -498,15 +498,15 @@ test('money is said once in two plain-word rows under one header', () => {
   // A live attempt with no usage says when the figure will exist rather than
   // printing a guess; the plan row still names the pool's meter state.
   const running = render(makeModels().running, 120).map(plain).join('\n');
-  assert.equal((running.match(/API rate/g) ?? []).length, 0);
+  assert.equal((running.match(/API price/g) ?? []).length, 0);
   assert.match(running, /measured when the attempt finishes/);
   assert.match(running, /codex · gpt-5\.6-luna · medium effort/);
   assert.doesNotMatch(running, /compatibility ·/);
   assert.doesNotMatch(running, /UNAVAILABLE|level unavailable/);
 
   const finished = render(makeModels().finished, 200).map(plain).join('\n');
-  assert.equal((finished.match(/API rate/g) ?? []).length, 1);
-  assert.match(finished, / API rate    ≈ \$0\.000556\s+2k tokens · legacy estimate/);
+  assert.equal((finished.match(/API price/g) ?? []).length, 1);
+  assert.match(finished, / API price   ≈ \$0\.000556\s+2k tokens · legacy estimate/);
   assert.match(finished, /codex plan  —       no meter reading for this attempt/);
   assert.match(finished, /estimated from the codex output bytes/);
 });
@@ -542,7 +542,7 @@ test('historical and failed frames state unavailable fields and preserve money b
   assert.match(retry, /attempt 2 of 2/);
   assert.match(retry, /failed · not verified 0\/1/);
   assert.match(retry, /not verified \(0\/1 requirements\)/);
-  assert.match(retry, /API rate {4}—/);
+  assert.match(retry, /API price {3}—/);
   assert.doesNotMatch(retry, /\$0\.00/);
   assert.match(retry, /event stream unavailable/);
   assert.match(retry, /failed   provider stream reported error/);

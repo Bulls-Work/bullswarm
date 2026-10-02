@@ -221,8 +221,7 @@ function tableMoney(value, tokenSource = null) {
   const money = value && typeof value === 'object' ? value : { usd: value, partial: false };
   const usd = finiteOrNull(money?.usd);
   if (usd == null) return null;
-  const glyph = money.partial || tokenSource === 'transcript-summed' ? '≈'
-    : tokenSource === 'estimated:utf8-bytes/4' ? '~' : '';
+  const glyph = money.partial ? '≥' : tokenSource === 'estimated:utf8-bytes/4' ? '~' : '';
   return { usd, glyph };
 }
 
@@ -230,7 +229,7 @@ const tableMoneyText = (money) => (money == null ? null
   : `${money.glyph}${money.usd > 0 && money.usd < 0.005 ? '<0.01' : money.usd.toFixed(2)}`);
 
 /** The rougher of two estimate glyphs, for a total over both. */
-const worseGlyph = (a, b) => (a === '~' || b === '~' ? '~' : a === '≈' || b === '≈' ? '≈' : '');
+const worseGlyph = (a, b) => (a === '≥' || b === '≥' ? '≥' : a === '~' || b === '~' ? '~' : a === '≈' || b === '≈' ? '≈' : '');
 
 /**
  * One pool's licence facts as table cells, from the model's own fields:
@@ -253,7 +252,9 @@ function licenceCells(row) {
   const minutes = finiteOrNull(row?.workerMinutes);
   const pct = finiteOrNull(row?.weeklyShare);
   const api = row?.apiFacts ? tableMoney(apiMoney(row), row?.tokenSource) : null;
+  // A pool's plan money is its share of an account-wide meter: an estimate.
   const plan = tableMoney(row?.subscriptionUsd);
+  if (plan) plan.glyph = '≈';
   const unpriced = row?.countsIncomplete || finiteOrNull(row?.attempts) == null
     ? null : finiteOrNull(row?.apiFacts?.unmeasured);
   return {
@@ -389,7 +390,7 @@ function licenceTableLines(rows, width) {
   if (totals) {
     lines.push({ text: paintRow(kept.map((column) => (column.key === 'pool' ? 'total' : totals[column.text] ?? ''))) });
   }
-  const legend = ['≈ ~ estimates (~ is rougher)', `${blank()} not measured`, 'a pool row opens Budget'];
+  const legend = ['≈ plan share', '~ estimated', '≥ partly priced', `${blank()} not measured`, 'a pool row opens Budget'];
   let legendText = ` ${legend.join(' · ')}`;
   while (visibleLength(legendText) > width && legend.length > 1) {
     legend.pop();
@@ -685,8 +686,8 @@ function spendChartLines(model, opts, width, { lines: fill = null } = {}) {
       ? ' no finished run recorded an estimate'
       : ' no finished run in this period', width)];
   }
-  const approximate = drawn.some((slot) => slot.partial || slot.source !== 'provider-reported');
-  const mark = approximate ? '~' : '';
+  const estimated = drawn.some((slot) => slot.source == null || slot.source === 'unknown' || String(slot.source).startsWith('estimated:'));
+  const mark = estimated ? '~' : drawn.some((slot) => slot.partial) ? '≥' : '';
   const ticks = spendTicks(Math.max(...drawn.map((slot) => slot.usd)));
   const top = ticks.at(-1);
   const unpriced = slots.reduce((sum, slot) => sum + slot.unpriced, 0);
@@ -1165,7 +1166,7 @@ function homeDetails(model, opts, body) {
       { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
     ], { width }), { kind: 'run', runId: record.runId });
   }
-  if (narrow) body.push(dimText(' ≈ API-equivalent estimates · the spend chart opens Stats', width));
+  if (narrow) body.push(dimText(' $ = API price at published rates · the spend chart opens Stats', width));
   return ' bullswarm · home';
 }
 

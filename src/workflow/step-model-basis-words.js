@@ -32,6 +32,7 @@ function apiBasisWords(basis, rateCard, pool, { short = false, includeDate = tru
   if (code === 'legacy') return 'legacy estimate';
   if (code === 'aggregate') return 'summed across attempts';
   if (code === 'unknown') return 'no recorded rate';
+  if (code === 'unknown:no-rate-card') return short ? 'no rate card' : 'no rate card for this model';
   // An `unknown: <why>` code is the kernel's own reason; print it as a phrase.
   const reason = code.replace(/^unknown:\s*/, '').trim();
   if (reason === code) return code;
@@ -45,9 +46,10 @@ function subscriptionBasisWords(basis, pool, { short = false } = {}) {
   if (code === 'unknown:no-price') return short ? 'no plan price' : 'no plan price recorded';
   if (code === 'unknown:no-cost') return short ? 'no API cost' : 'no API cost to price';
   if (code === 'unknown:below-resolution') return short ? 'below meter resolution' : 'below the meter resolution';
-  if (code === 'observed:meter-delta') return `measured from the ${name} meter`;
-  if (code === 'observed:meter-ledger') return `measured from the ${name} meter ledger`;
-  if (code === 'calibrated:usd-per-pct') return `calibrated from the ${name} meter`;
+  // Every plan amount is this attempt's share of an account-wide meter.
+  if (code === 'observed:meter-delta') return `share of the ${name} meter's move`;
+  if (code === 'observed:meter-ledger') return `share of the ${name} meter ledger`;
+  if (code === 'calibrated:usd-per-pct') return `estimated from the ${name} meter's $ per %`;
   if (code === 'provider-reported') return 'provider-reported';
   if (code === 'aggregate') return 'summed across attempts';
   if (code === 'unknown') return 'no meter reading';

@@ -12,9 +12,9 @@
             irure deserunt et incididunt consequat et…
  Enter → the step page · following ●
 
-── spend · 5 of 5 attempts measured ───────────────────
- API rate  $9.76
- plans     —   0 with a meter reading
+── spend · 5 of 5 attempts priced ─────────────────────
+ API price  $9.76
+ plan share —   0 with a meter reading
 
 ── timeline · 5 phases · 5 attempts ───────────────────
 ── Preflight

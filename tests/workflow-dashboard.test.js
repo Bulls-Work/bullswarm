@@ -2972,11 +2972,12 @@ test('the Budget page draws every window of every pool and no untrustworthy figu
 
 test('Home marks provider, transcript, estimated and unknown usage bases', () => {
   const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
-  // The money pair is strict: a provider-reported figure is bare, a summed one
-  // carries ≈, an estimate carries ~, and a figure with no source is a dash.
+  // The money pair is strict: a provider-reported or transcript-summed figure
+  // is bare (both are the provider's own counts), an estimate carries ~, and a
+  // figure with no source is a dash.
   const cases = [
     ['provider-reported', 1.23, /\$1\.23/],
-    ['transcript-summed', 1.23, /≈ \$1\.23/],
+    ['transcript-summed', 1.23, /(?<![≈~] )\$1\.23/],
     ['estimated:utf8-bytes\/4', 1.23, /~ \$1\.23/],
     // No figure at all: the money pair is a dash rather than a zero or a guess.
     ['unknown', null, /API — · subscription —/],
@@ -3603,9 +3604,9 @@ test('a run with no recorded estimate and no measured rate paints blanks, not ze
     // Run v2 rule 5: with nothing measured the spend block is a dash and the
     // coverage that produced it, in words — never a manufactured zero. The
     // label column is ten cells, so the amount opens one cell after it.
-    assert.match(text, /── spend · 0 of \d+ attempts measured ─/);
-    assert.match(text, /API rate {3}—\s+\d+ (?:running|unmeasured)/);
-    assert.match(text, /plans {6}—\s+0 attempts with a meter reading · \d+ without/);
+    assert.match(text, /── spend · 0 of \d+ attempts priced ─/);
+    assert.match(text, /API price {3}—\s+\d+ (?:running|unpriced)/);
+    assert.match(text, /plan share {2}—\s+0 attempts with a meter reading · \d+ without/);
     // Rules 4 and 7: the licence bars, the `so far` block and the ETA row all
     // left this page, so none of their words survive.
     assert.doesNotMatch(text, /free model · no licence meter/);
@@ -3637,13 +3638,13 @@ test('the Step page writes an unmetered pool in words, never a dotted track', ()
       for (const line of lines) {
         assert.ok(!/·{6,}/.test(line), `${width} kept a dotted track: ${line}`);
       }
-      // Step v2 rule 8: two rows, `API rate` and the pool's plan, each with its
+      // Step v2 rule 8: two rows, `API price` and the pool's plan, each with its
       // amount and one line of basis. `budget —` is gone and `api` is never
       // said twice, so the block rule is just `cost`.
       const cost = lines.findIndex((line) => /── cost ─/.test(line));
       assert.ok(cost >= 0, lines.join('\n'));
       const costBlock = lines.slice(cost, cost + 4).join('\n');
-      assert.match(costBlock, /API rate\s+—\s+no recorded rate/, `${width}: ${costBlock}`);
+      assert.match(costBlock, /API price\s+—\s+not priced/, `${width}: ${costBlock}`);
       assert.match(costBlock, /plan\s+—\s+no meter readin/, `${width}: ${costBlock}`);
       assert.doesNotMatch(costBlock, /budget/, `${width}: ${costBlock}`);
       assert.doesNotMatch(costBlock, /\$0\.00/, `${width}: ${costBlock}`);
@@ -3709,12 +3710,12 @@ test('an explicitly recorded "estimatedUsd: null" stays blank and is never count
         page, width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
       }).lines.join('\n'));
       assert.doesNotMatch(text, /\$0\.00/, `${page} manufactured a zero from a null estimate`);
-      assert.doesNotMatch(text, /attempts priced/, `${page} counted a null estimate as priced`);
-      if (page === 'run') assert.match(text, /API rate {3}—/, `${page} manufactured a money figure from a null estimate`);
+      assert.doesNotMatch(text, /[1-9]\d* of \d+ attempts priced/, `${page} counted a null estimate as priced`);
+      if (page === 'run') assert.match(text, /API price {3}—/, `${page} manufactured a money figure from a null estimate`);
       // Step v2 rule 11: a running attempt's cost block says it is measured
       // when the attempt finishes rather than printing a guess; a finished one
       // with no rate prints a dash and its reason.
-      else assert.match(text, /(?:API rate\s+—|measured when the attempt finishes)/, `${page} manufactured a money figure from a null estimate`);
+      else assert.match(text, /(?:API price\s+—|measured when the attempt finishes)/, `${page} manufactured a money figure from a null estimate`);
       // A null ratePerMinute is a blank share, never 0.00%.
       assert.doesNotMatch(text, /≈ 0\.00% of its/, `${page} claimed a zero licence share`);
     }

@@ -13,7 +13,7 @@ Totals 15 workflows · 2816.02 worker-minutes · ≥$299.8…
        │ ▆▆▆▆        ▄▄▄▄
        │ ▃▃▃▃  ▄▄▄▄  ▁▁▁▁
 $0     ┼Fri   Sat   Sun
- ~ bars leave 66 unpriced attempts out
+ ≥ bars leave 66 unpriced attempts out
 
 ── Pool spend ─────────────────────────────────────────
 codex        ▓▒▒▒▒▒                       ≥$63.16 21.1%
@@ -43,7 +43,7 @@ Longest run   ▓▓▓▓▓▓                      6h41m maximum
 Legend  ● claude-code:acme  ● claude-code  ● codex  ● …
 ● unallocated
 Basis · the recorded API-equivalent estimate per pool.
-Money · $ measured · ≈ transcript-summed · ~ estimated…
+Money · API price at published rates · ~ estimated fro…
 History · the requested period is longer than the reta…
 
 

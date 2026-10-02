@@ -661,15 +661,16 @@ function runSpendFacts(row, { rollup = null } = {}) {
     estimated,
     running,
     unmeasured,
-    coverageText: `${measured} of ${attemptsTotal} attempts measured`,
+    coverageText: `${measured + estimated} of ${attemptsTotal} attempts priced`,
     suffix: [
       estimated ? `${estimated} estimated` : null,
       running ? `${running} running` : null,
-      unmeasured ? `${unmeasured} unmeasured` : null,
+      unmeasured ? `${unmeasured} unpriced` : null,
     ].filter(Boolean).join(' · '),
     pools,
     plansKnownSubtotalUsd,
-    plansText: amountText(plansKnownSubtotalUsd, { lowerBound: planMeter < attemptsTotal }),
+    // A plan amount is a share of an account-wide meter: always an estimate.
+    plansText: amountText(plansKnownSubtotalUsd, { lowerBound: planMeter < attemptsTotal, approximate: true }),
     planMeter,
     planUnmetered: Math.max(0, attemptsTotal - planMeter),
   };

@@ -24,7 +24,7 @@
             elit dolor incididunt pariatur dolor cupidatat sed voluptate reprehenderit ullamco.[2m · 7 commands[0m                         │  [2mEnter on task: full text 2.4 KB · kernel wrapper 5.1 KB[0m
  14  [2m02:35[0m  sample response for step-model-1 incididunt nisi aliqua id culpa officia voluptate tempor amet est qui in magna occaecat │
             labore veniam culpa duis amet non incididunt sint laboris ut ut nulla occaecat.[2m · 11 commands · 8 edits[0m                  │ [2m──[0m cost [2m─────────────────────────────────────────────────────────[0m
-[7m 15  [2m02:39[0m[7m  sample report magna exercitation.[27m                                                                                        │  [2mAPI rate[0m    [1m$0.96[22m   [2m36.0M tokens[0m · [2mOpenAI rate card, 20 Sep[0m
+[7m 15  [2m02:39[0m[7m  sample report magna exercitation.[27m                                                                                        │  [2mAPI price[0m   [1m$0.96[22m   [2m36.0M tokens[0m · [2mOpenAI rate card, 20 Sep[0m
             [2m→ the report, shown under result[0m                                                                                         │              [2m35.2M cache read[0m · [2m713k input[0m · [2m58k output[0m
                                                                                                                                      │              [2m37k reasoning[0m
                                                                                                                                      │  [38;2;127;163;224mcodex[0m[2m plan[0m  [2m—[0m       [2mno meter reading for this attempt[0m

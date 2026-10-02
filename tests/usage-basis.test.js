@@ -6,8 +6,9 @@ test('usage basis keeps provider-reported dollars distinct', () => {
   assert.equal(formatUsageBasis({ tokenSource: 'provider-reported', cost: { estimatedUsd: 3.06 } }), '$ 3.06');
 });
 
-test('usage basis labels transcript sums and byte estimates', () => {
-  assert.equal(formatUsageBasis({ tokenSource: 'transcript-summed', costUsd: 3.06 }), '≈ $3.06 summed');
+test('usage basis prices transcript sums plainly and labels byte estimates', () => {
+  // A transcript sum is the provider's own per-request token counts added up.
+  assert.equal(formatUsageBasis({ tokenSource: 'transcript-summed', costUsd: 3.06 }), '$ 3.06');
   assert.equal(formatUsageBasis({ tokenSource: 'estimated:utf8-bytes/4', costUsd: 3.06 }), '~ $3.06 estimated');
 });
 
@@ -20,11 +21,11 @@ test('shared money formatter keeps cents for normal amounts and precision for sm
   assert.equal(formatMoneyPair({
     api: { usd: 0.0005564, tokenSource: 'estimated:utf8-bytes/4' },
     subscription: { usd: 0.0459, deltaPct: 1.2, window: 'weekly', basis: 'observed:meter-delta' },
-  }), '~ $0.000556 api estimated · 1.2% wk $0.0459 sub');
+  }), '~ $0.000556 api estimated · 1.2% wk ≈ $0.0459 sub');
   assert.equal(formatMoneyPair({
     api: { usd: 0.00418, tokenSource: 'provider-reported' },
     subscription: { usd: 0.42, basis: 'observed:meter-delta' },
-  }), '$0.00418 api · $0.42 sub');
+  }), '$0.00418 api · ≈ $0.42 sub');
 });
 
 test('money formatter distinguishes a real zero from an unpriced amount', () => {
@@ -50,7 +51,7 @@ test('shared money pair uses one glyph for each API basis', () => {
   }), '$0.42 api · sub unknown (no meter/calibration)');
   assert.equal(formatMoneyPair({
     api: { usd: 0.42, tokenSource: 'transcript-summed' }, subscription: null,
-  }), '≈ $0.42 api summed · sub unknown (no meter/calibration)');
+  }), '$0.42 api · sub unknown (no meter/calibration)');
   assert.equal(formatMoneyPair({
     api: { usd: 0.42, tokenSource: 'estimated:utf8-bytes/4' }, subscription: null,
   }), '~ $0.42 api estimated · sub unknown (no meter/calibration)');
@@ -59,11 +60,12 @@ test('shared money pair uses one glyph for each API basis', () => {
   }), 'api unknown · sub unknown (no meter/calibration)');
 });
 
-test('shared money pair distinguishes observed and calibrated subscription dollars', () => {
+test('shared money pair marks every subscription share as an estimate', () => {
+  // Observed or calibrated, a plan amount is a share of an account-wide meter.
   assert.equal(formatMoneyPair({
     api: { usd: 0.42, tokenSource: 'provider-reported' },
     subscription: { deltaPct: 1.2, window: 'weekly', usd: 0.84, basis: 'observed:meter-delta' },
-  }), '$0.42 api · 1.2% wk $0.84 sub');
+  }), '$0.42 api · 1.2% wk ≈ $0.84 sub');
   assert.equal(formatMoneyPair({
     api: { usd: 0.42, tokenSource: 'provider-reported' },
     subscription: { deltaPct: 1.2, window: 'weekly', usd: 0.84, basis: 'calibrated:usd-per-pct' },

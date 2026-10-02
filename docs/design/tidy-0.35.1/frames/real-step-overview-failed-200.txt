@@ -25,7 +25,7 @@
                                                                                                                                      │  Enter on task: full text 2.3 KB · kernel wrapper 5.2 KB
                                                                                                                                      │
                                                                                                                                      │ ── cost ─────────────────────────────────────────────────────────
-                                                                                                                                     │  API rate    —       no-rate-card
+                                                                                                                                     │  API price   —       not priced · no token counts recorded
                                                                                                                                      │  codex plan  —       no API cost to price
                                                                                                                                      │              $100/mo · weekly window
 

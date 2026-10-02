@@ -30,7 +30,7 @@
  after  step-model
 
 ── cost ───────────────────────────────────────────────
- API rate   —       no-rate-card
+ API price  —       not priced · no tokens
  codex plan —       no API cost · $100/mo weekly
 
 

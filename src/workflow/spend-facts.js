@@ -134,7 +134,7 @@ export function honestApiTotalText(facts, { api = 'api', whole = null, counts = 
   const countText = counts === 'unmeasured'
     ? [
       facts.running > 0 ? `${facts.running} running` : null,
-      facts.unmeasured > 0 ? `${facts.unmeasured} unmeasured` : null,
+      facts.unmeasured > 0 ? `${facts.unmeasured} unpriced` : null,
     ].filter(Boolean).join(' · ')
     : counts === 'none' ? '' : String(facts.suffix ?? '');
   const coverage = lowerBound && countText ? ` · ${countText}` : '';
@@ -142,7 +142,10 @@ export function honestApiTotalText(facts, { api = 'api', whole = null, counts = 
     // Nothing was priced. Keep the caller's own label when it still names a
     // whole-scope amount (a v1 rollup carries `costUsd` without coverage
     // counts); otherwise the honest answer is unknown, with the count.
-    if (coverage && (whole == null || whole === 'api unknown')) return `api unknown${coverage}`;
+    if (coverage && (whole == null || whole === 'api unknown')) {
+      // Finished attempts with no price at all: say so, not a bare unknown.
+      return facts.running > 0 ? `api unknown${coverage}` : 'not priced';
+    }
     return whole ?? `api unknown${coverage}`;
   }
   // A lower bound of nothing is `$0`, never the `$0.000` a priced zero reads.

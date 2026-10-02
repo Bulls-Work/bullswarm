@@ -196,7 +196,7 @@ test('Run v2 header and spend facts keep active/span and partial coverage honest
   assert.equal(spend.estimated, 1);
   assert.equal(spend.running, 1);
   assert.equal(spend.unmeasured, 0, 'running attempts have their own coverage class');
-  assert.match(spend.coverageText, /^1 of 3 attempts measured$/);
+  assert.match(spend.coverageText, /^2 of 3 attempts priced$/);
   assert.match(spend.suffix, /1 estimated/);
   assert.match(spend.suffix, /1 running/);
   assert.doesNotMatch(spend.suffix, /unmeasured/);

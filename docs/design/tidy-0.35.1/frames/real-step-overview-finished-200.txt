@@ -24,7 +24,7 @@
             elit dolor incididunt pariatur dolor cupidatat sed voluptate reprehenderit ullamco. · 7 commands                         │  Enter on task: full text 2.4 KB · kernel wrapper 5.1 KB
  14  02:35  sample response for step-model-1 incididunt nisi aliqua id culpa officia voluptate tempor amet est qui in magna occaecat │
             labore veniam culpa duis amet non incididunt sint laboris ut ut nulla occaecat. · 11 commands · 8 edits                  │ ── cost ─────────────────────────────────────────────────────────
- 15  02:39  sample report magna exercitation.                                                                                        │  API rate    $0.96   36.0M tokens · OpenAI rate card, 20 Sep
+ 15  02:39  sample report magna exercitation.                                                                                        │  API price   $0.96   36.0M tokens · OpenAI rate card, 20 Sep
             → the report, shown under result                                                                                         │              35.2M cache read · 713k input · 58k output
                                                                                                                                      │              37k reasoning
                                                                                                                                      │  codex plan  —       no meter reading for this attempt

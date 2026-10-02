@@ -37,6 +37,6 @@
  after  extract · stream-contract
 
 ── cost ───────────────────────────────────────────────
- API rate   $0.96   36.0M tokens · OpenAI card 20 Sep
+ API price  $0.96   36.0M tokens · OpenAI card 20 Sep
  codex plan —       no meter reading · $100/mo weekly
  [ back ]  Enter turn · v detail · t filter · ? help

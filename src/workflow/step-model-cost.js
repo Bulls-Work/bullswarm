@@ -14,15 +14,26 @@ import { stepDayText, stepTokenText, stepMoneyText } from './step-model-text.js'
 import { textOrNull, dateMs } from './step-model-values.js';
 
 /**
- * An exact amount prints plain. A rate card without every field priced, a
- * transcript sum, or a byte estimate is not the provider's own bill, so it
- * carries `≈`; an amount nobody recorded stays a dash with the reason.
+ * An exact amount prints plain: the provider's own token counts (reported or
+ * summed from its transcript) priced at a complete rate card. A rate card
+ * without every field priced or a byte estimate carries `≈`; an amount nobody
+ * recorded stays a dash with the reason.
  */
 function apiAmountIsExact(api, tokenSource) {
   const basis = textOrNull(api?.basis) ?? '';
   if (basis === 'rate-card:complete') return true;
   if (basis === 'provider-reported' || tokenSource === 'provider-reported') return true;
   return false;
+}
+
+/** Why an attempt has no API price, in the words the owner can act on. */
+function unpricedReason(api, tokens, { short = false } = {}) {
+  if (finiteOrNull(tokens?.totalKnown) == null) return short ? 'not priced · no tokens' : 'not priced · no token counts recorded';
+  if (textOrNull(api?.basis) === 'unknown:no-rate-card') {
+    return short ? 'not priced · no rate card'
+      : 'not priced · no rate card for this model yet (bullswarm workflow reprice fills it in)';
+  }
+  return 'not priced';
 }
 
 function monthlyPriceText(value) {
@@ -142,20 +153,21 @@ function costRows(moneyInput, { running = false, attempts = [], selected = null 
     multiplePools,
     rows: [
       {
-        label: 'API rate',
+        label: 'API price',
         amount: measuring ? '—' : stepMoneyText(explicit, { estimated: !exact }),
-        headline: measuring ? 'measured when the attempt finishes' : headline,
+        headline: measuring ? 'measured when the attempt finishes' : explicit == null ? unpricedReason(api, tokens) : headline,
         details: measuring ? [] : apiDetails,
         // The phone says the same two facts in one row, with the classes left
         // to the desk layout where they fit.
         phoneText: measuring
           ? 'measured when the attempt finishes'
-          : [totalText ? `${totalText} tokens` : null, apiBasisWords(api.basis, api.rateCard, pool, { short: true })].filter(Boolean).join(' · '),
+          : explicit == null ? unpricedReason(api, tokens, { short: true }) : [totalText ? `${totalText} tokens` : null, apiBasisWords(api.basis, api.rateCard, pool, { short: true })].filter(Boolean).join(' · '),
         unknown: explicit == null,
       },
       {
         label: `${multiplePools ? 'plans' : pool ?? 'pool'}${multiplePools ? '' : ' plan'}`,
-        amount: stepMoneyText(subscription.usd, { estimated: String(subscription.basis ?? '').startsWith('calibrated') }),
+        // A plan amount is a share of an account-wide meter: always `≈`.
+        amount: stepMoneyText(subscription.usd, { estimated: true }),
         headline: planHeadline,
         details: planDetails,
         phoneText: planPhone,

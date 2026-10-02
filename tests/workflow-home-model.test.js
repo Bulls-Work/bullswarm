@@ -133,12 +133,12 @@ test('Home money shows a partly-priced run as the recorded subtotal, not a dash'
   assert.deepEqual(info.apiCoverage, { priced: 3, attempts: 9 });
   // Six of the nine attempts were never priced, so the subtotal is a lower
   // bound and reads in the Run spend block's own words.
-  assert.match(recordMoneyPair(partial).text, /^at least \$9\.52 api \u00b7 6 unmeasured \u00b7 /);
-  assert.equal(recordMoneyPair(partial).apiSlotText, 'at least $9.52 · 6 unmeasured');
+  assert.match(recordMoneyPair(partial).text, /^at least \$9\.52 api \u00b7 6 unpriced \u00b7 /);
+  assert.equal(recordMoneyPair(partial).apiSlotText, 'at least $9.52 · 6 unpriced');
   // The suffix names only the classes the record can prove: this usage block
   // never said how many of its three priced attempts were measured, so none
   // of them is claimed as an estimate.
-  assert.equal(recordMoneyPair(partial).facts.suffix, '6 unmeasured');
+  assert.equal(recordMoneyPair(partial).facts.suffix, '6 unpriced');
   // A run whose attempts were all priced is untouched by the fallback.
   const whole = {
     runId: 'wf-whole',
@@ -146,12 +146,12 @@ test('Home money shows a partly-priced run as the recorded subtotal, not a dash'
     pools: { acme: { attempts: 5, pricedAttempts: 5, apiUsd: 9.760216, apiKnownSubtotalUsd: 9.760216 } },
   };
   assert.match(recordMoneyPair(whole).text, /^~ \$9\.76 api estimated \u00b7 /);
-  // No recorded amount at all is still a dash, never a zero.
+  // No recorded amount at all says so in words, never a zero.
   assert.match(recordMoneyPair({
     runId: 'wf-none',
     usage: { apiUsd: null, apiKnownSubtotalUsd: null, pricedAttempts: 0, attempts: 2 },
     pools: { acme: { attempts: 2, pricedAttempts: 0, apiUsd: null, apiKnownSubtotalUsd: null } },
-  }).text, /^api unknown/);
+  }).text, /^not priced · /);
 });
 
 test('Home model medians the period\'s runs on active minutes, or on a labelled span', () => {

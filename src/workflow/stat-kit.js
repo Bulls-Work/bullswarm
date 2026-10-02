@@ -92,7 +92,7 @@ export function slotLabelLine(slots, { cell, weekly = false, room }) {
 
 export function spendFootnote(unpriced) {
   const count = Math.max(0, Math.trunc(Number(unpriced)) || 0);
-  return count ? `~ bars leave ${count} unpriced attempt${count === 1 ? '' : 's'} out` : null;
+  return count ? `≥ bars leave ${count} unpriced attempt${count === 1 ? '' : 's'} out` : null;
 }
 
 /** The dashboard-wide compact money cell. */
@@ -101,9 +101,9 @@ export function compactMoney({ value, known, tokenSource = null, partial = false
   if (amount == null) return '—';
   const lowerBound = partial || Number(unpriced) > 0 || Number(running) > 0;
   const prefix = lowerBound ? '≥'
-    : tokenSource == null || tokenSource === 'provider-reported' ? ''
-      : tokenSource === 'transcript-summed' ? '≈' : '~';
-  const money = amount > 0 && amount < 0.01 ? '<$0.01' : `$${amount.toFixed(2)}`;
+    : tokenSource == null || tokenSource === 'provider-reported' || tokenSource === 'transcript-summed' ? '' : '~';
+  // A lower bound of nothing is `$0`, never the `$0.00` a priced zero reads.
+  const money = amount === 0 && lowerBound ? '$0' : amount > 0 && amount < 0.01 ? '<$0.01' : `$${amount.toFixed(2)}`;
   return `${prefix}${money}`;
 }
 

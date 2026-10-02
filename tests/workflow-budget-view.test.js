@@ -111,11 +111,11 @@ test('the pool spend line reads at least its recorded subtotal, and a whole amou
   const partial = budgetLines(budget({
     apiFacts: {
       apiText: 'at least $36.30', unmeasured: 12, running: 0,
-      suffix: '5 estimated · 12 unmeasured', apiKnownSubtotalUsd: 36.3,
+      suffix: '5 estimated · 12 unpriced', apiKnownSubtotalUsd: 36.3,
     },
     tokenSource: 'transcript-summed',
   }), { width: 120, ansi: false });
-  assert.match(partial.lines.join('\n'), /^spent at least \$36\.30 api · 12 unmeasured$/m);
+  assert.match(partial.lines.join('\n'), /^spent at least \$36\.30 api · 12 unpriced$/m);
 
   const whole = budgetLines(budget({
     apiFacts: {

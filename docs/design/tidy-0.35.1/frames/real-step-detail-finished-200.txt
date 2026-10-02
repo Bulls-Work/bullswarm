@@ -29,7 +29,7 @@
             01:53:04  $ sample command for step-model-1 cupidatat excepteur nostrud sit amet reprehenderit sint minim occaecat quis… │  Enter on task: full text 2.4 KB · kernel wrapper 5.1 KB
             01:53:17  $ sample command for step-model-1 aliquip consequat incididunt                                                 │
             01:53:26  $ sample command for step-model-1 aliquip proident aute ex consectetur aute in dolore sint cupidatat ex sunt … │ ── cost ─────────────────────────────────────────────────────────
-            01:53:32  $ sample command for step-model-1 adipiscing sit non sint aute aute et id culpa amet ut veniam laborum repreh… │  API rate    $0.96   36.0M tokens · OpenAI rate card, 20 Sep
+            01:53:32  $ sample command for step-model-1 adipiscing sit non sint aute aute et id culpa amet ut veniam laborum repreh… │  API price   $0.96   36.0M tokens · OpenAI rate card, 20 Sep
             01:53:45  $ sample command for step-model-1 fugiat reprehenderit elit ex ut magna ad id laboris ipsum exercitation adip… │              35.2M cache read · 713k input · 58k output
             01:53:57  $ sample command for step-model-1 esse sunt veniam reprehenderit id commodo officia in consectetur tempor ame… │              37k reasoning
             01:54:05  $ sample command for step-model-1 culpa esse ipsum dolore qui occaecat pariatur enim velit aliqua do sint inc… │  codex plan  —       no meter reading for this attempt

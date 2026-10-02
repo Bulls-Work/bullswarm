@@ -197,10 +197,12 @@ function planLine(row, ansi) {
 function spendLine(row, ansi) {
   const facts = row?.apiFacts ?? null;
   const amount = finite(facts?.apiKnownSubtotalUsd);
-  const glyph = row?.tokenSource === 'transcript-summed' ? '≈'
-    : row?.tokenSource === 'estimated:utf8-bytes/4' ? '~' : '';
+  const glyph = row?.tokenSource === 'estimated:utf8-bytes/4' ? '~' : '';
   const whole = amount == null ? null : `${glyph}${formatMoney(amount)} api`;
-  const text = facts ? honestApiTotalText(facts, { whole, counts: 'unmeasured' }) : null;
+  // A pool nobody ran this period spent nothing to price: say that, not
+  // `api unknown`.
+  const idle = facts && amount == null && !(Number(facts.attempts) > 0);
+  const text = idle ? '— · no Bullswarm runs in 7 days' : facts ? honestApiTotalText(facts, { whole, counts: 'unmeasured' }) : null;
   return paint(`spent ${text ?? '—'}`, METER_COLORS.dim, ansi);
 }
 
