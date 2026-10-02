@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.8 — dashboard money says only what its source supports; proof counts on v3 runs
+
 - dashboard: money says only as much as its source supports, in fewer words. An API price built from the provider's own token counts — reported, or summed from its transcript — prints plainly (`$4.01`, was `≈$4.01`): exact arithmetic at the dated rate card, checked on 2026-10-02 against all 251 priced codex attempts and 163 of 167 Claude attempts' own reported cost. `~` stays on prices estimated from text size. A total that leaves attempts out reads `≥$9.52` everywhere (was `at least $9.52 api · 6 unmeasured` or `≈`); the Runs day header and the Run page's spend rule (`25 of 26 attempts priced`) keep the counts. Every plan amount is a share of an account-wide meter, so it always carries `≈`, and a meter that did not move shows `—` (was `≈ $0.000`).
 - dashboard: a missing price is named, not a dash. A finished run with nothing priced reads `not priced` on its Home card and `unpriced` in the Runs list; the Step page says `not priced · no rate card` or `not priced · no token counts`. The Run page's rows read `API price` and `plan share`; the Home legend is `≈ ~ estimate · ≥ partly priced`, the chart footnote `66 unpriced`, Stats' note `Money · 83 of 149 attempts priced`, the period sentence `Your 15 runs in this period: ≥$299.87 at API prices`, and a Budget pool with no runs `spent —` (was `api unknown`).
 - dashboard: the Run header and timeline say `1 attempt` and `1 phase` (was `1 attempts`).
