@@ -276,6 +276,7 @@
       }
     }
   },
+  "$comment-reportedCost": "The CLI's own `total_cost_usd` is not the published API price: on 2026-10-02 every grok-4.6 and grok-4.7 attempt with no request at or over 200k tokens reported exactly 0.34x what https://docs.x.ai/developers/pricing gives for its tokens (worked by hand: 120,805 input, 1,181,056 cached, 7,090 output = $0.8747 published, $0.2974 reported). The rate card below follows the published page; scripts/check-rate-cards.mjs shows the gap.",
   "$comment-modelProfiles": "Exact rows carry each model's dated price; tier and rank come from modelFamilies. Prices are per 1M tokens as https://docs.x.ai/docs/models listed them on 2026-09-23, the same numbers as https://docs.x.ai/developers/pricing that day: grok-4.7 and grok-4.6 $2.00 input, $0.50 cached input, $6.00 output below 200k prompt tokens and $4.00, $1.00, $12.00 from 200k; grok-4.5 $2.00, $0.30, $6.00 and $4.00, $0.60, $12.00. grok-4.7-build-fast has no row on purpose. Doubling grok-4.7 gives $4.00, $1.00, $12.00 below 200k and $8.00, $2.00, $24.00 above, but the Pricing page's own Grok 4.7 Fast table (https://docs.x.ai/developers/pricing#grok-47-fast-pricing-cursor-and-grok-build-only, 2026-09-23) lists $4.00, $1.00, $12.00 below 200k and $6.00, $1.50, $18.00 above. The long-context rates are not twice grok-4.7's, so a 2x row would be wrong there, and it stays unpriced until a row states which rate card it follows.",
   "modelProfiles": [
     {
