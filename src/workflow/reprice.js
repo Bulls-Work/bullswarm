@@ -305,6 +305,34 @@ function attachSubscription(usage, { home, poolName, connector, oldSubscription,
 }
 
 /**
+ * Re-card an attempt whose token counts are already measured (provider
+ * reported or summed from its transcript) but carry no price: the same
+ * counts, priced at today's rate card. No transcript is read. Returns null
+ * when the card still has no price for the attempt's model.
+ */
+export function rateCardCandidate({ attempt, state, connectors, home }) {
+  const oldUsage = attempt?.usage && typeof attempt.usage === 'object' ? attempt.usage : null;
+  const tokenSource = sourceOf(oldUsage);
+  if (tokenSource !== 'provider-reported' && tokenSource !== 'transcript-summed') return null;
+  const poolName = attempt.pool ?? oldUsage?.subscription?.pool ?? null;
+  const connector = connectorFor(connectors, poolName);
+  const model = attempt.model ?? oldUsage?.model ?? connector.model ?? null;
+  const usage = usageFromTokens({
+    connector,
+    model,
+    sessionId: oldUsage?.sessionId ?? null,
+    subscription: subscriptionFor({ home, poolName, connector, oldSubscription: oldUsage?.subscription ?? null }),
+    tokens: tokenReport(oldUsage),
+    tokenSource,
+    requests: oldUsage?.requests ?? null,
+  });
+  if (usage?.api?.usd == null) return null;
+  return attachSubscription(usage, {
+    home, poolName, connector, oldSubscription: oldUsage?.subscription ?? null, runId: state?.runId, attemptId: attempt.id,
+  });
+}
+
+/**
  * Price one attempt from its durable record. Provider-reported usage is only
  * re-carded; everything else is looked up in the provider's transcripts by
  * session id, then task text, then cwd + time window.

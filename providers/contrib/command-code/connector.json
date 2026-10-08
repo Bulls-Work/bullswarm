@@ -350,6 +350,28 @@
       "pricingUpdatedAt": "2026-09-20"
     },
     {
+      "match": "^gpt-6-luna$",
+      "pricing": {
+        "inputUsdPerMillion": 0.1,
+        "cacheReadUsdPerMillion": 0.01,
+        "cacheWriteUsdPerMillion": 0.125,
+        "outputUsdPerMillion": 0.5
+      },
+      "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits",
+      "pricingUpdatedAt": "2026-10-09"
+    },
+    {
+      "match": "(?:^|/)claude-sonnet-5-5$",
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.2,
+        "cacheWriteUsdPerMillion": 2.5,
+        "outputUsdPerMillion": 10
+      },
+      "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits",
+      "pricingUpdatedAt": "2026-10-09"
+    },
+    {
       "match": "(?:^|/)claude-fable-",
       "pricing": {
         "inputUsdPerMillion": 10,

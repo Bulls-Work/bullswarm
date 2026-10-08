@@ -45,6 +45,7 @@ import {
 import {
   attemptEntries,
   candidateFor,
+  rateCardCandidate,
   loadPricingProviders,
   MATCHED_CONFIDENCES,
   sourceOf,
@@ -73,6 +74,8 @@ export const RECONCILE_SETTLED_MS = 60 * 60_000;
 export const RECONCILE_THROTTLE_MS = 5 * 60_000;
 
 const PRICEABLE_SOURCES = new Set(['unknown', 'estimated:utf8-bytes/4']);
+const MEASURED_SOURCES = new Set(['provider-reported', 'transcript-summed']);
+const PACKAGE_JSON = new URL('../../package.json', import.meta.url);
 const LOCK_STALE_MS = 30 * 60_000;
 const LOCK_INIT_GRACE_MS = 10_000;
 const HEARTBEAT_MS = 30_000;
@@ -221,6 +224,36 @@ export function priceableAttempt(attempt) {
   return PRICEABLE_SOURCES.has(sourceOf(attempt.usage));
 }
 
+/**
+ * A terminal attempt whose token counts are measured but carry no price —
+ * recorded before its model had a rate card. Re-carded from its own counts
+ * (rateCardCandidate), never from a transcript, so it takes no ledger tries.
+ */
+export function unpricedMeasuredAttempt(attempt) {
+  if (!attempt || typeof attempt !== 'object') return false;
+  if (attempt.status === 'running' || !(attempt.finishedAt ?? attempt.endedAt)) return false;
+  const usage = attempt.usage;
+  if (!MEASURED_SOURCES.has(sourceOf(usage)) || usage?.api?.usd != null) return false;
+  return Number.isFinite(Number(usage?.tokens?.totalKnown ?? usage?.api?.tokens?.totalKnown));
+}
+
+/**
+ * What the rate cards are: the installed package (its connectors carry the
+ * packaged cards) and the home's own connector overrides. A new stamp means a
+ * card may now price an attempt that had none, so every run is read again once.
+ */
+function rateCardStamp(bullswarmDir) {
+  let version = null;
+  try { version = JSON.parse(readFileSync(PACKAGE_JSON, 'utf8')).version ?? null; } catch { /* unreadable */ }
+  const dir = join(bullswarmDir, 'connectors');
+  let overrides = [];
+  try {
+    overrides = readdirSync(dir, { recursive: true }).map(String).sort()
+      .map((name) => `${name}:${fileFingerprint(join(dir, name)) ?? ''}`);
+  } catch { /* no overrides */ }
+  return JSON.stringify({ version, overrides });
+}
+
 function attemptWindow(attempt) {
   return {
     startedAt: attempt.startedAt ?? null,
@@ -336,6 +369,7 @@ function newStats() {
     parsedRuns: 0,
     scannedAttempts: 0,
     matched: 0,
+    carded: 0,
     ambiguous: 0,
     missing: 0,
     noReader: 0,
@@ -393,9 +427,22 @@ function reopenFromStores({ ledger, bullswarmDir, transcriptHome, pricing: lazyP
  * matched item gets `item.usage` (and `cwd`, `project`) for the caller to
  * persist. The ledger is mutated in place.
  */
-function priceItems(items, { ledger, bullswarmDir, transcriptHome, pricing: lazyPricing, nowMs, stats, lock, indexes = {} }) {
-  if (!items.length) return;
+function priceItems(allItems, { ledger, bullswarmDir, transcriptHome, pricing: lazyPricing, nowMs, stats, lock, indexes = {} }) {
+  if (!allItems.length) return;
   const pricing = lazyPricing();
+  // Measured counts with no price: today's card prices them or nothing does.
+  for (const item of allItems.filter((entry) => entry.rateCard)) {
+    stats.eligible += 1;
+    let usage = null;
+    try {
+      usage = rateCardCandidate({ attempt: item.attempt, state: item.state, connectors: pricing.connectors, home: bullswarmDir });
+    } catch (error) {
+      stats.failures.push({ key: item.key, error: error.message });
+    }
+    if (usage) { item.usage = usage; stats.carded += 1; }
+  }
+  const items = allItems.filter((entry) => !entry.rateCard);
+  if (!items.length) return;
   const ownerOf = new Map();
   const owner = (pool) => {
     if (!ownerOf.has(pool)) {
@@ -485,7 +532,7 @@ function applyToAttempt(attempt, item) {
 }
 
 function summaryLine(stats, { scope }) {
-  const priced = stats.matched;
+  const priced = stats.matched + (stats.carded ?? 0);
   const left = stats.ambiguous + stats.missing;
   const parts = [`${priced} attempt${priced === 1 ? '' : 's'} priced`];
   if (left) parts.push(`${left} still unmeasured (${stats.ambiguous} ambiguous, ${stats.missing} no transcript)`);
@@ -549,7 +596,7 @@ function stateValid(state) {
 // A run (or the task log) stays open while one of its unmeasured attempts
 // can still come due on the clock; closed attempts reopen via the ledger.
 function openItems(items, ledger) {
-  return items.some((item) => !item.usage && !closedUnmeasured(ledger.attempts[item.key])
+  return items.some((item) => !item.rateCard && !item.usage && !closedUnmeasured(ledger.attempts[item.key])
     && ledger.attempts[item.key]?.lastOutcome !== 'no-reader');
 }
 
@@ -575,7 +622,9 @@ export function reconcilePricing({
     const nowMs = now();
     const ledger = readReconcileLedger(bullswarmDir);
     const readerChanged = ledger.readerVersion !== RECONCILE_READER_VERSION;
-    if (readerChanged) ledger.cursor = { runs: {}, tasks: null };
+    const stamp = rateCardStamp(bullswarmDir);
+    if (readerChanged || ledger.rateCardStamp !== stamp) ledger.cursor = { runs: {}, tasks: null };
+    ledger.rateCardStamp = stamp;
     const stats = newStats();
     // Provider modules load only when there is something to price.
     let loaded = null;
@@ -606,8 +655,9 @@ export function reconcilePricing({
       }
       const runItems = [];
       for (const entry of attemptEntries(state)) {
-        if (!priceableAttempt(entry.attempt)) continue;
-        runItems.push({ key: `${runId}/${entry.attemptId}`, attempt: entry.attempt, state, dir: runDir });
+        const rateCard = unpricedMeasuredAttempt(entry.attempt);
+        if (!rateCard && !priceableAttempt(entry.attempt)) continue;
+        runItems.push({ key: `${runId}/${entry.attemptId}`, attempt: entry.attempt, state, dir: runDir, rateCard });
       }
       runs.push({ runId, runDir, state, items: runItems, fingerprint });
       items.push(...runItems);
@@ -622,8 +672,10 @@ export function reconcilePricing({
     if (homeFingerprint && !tasksUnchanged) {
       const homeState = readState(homeStatePath);
       for (const entry of taskEntries(homeState ?? {})) {
-        if (!priceableAttempt(entry.attempt)) continue;
+        const rateCard = unpricedMeasuredAttempt(entry.attempt);
+        if (!rateCard && !priceableAttempt(entry.attempt)) continue;
         taskItems.push({
+          rateCard,
           key: `task/${entry.attemptId}`,
           attempt: entry.attempt,
           task: entry.task,
@@ -694,7 +746,8 @@ export function reconcilePricing({
               (item.task.id != null && entry.id === item.task.id)
               || (item.task.id == null && entry.outFile === item.task.outFile && entry.ts === item.task.ts)
             ));
-            if (!live || !PRICEABLE_SOURCES.has(sourceOf(live.usage))) continue;
+            if (!live) continue;
+            if (item.rateCard ? !unpricedMeasuredAttempt(live) : !PRICEABLE_SOURCES.has(sourceOf(live.usage))) continue;
             applyToAttempt(live, item);
             wrote += 1;
           }

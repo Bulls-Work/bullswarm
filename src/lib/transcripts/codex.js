@@ -83,6 +83,9 @@ function blankRecord(confidence = 'none') {
   };
 }
 
+/** OpenAI prices a request whose input passes 272K tokens at its long-context rates. */
+const CODEX_LONG_CONTEXT_INPUT = 272_000;
+
 function tokenRecord({ input, cached, cacheWrite, output, reasoning }) {
   const cacheRead = input === 0 && cached === null
     ? 0
@@ -125,6 +128,46 @@ function subtractCumulative(end, start) {
     else out[field] = Math.max(0, end[field] - (start?.[field] ?? 0));
   }
   return out;
+}
+
+/**
+ * One record per model request inside the window, from each token_count row's
+ * `last_token_usage`, tagged `long` when its input passed OpenAI's long-context
+ * line (>272K input tokens, priced at the row's `longContext` rates). Null —
+ * and the window's single combined record is used — unless the requests add
+ * up exactly to the window's cumulative delta.
+ */
+function perRequestRecords(cumulative, { baseline, endRecord, delta, model }) {
+  if (!endRecord) return null;
+  const from = baseline ? cumulative.indexOf(baseline) + 1 : 0;
+  const to = cumulative.indexOf(endRecord);
+  const rows = [];
+  let previous = baseline?.counters ?? null;
+  for (const record of cumulative.slice(from, to + 1)) {
+    // A repeated token_count (same totals) is not a new request.
+    const same = previous && TOKEN_FIELDS.every((field) => record.counters[field] === previous[field]);
+    previous = record.counters;
+    if (same) continue;
+    if (!record.last) return null;
+    rows.push(record);
+  }
+  if (!rows.length) return null;
+  for (const field of ['input_tokens', 'cached_input_tokens', 'output_tokens']) {
+    const sum = rows.reduce((total, record) => total + (record.last[field] ?? 0), 0);
+    if (sum !== (delta[field] ?? 0)) return null;
+  }
+  return rows.map((record) => ({
+    at: record.at,
+    model,
+    tokens: tokenRecord({
+      input: record.last.input_tokens,
+      cached: record.last.cached_input_tokens,
+      cacheWrite: record.last.cache_write_input_tokens,
+      output: record.last.output_tokens,
+      reasoning: record.last.reasoning_output_tokens,
+    }),
+    contextTier: (record.last.input_tokens ?? 0) > CODEX_LONG_CONTEXT_INPUT ? 'long' : 'short',
+  }));
 }
 
 function safeRows(filePath) {
@@ -261,7 +304,12 @@ function parseRollout(filePath, {
       ? payload.info?.total_token_usage ?? payload.total_token_usage ?? payload.usage
       : null;
     const counters = cumulativeFrom(raw);
-    if (counters) cumulative.push({ at: timestamp, counters });
+    if (counters) {
+      const last = row.type === 'event_msg' && payload.type === 'token_count'
+        ? cumulativeFrom(payload.info?.last_token_usage)
+        : null;
+      cumulative.push({ at: timestamp, counters, last });
+    }
   }
   observedSessionId ??= sessionIdFromPath(filePath);
 
@@ -293,7 +341,9 @@ function parseRollout(filePath, {
     })
     : blankTokens();
   const requestAt = endRecord?.at ?? null;
-  const requests = delta ? [{ at: requestAt, model, tokens }] : [];
+  const requests = delta
+    ? perRequestRecords(cumulative, { baseline, endRecord, delta, model }) ?? [{ at: requestAt, model, tokens }]
+    : [];
   const sortedTimes = timestamps.sort((a, b) => (timeMs(a) ?? 0) - (timeMs(b) ?? 0));
   return {
     tokens,

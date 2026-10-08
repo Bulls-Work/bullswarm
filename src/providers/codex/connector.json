@@ -309,19 +309,19 @@
   },
   "$comment-priceBand": "Each tier takes the best newest-generation model whose dated API price is no more than what served the tier one generation back (src/lib/price-band.js).",
   "priceBand": true,
-  "$comment-modelProfiles": "Exact rows: dated prices (gpt-6 rates from the API pricing page; cache writes at 1.25x input per the prompt-caching guide for GPT-5.6 and later), and gpt-5.3-codex, which belongs to no family. Tier and rank come from modelFamilies unless a row sets them.",
+  "$comment-modelProfiles": "Exact rows: dated prices (gpt-6 rates from the API pricing page; cache writes at 1.25x input per the prompt-caching guide for GPT-5.6 and later), and gpt-5.3-codex, which belongs to no family. Tier and rank come from modelFamilies unless a row sets them. `longContext` is the pricing page's long-context column (a request with more than 272K input tokens), checked on 2026-10-09 for gpt-6-astra, gpt-6.1-sol, gpt-6-luna and gpt-5.6-sol; the page shows no long-context price for gpt-6-sol, gpt-5.6-terra or gpt-5.6-luna. Codex's rollout carries each request's `last_token_usage`, so src/lib/transcripts/codex.js tags each request short or long; an attempt measured only from the stream's one total is priced at the short rates.",
   "modelProfiles": [
     {
       "match": "^gpt-6-astra$",
-      "pricing": { "inputUsdPerMillion": 10, "cacheWriteUsdPerMillion": 12.5, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 },
+      "pricing": { "inputUsdPerMillion": 10, "cacheWriteUsdPerMillion": 12.5, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50, "longContext": { "thresholdTokens": 272000, "inputUsdPerMillion": 20, "cacheReadUsdPerMillion": 2, "cacheWriteUsdPerMillion": 25, "outputUsdPerMillion": 75 } },
       "pricingSource": "https://developers.openai.com/api/docs/pricing",
-      "pricingUpdatedAt": "2026-09-30"
+      "pricingUpdatedAt": "2026-10-09"
     },
     {
       "match": "^gpt-6\\.1-sol$",
-      "pricing": { "inputUsdPerMillion": 2, "cacheWriteUsdPerMillion": 2.5, "cacheReadUsdPerMillion": 0.1, "outputUsdPerMillion": 10 },
+      "pricing": { "inputUsdPerMillion": 2, "cacheWriteUsdPerMillion": 2.5, "cacheReadUsdPerMillion": 0.1, "outputUsdPerMillion": 10, "longContext": { "thresholdTokens": 272000, "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.2, "cacheWriteUsdPerMillion": 5, "outputUsdPerMillion": 15 } },
       "pricingSource": "https://developers.openai.com/api/docs/pricing",
-      "pricingUpdatedAt": "2026-09-30"
+      "pricingUpdatedAt": "2026-10-09"
     },
     {
       "match": "^gpt-6-sol$",
@@ -331,9 +331,9 @@
     },
     {
       "match": "^gpt-6-luna$",
-      "pricing": { "inputUsdPerMillion": 0.1, "cacheWriteUsdPerMillion": 0.125, "cacheReadUsdPerMillion": 0.01, "outputUsdPerMillion": 0.5 },
+      "pricing": { "inputUsdPerMillion": 0.1, "cacheWriteUsdPerMillion": 0.125, "cacheReadUsdPerMillion": 0.01, "outputUsdPerMillion": 0.5, "longContext": { "thresholdTokens": 272000, "inputUsdPerMillion": 0.2, "cacheReadUsdPerMillion": 0.02, "cacheWriteUsdPerMillion": 0.25, "outputUsdPerMillion": 0.75 } },
       "pricingSource": "https://developers.openai.com/api/docs/pricing",
-      "pricingUpdatedAt": "2026-09-30"
+      "pricingUpdatedAt": "2026-10-09"
     },
     {
       "match": "^gpt-5\\.6-sol$",
@@ -341,10 +341,11 @@
         "inputUsdPerMillion": 4,
         "cacheReadUsdPerMillion": 0.4,
         "cacheWriteUsdPerMillion": 5,
-        "outputUsdPerMillion": 20
+        "outputUsdPerMillion": 20,
+        "longContext": { "thresholdTokens": 272000, "inputUsdPerMillion": 8, "cacheReadUsdPerMillion": 0.8, "cacheWriteUsdPerMillion": 10, "outputUsdPerMillion": 30 }
       },
-      "pricingSource": "https://developers.openai.com/api/docs/guides/prompt-caching",
-      "pricingUpdatedAt": "2026-09-20"
+      "pricingSource": "https://developers.openai.com/api/docs/pricing",
+      "pricingUpdatedAt": "2026-10-09"
     },
     {
       "match": "^gpt-5\\.6-terra$",

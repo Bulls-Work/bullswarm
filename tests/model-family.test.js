@@ -131,8 +131,10 @@ test('real prices: Opus 5.5, Fable 5.1 and the gpt-6 models carry their own rate
   // 1.25x input per the prompt-caching guide.
   const codex = connector('codex');
   const codexPrice = (id) => modelRanking(codex, id).profile?.pricing ?? null;
+  // Long context (a request over 272K input tokens), read 2026-10-09.
   assert.deepEqual(codexPrice('gpt-6.1-sol'), {
     inputUsdPerMillion: 2, cacheWriteUsdPerMillion: 2.5, cacheReadUsdPerMillion: 0.1, outputUsdPerMillion: 10,
+    longContext: { thresholdTokens: 272000, inputUsdPerMillion: 4, cacheReadUsdPerMillion: 0.2, cacheWriteUsdPerMillion: 5, outputUsdPerMillion: 15 },
   });
   assert.equal(codexPrice('gpt-6-astra').outputUsdPerMillion, 50);
   assert.equal(codexPrice('gpt-6-sol').cacheReadUsdPerMillion, 0.2);

@@ -546,3 +546,55 @@ test('workflow reprice --incremental is the same pass from the command line', ()
     assert.equal(cmdReprice(['--trigger', 'x'], { bullswarmDir: fixture.home, log: () => {}, error: (line) => flags.push(line) }), 2);
   } finally { fixture.cleanup(); }
 });
+
+test('measured attempts recorded before their model had a rate card are priced once a card arrives', () => {
+  const fixture = fixtureHome({ actions: ['alpha'] });
+  try {
+    // Exact counts from the provider, but no card for the model when it ran.
+    const state = fixture.state();
+    state.attempts[0].model = 'gpt-6-new';
+    state.attempts[0].usage = {
+      model: 'gpt-6-new',
+      tokenSource: 'provider-reported',
+      tokens: { standardRead: 1000, cacheRead: 2000, cacheWrite: 0, output: 100, reasoning: 50, totalKnown: 3150 },
+      api: { usd: null, basis: 'unknown:no-rate-card' },
+    };
+    writeJsonAtomic(join(fixture.runDir, 'state.json'), state);
+    const withCard = () => {
+      const map = connectorMap();
+      map.codex.modelProfiles.push({
+        id: 'gpt-6-new',
+        pricing: { inputUsdPerMillion: 2, cacheReadUsdPerMillion: 0.2, outputUsdPerMillion: 10 },
+        pricingSource: 'fixture-rate-card', pricingUpdatedAt: '2026-10-09',
+      });
+      return map;
+    };
+
+    // No card yet: nothing priced, nothing tried, and the run is not held open.
+    const first = pass(fixture);
+    assert.equal(first.carded, 0);
+    assert.equal(fixture.state().attempts[0].usage.api.usd, null);
+    assert.equal(readReconcileLedger(fixture.home).attempts[`${RUN_ID}/alpha-1`], undefined);
+    assert.equal(readReconcileLedger(fixture.home).cursor.runs[RUN_ID].open, false);
+
+    // The card arrives with new connectors (an upgrade or an override): the
+    // changed stamp re-reads the run and prices it from its own counts.
+    mkdirSync(join(fixture.home, 'connectors'), { recursive: true });
+    writeFileSync(join(fixture.home, 'connectors', 'codex.json'), '{}');
+    const second = pass(fixture, { connectors: withCard() });
+    assert.equal(second.carded, 1, second.line);
+    assert.match(second.line, /^history: 1 attempt priced/);
+    const usage = fixture.state().attempts[0].usage;
+    assert.equal(usage.tokenSource, 'provider-reported');
+    assert.equal(usage.tokens.totalKnown, 3150);
+    // 1000 × $2 + 2000 × $0.20 + (100 + 50) × $10, per million.
+    assert.ok(Math.abs(usage.api.usd - 0.0039) < 1e-9, String(usage.api.usd));
+    const result = JSON.parse(readFileSync(join(fixture.runDir, 'result.json'), 'utf8'));
+    assert.ok(JSON.stringify(result).includes('0.0039'), 'the result envelope carries the new price');
+
+    // Priced once; a later pass has nothing to do.
+    assert.equal(pass(fixture, { connectors: withCard() }).carded, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});

@@ -8,14 +8,15 @@ const claude = JSON.parse(readFileSync(new URL('../src/providers/claude-code/con
 
 // Every Claude model Bullswarm dispatches has a dated price row with the
 // numbers https://platform.claude.com/docs/en/about-claude/pricing published
-// on 2026-10-02. claude-sonnet-5-5 had none until 0.38.8, so 34 attempts in a
+// (re-read 2026-10-09). claude-sonnet-5-5 had none until 0.38.8, so 34 attempts in a
 // week recorded no price although the CLI reported one.
 const PUBLISHED = {
   'claude-fable-5-1': [10, 12.5, 20, 0.25, 50],
   'claude-fable-5': [10, 12.5, 20, 1, 50],
   'claude-opus-5-5': [4, 5, 8, 0.2, 20],
   'claude-opus-5': [5, 6.25, 10, 0.5, 25],
-  'claude-sonnet-5-5': [2, 2.5, 4, 0.2, 10],
+  // Cache hits at 0.05x input ($0.10): the page's footnote 2, read 2026-10-09.
+  'claude-sonnet-5-5': [2, 2.5, 4, 0.1, 10],
   'claude-sonnet-5': [2, 2.5, 4, 0.2, 10],
   'claude-haiku-4-5': [1, 1.25, 2, 0.1, 5],
 };
@@ -62,4 +63,56 @@ test('an attempt with no reported cost or no rate-card price is left out', () =>
     { usage: { api: { usd: 2 } } },
   ] }, () => [{ usage: {} }]);
   assert.deepEqual(rows, []);
+});
+
+const connectorFile = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'));
+const codex = connectorFile('../src/providers/codex/connector.json');
+const grok = connectorFile('../src/providers/grok/connector.json');
+const commandCode = connectorFile('../providers/contrib/command-code/connector.json');
+
+// https://developers.openai.com/api/docs/pricing, read 2026-10-09:
+// [input, cached input, cache write, output] and, where the page lists one,
+// the same four for a request with more than 272K input tokens.
+const OPENAI = {
+  'gpt-6-astra': [[10, 1, 12.5, 50], [20, 2, 25, 75]],
+  'gpt-6.1-sol': [[2, 0.1, 2.5, 10], [4, 0.2, 5, 15]],
+  'gpt-6-sol': [[2, 0.2, 2.5, 10], null],
+  'gpt-6-luna': [[0.1, 0.01, 0.125, 0.5], [0.2, 0.02, 0.25, 0.75]],
+  'gpt-5.6-sol': [[4, 0.4, 5, 20], [8, 0.8, 10, 30]],
+  'gpt-5.6-terra': [[2, 0.2, 2.5, 12], null],
+  'gpt-5.6-luna': [[0.2, 0.02, 0.25, 1.2], null],
+};
+
+const fourRates = ([input, read, write, output]) => ({
+  inputUsdPerMillion: input, cacheReadUsdPerMillion: read, cacheWriteUsdPerMillion: write, outputUsdPerMillion: output,
+});
+
+test('every codex model has the rates OpenAI publishes, long context included', () => {
+  for (const [model, [short, long]] of Object.entries(OPENAI)) {
+    const pricing = modelProfile(codex, model)?.pricing;
+    assert.ok(pricing, `${model} has no price row`);
+    const { longContext, ...rest } = pricing;
+    assert.deepEqual(rest, fourRates(short), model);
+    if (long) assert.deepEqual(longContext, { thresholdTokens: 272000, ...fourRates(long) }, `${model} long context`);
+    else assert.equal(longContext, undefined, `${model} has no published long-context price`);
+  }
+});
+
+// https://docs.x.ai/docs/models, read 2026-10-09: under / at or above 200K.
+test('every grok model has the rates xAI publishes', () => {
+  const XAI = { 'grok-4.7': [2, 0.5, 6], 'grok-4.6': [2, 0.5, 6], 'grok-4.5': [2, 0.3, 6] };
+  for (const [model, [input, read, output]] of Object.entries(XAI)) {
+    assert.deepEqual(modelProfile(grok, model)?.pricing, {
+      inputUsdPerMillion: input,
+      cacheReadUsdPerMillion: read,
+      outputUsdPerMillion: output,
+      longContext: { thresholdTokens: 200000, inputUsdPerMillion: input * 2, cacheReadUsdPerMillion: read * 2, outputUsdPerMillion: output * 2 },
+    }, model);
+  }
+});
+
+// https://commandcode.ai/docs/resources/pricing-limits, read 2026-10-09.
+test('command-code prices the OpenAI and Anthropic models it runs at its published rates', () => {
+  assert.deepEqual(modelProfile(commandCode, 'gpt-6-luna')?.pricing, fourRates([0.1, 0.01, 0.125, 0.5]));
+  assert.deepEqual(modelProfile(commandCode, 'claude-sonnet-5-5')?.pricing, fourRates([2, 0.2, 2.5, 10]));
 });
