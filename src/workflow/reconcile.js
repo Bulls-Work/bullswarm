@@ -225,15 +225,16 @@ export function priceableAttempt(attempt) {
 }
 
 /**
- * A terminal attempt whose token counts are measured but carry no price —
- * recorded before its model had a rate card. Re-carded from its own counts
+ * A terminal attempt whose token counts are measured, priced or not: the
+ * rate cards may now price it (its model had no row when it ran) or price it
+ * differently (a row's dated rates changed). Re-carded from its own counts
  * (rateCardCandidate), never from a transcript, so it takes no ledger tries.
  */
-export function unpricedMeasuredAttempt(attempt) {
+export function measuredAttempt(attempt) {
   if (!attempt || typeof attempt !== 'object') return false;
   if (attempt.status === 'running' || !(attempt.finishedAt ?? attempt.endedAt)) return false;
   const usage = attempt.usage;
-  if (!MEASURED_SOURCES.has(sourceOf(usage)) || usage?.api?.usd != null) return false;
+  if (!MEASURED_SOURCES.has(sourceOf(usage))) return false;
   return Number.isFinite(Number(usage?.tokens?.totalKnown ?? usage?.api?.tokens?.totalKnown));
 }
 
@@ -655,7 +656,7 @@ export function reconcilePricing({
       }
       const runItems = [];
       for (const entry of attemptEntries(state)) {
-        const rateCard = unpricedMeasuredAttempt(entry.attempt);
+        const rateCard = measuredAttempt(entry.attempt);
         if (!rateCard && !priceableAttempt(entry.attempt)) continue;
         runItems.push({ key: `${runId}/${entry.attemptId}`, attempt: entry.attempt, state, dir: runDir, rateCard });
       }
@@ -672,7 +673,7 @@ export function reconcilePricing({
     if (homeFingerprint && !tasksUnchanged) {
       const homeState = readState(homeStatePath);
       for (const entry of taskEntries(homeState ?? {})) {
-        const rateCard = unpricedMeasuredAttempt(entry.attempt);
+        const rateCard = measuredAttempt(entry.attempt);
         if (!rateCard && !priceableAttempt(entry.attempt)) continue;
         taskItems.push({
           rateCard,
@@ -747,7 +748,7 @@ export function reconcilePricing({
               || (item.task.id == null && entry.outFile === item.task.outFile && entry.ts === item.task.ts)
             ));
             if (!live) continue;
-            if (item.rateCard ? !unpricedMeasuredAttempt(live) : !PRICEABLE_SOURCES.has(sourceOf(live.usage))) continue;
+            if (item.rateCard ? !measuredAttempt(live) : !PRICEABLE_SOURCES.has(sourceOf(live.usage))) continue;
             applyToAttempt(live, item);
             wrote += 1;
           }

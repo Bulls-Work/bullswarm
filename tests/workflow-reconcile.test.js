@@ -598,3 +598,46 @@ test('measured attempts recorded before their model had a rate card are priced o
     fixture.cleanup();
   }
 });
+
+test('an attempt priced at a rate that was not yet in force when it ran is priced again at the dated rate', () => {
+  const fixture = fixtureHome({ actions: ['alpha', 'beta'] });
+  try {
+    // A price cut on 2026-10-07: alpha ran before it, beta after.
+    const connectors = connectorMap();
+    connectors.codex.modelProfiles.push({
+      id: 'gpt-6-cut',
+      pricing: { inputUsdPerMillion: 2, cacheReadUsdPerMillion: 0.1, outputUsdPerMillion: 10 },
+      pricingSource: 'fixture-release-notes', pricingUpdatedAt: '2026-10-07',
+      pricingHistory: [{
+        until: '2026-10-07T00:00:00Z',
+        pricing: { inputUsdPerMillion: 2, cacheReadUsdPerMillion: 0.2, outputUsdPerMillion: 10 },
+        pricingSource: 'fixture-rate-card', pricingUpdatedAt: '2026-10-02',
+      }],
+    });
+    const tokens = { standardRead: 1000, cacheRead: 1_000_000, cacheWrite: 0, output: 100, reasoning: 0, totalKnown: 1_001_100 };
+    // Both were priced at today's $0.10 by a release that had no dated rows.
+    const today = { usd: 0.103, basis: 'rate-card:complete', rateCard: { source: 'fixture-release-notes', updatedAt: '2026-10-07' } };
+    const state = fixture.state();
+    state.attempts[0].startedAt = '2026-10-01T00:00:00.000Z';
+    state.attempts[1].startedAt = '2026-10-08T00:00:00.000Z';
+    for (const attempt of state.attempts) {
+      attempt.model = 'gpt-6-cut';
+      attempt.usage = { model: 'gpt-6-cut', tokenSource: 'provider-reported', tokens, api: { ...today } };
+    }
+    writeJsonAtomic(join(fixture.runDir, 'state.json'), state);
+
+    const result = pass(fixture, { connectors });
+    assert.equal(result.carded, 1, result.line);
+    const [alpha, beta] = fixture.state().attempts;
+    // 1000 × $2 + 1,000,000 × $0.20 + 100 × $10, per million.
+    assert.ok(Math.abs(alpha.usage.api.usd - 0.203) < 1e-9, String(alpha.usage.api.usd));
+    assert.equal(alpha.usage.api.rateCard.updatedAt, '2026-10-02');
+    assert.equal(beta.usage.api.usd, 0.103, 'an attempt after the cut keeps its price');
+    // Nothing left to correct.
+    mkdirSync(join(fixture.home, 'connectors'), { recursive: true });
+    writeFileSync(join(fixture.home, 'connectors', 'touch.json'), '{}');
+    assert.equal(pass(fixture, { connectors }).carded, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});

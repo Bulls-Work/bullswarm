@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- pricing: a rate card can carry dated history (`pricingHistory`: earlier rates, each with the time it ended), and an attempt is priced at the rate in force when it started. Anthropic cut Claude Sonnet 5.5 cache reads from $0.20 to $0.10 per million on 2026-10-07 (release notes); 0.38.9 applied $0.10 to every date. Attempts started before 7 Oct now price at $0.20 (all 48 on the live home), later ones at $0.10.
+- pricing: the automatic pricing pass also re-prices an already-priced attempt when the rate in force at its start differs from the card it was priced with. On the live home this corrects 2 Opus 5.5 attempts from 22 Sep that still carried the pre-0.36 card, where Opus 5.5 inherited Opus 5's price ($29.26 → $15.20, $13.90 → $7.74). Attempts priced at the right card are left alone.
+
 ## 0.38.9 — automatic pricing catches up when a rate card arrives; codex long-context pricing
 
 - pricing: the automatic pricing pass now prices attempts whose token counts were measured but whose model had no rate card yet. It only revisited unknown or byte-estimated attempts, so a model that gained its price in a release (Sonnet 5.5 in 0.38.8, the gpt-6 rows in 0.37.3) stayed `unpriced` until someone ran `reprice --apply`. Such attempts are now priced from their own recorded counts at today's card (no transcript lookup, no ledger tries), and a new package version or a changed connector override re-reads every run once. On the live home this prices 92 attempts (about $63).

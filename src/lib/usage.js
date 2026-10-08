@@ -383,9 +383,32 @@ function computedSubscription(subscription) {
   return computed ? compatibilitySubscription(subscription) : null;
 }
 
+/**
+ * The price row as it stood at `pricedAt`. A row may keep its earlier rates
+ * in `pricingHistory` — `[{ until, pricing, pricingSource, pricingUpdatedAt }]`,
+ * each entry in force before its `until` — so an attempt is priced at the
+ * rates of the day it ran, not today's. No time (a live attempt) or no older
+ * entry that covers it means the row's own rates.
+ */
+export function profileAt(profile, pricedAt = null) {
+  const history = Array.isArray(profile?.pricingHistory) ? profile.pricingHistory : [];
+  const at = Date.parse(pricedAt ?? '');
+  if (!history.length || !Number.isFinite(at)) return profile;
+  const entry = history
+    .filter((item) => item?.pricing && Date.parse(item.until) > at)
+    .sort((a, b) => Date.parse(a.until) - Date.parse(b.until))[0];
+  if (!entry) return profile;
+  return {
+    ...profile,
+    pricing: entry.pricing,
+    pricingSource: entry.pricingSource ?? profile.pricingSource ?? null,
+    pricingUpdatedAt: entry.pricingUpdatedAt ?? profile.pricingUpdatedAt ?? null,
+  };
+}
+
 function buildUsage({
   taskText = '', outputText = '', connector = {}, model = null, subscription = null,
-  reportedUsage = null, sessionId = null, forceTokenSource = null, requests = null,
+  reportedUsage = null, sessionId = null, forceTokenSource = null, requests = null, pricedAt = null,
 } = {}) {
   const structured = normalizeReportedUsage(reportedUsage);
   const parsed = parseReportedUsage(outputText);
@@ -408,7 +431,7 @@ function buildUsage({
   if (!tokens) tokens = normalizeTokens({});
 
   const selectedModel = model ?? structured?.model ?? connector.model ?? null;
-  const profile = modelProfile(connector, selectedModel);
+  const profile = profileAt(modelProfile(connector, selectedModel), pricedAt);
   const pricing = profile?.pricing ?? null;
   const tokenSource = forceTokenSource
     ?? structured?.tokenSource
@@ -461,7 +484,7 @@ function buildUsage({
   // Attach the original connector as a private recalculation hint.  This is
   // deliberately non-enumerable and therefore never leaks into durable JSON.
   Object.defineProperty(canonical, '_pricingContext', {
-    value: { connector, model: selectedModel }, enumerable: false, configurable: true,
+    value: { connector, model: selectedModel, pricedAt }, enumerable: false, configurable: true,
   });
   return canonical;
 }
@@ -471,7 +494,7 @@ export function estimateInvocationUsage(options = {}) {
 }
 
 /** Replace an estimate/provider record with authoritative transcript totals. */
-export function attachTranscriptUsage(record, transcriptResult) {
+export function attachTranscriptUsage(record, transcriptResult, { pricedAt = null } = {}) {
   if (!record || typeof record !== 'object' || !transcriptResult?.tokens) return record;
   const context = record._pricingContext ?? {
     connector: {
@@ -501,5 +524,6 @@ export function attachTranscriptUsage(record, transcriptResult) {
     },
     forceTokenSource: 'transcript-summed',
     requests: transcriptResult.requests ?? null,
+    pricedAt: pricedAt ?? context.pricedAt ?? null,
   });
 }

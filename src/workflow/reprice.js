@@ -13,7 +13,7 @@ import { basename, dirname, join } from 'node:path';
 
 import { loadProviders } from '../lib/providers.js';
 import { projectName } from '../lib/project.js';
-import { attachTranscriptUsage, estimateInvocationUsage } from '../lib/usage.js';
+import { attachTranscriptUsage, estimateInvocationUsage, modelProfile, profileAt } from '../lib/usage.js';
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
@@ -258,8 +258,9 @@ function tokenReport(usage) {
   };
 }
 
-function usageFromTokens({ connector, model, sessionId, subscription, tokens, tokenSource, requests = null }) {
+function usageFromTokens({ connector, model, sessionId, subscription, tokens, tokenSource, requests = null, pricedAt = null }) {
   return estimateInvocationUsage({
+    pricedAt,
     connector,
     model,
     sessionId,
@@ -306,9 +307,14 @@ function attachSubscription(usage, { home, poolName, connector, oldSubscription,
 
 /**
  * Re-card an attempt whose token counts are already measured (provider
- * reported or summed from its transcript) but carry no price: the same
- * counts, priced at today's rate card. No transcript is read. Returns null
- * when the card still has no price for the attempt's model.
+ * reported or summed from its transcript): the same counts, priced at the
+ * rates in force when it ran. No transcript is read. Returns null when there
+ * is nothing to change — the card still has no price, or a priced attempt was
+ * priced from the same dated row and comes out the same.
+ *
+ * A priced attempt on a row with long-context rates is left alone: its
+ * recorded price may come from per-request tiers its stored totals cannot
+ * reproduce.
  */
 export function rateCardCandidate({ attempt, state, connectors, home }) {
   const oldUsage = attempt?.usage && typeof attempt.usage === 'object' ? attempt.usage : null;
@@ -317,7 +323,15 @@ export function rateCardCandidate({ attempt, state, connectors, home }) {
   const poolName = attempt.pool ?? oldUsage?.subscription?.pool ?? null;
   const connector = connectorFor(connectors, poolName);
   const model = attempt.model ?? oldUsage?.model ?? connector.model ?? null;
+  const oldUsd = oldUsage?.api?.usd ?? null;
+  if (oldUsd != null) {
+    const pricedAt = attempt.startedAt ?? attempt.finishedAt ?? attempt.endedAt ?? null;
+    const row = profileAt(modelProfile(connector, model), pricedAt);
+    if (!row?.pricing || row.pricing.longContext) return null;
+    if ((oldUsage?.api?.rateCard?.updatedAt ?? null) === (row.pricingUpdatedAt ?? null)) return null;
+  }
   const usage = usageFromTokens({
+    pricedAt: attempt.startedAt ?? attempt.finishedAt ?? attempt.endedAt ?? null,
     connector,
     model,
     sessionId: oldUsage?.sessionId ?? null,
@@ -327,6 +341,7 @@ export function rateCardCandidate({ attempt, state, connectors, home }) {
     requests: oldUsage?.requests ?? null,
   });
   if (usage?.api?.usd == null) return null;
+  if (oldUsd != null && Math.abs(usage.api.usd - oldUsd) < 1e-9) return null;
   return attachSubscription(usage, {
     home, poolName, connector, oldSubscription: oldUsage?.subscription ?? null, runId: state?.runId, attemptId: attempt.id,
   });
@@ -358,6 +373,7 @@ export function candidateFor({ attempt, state, connectors, home, transcriptHome,
   // not need a transcript lookup; only their dated local card is refreshed.
   if (oldSource === 'provider-reported') {
     const usage = usageFromTokens({
+    pricedAt: attempt.startedAt ?? attempt.finishedAt ?? attempt.endedAt ?? null,
       connector,
       model,
       sessionId,
@@ -405,6 +421,7 @@ export function candidateFor({ attempt, state, connectors, home, transcriptHome,
   let usage;
   if (matched && transcript?.tokens) {
     const estimated = usageFromTokens({
+    pricedAt: attempt.startedAt ?? attempt.finishedAt ?? attempt.endedAt ?? null,
       connector,
       model,
       sessionId,
@@ -419,6 +436,7 @@ export function candidateFor({ attempt, state, connectors, home, transcriptHome,
     });
   } else {
     usage = usageFromTokens({
+    pricedAt: attempt.startedAt ?? attempt.finishedAt ?? attempt.endedAt ?? null,
       connector,
       model,
       sessionId,

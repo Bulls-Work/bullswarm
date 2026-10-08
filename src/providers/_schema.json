@@ -259,6 +259,15 @@
       },
       "pricingSource": "optional dated primary source",
       "pricingUpdatedAt": "YYYY-MM-DD",
+      "pricingHistory": [
+        {
+          "$comment": "Optional. Earlier rates, each in force until `until` (ISO time). An attempt is priced at the entry in force when it started; one started after every `until` takes `pricing`.",
+          "until": "YYYY-MM-DDT00:00:00Z",
+          "pricing": {},
+          "pricingSource": "optional",
+          "pricingUpdatedAt": "YYYY-MM-DD"
+        }
+      ],
       "autoRecommend": true,
       "free": false
     }
