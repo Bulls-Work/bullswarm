@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.9 — automatic pricing catches up when a rate card arrives; codex long-context pricing
+
 - pricing: the automatic pricing pass now prices attempts whose token counts were measured but whose model had no rate card yet. It only revisited unknown or byte-estimated attempts, so a model that gained its price in a release (Sonnet 5.5 in 0.38.8, the gpt-6 rows in 0.37.3) stayed `unpriced` until someone ran `reprice --apply`. Such attempts are now priced from their own recorded counts at today's card (no transcript lookup, no ledger tries), and a new package version or a changed connector override re-reads every run once. On the live home this prices 92 attempts (about $63).
 - pricing: codex long context. OpenAI charges more for a request with over 272K input tokens; the codex rows for gpt-6-astra, gpt-6.1-sol, gpt-6-luna and gpt-5.6-sol now carry those rates (`longContext`, read 2026-10-09; the page lists none for gpt-6-sol, gpt-5.6-terra or gpt-5.6-luna). Codex's transcript reader records each request from its `last_token_usage` and tags it short or long, so a long request is priced at the long rates — but only when the requests add up exactly to the window's total; otherwise the one combined record (short rates) is kept. Checked on a real gpt-5.6-sol session: 4 of 111 requests were long, adding exactly the hand-computed $0.50 ($11.84 → $12.34). An attempt measured only from codex's stream total stays at the short rates.
 - pricing: Claude Sonnet 5.5 cache reads are $0.10 per million (0.05x input, the pricing page's footnote 2, read 2026-10-09); 0.38.8 carried $0.20. Claude Code's own reported cost matched $0.20 on 41 of 45 attempts, so its bundled table differs from the published page; the dashboard's API price follows the page.
