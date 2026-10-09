@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.11 — a 5h-only seat is paced on its 5h window; Claude Haiku 5.5 priced
+
 - routing: a seat whose provider reports only a 5-hour window (a Claude Team seat: the usage API returns no weekly figure) is now paced on that window: surplus = 5h elapsed − 5h used, and a window not yet opened counts as wholly unspent. Before, it read `unmetered surplus=0` and routing reached it only once every other pool had fallen behind, so its 5-hour windows expired unused. `bullswarm pools` reads `5h used 48% elapsed 52.1%`, and Fleet names a `5-hour window`. Pools with a weekly or monthly window keep 5h as a gate only.
 - pricing: Claude Haiku 5.5 has a price row (read 2026-10-09): $0.10 input / $0.01 cache hit / $0.125 5m write / $0.20 1h write / $0.50 output, and for a request whose prompt is over 100,000 tokens $0.50 / $0.05 / $0.625 / $1 / $2.50. A row's `longContext.thresholdTokens` now tiers any request no reader tagged, so Claude transcript requests are priced one by one. A provider-reported attempt whose prompts together pass the line takes its transcript's requests when they add up to the same total; otherwise the pricing pass leaves it unpriced rather than charge the low rates.
 
