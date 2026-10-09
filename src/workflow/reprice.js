@@ -13,7 +13,7 @@ import { basename, dirname, join } from 'node:path';
 
 import { loadProviders } from '../lib/providers.js';
 import { projectName } from '../lib/project.js';
-import { attachTranscriptUsage, estimateInvocationUsage, modelProfile, profileAt } from '../lib/usage.js';
+import { attachTranscriptUsage, estimateInvocationUsage, modelProfile, needsPerRequestTiers, profileAt } from '../lib/usage.js';
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
@@ -341,6 +341,9 @@ export function rateCardCandidate({ attempt, state, connectors, home }) {
     requests: oldUsage?.requests ?? null,
   });
   if (usage?.api?.usd == null) return null;
+  // Totals cannot say which requests crossed a prompt-length line; past it,
+  // the attempt waits for per-request counts rather than take the low rates.
+  if (!oldUsage?.requests && needsPerRequestTiers(usage.pricing, usage.tokens)) return null;
   if (oldUsd != null && Math.abs(usage.api.usd - oldUsd) < 1e-9) return null;
   return attachSubscription(usage, {
     home, poolName, connector, oldSubscription: oldUsage?.subscription ?? null, runId: state?.runId, attemptId: attempt.id,

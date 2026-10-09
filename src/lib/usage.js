@@ -262,6 +262,30 @@ function oneRequestBreakdown(tokens, pricing) {
   return breakdown;
 }
 
+/** A request's prompt: everything it sent, cached or not. */
+export function promptTokens(tokens) {
+  return [tokens?.standardRead, tokens?.cacheRead, tokens?.cacheWrite5m, tokens?.cacheWrite1h,
+    tokens?.cacheWrite5m == null && tokens?.cacheWrite1h == null ? tokens?.cacheWrite : null]
+    .reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+}
+
+/**
+ * The tier of a request no reader tagged: a row whose `longContext` declares
+ * `thresholdTokens` charges its long rates to a prompt over that line
+ * (Anthropic's Haiku 5.5: "over 100,000 tokens").
+ */
+function promptTier(tokens, pricing) {
+  const threshold = pricing?.longContext?.thresholdTokens;
+  if (!Number.isFinite(threshold)) return undefined;
+  return promptTokens(tokens) > threshold ? 'long' : 'short';
+}
+
+/** True when a row prices by prompt length and the totals alone cannot say which tier each request took. */
+export function needsPerRequestTiers(pricing, tokens) {
+  const threshold = pricing?.longContext?.thresholdTokens;
+  return Number.isFinite(threshold) && promptTokens(tokens) > threshold;
+}
+
 function requestPricing(tokens, pricing, requests) {
   if (!Array.isArray(requests) || requests.length === 0) return null;
   const sums = Object.fromEntries(Object.values(BREAKDOWN_NAME).map((name) => [name, 0]));
@@ -270,7 +294,7 @@ function requestPricing(tokens, pricing, requests) {
   for (const request of requests) {
     const requestTokens = normalizeTokens({ ...(request?.tokens ?? {}), outputIsExclusive: true });
     if (!requestTokens) continue;
-    const rates = contextPricing(pricing, request.contextTier);
+    const rates = contextPricing(pricing, request.contextTier ?? promptTier(requestTokens, pricing));
     const costs = oneRequestBreakdown(requestTokens, rates);
     for (const [field, count] of tokenFields(requestTokens)) {
       if (count == null) continue;

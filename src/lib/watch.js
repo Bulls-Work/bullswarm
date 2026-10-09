@@ -235,9 +235,15 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // consult durable transcripts, and only when the provider exposes the
   // optional hook. Ambiguous or missing transcript matches are ignored so the
   // byte estimate remains visible for the live attempt; `workflow reprice`
-  // applies the stricter unknown policy to historical records.
+  // applies the stricter unknown policy to historical records. One exception:
+  // a row priced by prompt length (Haiku 5.5) needs each request's size, which
+  // the stream's totals lack, so a provider-reported record whose prompts sum
+  // past the line takes the transcript's requests — only when they add up to
+  // the same total.
   let transcriptReaderFound = false;
-  if (usage.tokenSource === 'estimated:utf8-bytes/4' || usage.tokenSource === 'unknown') {
+  const tiersNeeded = usage.tokenSource === 'provider-reported'
+    && usageLib.needsPerRequestTiers?.(usage.pricing, usage.tokens);
+  if (usage.tokenSource === 'estimated:utf8-bytes/4' || usage.tokenSource === 'unknown' || tiersNeeded) {
     const reader = await resolveTranscriptReader(opts, poolName, home);
     transcriptReaderFound = Boolean(reader);
     if (reader) {
@@ -257,7 +263,8 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         const exact = ['exact', 'window', 'task-text'].includes(transcript?.confidence);
         const hasTokens = transcript?.tokens && typeof transcript.tokens === 'object'
           && Object.values(transcript.tokens).some((value) => finiteNonNegative(value) != null);
-        if (exact && hasTokens) {
+        const sameTotal = !tiersNeeded || transcript?.tokens?.totalKnown === usage.tokens?.totalKnown;
+        if (exact && hasTokens && sameTotal) {
           const attach = usageLib.attachTranscriptUsage;
           if (typeof attach === 'function') {
             usage = await attach(usage, transcript) ?? usage;

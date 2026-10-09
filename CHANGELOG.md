@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- routing: a seat whose provider reports only a 5-hour window (a Claude Team seat: the usage API returns no weekly figure) is now paced on that window: surplus = 5h elapsed − 5h used, and a window not yet opened counts as wholly unspent. Before, it read `unmetered surplus=0` and routing reached it only once every other pool had fallen behind, so its 5-hour windows expired unused. `bullswarm pools` reads `5h used 48% elapsed 52.1%`, and Fleet names a `5-hour window`. Pools with a weekly or monthly window keep 5h as a gate only.
+- pricing: Claude Haiku 5.5 has a price row (read 2026-10-09): $0.10 input / $0.01 cache hit / $0.125 5m write / $0.20 1h write / $0.50 output, and for a request whose prompt is over 100,000 tokens $0.50 / $0.05 / $0.625 / $1 / $2.50. A row's `longContext.thresholdTokens` now tiers any request no reader tagged, so Claude transcript requests are priced one by one. A provider-reported attempt whose prompts together pass the line takes its transcript's requests when they add up to the same total; otherwise the pricing pass leaves it unpriced rather than charge the low rates.
+
 ## 0.38.10 — prices dated by when the attempt ran; Sonnet 5.5 cache reads $0.20 before 7 Oct
 
 - pricing: a rate card can carry dated history (`pricingHistory`: earlier rates, each with the time it ended), and an attempt is priced at the rate in force when it started. Anthropic cut Claude Sonnet 5.5 cache reads from $0.20 to $0.10 per million on 2026-10-07 (release notes); 0.38.9 applied $0.10 to every date. Attempts started before 7 Oct now price at $0.20 (all 48 on the live home), later ones at $0.10.

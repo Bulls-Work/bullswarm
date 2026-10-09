@@ -36,6 +36,28 @@ test('every dispatched Claude model has a price row with the published rates', (
   }
 });
 
+// Haiku 5.5 is priced by prompt length (re-read 2026-10-09): a request whose
+// prompt is over 100,000 tokens pays the second line of rates.
+test('Claude Haiku 5.5 carries both lines of its published rates', () => {
+  const profile = modelProfile(claude, 'claude-haiku-5-5');
+  assert.deepEqual(profile.pricing, {
+    inputUsdPerMillion: 0.1,
+    cacheReadUsdPerMillion: 0.01,
+    cacheWrite5mUsdPerMillion: 0.125,
+    cacheWrite1hUsdPerMillion: 0.2,
+    outputUsdPerMillion: 0.5,
+    longContext: {
+      thresholdTokens: 100000,
+      inputUsdPerMillion: 0.5,
+      cacheReadUsdPerMillion: 0.05,
+      cacheWrite5mUsdPerMillion: 0.625,
+      cacheWrite1hUsdPerMillion: 1,
+      outputUsdPerMillion: 2.5,
+    },
+  });
+  assert.match(profile.pricingSource, /platform\.claude\.com\/docs\/en\/about-claude\/pricing/);
+});
+
 test('a resumed attempt is compared with its session total, as Claude Code reports it', () => {
   const state = {
     shortId: 'abc123',

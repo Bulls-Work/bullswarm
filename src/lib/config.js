@@ -28,7 +28,7 @@ import { loadState } from './state.js';
 import { finiteOrNull } from './num.js';
 import {
   FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow, declaredResetPacing,
-  guessedRefusalWindow, refusalResetKnown,
+  guessedRefusalWindow, refusalResetKnown, windowPace, WINDOW_MS,
 } from '../meters/framework.js';
 import { loadProviders } from './providers.js';
 import { isFreeModel } from './usage.js';
@@ -259,6 +259,20 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
         p.pace = -100;
         p.paceResetsAt = selected?.resets_at ?? p.quotaRefusalResetsAt;
       }
+    } else if (fiveHourOnlyPace(reading, now)) {
+      // A seat whose provider reports a 5h window and nothing longer (a Claude
+      // Team seat: `seven_day` null) loses whatever a 5h window leaves unused,
+      // so that window paces it — the one exception to "5h only gates" (M3).
+      // A window not yet opened, or one already reset, is wholly unspent.
+      const fiveHour = fiveHourOnlyPace(reading, now);
+      p.meterSource = reading.source;
+      p.resetSource = 'provider';
+      p.usedPct = fiveHour.usedPct;
+      p.elapsedPct = fiveHour.elapsedPct;
+      p.pace = fiveHour.surplus;
+      p.paceResetsAt = fiveHour.resetsAt;
+      p.pacingWindow = '5h';
+      p.meterSnapshot = reading.snapshot ?? null;
     } else {
       // Declared / unmetered fallback
       const meter = { ...(p.connector.meter ?? {}), ...(ps.meter ?? {}) };
@@ -306,6 +320,27 @@ function pacedReading(reading, pacingWindow) {
   }
   if (!reading.pacing) return null;
   return { pacing: reading.pacing, window: reading.pacingWindow ?? pacingWindow ?? null };
+}
+
+/**
+ * The pace of a pool whose provider reported a 5h window and no weekly or
+ * monthly one, or null. An idle window (no reset named, or the named reset
+ * already passed) reads used 0 and surplus 100: none of it has been spent.
+ */
+export function fiveHourOnlyPace(reading, nowMs = Date.now()) {
+  const snapshot = reading?.snapshot;
+  if (!snapshot || reading.source === 'quota-refusal') return null;
+  const reported = (window) => window && typeof window === 'object'
+    && (finiteOrNull(window.utilization) != null || (window.resets_at ?? null) != null);
+  if (reported(snapshot.seven_day) || reported(snapshot.monthly)) return null;
+  const raw = guessedRefusalWindow(snapshot.five_hour) ? null : snapshot.five_hour;
+  const usedPct = finiteOrNull(raw?.utilization);
+  if (usedPct == null) return null;
+  const resetsAtMs = Date.parse(raw?.resets_at ?? '');
+  if (!Number.isFinite(resetsAtMs) || resetsAtMs <= nowMs) {
+    return { usedPct: 0, elapsedPct: null, surplus: 100, resetsAt: null };
+  }
+  return windowPace({ usedPct, resetsAtMs, windowMs: WINDOW_MS['5h'], nowMs });
 }
 
 /**

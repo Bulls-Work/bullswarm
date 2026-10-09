@@ -119,7 +119,7 @@ function recordOf(rung) {
 function poolBlurb(pool, nowMs) {
   const window = pool?.pacingWindow === 'monthly' || pool?.pacingWindow === 'weekly'
     ? `${pool.pacingWindow} window`
-    : null;
+    : pool?.pacingWindow === '5h' ? '5-hour window' : null;
   const used = pool?.usedPct == null ? null : `${numberText(pool.usedPct)}% used`;
   const elapsed = pool?.elapsedPct == null ? null : `${numberText(pool.elapsedPct)}% elapsed`;
   const resetAt = pool?.paceResetsAt ?? pool?.resetsAt ?? null;
