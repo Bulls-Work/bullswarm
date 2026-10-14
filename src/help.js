@@ -468,7 +468,7 @@ const poolsText = rich({
     + 'expected to push the window further; routing decides on the right-hand number. '
     + 'A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run: '
     + 'routing only deprioritizes a near-limit pool whose usage is ahead of its clock. '
-    + 'A pool whose weekly window resets within 24 hours, whose monthly window resets within 3 days, or (a 5h-only seat with no weekly limit) whose 5h window resets within 2 hours, '
+    + 'A pool whose weekly window resets within 24 hours, whose monthly window resets within 3 days, or (a 5h-only seat with no weekly limit) any time in its 5h window, '
     + 'ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON '
     + 'urgency=<n>`: quota about to be lost, scored as surplus divided by the fraction '
     + 'of the window still to run, which is what routing ranks it on.',
@@ -573,6 +573,9 @@ const strategyText = rich({
     { name: 'routes', desc: 'print only the currently effective high/medium/low choices' },
     { name: 'rungs', desc: 'list every pool/tier rung with its model, reasoning, evidence, and local record' },
     { name: 'set-provider', desc: 'enable or disable one provider pool non-interactively' },
+    { name: 'hold', desc: 'take one pool out of routing for a reason until a date (the hold list)' },
+    { name: 'unhold', desc: 'end a pool\'s hold now' },
+    { name: 'set-reserve', desc: 'opt-in: keep a share of one pool\'s window unspent by routing' },
     { name: 'set-model', desc: 'assign one model to multiple effort tiers or turn it off' },
     { name: 'set-rung', desc: 'set one pool/tier model and reasoning level in one atomic write' },
     { name: 'reset-tier', desc: 'return one tier from an explicit allow-list to automatic routing' },
@@ -627,6 +630,39 @@ const strategySetProviderText = rich({
   args: [{ name: '<pool>', desc: 'exact pool name from strategy inventory' }, { name: '<on|off>', desc: 'new state' }],
   options: [{ flag: '--yes', desc: 'required approval' }], safety: ['changes routing immediately for new dispatches'],
   examples: [{ cmd: 'bullswarm strategy set-provider relay:b off --yes' }], next: 'Use strategy routes --json to confirm.',
+});
+const strategyHoldText = rich({
+  usage: 'bullswarm strategy hold <pool> --until <date|24h|3d> --reason <text> --yes',
+  purpose: 'Put one pool on the hold list: routing gives it no work until the date, then it is back by itself. '
+    + '`bullswarm pools` shows `held until <date> (<reason>)`, and a step no pool can take names the hold and when it ends. '
+    + 'Unlike set-provider off, a hold carries its reason and ends without a command.',
+  args: [{ name: '<pool>', desc: 'pool id or label' }],
+  options: [
+    { flag: '--until', desc: 'when the hold ends: an ISO date/time, or a duration from now (90m, 24h, 3d)' },
+    { flag: '--reason', desc: 'why the pool is held, shown wherever the hold is' },
+    { flag: '--yes', desc: 'required approval' },
+  ],
+  safety: ['changes routing immediately for new dispatches; work already running is not stopped'],
+  examples: [{ cmd: 'bullswarm strategy hold command-code --until 2026-10-16T12:00:00Z --reason "Kipwise #767 review" --yes' }],
+  next: 'bullswarm pools to see the hold; strategy unhold <pool> --yes ends it early.',
+});
+const strategyUnholdText = rich({
+  usage: 'bullswarm strategy unhold <pool> --yes', purpose: 'End a pool\'s hold now.',
+  args: [{ name: '<pool>', desc: 'pool id or label' }], options: [{ flag: '--yes', desc: 'required approval' }],
+  safety: ['changes routing immediately for new dispatches'], examples: [{ cmd: 'bullswarm strategy unhold command-code --yes' }],
+  next: 'bullswarm pools to confirm.',
+});
+const strategySetReserveText = rich({
+  usage: 'bullswarm strategy set-reserve <pool> <pct|off> [--window 5h|weekly|monthly|all] --yes',
+  purpose: 'Opt-in owner reserve. Off by default: every pool is burned to 100% by pace. With a reserve of <pct>, routing gives the pool '
+    + 'no new work while the chosen window\'s reading, or its projection with the work already in flight, is at or above 100 - <pct> '
+    + '(for example, a reserve of 40 stops at 60%). `all` (the default) covers the 5h window and the pacing window. A step '
+    + 'already running is not stopped and nothing is time-boxed before a reset; the pool takes work again when the window resets.',
+  args: [{ name: '<pool>', desc: 'pool id or label' }, { name: '<pct|off>', desc: 'share of the window to keep, 0 < pct < 100; off (or 0) clears it' }],
+  options: [{ flag: '--window', desc: 'which window the reserve covers', default: 'all' }, { flag: '--yes', desc: 'required approval' }],
+  safety: ['changes routing immediately for new dispatches'],
+  examples: [{ cmd: 'bullswarm strategy set-reserve claude-code:kipwise 40 --window 5h --yes', note: 'keep 40% of each 5h window for the seat\'s owner' }],
+  next: 'bullswarm pools shows `reserve 40% (5h)` and, once reached, `at reserve`.',
 });
 const strategySetModelText = rich({
   usage: 'bullswarm strategy set-model <pool> <model> --tiers <high,medium,low|off> --yes', purpose: 'Assign one model to one or more effort tiers.',
@@ -1977,6 +2013,9 @@ const HELP = {
     inventory: { _text: strategyInventoryText },
     routes: { _text: strategyRoutesText },
     'set-provider': { _text: strategySetProviderText },
+    hold: { _text: strategyHoldText },
+    unhold: { _text: strategyUnholdText },
+    'set-reserve': { _text: strategySetReserveText },
     'set-model': { _text: strategySetModelText },
     'reset-tier': { _text: strategyResetTierText },
     'set-reasoning': { _text: strategySetReasoningText },

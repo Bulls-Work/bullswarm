@@ -60,7 +60,7 @@
 //       run to acme on 22.9 > 13.8, and grok's 15 points expired two hours
 //       later; the owner had been pinning grok by hand.) So a pool whose
 //       PACING window resets within a fixed lead time — EXPIRING_SOON_MS: 24
-//       hours weekly, 3 days monthly, 2 hours for a 5h-only seat, the owner's
+//       hours weekly, 3 days monthly, the whole window for a 5h-only seat, the owner's
 //       chosen values, about a seventh of a week and a tenth of a month — is ranked on
 //       urgency = effective surplus / the fraction of its window still to run
 //       (floored at MIN_WINDOW_LEFT_FRACTION so a reset seconds away cannot
@@ -115,7 +115,28 @@
 //       a check keeps "no free-first" and gets independence only through its
 //       own `route` (a hard filter applied before this router sees the pools).
 
+//  R14. Operator limits come before ranking (pool-limits.js). A pool on the
+//       hold list is out until its hold ends; a pool with an opt-in reserve is
+//       out while the reserved window's reading or in-flight projection is at
+//       or above 100 - reserve. No reserve is set by default: every pool is
+//       burned to 100% by pace. The reason names every pool a limit kept out.
+//  R15. Fit before reset, never a forced finish. Urgency (R11) values quota
+//       that expires unspent, and a task only spends what fits before the
+//       reset, so an urgent pool's urgency is multiplied by the share of the
+//       candidate's expected minutes that fit (min(1, minutes to reset /
+//       candidate minutes)). Under MIN_FIT_FOR_URGENT it is not urgent and
+//       competes on surplus like any pool. Nothing is refused or time-boxed: a
+//       task that crosses the reset runs on in the next window.
+//  R16. A stale meter is treated as closer to its cap. A reading older than
+//       STALE_METER_AFTER_MS is charged the spend it has probably missed: the
+//       measured rate × the minutes past that age (5h and pacing windows
+//       separately), or STALE_UNMEASURED_PENALTY_PCT with no rate, so a pool
+//       with a fresh reading wins a close call (seen 2026-10-14 15:55Z: a
+//       Sonnet step placed on claude-code:wati, its meter 429-stale at 75% of
+//       5h).
+
 import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS, windowSpent } from '../meters/framework.js';
+import { operatorLimit, operatorLimitText } from './pool-limits.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
@@ -142,8 +163,12 @@ export const DEFAULT_INFLIGHT_PENALTY_PCT = 3;
  */
 export const EXPIRING_SOON_MS = {
   // A 5h-only seat (a Claude Team seat: `seven_day` null) is paced on its 5h
-  // window and loses whatever that window leaves unused every five hours.
-  '5h': 2 * 3600_000,
+  // window and loses whatever that window leaves unused every five hours, so
+  // the whole window is its lead time: while it is behind pace it ranks ahead
+  // of pools whose quota does not expire for days. 0.38.13 used 2 hours; the
+  // one-day replay of 2026-10-14 (sim/kernel-5h-day.mjs) lost 19 instead of
+  // 79 points of the 13:00-18:00Z window with the whole window, 67 with 2h.
+  '5h': 5 * 3600_000,
   weekly: 24 * 3600_000,
   monthly: 72 * 3600_000,
 };
@@ -172,6 +197,59 @@ export const MIN_WINDOW_LEFT_FRACTION = 0.005;
  * before the line are exactly where that estimate is least trustworthy.
  */
 export const UNMEASURED_URGENT_HEADROOM_PCT = 5;
+
+/**
+ * R15: below this share of a candidate's expected minutes fitting before the
+ * pacing reset, an expiring-soon pool is not urgent for it. A quarter is the
+ * lead's chosen value: most of such a task would run in the next window,
+ * where the quota is not expiring.
+ */
+export const MIN_FIT_FOR_URGENT = 0.25;
+
+/**
+ * R16: a reading older than this is stale for routing. Ten minutes matches
+ * the meter snapshot freshness (registry.js SNAPSHOT_FRESH_MS), so an
+ * ordinary sampler file is never penalized.
+ */
+export const STALE_METER_AFTER_MS = 10 * 60_000;
+
+/** R16: points charged to a stale pool with no measured spend rate. */
+export const STALE_UNMEASURED_PENALTY_PCT = 5;
+
+/** R16: no stale charge exceeds this many points. */
+export const STALE_MAX_PENALTY_PCT = 50;
+
+/**
+ * R16: the pool as routing should see it when its meter is stale: each
+ * window's used % raised (and surplus lowered) by the spend it has probably
+ * missed. Returns the pool itself when the reading is fresh or undated.
+ */
+export function staleAdjusted(pool, now = Date.now()) {
+  const captured = Date.parse(pool?.meterCapturedAt ?? '');
+  if (!Number.isFinite(captured)) return pool;
+  const staleMinutes = (now - captured - STALE_METER_AFTER_MS) / 60_000;
+  if (!(staleMinutes > 0)) return pool;
+  const charge = (rate) => Math.min(
+    STALE_MAX_PENALTY_PCT,
+    rate != null && rate > 0 ? rate * staleMinutes : STALE_UNMEASURED_PENALTY_PCT,
+  );
+  const add = (value, points) => (num(value) == null ? value : num(value) + points);
+  const five = num(pool.fiveHourUsedPct) == null ? 0 : charge(num(pool?.spend?.fiveHour?.ratePerMinute));
+  const pacing = num(pool.usedPct) == null ? 0 : charge(num(pool?.spend?.pacing?.ratePerMinute));
+  return {
+    ...pool,
+    fiveHourUsedPct: add(pool.fiveHourUsedPct, five),
+    projectedFiveHourPct: add(pool.projectedFiveHourPct, five),
+    usedPct: add(pool.usedPct, pacing),
+    projectedPacingPct: add(pool.projectedPacingPct, pacing),
+    pace: num(pool.pace) == null ? pool.pace : num(pool.pace) - pacing,
+    stale: {
+      minutes: Math.round((now - captured) / 60_000),
+      fiveHourPenalty: Math.round(five * 10) / 10,
+      pacingPenalty: Math.round(pacing * 10) / 10,
+    },
+  };
+}
 
 export function elapsedPct(meter, now = Date.now()) {
   if (!meter || meter.type === 'none') return 0;
@@ -594,6 +672,7 @@ export function expiringSoonView(pool, opts = {}) {
   const leadMs = EXPIRING_SOON_MS[window] ?? null;
   const minutesToReset = minutesUntilPacingReset(pool, now);
   const notSoon = {
+    fit: null,
     expiringSoon: false,
     window,
     minutesToReset,
@@ -631,17 +710,22 @@ export function expiringSoonView(pool, opts = {}) {
     forecast != null
     && forecast >= PACING_FORECAST_BLOCK_PCT
     && (elapsed == null || forecast > elapsed);
+  // R15: only the part of the task that runs before the reset spends the
+  // expiring quota. Never a refusal: a poor fit just stops being urgent.
+  const mins = num(candidateMinutes);
+  const fit = mins != null && mins > 0 ? Math.min(1, minutesToReset / mins) : null;
   const state =
     draining ? 'draining'
-    : eff > 0 && forecast != null && trusted ? 'urgent'
+    : eff > 0 && forecast != null && trusted && (fit == null || fit >= MIN_FIT_FOR_URGENT) ? 'urgent'
     : 'normal';
   return {
+    fit,
     expiringSoon: true,
     window,
     minutesToReset,
     windowLeftFraction,
     effective: eff,
-    urgency: eff / windowLeftFraction,
+    urgency: (eff / windowLeftFraction) * (fit ?? 1),
     forecast,
     ratePerMinute: pacing.ratePerMinute,
     state,
@@ -729,14 +813,25 @@ export function pickPool(lane, pools, opts = {}) {
       requiredCapabilities.every((capability) =>
         (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)) &&
       !isExhausted(p, now),
-  );
+  ).map((p) => ({ source: p, view: staleAdjusted(p, now) }));
+  // R14: the hold list and opt-in reserves, read on the stale-adjusted view
+  // (R16) so a stale pool near its reserve is held back rather than overfilled.
+  const operatorLimited = laneCapable
+    .map(({ view }) => ({ pool: view, limit: operatorLimit(view, now) }))
+    .filter((entry) => entry.limit);
+  const limitedNames = new Set(operatorLimited.map((entry) => entry.pool.name));
+  const sourceOf = new Map(laneCapable.map(({ source, view }) => [view, source]));
+  const laneOpen = laneCapable.map(({ view }) => view).filter((p) => !limitedNames.has(p.name));
   // resolveDispatchModel() marks a pool ineligible when the persisted routing
   // policy cannot name a model for this tier — most often an effort tier whose
   // allow-list selects models on other pools only. Filtering here (instead of
   // in each caller) keeps that reason reachable; pools with no modelPolicy
   // attached at all are unaffected.
-  const modelBlocked = laneCapable.filter((p) => p.modelPolicy?.eligible === false);
-  const eligible = laneCapable.filter((p) => p.modelPolicy?.eligible !== false);
+  const modelBlocked = laneOpen.filter((p) => p.modelPolicy?.eligible === false);
+  const eligible = laneOpen.filter((p) => p.modelPolicy?.eligible !== false);
+  const limitedText = operatorLimited.length
+    ? `kept out: ${operatorLimited.map((entry) => operatorLimitText(entry.pool, entry.limit)).join('; ')}`
+    : null;
 
   const scored = eligible.map((p) => {
     const forecast = fiveHourForecast(p, candidateMins, now);
@@ -845,6 +940,11 @@ export function pickPool(lane, pools, opts = {}) {
     urgency: e.expiring.urgency == null ? null : tenth(e.expiring.urgency),
     forecastPacingPct: e.expiring.forecast == null ? null : tenth(e.expiring.forecast),
     urgencyState: e.expiring.state,
+    // R15: share of the candidate's expected minutes that fit before the
+    // pacing reset (null when not expiring soon or no estimate).
+    fitBeforeReset: e.expiring.fit == null ? null : Math.round(e.expiring.fit * 100) / 100,
+    // R16: the stale-meter charge applied, or null for a fresh reading.
+    staleMeter: e.pool.stale ?? null,
     free: isFree(e.pool),
     freeModel: e.pool.freeModel ?? null,
   }));
@@ -865,7 +965,7 @@ export function pickPool(lane, pools, opts = {}) {
       : '';
     return {
       pick: null,
-      why: noted(blocked ?? `no eligible pool${withCapabilities}`),
+      why: noted([blocked ?? `no eligible pool${withCapabilities}`, limitedText].filter(Boolean).join(' · ')),
       candidates,
       forecast: forecastReport,
     };
@@ -956,7 +1056,7 @@ export function pickPool(lane, pools, opts = {}) {
       e.pace >= winnerEntry.pace &&
       e.effective < winnerEntry.effective,
   );
-  const why = noted(routingReason(winnerEntry, {
+  const why = noted([routingReason(winnerEntry, {
     preferred: Boolean(preferredPool) && winnerEntry.pool.name === preferredPool,
     effortTier: opts.effortTier,
     pinned: Boolean(strictPool) && winnerEntry.pool.name === strictPool,
@@ -970,10 +1070,11 @@ export function pickPool(lane, pools, opts = {}) {
     skippedDraining,
     overLimit: overLimitEntries,
     yieldedBusier,
-  }));
+  }), staleText(winnerEntry, scored), limitedText].filter(Boolean).join(' · '));
 
   return {
-    pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
+    // The caller's own pool object, not the stale-adjusted view (R16).
+    pick: { pool: winnerEntry.pool.name, connector: sourceOf.get(winnerEntry.pool) ?? winnerEntry.pool },
     why,
     candidates,
     forecast: forecastReport,
@@ -1145,6 +1246,20 @@ function routingReason(
  * this scale a tenth of a point is noise, and the candidate row carries the
  * rounded value for anything that needs it.
  */
+/** R16: the stale charge on the winner and on the pools it beat, or null. */
+function staleText(winner, scored) {
+  const stale = scored.filter((e) => e.pool.stale);
+  if (!stale.length) return null;
+  return `stale meter charged: ${stale.map((e) => {
+    const { minutes, fiveHourPenalty, pacingPenalty } = e.pool.stale;
+    const parts = [
+      fiveHourPenalty ? `5h +${fiveHourPenalty}` : null,
+      pacingPenalty ? `${e.pool.pacingWindow ?? 'pacing'} +${pacingPenalty}` : null,
+    ].filter(Boolean).join(', ');
+    return `${e.pool.name} (${minutes}m old${parts ? `: ${parts}` : ''})${e === winner ? ' [picked]' : ''}`;
+  }).join(', ')}`;
+}
+
 function urgencyClause(entry, detail) {
   return (
     `expiring soon: ${entry.pool.name} resets in ${formatResetsIn(entry.expiring.minutesToReset)}, `
@@ -1158,8 +1273,13 @@ function urgencyArithmetic(entry, detail) {
   const word = window === 'monthly' ? 'month' : window === '5h' ? '5h window' : 'week';
   const left = tenth(windowLeftFraction * 100);
   const tail = detail ? ` (${detail})` : '';
+  // R15: a task that does not wholly fit before the reset is scored on the
+  // part that does.
+  const fit = entry.expiring.fit != null && entry.expiring.fit < 1
+    ? ` × ${tenth(entry.expiring.fit * 100)}% of the task before the reset`
+    : '';
   return (
-    `surplus ${tenth(entry.effective)} over ${left}% of the ${word} left `
+    `surplus ${tenth(entry.effective)} over ${left}% of the ${word} left${fit} `
     + `→ urgency ${Math.round(urgency)}, forecast ${pacingPctText(entry)}${tail}`
   );
 }

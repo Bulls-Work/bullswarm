@@ -1,3 +1,4 @@
+import { parseHoldUntil, RESERVE_WINDOWS } from './lib/pool-limits.js';
 import { loadState, updateState } from './lib/state.js';
 import { loadConnectors, loadPoolProviders, buildPools, buildPoolsLive } from './lib/config.js';
 import { providerFor } from './lib/providers.js';
@@ -65,6 +66,7 @@ function strategyHelpPath(sub, opts) {
     'set-reasoning', 'rungs', 'set-rung', 'reset-reasoning', 'configure',
     'refresh', 'recommend', 'apply', 'show', 'assign', 'clear-assignment',
     'exclude-model', 'include-model', 'set-subscription', 'set-free',
+    'hold', 'unhold', 'set-reserve',
   ];
   return LEAVES.includes(sub) ? ['strategy', sub] : null;
 }
@@ -816,6 +818,35 @@ export async function loadStrategyInventory(bullswarmDir, {
   });
 }
 
+// The hold list (pool-limits.js): a pool out of routing for a reason until a
+// date, after which it is back by itself. Written under the state lock, as
+// set-provider is.
+function setPoolHold(bullswarmDir, pool, hold) {
+  const connectors = loadConnectors(bullswarmDir, PACKAGED);
+  if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+  updateState(bullswarmDir, (state) => {
+    state.pools[pool] ??= {};
+    if (hold) state.pools[pool].hold = { ...hold, setAt: new Date().toISOString() };
+    else delete state.pools[pool].hold;
+  });
+  return hold ? { action: 'pool-held', pool, ...hold } : { action: 'pool-unheld', pool };
+}
+
+// An opt-in reserve (pool-limits.js): routing never takes the pool's window
+// to or above 100 - pct. Null clears it, back to burning to 100% by pace.
+function setPoolReserve(bullswarmDir, pool, reserve) {
+  const connectors = loadConnectors(bullswarmDir, PACKAGED);
+  if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+  updateState(bullswarmDir, (state) => {
+    state.pools[pool] ??= {};
+    if (reserve) state.pools[pool].reserve = reserve;
+    else delete state.pools[pool].reserve;
+  });
+  return reserve
+    ? { action: 'reserve-set', pool, ...reserve, ceiling: 100 - reserve.pct }
+    : { action: 'reserve-cleared', pool };
+}
+
 function setProviderEnabled(bullswarmDir, pool, enabled) {
   const connectors = loadConnectors(bullswarmDir, PACKAGED);
   if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
@@ -1012,7 +1043,7 @@ export async function cmdStrategy(args, {
   for (const flag of ['worker-pool']) {
     if (typeof opts[flag] === 'string' && opts[flag] !== 'auto') opts[flag] = resolvePoolId(opts[flag], bullswarmDir);
   }
-  if (['set-rung', 'set-provider', 'set-model', 'set-subscription'].includes(sub) && typeof opts.rest[0] === 'string') {
+  if (['set-rung', 'set-provider', 'set-model', 'set-subscription', 'hold', 'unhold', 'set-reserve'].includes(sub) && typeof opts.rest[0] === 'string') {
     opts.rest[0] = resolvePoolId(opts.rest[0], bullswarmDir);
   }
   try {
@@ -1132,6 +1163,30 @@ export async function cmdStrategy(args, {
       const mode = opts.rest[1];
       if (!pool || !['on', 'off'].includes(mode)) throw new Error(`usage: ${usageLine(['strategy', 'set-provider'])}`);
       console.log(JSON.stringify(setProviderEnabled(bullswarmDir, pool, mode === 'on'), null, 2));
+      return 0;
+    }
+    if (sub === 'hold' || sub === 'unhold' || sub === 'set-reserve') {
+      if (opts.yes !== true) throw new Error(`${sub} changes routing; pass --yes to approve`);
+      const pool = opts.rest[0];
+      if (!pool) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+      let result;
+      if (sub === 'hold') {
+        const until = parseHoldUntil(opts.until);
+        const reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
+        if (until == null || until <= Date.now()) throw new Error('--until must be a future date/time or a duration such as 24h or 3d');
+        if (!reason) throw new Error(`usage: ${usageLine(['strategy', 'hold'])}`);
+        result = setPoolHold(bullswarmDir, pool, { reason, until: new Date(until).toISOString() });
+      } else if (sub === 'unhold') {
+        result = setPoolHold(bullswarmDir, pool, null);
+      } else {
+        const raw = String(opts.rest[1] ?? '').trim().toLowerCase();
+        const pct = raw === 'off' ? 0 : Number(raw);
+        const window = opts.window === undefined ? 'all' : String(opts.window).trim().toLowerCase();
+        if (!raw || !Number.isFinite(pct) || pct < 0 || pct >= 100) throw new Error(`usage: ${usageLine(['strategy', 'set-reserve'])}`);
+        if (!RESERVE_WINDOWS.includes(window)) throw new Error(`--window must be ${RESERVE_WINDOWS.join(', ')}`);
+        result = setPoolReserve(bullswarmDir, pool, pct === 0 ? null : { pct, window });
+      }
+      console.log(JSON.stringify(result, null, 2));
       return 0;
     }
     if (sub === 'set-model') {
@@ -1413,7 +1468,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning|set-free) changes|free models must be|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning|set-free|hold|unhold|set-reserve) changes|--until must be|--window must be|free models must be|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }

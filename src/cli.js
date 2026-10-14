@@ -1,5 +1,6 @@
 // bullswarm CLI — verbs: setup (wizard), run, health, pools.
 
+import { activeHold, reserveOf, reserveReached } from './lib/pool-limits.js';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -106,14 +107,21 @@ export function meterSourceLabel(pool, nowMs = Date.now()) {
  * pool is ever paused or benched (state.js S1); a window at its limit shows in
  * its meter columns.
  */
-export function poolStatusText(p) {
+export function poolStatusText(p, nowMs = Date.now()) {
   if (!p.enabled) return 'disabled';
   // A dead sign-in seen by the latest meter read: not pickable, whatever the
   // cached numbers say (dispatch-pools.js meterSignInDead).
   if (meterSignInDead(p)) return `not ready · ${meterSignInText(p)}`;
+  // The hold list and an opt-in reserve (pool-limits.js, route.js R14).
+  const hold = activeHold(p, nowMs);
+  if (hold) return `held until ${hold.until} (${hold.reason})`;
+  const reserve = reserveOf(p);
+  const reached = reserveReached(p);
+  if (reached) return `at reserve · ${reached.window} ${reached.levelPct}% >= ${reached.ceiling}% (reserve ${reached.pct}%)`;
   const burst = p.burstGate ? ' BURST-GATED' : '';
   const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
-  return `ready${burst}${nearLimit}`;
+  const reserveTag = reserve ? ` reserve ${reserve.pct}% (${reserve.window})` : '';
+  return `ready${burst}${nearLimit}${reserveTag}`;
 }
 
 function knownPoolIds(home) {

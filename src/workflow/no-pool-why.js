@@ -8,6 +8,7 @@
 
 import { windowSpent } from '../meters/framework.js';
 import { meterSignInDead, meterSignInText } from './dispatch-pools.js';
+import { operatorLimit } from '../lib/pool-limits.js';
 
 function toMs(value) {
   if (value == null || value === '') return null;
@@ -19,6 +20,19 @@ function toMs(value) {
 export function spentWindowPart(pool, at) {
   const spent = windowSpent(pool, at);
   return spent ? [`at its ${spent.window} limit`, toMs(spent.resetsAt), true] : null;
+}
+
+/**
+ * A pool on the hold list, or at its opt-in reserve (pool-limits.js), as a
+ * held reason, or null. Neither is a usage limit; a hold is back at its end,
+ * a reserve when the reserved window resets.
+ */
+export function operatorLimitPart(pool, at) {
+  const limit = operatorLimit(pool, at);
+  if (!limit) return null;
+  if (limit.kind === 'hold') return [`held (${limit.reason})`, toMs(limit.until), false];
+  const back = limit.window === '5h' ? toMs(pool.fiveHourResetsAt) : toMs(pool.paceResetsAt);
+  return [`at its ${limit.pct}% reserve (${limit.window} ${limit.levelPct}% >= ${limit.ceiling}%)`, back, false];
 }
 
 /** A pool whose latest meter read says its sign-in is dead, as a held reason, or null. */

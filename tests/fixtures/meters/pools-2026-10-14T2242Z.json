@@ -1,0 +1,404 @@
+{
+ "capturedAt": "2026-10-14T22:42:47Z",
+ "source": "bullswarm pools --json on the lead Mac",
+ "pools": [
+  {
+   "name": "claude-code",
+   "enabled": true,
+   "costRank": 4,
+   "lanes": [
+    "analyze",
+    "build",
+    "chore"
+   ],
+   "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+   ],
+   "meterSource": "snapshot",
+   "meterCapturedAt": "2026-10-14T22:42:03Z",
+   "usedPct": 25,
+   "elapsedPct": 34.9,
+   "pace": 9.9,
+   "pacingWindow": "weekly",
+   "paceResetsAt": "2026-10-19T12:00:00.000Z",
+   "fiveHourUsedPct": 2,
+   "fiveHourResetsAt": "2026-10-15T00:10:00.000Z",
+   "nearFiveHourLimit": false,
+   "burstGate": false,
+   "projectedFiveHourPct": 2,
+   "projectedWeeklyPct": 25,
+   "projectedPacingPct": 25,
+   "spend": {
+    "fiveHour": {
+     "ratePerMinute": 0.173857,
+     "source": "history",
+     "samples": 20
+    },
+    "weekly": {
+     "ratePerMinute": 0.036749,
+     "source": "history",
+     "samples": 21
+    },
+    "monthly": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "pacing": {
+     "window": "weekly",
+     "ratePerMinute": 0.036749,
+     "source": "history",
+     "samples": 21
+    }
+   },
+   "inflight": {
+    "count": 0,
+    "minutes": 0,
+    "remainingMinutes": null,
+    "unknownExpected": 0,
+    "records": []
+   },
+   "meterSnapshot": {
+    "pool": "claude-code",
+    "login": "personal",
+    "captured_at": "2026-10-14T22:42:03Z",
+    "checked_at": "2026-10-14T22:42:24Z",
+    "source": "statusline",
+    "five_hour": {
+     "utilization": 2,
+     "resets_at": "2026-10-15T00:10:00Z"
+    },
+    "seven_day": {
+     "utilization": 25,
+     "resets_at": "2026-10-19T12:00:00Z"
+    },
+    "monthly": null,
+    "error": null,
+    "retry_at": null,
+    "stale": false,
+    "state": "ok"
+   }
+  },
+  {
+   "name": "claude-code:kipwise",
+   "enabled": true,
+   "costRank": 4,
+   "lanes": [
+    "analyze",
+    "build",
+    "chore"
+   ],
+   "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+   ],
+   "meterSource": "snapshot",
+   "meterCapturedAt": "2026-10-14T22:42:20Z",
+   "usedPct": 76,
+   "elapsedPct": 94.3,
+   "pace": 18.3,
+   "pacingWindow": "5h",
+   "paceResetsAt": "2026-10-14T22:59:59.525Z",
+   "fiveHourUsedPct": 76,
+   "fiveHourResetsAt": "2026-10-14T22:59:59.525Z",
+   "nearFiveHourLimit": true,
+   "burstGate": false,
+   "projectedFiveHourPct": 76,
+   "projectedWeeklyPct": null,
+   "projectedPacingPct": 76,
+   "spend": {
+    "fiveHour": {
+     "ratePerMinute": 0.317463,
+     "source": "history",
+     "samples": 28
+    },
+    "weekly": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "monthly": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "pacing": {
+     "window": "5h",
+     "ratePerMinute": 0.317463,
+     "source": "history",
+     "samples": 28
+    }
+   },
+   "inflight": {
+    "count": 0,
+    "minutes": 0,
+    "remainingMinutes": null,
+    "unknownExpected": 0,
+    "records": []
+   },
+   "meterSnapshot": {
+    "pool": "claude-code:kipwise",
+    "login": "kipwise",
+    "captured_at": "2026-10-14T22:42:20Z",
+    "checked_at": "2026-10-14T22:42:24Z",
+    "source": "bullswarm-forced",
+    "five_hour": {
+     "utilization": 76,
+     "resets_at": "2026-10-14T22:59:59.525964+00:00"
+    },
+    "seven_day": null,
+    "monthly": null,
+    "error": null,
+    "retry_at": null,
+    "stale": false,
+    "state": "ok"
+   }
+  },
+  {
+   "name": "claude-code:wati",
+   "enabled": true,
+   "costRank": 4,
+   "lanes": [
+    "analyze",
+    "build",
+    "chore"
+   ],
+   "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+   ],
+   "meterSource": "snapshot",
+   "meterCapturedAt": "2026-10-14T22:42:15Z",
+   "usedPct": 36,
+   "elapsedPct": 74.2,
+   "pace": 38.2,
+   "pacingWindow": "weekly",
+   "paceResetsAt": "2026-10-16T18:00:00.000Z",
+   "fiveHourUsedPct": 32,
+   "fiveHourResetsAt": "2026-10-15T02:50:00.000Z",
+   "nearFiveHourLimit": false,
+   "burstGate": false,
+   "projectedFiveHourPct": 32.5,
+   "projectedWeeklyPct": 36,
+   "projectedPacingPct": 36,
+   "spend": {
+    "fiveHour": {
+     "ratePerMinute": 0.288443,
+     "source": "history",
+     "samples": 71
+    },
+    "weekly": {
+     "ratePerMinute": 0.022258,
+     "source": "history",
+     "samples": 70
+    },
+    "monthly": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "pacing": {
+     "window": "weekly",
+     "ratePerMinute": 0.022258,
+     "source": "history",
+     "samples": 70
+    }
+   },
+   "inflight": {
+    "count": 1,
+    "minutes": 11.15,
+    "remainingMinutes": 1.9,
+    "unknownExpected": 0,
+    "records": [
+     {
+      "id": "bc4ac309-6fbf-4380-af75-6c3e231e7c2f",
+      "lane": "build",
+      "effort": "high",
+      "startedAt": "2026-10-14T22:31:37.268Z",
+      "elapsedMinutes": 11.15,
+      "expectedMinutes": 13.05,
+      "remainingMinutes": 1.9
+     }
+    ]
+   },
+   "meterSnapshot": {
+    "pool": "claude-code:wati",
+    "login": "wati",
+    "captured_at": "2026-10-14T22:42:15Z",
+    "checked_at": "2026-10-14T22:42:24Z",
+    "source": "statusline",
+    "five_hour": {
+     "utilization": 32,
+     "resets_at": "2026-10-15T02:50:00Z"
+    },
+    "seven_day": {
+     "utilization": 36,
+     "resets_at": "2026-10-16T18:00:00Z"
+    },
+    "monthly": null,
+    "error": null,
+    "retry_at": null,
+    "stale": false,
+    "state": "ok"
+   }
+  },
+  {
+   "name": "codex",
+   "enabled": true,
+   "costRank": 3,
+   "lanes": [
+    "analyze",
+    "build",
+    "chore"
+   ],
+   "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+   ],
+   "meterSource": "stale",
+   "meterCapturedAt": "2026-10-01T02:37:48.084Z",
+   "usedPct": 66,
+   "elapsedPct": 100,
+   "pace": 34,
+   "pacingWindow": "weekly",
+   "paceResetsAt": "2026-10-04T02:42:42.000Z",
+   "fiveHourUsedPct": null,
+   "fiveHourResetsAt": null,
+   "nearFiveHourLimit": false,
+   "burstGate": false,
+   "projectedFiveHourPct": null,
+   "projectedWeeklyPct": 66,
+   "projectedPacingPct": 66,
+   "spend": {
+    "fiveHour": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "weekly": {
+     "ratePerMinute": 0.103137,
+     "source": "history",
+     "samples": 23
+    },
+    "monthly": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "pacing": {
+     "window": "weekly",
+     "ratePerMinute": 0.103137,
+     "source": "history",
+     "samples": 23
+    }
+   },
+   "inflight": {
+    "count": 0,
+    "minutes": 0,
+    "remainingMinutes": null,
+    "unknownExpected": 0,
+    "records": []
+   },
+   "meterSnapshot": {
+    "captured_at": "2026-10-01T02:37:48.084Z",
+    "pool": "codex",
+    "five_hour": {
+     "utilization": null,
+     "resets_at": null
+    },
+    "seven_day": {
+     "utilization": 66,
+     "resets_at": "2026-10-04T02:42:42.000Z"
+    },
+    "monthly": null,
+    "plan_type": "prolite"
+   }
+  },
+  {
+   "name": "grok",
+   "enabled": true,
+   "costRank": 2,
+   "lanes": [
+    "analyze",
+    "build",
+    "chore"
+   ],
+   "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+   ],
+   "meterSource": "snapshot",
+   "meterCapturedAt": "2026-10-14T22:42:27Z",
+   "usedPct": 68,
+   "elapsedPct": 81.1,
+   "pace": 13.1,
+   "pacingWindow": "weekly",
+   "paceResetsAt": "2026-10-16T06:29:14.153Z",
+   "fiveHourUsedPct": null,
+   "fiveHourResetsAt": null,
+   "nearFiveHourLimit": false,
+   "burstGate": false,
+   "projectedFiveHourPct": null,
+   "projectedWeeklyPct": 68,
+   "projectedPacingPct": 68,
+   "spend": {
+    "fiveHour": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "weekly": {
+     "ratePerMinute": 0.139023,
+     "source": "history",
+     "samples": 121
+    },
+    "monthly": {
+     "ratePerMinute": null,
+     "source": null,
+     "samples": 0
+    },
+    "pacing": {
+     "window": "weekly",
+     "ratePerMinute": 0.139023,
+     "source": "history",
+     "samples": 121
+    }
+   },
+   "inflight": {
+    "count": 0,
+    "minutes": 0,
+    "remainingMinutes": null,
+    "unknownExpected": 0,
+    "records": []
+   },
+   "meterSnapshot": {
+    "pool": "grok",
+    "login": null,
+    "captured_at": "2026-10-14T22:42:27Z",
+    "checked_at": "2026-10-14T22:42:24Z",
+    "source": "bullswarm-forced",
+    "five_hour": null,
+    "seven_day": {
+     "utilization": 68,
+     "resets_at": "2026-10-16T06:29:14.153Z"
+    },
+    "monthly": null,
+    "error": null,
+    "retry_at": null,
+    "stale": false,
+    "state": "ok"
+   }
+  }
+ ]
+}

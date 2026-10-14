@@ -25,9 +25,13 @@ test('a 5h-only seat near its reset is expiring soon with urgency', () => {
   assert.equal(v.state, 'urgent');
 });
 
-test('a 5h-only seat early in its window is not expiring soon', () => {
+test('a 5h-only seat counts as expiring for its whole window, and is urgent only behind pace', () => {
+  // 0.38.15: the whole 5h window is the lead time (replay of 2026-10-14).
   const early = { ...kipwise, elapsedPct: 20, paceResetsAt: '2026-10-14T21:00:00Z' };
-  assert.equal(expiringSoonView(early, { now }).expiringSoon, false);
+  assert.equal(expiringSoonView(early, { now }).expiringSoon, true);
+  // Ahead of its pace (used 30% at 20% elapsed): expiring, but not urgent.
+  const ahead = { ...early, usedPct: 30, pace: -10 };
+  assert.equal(expiringSoonView(ahead, { now }).state, 'normal');
 });
 
 test('the urgent 5h seat wins over a same-cost weekly pool with MORE surplus', () => {

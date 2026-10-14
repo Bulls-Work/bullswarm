@@ -131,6 +131,12 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       connector: conn,
       testFixture: conn.flags?.testFixture === true,
       enabled: poolEnabled(conn, ps),
+      // Operator limits (pool-limits.js): the hold list and the opt-in
+      // reserve. Routing filters on them; views say why.
+      hold: ps.hold && typeof ps.hold === 'object' ? { ...ps.hold } : null,
+      reserve: ps.reserve && typeof ps.reserve === 'object' ? { ...ps.reserve } : null,
+      // When the reading routing uses was taken (stale-meter decay, route.js).
+      meterCapturedAt: null,
       costRank: conn.costRank ?? 5,
       lanes: conn.lanes,
       capabilities: conn.capabilities ?? [],
@@ -195,6 +201,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
     const ps = state.pools[p.name] ?? {};
     const reading = readings[p.name] ?? null;
     if (reading) {
+      p.meterCapturedAt = typeof reading.snapshot?.captured_at === 'string' ? reading.snapshot.captured_at : null;
       p.meterError = typeof reading.meterError === 'string' && reading.meterError
         ? reading.meterError
         : shortMeterError(reading.error);

@@ -2,6 +2,19 @@
 
 ## 0.38.14 (unreleased, local)
 
+### Routing: hold list, opt-in reserve, fit before reset, stale meters, 5h seats (BS-kernel-5h)
+
+Why: on 2026-10-14 the Kipwise Team seat (`claude-code:kipwise`, a 5h window and no weekly limit) lost 79 points of its 13:00-18:00Z window while weekly pools took the work, command-code had to be switched off by hand to keep it for a preview, and a step went to `claude-code:wati` while its meter was 429-stale at 75% of 5h.
+
+- Hold list: `bullswarm strategy hold <pool> --until <date|24h|3d> --reason <text> --yes` keeps a pool out of routing until that time, after which it is back by itself (`strategy unhold <pool> --yes` ends it early). `bullswarm pools` shows `held until <date> (<reason>)`; a pick's reason and a step no pool can take name the hold and when it ends.
+- Reserve, off by default: with none set every pool is burned to 100% by pace, as before. `bullswarm strategy set-reserve <pool> <pct|off> [--window 5h|weekly|monthly|all] --yes` keeps that share unspent: the pool gets no new work while the window's reading, or its projection with work in flight, is at or above 100 - pct. Nothing is time-boxed or stopped; the pool takes work again when the window resets. `pools` shows `reserve 40% (5h)` and, once reached, `at reserve · 5h 76% >= 60%`.
+- Fit before reset: an expiring-soon pool's urgency is multiplied by the share of the step's expected minutes that runs before the reset, and a step with less than a quarter before it is not urgent there (it still competes on surplus, and is never refused). The reason says `× 43% of the task before the reset`; candidates carry `fitBeforeReset`.
+- A 5h-only seat counts as expiring soon for its whole 5h window (0.38.13: its last 2 hours), so while it is behind pace it ranks ahead of pools whose quota does not expire for days. A one-day replay of 2026-10-14's 247 routing decisions over the real meter history (bullswork/sim/kernel-5h-day.mjs) put the 13:00-18:00Z window's loss at 19 points with this rule, against 79 actually and 67 with the 2-hour rule, with the seat enabled all day.
+- Stale meters: a reading more than 10 minutes old is charged the spend it has probably missed (the pool's measured rate × the minutes past 10, per window; 5 points with no measured rate; at most 50), so a pool with a fresh reading wins a close call. The reason says `stale meter charged: claude-code:wati (70m old: 5h +17.3, weekly +1.3)`; candidates carry `staleMeter`.
+- Not done: declaring the interactive agents that share a login (order item 7). The meter already counts their burn in the measured rate; a reserve covers the case where an owner needs headroom kept.
+
+### Meter reads
+
 Why: on 2026-10-14 ten or more Bullswarm processes read the same usage endpoint in the same second and got a 429. Each attempt forces a live meter read at its start and end once the cache is a minute old, and every Claude session's mod polls `pools --json`, so parallel runs each made their own call.
 
 - Meter reads are single-flight per pool: one process calls the provider at a time (lock `~/.bullswarm/meters/<pool>.fetch.lock`, taken over after 90 s or when its process is dead). A caller that waited takes the reading or the hold that call left, and a forced read accepts a reading another process took in the last 30 s, so ten attempts starting together make one call. A forced read after a usage limit still makes its own call.

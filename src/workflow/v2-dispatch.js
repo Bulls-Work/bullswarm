@@ -26,7 +26,7 @@ import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { REFUSAL_TEXT, declaredDeliverable, declaredEvidence, deliverableTypeOf, failureClassOf, roleOf } from './step-vocabulary.js';
 import { poolPassesRoute, routeUnavailableWhy } from './step-route.js';
-import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, signInPart, spentWindowPart } from './no-pool-why.js';
+import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, operatorLimitPart, signInPart, spentWindowPart } from './no-pool-why.js';
 import { isV3Step } from './program-v3.js';
 import {
   evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope,
@@ -1240,6 +1240,9 @@ export async function dispatchV2Action({
     ? toMs(last.retryAfter) ?? toMs(last.usageLimit?.until)
     : null;
   const draining = drainingAt(capable, endAt);
+  // Reserves read the projection with in-flight work, as the router does.
+  const viewedCapable = new Map(attachForecast(capable.map((pool) => ({ ...pool })), bullswarmDir, { now: endAt, decisionLog: coreDecisionLog() })
+    .map((pool) => [pool.name, pool]));
   // Each capable pool that cannot take the step now, as {pool, text, limit
   // (a usage limit), back (when it is back)}: a
   // spent window (known reset or not), a metered window at its limit and a
@@ -1255,6 +1258,8 @@ export async function dispatchV2Action({
     if (signIn) parts.push(signIn);
     const spent = spentWindowPart(pool, endAt);
     if (spent) parts.push(spent);
+    const limited = operatorLimitPart(viewedCapable.get(pool.name) ?? pool, endAt);
+    if (limited) parts.push(limited);
     if (draining.has(pool.name)) parts.push(drainingPart(draining.get(pool.name)));
     if (!parts.length) {
       // A pool the step left after a process failure cannot take its retry.
