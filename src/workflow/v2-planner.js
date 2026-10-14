@@ -522,6 +522,8 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
         'review-loop-until-passed': 'a v3 loop of 3 or more rounds that ends only when an analyze step answers passed: a strict review rarely passes, so the loop tends to run out of rounds; a dry loop stops when a round finds nothing new',
         'dry-loop-too-short': 'a v3 dry loop whose maxRounds leaves no room, after a round with findings, for the clean rounds that review every area again',
         'review-one-area': 'a v3 review with a single area: one review with a focus line',
+        'review-no-severity': 'a v3 dry loop whose review findings carry no severity: every in-scope finding keeps the loop going; with severity only those at or above until.floor (default edge) do',
+        'review-area-added': 'a v3 review whose areas named nothing past correctness: the non-functional area (performance, code structure and test quality) was added',
         'dry-loop-fix-first': 'a v3 dry loop whose fix step runs before its review on work a step outside the loop builds: round 1 runs the fixer with nothing to fix; put the review first',
         note: 'advice only: printed by plan validate and workflow goal, stored on the run, and never a rejection or a non-zero exit',
       },

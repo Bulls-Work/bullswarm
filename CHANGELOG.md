@@ -1,5 +1,15 @@
 # bullswarm changelog
 
+## 0.38.15 (unreleased, local)
+
+Why: in the 2026-10-14 minisql benchmark on 0.38.12 the orchestrator used the dry review loop with three area reviewers, but the loop never ran dry (38, 23, 15, 16 and 15 new findings a round, the tail mostly obscure), and all three areas were about query results: nobody reviewed speed, structure or the tests, which is where the blind judges ranked the engine last (architecture 3.5, tests 4) and where a 2,000-row update took 24.7 s.
+
+- Dry stop with a severity floor: a finding can carry `severity` (`everyday`, `edge` or `obscure`), and a round is dry when it has no new in-scope finding at or above the loop's floor (`until: {"step": "review", "dry": 1, "floor": "edge"}`, `edge` by default). A finding under the floor is recorded (`loops[i].findings.belowFloor`), handed to the fixer only in a round that runs it anyway (marked minor), and never reopens the loop. A finding with no severity counts as at the floor, so existing programs behave as before; validate warns `review-no-severity`. Every reviewer is told what the three levels mean and which ones keep the loop going; the loop line reads `until review finds nothing new at or above edge`.
+- A non-functional review area by default: a review whose `areas` name nothing past correctness (performance, structure, tests, maintainability…) gets `non-functional: performance, code structure and test quality` added (validate says `review-area-added`); a single reviewer without areas is asked about performance, code structure and whether the tests would catch a regression. `until.nonFunctional: false` keeps a review on correctness alone.
+- The rotation is never all correctness: with fewer reviewers than areas, the last reviewer takes a non-functional area every round and the others rotate over the rest. The rounds needed to review every area (and validate's maxRounds check and its `areasPerRound` hint) follow that rotation.
+- Pattern 6 of the skill and the plan contract's dry-loop example now name a performance/structure/tests area and a `severity` field.
+- `bullswarm pools`: a 5h reading whose reset has passed is 0% of a fresh window, not near its limit and not burst-gated, until a new reading lands (seen at 23:00:41Z: a 22:58 reading of kipwise at 76%, reset 23:00, still showed `5h=76% NEAR-5H-LIMIT`).
+
 ## 0.38.14 (unreleased, local)
 
 ### Routing: hold list, opt-in reserve, fit before reset, stale meters, 5h seats (BS-kernel-5h)

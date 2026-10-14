@@ -138,9 +138,10 @@ pattern 6.
 
 (Numbered 6 so the other patterns keep their numbers; it follows pattern 2
 because it is the review form of it.) A build, then a loop that reviews the
-work from three angles and fixes what each round finds, until a round finds
-nothing new. "Dry" is that round: a review round that reports no new finding
-worth fixing.
+work from four angles (three on correctness, one on performance, structure
+and tests) and fixes what each round finds, until a round finds nothing new at
+or above the loop's severity floor. "Dry" is that round: a review round that
+reports no new finding worth fixing.
 
 ```json
 {
@@ -150,11 +151,12 @@ worth fixing.
       "prompt": "In /work/acme, implement SPEC.md in src/query/engine.py with tests in tests/test_engine.py.",
       "evidence": [{ "type": "command", "cmd": "cd /work/acme && python -m pytest tests/test_engine.py", "timeoutSec": 300 }] },
     { "id": "review", "dependsOn": ["build"], "blindTo": ["build"],
-      "areas": ["grammar and parsing", "expressions and types", "joins and aggregates"],
+      "areas": ["grammar and parsing", "expressions and types", "joins and aggregates", "performance, code structure and tests"],
       "prompt": "In /work/acme, review src/query/engine.py against SPEC.md. Every way the code breaks SPEC.md is a finding, even if it looks harmless or intended: the caller decides. Try concrete inputs. Change no file.",
       "answer": { "type": "object", "required": ["findings"], "properties": { "findings": { "type": "array", "items": {
-        "type": "object", "required": ["title", "inScope", "where"],
+        "type": "object", "required": ["title", "inScope", "severity", "where"],
         "properties": { "title": { "type": "string" }, "inScope": { "type": "boolean" }, "stillOpen": { "type": "boolean" },
+                        "severity": { "enum": ["everyday", "edge", "obscure"] },
                         "where": { "type": "string" }, "repro": { "type": "string" } } } } } } },
     { "id": "fix", "dependsOn": ["review"], "lane": "build", "files": ["src/query/engine.py", "tests/test_engine.py"],
       "prompt": "In /work/acme, fix every finding in the Findings to fix block in src/query/engine.py, with a regression test for each in tests/test_engine.py. Keep other workers' edits.",
@@ -175,8 +177,8 @@ validate:
   review-area-3            analyze/medium answer after build blind to build
   fix                      build/medium deliverable=files evidence=command after review-area-1, review-area-2, review-area-3
   checks   not run · add --try-checks to run each command check once now against the current tree (it may take time and must not change files)
-  loop harden              steps review (3 area reviewers), fix · until review finds nothing new (1 round, every area) · at most 3 rounds
-       areas grammar and parsing · expressions and types · joins and aggregates (3 per round)
+  loop harden              steps review (3 area reviewers), fix · until review finds nothing new at or above edge (1 round, every area) · at most 3 rounds
+       areas grammar and parsing · expressions and types · joins and aggregates · performance, code structure and tests (3 per round, rotating)
 ```
 
 Why the review comes first: the build is outside the loop, so round 1 reviews
@@ -185,6 +187,18 @@ no fix.
 
 What each worker is told:
 
+- Three reviewers run each round over four areas: two rotate over the three
+  correctness areas and the third takes the non-functional one every round
+  (a round is never all correctness). A review whose areas name nothing past
+  correctness gets "non-functional: performance, code structure and test
+  quality" added, and validate says so (`review-area-added`).
+- Each finding has a `severity`: `everyday` (ordinary use hits it), `edge` (a
+  real but less common input) or `obscure` (a contrived combination). Only
+  findings at or above the loop's `floor` (`until.floor`, default `edge`)
+  keep it going; obscure ones are recorded and handed to the fixer only beside
+  them. Without `severity` every finding counts, and validate warns
+  (`review-no-severity`): in a 2026-10 benchmark such a loop found 38, 23, 15,
+  16 and 15 findings a round and never ran dry.
 - Each area reviewer (`review-area-1` to `review-area-3`, ordinary steps that
   run in parallel) gets a focus line naming its area and, from round 2, the
   "Already known" list (report a listed finding again, with `stillOpen: true`,

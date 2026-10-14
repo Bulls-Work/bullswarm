@@ -8,7 +8,9 @@ import {
   deliverableTypeOf, laneFitsDeliverable, roleRouting,
 } from './step-vocabulary.js';
 import { normalizeBlindTo, normalizeRoute } from './step-route.js';
-import { AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS, fixStepsOf, groupOf } from './dry-loops.js';
+import {
+  AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS, NON_FUNCTIONAL_AREA, coverRounds, fixStepsOf, groupOf,
+} from './dry-loops.js';
 
 export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, STEP_EVIDENCE_TYPES };
 
@@ -50,6 +52,7 @@ export const ACTION_KINDS = Object.freeze(Object.keys(KIND_DEFAULTS));
 export const PROGRAM_ADVISORY_CODES = Object.freeze([
   'all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files',
   'compile-check-only', 'review-loop-until-passed', 'dry-loop-too-short', 'review-one-area', 'dry-loop-fix-first',
+  'review-no-severity', 'review-area-added',
 ]);
 // `verifyRounds` at the top level is the normalized form this validator
 // returns (see the end of validateActionProgram); accepting it back keeps an
@@ -171,7 +174,7 @@ function reviewLoopAdvisories(program) {
     const perRound = reviewers.length || 1;
     // Clean rounds needed after a finding: until.dry, or more when the
     // reviewers take turns over more areas than run in one round.
-    const cover = Math.ceil(areas / perRound);
+    const cover = reviewers.length ? coverRounds(reviewers[0].areaOf.areas, perRound) : 1;
     const clean = Math.max(until.dry, cover);
     // Validation refuses a loop that could not end dry even with no finding
     // (clean > maxRounds); this is the loop that can, but only that way.
@@ -194,6 +197,24 @@ function reviewLoopAdvisories(program) {
         code: 'dry-loop-too-short',
         actionId: null,
         message: `loop ${loop.id} can end dry only if no round finds anything: after a round with findings it needs ${clean} clean round${clean === 1 ? '' : 's'}${cause}; ${fix.length ? fix.join(' or ') : 'name fewer areas or lower until.dry'}`,
+      });
+    }
+    // 0.38.15: the dry stop counts findings at or above the loop's floor; a
+    // review whose findings carry no severity counts every one.
+    const reviewer = reviewers[0] ?? step;
+    const itemProps = reviewer?.answer?.properties?.findings?.items?.properties;
+    if (reviewer && isObject(itemProps) && itemProps.severity === undefined) {
+      advisories.push({
+        code: 'review-no-severity',
+        actionId: reviewer.id,
+        message: `${until.step}'s findings carry no severity, so every in-scope finding keeps loop ${loop.id} going and it seldom ends dry; add severity (everyday, edge or obscure) to the findings' properties and required, and the loop counts only those at or above its floor (${until.floor ?? 'edge'})`,
+      });
+    }
+    if (reviewers.length && reviewers[0].areaOf.areas.includes(NON_FUNCTIONAL_AREA)) {
+      advisories.push({
+        code: 'review-area-added',
+        actionId: reviewers[0].id,
+        message: `${until.step}'s areas named nothing past correctness, so "${NON_FUNCTIONAL_AREA}" was added; with fewer reviewers than areas one of them takes it every round. Name your own non-functional area to replace it`,
       });
     }
     if (reviewers.length && areas === 1) {

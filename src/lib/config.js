@@ -221,11 +221,11 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
     // 5h utilization with no weekly/monthly window to pace by, and routing
     // still has to see that the pool is close to its 5h limit.
     if (reading) {
-      const fiveHour = fiveHourFromReading(reading);
+      const fiveHour = fiveHourFromReading(reading, now);
       p.fiveHourUsedPct = fiveHour.usedPct;
       p.fiveHourResetsAt = fiveHour.resetsAt;
       p.nearFiveHourLimit = fiveHour.nearLimit;
-      p.burstGate = reading.burstGate === true;
+      p.burstGate = fiveHour.resetPassed ? false : reading.burstGate === true;
     }
     const paced = pacedReading(reading, p.pacingWindow)
       // Provider usage with no provider reset: the operator-declared reset
@@ -355,13 +355,20 @@ export function fiveHourOnlyPace(reading, nowMs = Date.now()) {
  * produces and falls back to the raw snapshot, so a reading assembled by an
  * older code path still reports a real 5h number instead of null.
  */
-function fiveHourFromReading(reading) {
+export function fiveHourFromReading(reading, nowMs = Date.now()) {
   // A refusal marker's guessed 5h window is not a reading (framework.js).
   const raw5h = guessedRefusalWindow(reading?.snapshot?.five_hour) ? null : reading?.snapshot?.five_hour;
   const usedPct = finiteOrNull(reading?.fiveHourUsedPct)
     ?? finiteOrNull(raw5h?.utilization);
   const raw = reading?.fiveHourResetsAt ?? raw5h?.resets_at ?? null;
   const resetsMs = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  // The reading's window has reset since it was taken (seen 2026-10-14
+  // 23:00:41Z: a 22:58 reading of kipwise at 76% with resets_at 23:00 kept it
+  // NEAR-5H-LIMIT): until a new reading lands it is 0% of a fresh window,
+  // whose reset nobody has reported yet.
+  if (usedPct != null && Number.isFinite(resetsMs) && resetsMs <= nowMs) {
+    return { usedPct: 0, resetsAt: null, nearLimit: false, resetPassed: true };
+  }
   return {
     usedPct,
     resetsAt: Number.isFinite(resetsMs) ? new Date(resetsMs).toISOString() : null,

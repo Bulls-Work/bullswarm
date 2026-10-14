@@ -38,12 +38,41 @@ const FINDING_SHOWN_CHARS = 1500;
 const FIX_BLOCK_CHARS = 24_000;
 const KNOWN_BLOCK_CHARS = 32_000;
 
+// How much a finding matters (0.38.15), most first: `everyday` is hit in
+// ordinary use of the work, `edge` by a real but less common input or
+// situation, `obscure` only by a contrived combination. A loop's until
+// `floor` (default edge) is the least severity that keeps it going: a round
+// whose only new findings are below it is dry (benchmark 2026-10-14: five
+// rounds found 38, 23, 15, 16 and 15 and never ran dry, the tail mostly
+// obscure). A finding with no severity counts as at the floor.
+export const SEVERITIES = Object.freeze(['everyday', 'edge', 'obscure']);
+export const DEFAULT_FLOOR = 'edge';
+
+/** True when a finding is at or above the floor (no or an unknown severity: true). */
+export function atOrAboveFloor(finding, floor = DEFAULT_FLOOR) {
+  const rank = SEVERITIES.indexOf(finding?.severity);
+  return rank === -1 || rank <= Math.max(0, SEVERITIES.indexOf(floor));
+}
+
+/** The floor a dry loop counts from. */
+export const floorOf = (loop) => (SEVERITIES.includes(loop?.until?.floor) ? loop.until.floor : DEFAULT_FLOOR);
+
+// A review area that looks past correctness (0.38.15): the benchmark's
+// reviewers all read query results, and the engine lost its points on speed,
+// structure and tests. A review with areas gets this one when it names none.
+export const NON_FUNCTIONAL_AREA = 'non-functional: performance, code structure and test quality';
+const NON_FUNCTIONAL_RE = /non-?functional|perf|speed|latency|throughput|memory|scal|structure|architect|maintainab|readab|refactor|complexit|test/i;
+export const isNonFunctionalArea = (area) => NON_FUNCTIONAL_RE.test(String(area ?? ''));
+
 // The smallest answer schema a dry loop's review may declare; printed by the
 // validate issue and the plan contract so a caller can paste it.
 export const FINDINGS_ANSWER = Object.freeze({
   type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: {
     type: 'object', required: ['title', 'inScope'],
-    properties: { title: { type: 'string' }, inScope: { type: 'boolean' }, stillOpen: { type: 'boolean' }, where: { type: 'string' }, detail: { type: 'string' } },
+    properties: {
+      title: { type: 'string' }, inScope: { type: 'boolean' }, severity: { enum: [...SEVERITIES] },
+      stillOpen: { type: 'boolean' }, where: { type: 'string' }, detail: { type: 'string' },
+    },
   } } },
 });
 
@@ -125,8 +154,36 @@ export function groupOf(state, loop) {
 // How many areas a group covers: a review without areas has one implicit area.
 const areaCount = (group) => group.areas.length || 1;
 
+/**
+ * The area each reviewer slot takes in `round` (indexes, by slot). With every
+ * area in one round, or one reviewer a round, it is the plain rotation
+ * (areaFor). Otherwise, when the review has a non-functional area (0.38.15:
+ * a round is never all semantic), the last slot takes the non-functional
+ * areas in turn and the other slots rotate over the rest.
+ */
+export function roundAreas(areas, perRound, round) {
+  const plain = () => Array.from({ length: perRound }, (_, k) => areaFor(k + 1, round, perRound, areas.length));
+  const nonFunctional = areas.map((area, index) => (isNonFunctionalArea(area) ? index : -1)).filter((index) => index >= 0);
+  const rest = areas.map((_, index) => index).filter((index) => !nonFunctional.includes(index));
+  if (perRound >= areas.length || perRound < 2 || !nonFunctional.length || !rest.length) return plain();
+  const slots = perRound - 1;
+  const picked = Array.from({ length: slots }, (_, k) => rest[areaFor(k + 1, round, slots, rest.length)]);
+  picked.push(nonFunctional[(round - 1) % nonFunctional.length]);
+  return picked;
+}
+
+/** How many rounds it takes for every area to be reviewed once (roundAreas). */
+export function coverRounds(areas, perRound) {
+  const n = Array.isArray(areas) ? areas.length : Number(areas);
+  if (!Array.isArray(areas) || perRound >= n || perRound < 2) return Math.ceil(n / Math.max(1, perRound));
+  const nonFunctional = areas.filter(isNonFunctionalArea).length;
+  const rest = n - nonFunctional;
+  if (!nonFunctional || !rest) return Math.ceil(n / perRound);
+  return Math.max(Math.ceil(rest / (perRound - 1)), nonFunctional);
+}
+
 function areaOfSlot(group, index, round) {
-  return group.areas.length ? areaFor(index + 1, round, group.perRound, group.areas.length) : 0;
+  return group.areas.length ? roundAreas(group.areas, group.perRound, round)[index] : 0;
 }
 
 const areaName = (group, area) => (group.areas.length && Number.isInteger(area) ? group.areas[area] : null);
@@ -222,7 +279,7 @@ export function knownBefore(findings, round) {
  * `reopen` false (a loop with no fix step) reads stillOpen as a repeat: with
  * nothing to fix it, a finding still present is no news.
  */
-export function mergeRound({ answers, known = [], knownDropped = 0, dropped = [], round, reopen = true }) {
+export function mergeRound({ answers, known = [], knownDropped = 0, dropped = [], round, reopen = true, floor = DEFAULT_FLOOR }) {
   const list = clone(known);
   const byKey = new Map();
   for (const entry of list) {
@@ -235,6 +292,9 @@ export function mergeRound({ answers, known = [], knownDropped = 0, dropped = []
   const droppedKeys = new Set(droppedList.map((entry) => entry.key));
   const entry = { round, reviewed: [], new: 0, reopened: 0, repeated: 0, outOfScope: 0, ignored: 0 };
   const fix = [];
+  // New in-scope findings under the floor: recorded, not counted as new, and
+  // handed to the fixer only beside findings that make the round run it.
+  const low = [];
   let droppedCount = knownDropped;
   for (const { step, area, value } of answers) {
     if (!isObject(value) || !Array.isArray(value.findings)) continue;
@@ -255,8 +315,14 @@ export function mergeRound({ answers, known = [], knownDropped = 0, dropped = []
         // A title the full list kept only as a hash: known, so a repeat.
         if (droppedKeys.has(hashed)) { entry.repeated += 1; continue; }
         const inScope = finding.inScope === true;
-        if (inScope) entry.new += 1; else entry.outOfScope += 1;
-        const item = { title, ...(long ? { key: hashed } : {}), round, area, inScope, from: step, reopened: [] };
+        const below = inScope && !atOrAboveFloor(finding, floor);
+        if (below) entry.belowFloor = (entry.belowFloor ?? 0) + 1;
+        else if (inScope) entry.new += 1; else entry.outOfScope += 1;
+        const severity = SEVERITIES.includes(finding.severity) ? finding.severity : null;
+        const item = {
+          title, ...(long ? { key: hashed } : {}), round, area, inScope, ...(severity ? { severity } : {}),
+          ...(below ? { belowFloor: true } : {}), from: step, reopened: [],
+        };
         byKey.set(key, item);
         byKey.set(titleKey(title), item);
         if (list.length < KNOWN_MAX) list.push(item);
@@ -265,21 +331,25 @@ export function mergeRound({ answers, known = [], knownDropped = 0, dropped = []
           droppedKeys.add(hashed);
           if (droppedList.length < DROPPED_MAX) droppedList.push({ key: hashed, round });
         }
-        if (inScope) fix.push({ finding, area, step, reopened: false });
+        if (below) low.push({ finding, area, step, reopened: false, belowFloor: true });
+        else if (inScope) fix.push({ finding, area, step, reopened: false });
         continue;
       }
       // Two reviewers of one round disagree on its scope: in scope wins, so
       // the counts do not depend on the order they answered in (the first
       // report becomes the new in-scope one, this one its repeat).
       if (seen.round === round && !seen.inScope && finding.inScope === true) {
-        Object.assign(seen, { inScope: true, area, from: step });
+        const below = !atOrAboveFloor(finding, floor);
+        Object.assign(seen, { inScope: true, area, from: step, ...(below ? { belowFloor: true } : {}) });
         entry.outOfScope -= 1;
-        entry.new += 1;
+        if (below) entry.belowFloor = (entry.belowFloor ?? 0) + 1; else entry.new += 1;
         entry.repeated += 1;
-        fix.push({ finding, area, step, reopened: false });
+        (below ? low : fix).push({ finding, area, step, reopened: false, ...(below ? { belowFloor: true } : {}) });
         continue;
       }
-      if (reopen && finding.stillOpen === true && seen.inScope && seen.round !== round && !seen.reopened.includes(round)) {
+      // A finding under the floor reported still open is no reason for
+      // another round: counted as a repeat.
+      if (reopen && finding.stillOpen === true && seen.inScope && !seen.belowFloor && seen.round !== round && !seen.reopened.includes(round)) {
         seen.reopened.push(round);
         entry.reopened += 1;
         fix.push({ finding, area, step, reopened: true });
@@ -288,6 +358,7 @@ export function mergeRound({ answers, known = [], knownDropped = 0, dropped = []
       entry.repeated += 1;
     }
   }
+  if (fix.length) fix.push(...low);
   return { known: list, knownDropped: droppedCount, dropped: droppedList, entry, fix };
 }
 
@@ -324,7 +395,9 @@ export function loopFindingsSummary(loop, record, group) {
   const last = findings.rounds.at(-1);
   const names = group.areas.length ? verdict.unreviewed.map((area) => group.areas[area]) : [];
   return {
-    known: findings.known.filter((entry) => entry.inScope).map((entry) => entry.title),
+    known: findings.known.filter((entry) => entry.inScope && !entry.belowFloor).map((entry) => entry.title),
+    // In scope but under the loop's floor: recorded, never a reason to go on.
+    belowFloor: findings.known.filter((entry) => entry.inScope && entry.belowFloor).map((entry) => entry.title),
     outOfScope: findings.known.filter((entry) => !entry.inScope).map((entry) => entry.title),
     rounds: findings.rounds.map((round) => round.new),
     stillOpen: findings.rounds.map((round) => round.reopened),
@@ -338,11 +411,13 @@ export function loopFindingsSummary(loop, record, group) {
 
 // How a reviewer writes findings. `reopen` false (a loop with no fix step, or
 // round 1, which has no known list yet): stillOpen is not asked for.
-function titleRules({ reopen }) {
+function titleRules({ reopen, floor = DEFAULT_FLOOR }) {
+  const counted = SEVERITIES.slice(0, SEVERITIES.indexOf(floor) + 1).join(' or ');
   return [
     'Write each problem as one finding:',
     `- title: one short line naming what is wrong and where, under ${TITLE_MAX} characters (a longer one is shown cut). Bullswarm tells new findings from known ones by the title, ignoring case, extra spaces and a final period, so reuse a known title word for word.`,
     '- inScope: true when the contract you were given requires it; false for style, wishes or anything it does not require (recorded, never fixed, does not keep the loop going).',
+    `- severity: everyday (ordinary use of the work hits it), edge (a real but less common input or situation), or obscure (only a contrived combination hits it). Judge how often it would be hit, not how bad it sounds. Only ${counted} findings keep the loop going; obscure ones are recorded and fixed only beside them.`,
     ...(reopen ? ['- stillOpen: true only when you report a finding from the list below again because it is still present; use its exact title.'] : []),
   ];
 }
@@ -425,8 +500,11 @@ export function reviewRoundBlock(state, action) {
     const mine = group.areas[areaOfSlot(group, index, round)];
     const others = [...new Set(group.steps.map((_, slot) => group.areas[areaOfSlot(group, slot, round)]))].filter((area) => area !== mine);
     lines.push(`Focus on this area: ${mine}.${others.length ? ` Other reviewers cover ${joinAnd(others)} this round;` : ''} Report a finding outside your area only when it is serious.`);
+  } else if (loop.until.nonFunctional !== false) {
+    // One reviewer, no areas: it covers the non-functional side too (0.38.15).
+    lines.push('Besides whether the work does what the contract asks, look at performance (an operation far slower than it needs to be on realistic input), code structure, and whether the tests would catch a regression; a problem there is a finding too.');
   }
-  lines.push(...titleRules({ reopen: fixers.length > 0 && round >= 2 }));
+  lines.push(...titleRules({ reopen: fixers.length > 0 && round >= 2, floor: floorOf(loop) }));
   if (round >= 2) {
     const previous = record.findings?.rounds?.find((entry) => entry.round === round - 1);
     if (fixers.length && previous) {
@@ -508,7 +586,7 @@ export function findingsToFixBlock(state, action, { readOnly = action?.lane === 
   const entry = record.findings?.rounds?.find((item) => item.round === found);
   if (!entry) return null;
   const answers = mergedAnswers(state, group, entry);
-  const merged = mergeRound({ answers, ...knownBefore(record.findings, found), round: found });
+  const merged = mergeRound({ answers, ...knownBefore(record.findings, found), round: found, floor: floorOf(loop) });
   if (!merged.fix.length) return null;
   const fresh = merged.fix.filter((item) => !item.reopened).length;
   const open = merged.fix.length - fresh;
@@ -527,7 +605,7 @@ export function findingsToFixBlock(state, action, { readOnly = action?.lane === 
   let listed = 0;
   for (const [index, item] of merged.fix.entries()) {
     const area = areaName(group, item.area);
-    const row = `${index + 1}. ${area ? `[${area}] ` : ''}${item.reopened ? '(still open) ' : ''}${String(item.finding.title).trim()}\n   ${cut(JSON.stringify(item.finding), FINDING_SHOWN_CHARS)}`;
+    const row = `${index + 1}. ${area ? `[${area}] ` : ''}${item.reopened ? '(still open) ' : ''}${item.belowFloor ? '(minor, fix if cheap) ' : ''}${String(item.finding.title).trim()}\n   ${cut(JSON.stringify(item.finding), FINDING_SHOWN_CHARS)}`;
     if (used + row.length > FIX_BLOCK_CHARS) break;
     lines.push(row);
     used += row.length + 1;

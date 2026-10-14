@@ -217,6 +217,21 @@ with `until: {"step": "review", "dry": 1}` and a findings answer:
 - **Writing titles**: one line under 160 characters, what is wrong and
   where. The loop tells new findings from known ones by the whole title; a
   longer one is shown cut.
+- **Severity and the floor**: give the findings a `severity` (`everyday`,
+  `edge` or `obscure`; every reviewer is told what each means). A round is dry
+  when it has no new in-scope finding at or above the loop's floor:
+  `until: {"step": "review", "dry": 1, "floor": "edge"}` (`edge` is the
+  default; `everyday` stops sooner, `obscure` counts everything). A finding
+  below the floor is recorded (`loops[i].findings.belowFloor` in the result)
+  and handed to the fixer only in a round that runs it anyway, marked minor; a
+  finding with no severity counts as at the floor.
+- **Past correctness**: a single reviewer is also asked about performance,
+  code structure and whether the tests would catch a regression. With `areas`,
+  a review that names no non-functional area (performance, structure, tests,
+  maintainability…) gets "non-functional: performance, code structure and test
+  quality" added, and when fewer reviewers run than there are areas the last
+  one takes a non-functional area every round while the others rotate over the
+  rest. `until.nonFunctional: false` keeps a review on correctness alone.
 
 Give the review `areas` (2-3 angles, such as "grammar and parsing",
 "expressions and types", "joins and aggregates") to look from several angles
@@ -225,8 +240,11 @@ each round. The review becomes `areasPerRound` ordinary steps
 `dependsOn`, `blindTo` and `route.independentOf` that name `review` now name
 them all, and the loop's `until` keeps naming `review`. With fewer reviewers
 than areas they rotate: reviewer k looks from area `((round − 1) · P + k − 1)
-mod N`, so a retry or resume keeps its area. A dry stop then also needs every
-area reviewed after the last finding, which takes `ceil(N / P)` rounds even
+mod N`, except that with a non-functional area the last reviewer takes the
+non-functional areas in turn and the others rotate over the rest by the same
+rule; the area depends only on the round, so a retry or resume keeps it. A dry
+stop then also needs every area reviewed after the last finding, which takes
+`ceil(N / P)` rounds (with a non-functional area, `ceil(rest / (P − 1))`) even
 when no round finds anything: validate refuses a loop whose `maxRounds` is
 smaller. A failed reviewer blocks the loop as
 any failed loop step does; accepting it (`workflow step accept`) counts its

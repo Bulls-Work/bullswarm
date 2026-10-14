@@ -165,7 +165,7 @@ function blockState({ round = 1, areas = null, findings, answers = {} }) {
       { id: 'review', dependsOn: ['build'], prompt: 'Review the acme parser.', answer: findingsAnswer, ...(areas ? { areas } : {}) },
       { id: 'fix', dependsOn: ['review'], lane: 'build', prompt: 'Fix the acme parser.' },
     ],
-    loops: [{ id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1 }, maxRounds: 4 }],
+    loops: [{ id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1, nonFunctional: false }, maxRounds: 4 }],
   });
   const attempts = [];
   const actions = program.actions.map((action) => {
@@ -274,7 +274,9 @@ test('findingsToFixBlock: a step that changes no file gets the list for referenc
 
 // --- 9.2 validation -----------------------------------------------------------------
 
-const dryProgram = ({ areas = null, areasPerRound, maxRounds = 4, dry = 1, order = ['review', 'fix'], review = {} } = {}) => ({
+// 0.38.12's rotation tests keep their areas as named: nonFunctional false
+// (0.38.15 adds a non-functional area otherwise; tested on its own below).
+const dryProgram = ({ areas = null, areasPerRound, maxRounds = 4, dry = 1, order = ['review', 'fix'], review = {}, nonFunctional = false } = {}) => ({
   schemaVersion: V3,
   steps: [
     { id: 'build', lane: 'build', prompt: 'Build the acme parser.' },
@@ -286,7 +288,7 @@ const dryProgram = ({ areas = null, areasPerRound, maxRounds = 4, dry = 1, order
     { id: 'fix', dependsOn: order[0] === 'review' ? ['review'] : ['build'], lane: 'build', prompt: 'Fix the acme parser.' },
     { id: 'ship', dependsOn: ['harden'], prompt: 'Ship the acme parser.' },
   ],
-  loops: [{ id: 'harden', steps: order, until: { step: 'review', dry }, maxRounds }],
+  loops: [{ id: 'harden', steps: order, until: { step: 'review', dry, ...(nonFunctional === false ? { nonFunctional: false } : {}) }, maxRounds }],
 });
 
 const issuesOf = (program) => {
@@ -317,7 +319,7 @@ test('areas expand into area reviewers; references to the review are rewritten; 
   assert.deepEqual(reviewer.blindTo, ['build']);
   assert.deepEqual(normal.steps[4].dependsOn, ['review-area-1', 'review-area-2', 'review-area-3']);
   assert.deepEqual(normal.loops[0].steps, ['review-area-1', 'review-area-2', 'review-area-3', 'fix']);
-  assert.deepEqual(normal.loops[0].until, { step: 'review', dry: 1 });
+  assert.deepEqual(normal.loops[0].until, { step: 'review', dry: 1, nonFunctional: false });
   const all = normaliseProgramV3(dryProgram({ areas: ['grammar', 'types'] }));
   assert.equal(all.steps[1].label, 'review · grammar', 'with every area each round the label names it');
   const stored = storedProgramV3(program);
@@ -1348,7 +1350,7 @@ const echoProgram = ({ areas, areasPerRound, maxRounds }) => ({
     },
     { id: 'fix', dependsOn: ['review'], lane: 'build', prompt: 'Fix the acme parser. TOUCH:fixed.txt' },
   ],
-  loops: [{ id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1 }, maxRounds }],
+  loops: [{ id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1, nonFunctional: false }, maxRounds }],
 });
 
 test('end to end with the echo worker: the finding is carried forward, the fixer runs once, the loop ends dry in round 2', { timeout: 120_000 }, (t) => {

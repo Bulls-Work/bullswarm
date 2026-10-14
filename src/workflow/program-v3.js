@@ -31,7 +31,9 @@ import {
 import { deliverableTypeOf } from './step-vocabulary.js';
 import { SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
 import { isReasoningLevel } from '../lib/reasoning.js';
-import { AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS, findingsSchemaIssue, titleKey } from './dry-loops.js';
+import {
+  AREAS_PER_ROUND_MAX, DEFAULT_FLOOR, LOOP_MAX_ROUNDS, NON_FUNCTIONAL_AREA, SEVERITIES, coverRounds, findingsSchemaIssue, isNonFunctionalArea, titleKey,
+} from './dry-loops.js';
 // The limits live in dry-loops.js so action-validator.js can read them too.
 export { AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS };
 
@@ -218,7 +220,13 @@ function readCondition(raw, at, issues, stepsById, { groups = new Map(), loop = 
 // The dry form {step, dry}: a loop's until only, on a review (or an area
 // review group) whose answer lists findings [{title, inScope, …}].
 function readDryCondition(raw, at, issues, stepsById, { groups, loop, loopSteps }) {
-  for (const key of present(raw)) if (key !== 'step' && key !== 'dry') issues.push(`${at}.${key} is not allowed`);
+  for (const key of present(raw)) if (!['step', 'dry', 'floor', 'nonFunctional'].includes(key)) issues.push(`${at}.${key} is not allowed`);
+  if (raw.nonFunctional !== undefined && raw.nonFunctional !== false) {
+    issues.push(`${at}.nonFunctional may only be false (the review then stays on correctness: no non-functional area is added and a single reviewer is not asked about performance, structure or tests)`);
+  }
+  if (raw.floor !== undefined && !SEVERITIES.includes(raw.floor)) {
+    issues.push(`${at}.floor must be ${SEVERITIES.join(', ')} (the least severity that keeps the loop going; default ${DEFAULT_FLOOR})`);
+  }
   if (!loop) {
     issues.push(`${at}: the dry form ({step, dry}) is for a loop's until only`);
     return undefined;
@@ -238,7 +246,10 @@ function readDryCondition(raw, at, issues, stepsById, { groups, loop, loopSteps 
   const members = group ? group.ids : [raw.step];
   const problem = findingsSchemaIssue(step.answer, { stillOpen: loopSteps.some((id) => !members.includes(id)) });
   if (problem) issues.push(`${at}: the answer schema of step ${raw.step} ${problem}`);
-  return { step: raw.step, dry: raw.dry };
+  return {
+    step: raw.step, dry: raw.dry, ...(SEVERITIES.includes(raw.floor) ? { floor: raw.floor } : {}),
+    ...(raw.nonFunctional === false ? { nonFunctional: false } : {}),
+  };
 }
 
 const cutLabel = (text) => ([...text].length > LABEL_MAX ? `${[...text].slice(0, LABEL_MAX - 1).join('')}…` : text);
@@ -310,11 +321,17 @@ function expandAreas(rawSteps, rawLoops, rawGates, issues) {
       entries.push({ raw: withoutKeys(raw, ['areasPerRound']), index });
       continue;
     }
-    const areas = readAreas(raw.areas, at, issues);
-    if (!areas || typeof raw.id !== 'string' || !ID_RE.test(raw.id)) {
+    const named = readAreas(raw.areas, at, issues);
+    if (!named || typeof raw.id !== 'string' || !ID_RE.test(raw.id)) {
       entries.push({ raw: withoutKeys(raw, ['areas', 'areasPerRound']), index });
       continue;
     }
+    // 0.38.15: a review's areas always include one past correctness; when the
+    // author named none, NON_FUNCTIONAL_AREA is added (dry-loops.js), and the
+    // rotation puts one in every round (roundAreas).
+    const optedOut = rawLoops.some((loop) => isObject(loop?.until) && loop.until.step === raw.id && loop.until.nonFunctional === false);
+    const added = !optedOut && !named.some(isNonFunctionalArea) && named.length < AREAS_MAX;
+    const areas = added ? [...named, NON_FUNCTIONAL_AREA] : named;
     const most = Math.min(areas.length, AREAS_PER_ROUND_MAX);
     let perRound = raw.areasPerRound ?? Math.min(areas.length, 3);
     if (!(Number.isInteger(perRound) && perRound >= 1 && perRound <= most)) {
@@ -330,7 +347,7 @@ function expandAreas(rawSteps, rawLoops, rawGates, issues) {
       const label = cutLabel(perRound === areas.length ? `${name} · ${areas[slot - 1]}` : `${name} · area reviewer ${slot} of ${perRound}`);
       entries.push({ raw: { ...clone(base), id, label, areaOf: { step: raw.id, slot, areas: [...areas] } }, index });
     }
-    groups.set(raw.id, { ids, areas, perRound, index, label: raw.label });
+    groups.set(raw.id, { ids, areas, perRound, index, label: raw.label, ...(added ? { addedArea: NON_FUNCTIONAL_AREA } : {}) });
   }
   // A stored group: every slot once, the same areas, and the same step but for
   // its id, label and slot.
@@ -581,11 +598,14 @@ export function normaliseProgramV3(input, runtime = {}) {
       // P reviewers a round, that takes ceil(N / P) rounds even when no round
       // ever finds anything.
       const { areas, perRound } = groups.get(until.step);
-      const cover = Math.ceil(areas.length / perRound);
+      const cover = coverRounds(areas, perRound);
       if (cover > loop.maxRounds) {
+        // The fewest reviewers a round that cover every area in maxRounds.
+        const most = Math.min(areas.length, AREAS_PER_ROUND_MAX);
+        const enough = Array.from({ length: most }, (_, k) => k + 1).find((p) => p > perRound && coverRounds(areas, p) <= loop.maxRounds);
         const fix = [
           ...(cover <= LOOP_MAX_ROUNDS ? [`raise maxRounds to ${cover}`] : []),
-          ...(Math.ceil(areas.length / loop.maxRounds) <= Math.min(areas.length, AREAS_PER_ROUND_MAX) ? [`raise areasPerRound to ${Math.ceil(areas.length / loop.maxRounds)}`] : []),
+          ...(enough ? [`raise areasPerRound to ${enough}`] : []),
           'name fewer areas',
         ];
         issues.push(`${at}: ${until.step}'s ${areas.length} areas take ${cover} rounds to review at ${perRound} per round, but maxRounds is ${loop.maxRounds}; the loop could never end dry. ${fix.join(', or ').replace(/^./, (c) => c.toUpperCase())}`);

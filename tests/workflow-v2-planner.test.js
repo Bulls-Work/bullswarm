@@ -205,6 +205,7 @@ test('the planning contract documents kind, its derived table, program defaults,
   assert.deepEqual(contract.program.advisories.codes, [
     'all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files',
     'compile-check-only', 'review-loop-until-passed', 'dry-loop-too-short', 'review-one-area', 'dry-loop-fix-first',
+    'review-no-severity', 'review-area-added',
   ]);
   assert.match(contract.program.advisories['requirement-unchecked'], /never verified/);
   assert.match(contract.program.advisories.note, /never a rejection/);

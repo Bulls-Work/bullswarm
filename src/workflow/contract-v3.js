@@ -59,7 +59,7 @@ const CONDITION = Object.freeze({
   forms: [
     '{"step": "<id>", "field": "<name>", "equals": true}: a boolean field listed in the required fields of that step\'s object answer schema; equals is true (the default) or false',
     '{"step": "<id>", "evidence": "passed"}: every evidence check of that step passed; inside a loop a failed check on the until step reads as not passed instead of failing the step',
-    `{"step": "<id>", "dry": 1}: loop until only ("dry": a review round that finds nothing new); the step's answer lists findings [{title, inScope, stillOpen?}]; the loop ends after dry (1-${DRY_MAX_ROUNDS}, 1 recommended) rounds in a row with nothing to fix: no new in-scope finding and no known one reported still open (and every area reviewed since the last finding); later reviews are told the known findings and other loop steps run only when there is something to fix`,
+    `{"step": "<id>", "dry": 1, "floor"?: "everyday"|"edge"|"obscure", "nonFunctional"?: false}: loop until only ("dry": a review round that finds nothing new at or above the floor, default edge); the step's answer lists findings [{title, inScope, severity?, stillOpen?}]; the loop ends after dry (1-${DRY_MAX_ROUNDS}, 1 recommended) rounds in a row with nothing to fix: no new in-scope finding at or above the floor (a finding with no severity counts) and no known one reported still open (and every area reviewed since the last finding); later reviews are told the known findings and other loop steps run only when there is something to fix. A review is also asked about performance, structure and tests: with areas that name none, a non-functional area is added and taken every round; nonFunctional false keeps it on correctness`,
   ],
   findingsAnswer: 'the smallest answer schema a dry loop\'s review may declare; add your own fields (where, repro, detail) to the items. title is one line naming what is wrong and where (the loop tells new findings from known ones by it); inScope false marks a finding the contract does not require (recorded, never fixed); stillOpen true reports a known finding that is still present (its fix did not hold): like a new one it goes to the fix and keeps the loop going; in a loop with no other step it counts as a repeat',
   note: 'a gate\'s when takes the field or evidence form; a loop\'s until takes any of the three (the dry form is for a loop\'s until only, never a gate). No expressions and no else: anything more is your call, with workflow wait and workflow add',
@@ -109,7 +109,8 @@ const EXAMPLE = Object.freeze({
   gates: [{ id: 'approve', dependsOn: ['polish'], note: 'Read brief.md and decide whether to publish it' }],
 });
 
-// The build, then review until dry: three area reviewers each round, and a
+// The build, then review until dry: three area reviewers each round over four
+// areas (one non-functional, taken every round), severity on findings, and a
 // fixer that runs only when a round finds something new. It is pattern 6 of
 // skill/references/patterns.md, with /abs/workspace for /work/acme
 // (tests/workflow-v3-docs.test.js keeps the two the same).
@@ -120,11 +121,11 @@ const DRY_EXAMPLE = Object.freeze({
       prompt: 'In /abs/workspace, implement SPEC.md in src/query/engine.py with tests in tests/test_engine.py.',
       evidence: [{ type: 'command', cmd: 'cd /abs/workspace && python -m pytest tests/test_engine.py', timeoutSec: 300 }] },
     { id: 'review', dependsOn: ['build'], blindTo: ['build'],
-      areas: ['grammar and parsing', 'expressions and types', 'joins and aggregates'],
+      areas: ['grammar and parsing', 'expressions and types', 'joins and aggregates', 'performance, code structure and tests'],
       prompt: 'In /abs/workspace, review src/query/engine.py against SPEC.md. Every way the code breaks SPEC.md is a finding, even if it looks harmless or intended: the caller decides. Try concrete inputs. Change no file.',
       answer: { type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: {
-        type: 'object', required: ['title', 'inScope', 'where'],
-        properties: { title: { type: 'string' }, inScope: { type: 'boolean' }, stillOpen: { type: 'boolean' }, where: { type: 'string' }, repro: { type: 'string' } } } } } } },
+        type: 'object', required: ['title', 'inScope', 'severity', 'where'],
+        properties: { title: { type: 'string' }, inScope: { type: 'boolean' }, stillOpen: { type: 'boolean' }, severity: { enum: ['everyday', 'edge', 'obscure'] }, where: { type: 'string' }, repro: { type: 'string' } } } } } } },
     { id: 'fix', dependsOn: ['review'], lane: 'build', files: ['src/query/engine.py', 'tests/test_engine.py'],
       prompt: 'In /abs/workspace, fix every finding in the Findings to fix block in src/query/engine.py, with a regression test for each in tests/test_engine.py. Keep other workers\' edits.',
       evidence: [{ type: 'command', cmd: 'cd /abs/workspace && python -m pytest tests/test_engine.py', timeoutSec: 300 }] },

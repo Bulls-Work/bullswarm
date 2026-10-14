@@ -46,7 +46,7 @@ import { scheduleV2Actions } from './v2-scheduler.js';
 import { presentationStageStatus, stageForAction } from './v2-presentation.js';
 import { glyphs } from '../lib/glyphs.js';
 import {
-  dryContext, dryVerdict, fixStepsOf, fixersOf, groupAnswers, groupOf, isDryLoop, knownBefore, loopFindingsSummary, mergeRound, onceFixersOf, roundAnswersChanged, skippedInRound,
+  DEFAULT_FLOOR, dryContext, dryVerdict, fixStepsOf, fixersOf, floorOf, groupAnswers, groupOf, isDryLoop, knownBefore, loopFindingsSummary, mergeRound, onceFixersOf, roundAnswersChanged, skippedInRound,
 } from './dry-loops.js';
 
 // Extra rounds `workflow continue --rounds` may give an out-of-rounds loop.
@@ -182,7 +182,11 @@ export function readCondition(state, condition) {
  */
 export function describeCondition(condition, { areas = false } = {}) {
   if (!condition) return 'no condition';
-  if (condition.dry !== undefined) return `${condition.step} finds nothing new (${condition.dry} round${condition.dry === 1 ? '' : 's'}${areas ? ', every area' : ''})`;
+  if (condition.dry !== undefined) {
+    // 0.38.15: only findings at or above the floor count as new.
+    const floor = condition.floor ?? DEFAULT_FLOOR;
+    return `${condition.step} finds nothing new at or above ${floor} (${condition.dry} round${condition.dry === 1 ? '' : 's'}${areas ? ', every area' : ''})`;
+  }
   if (condition.evidence === 'passed') return `${condition.step}'s evidence passed`;
   return `${condition.step}.${condition.field} is ${condition.equals === false ? 'false' : 'true'}`;
 }
@@ -466,7 +470,7 @@ function mergeDryRound(state, loop, record, { at, emit, rerun }) {
   const answers = groupAnswers(state, group, record.round);
   // Merged again: from the list as it stood before this round.
   const base = already ? knownBefore(findings, record.round) : { known: findings.known, knownDropped: findings.knownDropped, dropped: findings.dropped ?? [] };
-  const merged = mergeRound({ answers, ...base, round: record.round, reopen: fixers.length > 0 });
+  const merged = mergeRound({ answers, ...base, round: record.round, reopen: fixers.length > 0, floor: floorOf(loop) });
   const worthy = merged.entry.new + merged.entry.reopened;
   const entry = {
     ...merged.entry, fix: !fixes ? 'none' : worthy ? 'runs' : 'skipped',

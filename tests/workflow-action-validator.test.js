@@ -415,6 +415,7 @@ test('advisories report the two effort smells and never change validity', () => 
   assert.deepEqual([...PROGRAM_ADVISORY_CODES], [
     'all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files',
     'compile-check-only', 'review-loop-until-passed', 'dry-loop-too-short', 'review-one-area', 'dry-loop-fix-first',
+    'review-no-severity', 'review-area-added',
   ]);
   const writers = (efforts) => ({
     schemaVersion: 'bullswarm.workflow.program.v2',
