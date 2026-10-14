@@ -72,7 +72,7 @@ function stepPresentation({
     && !Array.isArray(action.acceptance.requirements);
   // A step a dry loop skipped ran no worker (0.38.12): say so, never "succeeded".
   const skipped = execution.succeeded === true && action?.skipped && typeof action.skipped === 'object'
-    ? `skipped · nothing to fix (round ${action.skipped.round})` : null;
+    ? `skipped · ${action.skipped.why && action.skipped.why !== 'nothing new to fix' ? action.skipped.why : 'nothing to fix'} (round ${action.skipped.round})` : null;
   const statusWord = acceptedByChoice ? 'accepted by choice' : skipped ?? execution.status ?? 'unknown';
   // A v3 step is judged by facts (its answer, evidence, deliverable), never
   // by the run's implicit requirement: it has no verification verdict.

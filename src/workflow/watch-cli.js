@@ -437,13 +437,20 @@ function staleEpisode(score, baseAt, baseLevel = 1) {
 // one there all along would: the levels due from the stale time up to the
 // last progress the attempt made while stale, then the clock restarted at
 // that progress, at that level, and the level due at `atMs`. Only the last
-// progress is known, so two or more while stale can put it a level above
-// what that watcher printed, never below: it never repeats a level.
+// progress is known. A file change is rare, so the stale time up to it is
+// taken as one silent stretch (the level due then): with two or more changes
+// while stale that can put it a level above what an all-along watcher
+// printed, never below. Output is not rare: a step stale for another reason
+// (the same command again, running over its time) keeps printing, so no
+// window is taken to have passed without it and the level at that progress
+// is 1. With sparse output that can repeat a level a predecessor printed; it
+// never skips one, and never prints "warning 4 · no output for 5s".
 function staleEpisodeSeenAt(score, fallback, atMs) {
   const since = score.staleSince ?? fallback;
   const first = staleEpisode(score, since);
   const progressAt = Number.isFinite(score.progressAt) && score.progressAt > since ? score.progressAt : null;
-  const entry = progressAt == null ? first : staleEpisode(score, progressAt, staleLevelAt(first, progressAt));
+  const levelAtProgress = progressAt == null || score.progressBy === 'output' ? 1 : staleLevelAt(first, progressAt);
+  const entry = progressAt == null ? first : staleEpisode(score, progressAt, levelAtProgress);
   entry.level = staleLevelAt(entry, atMs);
   return entry;
 }

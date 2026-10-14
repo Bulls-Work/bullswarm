@@ -20,7 +20,7 @@ import {
 import { applyContinueOffline, controlWatchEvent, readCondition, renderControlEvent, requestContinue } from '../src/workflow/gates-loops.js';
 import { acceptV2Step, rerunV2Step } from '../src/workflow/cli-step-verbs.js';
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
-import { addV3Steps, waitFactLines, waitV3Nodes } from '../src/workflow/cli-steps.js';
+import { addV3Steps, waitFactLines, waitFacts, waitV3Nodes } from '../src/workflow/cli-steps.js';
 import { formatV2ProofLine, summarizeV2Result, validateV2ResultEnvelope } from '../src/workflow/v2-outcome.js';
 import { programAdvisories } from '../src/workflow/action-validator.js';
 import { notableWatchEvents, renderWatchEvent } from '../src/workflow/watch-cli.js';
@@ -733,6 +733,136 @@ test('a rerun of the work a passed dry loop reviewed: the review\'s new finding 
   assert.deepEqual(done.result.loops[0].findings.known, ['New bug after the acme rebuild']);
 });
 
+test('a loop ended by `workflow continue`, then its review (or the build upstream) rerun: the new finding reaches the fixer, not the old one', async (t) => {
+  for (const rerunId of ['review', 'build']) {
+    const f = fixture(t);
+    const run = await launch(f, dryProgram({ maxRounds: 1 }), fakeDispatch(reviewAnswers(() => ({ findings: [finding('Old bug one')] }))));
+    assert.deepEqual([node(run, 'harden').status, node(run, 'harden').reason], ['waiting', 'out-of-rounds']);
+    continueOffline(run, 'harden');
+    const ended = await resume(f, run.runId, fakeDispatch(() => ({})));
+    assert.deepEqual([node(ended, 'harden').status, node(ended, 'harden').reason], ['passed', 'continued']);
+    assert.equal((await rerunV2Step({ bullswarmDir: f.bullswarmDir, token: run.runId, stepId: rerunId, waitMs: 0 })).status, 'applied');
+    const seen = [];
+    const done = await resume(f, run.runId, fakeDispatch(reviewAnswers(() => ({ findings: [finding('Brand new bug two')] })), { seen }));
+    const fixTask = workerRuns(seen, 'fix')[0].task;
+    assert.match(fixTask, /1\. Brand new bug two/, `${rerunId}: the fixer is handed the new finding`);
+    assert.doesNotMatch(fixTask, /Old bug one/, `${rerunId}: and not the one already fixed`);
+    assert.match(fixTask, /answer-review-attempt-2\.json/, `${rerunId}: from the new review attempt`);
+    const record = node(done, 'harden');
+    // The round is merged again from the list before it, as for a loop that passed dry.
+    assert.deepEqual(record.findings.known.map((item) => item.title), ['Brand new bug two']);
+    // Out of rounds again (one round only): back with the caller, not silently passed.
+    assert.deepEqual([record.status, record.reason], ['waiting', 'out-of-rounds']);
+    // What ran behind the loop when it was continued was made before this fix.
+    assert.equal(runtimeOf(done, 'ship').status, 'pending', `${rerunId}: ship waits for the loop again`);
+    assert.equal(validateV2DurableState(done.state), true);
+  }
+});
+
+test('a loop that passed in its last round and is reopened by a rerun: the steps behind it rerun after the new fix, not before it', async (t) => {
+  // Passed dry in round 2 of 2, so no next round exists to rerun `ship`.
+  const f = fixture(t);
+  const seen = [];
+  const run = await launch(f, dryProgram({ maxRounds: 2 }), fakeDispatch(reviewAnswers((turn) => ({ findings: turn === 1 ? [finding('Old bug one')] : [] })), { seen }));
+  assert.deepEqual([node(run, 'harden').status, node(run, 'harden').reason, node(run, 'harden').round], ['passed', 'dry', 2]);
+  assert.equal((await rerunV2Step({ bullswarmDir: f.bullswarmDir, token: run.runId, stepId: 'build', waitMs: 0 })).status, 'applied');
+  const mid = await resume(f, run.runId, fakeDispatch(reviewAnswers(() => ({ findings: [finding('Brand new bug two')] })), { seen }));
+  assert.deepEqual([node(mid, 'harden').status, node(mid, 'harden').reason], ['waiting', 'out-of-rounds']);
+  assert.equal(runtimeOf(mid, 'ship').status, 'pending', 'ship made from the old result is reset while the loop is open');
+  assert.equal(mid.state.lifecycle.status, 'waiting');
+  continueOffline(mid, 'harden');
+  const done = await resume(f, run.runId, fakeDispatch(() => ({}), { seen }));
+  assert.equal(done.result.status, 'completed');
+  const order = seen.map((entry) => entry.actionId);
+  assert.equal(order.filter((id) => id === 'ship').length, 2, order.join(','));
+  assert.equal(order.at(-1), 'ship', `ship reruns after the new fix: ${order.join(',')}`);
+  assert.ok(order.lastIndexOf('ship') > order.lastIndexOf('fix'));
+  assert.equal(validateV2DurableState(done.state), true);
+});
+
+test('a failed fixer the caller accepted, then a clean round that skips it: the accept stays on the step and in the result, and `wait` says so', async (t) => {
+  {
+    const f = fixture(t);
+    // The fixer fails twice (its retry too); the review of the first round finds a bug, the next is clean.
+    const runs = {};
+    const script = (id) => {
+      runs[id] = (runs[id] ?? 0) + 1; // counted across the resume, which restarts the dispatcher's own turns
+      if (id === 'review') return { answer: { findings: runs[id] === 1 ? [finding('A bug')] : [] } };
+      return id === 'fix' && runs[id] <= 2 ? { fail: 'provider' } : {};
+    };
+    const run = await launch(f, dryProgram({ maxRounds: 3 }), fakeDispatch(script));
+    assert.equal(runtimeOf(run, 'fix').status, 'failed');
+    const accepted = await acceptV2Step({ bullswarmDir: f.bullswarmDir, token: run.runId, stepId: 'fix', reason: 'not a problem', waitMs: 0 });
+    assert.equal(accepted.status, 'applied', JSON.stringify(accepted));
+    const done = await resume(f, run.runId, fakeDispatch(script));
+    assert.equal(runs.review, 2);
+    assert.equal(runs.fix, 2, 'the fixer never ran again');
+    const fix = runtimeOf(done, 'fix');
+    assert.deepEqual([fix.status, fix.skipped?.round, fix.acceptance?.reason, fix.acceptance?.attemptId], ['succeeded', 2, 'not a problem', 'fix-2']);
+    assert.equal(done.result.status, 'completed');
+    assert.match(done.result.reason, /1 step accepted by choice/);
+    assert.doesNotMatch(done.result.reason, /skipped \(nothing to fix\)/, 'the accepted fixer is not reported as having nothing to fix');
+    const proof = formatV2ProofLine(summarizeV2Result(done.result, done.state, { runDir: done.runDir }));
+    assert.match(proof, /1 accepted by choice: fix/);
+    assert.doesNotMatch(proof, /skipped \(nothing to fix\)/);
+    assert.deepEqual(done.result.actions.find((action) => action.id === 'fix').acceptance.reason, 'not a problem');
+    const [wait] = waitFacts(done.state, ['fix']).nodes;
+    assert.match(waitFactLines(wait)[0], /^\S+ fix accepted by choice after provider · not a problem/);
+    assert.equal(wait.deliverable.produced, null, 'no worker produced anything for it');
+    assert.equal(validateV2DurableState(done.state), true);
+    assert.doesNotThrow(() => validateV2ResultEnvelope(done.result));
+  }
+});
+
+test('the accept is dropped when the fixer runs again after it: a fixer that ran and succeeded is not "accepted"', async (t) => {
+  const f = fixture(t);
+  const runs = {};
+  const script = (id) => {
+    runs[id] = (runs[id] ?? 0) + 1;
+    if (id === 'review') return { answer: { findings: runs[id] <= 2 ? [finding(`Bug ${runs[id]}`)] : [] } };
+    return id === 'fix' && runs[id] <= 2 ? { fail: 'provider' } : {};
+  };
+  const run = await launch(f, dryProgram({ maxRounds: 4 }), fakeDispatch(script));
+  assert.equal((await acceptV2Step({ bullswarmDir: f.bullswarmDir, token: run.runId, stepId: 'fix', reason: 'not a problem', waitMs: 0 })).status, 'applied');
+  const done = await resume(f, run.runId, fakeDispatch(script));
+  const fix = runtimeOf(done, 'fix');
+  // Round 2 found another bug, so the fixer ran again (its third attempt) and then round 3 was clean.
+  assert.equal(done.state.attempts.filter((attempt) => attempt.actionId === 'fix').length >= 3, true);
+  assert.equal(fix.acceptance, undefined);
+  assert.doesNotMatch(done.result.reason, /accepted by choice/);
+  assert.equal(validateV2DurableState(done.state), true);
+});
+
+test('the build inside the loop ([build, review, fix]): it runs in round 1 only, the fixer alone gets the findings, and a test run before the review still reruns', async (t) => {
+  const f = fixture(t);
+  const program = dryProgram({ maxRounds: 4 });
+  program.loops[0].steps = ['build', 'review', 'fix'];
+  const seen = [];
+  const run = await launch(f, program, fakeDispatch(reviewAnswers((turn) => ({ findings: turn === 1 ? [finding('A is broken')] : [] })), { seen }));
+  assert.deepEqual(seen.map((entry) => entry.actionId), ['build', 'review', 'fix', 'review', 'ship'], 'no second build');
+  assert.match(workerRuns(seen, 'fix')[0].task, /## Findings to fix[\s\S]*1\. A is broken/);
+  assert.doesNotMatch(workerRuns(seen, 'build')[0].task, /A is broken/);
+  const roundTwo = workerRuns(seen, 'review')[1].task;
+  assert.match(roundTwo, /Round 1's findings went to fix; check whether each fix holds\./, 'the reviewer is not told the build took them');
+  const record = node(run, 'harden');
+  assert.deepEqual([record.status, record.reason, record.round], ['passed', 'dry', 2]);
+  const build = runtimeOf(run, 'build');
+  assert.deepEqual([build.status, build.skipped?.round, build.skipped?.loopId], ['succeeded', 2, 'harden']);
+  assert.match(build.skipped.why, /findings go to the fix after it/);
+  assert.equal(run.state.attempts.filter((attempt) => attempt.actionId === 'build').length, 1);
+  assert.equal(validateV2DurableState(run.state), true);
+  // A read-only step before the review is not a fixer: it runs again after each fix.
+  const checked = dryProgram({ maxRounds: 4 });
+  checked.steps.splice(1, 0, { id: 'check', dependsOn: ['build'], lane: 'analyze', prompt: 'Run the acme tests.' });
+  checked.steps.find((step) => step.id === 'review').dependsOn = ['check'];
+  checked.loops[0].steps = ['build', 'check', 'review', 'fix'];
+  const seenChecked = [];
+  const second = await launch(fixture(t), checked, fakeDispatch(reviewAnswers((turn) => ({ findings: turn === 1 ? [finding('B is broken')] : [] })), { seen: seenChecked }));
+  assert.deepEqual(seenChecked.map((entry) => entry.actionId), ['build', 'check', 'review', 'fix', 'check', 'review', 'ship']);
+  assert.deepEqual([node(second, 'harden').status, node(second, 'harden').reason], ['passed', 'dry']);
+  assert.equal(validateV2DurableState(second.state), true);
+});
+
 test('[fix, review] out of rounds: the last round\'s findings are not fixed yet, and the watch and the note say so', async (t) => {
   const f = fixture(t);
   const seen = [];
@@ -1265,4 +1395,110 @@ test('end to end with rotating areas: round 2 is clean but one area was not revi
   const result = JSON.parse(e.bullswarm('workflow', 'runs', 'result', token, '--json').stdout);
   assert.equal(result.status, 'completed', result.reason);
   assert.equal(result.loops[0].findings.dryIn, 3);
+});
+
+test('end to end: a fixer the loop skipped is reported skipped by `workflow wait` and `runs show`, never as having produced files', { timeout: 120_000 }, (t) => {
+  const program = echoProgram({ areas: ['grammar and parsing', 'joins'], maxRounds: 3 });
+  program.steps.find((step) => step.id === 'review').prompt = 'Review the acme parser. ANSWER_JSON:{"findings":[]}';
+  const e = echoRun(t, program);
+  const goal = e.bullswarm('workflow', 'goal', 'Harden the acme parser', '--cwd', e.workspace, '--program', e.plan, '--foreground', '--json');
+  assert.equal(goal.status, 0, goal.stdout + goal.stderr);
+  const token = JSON.parse(goal.stdout).shortId;
+  const wait = e.bullswarm('workflow', 'wait', token, 'fix');
+  assert.match(wait.stdout, /^✓ fix skipped \(nothing to fix, loop harden round 1\)/);
+  assert.doesNotMatch(wait.stdout, /produced/);
+  const fact = JSON.parse(e.bullswarm('workflow', 'wait', token, 'fix', '--json').stdout).nodes[0];
+  assert.deepEqual(fact.skipped, { loopId: 'harden', round: 1, why: 'nothing new to fix' });
+  assert.equal(fact.deliverable.produced, null, 'no worker ran, so nothing was produced');
+  assert.equal(fact.attempts, 0);
+  const show = e.bullswarm('workflow', 'runs', 'show', token).stdout;
+  assert.match(show, /^# actions  4\/4 succeeded \(1 skipped, nothing to fix: fix\)$/m);
+  assert.match(show, /^  fix\s+build\/medium\s+skipped \(nothing to fix\)$/m);
+});
+
+// --- a passed loop reopened while a step behind it runs, or behind a gate -----------
+
+// Start the run without awaiting it; resolves once `ship` has a worker running.
+async function startUntilShip(f, program, script, seen) {
+  const running = launch(f, program, fakeDispatch(script, { seen }));
+  for (let i = 0; i < 200 && !seen.some((entry) => entry.actionId === 'ship'); i += 1) await new Promise((done) => setTimeout(done, 25));
+  assert.ok(seen.some((entry) => entry.actionId === 'ship'), 'ship started');
+  const token = readdirSync(join(f.bullswarmDir, 'workflows')).find((name) => !name.includes('.'));
+  return { running, token };
+}
+
+test('a reviewer rerun with a new finding while `ship` still runs behind a dry loop waits for ship, then reruns it; the kernel does not crash', { timeout: 60_000 }, async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  let reviews = 0;
+  const script = (id) => {
+    if (id === 'review') { reviews += 1; return { answer: { findings: reviews === 1 ? [finding('Old bug one')] : reviews === 3 ? [finding('Brand new bug two')] : [] } }; }
+    return id === 'ship' ? { delayMs: 800 } : {};
+  };
+  const { running, token } = await startUntilShip(f, dryProgram({ maxRounds: 2 }), script, seen);
+  assert.equal((await rerunV2Step({ bullswarmDir: f.bullswarmDir, token, stepId: 'review', waitMs: 3000 })).status, 'applied');
+  const run = await running;
+  assert.notEqual(run.state.lifecycle.status, 'interrupted');
+  // The new finding was merged once ship had finished, and ship was reset with the loop reopened.
+  assert.deepEqual(seen.map((entry) => entry.actionId), ['build', 'review', 'fix', 'review', 'ship', 'review', 'fix']);
+  assert.equal(runtimeOf(run, 'ship').status, 'pending', 'ship made from the old result waits for the loop');
+  assert.equal(run.state.lifecycle.status, 'waiting');
+  continueOffline(run, 'harden');
+  const done = await resume(f, run.runId, fakeDispatch(script, { seen }));
+  assert.equal(done.result.status, 'completed');
+  assert.equal(workerRuns(seen, 'ship').length, 2, 'ship ran again after the new fix');
+  assert.equal(seen.at(-1).actionId, 'ship');
+});
+
+test('a loop the caller continued, then a reviewer rerun with a finding while `ship` runs: the same wait, no crash', { timeout: 60_000 }, async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  let reviews = 0;
+  const script = (id) => {
+    if (id === 'review') { reviews += 1; return { answer: { findings: reviews === 1 ? [finding('Old bug one')] : [finding('Brand new bug two')] } }; }
+    return id === 'ship' ? { delayMs: 800 } : {};
+  };
+  const first = await launch(f, dryProgram({ maxRounds: 1 }), fakeDispatch(script, { seen }));
+  assert.equal(node(first, 'harden').status, 'waiting');
+  continueOffline(first, 'harden');
+  const resumed = resume(f, first.runId, fakeDispatch(script, { seen }));
+  for (let i = 0; i < 200 && !seen.some((entry) => entry.actionId === 'ship'); i += 1) await new Promise((done) => setTimeout(done, 25));
+  assert.equal((await rerunV2Step({ bullswarmDir: f.bullswarmDir, token: first.runId, stepId: 'review', waitMs: 3000 })).status, 'applied');
+  const run = await resumed;
+  assert.notEqual(run.state.lifecycle.status, 'interrupted');
+  assert.equal(node(run, 'harden').status, 'waiting');
+  assert.equal(runtimeOf(run, 'ship').status, 'pending');
+});
+
+test('a gate between the loop and a later step: reopening the loop makes the gate wait again and reruns the step behind it', { timeout: 60_000 }, async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  const program = dryProgram({ maxRounds: 4 });
+  program.steps.find((step) => step.id === 'ship').dependsOn = ['approve'];
+  program.gates = [{ id: 'approve', dependsOn: ['harden'] }];
+  let phase = 1;
+  const script = reviewAnswers((turn) => ({ findings: phase === 1 ? (turn === 1 ? [finding('Old bug one')] : []) : [finding('Brand new bug two')] }));
+  const first = await launch(f, program, fakeDispatch(script, { seen }));
+  assert.equal(node(first, 'approve').status, 'waiting');
+  continueOffline(first, 'approve');
+  const shipped = await resume(f, first.runId, fakeDispatch(script, { seen }));
+  assert.equal(shipped.result.status, 'completed');
+  assert.equal(workerRuns(seen, 'ship').length, 1);
+  phase = 2;
+  assert.equal((await rerunV2Step({ bullswarmDir: f.bullswarmDir, token: first.runId, stepId: 'build', waitMs: 0 })).status, 'applied');
+  const mid = await resume(f, first.runId, fakeDispatch(script, { seen }));
+  // The new review found something while the loop had passed: the approval of the old result does not stand.
+  assert.equal(node(mid, 'harden').status, 'passed');
+  assert.equal(node(mid, 'approve').status, 'waiting', 'the caller approves the new result again');
+  assert.equal(runtimeOf(mid, 'ship').status, 'pending');
+  assert.equal(workerRuns(seen, 'ship').length, 1, 'ship has not run on the new result yet');
+  assert.notEqual(mid.result?.status, 'completed');
+  continueOffline(mid, 'approve');
+  const last = await resume(f, first.runId, fakeDispatch(script, { seen }));
+  assert.equal(last.result.status, 'completed');
+  assert.equal(workerRuns(seen, 'ship').length, 2, 'ship ran again on the new result');
+  const gateEvents = eventsOf(last, 'gate.reopened');
+  assert.ok(gateEvents.length >= 1);
+  assert.deepEqual([gateEvents[0].payload.gateId, gateEvents[0].payload.loopId], ['approve', 'harden']);
+  assert.match(renderControlEvent(controlWatchEvent(gateEvents[0], { token: 'x' })), /gate approve waits again/);
 });

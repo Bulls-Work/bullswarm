@@ -46,7 +46,7 @@ import { scheduleV2Actions } from './v2-scheduler.js';
 import { presentationStageStatus, stageForAction } from './v2-presentation.js';
 import { glyphs } from '../lib/glyphs.js';
 import {
-  dryContext, dryVerdict, fixStepsOf, fixersOf, groupAnswers, groupOf, isDryLoop, knownBefore, loopFindingsSummary, mergeRound, roundAnswersChanged, skippedInRound,
+  dryContext, dryVerdict, fixStepsOf, fixersOf, groupAnswers, groupOf, isDryLoop, knownBefore, loopFindingsSummary, mergeRound, onceFixersOf, roundAnswersChanged, skippedInRound,
 } from './dry-loops.js';
 
 // Extra rounds `workflow continue --rounds` may give an out-of-rounds loop.
@@ -205,14 +205,14 @@ function untilText(state, loop) {
 // --- the kernel's pass -------------------------------------------------------
 
 /** The revision request that reruns a loop's body steps for its next round. */
-function loopRerunRequest(state, loop, round, at) {
+function loopRerunRequest(state, loop, round, at, { steps = loop.steps, summary = null } = {}) {
   const taken = new Set((state.revisions ?? []).map((entry) => entry.id));
   const base = `loop-${loop.id}-round-${round}`;
   let id = base;
   for (let k = 2; taken.has(id); k += 1) id = `${base}-${k}`;
   return {
-    id, source: 'kernel', queuedAt: at, summary: `Loop ${loop.id} round ${round}: rerun ${loop.steps.join(', ')}`,
-    baseRevision: state.program.revision, program: exportV2Plan(state).program, rerun: [...loop.steps], steeringIds: [],
+    id, source: 'kernel', queuedAt: at, summary: summary ?? `Loop ${loop.id} round ${round}: rerun ${steps.join(', ')}`,
+    baseRevision: state.program.revision, program: exportV2Plan(state).program, rerun: [...steps], steeringIds: [],
   };
 }
 
@@ -223,8 +223,8 @@ function loopRerunRequest(state, loop, round, at) {
  * changes (its number, the steps it skips) is saved with the rerun, never
  * after it. Returns true when the revision applied.
  */
-function rerunLoopBody(state, loop, round, { runDir, at, emit, features = null, apply = null }) {
-  const request = loopRerunRequest(state, loop, round, at);
+function rerunLoopBody(state, loop, round, { runDir, at, emit, features = null, apply = null, steps = undefined, summary = null }) {
+  const request = loopRerunRequest(state, loop, round, at, { steps, summary });
   const planned = planV2Revision(state, request, { pendingSteeringIds: [], features });
   if (!planned.ok) {
     state.revisions = [...(state.revisions ?? []), rejectedRevisionRecord(request, planned.issues, at)];
@@ -283,17 +283,18 @@ function stepGate(state, gate, record, { at, emit, records }) {
 }
 
 function stepLoop(state, loop, record, { at, emit, records, rerun }) {
-  // A waiting dry loop, or one that passed dry, still learns a reviewer's new
-  // answer (a step rerun of it, or of the work it reviews): a finding it
-  // brings is never dropped, and its fixer runs with it (mergeDryRound).
-  if (isDryLoop(loop) && (record.status === 'waiting' || (record.status === 'passed' && record.reason === 'dry'))) {
-    return mergeDryRound(state, loop, record, { at, emit });
+  // A waiting dry loop, or one that passed (dry, or ended by the caller's
+  // `workflow continue`), still learns a reviewer's new answer (a step rerun
+  // of it, or of the work it reviews): a finding it brings is never dropped,
+  // and its fixer runs with it (mergeDryRound).
+  if (isDryLoop(loop) && (record.status === 'waiting' || (record.status === 'passed' && ['dry', 'continued'].includes(record.reason)))) {
+    return mergeDryRound(state, loop, record, { at, emit, rerun });
   }
   if (record.status !== 'pending' && record.status !== 'blocked') return false;
   // A dry loop decides right after its review, before the scheduler can
   // start a step that comes after it, even when a step beside the review has
   // failed: the merge is what skips the fixer on a clean round.
-  if (isDryLoop(loop) && mergeDryRound(state, loop, record, { at, emit })) return true;
+  if (isDryLoop(loop) && mergeDryRound(state, loop, record, { at, emit, rerun })) return true;
   const body = loop.steps.map((id) => [id, outcomeOf(state, records, id)]);
   const failed = body.find(([, status]) => UNSUCCESSFUL.has(status));
   if (failed) {
@@ -334,13 +335,24 @@ function nextRound(state, loop, record, { at, emit, rerun }) {
   // of them runs when it found nothing worth fixing.
   const last = isDryLoop(loop) ? record.findings?.rounds?.find((entry) => entry.round === round - 1) ?? null : null;
   let skipped = [];
+  // The rerun forgets which steps the caller accepted (a rerun undoes an
+  // accept); a step this round skips without running it was still accepted
+  // last, so the loop keeps them (skipSteps puts one back).
+  const accepted = isDryLoop(loop) ? acceptedStepsOf(state, loop) : null;
   // The round number and the skips go into the rerun's own state change
   // (one save), so a kernel that stops right after it never runs a skipped step.
   const started = rerun(loop, round, () => {
     record.round = round;
     settle(record, 'pending', at);
+    if (!isDryLoop(loop)) return;
+    if (Object.keys(accepted).length) record.accepted = accepted;
+    else delete record.accepted;
+    const group = groupOf(state, loop);
+    // A builder before the review, with a fixer after it, runs in round 1
+    // only: the fixer is handed the findings (onceFixersOf).
+    skipped = skipSteps(state, onceFixersOf(state, loop, group), { loopId: loop.id, round, at, why: SKIP_ONCE_WHY, record });
     if (last && last.new + last.reopened === 0) {
-      skipped = skipSteps(state, fixStepsOf(state, loop, groupOf(state, loop)).before, { loopId: loop.id, round, at });
+      skipped = [...skipped, ...skipSteps(state, fixStepsOf(state, loop, group).before, { loopId: loop.id, round, at, record })];
     }
   });
   if (!started) {
@@ -359,12 +371,13 @@ function nextRound(state, loop, record, { at, emit, rerun }) {
 // --- dry loops (dry-loops.js) ---------------------------------------------------
 
 const SKIP_WHY = 'nothing new to fix';
+const SKIP_ONCE_WHY = 'its work was done in round 1; the review\'s findings go to the fix after it';
 
 // Settle loop steps that have nothing to fix this round: succeeded, no worker,
 // marked skipped. A step that ran in an earlier round keeps pointing at that
 // run's output and checked answer, so the result still names what it did (its proof is read from
 // that attempt, v2-outcome.js). Returns the ids it settled.
-function skipSteps(state, ids, { loopId, round, at }) {
+function skipSteps(state, ids, { loopId, round, at, why = SKIP_WHY, record = null }) {
   const settled = [];
   for (const id of ids) {
     const runtime = state.actions.find((action) => action.id === id);
@@ -372,14 +385,30 @@ function skipSteps(state, ids, { loopId, round, at }) {
     const ran = state.attempts.findLast((attempt) => attempt.actionId === id && attempt.status === 'succeeded') ?? null;
     Object.assign(runtime, {
       status: 'succeeded', finishedAt: at, outputFile: ran?.outputFile ?? null, artifactIds: [], lastFailure: null,
-      skipped: { loopId, round, why: SKIP_WHY, at },
+      skipped: { loopId, round, why, at },
     });
     // Its checked answer from that run too (the round's rerun cleared it).
     const declared = state.program.actions.find((action) => action.id === id);
     if (declared?.answer !== undefined && ran?.answer?.ok) runtime.answer = { attemptId: ran.id, value: clone(ran.answer.value) };
+    // A step the caller accepted after it failed, and no attempt has run since:
+    // skipping it must not turn that accept into "nothing to fix".
+    const kept = record?.accepted?.[id];
+    const latest = state.attempts.findLast((attempt) => attempt.actionId === id) ?? null;
+    if (kept && (latest?.id ?? null) === (kept.attemptId ?? null)) runtime.acceptance = clone(kept);
     settled.push(id);
   }
   return settled;
+}
+
+// The loop's steps the caller accepted by choice (not a check's requirement
+// acceptance), by id: the record a rerun is about to erase.
+function acceptedStepsOf(state, loop) {
+  const found = {};
+  for (const id of loop.steps) {
+    const acceptance = state.actions.find((action) => action.id === id)?.acceptance;
+    if (acceptance && !Array.isArray(acceptance.requirements)) found[id] = clone(acceptance);
+  }
+  return found;
 }
 
 // The finished event of each skipped step, then its phase started and
@@ -419,11 +448,11 @@ function emitSkipped(state, ids, { at, emit }) {
  * so a kernel that stops in between never runs a fixer that should have been
  * skipped. A blocked loop merges too (a step beside the review failed), so its
  * skips still hold. A waiting loop only learns the round: it waits unless its
- * review has now run dry. A loop that passed dry and is no longer dry goes
- * back to pending in its round, so its fixer runs with the new findings; one
+ * review has now run dry. A loop that passed (dry, or ended by `workflow
+ * continue`) and is no longer dry goes back to pending in its round, so its fixer runs with the new findings; one
  * still dry stays passed. True when it merged.
  */
-function mergeDryRound(state, loop, record, { at, emit }) {
+function mergeDryRound(state, loop, record, { at, emit, rerun }) {
   const group = groupOf(state, loop);
   const findings = record.findings ?? { rounds: [], known: [], knownDropped: 0 };
   const already = findings.rounds.find((entry) => entry.round === record.round) ?? null;
@@ -443,19 +472,28 @@ function mergeDryRound(state, loop, record, { at, emit }) {
     ...merged.entry, fix: !fixes ? 'none' : worthy ? 'runs' : 'skipped',
     answers: Object.fromEntries(answers.map((answer) => [answer.step, answer.attemptId])),
   };
-  record.findings = {
+  const nextFindings = {
     rounds: [...findings.rounds.filter((item) => item.round !== record.round), entry], known: merged.known, knownDropped: merged.knownDropped,
     ...(merged.dropped.length ? { dropped: merged.dropped } : {}),
   };
-  const skipped = worthy ? [] : skipSteps(state, after, { loopId: loop.id, round: record.round, at });
-  const verdict = dryVerdict(loop, record, group);
+  const verdict = dryVerdict(loop, { ...record, findings: nextFindings }, group);
+  // A passed loop that this answer reopens must reset the steps behind it, and
+  // a step still running there cannot be reset under its worker (the
+  // scheduler would see it active behind an unfinished loop). Merge nothing
+  // yet: the answer stays unmerged (its attempt differs from the round's
+  // record), so this runs again when that step has finished, and its result
+  // is then rerun with the rest.
+  if (record.status === 'passed' && !verdict.dry && stepsBehind(state, loop).actions.some((id) => state.actions.find((action) => action.id === id)?.status === 'running')) return false;
+  record.findings = nextFindings;
+  const skipped = worthy ? [] : skipSteps(state, after, { loopId: loop.id, round: record.round, at, record });
   const done = loop.steps.every((id) => state.actions.find((action) => action.id === id)?.status === 'succeeded');
   const passes = verdict.dry && done;
   const known = merged.known.filter((item) => item.inScope).length;
   const wasPassed = record.status === 'passed';
   if (passes && !wasPassed) settle(record, 'passed', at, 'dry');
   // Passed dry, and the new answer is not dry: the round goes on.
-  if (!verdict.dry && wasPassed) settle(record, 'pending', at);
+  const reopened = !verdict.dry && wasPassed;
+  if (reopened) settle(record, 'pending', at);
   emit('loop.findings', {
     loopId: loop.id, round: record.round, of: record.maxRounds,
     new: entry.new, reopened: entry.reopened, repeated: entry.repeated, outOfScope: entry.outOfScope, known,
@@ -465,7 +503,56 @@ function mergeDryRound(state, loop, record, { at, emit }) {
   });
   emitSkipped(state, skipped, { at, emit });
   if (passes && !wasPassed) emitDryPassed(state, loop, record, { emit });
+  if (reopened) rerunStepsBehind(state, loop, record, { at, emit, rerun });
   return true;
+}
+
+// What comes after a loop, through steps, gates and later loops: {actions,
+// gates} (ids), the steps and gates that depend on it directly or by way of
+// another. A passed gate does not stop the walk: what is behind it was made
+// from the loop's result too.
+function stepsBehind(state, loop) {
+  const control = controlOf(state);
+  const dependents = new Map();
+  const add = (from, to) => dependents.set(from, [...(dependents.get(from) ?? []), to]);
+  for (const action of state.program.actions) for (const id of action.dependsOn) add(id, action.id);
+  for (const gate of control.gates) for (const id of gate.dependsOn) add(id, gate.id);
+  for (const other of control.loops) for (const id of other.steps) add(id, other.id);
+  const reached = new Set();
+  const queue = [loop.id];
+  while (queue.length) for (const next of dependents.get(queue.shift()) ?? []) if (!reached.has(next)) { reached.add(next); queue.push(next); }
+  return {
+    actions: state.program.actions.map((action) => action.id).filter((id) => reached.has(id)),
+    gates: control.gates.map((gate) => gate.id).filter((id) => reached.has(id)),
+  };
+}
+
+// A loop that passed and now goes on has finished work behind it that was made
+// from the old result (a ship step that ran when it passed, behind a gate or
+// not), and gates the caller passed on that result. Nothing reruns those when
+// the loop is at its last round (no next round reruns them), so reset them
+// now, while the loop is pending and they cannot start before it ends again.
+// A passed gate waits again: the approval was of the old result. Their own
+// dependents follow through the revision walk. The steps are reset together
+// with the gates, in one state change (the caller made sure none is running).
+function rerunStepsBehind(state, loop, record, { at, emit, rerun }) {
+  const behind = stepsBehind(state, loop);
+  const steps = behind.actions.filter((id) => ['succeeded', 'failed'].includes(state.actions.find((entry) => entry.id === id)?.status));
+  const records = ensureRecords(state);
+  const reset = [];
+  const reopenGates = () => {
+    if (reset.length) return;
+    for (const id of behind.gates) {
+      const gate = records.get(id);
+      if (gate?.status !== 'passed') continue;
+      settle(gate, 'pending', at);
+      reset.push(id);
+    }
+  };
+  const rerunDone = steps.length > 0 && rerun(loop, record.round, reopenGates, { steps, summary: `Loop ${loop.id} reopened in round ${record.round}: rerun ${steps.join(', ')} after it` });
+  reopenGates();
+  for (const gateId of reset) emit('gate.reopened', { gateId, loopId: loop.id, round: record.round });
+  return rerunDone;
 }
 
 // The loop.passed event of a dry loop.
@@ -610,7 +697,7 @@ function advanceControlNodes(state, { runDir, at, emit, rerun }) {
  */
 export function kernelControlPass(state, { runDir, at, emit, features = null, active = 0, schedulingOptions = {} }) {
   if (!controlOf(state)) return null;
-  const rerun = (loop, round, apply) => rerunLoopBody(state, loop, round, { runDir, at, emit, features, apply });
+  const rerun = (loop, round, apply, extra = {}) => rerunLoopBody(state, loop, round, { runDir, at, emit, features, apply, ...extra });
   if (advanceControlNodes(state, { runDir, at, emit, rerun })) return { changed: true };
   const graph = schedulerView(state);
   const selectable = scheduleV2Actions(graph.actions, graph.states, schedulingOptions).selected.length > 0;
@@ -729,7 +816,7 @@ export function continueRefusal(state, nodeId, rounds) {
  */
 export function applyContinueOffline(state, intent, { runDir, at, features = null }) {
   const emit = (type, payload) => appendEvent(runDir, state, type, payload);
-  const rerun = (loop, round, apply) => rerunLoopBody(state, loop, round, { runDir, at, emit, features, apply });
+  const rerun = (loop, round, apply, extra = {}) => rerunLoopBody(state, loop, round, { runDir, at, emit, features, apply, ...extra });
   const outcome = applyContinue(state, intent, { at, emit, rerun });
   markContinueApplied(runDir, intent, { at, refused: outcome.applied ? null : outcome.why });
   if (!outcome.applied) return outcome;
@@ -810,6 +897,8 @@ export function parkedWaitingFor(state) {
 export function controlWatchEvent(event, { token }) {
   const payload = event?.payload ?? {};
   switch (event?.type) {
+    case 'gate.reopened':
+      return { type: event.type, gateId: payload.gateId ?? null, loopId: payload.loopId ?? null, round: payload.round ?? null, token };
     case 'gate.waiting': case 'gate.passed': case 'gate.blocked':
       return { type: event.type, gateId: payload.gateId ?? null, note: payload.note ?? null, reason: payload.reason ?? null, why: payload.why ?? null, condition: payload.condition ?? null, token };
     case 'loop.round': case 'loop.passed': case 'loop.out-of-rounds': case 'loop.blocked': case 'loop.continued':
@@ -856,6 +945,8 @@ export function renderControlEvent(event) {
       return `${g.waiting} gate ${event.gateId} waiting${event.note ? ` · ${event.note}` : ''} · continue: bullswarm workflow continue ${event.token} ${event.gateId}`;
     case 'gate.passed':
       return `${g.ok} gate ${event.gateId} passed · ${event.reason === 'continued' ? 'continued by the caller' : `${event.condition ?? 'its condition'} does not hold`}`;
+    case 'gate.reopened':
+      return `${g.waiting} gate ${event.gateId} waits again · loop ${event.loopId} was reopened in round ${event.round}, so the approval of its old result no longer holds`;
     case 'gate.blocked':
       return `${g.blocked} gate ${event.gateId} blocked · ${event.why ?? 'a dependency did not succeed'}`;
     case 'loop.round':
@@ -958,7 +1049,8 @@ export function previousRoundBlock(state, action) {
     // A fix step the dry loop skipped last round did not run then; its
     // latest attempt is from an earlier round.
     if (dry && skippedInRound(state, loop, record, stepId, record.round - 1)) {
-      lines.push(`- ${stepId}: skipped in round ${record.round - 1} (nothing new to fix)`);
+      const why = state.actions.find((item) => item.id === stepId)?.skipped?.why ?? SKIP_WHY;
+      lines.push(`- ${stepId}: skipped in round ${record.round - 1} (${why})`);
       continue;
     }
     // A reviewer's round-before attempt is the one that round merged; one

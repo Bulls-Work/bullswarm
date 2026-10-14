@@ -14,7 +14,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_STALE_THRESHOLDS, actionWrites, attemptStreamPath, createFileChangeClock, createStaleProbe, createStreamFactsReader,
-  emptyStreamFacts, foldStreamRecord, ownedFilesChangedAt, staleScore,
+  emptyStreamFacts, foldStreamRecord, lastFileChange, ownedFilesChangedAt, staleScore,
 } from '../src/lib/stale.js';
 import { EVIDENCE_HEARTBEAT_MS } from '../src/workflow/evidence-runner.js';
 
@@ -471,4 +471,36 @@ test('a writing step with an ignored deliverable path that was just written has 
   const stale = createStaleProbe({ state: { intent: { cwd: dir } }, readFacts: () => facts });
   const staleScoreResult = stale({ attempt, action, nowMs });
   assert.equal(staleScoreResult.signals.some((signal) => signal.id === 'no-file-change'), true);
+});
+
+test('a failed edit is not a file change: the clock, the repeat streak and the facts stay put; an edit in flight or finished well counts', () => {
+  const t0 = Date.parse('2026-10-14T10:00:00.000Z');
+  const rec = (minutes, extra) => ({ at: new Date(t0 + minutes * 60_000).toISOString(), ...extra });
+  const bash = (minutes, id) => [rec(minutes, { kind: 'Bash', status: 'running', toolCallId: id, summary: 'ls' }), rec(minutes + 0.1, { kind: 'tool', status: 'completed', toolCallId: id })];
+  // Claude Code: the Edit call opens as running, its result is a generic tool record.
+  const open = (minutes, id) => rec(minutes, { kind: 'Edit', status: 'running', toolCallId: id, summary: 'a.txt' });
+  const result = (minutes, id, status) => rec(minutes, { kind: 'tool', status, toolCallId: id });
+  const stuck = streamFacts([...bash(1, 'b1'), ...bash(2, 'b2'), open(3, 'e1'), result(3.1, 'e1', 'failed'), ...bash(4, 'b3'), open(5, 'e2'), result(5.1, 'e2', 'failed')]);
+  assert.equal(lastFileChange(stuck), null, 'two failed edits changed no file');
+  assert.equal(stuck.lastFileChangeAt, null);
+  assert.equal(stuck.streak.count, 3, 'the same Bash three times, with two failed edits between, is still a repeat');
+  // In flight: the outcome is not known yet, so it counts from its start.
+  assert.equal(lastFileChange(streamFacts([open(6, 'e3')])), t0 + 6 * 60_000);
+  // Finished well: counts from the call's start, and breaks the streak.
+  const done = streamFacts([...bash(1, 'b1'), open(6, 'e3'), result(6.1, 'e3', 'completed')]);
+  assert.equal(lastFileChange(done), t0 + 6 * 60_000);
+  assert.equal(done.lastFileChangeAt, t0 + 6 * 60_000);
+  assert.equal(done.streak, null);
+  // Grok keeps the edit's own kind on its result: failed does not count, completed does.
+  assert.equal(lastFileChange(streamFacts([rec(1, { kind: 'search_replace', status: 'running', toolCallId: 'g1', summary: 'a.txt' }), rec(1.1, { kind: 'search_replace', status: 'failed', toolCallId: 'g1' })])), null);
+  assert.equal(lastFileChange(streamFacts([rec(1, { kind: 'write', status: 'completed', toolCallId: 'g2', summary: 'a.txt' })])), t0 + 60_000);
+  // An edit open when events were dropped may have finished in the gap: it counts.
+  const gap = streamFacts([open(7, 'e4'), { truncated: true }]);
+  assert.equal(lastFileChange(gap), t0 + 7 * 60_000);
+  // The stale score reads the same: a writer retrying failed edits is flagged, as one reading is.
+  const attempt = { id: 'build-1', actionId: 'build', status: 'running', startedAt: new Date(t0).toISOString(), pool: 'claude-code', routing: { forecast: { expectedMinutes: 60 } } };
+  const retrying = [];
+  for (let m = 1; m <= 25; m += 1) retrying.push(...bash(m, `b${m}`), open(m + 0.2, `f${m}`), result(m + 0.3, `f${m}`, 'failed'));
+  const score = staleScore({ attempt, facts: streamFacts(retrying), writes: actionWrites({ id: 'build', lane: 'build' }), nowMs: t0 + 26 * 60_000 });
+  assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), true, JSON.stringify(score.signals.map((signal) => signal.id)));
 });

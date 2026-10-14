@@ -262,8 +262,9 @@ function printV2ProgramRouting(state) {
     const role = action.role ? `  role ${action.role}` : '';
     const runtime = runtimes.get(action.id);
     // A step the caller accepted reads as such (stage-3 D22), not as a success.
+    // One a dry loop skipped ran no worker (0.38.12): it reads skipped, not succeeded.
     const status = runtime?.status === 'succeeded' && runtime.acceptance && !Array.isArray(runtime.acceptance.requirements)
-      ? 'accepted' : runtime?.status ?? 'unknown';
+      ? 'accepted' : runtime?.status === 'succeeded' && runtime.skipped ? 'skipped (nothing to fix)' : runtime?.status ?? 'unknown';
     const route = routeSummary(action.route);
     console.log(`  ${String(action.id).padEnd(24)} ${action.lane ?? '?'}/${action.effort ?? '?'}${kind}${role}  ${status}${route ? `  route ${route}` : ''}`);
   }
@@ -314,7 +315,8 @@ function runsShow(idToken, opts) {
   console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
   // A v3 run has only its implicit requirement: it reports steps, never requirements.
   if (!isProgramV3(state?.program)) console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
-  console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded`);
+  const skippedSteps = (state.actions ?? []).filter((action) => action.status === 'succeeded' && action.skipped && !(action.acceptance && !Array.isArray(action.acceptance.requirements)));
+  console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded${skippedSteps.length ? ` (${skippedSteps.length} skipped, nothing to fix: ${skippedSteps.map((action) => action.id).join(', ')})` : ''}`);
   printV2ProgramRouting(state);
   // One line per attempt, so the pool, model and the reasoning level it
   // actually ran at are visible in text mode too — --json already carries

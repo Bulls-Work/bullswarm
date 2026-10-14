@@ -125,7 +125,7 @@ const ATTEMPT_FIELDS = new Set([
 const ATTEMPT_ANSWER_FIELDS = new Set(['file', 'ok', 'value', 'errors']);
 const ACTION_ANSWER_FIELDS = new Set(['attemptId', 'value']);
 const WAITING_FOR_FIELDS = new Set(['id', 'type', 'since', 'note']);
-const CONTROL_NODE_FIELDS = new Set(['id', 'type', 'status', 'at', 'round', 'maxRounds', 'reason', 'findings']);
+const CONTROL_NODE_FIELDS = new Set(['id', 'type', 'status', 'at', 'round', 'maxRounds', 'reason', 'findings', 'accepted']);
 // A dry loop's merged review rounds and known findings (dry-loops.js), present
 // only on a dry loop after its first review.
 // `dropped`: the titles past the known list's cap, as {key (16 hex), round}.
@@ -602,7 +602,15 @@ function validateControlNodes(state) {
         const loop = (state.program.control?.loops ?? []).find((item) => item.id === entry.id);
         validateLoopFindings(entry.findings, `${at}.findings`, { loop, round: entry.round, actions: state.program.actions });
       }
-    } else if (entry.round !== undefined || entry.maxRounds !== undefined || entry.findings !== undefined) fail(`${at} is a gate and has no rounds`);
+      if (entry.accepted !== undefined) {
+        const loop = (state.program.control?.loops ?? []).find((item) => item.id === entry.id);
+        object(entry.accepted, `${at}.accepted`);
+        for (const [id, acceptance] of Object.entries(entry.accepted)) {
+          if (!loop?.steps.includes(id)) fail(`${at}.accepted.${id} must name a step of the loop`);
+          validateAcceptance(acceptance, `${at}.accepted.${id}`);
+        }
+      }
+    } else if (entry.round !== undefined || entry.maxRounds !== undefined || entry.findings !== undefined || entry.accepted !== undefined) fail(`${at} is a gate and has no rounds`);
   }
 }
 

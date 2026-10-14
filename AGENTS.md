@@ -45,7 +45,11 @@ reviewers missed bugs. The same release stops a `build` or `chore` worker
 that changes no file for `BULLSWARM_WORKER_NO_PROGRESS_SEC` (failure
 `stalled`, one retry elsewhere) and repeats the stale warning each window;
 runs the default `claude-code` pool with `CLAUDE_CONFIG_DIR` removed so the
-worker uses the keychain login the meter reads (`claudeHomeLaunch`); and has
+worker uses the keychain login the meter reads (`claudeHomeLaunch`), and with
+`--strict-mcp-config` because that makes `claude` read `~/.claude.json`, whose
+user-scope MCP servers a worker with skipped permissions must not start (the
+flag also leaves it no plugin or claude.ai connector server; named homes keep
+theirs); and has
 a retry that moves pools try the same model, then the same model family,
 first (`retryPoolTiers`).
 

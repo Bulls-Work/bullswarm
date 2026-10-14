@@ -57,6 +57,9 @@ export const NO_FILE_CHANGE_ALONE = 2;
 // A normalized stream record opens a tool call, updates one, or closes one.
 const OPEN_STATUSES = new Set(['running', 'pending', 'queued', 'in_progress', 'started']);
 const CLOSE_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled', 'canceled', 'succeeded', 'done']);
+// The close statuses of a call that did its work: a failed, errored or
+// cancelled edit changed no file.
+const DONE_STATUSES = new Set(['completed', 'succeeded', 'done']);
 // Records that are the model talking or accounting, never a tool call.
 const NON_TOOL_KINDS = new Set([
   'response', 'usage', 'result', 'reasoning', 'thinking', 'text', 'message',
@@ -97,6 +100,18 @@ export function evidenceRunning(attempt) {
 
 function fileChangeKind(kind) {
   return FILE_CHANGE_KINDS.has(String(kind ?? '').toLowerCase());
+}
+
+/**
+ * The last file change the stream shows (epoch ms, or null): the edits that
+ * finished well, and an edit still in flight at its start (its outcome is not
+ * known yet). An edit that failed is neither: a worker that retries an Edit
+ * whose old_string is not found changes nothing, so its clock must not move.
+ */
+export function lastFileChange(facts) {
+  const inFlight = (facts?.open ?? []).filter((entry) => fileChangeKind(entry.kind)).map((entry) => entry.at);
+  const at = Math.max(facts?.lastFileChangeAt ?? 0, ...inFlight);
+  return at > 0 ? at : null;
 }
 
 function commandKey(record) {
@@ -142,6 +157,11 @@ export function foldStreamRecord(facts, record, thresholds = DEFAULT_STALE_THRES
     // Events were dropped between the head and the tail: whatever was open
     // may have closed in the gap, so the in-flight set restarts empty.
     facts.truncated = true;
+    // An edit in flight may have finished in the gap: its outcome is unknown,
+    // so it keeps counting.
+    for (const entry of facts.open) {
+      if (fileChangeKind(entry.kind)) facts.lastFileChangeAt = Math.max(facts.lastFileChangeAt ?? 0, entry.at);
+    }
     facts.open = [];
     return facts;
   }
@@ -157,18 +177,33 @@ export function foldStreamRecord(facts, record, thresholds = DEFAULT_STALE_THRES
   const generic = GENERIC_TOOL_KINDS.has(lower);
   if (NON_TOOL_KINDS.has(lower) && !id) return facts;
 
-  if (fileChangeKind(kind) && (OPEN_STATUSES.has(status) || CLOSE_STATUSES.has(status))) {
-    facts.lastFileChangeAt = Math.max(facts.lastFileChangeAt ?? 0, at);
+  // An edit that finished well is a file change, whatever record says so: the
+  // edit's own (codex, grok), or the generic result that closes the Edit call
+  // opened earlier (Claude Code), counted from the call's start. An edit that
+  // failed changes nothing; one still open counts through lastFileChange().
+  const confirmChange = (changedAt) => {
+    facts.lastFileChangeAt = Math.max(facts.lastFileChangeAt ?? 0, changedAt);
     facts.streak = null;
+  };
+  if (fileChangeKind(kind) && DONE_STATUSES.has(status)) confirmChange(at);
+  else if (!fileChangeKind(kind) && DONE_STATUSES.has(status) && id) {
+    const opened = facts.open.find((entry) => entry.id === id);
+    if (opened && fileChangeKind(opened.kind)) confirmChange(opened.at);
   }
 
   if (CLOSE_STATUSES.has(status)) {
-    if (id) closeOpen(facts, facts.open.findIndex((entry) => entry.id === id));
+    let index = -1;
+    if (id) index = facts.open.findIndex((entry) => entry.id === id);
     else {
       const sameKind = facts.open.findIndex((entry) => entry.kind === lower && entry.id == null);
-      if (sameKind >= 0) closeOpen(facts, sameKind);
-      else if (generic) closeOpen(facts, 0);
+      index = sameKind >= 0 ? sameKind : generic ? 0 : -1;
     }
+    // An edit that failed did not break the command repeat it interrupted.
+    const closing = facts.open[index];
+    if (closing && !DONE_STATUSES.has(status) && fileChangeKind(closing.kind) && facts.streak === null && closing.streakBefore) {
+      facts.streak = closing.streakBefore;
+    }
+    closeOpen(facts, index);
     return facts;
   }
   if (!OPEN_STATUSES.has(status)) return facts;
@@ -179,6 +214,12 @@ export function foldStreamRecord(facts, record, thresholds = DEFAULT_STALE_THRES
   if (generic) return facts;
   if (id && facts.countedIds.includes(id)) return facts;
   facts.open.push({ id, kind: lower, at });
+  // An edit under way is progress, so it ends a command repeat; if it then
+  // fails, the repeat is back (the close above).
+  if (fileChangeKind(kind) && facts.streak) {
+    facts.open.at(-1).streakBefore = facts.streak;
+    facts.streak = null;
+  }
   if (id) {
     facts.countedIds.push(id);
     if (facts.countedIds.length > 256) facts.countedIds.shift();
@@ -437,7 +478,7 @@ export function createFileChangeClock({
     const workspaceAt = workspace.at;
     seen = Math.max(
       seen,
-      facts.lastFileChangeAt ?? 0,
+      lastFileChange(facts) ?? 0,
       workspaceAt != null && workspaceAt >= startedAtMs ? workspaceAt : 0,
     );
     return workspace.whole ? seen : null;
@@ -529,7 +570,7 @@ export function staleScore({
   // The writer's last file change: an edit in its stream or a changed file in
   // its workspace, never earlier than its start.
   const workspaceChangedAt = fileChangedAt != null && fileChangedAt >= startedAt ? fileChangedAt : 0;
-  const changedAt = Math.max(startedAt, facts?.lastFileChangeAt ?? 0, workspaceChangedAt);
+  const changedAt = Math.max(startedAt, lastFileChange(facts) ?? 0, workspaceChangedAt);
 
   // no-file-change: a writer keeps running commands but changes nothing.
   // Past twice its window it is stale on its own (NO_FILE_CHANGE_ALONE): a

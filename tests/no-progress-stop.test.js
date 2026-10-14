@@ -230,6 +230,24 @@ test('an edit that scrolls out of the stream\'s rolling tail still counts: the c
   assert.equal(createFileChangeClock({ streamFile, targetDir: null, startedAtMs })(), startedAtMs);
 });
 
+test('a worker that keeps retrying an Edit that fails changes no file: the clock stays at the start, and a passing Edit then moves it', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-no-progress-failed-edit-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const streamFile = join(dir, 'stream-build-attempt-1.jsonl');
+  const startedAtMs = Date.now() - 30 * 60_000;
+  const at = (minutes) => new Date(startedAtMs + minutes * 60_000).toISOString();
+  // The shapes the claude-code connector writes: the Edit call opens running, its result is a generic tool record.
+  const edit = (id, minutes) => JSON.stringify({ at: at(minutes), kind: 'Edit', status: 'running', toolCallId: id, summary: 'a.txt' });
+  const result = (id, minutes, status) => JSON.stringify({ at: at(minutes), kind: 'tool', status, toolCallId: id });
+  writeFileSync(streamFile, [1, 2, 3].flatMap((n) => [edit(`e${n}`, n * 5), result(`e${n}`, n * 5 + 0.1, 'failed')]).join('\n') + '\n');
+  const clock = createFileChangeClock({ streamFile, targetDir: null, action: { id: 'build', lane: 'build' }, startedAtMs });
+  assert.equal(clock(), startedAtMs, 'three failed edits: no file changed');
+  appendFileSync(streamFile, `${edit('e4', 20)}\n`);
+  assert.equal(clock(), startedAtMs + 20 * 60_000, 'an edit still in flight counts from its start');
+  appendFileSync(streamFile, `${result('e4', 20.1, 'completed')}\n`);
+  assert.equal(clock(), startedAtMs + 20 * 60_000, 'and so does one that finished well');
+});
+
 test('a build step that changes no file is stopped as stalled and retried once on another pool; an analyze step is never stopped for it', { timeout: 30_000 }, async (t) => {
   const reader = fixturePool('reader', READER, { costRank: 1 });
   const writer = fixturePool('writer', WRITER, { costRank: 3 });

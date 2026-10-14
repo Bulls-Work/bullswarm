@@ -341,3 +341,9 @@ test('observing.md says no file change alone is stale after 40 minutes and names
   assert.ok(!recovery.includes('its warning comes at least 20 minutes before the stop. Two cases'));
   assert.ok(recovery.includes('or at its fifth command since then if that comes later'));
 });
+
+test('the skill says the default claude-code pool has no MCP server or connector, and where an outward step that needs one goes', () => {
+  const text = skillWide();
+  assert.match(text, /default `claude-code` pool has no MCP server or connector/);
+  assert.match(text, /names a named Claude home or another provider in `route\.pools\.use`/);
+});

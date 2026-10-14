@@ -413,10 +413,16 @@ function evidenceFacts(results) {
 function deliverableOutcome(runtime, failure, last) {
   if (failure?.kind === 'not-produced' && runtime.status !== 'succeeded') return { produced: false };
   if (runtime.status !== 'succeeded') return { produced: null };
+  // Settled with no attempt that succeeded: skipped by a dry loop, or accepted
+  // by the caller after it failed. Nothing was produced by a worker.
+  if ((runtime.skipped || acceptedByChoice(runtime)) && last?.status !== 'succeeded') return { produced: null };
   const fact = last?.status === 'succeeded' ? last.deliverable : null;
   if (!fact || typeof fact !== 'object' || !Object.hasOwn(fact, 'produced')) return { produced: true };
   return { produced: fact.carried === true ? null : fact.produced ?? null, ...(fact.carried === true ? { carried: true } : {}) };
 }
+
+// A step the caller accepted (not a check's requirement acceptance).
+const acceptedByChoice = (runtime) => Boolean(runtime?.acceptance) && !Array.isArray(runtime.acceptance.requirements);
 
 function stepFacts(state, definition, runtime) {
   const attempts = currentAttempts(state, runtime);
@@ -432,6 +438,8 @@ function stepFacts(state, definition, runtime) {
     evidence: evidenceFacts(last?.evidenceResults),
     deliverable: deliverable ? { ...deliverable, ...deliverableOutcome(runtime, failure, last) } : null,
     outputFile: runtime.outputFile ?? null,
+    ...(acceptedByChoice(runtime) ? { acceptance: { reason: runtime.acceptance.reason, failureKind: runtime.acceptance.failureKind ?? null } } : {}),
+    ...(runtime.skipped ? { skipped: { loopId: runtime.skipped.loopId, round: runtime.skipped.round, why: runtime.skipped.why } } : {}),
     ...(failure && runtime.status !== 'succeeded' ? { failure: { kind: failure.kind ?? null, why: failure.message ?? null } } : {}),
   };
   if (definition.answer !== undefined) {
@@ -579,7 +587,10 @@ export function waitFactLines(fact) {
   }
   const mark = fact.status === 'succeeded' ? g.ok : fact.status === 'blocked' ? g.blocked
     : UNSUCCESSFUL.has(fact.status) ? g.fail : g.pending;
-  const parts = [`${mark} ${fact.id} ${fact.status}`];
+  // The caller's accept, then a dry loop's skip, outrank "succeeded": no worker's result backs the step.
+  const word = fact.acceptance ? `accepted by choice${fact.acceptance.failureKind ? ` after ${fact.acceptance.failureKind}` : ''} · ${fact.acceptance.reason}`
+    : fact.skipped ? `skipped (nothing to fix, loop ${fact.skipped.loopId} round ${fact.skipped.round})` : fact.status;
+  const parts = [`${mark} ${fact.id} ${word}`];
   if (fact.pool) parts.push(`${fact.pool}${fact.model ? ` · ${fact.model}` : ''}`);
   if (fact.durationSec != null) parts.push(formatDuration(fact.durationSec));
   if (fact.evidence?.length) parts.push(`evidence ${fact.evidence.filter((item) => item.status === 'passed').length}/${fact.evidence.length} passed`);

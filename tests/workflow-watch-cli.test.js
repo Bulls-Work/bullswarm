@@ -316,6 +316,38 @@ test('a watcher that first sees a step windows after it went stale prints one li
   assert.deepEqual(levels(initialWatchMemory(state), 100, 101), [[100, 4]]);
 });
 
+test('a step that keeps printing while stale (output progress) warns a fresh or relaunched watcher at the level an all-along watcher printed, never above it', () => {
+  const run = { state: JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8')) };
+  const attempt = { ...run.state.attempts.find((entry) => entry.id === 'verify-1'), status: 'running', finishedAt: null };
+  const state = { ...run.state, attempts: [...run.state.attempts.filter((entry) => entry.id !== 'verify-1'), attempt] };
+  const T0 = Date.parse('2026-10-14T10:00:00Z');
+  const min = (m) => T0 + m * 60_000;
+  // Stale since +0 for a reason other than quiet (the same command again), 10-minute window; it prints until +40.
+  const probe = ({ nowMs }) => ({
+    stale: true, score: 2, staleSince: min(0), reasons: ['same command 3x in a row: npm test'],
+    progressAt: Math.min(nowMs - 5000, min(40)), progressBy: 'output', progressWindowSec: 600,
+  });
+  const levels = (memory, from, to) => {
+    const out = [];
+    for (let m = from; m <= to; m += 1) {
+      const collected = notableWatchEvents({ state, stale: probe, nowMs: min(m), memory });
+      memory = collected.memory;
+      for (const event of collected.notable.filter((item) => item.type === 'attempt.stale')) out.push([m, event.level, event.noProgressSec]);
+    }
+    return out;
+  };
+  const strip = (rows) => rows.map(([m, level]) => [m, level]);
+  const allAlong = strip(levels(initialWatchMemory(state, { nowMs: min(-1) }), -1, 60));
+  assert.deepEqual(allAlong.map(([, level]) => level), [1, 2], 'one there all along: warning 1 when it went stale, 2 a window after the output stopped');
+  // A fresh watcher at +35 prints warning 1 (not 4 with "no output for 5s"), then 2 at the same minute.
+  const fresh = levels(initialWatchMemory(state, { nowMs: min(35) }), 35, 60);
+  assert.deepEqual(strip(fresh), [[35, 1], [allAlong[1][0], 2]]);
+  assert.equal(fresh[0][2], 5, 'it was told the step printed 5 seconds ago');
+  // A --since relaunch at +35, its predecessor having printed warning 1: it skips none.
+  const relaunched = levels(initialWatchMemory(state, { nowMs: min(35), sinceMs: min(30), stale: probe }), 35, 60);
+  assert.deepEqual(strip(relaunched), [[allAlong[1][0], 2]]);
+});
+
 test('trouble is a failed, rejected, paused, stalled or stale line, or steering for the caller', () => {
   const kinds = [
     [{ type: 'action.finished', status: 'failed' }, 'failed'],

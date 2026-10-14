@@ -467,6 +467,8 @@ export function discoverClaudeAccounts(opts = {}) {
 
 // --- pools -----------------------------------------------------------------------
 
+const STRICT_MCP_FLAG = '--strict-mcp-config';
+
 /**
  * The packaged `claude-code` connector once per login. The default home keeps
  * the historical pool name `claude-code` and runs its workers with
@@ -490,10 +492,25 @@ export function connectors(ctx = {}) {
   // must still not inherit the caller's home.
   const baseEnv = { ...(base.env ?? {}) };
   delete baseEnv.CLAUDE_CONFIG_DIR;
+  // With the variable removed `claude` reads ~/.claude.json, which lists the
+  // user's own MCP servers (a worker with CLAUDE_CONFIG_DIR=~/.claude read
+  // ~/.claude/.claude.json, which lists none of its own). A default-pool
+  // worker runs with permissions skipped, so it must not start them.
+  // --strict-mcp-config cannot leave those out alone: it ignores every MCP
+  // configuration but --mcp-config, which Bullswarm never passes. So a
+  // default-pool worker has NO MCP server: no user-scope server, and also
+  // none of the plugin servers (enabledPlugins) or claude.ai connectors that
+  // a 0.38.11 worker under ~/.claude still loaded. A named home keeps its
+  // spawn, so a step that needs a connector routes to a named home.
+  const baseSpawn = structuredClone(base.spawn ?? null);
   const useDefault = (defaultDir) => {
     const launch = claudeHomeLaunch(defaultDir, homeDir);
     base.env = { ...baseEnv, ...launch.env };
     base.unsetEnv = launch.unsetEnv;
+    if (Array.isArray(baseSpawn?.cmd)) {
+      const strict = !launch.env.CLAUDE_CONFIG_DIR && !baseSpawn.cmd.includes(STRICT_MCP_FLAG);
+      base.spawn = { ...baseSpawn, cmd: strict ? [...baseSpawn.cmd, STRICT_MCP_FLAG] : [...baseSpawn.cmd] };
+    }
     base.profile = { slug: null, configDir: launch.configDir, command: profileCommand(defaultDir, bin, homeDir) };
   };
   useDefault(defaultClaudeHome(homeDir));
@@ -521,6 +538,8 @@ export function connectors(ctx = {}) {
     names.add(poolName);
     const clone = structuredClone(base);
     clone.name = poolName;
+    // A named home keeps the spawn it always had (its own config file).
+    if (baseSpawn) clone.spawn = structuredClone(baseSpawn);
     // No credentialGroup, deliberately: each home is a SEPARATE subscription
     // with its own credential and its own window. One seat's auth failure
     // says nothing about the next one, so a dispatch never skips one for

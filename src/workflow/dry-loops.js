@@ -360,6 +360,21 @@ export function fixersOf(state, loop, group) {
 }
 
 /**
+ * The loop's fixers that run before the review while another fixer follows
+ * it (the build inside `[build, review, fix]`): the fixer after the review is
+ * handed every round's findings, so these are not: they do their work in
+ * round 1 and are skipped from round 2 (rebuilding every round would redo the
+ * work, hand the findings to two steps, and fail "no file changed" when
+ * nothing is left to change). A read-only step before the review (a test run)
+ * is not one: it runs again after each fix. [] when no fixer follows the review.
+ */
+export function onceFixersOf(state, loop, group) {
+  const { before, after } = fixStepsOf(state, loop, group);
+  const fixers = fixersOf(state, loop, group);
+  return after.some((id) => fixers.includes(id)) ? before.filter((id) => fixers.includes(id)) : [];
+}
+
+/**
  * True when a dry loop skipped fix step `stepId` in `round`: a step after the
  * review when that round found nothing fix-worthy, a step before it (from
  * round 2) when the round before did.
@@ -369,6 +384,7 @@ export function skippedInRound(state, loop, record, stepId, round) {
   if (!group || group.steps.includes(stepId)) return false;
   const before = fixStepsOf(state, loop, group).before.includes(stepId);
   if (before && round < 2) return false;
+  if (onceFixersOf(state, loop, group).includes(stepId)) return true;
   const decided = before ? round - 1 : round;
   return (record?.findings?.rounds ?? []).find((entry) => entry.round === decided)?.fix === 'skipped';
 }
@@ -400,6 +416,9 @@ export function reviewRoundBlock(state, action) {
   const round = record?.round ?? 1;
   const of = record?.maxRounds ?? loop.maxRounds;
   const fixers = fixersOf(state, loop, group);
+  // The fixers that took part in the round before (not the build that runs once).
+  const once = onceFixersOf(state, loop, group);
+  const ran = fixers.filter((id) => !once.includes(id));
   const lines = [`## Review round (loop ${loop.id}, round ${round} of ${of})`];
   if (group.areas.length) {
     const index = group.steps.indexOf(action.id);
@@ -412,8 +431,8 @@ export function reviewRoundBlock(state, action) {
     const previous = record.findings?.rounds?.find((entry) => entry.round === round - 1);
     if (fixers.length && previous) {
       lines.push(previous.fix === 'skipped'
-        ? `Round ${round - 1} found nothing new to fix, so ${joinAnd(fixers)} did not run.`
-        : `Round ${round - 1}'s findings went to ${joinAnd(fixers)}; check whether each fix holds.`);
+        ? `Round ${round - 1} found nothing new to fix, so ${joinAnd(ran)} did not run.`
+        : `Round ${round - 1}'s findings went to ${joinAnd(ran)}; check whether each fix holds.`);
     }
     // With a fixer, a known finding that is still present is reported
     // again (stillOpen); without one, nothing fixes it between rounds.
@@ -469,6 +488,13 @@ export function findingsToFixBlock(state, action, { readOnly = action?.lane === 
   // findings for reference, never told to fix them.
   const heading = `## ${readOnly ? 'Review findings' : 'Findings to fix'} (loop ${loop.id}, round ${record.round} of ${record.maxRounds})`;
   const found = role === 'after' ? record.round : record.round - 1;
+  // A builder before the review, with a fixer after it: the fixer is handed
+  // the findings, this step is not (a rerun of it, by the caller, in a later round).
+  const once = onceFixersOf(state, loop, group);
+  if (once.includes(action.id) && found >= 1) {
+    const after = fixStepsOf(state, loop, group).after.filter((id) => fixersOf(state, loop, group).includes(id));
+    return [heading, `The findings of the review go to ${joinAnd(after)}, after ${group.id}, not to this step: do the work your prompt asks for.`].join('\n');
+  }
   if (found < 1) {
     return [heading, `No review has run yet in this loop, so this round has no findings${readOnly ? '' : ' to fix'}: ${action.id} runs before ${group.id}. Do the work your prompt asks for; ${group.id} reviews it next.`].join('\n');
   }

@@ -30,7 +30,7 @@ import { loadProviders, REPO_ROOT } from '../src/lib/providers.js';
 import { watchOnce } from '../src/lib/watch.js';
 import { meterSignInFailed } from '../src/meters/registry.js';
 import { preparePools } from '../src/workflow/dispatch-pools.js';
-import { workerEnv } from '../src/lib/worker-argv.js';
+import { argvWithModel, workerEnv } from '../src/lib/worker-argv.js';
 import { childDepthEnv } from '../src/lib/state.js';
 
 const FIRST_CLASS = join(REPO_ROOT, 'src', 'providers');
@@ -487,7 +487,7 @@ test("a worker bills its own pool's account even when the caller runs under anot
     // The script prints what the worker actually received.
     const template = {
       name: 'claude-code',
-      spawn: { cmd: [process.execPath, '-e', 'console.log(JSON.stringify({ config: process.env.CLAUDE_CONFIG_DIR, depth: process.env.BULLSWARM_DEPTH }))'] },
+      spawn: { cmd: [process.execPath, '-e', 'console.log(JSON.stringify({ config: process.env.CLAUDE_CONFIG_DIR, depth: process.env.BULLSWARM_DEPTH }))', '--'] }, // after `--`, the default pool's --strict-mcp-config is an argument, not a node option
       outputExtraction: { strategy: 'stdout' },
     };
     const pools = connectors({ template, home, env: {}, opts: { accounts: discoverClaudeAccounts({ homeDir: home, envConfigDir: '', platform: 'linux' }) } });
@@ -517,6 +517,29 @@ test("a worker bills its own pool's account even when the caller runs under anot
     if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved;
     rmSync(home, { recursive: true, force: true });
     rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("the default pool's workers start no MCP server at all (their config file is ~/.claude.json, which lists the user's own; the flag also drops plugin and claude.ai servers); a named home keeps its spawn", () => {
+  const home = makeHome();
+  try {
+    twoLogins(home);
+    const template = JSON.parse(readFileSync(resolve('src/providers/claude-code/connector.json'), 'utf8'));
+    const before = [...template.spawn.cmd];
+    const pools = connectors({ template, home, env: {}, opts: { accounts: discoverClaudeAccounts({ homeDir: home, envConfigDir: '', platform: 'linux' }) } });
+    const [base, extra] = pools;
+    const paths = { taskFile: '/t/task.md', outFile: '/t/out.md', cwd: '/work' };
+    assert.deepEqual(argvWithModel(base, paths).filter((arg) => arg === '--strict-mcp-config'), ['--strict-mcp-config']);
+    assert.ok(argvWithModel(base, paths).includes('--dangerously-skip-permissions'), 'the rest of the spawn is unchanged');
+    assert.deepEqual(extra.spawn.cmd, before, 'a named home reads its own config file and keeps its spawn');
+    assert.ok(!argvWithModel(extra, paths).includes('--strict-mcp-config'));
+    // Extra homes switched off, or a test process: the default pool still gets it, once.
+    for (const ctx of [{ env: { BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' }, opts: {} }, { env: {}, opts: { disabled: true } }, { env: { NODE_TEST_CONTEXT: '1' }, opts: {} }]) {
+      const [only] = connectors({ template: JSON.parse(JSON.stringify(template)), home, ...ctx });
+      assert.equal(only.spawn.cmd.filter((arg) => arg === '--strict-mcp-config').length, 1);
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

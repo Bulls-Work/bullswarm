@@ -236,7 +236,10 @@ wait <run> review` waits for all of them; `step rerun` and `step accept` name
 one reviewer. A reviewer rerun after its round was merged (a `step rerun` of
 it, or of the work it reviews) has that round merged again from its new
 answer, even after the loop ended dry: a new finding then sends the loop back
-into that round, and the fix runs with it.
+into that round, and the fix runs with it. Steps behind the loop that already
+ran (also behind a gate) run again after it, and a gate you had passed waits
+for you again. If one of those steps is still running when the new finding
+arrives, the loop waits for it to finish first.
 
 Cost, with a review at about 40k output tokens and a fix round at about 200k
 (the real figures depend on the work): a round that finds something costs
@@ -396,7 +399,10 @@ Rules the fields above do not show on their own:
   check on that step reads as "not passed" and the loop goes on. With the
   field form, a failed check fails the step as it would outside a loop. A
   dry loop checks right after its review instead, and skips its other steps
-  when there is nothing new to fix.
+  when there is nothing new to fix. A build before the review in a dry loop
+  that also has a fix after the review (`[build, review, fix]`) runs in round 1
+  only; the fix after the review gets the findings. Keep the build outside the
+  loop unless you want that.
 - **A critique asks only for what the sources can show.** A claim that
   something is missing cannot cite a line, so a critique that demands one
   never passes. Cap `maxRounds` at 2 unless a round is cheap, and decide up
@@ -422,7 +428,9 @@ Rules the fields above do not show on their own:
   fixing a wrong check reruns the worker.
 - **Steps that must not repeat.** Sending or publishing is `"deliverable":
   "outward"` with `"retry": 0`; an outward step is never retried once its
-  worker started.
+  worker started. A worker on the default `claude-code` pool has no MCP server
+  or connector (Gmail, Slack, a wiki); a step that publishes through one names
+  a named Claude home or another provider in `route.pools.use`.
 - **Prompts are self-contained.** Nothing is substituted: name the absolute
   workspace path, the outcome, the files, what to read from dependencies, and
   the checks to run. Every task carries a soft time box (`timeBox` minutes, a

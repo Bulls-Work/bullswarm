@@ -168,11 +168,14 @@ the human `next:` block adds
 `attempt.stale` JSONL object carries `reasons`, `score` and `staleSince`, plus
 `level` (1 for the first warning), `noProgressSec` (seconds since the last
 progress) and `progressBy` (`file-change` or `output`). A relaunched watcher
-given `--since` does not repeat a level its predecessor already printed (it
-counts the levels due up to the step's last progress while stale, then the
-windows since); it skips none unless the step made progress more than once
-while stale, when it can skip one. A watcher that first sees a step several
-windows after it went stale prints one line, at the level due then.
+given `--since` does not skip a level its predecessor printed. For a step that
+writes files it counts the levels due up to the step's last file change while
+stale, then the windows since; with more than one change while stale it can
+skip one. For any other step (output is the progress) it counts only the
+windows since the last output, since a step that prints is not silent between
+lines: the relaunch skips none, and with long gaps in the output can repeat a
+level. A watcher that first sees a step after it went stale prints one line, at
+the level due then, and its `no output for` time always agrees with it.
 Nothing is stopped by these lines: let it run (start the `next:` watch again),
 or restart that one step rather than cancelling the run.
 

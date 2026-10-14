@@ -371,6 +371,7 @@ function succeededProgramReason(state, count, live = state.program.actions) {
   // A step a dry loop skipped without ever running it (stepProof's rule) is
   // not called succeeded: the reason names it, as the proof line does.
   const skipped = live.filter((action) => state.actions.find((entry) => entry.id === action.id)?.skipped
+    && !stepAccepted(state.actions.find((entry) => entry.id === action.id))
     && !state.attempts.some((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded')).map((action) => action.id);
   const steps = skipped.length
     ? `all ${count} steps finished: ${count - skipped.length} succeeded, ${skipped.length} skipped (nothing to fix): ${skipped.join(', ')}`
