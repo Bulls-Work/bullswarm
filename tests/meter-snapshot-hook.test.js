@@ -249,3 +249,23 @@ test('buildPoolsLive reads only the pools named in `only`', async () => {
     assert.ok(pools.every((p) => p.name === 'grok'));
   } finally { h.done(); }
 });
+
+test('a forced read waits out a 429 hold but goes through a sign-in hold', async () => {
+  const h = homes();
+  try {
+    writeFileSync(join(h.home, 'meters', 'p.json'), JSON.stringify(weekly(Date.now() - 20 * 60_000, 20)));
+    const hold = (extra) => writeFileSync(join(h.home, 'meters', 'p.hold.json'), JSON.stringify({
+      failed_at: iso(Date.now() - 1000), retry_after_ms: 300_000, ...extra,
+    }));
+    hold({ reason: '429' });
+    const reader = countingReader(weekly(Date.now(), 21));
+    const limited = await getMeterReading('p', { bullswarmDir: h.home, reader, force: true });
+    assert.equal(reader.calls, 0);
+    assert.equal(limited.source, 'stale');
+    assert.equal(limited.meterError, '429');
+    hold({ reason: '401', sign_in_failed: true });
+    const signIn = await getMeterReading('p', { bullswarmDir: h.home, reader, force: true });
+    assert.equal(reader.calls, 1);
+    assert.equal(signIn.source, 'live');
+  } finally { h.done(); }
+});

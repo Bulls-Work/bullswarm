@@ -325,12 +325,15 @@ export async function getMeterReading(pool, opts = {}) {
 
   // A persisted hold is checked before the ordinary freshness path: a failed
   // poll is a reason to say stale even if another process happened to refresh
-  // the snapshot while this process was starting. `force` is the explicit
-  // operator escape hatch and always reaches the reader.
-  if (!force) {
+  // the snapshot while this process was starting. `force` reaches the reader
+  // through a sign-in or network hold (either may have been fixed), but not
+  // through a 429 hold: a call inside one only gets another 429 and extends
+  // it (2026-10-14: six attempts in a row did exactly that).
+  {
     const hold = cache.getHold(pool);
     const holdUntil = holdUntilOf(hold);
-    if (holdUntil != null && nowMs < holdUntil) {
+    const blocksForce = hold?.reason === '429';
+    if (holdUntil != null && nowMs < holdUntil && (!force || blocksForce)) {
       const error = decorateError(errorFromHold(hold), hold, holdUntil);
       if (cached) return staleResult(cached, nowMs, error, holdUntil, hold.reason);
       // Keep the historical no-cache contract (throw), but do not poll again;
