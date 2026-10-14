@@ -67,6 +67,7 @@ export function deliverableVerdict({
   pathsAfter = null,
   outputBytes = null,
   earlierWork = { produced: false, unknown: false },
+  outsideChanged = [],
 } = {}) {
   const declared = declaredDeliverable(action);
   const contentOk = verdict?.ok !== false;
@@ -84,12 +85,16 @@ export function deliverableVerdict({
   const dispatchChanged = paths.length ? statWrite : changedList.length > 0 || headMoved || statWrite;
   const earlierHit = !dispatchChanged && (earlierWork?.produced === true || earlierWork?.unknown === true);
   const quiet = (fact, failWhy) => ({ fact, failWhy: contentOk ? failWhy : null });
+  // Files the worker wrote outside the cwd (outside-writes.js): the work
+  // landed where the cwd diff cannot see, so it is produced, and said so.
+  const outside = Array.isArray(outsideChanged) ? outsideChanged.slice(0, 50) : [];
+  const producedOutside = (type) => ({ fact: { type, gated: true, produced: true, outsideCwd: outside }, failWhy: null });
 
   if (!declared) {
     if (evidence || legacyGate === false) return { fact: null, failWhy: null };
     const judged = action?.lane === 'build' && snapshotOk === true;
     if (!judged || earlierHit) return { fact: null, failWhy: null };
-    if (!dispatchChanged) return quiet(null, 'no file changed');
+    if (!dispatchChanged) return outside.length ? producedOutside('files') : quiet(null, 'no file changed');
     return { fact: null, failWhy: null };
   }
 
@@ -136,6 +141,8 @@ export function deliverableVerdict({
     };
   }
   if (earlierHit) return { fact: { type: 'files', gated: false, produced: null, carried: true }, failWhy: null };
-  if (!dispatchChanged) return quiet({ type: 'files', gated: true, produced: false }, 'no file changed');
+  if (!dispatchChanged) {
+    return outside.length ? producedOutside('files') : quiet({ type: 'files', gated: true, produced: false }, 'no file changed');
+  }
   return { fact: { type: 'files', gated: true, produced: true }, failWhy: null };
 }

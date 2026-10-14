@@ -113,6 +113,7 @@ const TABLE = {
   'strategy hold': ['until', 'reason', 'yes'],
   'strategy unhold': ['yes'],
   'strategy set-reserve': ['window', 'yes'],
+  'strategy recheck-not-produced': ['yes'],
   'strategy set-model': ['tiers', 'yes'],
   'strategy reset-tier': ['yes'],
   'strategy set-reasoning': ['tier', 'level', 'pool', 'model', 'yes'],

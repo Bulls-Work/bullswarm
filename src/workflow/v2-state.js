@@ -134,7 +134,7 @@ const FINDINGS_ROUND_FIELDS = new Set(['round', 'reviewed', 'new', 'reopened', '
 const KNOWN_FINDING_FIELDS = new Set(['title', 'key', 'round', 'area', 'inScope', 'from', 'reopened']);
 const CONTROL_NODE_STATUSES = new Set(['pending', 'waiting', 'passed', 'blocked']);
 const ANSWER_ERRORS_MAX = 100;
-const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried']);
+const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried', 'outsideCwd']);
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
 const ATTEMPT_TIME_BOX_SOURCES = new Set(['program', 'pair', 'kind', 'fallback']);
 const ATTEMPT_RETURNED_EARLY_FIELDS = new Set(['count', 'items']);
@@ -1122,6 +1122,8 @@ function validateAttemptDeliverable(value, at) {
   if (typeof value.produced !== 'boolean' && value.produced !== null) fail(`${at}.produced must be a boolean or null`);
   if (value.written !== undefined) stringPathList(value.written, `${at}.written`);
   if (value.missing !== undefined) stringPathList(value.missing, `${at}.missing`);
+  // Files the worker changed outside the run's cwd (outside-writes.js).
+  if (value.outsideCwd !== undefined) stringPathList(value.outsideCwd, `${at}.outsideCwd`);
   if (value.carried !== undefined && value.carried !== true) fail(`${at}.carried must be true`);
 }
 

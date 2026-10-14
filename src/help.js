@@ -370,7 +370,7 @@ const runText = rich({
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
     'records the run under ~/.bullswarm/workflows/<id>/ (see bullswarm workflow runs --all) and each attempt in the decision log; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of each attempt and releases it when the attempt ends; --dry-run registers nothing',
-    'a build or chore run must change a file (else failure kind not-produced), as every workflow step must; files git ignores count too, except caches and build output (dist, build, coverage, target, *.log); outside a git repository Bullswarm lists the folder (up to 5,000 files and 64 MiB, .git and node_modules skipped) to see it',
+    'a build or chore run must change a file (else failure kind not-produced), as every workflow step must; files its worker wrote outside the cwd, named in its own tool calls, count and are listed as changed outside cwd; files git ignores count too, except caches and build output (dist, build, coverage, target, *.log); outside a git repository Bullswarm lists the folder (up to 5,000 files and 64 MiB, .git and node_modules skipped) to see it',
     'one automatic retry (a process failure on another pool, a failed answer check on the same pool) unless --no-retry; a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
   ],
   examples: [
@@ -576,6 +576,7 @@ const strategyText = rich({
     { name: 'hold', desc: 'take one pool out of routing for a reason until a date (the hold list)' },
     { name: 'unhold', desc: 'end a pool\'s hold now' },
     { name: 'set-reserve', desc: 'opt-in: keep a share of one pool\'s window unspent by routing' },
+    { name: 'recheck-not-produced', desc: 'find old not-produced failures whose worker wrote files outside the cwd, and stop counting them' },
     { name: 'set-model', desc: 'assign one model to multiple effort tiers or turn it off' },
     { name: 'set-rung', desc: 'set one pool/tier model and reasoning level in one atomic write' },
     { name: 'reset-tier', desc: 'return one tier from an explicit allow-list to automatic routing' },
@@ -663,6 +664,16 @@ const strategySetReserveText = rich({
   safety: ['changes routing immediately for new dispatches'],
   examples: [{ cmd: 'bullswarm strategy set-reserve claude-code:kipwise 40 --window 5h --yes', note: 'keep 40% of each 5h window for the seat\'s owner' }],
   next: 'bullswarm pools shows `reserve 40% (5h)` and, once reached, `at reserve`.',
+});
+const strategyRecheckNotProducedText = rich({
+  usage: 'bullswarm strategy recheck-not-produced [--yes]',
+  purpose: 'Find decision-log rows that failed not-produced although their worker wrote files outside the run\'s cwd (recorded before '
+    + 'Bullswarm looked there), and the same-pool retries those caused. Without --yes it lists them; with --yes it marks them '
+    + '`falseFailure`, so ok-share stats no longer count them against the pool. The recorded verdict is kept.',
+  options: [{ flag: '--yes', desc: 'write the marks (without it, nothing is written)' }],
+  safety: ['reads each row\'s stream file and the files it names; writes only the marks into state.json'],
+  examples: [{ cmd: 'bullswarm strategy recheck-not-produced', note: 'list what would be marked' }],
+  next: 'bullswarm strategy rungs shows the ok share without them.',
 });
 const strategySetModelText = rich({
   usage: 'bullswarm strategy set-model <pool> <model> --tiers <high,medium,low|off> --yes', purpose: 'Assign one model to one or more effort tiers.',
@@ -2016,6 +2027,7 @@ const HELP = {
     hold: { _text: strategyHoldText },
     unhold: { _text: strategyUnholdText },
     'set-reserve': { _text: strategySetReserveText },
+    'recheck-not-produced': { _text: strategyRecheckNotProducedText },
     'set-model': { _text: strategySetModelText },
     'reset-tier': { _text: strategyResetTierText },
     'set-reasoning': { _text: strategySetReasoningText },

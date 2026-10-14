@@ -730,6 +730,7 @@ export function notableWatchEvents({
           // What backs the step (E22); events of older runs carry none.
           ...(status === 'succeeded' && payload.proof && typeof payload.proof === 'object' ? { proof: payload.proof } : {}),
           ...(status === 'succeeded' && payload.carried === true ? { carried: true } : {}),
+          ...(status === 'succeeded' && Array.isArray(payload.outsideCwd) && payload.outsideCwd.length ? { outsideCwd: payload.outsideCwd } : {}),
           ...(status === 'failed' && evidenceNotRun(state, payload, event) ? { evidenceNotRun: true } : {}),
           // A v3 step's checked answer, cut to one line (answers.js).
           ...(status === 'succeeded' ? answerField(state, payload.actionId, event.committedAt) : {}),
@@ -1108,7 +1109,8 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
       }
       if (event.status === 'succeeded') {
         const label = formatV2ProofLabel(event.proof);
-        const carried = event.carried ? ' · deliverable carried from an earlier attempt' : '';
+        const carried = (event.carried ? ' · deliverable carried from an earlier attempt' : '')
+          + (event.outsideCwd?.length ? ` · changed outside cwd: ${event.outsideCwd.slice(0, 3).join(', ')}${event.outsideCwd.length > 3 ? ` and ${event.outsideCwd.length - 3} more` : ''}` : '');
         return `${glyphs().ok} ${event.actionId} finished · ${label ? `${label} · ` : ''}${formatDuration(event.durationSec)}${carried}${event.answer ? `\n  answer ${event.answer}` : ''}`;
       }
       if (event.status === 'blocked') return `${glyphs().blocked} ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;

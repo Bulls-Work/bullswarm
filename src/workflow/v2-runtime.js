@@ -876,6 +876,8 @@ async function runV2Kernel({
       ...(proof ? { proof } : {}),
       // This dispatch changed nothing; an earlier attempt's work stands (D19).
       ...(finished?.deliverable?.carried === true ? { carried: true } : {}),
+      // The worker's files were outside the run's cwd (outside-writes.js).
+      ...(finished?.deliverable?.outsideCwd?.length ? { outsideCwd: finished.deliverable.outsideCwd.slice(0, 10) } : {}),
     });
     releaseWorkspace();
     completePresentationStages();

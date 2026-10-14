@@ -799,7 +799,10 @@ export function rungRecord(decisionLog, pool, tier) {
   // A dispatch someone stopped (a workflow cancel, a plan revision, a pause) is
   // not a verdict on the pool. Older rows carry no failureKind, only the
   // dispatcher's fixed cancellation message.
-  const stopped = (row) => row.failureKind === 'cancelled' || row.why === 'workflow cancellation requested';
+  // A failure later shown false (`falseFailure`, e.g. a `not-produced` whose
+  // worker wrote its files outside the cwd) is not one either.
+  const stopped = (row) => row.failureKind === 'cancelled' || row.why === 'workflow cancellation requested'
+    || (typeof row.falseFailure === 'string' && row.falseFailure.length > 0);
   const verdicts = rows.filter((row) => typeof row.ok === 'boolean' && !stopped(row));
   return {
     dispatches: rows.length,

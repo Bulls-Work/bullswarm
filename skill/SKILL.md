@@ -54,7 +54,9 @@ content before you use it. `ok: false` means inspect and report the failure;
 `failureKind` names it and `why` says it in one line. `pool` and `model` name
 who ran it; `shortId` names the run; the last field, `details`, is the command
 for its record and cost. A build or chore run that changes no file (files git
-ignores count) fails `not-produced`, also outside git. Do not run `doctor`
+ignores count) fails `not-produced`, also outside git; files its worker wrote
+outside the cwd (named in its own tool calls) count, and the result lists them
+as changed outside cwd. Do not run `doctor`
 unless dispatch reports a readiness problem.
 
 ## 3. A workflow: write, validate, launch, watch

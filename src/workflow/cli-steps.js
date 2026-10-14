@@ -418,7 +418,11 @@ function deliverableOutcome(runtime, failure, last) {
   if ((runtime.skipped || acceptedByChoice(runtime)) && last?.status !== 'succeeded') return { produced: null };
   const fact = last?.status === 'succeeded' ? last.deliverable : null;
   if (!fact || typeof fact !== 'object' || !Object.hasOwn(fact, 'produced')) return { produced: true };
-  return { produced: fact.carried === true ? null : fact.produced ?? null, ...(fact.carried === true ? { carried: true } : {}) };
+  return {
+    produced: fact.carried === true ? null : fact.produced ?? null,
+    ...(fact.carried === true ? { carried: true } : {}),
+    ...(Array.isArray(fact.outsideCwd) && fact.outsideCwd.length ? { changedOutsideCwd: [...fact.outsideCwd] } : {}),
+  };
 }
 
 // A step the caller accepted (not a check's requirement acceptance).

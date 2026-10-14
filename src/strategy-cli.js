@@ -1,4 +1,5 @@
 import { parseHoldUntil, RESERVE_WINDOWS } from './lib/pool-limits.js';
+import { markOutsideFalseFailures } from './workflow/outside-writes.js';
 import { loadState, updateState } from './lib/state.js';
 import { loadConnectors, loadPoolProviders, buildPools, buildPoolsLive } from './lib/config.js';
 import { providerFor } from './lib/providers.js';
@@ -66,7 +67,7 @@ function strategyHelpPath(sub, opts) {
     'set-reasoning', 'rungs', 'set-rung', 'reset-reasoning', 'configure',
     'refresh', 'recommend', 'apply', 'show', 'assign', 'clear-assignment',
     'exclude-model', 'include-model', 'set-subscription', 'set-free',
-    'hold', 'unhold', 'set-reserve',
+    'hold', 'unhold', 'set-reserve', 'recheck-not-produced',
   ];
   return LEAVES.includes(sub) ? ['strategy', sub] : null;
 }
@@ -1187,6 +1188,16 @@ export async function cmdStrategy(args, {
         result = setPoolReserve(bullswarmDir, pool, pct === 0 ? null : { pct, window });
       }
       console.log(JSON.stringify(result, null, 2));
+      return 0;
+    }
+    if (sub === 'recheck-not-produced') {
+      const preview = loadState(bullswarmDir).decisionLog ?? [];
+      const found = structuredClone(preview);
+      markOutsideFalseFailures(found);
+      const rows = found.filter((row, i) => row?.falseFailure && !preview[i]?.falseFailure)
+        .map((row) => ({ ts: row.ts, pool: row.picked, run: row.outFile?.split('/').at(-2) ?? null, falseFailure: row.falseFailure }));
+      if (opts.yes === true && rows.length) updateState(bullswarmDir, (state) => { markOutsideFalseFailures(state.decisionLog ?? []); });
+      console.log(JSON.stringify({ action: opts.yes === true ? 'marked' : 'preview', count: rows.length, rows }, null, 2));
       return 0;
     }
     if (sub === 'set-model') {

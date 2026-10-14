@@ -42,6 +42,7 @@ import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
 } from './dispatch-snapshot.js';
 import { deliverableVerdict, gateBaselinePaths } from './dispatch-deliverable.js';
+import { outsideWrites } from './outside-writes.js';
 import { durableHandoff, lastResponseEvents, streamShowsWork } from './dispatch-handoff.js';
 import { noPoolCandidates, tierOffReasons } from './dispatch-no-pool.js';
 
@@ -807,6 +808,11 @@ export async function dispatchV2Action({
       ? String(verdict?.why ?? 'no reason recorded')
       : null;
     const gateVerdict = textVerdictWhy != null ? { ...verdict, ok: true } : verdict;
+    // Read only when the cwd shows no change: a worker that edited files
+    // elsewhere (its own tool calls name them) produced its work there.
+    const outsideChanged = gateVerdict?.ok && snapshot.ok && stepChanged.size === 0 && headAfter === stepHeadBefore
+      ? outsideWrites({ streamFile: files.streamFile, targetDir, startedAtMs: Date.parse(startedAt) })
+      : [];
     const judged = deliverableVerdict({
       action,
       verdict: gateVerdict,
@@ -819,6 +825,7 @@ export async function dispatchV2Action({
       pathsAfter,
       outputBytes,
       earlierWork: stepEarlier,
+      outsideChanged,
     });
     if (gateVerdict?.ok && judged.failWhy) {
       verdict = { ...verdict, ok: false, why: judged.failWhy, failureKind: 'not-produced' };
@@ -1143,6 +1150,7 @@ export async function dispatchV2Action({
       usage: verdict.meta?.usage ?? null, routing: record.routing,
       forecast: record.routing.forecast,
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
+      ...(deliverableFact?.outsideCwd?.length ? { changedOutsideCwd: deliverableFact.outsideCwd.length } : {}),
     }, { updateCoreState });
     onAttempt?.('finished', clone(record), verdict);
     if (verdict.ok) {
