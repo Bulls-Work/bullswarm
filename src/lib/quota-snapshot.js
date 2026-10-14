@@ -70,13 +70,16 @@ function selectedWindow(home, poolName, snapshot) {
   const declared = declaredSubscription(home, poolName);
   const connector = connectorSubscription(home, poolName);
   const requested = normalizeWindow(declared?.quotaWindow ?? connector?.quotaWindow);
-  if (requested) return requested;
-  // A home without connector metadata can still be inspected honestly. Pick
-  // the first named window that the cached provider actually supplied.
-  if (snapshot?.seven_day) return 'weekly';
-  if (snapshot?.monthly) return 'monthly';
-  if (snapshot?.five_hour) return '5h';
-  return null;
+  const measured = (window) => finite(snapshotPart(snapshot, window)?.utilization) != null;
+  // The declared window wins when the provider measured it. A 5h-only seat (a
+  // Claude Team seat: seven_day utilization null) declares weekly through its
+  // plan family but only its 5h window is real, so fall through to it.
+  if (requested && measured(requested)) return requested;
+  // Otherwise pick the first window the cached provider actually measured.
+  if (measured('weekly')) return 'weekly';
+  if (measured('monthly')) return 'monthly';
+  if (measured('5h')) return '5h';
+  return requested ?? null;
 }
 
 function snapshotPart(snapshot, window) {

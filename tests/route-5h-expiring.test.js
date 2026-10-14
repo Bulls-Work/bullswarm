@@ -36,3 +36,22 @@ test('the urgent 5h seat wins over a same-cost weekly pool with MORE surplus', (
   assert.equal(r.pick.pool, 'claude-code:kipwise');
   assert.match(r.why, /of the 5h window left/);
 });
+
+test('a 5h-only seat snapshot falls back from the declared weekly window to 5h', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { snapshotPool } = await import('../src/lib/quota-snapshot.js');
+  const { MeterCache } = await import('../src/meters/framework.js');
+  const home = mkdtempSync(join(tmpdir(), 'bs5h-'));
+  mkdirSync(join(home, 'meters'), { recursive: true });
+  writeFileSync(join(home, 'state.json'), JSON.stringify({ strategy: { subscriptions: { 'claude-code:k': { quotaWindow: 'weekly' } } } }));
+  new MeterCache(join(home, 'meters')).put('claude-code:k', {
+    captured_at: '2026-10-14T17:13:05.561Z',
+    five_hour: { utilization: 17, resets_at: '2026-10-14T18:00:00Z' },
+    seven_day: { utilization: null, resets_at: null }, monthly: null, plan_type: 'team',
+  });
+  const snap = snapshotPool('claude-code:k', { home, now: Date.parse('2026-10-14T17:14:00Z') });
+  assert.equal(snap?.window, '5h');
+  assert.equal(snap?.usedPct, 17);
+});
