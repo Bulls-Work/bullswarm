@@ -2,7 +2,9 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import {
   MeterCache, paceSnapshot, FRESH_MS, STALE_MS, WINDOW_MS,
   normalizePacingWindow, meterResolutionPct, monotonicIntervalDelta, refusalResetKnown,
@@ -12,6 +14,131 @@ import { migratePoolNameHome } from '../lib/state.js';
 
 export const METERS_DIR = () =>
   process.env.BULLSWARM_HOME?.trim() || join(homedir(), '.bullswarm');
+
+/**
+ * Directory of meter snapshots written by an external sampler (meterd), from
+ * env BULLSWARM_METER_SNAPSHOT_DIR. One JSON file per pool:
+ * `<dir>/<pool>.json`, the shape `readUsage` returns (`captured_at`,
+ * `five_hour`, `seven_day`, `monthly`) plus the sampler's `error`/`state`.
+ * A file younger than SNAPSHOT_FRESH_MS answers an unforced read without a
+ * provider call; a missing, undated or older file falls back to the
+ * cache-first live path, whose provider call is single-flight per pool.
+ */
+export const SNAPSHOT_FRESH_MS = 10 * 60_000;
+
+export function meterSnapshotDir() {
+  const raw = process.env.BULLSWARM_METER_SNAPSHOT_DIR;
+  const dir = typeof raw === 'string' ? raw.trim() : '';
+  return dir || null;
+}
+
+function readSnapshotFile(dir, pool) {
+  try {
+    const snapshot = JSON.parse(readFileSync(join(dir, `${pool}.json`), 'utf8'));
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+const SNAPSHOT_WINDOWS = ['five_hour', 'seven_day', 'monthly'];
+
+function windowUsable(window, nowMs) {
+  if (!window || typeof window !== 'object') return false;
+  const reset = Date.parse(window.resets_at ?? '');
+  return Number.isFinite(Number(window.utilization)) && Number.isFinite(reset) && reset > nowMs;
+}
+
+/**
+ * A reading from a sampler file, or null when the file cannot answer (absent,
+ * undated, older than SNAPSHOT_FRESH_MS, or older than a quota refusal this
+ * home recorded, which stays the stronger evidence). A status-line sample can
+ * omit a window the pool has (seen: `seven_day` missing for some sessions);
+ * dropping it would make a weekly seat look 5h-only, so a window the file
+ * lacks is taken from this home's cache while that window has not reset.
+ */
+function snapshotReading(external, cached, nowMs) {
+  if (!external) return null;
+  const capturedMs = Date.parse(external.captured_at ?? '');
+  if (!Number.isFinite(capturedMs)) return null;
+  const ageMs = nowMs - capturedMs;
+  if (ageMs > SNAPSHOT_FRESH_MS) return null;
+  const refusal = quotaRefusalOf(cached);
+  if (refusal && Date.parse(refusal.refusedAt ?? '') > capturedMs) return null;
+  const snapshot = { ...external };
+  const filled = [];
+  for (const key of SNAPSHOT_WINDOWS) {
+    if (snapshot[key] && typeof snapshot[key] === 'object') continue;
+    if (windowUsable(cached?.[key], nowMs)) {
+      snapshot[key] = { ...cached[key], source: 'cache' };
+      filled.push(key);
+    }
+  }
+  if (filled.length) snapshot.filled_from_cache = filled;
+  const meterError = typeof external.error === 'string' && external.error.trim()
+    ? external.error.trim()
+    : null;
+  return {
+    snapshot,
+    source: 'snapshot',
+    ageMs: Math.max(0, ageMs),
+    ...(meterError ? { meterError } : {}),
+    ...(meterError && /^401\b|sign-in/i.test(meterError) ? { signInFailed: true } : {}),
+    ...paceSnapshot(snapshot, nowMs),
+  };
+}
+
+// --- single-flight provider reads -----------------------------------------
+
+/** A lock older than this, or held by a dead pid, is taken over. */
+const FETCH_LOCK_STALE_MS = 90_000;
+/** How long a caller waits for another process's provider read. */
+const FETCH_LOCK_WAIT_MS = 60_000;
+const FETCH_LOCK_POLL_MS = 150;
+/** A forced read accepts a reading another process took this recently. */
+export const FORCED_SHARE_MS = 30_000;
+
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
+}
+
+/**
+ * Take `<meters>/<pool>.fetch.lock` (O_EXCL). Returns { waited, release }:
+ * `waited` is true when another process held it first, so the caller should
+ * look for that process's reading before calling the provider itself.
+ * `timedOut` means the holder never finished; the caller then reads without
+ * the lock rather than hang.
+ */
+async function acquireFetchLock(dir, pool) {
+  const path = join(dir, `${pool}.fetch.lock`);
+  const started = Date.now();
+  let waited = false;
+  for (;;) {
+    try {
+      writeFileSync(path, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+      return { waited, release() { try { unlinkSync(path); } catch { /* already gone */ } } };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') return { waited, release() {} };
+    }
+    let holder = null;
+    let ageMs = 0;
+    try {
+      ageMs = Date.now() - statSync(path).mtimeMs;
+      holder = JSON.parse(readFileSync(path, 'utf8'));
+    } catch { /* removed or half-written: look again */ }
+    if (ageMs > FETCH_LOCK_STALE_MS || (holder && !pidAlive(Number(holder.pid)))) {
+      try { unlinkSync(path); } catch { /* someone else took it over */ }
+      continue;
+    }
+    if (Date.now() - started > FETCH_LOCK_WAIT_MS) return { waited: true, timedOut: true, release() {} };
+    waited = true;
+    await sleep(FETCH_LOCK_POLL_MS);
+  }
+}
 
 /** The operator-declared subscription record for one pool, or null. */
 export function declaredSubscription(subscriptions, pool) {
@@ -186,6 +313,16 @@ export async function getMeterReading(pool, opts = {}) {
   const cache = new MeterCache(join(home, 'meters'));
   const cached = cache.get(pool);
 
+  // An external sampler owns the network read: a fresh file answers an
+  // unforced read with no provider call. A forced read (an attempt's start
+  // or end, a quota refusal, `pools --force`) still goes live below, where
+  // parallel callers share one provider call.
+  const snapshotDir = force ? null : meterSnapshotDir();
+  if (snapshotDir) {
+    const fromSnapshot = snapshotReading(readSnapshotFile(snapshotDir, pool), cached, nowMs);
+    if (fromSnapshot) return fromSnapshot;
+  }
+
   // A persisted hold is checked before the ordinary freshness path: a failed
   // poll is a reason to say stale even if another process happened to refresh
   // the snapshot while this process was starting. `force` is the explicit
@@ -237,47 +374,98 @@ export async function getMeterReading(pool, opts = {}) {
     return { snapshot: null, source: 'none', pacing: null, burstGate: false, windows: {} };
   }
 
+  // Single flight: one process per pool calls the provider at a time. A
+  // caller that waited takes the reading (or the hold) that process left
+  // instead of calling again, and a forced read shares a reading taken in the
+  // last FORCED_SHARE_MS: ten attempts starting together make one call.
+  const lock = opts.singleFlight === false
+    ? { waited: false, release() {} }
+    : await acquireFetchLock(cache.dir, pool);
   try {
-    let rawSnapshot;
-    try {
-      rawSnapshot = await reader();
-      logMeterRead(cache.dir, pool, { force, ok: true });
-    } catch (readErr) {
-      logMeterRead(cache.dir, pool, { force, ok: false, error: meterErrorText(readErr) });
-      throw readErr;
-    }
-    // A provider reader is authoritative. If a test adapter or an older
-    // provider returns the cache object by reference, do not let the
-    // synthetic refusal metadata survive a successful live read.
-    const snapshot = rawSnapshot && typeof rawSnapshot === 'object'
-      ? { ...rawSnapshot }
-      : rawSnapshot;
-    if (snapshot && typeof snapshot === 'object' && quotaRefusalOf(snapshot)) {
-      delete snapshot.quota_refusal;
-      if (snapshot.source === 'quota-refusal') delete snapshot.source;
-    }
-    cache.put(pool, snapshot);
-    try { cache.clearHold(pool); } catch { /* a later live read can retry cleanup */ }
-    // The cache keeps only the latest reading; the spend model needs the
-    // series, so every LIVE reading is also appended to the history log.
-    appendMeterHistory(pool, snapshot, {
-      dir: cache.dir,
-      source: force ? 'forced' : 'live',
+    const shared = sharedReading(cache, pool, cached, {
+      force, nowMs, waited: lock.waited, shareMs: opts.shareMs ?? FORCED_SHARE_MS,
     });
-    return { snapshot, source: 'live', ...paceSnapshot(snapshot, nowMs) };
-  } catch (err) {
-    const hold = holdForError(err, nowMs);
-    const holdUntil = nowMs + hold.retry_after_ms;
-    try { cache.putHold(pool, hold); } catch { /* negative cache is best effort */ }
-    decorateError(err, hold, holdUntil);
-    if (cached) {
-      const ageMs = nowMs - Date.parse(cached.captured_at);
-      if (quotaRefusalOf(cached) || ageMs <= STALE_MS || nowMs < holdUntil) {
-        return staleResult(cached, nowMs, err, holdUntil, hold.reason);
+    if (shared) return shared;
+    try {
+      let rawSnapshot;
+      try {
+        rawSnapshot = await reader();
+        logMeterRead(cache.dir, pool, { force, ok: true });
+      } catch (readErr) {
+        logMeterRead(cache.dir, pool, { force, ok: false, error: meterErrorText(readErr) });
+        throw readErr;
       }
+      // A provider reader is authoritative. If a test adapter or an older
+      // provider returns the cache object by reference, do not let the
+      // synthetic refusal metadata survive a successful live read.
+      const snapshot = rawSnapshot && typeof rawSnapshot === 'object'
+        ? { ...rawSnapshot }
+        : rawSnapshot;
+      if (snapshot && typeof snapshot === 'object' && quotaRefusalOf(snapshot)) {
+        delete snapshot.quota_refusal;
+        if (snapshot.source === 'quota-refusal') delete snapshot.source;
+      }
+      cache.put(pool, snapshot);
+      try { cache.clearHold(pool); } catch { /* a later live read can retry cleanup */ }
+      // The cache keeps only the latest reading; the spend model needs the
+      // series, so every LIVE reading is also appended to the history log.
+      appendMeterHistory(pool, snapshot, {
+        dir: cache.dir,
+        source: force ? 'forced' : 'live',
+      });
+      return { snapshot, source: 'live', ...paceSnapshot(snapshot, nowMs) };
+    } catch (err) {
+      const hold = holdForError(err, nowMs);
+      const holdUntil = nowMs + hold.retry_after_ms;
+      try { cache.putHold(pool, hold); } catch { /* negative cache is best effort */ }
+      decorateError(err, hold, holdUntil);
+      if (cached) {
+        const ageMs = nowMs - Date.parse(cached.captured_at);
+        if (quotaRefusalOf(cached) || ageMs <= STALE_MS || nowMs < holdUntil) {
+          return staleResult(cached, nowMs, err, holdUntil, hold.reason);
+        }
+      }
+      throw err;
     }
-    throw err;
+  } finally {
+    lock.release();
   }
+}
+
+/**
+ * What a caller that reached the provider lock can use without a provider
+ * call: a reading another process stored since this caller first looked, a
+ * hold another process stored while this caller waited, or (forced) a reading
+ * no older than shareMs. Null means call the provider.
+ */
+function sharedReading(cache, pool, cachedBefore, { force, nowMs, waited, shareMs }) {
+  const after = cache.get(pool);
+  const afterMs = Date.parse(after?.captured_at ?? '');
+  const beforeMs = Date.parse(cachedBefore?.captured_at ?? '');
+  const changed = Number.isFinite(afterMs) && (!Number.isFinite(beforeMs) || afterMs > beforeMs);
+  if (waited) {
+    const hold = cache.getHold(pool);
+    const holdUntil = holdUntilOf(hold);
+    if (holdUntil != null && nowMs < holdUntil && !changed) {
+      const error = decorateError(errorFromHold(hold), hold, holdUntil);
+      if (cachedBefore) return { ...staleResult(cachedBefore, nowMs, error, holdUntil, hold.reason), shared: true };
+      throw error;
+    }
+  }
+  if (!after || !Number.isFinite(afterMs)) return null;
+  const ageMs = nowMs - afterMs;
+  const usable = changed || (force ? shareMs > 0 && ageMs <= shareMs : ageMs <= FRESH_MS);
+  if (!usable) return null;
+  // A forced caller asked for a provider observation; a reading another
+  // process just took is one, so it is reported as live (watch.js accepts
+  // only live/forced as the attempt's start/end reading).
+  return readingWithMarker({
+    snapshot: after,
+    source: force ? 'live' : 'cache',
+    shared: true,
+    ageMs: Math.max(0, ageMs),
+    ...paceSnapshot(after, nowMs),
+  }, after);
 }
 
 /**
@@ -441,6 +629,8 @@ export async function refreshMeterAfterQuota(pool, opts = {}) {
       ...opts,
       reader,
       force: true,
+      // A reading from before the refusal must not stand in for one after it.
+      shareMs: 0,
       nowMs,
     });
   } catch {

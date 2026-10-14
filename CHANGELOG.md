@@ -1,5 +1,14 @@
 # bullswarm changelog
 
+## 0.38.14 (unreleased, local)
+
+Why: on 2026-10-14 ten or more Bullswarm processes read the same usage endpoint in the same second and got a 429. Each attempt forces a live meter read at its start and end once the cache is a minute old, and every Claude session's mod polls `pools --json`, so parallel runs each made their own call.
+
+- Meter reads are single-flight per pool: one process calls the provider at a time (lock `~/.bullswarm/meters/<pool>.fetch.lock`, taken over after 90 s or when its process is dead). A caller that waited takes the reading or the hold that call left, and a forced read accepts a reading another process took in the last 30 s, so ten attempts starting together make one call. A forced read after a usage limit still makes its own call.
+- `BULLSWARM_METER_SNAPSHOT_DIR`: set to a directory an external sampler writes (`<dir>/<pool>.json`, the `readUsage` shape plus `error`/`state`), an unforced read takes that file while it is under 10 minutes old (meter source `snapshot`) and makes no provider call; an older, missing or undated file falls back to the live read above. The file's `error` shows as the meter error (a 401 marks the sign-in failed). A window the file lacks is taken from Bullswarm's own cache until that window resets (a status-line sample can omit `seven_day`, which made a weekly seat look 5h-only), and a quota refusal recorded after the file's capture still wins. From the meter hook by Hands (Second Mate fleet).
+- `bullswarm pools --pool a,b`: reads and shows only those pools; the others are not polled. An unknown pool exits 2.
+- Every provider usage call appends one line to `~/.bullswarm/meters/reads.jsonl` (time, pool, pid, forced, ok, error), so endpoint load can be counted.
+
 ## 0.38.13 (unreleased, local)
 
 - A 5h-only seat (a Claude Team seat whose meter has no weekly window, such as `claude-code:kipwise`) now counts as expiring soon in the last 2 hours of its 5h window. Before, only weekly and monthly windows could be, so the router let that seat's unused 5h quota expire every five hours while it sent work to pools with less spare quota. Its urgency (surplus divided by the share of the window left) now ranks it first, `bullswarm pools` tags it `EXPIRING-SOON`, and the route reason says "of the 5h window left".

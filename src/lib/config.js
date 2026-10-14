@@ -366,7 +366,7 @@ function fiveHourFromReading(reading) {
  * Async variant that fetches live readings for pools with readers.
  */
 export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
-  force = false, getReadings, onProviderProgress, packaged = false, effortTier = null,
+  force = false, getReadings, onProviderProgress, packaged = false, effortTier = null, only = null,
 } = {}) {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir, { packaged });
@@ -375,8 +375,12 @@ export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
   // theirs read a credential and called a provider usage endpoint for a
   // number that was thrown away — on every `pools`, every `run` and every
   // 15-second V2 refresh.
+  // `only` (pools --pool) narrows the reads to the named pools, so a sampler
+  // that already holds the others does not make the provider calls again.
+  const wanted = Array.isArray(only) && only.length ? new Set(only) : null;
   const names = Object.keys(connectors)
-    .filter((name) => poolEnabled(connectors[name], state.pools?.[name] ?? {}));
+    .filter((name) => poolEnabled(connectors[name], state.pools?.[name] ?? {}))
+    .filter((name) => !wanted || wanted.has(name));
   const readings = getReadings
     ? await getReadings(names, {
       force, nowMs: now, onProgress: onProviderProgress,
@@ -390,5 +394,6 @@ export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
   // Forward the loader options: the pool list this returns must come from the
   // same tiers the polling decision above was made against, or a caller that
   // asked for the packaged tiers would poll them and then get none back.
-  return buildPools(bullswarmDir, now, readings, { packaged, effortTier });
+  const built = buildPools(bullswarmDir, now, readings, { packaged, effortTier });
+  return wanted ? { ...built, pools: built.pools.filter((p) => wanted.has(p.name)) } : built;
 }

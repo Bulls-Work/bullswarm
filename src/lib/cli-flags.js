@@ -77,7 +77,7 @@ const TABLE = {
     'avoid-pool', 'use-provider', 'avoid-provider',
   ],
   health: ['json'],
-  pools: ['force', 'json'],
+  pools: ['force', 'json', 'pool'],
   'pools label': ['list', 'clear', 'json'],
   assignments: ['json'],
   doctor: ['json'],

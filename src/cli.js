@@ -166,11 +166,26 @@ async function cmdPools(opts) {
     console.error(`usage: ${usageLine(['pools'])}`);
     return 2;
   }
+  let only = null;
+  if (opts.pool !== undefined) {
+    only = typeof opts.pool === 'string'
+      ? [...new Set(opts.pool.split(',').map((name) => name.trim()).filter(Boolean))]
+      : [];
+    const known = new Set(Object.keys(loadConnectors(getBullswarmDir(), { packaged: true })));
+    const unknown = only.filter((name) => !known.has(name));
+    if (!only.length || unknown.length) {
+      console.error(only.length
+        ? `✗ unknown pool${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')} (bullswarm pools lists them)`
+        : '✗ --pool needs a pool name or a comma-separated list');
+      return 2;
+    }
+  }
   const now = Date.now();
   const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
     packaged: true,
     force: opts.force === true,
     getReadings: getAllMeterReadings,
+    only,
   });
   // Current cross-process load, from the shared ledger rather than this
   // process's own memory: work another Bullswarm started still shows here —

@@ -452,7 +452,7 @@ const healthText = rich({
 });
 
 const poolsText = rich({
-  usage: 'bullswarm pools [label ...] [--force] [--json]',
+  usage: 'bullswarm pools [label ...] [--pool <name,...>] [--force] [--json]',
   purpose: 'Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, '
     + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and whether a '
     + 'window is spent. The status after the columns is `disabled`, or `ready` followed by '
@@ -474,16 +474,20 @@ const poolsText = rich({
     + 'of the window still to run, which is what routing ranks it on.',
   args: [],
   options: [
-    { flag: '--force', desc: 'bypass the meter cache and re-read live usage for every pool', default: 'off (cached meter readings reused within their TTL)' },
+    { flag: '--pool', desc: 'read and show only these pools (comma-separated ids); the others are not polled', default: 'every enabled pool' },
+    { flag: '--force', desc: 'bypass the meter cache and the snapshot directory and re-read live usage for every pool read; parallel forced reads of one pool share a single provider call', default: 'off (cached meter readings reused within their TTL)' },
     { flag: '--json', desc: 'machine-readable { pools }, each pool carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, paceResetsAt, resetSource (provider | declared | null), and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
   ],
   safety: [
-    'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages',
+    'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages, unless the reading is cached; one process per pool calls it at a time and the rest take its reading',
+    'with env BULLSWARM_METER_SNAPSHOT_DIR set to a directory, reads <dir>/<pool>.json (written by an external sampler) instead, meter source `snapshot`, while the file is under 10 minutes old; an older or missing file falls back to the live read',
+    'appends one line per provider usage call to ~/.bullswarm/meters/reads.jsonl',
     'reads state.json and never changes it (beyond the first-use setup every command does)',
     'reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours)',
   ],
   examples: [
     { cmd: 'bullswarm pools --force' },
+    { cmd: 'bullswarm pools --json --force --pool grok,claude-code:kipwise', note: 'a sampler refreshing just the pools it has no other source for' },
     { cmd: 'bullswarm pools --json', note: 'the same facts, with each pool\'s meter snapshot and spend rates' },
   ],
   next: 'bullswarm assignments to see which run and action each in-flight entry belongs to.',
