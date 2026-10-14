@@ -238,7 +238,14 @@ export async function getMeterReading(pool, opts = {}) {
   }
 
   try {
-    const rawSnapshot = await reader();
+    let rawSnapshot;
+    try {
+      rawSnapshot = await reader();
+      logMeterRead(cache.dir, pool, { force, ok: true });
+    } catch (readErr) {
+      logMeterRead(cache.dir, pool, { force, ok: false, error: meterErrorText(readErr) });
+      throw readErr;
+    }
     // A provider reader is authoritative. If a test adapter or an older
     // provider returns the cache object by reference, do not let the
     // synthetic refusal metadata survive a successful live read.
@@ -271,6 +278,26 @@ export async function getMeterReading(pool, opts = {}) {
     }
     throw err;
   }
+}
+
+/**
+ * One line per provider usage call in `<meters>/reads.jsonl`, so the load a
+ * fleet puts on a usage endpoint can be counted. Kept to the last
+ * READ_LOG_KEEP lines; best effort, never blocks a read.
+ */
+const READ_LOG_KEEP = 20_000;
+export function logMeterRead(dir, pool, { force = false, ok = true, error = null } = {}) {
+  try {
+    const path = join(dir, 'reads.jsonl');
+    const line = JSON.stringify({
+      at: new Date().toISOString(), pool, pid: process.pid, force, ok, ...(error ? { error } : {}),
+    });
+    appendFileSync(path, `${line}\n`);
+    if (Math.random() < 0.01) {
+      const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean);
+      if (lines.length > READ_LOG_KEEP) writeFileSync(path, `${lines.slice(-READ_LOG_KEEP).join('\n')}\n`);
+    }
+  } catch { /* counting is never a precondition for reading */ }
 }
 
 // --- quota refusal refresh -------------------------------------------------
