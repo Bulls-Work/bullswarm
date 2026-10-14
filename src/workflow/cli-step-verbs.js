@@ -142,6 +142,11 @@ function loadStepRun(bullswarmDir, token, stepId, verb) {
   const id = state.shortId ?? state.runId;
   if (!isProgramWorkflow(state)) return { refusal: { code: 1, why: `run ${id} is not a program-mode run; step ${verb} needs a run started with --program` } };
   const runtime = state.actions.find((action) => action.id === stepId);
+  // A dry loop's review group (0.38.12) is no step: its area reviewers are.
+  const reviewers = state.program.actions.filter((action) => action.areaOf?.step === stepId).map((action) => action.id);
+  if (!runtime && reviewers.length) {
+    return { refusal: { code: 1, why: `${stepId} is a group of area reviewers (${reviewers[0]} to ${reviewers.at(-1)}); name one of them` } };
+  }
   if (!runtime || runtime.status === 'removed' || !state.program.actions.some((action) => action.id === stepId)) {
     return { refusal: { code: 1, why: `run ${id} has no step "${stepId}"` } };
   }

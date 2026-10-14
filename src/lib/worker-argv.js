@@ -80,13 +80,28 @@ export function argvWithModel(connector, paths, model = null, conversation = nul
 }
 
 /**
+ * `env` with a pool's own settings applied: its `env` values set, then every
+ * name in its `unsetEnv` removed. Removal is how a pool says "run without
+ * this variable", which a set value cannot say (claude-code's default home
+ * needs CLAUDE_CONFIG_DIR absent, not empty). Every place that launches a
+ * pool's CLI goes through this, so the worker and model discovery see the
+ * same environment.
+ */
+export function withPoolEnv(env, connector) {
+  const out = { ...(env ?? {}), ...(connector?.env ?? {}) };
+  for (const key of connector?.unsetEnv ?? []) delete out[key];
+  return out;
+}
+
+/**
  * The environment a worker runs with, lowest precedence first:
  * - this process's environment;
  * - the caller's (`callerEnv`, usually a full copy of the parent's);
  * - the pool's own settings (`connector.env`), which say which account the
  *   pool bills, such as claude-code's CLAUDE_CONFIG_DIR. They must win over
  *   the caller's copy: a caller running under one Claude home used to send
- *   every claude-code pool to that one account;
+ *   every claude-code pool to that one account. Names in the pool's
+ *   `unsetEnv` are then removed, whichever layer set them;
  * - Bullswarm's own keys from the caller (`BULLSWARM_*`, among them the
  *   BULLSWARM_DEPTH recursion guard), which no pool setting may override;
  * - PWD, always the spawned directory (a stale PWD is the wrong-repo hazard).
@@ -94,5 +109,5 @@ export function argvWithModel(connector, paths, model = null, conversation = nul
 export function workerEnv(connector, callerEnv = {}, cwd = process.cwd(), base = process.env) {
   const caller = callerEnv ?? {};
   const own = Object.fromEntries(Object.entries(caller).filter(([key]) => key.startsWith('BULLSWARM_')));
-  return { ...base, ...caller, ...(connector?.env ?? {}), ...own, PWD: cwd };
+  return { ...withPoolEnv({ ...base, ...caller }, connector), ...own, PWD: cwd };
 }

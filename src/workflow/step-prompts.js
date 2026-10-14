@@ -9,12 +9,19 @@ import { declaredDeliverable, declaredEvidence, roleOf } from './step-vocabulary
 import { evidenceBriefLines, rewriteEvidenceCwd } from './evidence-runner.js';
 import { dependencyAnswerField } from './answers.js';
 import { previousRoundBlock } from './gates-loops.js';
+import { findingsToFixBlock, reviewRoundBlock, reviewerBlindTo } from './dry-loops.js';
 import { enforcesOwnership, isProgramWorkflow } from './execution-policy.js';
+
+// The steps whose own account this step is not handed: its blindTo (0.38.3)
+// and, for a dry loop's reviewer, the loop's fix steps it depends on.
+function blindIds(state, action) {
+  return [...new Set([...(Array.isArray(action.blindTo) ? action.blindTo : []), ...reviewerBlindTo(state, action)])];
+}
 
 function dependencyArtifacts(state, action) {
   // A v3 step's blindTo (0.38.3): a dependency it must judge by its work alone
   // is still listed, without its output file or checked answer.
-  const blind = new Set(Array.isArray(action.blindTo) ? action.blindTo : []);
+  const blind = new Set(blindIds(state, action));
   return action.dependsOn.map((id) => {
     const runtime = actionState(state, id);
     if (blind.has(id)) return { actionId: id, artifactIds: clone(runtime?.artifactIds ?? []), blind: true };
@@ -140,8 +147,11 @@ function blindLine(ids) {
 export function buildProgramWorkTask(state, action, targetDir, runDir = null, { privateWorkspace = targetDir !== state.intent.cwd } = {}) {
   const strict = enforcesOwnership(state);
   // A loop step from round 2 on carries the previous round (gates-loops.js).
-  const round = previousRoundBlock(state, action);
+  // In a dry loop a reviewer gets its review block every round instead, and a
+  // fix step the findings it fixes (dry-loops.js).
+  const round = reviewRoundBlock(state, action) ?? previousRoundBlock(state, action);
   const readOnly = action.lane === 'analyze' || state.intent.constraints?.workspaceMutation === 'forbidden';
+  const toFix = findingsToFixBlock(state, action, { readOnly });
   // Kind-only steps (no role, no deliverable) keep the brief byte-identical.
   const deliverableLine = action.role == null && action.deliverable == null
     ? null
@@ -166,13 +176,14 @@ export function buildProgramWorkTask(state, action, targetDir, runDir = null, { 
     'Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Do not commit unless the user explicitly requires it.',
     'Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file requests. An integration action applies those requests, reconciles the combined work, and runs the repository acceptance gates.',
     `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}`,
-    ...(action.blindTo?.length ? [blindLine(action.blindTo)] : []),
+    ...(blindIds(state, action).length ? [blindLine(blindIds(state, action))] : []),
     ...state.intent.requirements.filter((item) => action.affects.includes(item.id)).map((item) => `Requirement context (${item.id}): ${item.text}`),
     'Deliver only your action purpose. Exercise observable behavior and run the focused checks; report exact validation and anything unfinished. Do not claim success based only on editing files or unrelated green tests.',
     ...(deliverableLine ? [deliverableLine] : []),
     ...evidenceLines,
     '', targetDir === state.intent.cwd ? action.prompt : action.prompt.split(state.intent.cwd).join(targetDir),
     ...(round ? ['', round] : []),
+    ...(toFix ? ['', toFix] : []),
     '',
     'Output transport: your complete final response is captured as this action\'s durable output artifact. Do not overwrite kernel-owned task/output files. Include delivered files or findings, validation results, unfinished work, and precise requests for the integrator. Read-only reports belong in the final response itself.',
   ].join('\n');

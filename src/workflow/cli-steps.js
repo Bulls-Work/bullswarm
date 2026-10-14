@@ -24,7 +24,7 @@ import { writeJsonAtomic } from '../lib/fsjson.js';
 import { glyphs } from '../lib/glyphs.js';
 import { usageLine } from '../help.js';
 import {
-  CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, loopOutcome, parkedWaitingFor, readContinueIntents, requestContinue,
+  CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, blocksIssues, fragmentShapeIssues } from './revision-v3.js';
@@ -452,14 +452,26 @@ function nodeFacts(state, id) {
   if (gate?.note) fact.note = gate.note;
   if (loop) Object.assign(fact, { round: record?.round ?? 1, maxRounds: record?.maxRounds ?? loop.maxRounds });
   if (record?.reason) fact.reason = record.reason;
+  // A dry loop's findings so far (gates-loops.js loopOutcomes).
+  const findings = loop ? loopOutcomes(state).find((entry) => entry.id === id)?.findings : undefined;
+  if (findings) fact.findings = findings;
   if (status === 'waiting') {
     fact.next = gate ? `bullswarm workflow continue ${token} ${id}` : `bullswarm workflow continue ${token} ${id} --rounds <1-${CONTINUE_MAX_ROUNDS}>`;
   }
   return fact;
 }
 
+/** The named ids with a dry loop's review group id read as its area reviewers (0.38.12). */
+function withReviewers(state, ids) {
+  return [...new Set(ids.flatMap((id) => {
+    const reviewers = state.program.actions.filter((action) => action.areaOf?.step === id).map((action) => action.id);
+    return reviewers.length && !state.program.actions.some((action) => action.id === id) ? reviewers : [id];
+  }))];
+}
+
 /** Each named id's facts, or {unknown} naming the ids the run does not have. */
-export function waitFacts(state, ids) {
+export function waitFacts(state, named) {
+  const ids = withReviewers(state, named);
   const definitions = new Map(state.program.actions.map((action) => [action.id, action]));
   const runtimes = new Map(state.actions.map((action) => [action.id, action]));
   const control = new Set([...(state.program.control?.gates ?? []), ...(state.program.control?.loops ?? [])].map((node) => node.id));
@@ -524,7 +536,7 @@ export async function waitV3Nodes({
         return { code: 2, status: 'error', why: `run ${state.shortId ?? state.runId} has no step, gate or loop ${facts.unknown.join(', ')} (it has ${known.join(', ') || 'none'})`, ...base };
       }
       const failed = facts.nodes.some((fact) => UNSUCCESSFUL.has(fact.status));
-      base.loops = loopsBefore(state, ids);
+      base.loops = loopsBefore(state, withReviewers(state, ids));
       if (facts.nodes.every(settled)) return { code: failed ? 1 : 0, status: 'settled', ...base, nodes: facts.nodes };
       const alive = liveness(state, { runDir: resolved.runDir });
       const stopped = STOPPED.has(state.lifecycle.status) || (alive.checked && !alive.alive);
@@ -548,12 +560,22 @@ export function waitFactLines(fact) {
   if (fact.type === 'loop' && fact.status === 'passed' && fact.reason === 'continued') {
     return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds)}`];
   }
+  if (fact.type === 'loop' && fact.findings?.dryIn !== undefined) {
+    return [`${g.ok} ${dryLoopText(fact.id, fact.findings.dryIn, fact.maxRounds, fact.findings.known.length)}`];
+  }
   if (fact.type !== 'step') {
     const mark = fact.status === 'passed' ? g.ok : fact.status === 'waiting' ? g.waiting : fact.status === 'blocked' ? g.blocked : g.pending;
     const round = fact.type === 'loop' ? ` · round ${fact.round} of ${fact.maxRounds}` : '';
     const note = fact.note ? ` · ${fact.note}` : '';
     const reason = fact.reason ? ` · ${fact.reason}` : '';
-    return [`${mark} ${fact.type} ${fact.id} ${fact.status}${round}${note}${reason}`, ...(fact.next ? [`  continue ${fact.next}`] : [])];
+    const lines = [`${mark} ${fact.type} ${fact.id} ${fact.status}${round}${note}${reason}`];
+    // A dry loop: what its reviews found so far.
+    if (fact.findings) {
+      const { known, outOfScope, rounds, stillOpen, unreviewed } = fact.findings;
+      // A known finding reported again as still open keeps the loop going too.
+      lines.push(`  findings ${known.length} known${outOfScope.length ? `, ${outOfScope.length} out of scope` : ''} · new per round ${rounds.join(', ')}${stillOpen ? ` · still open per round ${stillOpen.join(', ')}` : ''}${unreviewed?.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}`);
+    }
+    return [...lines, ...(fact.next ? [`  continue ${fact.next}`] : [])];
   }
   const mark = fact.status === 'succeeded' ? g.ok : fact.status === 'blocked' ? g.blocked
     : UNSUCCESSFUL.has(fact.status) ? g.fail : g.pending;

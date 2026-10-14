@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
+import { withPoolEnv } from '../../lib/worker-argv.js';
 import {
   buildTranscriptIndex as buildCodexTranscriptIndex,
   readTranscriptUsage as readCodexTranscriptUsage,
@@ -124,7 +125,7 @@ export async function discoverModels(connector, { executor = runCodexDiscovery }
   const pages = await executor({
     command,
     args,
-    env: { ...process.env, ...(connector?.env ?? {}) },
+    env: withPoolEnv(process.env, connector),
     timeoutMs,
   });
   return { command: [command, ...args], models: parseCodexModelDiscovery(pages) };

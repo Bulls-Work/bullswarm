@@ -18,6 +18,7 @@ import { pacingWindowFor, windowSpent } from '../meters/framework.js';
 // TIER_CONTEXTS below for the tier -> lane derivation they feed.
 import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-validator.js';
 import { formatMoney } from './usage-basis.js';
+import { withPoolEnv } from './worker-argv.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -1030,7 +1031,7 @@ export async function discoverConnectorModels(connector, {
     try {
       const output = await executor(discovery.cmd[0], discovery.cmd.slice(1), {
         timeoutMs: Number(discovery.timeoutMs ?? 20_000),
-        env: { ...process.env, ...(connector.env ?? {}) },
+        env: withPoolEnv(process.env, connector),
       });
       discovered = parseDiscoveredModels(output, discovery).map((id) => ({ id }));
     } catch (err) {

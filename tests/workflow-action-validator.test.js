@@ -412,7 +412,10 @@ test('ownedFiles name exact files, and a requirement no step checks is an adviso
 });
 
 test('advisories report the two effort smells and never change validity', () => {
-  assert.deepEqual([...PROGRAM_ADVISORY_CODES], ['all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files']);
+  assert.deepEqual([...PROGRAM_ADVISORY_CODES], [
+    'all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files',
+    'compile-check-only', 'review-loop-until-passed', 'dry-loop-too-short', 'review-one-area', 'dry-loop-fix-first',
+  ]);
   const writers = (efforts) => ({
     schemaVersion: 'bullswarm.workflow.program.v2',
     actions: efforts.map((effort, index) => kindWork('implement', { id: `w-${index}`, effort })),

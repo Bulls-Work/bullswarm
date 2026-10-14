@@ -257,3 +257,87 @@ test('default review examples carry no independentOf, and the opt-in is stated i
     assert.match(text, /another provider may still serve the same model/, `${path}: same-model caveat`);
   }
 });
+
+// 0.38.12: the dry loop. `plan contract` prints pattern 6 as its second
+// example; the skill says what "dry" means in plain words and what it costs.
+test('the plan contract dry loop example is pattern 6 of patterns.md, and the skill defines dry and its cost', async () => {
+  const { buildV3Contract } = await import('../src/workflow/contract-v3.js');
+  const example = buildV3Contract({ goal: 'g', cwd: '/abs/workspace', next: {} }).dryLoopExample;
+  const patterns = read('skill/references/patterns.md');
+  const section = patterns.slice(patterns.indexOf('## 6. Fix until the review is dry'));
+  const block = /```json\n([\s\S]*?)\n```/.exec(section)[1];
+  assert.deepEqual(example, JSON.parse(block.replaceAll('/work/acme', '/abs/workspace')));
+  assert.deepEqual(example.loops[0].until, { step: 'review', dry: 1 });
+  const entry = read('skill/SKILL.md').replace(/\s+/g, ' ');
+  assert.ok(entry.includes('("dry": a round that finds nothing new)'), 'SKILL.md defines dry');
+  assert.ok(entry.includes('An area reviewer costs about one review per round, a fix round about five'), 'SKILL.md states the cost');
+  const flat = patterns.replace(/\s+/g, ' ');
+  assert.ok(flat.includes('"Dry" is that round: a review round that reports no new finding worth fixing.'));
+  assert.ok(flat.includes('a round that finds something costs 3 × 40k + 200k = 320k, a clean round 120k'));
+  const program = read('skill/references/program.md').replace(/\s+/g, ' ');
+  assert.ok(program.includes('"Dry" is a review round that reports no new finding worth fixing'));
+  assert.ok(program.includes('a round that finds something costs `P × 40k + 200k`, a clean round `P × 40k`'));
+});
+
+// The new advisories stay silent on the canonical examples (patterns 2, 3
+// and 6, and both contract examples).
+test('the review-loop advisories stay silent on the canonical examples', async () => {
+  const { buildV3Contract } = await import('../src/workflow/contract-v3.js');
+  const { programAdvisories } = await import('../src/workflow/action-validator.js');
+  const { storedProgramV3 } = await import('../src/workflow/program-v3.js');
+  const contract = buildV3Contract({ goal: 'g', cwd: '/abs/workspace', next: {} });
+  const patterns = read('skill/references/patterns.md');
+  const programs = [contract.example, contract.dryLoopExample];
+  for (const heading of ['## 2. Fix until a check passes', '## 3. Draft, critique, approve, publish', '## 6. Fix until the review is dry']) {
+    const section = patterns.slice(patterns.indexOf(heading));
+    programs.push(JSON.parse(/```json\n([\s\S]*?)\n```/.exec(section)[1]));
+  }
+  for (const program of programs) {
+    const codes = programAdvisories(storedProgramV3(program)).map((item) => item.code);
+    for (const code of ['review-loop-until-passed', 'dry-loop-too-short', 'review-one-area', 'dry-loop-fix-first', 'compile-check-only']) {
+      assert.ok(!codes.includes(code), `${code} on ${JSON.stringify(program.loops ?? program.steps.map((step) => step.id))}`);
+    }
+  }
+});
+
+test('observing.md describes the repeated stale warnings, not one line per attempt', () => {
+  const guide = read('docs/guide/observing.md').replace(/\s+/g, ' ');
+  assert.ok(!guide.includes('prints one line per attempt'));
+  assert.ok(guide.includes('`⚠ verify still looks stale (warning 2) · no file change for 45m00s: <reasons>`'));
+  assert.ok(guide.includes('the next warning is still one level higher'));
+  const recovery = read('skill/references/recovery.md').replace(/\s+/g, ' ');
+  assert.ok(recovery.includes('restarts the window without a line, but not the level'));
+});
+
+test('the public reference teaches the dry loop: program.md has the third condition form and areas, cli.md the two contract examples', () => {
+  const program = read('docs/reference/program.md').replace(/\s+/g, ' ');
+  assert.ok(!program.includes('take one of two forms'));
+  assert.ok(program.includes('`{"step": "<id>", "dry": 1}`'));
+  assert.ok(program.includes('| `areas` | no |') && program.includes('| `areasPerRound` | no |'));
+  assert.ok(program.includes('With a field or evidence `until`, every step of the loop runs in every round'));
+  const cli = read('docs/reference/cli.md').replace(/\s+/g, ' ');
+  assert.ok(!cli.includes('one worked example that validates'));
+  assert.ok(cli.includes('`dryLoopExample`'));
+  assert.ok(cli.includes('A dry loop (`until: {"step": "review", "dry": 1}`) stops after a review round that finds nothing new'));
+});
+
+test('the contract and its help say the dry form is for a loop only, never "the one condition form" of a gate', async () => {
+  const { buildV3Contract } = await import('../src/workflow/contract-v3.js');
+  const condition = buildV3Contract({ goal: 'g', cwd: '/abs/workspace', next: {} }).program.condition;
+  assert.equal(condition.forms.length, 3);
+  assert.doesNotMatch(condition.note, /the one condition form/);
+  assert.match(condition.note, /a gate's when takes the field or evidence form; a loop's until takes any of the three/);
+  const help = spawnSync(process.execPath, [join(repo, 'bin/bullswarm.js'), 'workflow', 'plan', 'contract', '--help'], { encoding: 'utf8' }).stdout.replace(/\s+/g, ' ');
+  assert.doesNotMatch(help, /the one condition form/);
+  assert.match(help, /a gate's when takes the field or evidence form; a loop's until takes those or the dry form, which is for a loop only/);
+});
+
+test('observing.md says no file change alone is stale after 40 minutes and names the stop; recovery.md no longer promises 20 minutes always', () => {
+  const guide = read('docs/guide/observing.md').replace(/\s+/g, ' ');
+  assert.ok(guide.includes('| 1, and 2 (stale on its own) once it lasts 40 minutes |'));
+  assert.ok(guide.includes('No file change alone reaches a score of 2 after 40 minutes'));
+  assert.ok(guide.includes('`BULLSWARM_WORKER_NO_PROGRESS_SEC` seconds (default 3600'));
+  const recovery = read('skill/references/recovery.md').replace(/\s+/g, ' ');
+  assert.ok(!recovery.includes('its warning comes at least 20 minutes before the stop. Two cases'));
+  assert.ok(recovery.includes('or at its fifth command since then if that comes later'));
+});

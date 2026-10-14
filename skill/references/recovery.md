@@ -145,19 +145,36 @@ attempt's persisted event stream (`stream-<step>-attempt-<n>.jsonl` and its
 | Signal | Fires when | Weight |
 |---|---|---|
 | quiet | no event for 10 minutes while no command is in flight (a command still running is excluded; without an event stream it is plain output silence) | 2 |
-| no file change | a step that writes (it owns files or is `build`, and is not a check) changed no file for 20 minutes while at least 5 commands ran | 1 |
+| no file change | a step that writes (it owns files, or is `build` or `chore` without an outward deliverable, and is not a check) changed no file for 20 minutes while at least 5 commands ran | 1, and 2 (stale on its own) once it lasts 40 minutes |
 | repeat | the same command 3 times in a row with no file change between | 1 |
 | wall | running longer than 3× the router's expected minutes for its lane and effort (`routing.forecast.expectedMinutes`) | 1 |
 
 While Bullswarm runs a step's declared checks, only quiet counts, read from
 the checks' heartbeat: `no check heartbeat for <N>m`.
 
-At a score of 2 the watcher prints `⚠ <step> looks stale: <reasons>` once per
-attempt. The line wakes `--next` and `--until trouble`, and the human `next:`
-block adds `or restart: bullswarm workflow step restart <shortId> <step>`. The
-`attempt.stale` JSONL object carries `reasons`, `score` and `staleSince`.
-Nothing is stopped for you: let it run (start the `next:` watch again), or
-restart that one step rather than cancelling the run.
+At a score of 2 the watcher prints `⚠ <step> looks stale: <reasons>`. While
+the step stays stale and shows no progress, it warns again after each further
+full window, one level higher:
+`⚠ <step> still looks stale (warning 2) · no file change for 45m00s: <reasons>`.
+Progress means a file change for a step that writes (the window is 20
+minutes, the no-file-change time) and any output for any other step (10
+minutes, the quiet time). Progress while the step is still stale restarts the
+window without a line, but not the level: the next warning is still one higher
+than the last. A reading that is no longer stale, with or without progress,
+ends it, so a later one starts again at warning 1. Every warning line wakes `--next` and
+`--until trouble`, so a caller that let the first one go is woken again, and
+the human `next:` block adds
+`or restart: bullswarm workflow step restart <shortId> <step>`. The
+`attempt.stale` JSONL object carries `reasons`, `score` and `staleSince`, plus
+`level` (1 for the first warning), `noProgressSec` (seconds since the last
+progress) and `progressBy` (`file-change` or `output`). A relaunched watcher
+given `--since` does not repeat a level its predecessor already printed (it
+counts the levels due up to the step's last progress while stale, then the
+windows since); it skips none unless the step made progress more than once
+while stale, when it can skip one. A watcher that first sees a step several
+windows after it went stale prints one line, at the level due then.
+Nothing is stopped by these lines: let it run (start the `next:` watch again),
+or restart that one step rather than cancelling the run.
 
 `bullswarm workflow step restart <shortId> <step> [--pool <pool>] [--wait <seconds>] [--json]`
 writes `restart-<step>.json` next to the run. The live kernel applies it within
@@ -182,6 +199,41 @@ A worker silent for `BULLSWARM_WORKER_SILENCE_SEC` (default 3600 seconds) is
 stopped as `stalled`. The cutoff measures silence, not run time: every byte a
 worker writes restarts it. Shorter silence is evidence to inspect, not proof
 of a hang.
+
+Because any output restarts that clock, a worker that keeps calling read-only
+tools never reaches it. So a `build` or `chore` step whose worker changes no
+file for `BULLSWARM_WORKER_NO_PROGRESS_SEC` (default 3600 seconds, `0` turns it
+off) is stopped the same way, as `stalled`, with the reason
+`stalled: no file change for 60 min, the worker was stopped`. The clock counts
+from the attempt's start or its last file change: an edit the worker's event
+stream shows, or a changed file in its workspace (its `files`, or what git
+sees as changed and a new commit, plus its deliverable paths), the same
+reading as the stale score's, on the same steps: every step it can stop is one
+the stale score treats as writing. A step that keeps running commands without
+changing a file looks stale on no file change alone 40 minutes after its last
+change, or at its fifth command since then if that comes later. So with the
+default limit the warning comes at least 20 minutes before the stop when those
+five commands ran within the first 40 minutes, and later, but still before
+the stop, when the fifth came later. Two cases get no warning first: a step
+that ran fewer than 5 commands since its last file change (one long command,
+say), and any step when the limit is set below 40 minutes. A change once
+read keeps counting: an edit that later scrolls out of the event stream's
+rolling 512 KiB tail is not forgotten. Inside a git repository it reads every
+file git lists as changed, up to 5,000; outside one it reads the folder's own
+files (up to 5,000 files and 64 MiB). A workspace it cannot read whole (more
+changed files than that, a larger folder, or git failing) gives no reading,
+and nothing is stopped: a change made by a shell command (sed, a redirect) is
+not in the event stream, so a change it did not read could be the worker's
+only one. Inside a git repository, a file git ignores (a build or data folder)
+is not seen: a step that writes only such files should name them in `files`
+or its deliverable paths, or it can be stopped while it works. It counts wall time, so a single command running longer than the
+limit with no file change is stopped too. It never applies to an `analyze`
+step, an `act` step or an outward step, nor to a worker with no event stream
+(no reading, nothing stopped). Like a silence stop, it uses the step's one
+retry on another pool. The attempt records `noProgressSec` instead of
+`silentSec`, its needs-you header reads `worker changed no file` (a silence
+stop reads `worker went silent`), and the watch line reads
+`⚠ <step> stalled on <pool> · no file change for 1h00m · retrying on another pool`.
 
 ## Pause, resume and cancel
 
@@ -245,7 +297,11 @@ decision, never as verification. `step accept` on a failed step inside a
 loop does not end the loop (the next round still starts); to stop a loop
 early let it run out of rounds (`maxRounds`), then
 `bullswarm workflow continue <shortId> <loop>`, which is recorded as
-condition not met.
+condition not met. In a dry loop with areas, accepting a failed area reviewer
+(`review-area-2`, never the group id `review`) counts its area as not reviewed
+that round, so the loop cannot end dry until a later round reviews it; a
+step the loop skipped reads `skipped (nothing to fix)` and is counted apart,
+never as proven.
 
 ## Other stopping rules
 

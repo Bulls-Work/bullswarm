@@ -240,6 +240,10 @@ export function poolCausedPools(attempts, actionId) {
   return [...byPool].map(([pool, failureKind]) => ({ pool, failureKind }));
 }
 
+// The needs-you header label of a `stalled` step stopped for changing no file
+// (its attempt records noProgressSec): it kept working, it did not go silent.
+export const STALLED_NO_PROGRESS_LABEL = 'worker changed no file';
+
 // The needs-you header label per failureKind (stage-3 §2.5). `failed-evidence`
 // has two: the caller picks by the type of the first failing item.
 export const NEEDS_YOU_LABELS = Object.freeze({

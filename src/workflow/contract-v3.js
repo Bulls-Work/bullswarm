@@ -10,7 +10,8 @@ import { DEFAULT_EFFORT_BY_LANE, TIME_BOX_MAX_MINUTES } from './action-validator
 import {
   CHECKER_PATH, EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_ENV_KEYS, EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC,
 } from './evidence-runner.js';
-import { LOOP_MAX_ROUNDS, PROGRAM_V3_SCHEMA_VERSION } from './program-v3.js';
+import { AREAS_MAX, AREAS_PER_ROUND_MAX, DRY_MAX_ROUNDS, LOOP_MAX_ROUNDS, PROGRAM_V3_SCHEMA_VERSION } from './program-v3.js';
+import { FINDINGS_ANSWER } from './dry-loops.js';
 import { SCHEMA_ASSERTED_KEYWORDS, SCHEMA_IGNORED_KEYWORDS } from './schema-check.js';
 import { REASONING_LEVELS } from '../lib/reasoning.js';
 
@@ -36,6 +37,8 @@ const STEP_FIELDS = Object.freeze({
   files: 'optional exact relative paths the step may change (no directories or globs); steps whose files overlap run one after the other',
   retry: 'optional 0 or 1 (default defaults.retry, else 1): the one automatic retry after a failure; 0 for a step that must not repeat',
   timeBox: `optional whole minutes 0-${TIME_BOX_MAX_MINUTES}: the soft time box written into the task (0 leaves it out); a guide, never a timeout`,
+  areas: `optional 1-${AREAS_MAX} different one-line angles (at most 80 characters each), only on the review a dry loop's until names (lane analyze, no outward deliverable): the review becomes areasPerRound area reviewers <id>-area-1 … <id>-area-P that run side by side, each round each looking from one area, rotating so every area is covered; other steps and the until keep naming the review's id`,
+  areasPerRound: `optional whole number from 1 to the number of areas (at most ${AREAS_PER_ROUND_MAX}), default min(areas, 3): how many area reviewers run each round; fewer than the areas means they rotate`,
 });
 
 const GATE_FIELDS = Object.freeze({
@@ -48,7 +51,7 @@ const GATE_FIELDS = Object.freeze({
 const LOOP_FIELDS = Object.freeze({
   id: 'required: a kebab-case id; steps after the loop list it in dependsOn, never a step inside it',
   steps: 'the step ids that repeat, in order through their own dependsOn; a step is in at most one loop; no loops inside loops',
-  until: 'condition on one of the loop\'s steps: true ends the loop; false runs the next round',
+  until: 'condition on one of the loop\'s steps: true ends the loop; false runs the next round. The dry form ends a review loop when a round finds nothing new',
   maxRounds: `required whole number 1-${LOOP_MAX_ROUNDS}: rounds used up, the loop waits for you like a gate`,
 });
 
@@ -56,8 +59,10 @@ const CONDITION = Object.freeze({
   forms: [
     '{"step": "<id>", "field": "<name>", "equals": true}: a boolean field listed in the required fields of that step\'s object answer schema; equals is true (the default) or false',
     '{"step": "<id>", "evidence": "passed"}: every evidence check of that step passed; inside a loop a failed check on the until step reads as not passed instead of failing the step',
+    `{"step": "<id>", "dry": 1}: loop until only ("dry": a review round that finds nothing new); the step's answer lists findings [{title, inScope, stillOpen?}]; the loop ends after dry (1-${DRY_MAX_ROUNDS}, 1 recommended) rounds in a row with nothing to fix: no new in-scope finding and no known one reported still open (and every area reviewed since the last finding); later reviews are told the known findings and other loop steps run only when there is something to fix`,
   ],
-  note: 'the one condition form, for a gate\'s when and a loop\'s until; no expressions and no else: anything more is your call, with workflow wait and workflow add',
+  findingsAnswer: 'the smallest answer schema a dry loop\'s review may declare; add your own fields (where, repro, detail) to the items. title is one line naming what is wrong and where (the loop tells new findings from known ones by it); inScope false marks a finding the contract does not require (recorded, never fixed); stillOpen true reports a known finding that is still present (its fix did not hold): like a new one it goes to the fix and keeps the loop going; in a loop with no other step it counts as a repeat',
+  note: 'a gate\'s when takes the field or evidence form; a loop\'s until takes any of the three (the dry form is for a loop\'s until only, never a gate). No expressions and no else: anything more is your call, with workflow wait and workflow add',
 });
 
 const RULES = Object.freeze([
@@ -67,7 +72,8 @@ const RULES = Object.freeze([
   'A usage limit (a spent 5-hour, weekly or monthly window, or no credit left) ends the step and sends it to you at once: nothing waits, moves or retries. A short rate limit backs off on the same pool at most twice, then comes to you. Finding no capable pool free at the pick also sends the step to you.',
   'Nothing else is automatic: only what you declared runs by itself (the retry, loop rounds, gates that pass because their when does not hold).',
   'A gate stops only the steps behind it; other branches keep running. When only waiting gates or loops are left, the run parks with status waiting; workflow continue <run> <id> moves a gate on, and --rounds N gives a loop that ran out N more rounds.',
-  'A loop runs every one of its steps in every round and reads its condition when the round is over, so put the deciding step last, and give every writer in a loop work to do each round: a build or chore step that changes no file fails not-produced (a draft that is rewritten from the critique works; a revise step after a critique that already passed does not).',
+  'A loop until a field or evidence condition runs every one of its steps in every round and reads its condition when the round is over, so put the deciding step last, and give every writer in a loop work to do each round: a build or chore step that changes no file fails not-produced (a draft that is rewritten from the critique works; a revise step after a critique that already passed does not).',
+  'A dry loop (until {"step": "review", "dry": 1}) is different: put the review first ([review, fix], the build outside the loop); the loop decides right after each review, and its other steps run only when the review found something to fix: a new in-scope finding, or a known one it reports again as still open (stillOpen: true) (a skipped step is recorded skipped, never proven by the round it sat out). It ends after a round with nothing to fix; with areas, only once every area was reviewed after the last finding. A round that finds something costs the reviewers and the fix; a clean round costs only the reviewers.',
   'A failed step blocks only the steps that depend on it; other branches finish.',
   'route.independentOf can only name steps this step depends on (directly or through others): a check that must run on another provider than its source also depends on that source.',
   'Workers share one folder: tell each writer to keep other workers\' edits, and give it the exact files it changes in files.',
@@ -103,6 +109,29 @@ const EXAMPLE = Object.freeze({
   gates: [{ id: 'approve', dependsOn: ['polish'], note: 'Read brief.md and decide whether to publish it' }],
 });
 
+// The build, then review until dry: three area reviewers each round, and a
+// fixer that runs only when a round finds something new. It is pattern 6 of
+// skill/references/patterns.md, with /abs/workspace for /work/acme
+// (tests/workflow-v3-docs.test.js keeps the two the same).
+const DRY_EXAMPLE = Object.freeze({
+  schemaVersion: PROGRAM_V3_SCHEMA_VERSION,
+  steps: [
+    { id: 'build', lane: 'build', files: ['src/query/engine.py', 'tests/test_engine.py'],
+      prompt: 'In /abs/workspace, implement SPEC.md in src/query/engine.py with tests in tests/test_engine.py.',
+      evidence: [{ type: 'command', cmd: 'cd /abs/workspace && python -m pytest tests/test_engine.py', timeoutSec: 300 }] },
+    { id: 'review', dependsOn: ['build'], blindTo: ['build'],
+      areas: ['grammar and parsing', 'expressions and types', 'joins and aggregates'],
+      prompt: 'In /abs/workspace, review src/query/engine.py against SPEC.md. Every way the code breaks SPEC.md is a finding, even if it looks harmless or intended: the caller decides. Try concrete inputs. Change no file.',
+      answer: { type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: {
+        type: 'object', required: ['title', 'inScope', 'where'],
+        properties: { title: { type: 'string' }, inScope: { type: 'boolean' }, stillOpen: { type: 'boolean' }, where: { type: 'string' }, repro: { type: 'string' } } } } } } },
+    { id: 'fix', dependsOn: ['review'], lane: 'build', files: ['src/query/engine.py', 'tests/test_engine.py'],
+      prompt: 'In /abs/workspace, fix every finding in the Findings to fix block in src/query/engine.py, with a regression test for each in tests/test_engine.py. Keep other workers\' edits.',
+      evidence: [{ type: 'command', cmd: 'cd /abs/workspace && python -m pytest tests/test_engine.py', timeoutSec: 300 }] },
+  ],
+  loops: [{ id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1 }, maxRounds: 3 }],
+});
+
 /** The v3 contract document for a goal; `next` holds the validate and launch commands. */
 export function buildV3Contract({ goal, cwd, next, workerReasoning = null }) {
   return {
@@ -117,7 +146,7 @@ export function buildV3Contract({ goal, cwd, next, workerReasoning = null }) {
       stepFields: { ...STEP_FIELDS },
       gateFields: { ...GATE_FIELDS },
       loopFields: { ...LOOP_FIELDS },
-      condition: { forms: [...CONDITION.forms], note: CONDITION.note },
+      condition: { forms: [...CONDITION.forms], findingsAnswer: JSON.parse(JSON.stringify(FINDINGS_ANSWER)), findingsNote: CONDITION.findingsAnswer, note: CONDITION.note },
       evidence: {
         maxItems: EVIDENCE_MAX_ITEMS,
         timeoutSec: { default: EVIDENCE_DEFAULT_TIMEOUT_SEC, max: EVIDENCE_MAX_TIMEOUT_SEC },
@@ -135,6 +164,8 @@ export function buildV3Contract({ goal, cwd, next, workerReasoning = null }) {
       note: 'null means no run-wide override: the configured strategy or connector default applies. A step\'s reasoning outranks both.',
     },
     example: JSON.parse(JSON.stringify(EXAMPLE)),
+    // A second example: fix until the review is dry, with area reviewers.
+    dryLoopExample: JSON.parse(JSON.stringify(DRY_EXAMPLE)),
     next: { validate: next.validate, launch: next.launch },
   };
 }

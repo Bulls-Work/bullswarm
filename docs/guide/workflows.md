@@ -63,13 +63,15 @@ and/or `evidence`. v3 has no requirement IDs, `evidenceFor`, roles, kinds or
 `verifyRounds`: validate refuses them, and a v3 run reports facts per step,
 never `verified`.
 
-There is one condition form, for a gate's `when` and a loop's `until`:
+A gate's `when` and a loop's `until` take a condition:
 `{"step": "critique", "field": "passed"}` reads a boolean the step's answer
 schema requires (add `"equals": false` to invert it), and
 `{"step": "check", "evidence": "passed"}` reads whether the step's evidence
 passed. When `until` is the evidence form, a failed check on that step reads
 as "not passed" and the loop goes on; with the field form, a failed check
-fails the step as it would outside a loop.
+fails the step as it would outside a loop. A loop's `until` also takes a third
+form, `{"step": "review", "dry": 1}`: the loop ends after a review round that
+finds nothing new to fix ([Workflow program](/reference/program#fix-until-the-review-is-dry)).
 
 A loop that fixes until the tests pass:
 

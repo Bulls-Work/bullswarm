@@ -78,6 +78,17 @@ async function accountingModules() {
 /**
  * Watch one delegation end-to-end. Returns the standard verdict.
  */
+// A limit in plain words, never rounded, so the why names the same time as
+// the attempt's recorded limit and the watch line: `60 min`, `1 min 30 s`,
+// or `45 s` under a minute.
+export function minutesOrSeconds(sec) {
+  const value = Number(sec);
+  if (!(value >= 60)) return `${sec} s`;
+  const minutes = Math.floor(value / 60);
+  const rest = Math.round((value - minutes * 60) * 1000) / 1000;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+}
+
 export async function watchOnce(connector, taskText, targetDir, paths, opts = {}) {
   const loadedAccounting = await accountingModules();
   const quota = opts.quotaSnapshot ?? loadedAccounting.quota;
@@ -199,6 +210,9 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         conversation: null,
         onDelegateExit: null,
         attemptStream: null,
+        // The follow-up only asks for the report; it changes no file.
+        noProgressTimeoutSec: null,
+        fileChangedAt: null,
         streamFile: originalStreamFile ? `${originalStreamFile}.follow-up` : null,
         stdoutFile: originalStdoutFile ? `${originalStdoutFile}.follow-up` : null,
       });
@@ -553,9 +567,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         }).verdict === 'pass');
   if (obs.cancelled) {
     verdict = { ok: false, why: 'workflow cancellation requested', cancelled: true };
+  } else if (obs.stalled && obs.stalledBy === 'no-progress') {
+    verdict = { ok: false, why: `stalled: no file change for ${minutesOrSeconds(opts.noProgressTimeoutSec)}, the worker was stopped`, failureKind: 'stalled' };
   } else if (obs.stalled) {
-    const quiet = Number(opts.silenceTimeoutSec) >= 60 ? `${Math.round(Number(opts.silenceTimeoutSec) / 60)} min` : `${opts.silenceTimeoutSec} s`;
-    verdict = { ok: false, why: `stalled: the worker wrote nothing for ${quiet} and was stopped`, failureKind: 'stalled' };
+    verdict = { ok: false, why: `stalled: the worker wrote nothing for ${minutesOrSeconds(opts.silenceTimeoutSec)} and was stopped`, failureKind: 'stalled' };
   } else if (obs.timedOut) {
     verdict = { ok: false, why: `timeout after ${opts.timeoutSec}s` };
   } else if (obs.spawnError) {
@@ -745,6 +760,8 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       signal: obs.signal,
       timedOut: obs.timedOut,
       stalled: obs.stalled ?? false,
+      // Why a stalled worker was stopped, when it was not silence.
+      ...(obs.stalledBy ? { stalledBy: obs.stalledBy } : {}),
       cancelled: obs.cancelled,
       // Stage 3: read only by the failure rule of marked runs (a process
       // failure, and the one retry an act step may get). classifyFailure

@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  DEFAULT_STALE_THRESHOLDS, actionWrites, attemptStreamPath, createStaleProbe, createStreamFactsReader,
+  DEFAULT_STALE_THRESHOLDS, actionWrites, attemptStreamPath, createFileChangeClock, createStaleProbe, createStreamFactsReader,
   emptyStreamFacts, foldStreamRecord, ownedFilesChangedAt, staleScore,
 } from '../src/lib/stale.js';
 import { EVIDENCE_HEARTBEAT_MS } from '../src/workflow/evidence-runner.js';
@@ -60,7 +60,14 @@ function makeGitRepo(t) {
   writeFileSync(join(dir, 'src', 'example.js'), 'export const value = 1;\n');
   execFileSync('git', ['-C', dir, 'add', 'src/example.js']);
   execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', 'initial']);
+  headMovedAt(dir, Date.parse('2026-09-01T00:00:00.000Z'));
   return dir;
+}
+
+// HEAD's last move as the stale clock reads it: the mtime of its reflog. The
+// fixtures' commits are made now, long after the attempts' made-up start.
+function headMovedAt(dir, at) {
+  utimesSync(join(dir, '.git', 'logs', 'HEAD'), new Date(at), new Date(at));
 }
 
 function unrestrictedWriter(dir, startedAt) {
@@ -172,7 +179,11 @@ test('a writer whose checks are running never reads as stale; only a stopped che
 
   // The kernel's running-checks note (stamped when the first check starts).
   const checking = { ...attempt, notes: [{ at: iso(10), kind: 'evidence-running', text: 'the worker finished; Bullswarm is running the step\'s checks' }] };
-  assert.deepEqual(staleScore({ attempt: checking, ...input }), { score: 0, stale: false, staleSince: null, signals: [], reasons: [] });
+  // Progress during the checks is their heartbeat, the last activity.
+  assert.deepEqual(staleScore({ attempt: checking, ...input }), {
+    score: 0, stale: false, staleSince: null, signals: [], reasons: [],
+    progressAt: min(29.8), progressBy: 'output', progressWindowSec: 600,
+  });
   // A worker streak (the same command 3× before it exited) no longer counts.
   const streak = { key: 'bash\u0000npm test', kind: 'bash', summary: 'npm test', count: 3, nthAt: min(9) };
   assert.equal(staleScore({ attempt: checking, ...input, facts: { ...facts, streak } }).score, 0);
@@ -256,6 +267,19 @@ test('no file change while commands continue counts only for a step that writes'
   // An owned file touched on disk at minute 20 is progress the stream did not show.
   const touched = staleScore({ attempt: running(attempt), facts, writes: true, fileChangedAt: t0 + 20 * 60_000, nowMs });
   assert.equal(touched.signals.some((signal) => signal.id === 'no-file-change'), false);
+
+  // Progress, for the watcher's repeated warning: a writer's last file change
+  // (stream or disk) with the no-file-change window, a reader's last output
+  // with the quiet window.
+  assert.deepEqual(
+    { progressAt: writer.progressAt, progressBy: writer.progressBy, progressWindowSec: writer.progressWindowSec },
+    { progressAt: t0 + 60_000, progressBy: 'file-change', progressWindowSec: 1200 },
+  );
+  assert.equal(touched.progressAt, t0 + 20 * 60_000);
+  assert.deepEqual(
+    { progressAt: reader.progressAt, progressBy: reader.progressBy, progressWindowSec: reader.progressWindowSec },
+    { progressAt: t0 + 25.5 * 60_000, progressBy: 'output', progressWindowSec: 600 },
+  );
 });
 
 test('the incremental reader folds appended lines and re-reads the tail segment', (t) => {
@@ -334,16 +358,61 @@ test('an unrestricted writer with no changed files still gets the no-file-change
   assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), true);
 });
 
-test('an unrestricted writer in a non-git directory falls back to stream evidence', (t) => {
+test('an unrestricted writer that commits each change: HEAD moving counts as a file change', (t) => {
+  // A change written and committed in one shell command leaves git status
+  // clean and no edit in the stream; the commit moved HEAD.
+  const dir = makeGitRepo(t);
+  const startedAt = Date.parse('2026-09-19T10:00:00.000Z');
+  writeFileSync(join(dir, 'src', 'example.js'), 'export const value = 2;\n');
+  execFileSync('git', ['-C', dir, 'commit', '--quiet', '-am', 'change']);
+  assert.equal(execFileSync('git', ['-C', dir, 'status', '--porcelain=v1'], { encoding: 'utf8' }).trim(), '');
+  headMovedAt(dir, startedAt + 25 * 60_000);
+  const { probe, attempt, action, nowMs } = unrestrictedWriter(dir, startedAt);
+  const score = probe({ attempt, action, nowMs });
+  assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), false, JSON.stringify(score));
+  assert.equal(score.progressAt, startedAt + 25 * 60_000);
+  // The dispatcher's no-progress clock reads the same move.
+  const clock = createFileChangeClock({ streamFile: 'stream.jsonl', targetDir: dir, action, startedAtMs: startedAt, readFacts: () => ({ lastFileChangeAt: null }) });
+  assert.equal(clock(), startedAt + 25 * 60_000);
+});
+
+test('a writer that keeps running commands and changes no file is stale on its own after twice its window', () => {
+  const startedAt = Date.parse('2026-09-19T10:00:00.000Z');
+  const facts = emptyStreamFacts();
+  // A different read every 30 s: never quiet, never a repeat, no edit.
+  for (let sec = 30; sec < 59 * 60; sec += 30) {
+    for (const status of ['running', 'completed']) foldStreamRecord(facts, { at: new Date(startedAt + sec * 1000).toISOString(), kind: 'Read', status, toolCallId: `r${sec}`, summary: `src/file${sec}.py` });
+  }
+  const attempt = { status: 'running', startedAt: new Date(startedAt).toISOString() };
+  const at = (minutes) => staleScore({ attempt: { ...attempt, lastActivityAt: new Date(startedAt + minutes * 60_000 - 20_000).toISOString() }, facts, writes: true, expectedMinutes: 25, nowMs: startedAt + minutes * 60_000 });
+  // 30 minutes: the signal fired at 20 but weighs 1, and wall is not due until 75.
+  assert.deepEqual([at(30).score, at(30).stale], [1, false]);
+  // 40 minutes (twice the 20-minute window): stale on its own, before the 60-minute stop.
+  const forty = at(40);
+  assert.deepEqual([forty.score, forty.stale, forty.staleSince], [2, true, startedAt + 40 * 60_000]);
+  assert.deepEqual(forty.signals.map((signal) => [signal.id, signal.weight]), [['no-file-change', 2]]);
+  // With wall also firing (expected 10 minutes, wall at 30), staleSince is when the two met.
+  const both = staleScore({ attempt: { ...attempt, lastActivityAt: new Date(startedAt + 45 * 60_000).toISOString() }, facts, writes: true, expectedMinutes: 10, nowMs: startedAt + 45 * 60_000 });
+  assert.deepEqual([both.score, both.staleSince], [3, startedAt + 30 * 60_000]);
+});
+
+test('an unrestricted writer in a non-git directory reads the folder\'s own files, else the stream', (t) => {
+  // Outside git there is no changed-file list: a file a shell command wrote
+  // (no edit tool in the stream) still counts, read from the folder itself.
   const dir = mkdtempSync(join(tmpdir(), 'bs-stale-unrestricted-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const startedAt = Date.parse('2026-09-19T10:00:00.000Z');
   const file = join(dir, 'example.js');
   writeFileSync(file, 'export const value = 2;\n');
   utimesSync(file, new Date(startedAt + 25 * 60_000), new Date(startedAt + 25 * 60_000));
-  const { probe, attempt, action, nowMs } = unrestrictedWriter(dir, startedAt);
+  const { probe, attempt, action } = unrestrictedWriter(dir, startedAt);
   const score = probe({ attempt, action, nowMs: startedAt + 40 * 60_000 });
-  assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), true);
+  assert.equal(score.signals.some((signal) => signal.id === 'no-file-change'), false, JSON.stringify(score));
+  // A file older than the attempt is not its change: the stream's last edit (+1m) decides.
+  utimesSync(file, new Date(startedAt - 60_000), new Date(startedAt - 60_000));
+  const fresh = unrestrictedWriter(dir, startedAt).probe;
+  const old = fresh({ attempt, action, nowMs: startedAt + 40 * 60_000 });
+  assert.equal(old.signals.some((signal) => signal.id === 'no-file-change'), true);
 });
 
 test('the probe finds a running attempt\'s stream beside its task file', (t) => {
@@ -372,6 +441,7 @@ test('a writing step with an ignored deliverable path that was just written has 
   writeFileSync(join(dir, '.gitignore'), 'out/\n');
   execFileSync('git', ['-C', dir, 'add', '.gitignore']);
   execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', 'ignore out']);
+  headMovedAt(dir, Date.parse('2026-09-01T00:00:00.000Z'));
   mkdirSync(join(dir, 'out'));
   const summary = join(dir, 'out', 'summary.json');
   writeFileSync(summary, '{"jsFiles":1}\n');

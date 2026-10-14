@@ -31,6 +31,9 @@ import {
 import { deliverableTypeOf } from './step-vocabulary.js';
 import { SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
 import { isReasoningLevel } from '../lib/reasoning.js';
+import { AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS, findingsSchemaIssue, titleKey } from './dry-loops.js';
+// The limits live in dry-loops.js so action-validator.js can read them too.
+export { AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS };
 
 export const PROGRAM_V3_SCHEMA_VERSION = 'bullswarm.workflow.program.v3';
 // The one requirement a v3 goal carries until 0.38.0 removes requirements.
@@ -45,7 +48,7 @@ const PROGRAM_KEYS = new Set(['schemaVersion', 'defaults', 'steps', 'gates', 'lo
 const DEFAULT_KEYS = new Set(['lane', 'effort', 'reasoning', 'retry', 'timeBox']);
 const STEP_KEYS = new Set([
   'id', 'prompt', 'dependsOn', 'phase', 'label', 'lane', 'effort', 'reasoning', 'model', 'route', 'blindTo',
-  'answer', 'evidence', 'deliverable', 'files', 'retry', 'timeBox',
+  'answer', 'evidence', 'deliverable', 'files', 'retry', 'timeBox', 'areas', 'areasPerRound',
 ]);
 // Present in the stored form; accepted on input only with the derived value.
 const DERIVED_KEYS = new Set(['purpose', 'ownedFiles', 'affects', 'role', 'evidenceFor', 'inputs', 'produces']);
@@ -55,7 +58,11 @@ const DERIVED_FROM = Object.freeze({
 });
 const GATE_KEYS = new Set(['id', 'dependsOn', 'when', 'note']);
 const LOOP_KEYS = new Set(['id', 'steps', 'until', 'maxRounds']);
-export const LOOP_MAX_ROUNDS = 5;
+// A dry loop's until ({step, dry}) counts 1 to this many clean rounds in a row.
+export const DRY_MAX_ROUNDS = 3;
+// A review's areas (0.38.12): how many, how long each, how many reviewers at most.
+export const AREAS_MAX = 8;
+const AREA_MAX_CHARS = 80;
 const LABEL_MAX = 200;
 const PHASE_MAX = 80;
 const NOTE_MAX = 1000;
@@ -164,14 +171,21 @@ function readAnswer(raw, at, issues) {
 // The one condition form, for `until` and `when`:
 //   {step, field, equals?}  a boolean top-level field of that step's answer
 //   {step, evidence: "passed"}  that step's evidence passed
-function readCondition(raw, at, issues, stepsById) {
+//   {step, dry: n}  loop until only: the review found nothing new for n
+//                   rounds (dry-loops.js); step may name an area review group
+function readCondition(raw, at, issues, stepsById, { groups = new Map(), loop = false, loopSteps = [] } = {}) {
   if (!isObject(raw)) {
-    issues.push(`${at} must be {step, field, equals?} or {step, evidence: "passed"}`);
+    issues.push(`${at} must be {step, field, equals?} or {step, evidence: "passed"}${loop ? ' or {step, dry}' : ''}`);
     return undefined;
   }
+  if (raw.dry !== undefined) return readDryCondition(raw, at, issues, stepsById, { groups, loop, loopSteps });
   const byEvidence = raw.evidence !== undefined;
   const allowed = byEvidence ? ['step', 'evidence'] : ['step', 'field', 'equals'];
   for (const key of present(raw)) if (!allowed.includes(key)) issues.push(`${at}.${key} is not allowed`);
+  if (groups.has(raw.step)) {
+    issues.push(`${at}: ${raw.step} is a group of area reviewers; only a loop's until may name it, in the dry form`);
+    return undefined;
+  }
   const step = stepsById.get(raw.step);
   if (!step) {
     issues.push(`${at}.step must name a step`);
@@ -199,6 +213,146 @@ function readCondition(raw, at, issues, stepsById) {
   }
   if (raw.equals !== undefined && typeof raw.equals !== 'boolean') issues.push(`${at}.equals must be true or false`);
   return { step: raw.step, field: raw.field, equals: raw.equals === false ? false : true };
+}
+
+// The dry form {step, dry}: a loop's until only, on a review (or an area
+// review group) whose answer lists findings [{title, inScope, …}].
+function readDryCondition(raw, at, issues, stepsById, { groups, loop, loopSteps }) {
+  for (const key of present(raw)) if (key !== 'step' && key !== 'dry') issues.push(`${at}.${key} is not allowed`);
+  if (!loop) {
+    issues.push(`${at}: the dry form ({step, dry}) is for a loop's until only`);
+    return undefined;
+  }
+  const group = groups.get(raw.step);
+  const step = group ? stepsById.get(group.ids[0]) : stepsById.get(raw.step);
+  if (!step) {
+    issues.push(`${at}.step must name a step`);
+    return undefined;
+  }
+  if (!(Number.isInteger(raw.dry) && raw.dry >= 1 && raw.dry <= DRY_MAX_ROUNDS)) {
+    issues.push(`${at}.dry must be a whole number from 1 to ${DRY_MAX_ROUNDS}`);
+    return undefined;
+  }
+  // A loop with a fix step tells its reviews to mark a known finding still
+  // present with stillOpen, so their answers must be allowed to carry it.
+  const members = group ? group.ids : [raw.step];
+  const problem = findingsSchemaIssue(step.answer, { stillOpen: loopSteps.some((id) => !members.includes(id)) });
+  if (problem) issues.push(`${at}: the answer schema of step ${raw.step} ${problem}`);
+  return { step: raw.step, dry: raw.dry };
+}
+
+const cutLabel = (text) => ([...text].length > LABEL_MAX ? `${[...text].slice(0, LABEL_MAX - 1).join('')}…` : text);
+const withoutKeys = (raw, keys) => Object.fromEntries(Object.entries(raw).filter(([key]) => !keys.includes(key)));
+
+function readAreas(value, at, issues) {
+  if (!Array.isArray(value) || !value.length || value.length > AREAS_MAX) {
+    issues.push(`${at}.areas must be an array of 1 to ${AREAS_MAX} areas`);
+    return null;
+  }
+  const bad = value.findIndex((area) => typeof area !== 'string' || !area.trim() || /[\r\n]/.test(area) || area.length > AREA_MAX_CHARS);
+  if (bad !== -1) {
+    issues.push(`${at}.areas[${bad}] must be one line of 1 to ${AREA_MAX_CHARS} characters`);
+    return null;
+  }
+  // Two areas that differ only in case or spacing are the same angle.
+  if (new Set(value.map(titleKey)).size !== value.length) {
+    issues.push(`${at}.areas names an area twice`);
+    return null;
+  }
+  return [...value];
+}
+
+// A step's id lists with a review group's id replaced by its reviewer ids.
+function rewriteGroupIds(raw, groups) {
+  if (!isObject(raw) || !groups.size) return raw;
+  const swap = (list) => (Array.isArray(list) ? list.flatMap((id) => (groups.has(id) ? groups.get(id).ids : [id])) : list);
+  const out = { ...raw };
+  if (Array.isArray(raw.dependsOn)) out.dependsOn = swap(raw.dependsOn);
+  if (Array.isArray(raw.blindTo)) out.blindTo = swap(raw.blindTo);
+  if (isObject(raw.route) && Array.isArray(raw.route.independentOf)) out.route = { ...raw.route, independentOf: swap(raw.route.independentOf) };
+  return out;
+}
+
+/**
+ * The area pre-pass (0.38.12): a review step with `areas` becomes
+ * `areasPerRound` ordinary steps <id>-area-1 … <id>-area-P, each carrying the
+ * derived `areaOf: {step, slot, areas}`, in the review's place. Every
+ * dependsOn, blindTo, route.independentOf, loop steps and gate dependsOn entry
+ * naming the review is rewritten to the reviewer ids; the review's id stays
+ * as the group id a dry loop's until names. A step that already carries
+ * areaOf (a stored program) is not expanded again: its group is checked to be
+ * whole and alike, so the stored form normalises to itself.
+ * Returns {entries: [{raw, index}], groups, loops, gates}.
+ */
+function expandAreas(rawSteps, rawLoops, rawGates, issues) {
+  const groups = new Map();
+  const entries = [];
+  const stored = new Map();
+  for (const [index, raw] of rawSteps.entries()) {
+    const at = `steps[${index}]`;
+    if (!isObject(raw)) { entries.push({ raw, index }); continue; }
+    if (raw.areaOf !== undefined) {
+      if (raw.areas !== undefined || raw.areasPerRound !== undefined) issues.push(`${at} is one area reviewer (areaOf); remove areas and areasPerRound`);
+      const of = raw.areaOf;
+      if (!isObject(of) || typeof of.step !== 'string' || !ID_RE.test(of.step) || !Number.isInteger(of.slot) || of.slot < 1
+        || !Array.isArray(of.areas) || !of.areas.length || of.areas.some((area) => typeof area !== 'string')) {
+        issues.push(`${at}.areaOf is derived from a review's areas in v3; remove it`);
+        entries.push({ raw: withoutKeys(raw, ['areaOf', 'areas', 'areasPerRound']), index });
+        continue;
+      }
+      if (!stored.has(of.step)) stored.set(of.step, []);
+      stored.get(of.step).push({ raw, index });
+      entries.push({ raw, index });
+      continue;
+    }
+    if (raw.areas === undefined) {
+      if (raw.areasPerRound !== undefined) issues.push(`${at}.areasPerRound needs areas`);
+      entries.push({ raw: withoutKeys(raw, ['areasPerRound']), index });
+      continue;
+    }
+    const areas = readAreas(raw.areas, at, issues);
+    if (!areas || typeof raw.id !== 'string' || !ID_RE.test(raw.id)) {
+      entries.push({ raw: withoutKeys(raw, ['areas', 'areasPerRound']), index });
+      continue;
+    }
+    const most = Math.min(areas.length, AREAS_PER_ROUND_MAX);
+    let perRound = raw.areasPerRound ?? Math.min(areas.length, 3);
+    if (!(Number.isInteger(perRound) && perRound >= 1 && perRound <= most)) {
+      issues.push(`${at}.areasPerRound must be a whole number from 1 to ${most} (the number of areas, at most ${AREAS_PER_ROUND_MAX})`);
+      perRound = Math.min(areas.length, 3);
+    }
+    const base = withoutKeys(raw, ['areas', 'areasPerRound', 'label']);
+    const name = typeof raw.label === 'string' ? raw.label : raw.id;
+    const ids = [];
+    for (let slot = 1; slot <= perRound; slot += 1) {
+      const id = `${raw.id}-area-${slot}`;
+      ids.push(id);
+      const label = cutLabel(perRound === areas.length ? `${name} · ${areas[slot - 1]}` : `${name} · area reviewer ${slot} of ${perRound}`);
+      entries.push({ raw: { ...clone(base), id, label, areaOf: { step: raw.id, slot, areas: [...areas] } }, index });
+    }
+    groups.set(raw.id, { ids, areas, perRound, index, label: raw.label });
+  }
+  // A stored group: every slot once, the same areas, and the same step but for
+  // its id, label and slot.
+  for (const [step, members] of stored) {
+    const sorted = [...members].sort((a, b) => a.raw.areaOf.slot - b.raw.areaOf.slot);
+    const first = sorted[0].raw;
+    const at = `steps[${sorted[0].index}]`;
+    const alike = (raw) => same(withoutKeys(raw, ['id', 'label', 'areaOf', 'purpose']), withoutKeys(first, ['id', 'label', 'areaOf', 'purpose']));
+    const whole = sorted.every((member, k) => member.raw.areaOf.slot === k + 1 && member.raw.id === `${step}-area-${k + 1}`
+      && same(member.raw.areaOf.areas, first.areaOf.areas));
+    if (!whole) issues.push(`${at}.areaOf: the area reviewers of ${step} must be ${step}-area-1 to ${step}-area-${sorted.length}, one per slot, with the same areas`);
+    else if (!sorted.every((member) => alike(member.raw))) issues.push(`${at}: the area reviewers of ${step} must be the same step but for their id and label; one was changed`);
+    if (sorted.length > Math.min(first.areaOf.areas.length, AREAS_PER_ROUND_MAX)) issues.push(`${at}.areaOf: ${step} has more area reviewers than areas`);
+    groups.set(step, { ids: sorted.map((member) => member.raw.id), areas: [...first.areaOf.areas], perRound: sorted.length, index: sorted[0].index, stored: true });
+  }
+  const swap = (list) => (Array.isArray(list) ? list.flatMap((id) => (groups.has(id) ? groups.get(id).ids : [id])) : list);
+  return {
+    entries: entries.map((entry) => ({ ...entry, raw: rewriteGroupIds(entry.raw, groups) })),
+    groups,
+    loops: rawLoops.map((raw) => (isObject(raw) && Array.isArray(raw.steps) ? { ...raw, steps: swap(raw.steps) } : raw)),
+    gates: rawGates.map((raw) => (isObject(raw) && Array.isArray(raw.dependsOn) ? { ...raw, dependsOn: swap(raw.dependsOn) } : raw)),
+  };
 }
 
 // v2 issues speak of actions[i], ownedFiles, roles and check steps with
@@ -252,14 +406,17 @@ export function normaliseProgramV3(input, runtime = {}) {
   if (program.schemaVersion !== PROGRAM_V3_SCHEMA_VERSION) issues.push(`schemaVersion must be "${PROGRAM_V3_SCHEMA_VERSION}"`);
   const defaults = readDefaults(program.defaults, issues);
   if (!Array.isArray(program.steps) || !program.steps.length) issues.push('steps must be a non-empty array');
-  const rawSteps = Array.isArray(program.steps) ? program.steps : [];
   const listOf = (name) => {
     if (program[name] === undefined) return [];
     if (!Array.isArray(program[name])) { issues.push(`${name} must be an array`); return []; }
     return program[name];
   };
-  const rawGates = listOf('gates');
-  const rawLoops = listOf('loops');
+  // A review's areas become its area reviewers before any other check.
+  const expanded = expandAreas(Array.isArray(program.steps) ? program.steps : [], listOf('loops'), listOf('gates'), issues);
+  const { groups } = expanded;
+  const rawGates = expanded.gates;
+  const rawLoops = expanded.loops;
+  const reviewerOf = new Map([...groups].flatMap(([id, group]) => group.ids.map((reviewer) => [reviewer, id])));
   const requirementId = runtime.requirementId
     ?? (Array.isArray(runtime.requirements) && typeof runtime.requirements[0]?.id === 'string' ? runtime.requirements[0].id : IMPLICIT_REQUIREMENT_ID);
 
@@ -267,17 +424,22 @@ export function normaliseProgramV3(input, runtime = {}) {
   const kindOf = new Map();
   const claim = (id, kind) => {
     if (typeof id !== 'string' || !ID_RE.test(id)) return false;
-    if (kindOf.has(id)) { issues.push(`id "${id}" is used twice; steps, gates and loops share one id space`); return false; }
+    if (kindOf.has(id)) {
+      const group = reviewerOf.get(id);
+      const named = group ? ` (${group}'s areas use ${groups.get(group).ids[0]} to ${groups.get(group).ids.at(-1)})` : '';
+      issues.push(`id "${id}" is used twice; steps, gates and loops share one id space${named}`);
+      return false;
+    }
     kindOf.set(id, kind);
     return true;
   };
 
   // Steps: the v3 fields, and the derived v2 action dispatch reads.
-  const steps = rawSteps.map((raw, index) => {
+  const steps = expanded.entries.map(({ raw, index }) => {
     const at = `steps[${index}]`;
     if (!isObject(raw)) { issues.push(`${at} must be an object`); return null; }
     for (const key of present(raw)) {
-      if (STEP_KEYS.has(key) || DERIVED_KEYS.has(key)) continue;
+      if (STEP_KEYS.has(key) || DERIVED_KEYS.has(key) || key === 'areaOf') continue;
       issues.push(V2_ONLY_KEYS.has(key) ? `${at}.${key} is not a v3 field` : `${at}.${key} is not allowed`);
     }
     if (typeof raw.id !== 'string' || !ID_RE.test(raw.id)) issues.push(`${at}.id must be a kebab-case id`);
@@ -307,6 +469,8 @@ export function normaliseProgramV3(input, runtime = {}) {
     };
   });
   const stepsById = new Map(steps.filter(Boolean).map((step) => [step.id, step]));
+  // A review group's id is claimed too: a dry loop's until names it.
+  for (const id of groups.keys()) claim(id, 'group');
 
   // Gates and loops.
   const gates = rawGates.map((raw, index) => {
@@ -346,8 +510,22 @@ export function normaliseProgramV3(input, runtime = {}) {
       if (!kindOf.has(dep)) { issues.push(`${node.id}.dependsOn references unknown step, gate or loop "${dep}"`); continue; }
       const loop = loopOfStep.get(dep);
       if (loop && loopOfStep.get(node.id) !== loop) {
-        issues.push(`${node.id} depends on ${dep} inside loop ${loop}; depend on the loop ${loop} instead`);
+        const named = reviewerOf.get(dep) ?? dep;
+        const who = reviewerOf.get(node.id) ?? node.id;
+        issues.push(`${who} depends on ${named} inside loop ${loop}; depend on the loop ${loop} instead`);
       }
+    }
+  }
+  // A step that depends on an area reviewer depends on its whole group: the
+  // round is merged only once every reviewer answered, and a step that started
+  // after one of them would run before the loop decided whether it runs.
+  for (const node of [...steps, ...gates].filter(Boolean)) {
+    const partial = [...new Set(node.dependsOn.map((dep) => reviewerOf.get(dep)).filter(Boolean))]
+      .filter((group) => !groups.get(group).ids.every((id) => node.dependsOn.includes(id)));
+    for (const group of partial) {
+      const who = reviewerOf.get(node.id) ?? node.id;
+      const { ids } = groups.get(group);
+      issues.push(`${who} depends on some of ${group}'s area reviewers; depend on ${group} itself (all of ${ids[0]} to ${ids.at(-1)})`);
     }
   }
   const visiting = new Set();
@@ -379,16 +557,69 @@ export function normaliseProgramV3(input, runtime = {}) {
   };
 
   const normalGates = gates.filter(Boolean).map((gate) => {
-    const when = gate.raw.when === undefined ? undefined : readCondition(gate.raw.when, `gates[${gate.index}].when`, issues, stepsById);
+    const when = gate.raw.when === undefined ? undefined : readCondition(gate.raw.when, `gates[${gate.index}].when`, issues, stepsById, { groups });
     if (when && !ancestors(gate.id).has(when.step)) issues.push(`gates[${gate.index}].when.step must run before gate ${gate.id}; ${when.step} is not one of its dependencies`);
     return { id: gate.id, dependsOn: gate.dependsOn, ...(when ? { when } : {}), ...(gate.note !== undefined ? { note: gate.note } : {}) };
   });
   const normalLoops = loops.filter(Boolean).map((loop) => {
-    const until = readCondition(loop.raw.until, `loops[${loop.index}].until`, issues, stepsById);
-    if (until && !loop.steps.includes(until.step)) issues.push(`loops[${loop.index}].until.step must be one of the loop's steps (${loop.steps.join(', ')})`);
+    const at = `loops[${loop.index}]`;
+    const until = readCondition(loop.raw.until, `${at}.until`, issues, stepsById, { groups, loop: true, loopSteps: loop.steps });
+    // A group id counts as the loop's step when all its reviewers are.
+    const members = until ? groups.get(until.step)?.ids ?? [until.step] : [];
+    const missing = members.filter((id) => !loop.steps.includes(id));
+    if (until && missing.length === members.length) {
+      const shown = loop.steps.map((id) => reviewerOf.get(id) ?? id).filter((id, index, list) => list.indexOf(id) === index);
+      issues.push(`${at}.until.step must be one of the loop's steps (${shown.join(', ')})`);
+    } else if (until && missing.length) {
+      // Some of the group's reviewers are in the loop and some are not.
+      issues.push(`${at}.steps must list every area reviewer of ${until.step} (${members[0]} to ${members.at(-1)}); it leaves out ${missing.join(', ')}. List ${until.step} itself to include them all`);
+    }
+    if (until?.dry !== undefined && Number.isInteger(loop.maxRounds) && until.dry > loop.maxRounds) {
+      issues.push(`${at}.until.dry is ${until.dry} but maxRounds is ${loop.maxRounds}; the loop could never end dry`);
+    } else if (until?.dry !== undefined && Number.isInteger(loop.maxRounds) && groups.has(until.step)) {
+      // Dry needs every area reviewed after the last finding: with N areas and
+      // P reviewers a round, that takes ceil(N / P) rounds even when no round
+      // ever finds anything.
+      const { areas, perRound } = groups.get(until.step);
+      const cover = Math.ceil(areas.length / perRound);
+      if (cover > loop.maxRounds) {
+        const fix = [
+          ...(cover <= LOOP_MAX_ROUNDS ? [`raise maxRounds to ${cover}`] : []),
+          ...(Math.ceil(areas.length / loop.maxRounds) <= Math.min(areas.length, AREAS_PER_ROUND_MAX) ? [`raise areasPerRound to ${Math.ceil(areas.length / loop.maxRounds)}`] : []),
+          'name fewer areas',
+        ];
+        issues.push(`${at}: ${until.step}'s ${areas.length} areas take ${cover} rounds to review at ${perRound} per round, but maxRounds is ${loop.maxRounds}; the loop could never end dry. ${fix.join(', or ').replace(/^./, (c) => c.toUpperCase())}`);
+      }
+    }
     return { id: loop.id, steps: loop.steps, ...(until ? { until } : {}), maxRounds: loop.maxRounds };
   });
+  // Areas belong to the review a dry loop's until names: an analyze step that
+  // writes nothing, since its reviewers run side by side.
+  for (const [id, group] of groups) {
+    const at = `steps[${group.index}]`;
+    const loop = loops.find((entry) => isObject(entry?.raw.until) && entry.raw.until.dry !== undefined && entry.raw.until.step === id);
+    if (!loop) issues.push(`${at}.areas: ${id} is not the until step of a loop that ends dry ({"step": "${id}", "dry": 1}); areas are only for that review`);
+    const first = stepsById.get(group.ids[0]);
+    if (first && first.lane !== 'analyze') issues.push(`${at}.areas: an area review must be lane analyze; its reviewers run side by side and change no file`);
+    else if (first?.role === 'act') issues.push(`${at}.areas: an area review cannot have an outward deliverable`);
+  }
 
+  // A dry loop's reviewer is never handed the account of a fix step that runs
+  // after it (dry-loops.js), so such a step in its blindTo is refused with
+  // that reason, not with the generic "add it to dependsOn" (which would make
+  // a cycle). Reviewer id -> the loop's steps that depend on its review.
+  const laterFixers = new Map();
+  for (const loop of loops.filter((entry) => entry && isObject(entry.raw.until) && entry.raw.until.dry !== undefined)) {
+    const members = groups.get(loop.raw.until.step)?.ids ?? [loop.raw.until.step];
+    const reaches = (id, seen = new Set()) => (stepsById.get(id)?.dependsOn ?? []).some((dep) => {
+      if (members.includes(dep)) return true;
+      if (seen.has(dep) || !loop.steps.includes(dep)) return false;
+      seen.add(dep);
+      return reaches(dep, seen);
+    });
+    const after = loop.steps.filter((id) => !members.includes(id) && reaches(id));
+    for (const id of members) laterFixers.set(id, { loop: loop.id, after });
+  }
   // The step-level rules v2 already has, on the derived action list.
   const live = steps.filter(Boolean);
   const mapped = live.map((step) => {
@@ -404,7 +635,14 @@ export function normaliseProgramV3(input, runtime = {}) {
     if (step.deliverable !== undefined) action.deliverable = step.deliverable;
     if (step.raw.evidence !== undefined) action.evidence = step.raw.evidence;
     if (step.raw.route !== undefined) action.route = step.raw.route;
-    if (step.raw.blindTo !== undefined) action.blindTo = step.raw.blindTo;
+    if (step.raw.blindTo !== undefined) {
+      const later = laterFixers.get(step.id);
+      const named = Array.isArray(step.raw.blindTo) && later ? step.raw.blindTo.filter((id) => later.after.includes(id)) : [];
+      for (const id of [...new Set(named)]) {
+        issues.push(`steps[${step.index}].blindTo names "${id}", which runs after ${reviewerOf.get(step.id) ?? step.id} in loop ${later.loop}; a review of a loop that ends dry is never handed a fix step's output or answer, so remove ${id} from blindTo (keep the steps outside the loop that wrote the work)`);
+      }
+      action.blindTo = named.length ? step.raw.blindTo.filter((id) => !named.includes(id)) : step.raw.blindTo;
+    }
     return action;
   });
   let checked = null;
@@ -418,7 +656,9 @@ export function normaliseProgramV3(input, runtime = {}) {
         requirements: Array.isArray(runtime.requirements) ? runtime.requirements : [{ id: requirementId, mandatory: false }],
       });
     } catch (error) {
-      issues.push(...v3IssuesWording(Array.isArray(error?.issues) ? error.issues : [error.message]));
+      // actions[i] is the i-th live step; name the step the caller wrote.
+      issues.push(...v3IssuesWording(Array.isArray(error?.issues) ? error.issues : [error.message])
+        .map((issue) => issue.replace(/^steps\[(\d+)\]/, (match, index) => `steps[${live[Number(index)]?.index ?? index}]`)));
     }
   }
 
@@ -459,6 +699,7 @@ export function normaliseProgramV3(input, runtime = {}) {
     if (action.route !== undefined) out.route = clone(action.route);
     if (action.blindTo !== undefined) out.blindTo = [...action.blindTo];
     if (step.answer !== undefined) out.answer = step.answer;
+    if (step.raw.areaOf !== undefined) out.areaOf = clone(step.raw.areaOf);
     out.evidenceFor = [];
     out.inputs = [];
     out.produces = [];
@@ -525,5 +766,6 @@ export function stepV3Facts(action) {
     retry: action.retry, files: [...(action.files ?? [])],
     ...(action.blindTo?.length ? { blindTo: [...action.blindTo] } : {}),
     ...(action.answer !== undefined ? { answer: clone(action.answer) } : {}),
+    ...(action.areaOf !== undefined ? { areaOf: clone(action.areaOf) } : {}),
   };
 }

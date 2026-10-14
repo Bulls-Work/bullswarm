@@ -704,6 +704,7 @@ async function runV2Kernel({
               stalled: true,
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
               silentSec: record.silentSec ?? null,
+              ...(record.noProgressSec != null ? { noProgressSec: record.noProgressSec } : {}),
             } : {}),
           });
         }

@@ -22,7 +22,8 @@
 //
 // The score is the sum of the firing signals' weights; the attempt is stale at
 // DEFAULT_STALE_THRESHOLDS.staleScore. Quiet alone is enough (the agent is
-// doing nothing at all); any two of the others are. Nothing here stops,
+// doing nothing at all); any two of the others are, and so is no-file-change
+// alone once it lasts twice its window (NO_FILE_CHANGE_ALONE). Nothing here stops,
 // restarts or retries anything — the watcher prints one line and the caller
 // decides (`bullswarm workflow step restart`).
 
@@ -30,6 +31,8 @@ import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, cl
 import { execFileSync } from 'node:child_process';
 import { isAbsolute, join } from 'node:path';
 import { artifactBesideTask } from './attempt-stream.js';
+import { walkFolderFiles } from '../workflow/folder-walk.js';
+import { deliverableTypeOf } from '../workflow/step-vocabulary.js';
 
 export const DEFAULT_STALE_THRESHOLDS = Object.freeze({
   quietSec: 600,
@@ -46,6 +49,10 @@ export const STALE_SIGNAL_WEIGHTS = Object.freeze({
   repeat: 1,
   wall: 1,
 });
+// After this many windows with no file change (2 × 20 min by default) the
+// no-file-change signal is enough on its own, so a writer gets its warning
+// before the dispatcher's 60-minute no-progress stop (dispatch-silence.js).
+export const NO_FILE_CHANGE_ALONE = 2;
 
 // A normalized stream record opens a tool call, updates one, or closes one.
 const OPEN_STATUSES = new Set(['running', 'pending', 'queued', 'in_progress', 'started']);
@@ -71,7 +78,10 @@ const FILE_CHANGE_KINDS = new Set([
 // starts, removed when the attempt finishes (src/workflow/v2-runtime.js).
 export const EVIDENCE_RUNNING_NOTE = 'evidence-running';
 
-const MAX_OWNED_FILES = 200;
+// The most files one workspace reading stats: a step's own files, or the
+// changed files git lists (the bound of the folder walk outside git). Past it
+// the reading is not whole, and the no-progress clock gives no reading.
+const MAX_READ_FILES = 5000;
 const MAX_COMMAND_TIMES = 256;
 const WORKSPACE_STAT_TTL_MS = 10_000;
 
@@ -272,6 +282,11 @@ export function createStreamFactsReader({ thresholds = DEFAULT_STALE_THRESHOLDS 
       try { text = readFileSync(tailPath, 'utf8'); } catch { text = ''; }
       entry.withTail = foldStreamText(cloneFacts(entry.facts), text, thresholds);
       entry.tailKey = tailKey;
+      // The tail rolls: an edit it showed once is kept after it scrolls out,
+      // so the last file change never moves back (the no-progress stop and
+      // the stale score count from it).
+      const latest = Math.max(entry.lastFileChangeAt ?? 0, entry.withTail.lastFileChangeAt ?? 0);
+      if (latest > 0) entry.withTail.lastFileChangeAt = entry.lastFileChangeAt = latest;
     }
     return entry.withTail ?? entry.facts;
   };
@@ -284,20 +299,52 @@ export function createStreamFactsReader({ thresholds = DEFAULT_STALE_THRESHOLDS 
  * step's progress.
  */
 export function ownedFilesChangedAt(targetDir, ownedFiles = []) {
-  if (!targetDir || !Array.isArray(ownedFiles) || !ownedFiles.length) return null;
+  return ownedFilesReading(targetDir, ownedFiles).at;
+}
+
+// A workspace reading: {at (latest mtime, epoch ms, or null when no file was
+// found), whole (false when part of the workspace could not be read: too many
+// files, a folder too large to walk, or git failing)}. Only a whole reading
+// can tell "no file changed" from "a change it did not look at".
+function ownedFilesReading(targetDir, ownedFiles = []) {
+  if (!targetDir || !Array.isArray(ownedFiles) || !ownedFiles.length) return { at: null, whole: true };
   let latest = null;
-  for (const file of ownedFiles.slice(0, MAX_OWNED_FILES)) {
+  for (const file of ownedFiles.slice(0, MAX_READ_FILES)) {
     if (typeof file !== 'string' || !file) continue;
     const stat = statOrNull(isAbsolute(file) ? file : join(targetDir, file));
     if (stat) latest = Math.max(latest ?? 0, stat.mtimeMs);
   }
-  return latest;
+  return { at: latest, whole: ownedFiles.length <= MAX_READ_FILES };
 }
 
-/** Latest modification time of changed files in an unrestricted workspace. */
-function unrestrictedFilesChangedAt(targetDir) {
-  if (!targetDir) return null;
+// Outside a git repository there is no changed-file list: the latest
+// modification time of the folder's own files (the bounded walk the
+// deliverable check uses, folder-walk.js); not whole when it is too large.
+function folderFilesReading(targetDir) {
+  const files = walkFolderFiles(targetDir);
+  if (!files) return { at: null, whole: false };
+  let latest = null;
+  for (const file of files) {
+    const stat = statOrNull(join(targetDir, file));
+    if (stat) latest = Math.max(latest ?? 0, stat.mtimeMs);
+  }
+  return { at: latest, whole: true };
+}
+
+/**
+ * The changed files of an unrestricted workspace, read as {at, whole}: the
+ * latest modification time among them, or the last time HEAD moved there,
+ * whichever is later. A worker that writes and commits in one shell command
+ * leaves no changed file for git status to list (the deliverable check counts
+ * HEAD moving as a change too, dispatch-deliverable.js). HEAD's move is read
+ * from the mtime of its reflog. Every changed path is stat'ed, up to
+ * MAX_READ_FILES: a shell edit (sed, a redirect) is no event in the stream, so
+ * a path left unread could hide the worker's only change.
+ */
+function unrestrictedFilesReading(targetDir) {
+  if (!targetDir) return { at: null, whole: true };
   let root;
+  let gitDir;
   let output;
   try {
     const options = {
@@ -308,27 +355,93 @@ function unrestrictedFilesChangedAt(targetDir) {
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
     };
-    root = execFileSync('git', ['rev-parse', '--show-toplevel'], options).replace(/\r?\n$/, '');
+    try {
+      [root, gitDir] = execFileSync('git', ['rev-parse', '--show-toplevel', '--absolute-git-dir'], options).split(/\r?\n/);
+    } catch {
+      return folderFilesReading(targetDir);
+    }
     output = execFileSync('git', [
       'status', '--porcelain=v1', '-z', '--untracked-files=all',
     ], options);
   } catch {
-    return null;
+    return { at: null, whole: false };
   }
 
-  let latest = null;
+  let latest = gitDir ? statOrNull(join(gitDir, 'logs', 'HEAD'))?.mtimeMs ?? null : null;
   let checked = 0;
   for (const record of output.split('\0')) {
-    if (checked >= MAX_OWNED_FILES) break;
     if (!record) continue;
     const status = record.slice(0, 2);
     const path = record.slice(3);
     if (!path || !(status === '??' || /[AMRC]/.test(status))) continue;
+    if (checked >= MAX_READ_FILES) return { at: latest, whole: false };
     checked += 1;
     const stat = statOrNull(join(root, path));
     if (stat) latest = Math.max(latest ?? 0, stat.mtimeMs);
   }
-  return latest;
+  return { at: latest, whole: true };
+}
+
+/**
+ * The files a step changed in the directory it works in, read as {at,
+ * whole}: its owned files when it declares some, else the git-changed files
+ * there and the last time HEAD moved (a commit; outside a git repository, the
+ * folder's files), plus its deliverable paths. `at` is null when none can be
+ * read; `whole` is false when part of it could not be read.
+ */
+function stepFilesReading(targetDir, action) {
+  const ownedFiles = Array.isArray(action?.ownedFiles) ? action.ownedFiles : [];
+  const reading = ownedFiles.length ? ownedFilesReading(targetDir, ownedFiles) : unrestrictedFilesReading(targetDir);
+  let changedAt = reading.at;
+  // A git-ignored data or media path is invisible to git status. Its
+  // mtime still counts as this step's file change.
+  const deliverablePaths = action?.deliverable?.paths;
+  if (Array.isArray(deliverablePaths) && deliverablePaths.length) {
+    const deliverableAt = ownedFilesChangedAt(targetDir, deliverablePaths);
+    if (deliverableAt != null) changedAt = Math.max(changedAt ?? 0, deliverableAt);
+  }
+  return { at: changedAt, whole: reading.whole };
+}
+
+/** The latest file change stepFilesReading found, or null; the stale score reads it. */
+function stepFilesChangedAt(targetDir, action) {
+  return stepFilesReading(targetDir, action).at;
+}
+
+/**
+ * The dispatcher's no-progress clock for one running attempt: the same file
+ * change the stale score reads (an edit in the attempt's event stream, or a
+ * changed file in its workspace), never earlier than the attempt's start,
+ * and never earlier than a change it read before (an edit that scrolled out
+ * of the stream's rolling tail, or a changed file since committed, still
+ * counts). Returns `() => epoch ms | null`; null means a file change cannot
+ * be told from no file change, so nothing may be stopped on it: the attempt
+ * has no event stream yet, or its workspace could not be read whole (more
+ * than 5,000 changed files, a folder too large to walk, git failing), where a
+ * shell edit, which the event stream does not show, could go unseen.
+ */
+export function createFileChangeClock({
+  streamFile,
+  targetDir,
+  action = null,
+  startedAtMs,
+  readFacts = createStreamFactsReader(),
+} = {}) {
+  let seen = startedAtMs;
+  return function changedAt() {
+    let facts = null;
+    try { facts = readFacts(streamFile); } catch { facts = null; }
+    if (!facts) return null;
+    let workspace = { at: null, whole: false };
+    try { workspace = stepFilesReading(targetDir, action); } catch { workspace = { at: null, whole: false }; }
+    const workspaceAt = workspace.at;
+    seen = Math.max(
+      seen,
+      facts.lastFileChangeAt ?? 0,
+      workspaceAt != null && workspaceAt >= startedAtMs ? workspaceAt : 0,
+    );
+    return workspace.whole ? seen : null;
+  };
 }
 
 function formatMinutes(ms) {
@@ -345,11 +458,19 @@ function clip(text, max = 60) {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
-/** Whether a step is expected to change files: it owns some, or builds. */
+/**
+ * Whether a step is expected to change files in its workspace: it owns some,
+ * or it is a build or chore step (a step with no lane dispatches as chore)
+ * whose deliverable is not outward. The one definition the watcher's score
+ * and the dispatcher's no-file-change stop both read (noProgressLimitApplies
+ * in src/workflow/dispatch-silence.js), so a step stopped for changing no
+ * file is always watched as a writer first.
+ */
 export function actionWrites(action) {
   if (!action) return false;
   if (Array.isArray(action.evidenceFor) && action.evidenceFor.length) return false;
-  return (Array.isArray(action.ownedFiles) && action.ownedFiles.length > 0) || action.lane === 'build';
+  if (deliverableTypeOf(action.deliverable) === 'outward') return false;
+  return (Array.isArray(action.ownedFiles) && action.ownedFiles.length > 0) || ['build', 'chore'].includes(action.lane ?? 'chore');
 }
 
 /**
@@ -365,8 +486,11 @@ export function actionWrites(action) {
  *   writes            whether the step is expected to change files
  *   expectedMinutes   overrides the attempt's recorded expectation
  * Returns {score, stale, staleSince, signals: [{id, weight, firedAt, reason}],
- * reasons: [string]}; staleSince is when the score first reached the stale
- * threshold in the current episode (epoch ms), null when not stale.
+ * reasons: [string], progressAt, progressBy, progressWindowSec}; staleSince is
+ * when the score first reached the stale threshold in the current episode
+ * (epoch ms), null when not stale. progressAt is the attempt's last progress
+ * (epoch ms): its last file change, or the start, for a step that writes
+ * (progressBy 'file-change'), its last output for any other ('output').
  */
 export function staleScore({
   attempt,
@@ -402,16 +526,26 @@ export function staleScore({
     signals.push({ id: 'quiet', firedAt: activityAt + limits.quietSec * 1000, reason });
   }
 
+  // The writer's last file change: an edit in its stream or a changed file in
+  // its workspace, never earlier than its start.
+  const workspaceChangedAt = fileChangedAt != null && fileChangedAt >= startedAt ? fileChangedAt : 0;
+  const changedAt = Math.max(startedAt, facts?.lastFileChangeAt ?? 0, workspaceChangedAt);
+
   // no-file-change: a writer keeps running commands but changes nothing.
+  // Past twice its window it is stale on its own (NO_FILE_CHANGE_ALONE): a
+  // worker that keeps reading different files is never quiet and never
+  // repeats, and the dispatcher stops it at its no-progress limit (60 min by
+  // default), so its warning must not wait for a second signal.
   if (writes && facts && !checking) {
-    const workspaceChangedAt = fileChangedAt != null && fileChangedAt >= startedAt ? fileChangedAt : 0;
-    const changedAt = Math.max(startedAt, facts.lastFileChangeAt ?? 0, workspaceChangedAt);
     const sinceChange = nowMs - changedAt;
     const after = facts.commandAts.filter((at) => at > changedAt);
     if (after.length >= limits.noFileChangeCommands && sinceChange >= limits.noFileChangeSec * 1000) {
+      const firedAt = Math.max(changedAt + limits.noFileChangeSec * 1000, after[limits.noFileChangeCommands - 1]);
+      const aloneAt = changedAt + NO_FILE_CHANGE_ALONE * limits.noFileChangeSec * 1000;
       signals.push({
         id: 'no-file-change',
-        firedAt: Math.max(changedAt + limits.noFileChangeSec * 1000, after[limits.noFileChangeCommands - 1]),
+        firedAt,
+        ...(nowMs >= aloneAt ? { aloneAt: Math.max(aloneAt, firedAt) } : {}),
         reason: `no file change in ${formatMinutes(sinceChange)} while ${after.length} command${after.length === 1 ? '' : 's'} ran`,
       });
     }
@@ -439,20 +573,41 @@ export function staleScore({
     }
   }
 
+  // Progress, for the watcher's repeated warning: a file change for a step
+  // that writes, any output for any other (and for the checks, their
+  // heartbeat). `progressWindowSec` is how long the watcher waits without it
+  // before it warns again.
+  const writerProgress = writes && !checking;
+  const progress = {
+    progressAt: writerProgress ? changedAt : activityAt,
+    progressBy: writerProgress ? 'file-change' : 'output',
+    progressWindowSec: writerProgress ? limits.noFileChangeSec : limits.quietSec,
+  };
+
   for (const signal of signals) signal.weight = STALE_SIGNAL_WEIGHTS[signal.id] ?? 1;
+  // A no-file-change signal past twice its window weighs the stale score
+  // alone; its weight grew at aloneAt, which staleSince reads.
+  const steps = [];
+  for (const signal of signals) {
+    if (signal.aloneAt == null) { steps.push([signal.firedAt, signal.weight]); continue; }
+    const alone = Math.max(signal.weight, limits.staleScore);
+    steps.push([signal.firedAt, signal.weight], [signal.aloneAt, alone - signal.weight]);
+    signal.weight = alone;
+    delete signal.aloneAt;
+  }
   const score = signals.reduce((sum, signal) => sum + signal.weight, 0);
   const stale = score >= limits.staleScore;
   let staleSince = null;
   if (stale) {
     let cumulative = 0;
-    for (const signal of [...signals].sort((a, b) => a.firedAt - b.firedAt)) {
-      cumulative += signal.weight;
-      if (cumulative >= limits.staleScore) { staleSince = signal.firedAt; break; }
+    for (const [at, weight] of steps.sort((a, b) => a[0] - b[0])) {
+      cumulative += weight;
+      if (cumulative >= limits.staleScore) { staleSince = at; break; }
     }
   }
   // Strongest first, so the line leads with the reason that matters most.
   const ordered = [...signals].sort((a, b) => b.weight - a.weight || a.firedAt - b.firedAt);
-  return { score, stale, staleSince, signals: ordered, reasons: ordered.map((signal) => signal.reason) };
+  return { score, stale, staleSince, signals: ordered, reasons: ordered.map((signal) => signal.reason), ...progress };
 }
 
 // The kernel names an isolated workspace `<step>-attempt-<n>-<time>` under the
@@ -489,7 +644,6 @@ export function createStaleProbe({
     const writes = actionWrites(action);
     let fileChangedAt = null;
     if (writes) {
-      const ownedFiles = Array.isArray(action?.ownedFiles) ? action.ownedFiles : [];
       const key = attempt.id ?? `${attempt.actionId}-${attempt.ordinal}`;
       const cached = workspaceCache.get(key);
       if (cached && nowMs - cached.at < WORKSPACE_STAT_TTL_MS) fileChangedAt = cached.value;
@@ -498,16 +652,7 @@ export function createStaleProbe({
           ? isolatedWorkspace(runDir, attempt.actionId)
           : null;
         const targetDir = isolated ?? current?.intent?.cwd ?? null;
-        fileChangedAt = ownedFiles.length
-          ? ownedFilesChangedAt(targetDir, ownedFiles)
-          : unrestrictedFilesChangedAt(targetDir);
-        // A git-ignored data or media path is invisible to git status. Its
-        // mtime still counts as this step's file change.
-        const deliverablePaths = action?.deliverable?.paths;
-        if (Array.isArray(deliverablePaths) && deliverablePaths.length) {
-          const deliverableAt = ownedFilesChangedAt(targetDir, deliverablePaths);
-          if (deliverableAt != null) fileChangedAt = Math.max(fileChangedAt ?? 0, deliverableAt);
-        }
+        fileChangedAt = stepFilesChangedAt(targetDir, action);
         workspaceCache.set(key, { at: nowMs, value: fileChangedAt });
       }
     }

@@ -227,6 +227,29 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       silenceTimer.unref?.();
     };
     armSilence();
+    // No file change, not silence: a writing step that keeps calling
+    // read-only tools resets the silence clock forever, so the caller can pass
+    // `fileChangedAt()` (its last file change, epoch ms, or null when that
+    // cannot be read) and a limit. The clock counts from the spawn or the
+    // last file change; a null reading never stops anything.
+    const noProgressMs = Number(opts.noProgressTimeoutSec) > 0 && typeof opts.fileChangedAt === 'function'
+      ? Number(opts.noProgressTimeoutSec) * 1000
+      : null;
+    let stalledBy = null;
+    const spawnedAtMs = Date.now();
+    const progressPoll = noProgressMs == null ? null : setInterval(() => {
+      if (stalled || cancelled || timedOut) return;
+      let changedAt = null;
+      try { changedAt = opts.fileChangedAt(); } catch { changedAt = null; }
+      if (!Number.isFinite(changedAt)) return;
+      if (Date.now() - Math.max(spawnedAtMs, changedAt) < noProgressMs) return;
+      stalled = true;
+      stalledBy = 'no-progress';
+      if (silenceTimer) clearTimeout(silenceTimer);
+      stopChild('SIGTERM');
+      forceKillTimer ??= setTimeout(() => stopChild('SIGKILL'), 2000);
+    }, Math.min(60_000, Math.max(250, Math.floor(noProgressMs / 4))));
+    progressPoll?.unref?.();
     const cancelPoll = typeof opts.shouldCancel === 'function' ? setInterval(() => {
       if (cancelled || !opts.shouldCancel()) return;
       cancelled = true;
@@ -299,6 +322,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       const streamStats = finishedStream.streamStats;
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
+      if (progressPoll) clearInterval(progressPoll);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
@@ -310,6 +334,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         stderr: `${capturedStreams().stderr}\n${err.message}`,
         timedOut,
         stalled,
+        ...(stalledBy ? { stalledBy } : {}),
         cancelled,
         fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
@@ -333,12 +358,14 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       const streamStats = finishedStream.streamStats;
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
+      if (progressPoll) clearInterval(progressPoll);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       if (cancelPoll) clearInterval(cancelPoll);
       resolvePromise({
         exitCode: code, signal, ...capturedStreams(), timedOut, stalled, cancelled, fatalSignature,
+        ...(stalledBy ? { stalledBy } : {}),
         eventOutput: eventDecoder?.output() ?? '',
         reportedUsage: finishedStream.reportedUsage,
         eventTimeline: { lastResponseSequence, lastToolSequence },

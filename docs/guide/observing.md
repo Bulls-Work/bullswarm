@@ -692,16 +692,29 @@ cannot be read, that check contributes nothing and the score uses the stream.
 | Signal | Fires when | Weight |
 |---|---|---|
 | quiet | no event for 10 minutes while no command is in flight | 2 |
-| no file change | a writing step changed nothing for 20 minutes while at least 5 commands ran | 1 |
+| no file change | a writing step (it owns files, or is `build` or `chore`) changed nothing for 20 minutes while at least 5 commands ran | 1, and 2 (stale on its own) once it lasts 40 minutes |
 | repeat | the same command 3 times in a row, no file change between | 1 |
 | wall | past 3× the router's expected minutes for the step's lane and effort | 1 |
 
 While Bullswarm runs a step's declared checks, only quiet counts, read from
 the checks' heartbeat (`no check heartbeat for <N>m`).
 
-At a score of 2 it prints one line per attempt, for example `⚠ verify looks
-stale: quiet 12m with no command running`. The line wakes `--next` and `--until
-trouble`, whose exit adds the command that answers it:
+No file change alone reaches a score of 2 after 40 minutes (or at the fifth
+command since the last change, if that comes later). A writing step that only
+reads, never quiet and never repeating a command, is still flagged, for
+example `⚠ build looks stale: no file change in 41m while 7 commands ran`. That
+line exists to come before the stop below.
+
+At a score of 2 it prints a line for the attempt, for example `⚠ verify looks
+stale: quiet 12m with no command running`. While the attempt stays stale and
+shows no progress (no file change for a writing step, no output for any
+other), it prints one more line after each further full window (20 minutes for
+a writing step, 10 for any other), one level higher:
+`⚠ verify still looks stale (warning 2) · no file change for 45m00s: <reasons>`.
+Progress while it stays stale restarts the window without a line, and the
+next warning is still one level higher; a reading that is no longer stale,
+with or without progress, ends it, so a later one starts at warning 1 again. Each line wakes `--next`
+and `--until trouble`, whose exit adds the command that answers it:
 
 ```text
 ⚠ verify looks stale: quiet 12m with no command running
@@ -709,7 +722,15 @@ next: bullswarm workflow watch euqrni --until trouble --after 33 --since 2026-09
   or restart: bullswarm workflow step restart euqrni verify
 ```
 
-Nothing restarts on its own. The score was replayed through every real
+The watcher's lines restart nothing on their own. Separately, the dispatcher
+stops a `build` or `chore` worker that changed no file for
+`BULLSWARM_WORKER_NO_PROGRESS_SEC` seconds (default 3600, `0` turns it off) as
+`stalled`, and the step gets its one retry on another pool. With the default
+limit the 40-minute stale line comes before that stop; a step that ran fewer
+than 5 commands since its last change, or a limit below 40 minutes, can be
+stopped without one. A workspace that cannot be read whole (more than 5,000
+changed files, or a folder too large to walk) never triggers the stop. The
+score was replayed through every real
 attempt in a copied home: 128 finished attempts with streams, checked every
 15 seconds of each attempt's life. It flagged three. One was real: a codex
 step at 55 minutes against an expected 13, which had run the same command

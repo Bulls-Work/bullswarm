@@ -36,6 +36,19 @@ Every other saved run (v2, stage 1-3, legacy) is view-only: it stays
 listable, showable and countable, and every driving command refuses it
 before doing anything. Their readers and stored formats are unchanged.
 
+0.38.12 (`docs/design/0.38.12-dry-loops.md`) adds a third condition form for
+a loop's until, `{step, dry}`: the loop ends when a review round finds nothing
+new, skips its other steps on a clean round, and a review with `areas` runs as
+area reviewer steps that rotate (`src/workflow/dry-loops.js`). It came from a
+benchmark where a loop until `review.passed` never passed and same-angle
+reviewers missed bugs. The same release stops a `build` or `chore` worker
+that changes no file for `BULLSWARM_WORKER_NO_PROGRESS_SEC` (failure
+`stalled`, one retry elsewhere) and repeats the stale warning each window;
+runs the default `claude-code` pool with `CLAUDE_CONFIG_DIR` removed so the
+worker uses the keychain login the meter reads (`claudeHomeLaunch`); and has
+a retry that moves pools try the same model, then the same model family,
+first (`retryPoolTiers`).
+
 ## Non-negotiable doctrine
 
 1. Judge delegate output by what can be checked, never by the delegate's exit code or its own report: the content (`src/lib/verify.js`) and, when a step declares them, the command and schema evidence Bullswarm runs itself (`src/workflow/evidence-runner.js`).
@@ -67,7 +80,10 @@ before doing anything. Their readers and stored formats are unchanged.
    a spent window are excluded (`preparePools`, in `dispatch-pools.js`), and a sign-in failure is
    failure kind `auth`: the step's retry skips every pool in the dead
    credential's group (`upstreamGroupOf`), a choice held for that dispatch
-   only and never stored. A step's `route`, the run's pin and the step's
+   only and never stored. A retry that moves pools tries the pools running
+   the failed attempt's model first, then its model family, then the rest,
+   pace ranking inside each tier (`retryPoolTiers`, one pick only), after the
+   router's own 5-hour wall and near-limit ordering over the whole list. A step's `route`, the run's pin and the step's
    capability tier are hard filters applied before pace ranks what is left. The failure rule is one automatic retry per step (a
    process failure on another eligible pool, a gate failure on the same pool
    with the failure attached), then the caller. A refusal at start (a sign-in

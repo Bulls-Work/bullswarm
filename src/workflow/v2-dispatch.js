@@ -32,8 +32,11 @@ import {
   evidenceEnv, evidenceFailureWhy, evidenceSchemaBaseline, evidenceScope, removeCreatedOutOfScope,
   restoreChangedOutOfScope, runStepEvidence,
 } from './evidence-runner.js';
-import { attemptSilenceTimeoutSec, workerSilenceTimeoutSec } from './dispatch-silence.js';
-import { preparePools, selectedModel } from './dispatch-pools.js';
+import {
+  attemptSilenceTimeoutSec, noProgressLimitApplies, workerNoProgressTimeoutSec, workerSilenceTimeoutSec,
+} from './dispatch-silence.js';
+import { createFileChangeClock } from '../lib/stale.js';
+import { preparePools, retryPoolTiers, selectedModel } from './dispatch-pools.js';
 import { attemptPaths, evidenceLogFile, fileBytes, runIdFromPaths, withAttemptArtifacts } from './dispatch-attempt-files.js';
 import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
@@ -215,6 +218,9 @@ export async function dispatchV2Action({
   currentSession = null,
   maxMechanicalRetries = 1,
   silenceTimeoutSec = null,
+  // Seconds a build or chore step may change no file before its worker is
+  // stopped as `stalled`; null reads BULLSWARM_WORKER_NO_PROGRESS_SEC, 0 is off.
+  noProgressTimeoutSec = null,
   shouldCancel = null,
   onAttempt = null,
   onSpawn = null,
@@ -298,6 +304,11 @@ export async function dispatchV2Action({
   const configuredSilenceTimeoutSec = callerSilenceOverride
     ? silenceTimeoutSec
     : workerSilenceTimeoutSec(parentEnv);
+  const noProgressSec = noProgressLimitApplies(action)
+    ? (noProgressTimeoutSec !== null && noProgressTimeoutSec !== undefined
+      ? Number(noProgressTimeoutSec)
+      : workerNoProgressTimeoutSec(parentEnv))
+    : 0;
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
   const failedProbes = new Set();
   // Credential groups a sign-in failure in THIS dispatch showed dead: no
@@ -511,7 +522,7 @@ export async function dispatchV2Action({
     // others just registered. Cheap by construction — a directory read, no
     // meter poll and no network.
     attachForecast(routingPools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
-    const route = choosePool(action.lane ?? 'chore', routingPools, {
+    const routeOptions = {
       preferredPool: effectivePreferredPool,
       // `routingPools` is already filtered to the pin; the router needs the
       // name so routeWhy says the pick was pinned, not compared.
@@ -523,7 +534,38 @@ export async function dispatchV2Action({
       evidence,
       pinSource: gatePick ? GATE_RETRY_PIN_SOURCE : pinSource,
       routeNote: routeFilter?.summary || null,
-    });
+    };
+    // A retry that moves pools (after a sign-in failure or any other) tries
+    // the pools running the failed attempt's model first, then its model
+    // family, then the rest; pace ranks inside each tier (retryPoolTiers).
+    // The router's own ordering comes first: a pool it puts behind the others
+    // over the whole list (a 5-hour forecast past 100%, or near its 5-hour
+    // limit while another pool is behind pace) is kept out of the tiers while
+    // any pool is not. Held for this pick only. A gate retry or a backoff
+    // keeps its own pool.
+    const failedAttempt = attempts.at(-1) ?? null;
+    let route = null;
+    let tierNote = null;
+    let whole = null;
+    if (failedAttempt && lastPool && !gatePick && !backoffReplay) {
+      whole = choosePool(action.lane ?? 'chore', routingPools, routeOptions);
+      const behind = (candidate) => (candidate.forecastOverLimit ? 2 : candidate.nearFiveHourPenalty ? 1 : 0);
+      const rank = new Map((whole.candidates ?? []).map((candidate) => [candidate.pool, behind(candidate)]));
+      const best = Math.min(...rank.values());
+      const tierable = rank.size ? routingPools.filter((candidate) => rank.get(candidate.name) === best) : routingPools;
+      for (const tier of retryPoolTiers(tierable, { pool: lastPool, model: failedAttempt.model }, effort, preferredModel)) {
+        if (tier.match === 'any') break;
+        const tierRoute = choosePool(action.lane ?? 'chore', tier.pools, routeOptions);
+        if (!tierRoute.pick) continue;
+        route = tierRoute;
+        if (tier.pools.length < routingPools.length) {
+          tierNote = `retry kept to pools running ${tier.match === 'model' ? 'the same model as' : 'the same model family as'} the failed attempt (${failedAttempt.model})`;
+        }
+        break;
+      }
+    }
+    route ??= whole ?? choosePool(action.lane ?? 'chore', routingPools, routeOptions);
+    if (route.pick && tierNote) route.why = [route.why, tierNote].filter(Boolean).join(' · ');
     if (route.pick && keptOffDraining.size) {
       // The router never saw the pools kept off above; say so in its words.
       const kept = [...keptOffDraining].map(([name, view]) => `${name} ${Number(view.forecast).toFixed(1)}%${
@@ -698,6 +740,13 @@ export async function dispatchV2Action({
         conversation: session?.invocation ?? null,
         shouldCancel,
         silenceTimeoutSec: attemptSilenceSec,
+        // The same file-change signal the watcher's stale score reads.
+        ...(noProgressSec > 0 ? {
+          noProgressTimeoutSec: noProgressSec,
+          fileChangedAt: createFileChangeClock({
+            streamFile: files.streamFile, targetDir, action, startedAtMs: Date.parse(startedAt),
+          }),
+        } : {}),
         processGroup: true,
         onSpawn: (pid) => {
           workerPid = pid;
@@ -1053,7 +1102,11 @@ export async function dispatchV2Action({
       ...(Array.isArray(verdict.notes) && verdict.notes.length ? { notes: clone(verdict.notes) } : {}),
       ...(!next && blockers.length ? { outsideBlockers: blockers } : {}),
       ...(kind === 'stalled'
-        ? { stalled: true, partialOutput: files.outFile, silentSec: attemptSilenceSec }
+        ? {
+          stalled: true, partialOutput: files.outFile,
+          // The limit that stopped it: silence, or no file change.
+          ...(verdict?.meta?.stalledBy === 'no-progress' ? { noProgressSec } : { silentSec: attemptSilenceSec }),
+        }
         : {}),
     });
     // The provider's own session id (when its stream/transcript reports one)
@@ -1153,7 +1206,9 @@ export async function dispatchV2Action({
       replayPool = pool;
       await backoff(throttleBackoffMs(throttleRetries, { waitMs: verdict.throttleWaitMs }));
     } else if (kind === 'stalled') {
-      fallbackWhy = `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
+      fallbackWhy = verdict?.meta?.stalledBy === 'no-progress'
+        ? `fallback from ${pool.name} after no file change for ${Math.round(noProgressSec)}s`
+        : `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
     }
   }
 

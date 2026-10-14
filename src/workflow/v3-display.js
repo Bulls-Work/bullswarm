@@ -6,6 +6,7 @@
 
 import { glyphs } from '../lib/glyphs.js';
 import { CONTINUED_MARK, CONTINUE_MAX_ROUNDS, controlRecords, describeCondition, parkedWaitingFor, readCondition } from './gates-loops.js';
+import { groupOf, isDryLoop, loopFindingsSummary } from './dry-loops.js';
 import { declaredControl, isV3State } from './v3-phases.js';
 
 const ANSWER_CHARS = 160;
@@ -49,10 +50,17 @@ function loopFacts(state, loop, record, token) {
   const g = glyphs();
   const round = record?.round ?? 1;
   const of = record?.maxRounds ?? loop.maxRounds;
-  const until = describeCondition(loop.until);
+  const group = isDryLoop(loop) ? groupOf(state, loop) : null;
+  const until = describeCondition(loop.until, { areas: Boolean(group?.areas.length) });
   const holds = readCondition(state, loop.until);
+  // A dry loop's findings so far (dry-loops.js), or null.
+  const findings = group ? loopFindingsSummary(loop, record, group) : null;
   switch (record?.status) {
     case 'passed':
+      if (record.reason === 'dry' && findings) {
+        const count = findings.known.length;
+        return { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · dry in round ${round} of ${of} · ${count} finding${count === 1 ? '' : 's'}` };
+      }
       return record.reason === 'continued' || holds !== true
         ? { glyph: CONTINUED_MARK, role: 'passed', text: `loop ${loop.id} · continued by the caller after ${round} of ${of} rounds (condition not met)` }
         : { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · passed in round ${round} of ${of} · ${until}` };
@@ -65,6 +73,12 @@ function loopFacts(state, loop, record, token) {
     case 'blocked':
       return { glyph: g.blocked, role: 'blocked', text: `loop ${loop.id} · blocked in round ${round} of ${of} · ${record.reason ?? 'a step did not succeed'}` };
     default: {
+      if (findings && round > 1) {
+        const before = findings.lastNew.round === round - 1 ? findings.lastNew : null;
+        const said = before ? ` · round ${round - 1}: ${before.new} new${before.reopened ? `, ${before.reopened} still open` : ''}` : '';
+        const unreviewed = findings.unreviewed?.length ? ` · not reviewed since: ${findings.unreviewed.join(', ')}` : '';
+        return { glyph: g.retry, role: 'pending', text: `loop ${loop.id} · round ${round} of ${of} · until ${until}${said}${unreviewed}` };
+      }
       // Between rounds the condition read is the last round's: it did not hold.
       const last = round > 1 ? ` · round ${round - 1}: did not hold` : '';
       return { glyph: g.retry, role: 'pending', text: `loop ${loop.id} · round ${round} of ${of} · until ${until}${last}` };

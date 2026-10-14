@@ -8,6 +8,7 @@ import {
   deliverableTypeOf, laneFitsDeliverable, roleRouting,
 } from './step-vocabulary.js';
 import { normalizeBlindTo, normalizeRoute } from './step-route.js';
+import { AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS, fixStepsOf, groupOf } from './dry-loops.js';
 
 export { ROLES, KIND_ROLES, DELIVERABLE_TYPES, STEP_EVIDENCE_TYPES };
 
@@ -39,10 +40,17 @@ export const KIND_DEFAULTS = Object.freeze({
   'adversarial-acceptance': Object.freeze({ lane: 'analyze', effort: 'high' }),
 });
 export const ACTION_KINDS = Object.freeze(Object.keys(KIND_DEFAULTS));
-// Exactly four advisory codes: two about effort choices, one about a
-// requirement no step checks, one about a command that runs wider than the
-// step's files. Advisories never affect validity, exit codes, or dispatch.
-export const PROGRAM_ADVISORY_CODES = Object.freeze(['all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files']);
+// The advisory codes: two about effort choices, one about a requirement no
+// step checks, one about a command that runs wider than the step's files, one
+// about a step whose only check is a compile or syntax check, and four about
+// v3 review loops (0.38.12): a loop that waits for a review to pass, a dry
+// loop too short to review every area again, a review with one area, and a
+// dry loop whose fix runs before its review on work built outside the loop.
+// Advisories never affect validity, exit codes, or dispatch.
+export const PROGRAM_ADVISORY_CODES = Object.freeze([
+  'all-writers-high', 'docs-at-high', 'requirement-unchecked', 'suite-wider-than-files',
+  'compile-check-only', 'review-loop-until-passed', 'dry-loop-too-short', 'review-one-area', 'dry-loop-fix-first',
+]);
 // `verifyRounds` at the top level is the normalized form this validator
 // returns (see the end of validateActionProgram); accepting it back keeps an
 // accepted program valid when it is validated a second time.
@@ -128,6 +136,95 @@ function commandNamesFiles(cmd, stems) {
 
 const isMarkdown = (file) => typeof file === 'string' && /\.md$/i.test(file);
 
+// A command that only compiles or parses the files (benchmark 2026-10: a tests
+// step was accepted on `python -m py_compile` alone). Each part of a command
+// joined by &&, || or ; must be one of these (a `cd` part is ignored).
+const COMPILE_ONLY = [
+  /^python[0-9.]*\s+-m\s+(py_compile|compileall)\b/, /^node\s+(--check|-c)\b/, /^(npx\s+)?tsc\b.*\s--noEmit\b/,
+  /^cargo\s+(check|build)\b/, /^go\s+(build|vet)\b/, /^ruby\s+-c\b/, /^php\s+-l\b/, /^(ba|z)?sh\s+-n\b/,
+  /^(gcc|g\+\+|clang|clang\+\+)\b.*\s-fsyntax-only\b/, /^javac\b/,
+];
+
+function compileOnly(cmd) {
+  const parts = cmd.split(/&&|\|\||;|\n/).map((part) => part.trim()).filter((part) => part && !/^cd\s/.test(part));
+  return parts.length > 0 && parts.every((part) => COMPILE_ONLY.some((pattern) => pattern.test(part)));
+}
+
+// v3 review loops (0.38.12, docs/design/0.38.12-dry-loops.md section 6).
+function reviewLoopAdvisories(program) {
+  const loops = Array.isArray(program.control?.loops) ? program.control.loops : [];
+  const steps = new Map(program.actions.filter(isObject).map((action) => [action.id, action]));
+  const advisories = [];
+  for (const loop of loops.filter(isObject)) {
+    const until = isObject(loop.until) ? loop.until : {};
+    const step = steps.get(until.step);
+    if (typeof until.field === 'string' && step?.lane === 'analyze' && !(Array.isArray(step.evidence) && step.evidence.length) && loop.maxRounds >= 3) {
+      advisories.push({
+        code: 'review-loop-until-passed',
+        actionId: step.id,
+        message: `loop ${loop.id} ends only when ${step.id}.${until.field} is ${until.equals === false ? 'false' : 'true'}; a strict review of a large change rarely passes outright, so the loop tends to run out of rounds. To stop when a round finds nothing new, use until {"step": "${step.id}", "dry": 1} with a findings answer, and areas to review from several angles (program.md, Reviews)`,
+      });
+    }
+    if (!Number.isInteger(until.dry)) continue;
+    const reviewers = program.actions.filter((action) => isObject(action) && action.areaOf?.step === until.step);
+    const areas = reviewers.length ? reviewers[0].areaOf.areas.length : 1;
+    const perRound = reviewers.length || 1;
+    // Clean rounds needed after a finding: until.dry, or more when the
+    // reviewers take turns over more areas than run in one round.
+    const cover = Math.ceil(areas / perRound);
+    const clean = Math.max(until.dry, cover);
+    // Validation refuses a loop that could not end dry even with no finding
+    // (clean > maxRounds); this is the loop that can, but only that way.
+    if (clean <= loop.maxRounds && loop.maxRounds < 1 + clean) {
+      // Only values validation accepts: maxRounds 1-5, areasPerRound 1 to
+      // min(areas, 5), and enough reviewers to cover every area in the rounds left.
+      const left = loop.maxRounds - 1;
+      const enough = left >= until.dry && left > 0 ? Math.ceil(areas / left) : null;
+      const fix = [
+        ...(1 + clean <= LOOP_MAX_ROUNDS ? [`raise maxRounds to ${1 + clean}`] : []),
+        ...(reviewers.length && enough !== null && enough > perRound && enough <= Math.min(areas, AREAS_PER_ROUND_MAX) ? [`areasPerRound to ${enough}`] : []),
+        ...(until.dry === clean && loop.maxRounds - 1 >= cover && loop.maxRounds - 1 >= 1 ? [`lower until.dry to ${loop.maxRounds - 1}`] : []),
+      ];
+      // Name what sets the count: the rotation over the areas, until.dry, or both.
+      const rotating = reviewers.length > 0 && cover === clean && cover > 1;
+      const cause = rotating && until.dry < clean ? ` to review all ${areas} areas again`
+        : rotating ? ` (until.dry is ${until.dry}, and reviewing all ${areas} areas again takes as many)`
+          : ` (until.dry is ${until.dry})`;
+      advisories.push({
+        code: 'dry-loop-too-short',
+        actionId: null,
+        message: `loop ${loop.id} can end dry only if no round finds anything: after a round with findings it needs ${clean} clean round${clean === 1 ? '' : 's'}${cause}; ${fix.length ? fix.join(' or ') : 'name fewer areas or lower until.dry'}`,
+      });
+    }
+    if (reviewers.length && areas === 1) {
+      advisories.push({
+        code: 'review-one-area',
+        actionId: reviewers[0].id,
+        message: `${until.step} has one area; that is a single review with a focus line. Name 2-4 angles, or drop areas`,
+      });
+    }
+    // A fixer (a build or chore step) before the review that fixes work a
+    // step outside the loop builds: round 1 runs it with no findings yet (it
+    // is then the writer). A read-only step there (a lint) fixes nothing.
+    if (Array.isArray(loop.steps)) {
+      const view = { program: { actions: program.actions.filter(isObject) } };
+      const group = groupOf(view, loop);
+      const { before } = fixStepsOf(view, loop, group);
+      const writes = (id) => ['build', 'chore'].includes(steps.get(id)?.lane);
+      const first = before.find((id) => writes(id) && (steps.get(id)?.dependsOn ?? []).some((dep) => !loop.steps.includes(dep) && writes(dep)));
+      if (first) {
+        const order = [until.step, ...loop.steps.filter((id) => !group.steps.includes(id))];
+        advisories.push({
+          code: 'dry-loop-fix-first',
+          actionId: first,
+          message: `loop ${loop.id} runs ${first} before ${until.step}, so in round 1 no review has run yet and ${first} has nothing to fix. To fix what the review finds, put the review first: ${until.step} depends on the work, ${first} depends on ${until.step}, steps [${order.join(', ')}] (patterns.md 6)`,
+        });
+      }
+    }
+  }
+  return advisories;
+}
+
 /**
  * Non-blocking authoring advice about a program's effort choices. Advisories
  * never change validity, exit codes, or dispatch; they are printed and stored
@@ -175,6 +272,16 @@ export function programAdvisories(program, { requirements = null } = {}) {
       message: `evidence \`${wide}\` runs without naming any of this step's files (${action.ownedFiles.join(', ')}); a failure elsewhere in the suite fails this step and it cannot fix it, so scope the command to the files or move the whole-suite run to a check step with no files`,
     });
   }
+  // A compile or syntax check proves the files parse, not that the work runs.
+  for (const action of resolved) {
+    if (!action.commands.length || !action.commands.every(compileOnly)) continue;
+    advisories.push({
+      code: 'compile-check-only',
+      actionId: action.id,
+      message: `evidence \`${action.commands[0]}\` only proves the files parse (compile); it runs no test, so it cannot show the tests pass. Add a command that runs the tests (for example python -m pytest or node --test) if this step must prove that`,
+    });
+  }
+  advisories.push(...reviewLoopAdvisories(program));
   // A requirement no step gives evidence for can never pass, so the run can
   // finish but never be verified. Said at launch, not discovered at the end.
   if (Array.isArray(requirements) && requirements.length) {

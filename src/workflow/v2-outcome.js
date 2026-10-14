@@ -11,7 +11,7 @@ import { countRetries, declaredEvidence, evidenceResultsIssues } from './step-vo
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isProgramV3 } from './program-v3.js';
 import { resultAnswerField, resultAnswerIssue, summaryAnswerField } from './answers.js';
-import { continuedLoopText, loopOutcomes, schedulerView } from './gates-loops.js';
+import { continuedLoopText, dryLoopText, loopOutcomes, schedulerView } from './gates-loops.js';
 import { isRouteUnavailable } from './step-route.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
@@ -200,7 +200,7 @@ function validateResultUsageBytes(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'evidenceResults', 'bytes', 'routeWhy', 'routeCandidates', 'usage', 'acceptance', 'answer']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'role', 'evidenceResults', 'bytes', 'routeWhy', 'routeCandidates', 'usage', 'acceptance', 'answer', 'skipped']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -225,6 +225,14 @@ function validateResultAction(value, name) {
   validateResultBytes(value.bytes, `${name}.bytes`);
   if (value.usage !== undefined && value.usage !== null) validateUsageAggregate(value.usage, `${name}.usage`);
   if (value.acceptance !== undefined) validateResultAcceptance(value.acceptance, `${name}.acceptance`);
+  // 0.38.12: a step a dry loop skipped (nothing new to fix); absent otherwise.
+  if (value.skipped !== undefined) {
+    resultObject(value.skipped, `${name}.skipped`);
+    exactFields(value.skipped, new Set(['loopId', 'round', 'why']), `${name}.skipped`);
+    resultString(value.skipped.loopId, `${name}.skipped.loopId`);
+    if (!Number.isInteger(value.skipped.round) || value.skipped.round < 1) resultFail(`${name}.skipped.round must be a positive integer`);
+    resultString(value.skipped.why, `${name}.skipped.why`);
+  }
   const answerIssue = resultAnswerIssue(value.answer, name);
   if (answerIssue) resultFail(answerIssue);
 }
@@ -359,8 +367,14 @@ function describeSteps(actions, runtimeStates, limit = 3) {
 // Say what actually happened in words a caller can act on. "All program
 // actions finished successfully" read as success on runs whose verify step
 // had failed the work, and callers stopped there (2026-09 caller study).
-function succeededProgramReason(state, count) {
-  const steps = `all ${count} step${count === 1 ? '' : 's'} succeeded`;
+function succeededProgramReason(state, count, live = state.program.actions) {
+  // A step a dry loop skipped without ever running it (stepProof's rule) is
+  // not called succeeded: the reason names it, as the proof line does.
+  const skipped = live.filter((action) => state.actions.find((entry) => entry.id === action.id)?.skipped
+    && !state.attempts.some((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded')).map((action) => action.id);
+  const steps = skipped.length
+    ? `all ${count} steps finished: ${count - skipped.length} succeeded, ${skipped.length} skipped (nothing to fix): ${skipped.join(', ')}`
+    : `all ${count} step${count === 1 ? '' : 's'} succeeded`;
   // A loop that handed failures back says how many rounds it spent.
   const loop = state.verifyLoop;
   const rounds = loop && loop.max > 1 && loop.rounds.some((round) => round.closedAt && round.failed.length)
@@ -639,7 +653,7 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
     const unsuccessful = live.filter((action) => runtimeStates.get(action.id)?.status !== 'succeeded');
     return unsuccessful.length
       ? { status: 'partial', terminal: true, reason: `${unsuccessful.length} of ${live.length} step${live.length === 1 ? '' : 's'} did not succeed: ${describeSteps(unsuccessful, runtimeStates)}`, gaps: consolidateV2Gaps(state) }
-      : { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: succeededProgramReason(state, live.length) };
+      : { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: succeededProgramReason(state, live.length, live) };
   }
   if (!unresolvedMandatory.length) {
     return { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: 'all mandatory requirements have fresh passing evidence' };
@@ -673,6 +687,9 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
   const loops = isProgramV3(state.program) ? loopOutcomes(state) : [];
   const unmet = loops.filter((loop) => loop.outcome === 'continued-unmet')
     .map((loop) => ` · ${continuedLoopText(loop.id, loop.rounds, loop.maxRounds)}`).join('');
+  // A loop that ended dry says so, with how many findings its reviews made.
+  const dry = loops.filter((loop) => loop.findings?.dryIn !== undefined)
+    .map((loop) => ` · ${dryLoopText(loop.id, loop.findings.dryIn, loop.maxRounds, loop.findings.known.length)}`).join('');
   const result = {
     schemaVersion: V2_RESULT_SCHEMA_VERSION,
     runId: state.runId,
@@ -682,7 +699,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     status,
     verified,
     ...(program ? { executionMode: 'program', ...(workspace ? { workspace: clone(workspace) } : {}) } : {}),
-    reason: `${progress.reason}${acceptedSteps ? ` · ${acceptedSteps} step${acceptedSteps === 1 ? '' : 's'} accepted by choice` : ''}${unmet}`,
+    reason: `${progress.reason}${acceptedSteps ? ` · ${acceptedSteps} step${acceptedSteps === 1 ? '' : 's'} accepted by choice` : ''}${unmet}${dry}`,
     ...(loops.length ? { loops } : {}),
     requirements: state.intent.requirements.map((intentRequirement) => {
       const requirement = state.ledger.requirements[intentRequirement.id];
@@ -727,6 +744,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         routeCandidates: clone(runtime?.lastFailure?.route?.candidates ?? attempt?.routeCandidates ?? null),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
         ...(runtime?.acceptance ? { acceptance: publicAcceptance(runtime.acceptance) } : {}),
+        ...(runtime?.skipped ? { skipped: { loopId: runtime.skipped.loopId, round: runtime.skipped.round, why: runtime.skipped.why } } : {}),
         // Program v3: the step's checked answer (answers.js).
         ...resultAnswerField(definition, runtime),
       };
@@ -1284,6 +1302,8 @@ export const PROOF_TYPES = Object.freeze(['command', 'schema', 'review']);
 // steps apart, never as proven. Kept apart so a run with no answer reads
 // exactly as before.
 const ANSWER_CHECKED = 'answer';
+// A step a dry loop settled without running it (nothing new to fix): no proof type either.
+const SKIPPED = 'skipped';
 
 function isReviewStep(definition) {
   return Array.isArray(definition?.evidenceFor) && definition.evidenceFor.length > 0;
@@ -1305,6 +1325,13 @@ export function stepProof(state, definition, { atFinish = false, features } = {}
   // (only stage-3 code can accept, D34). A check's requirement acceptance
   // labels no step.
   if (stepAccepted((state?.actions ?? []).find((action) => action.id === definition.id))) return { by: ['choice'], reviewPending: false };
+  // A step a dry loop skipped ran no worker that round: it is counted apart,
+  // never proven, unless it ran in an earlier round, whose attempt still
+  // backs it (its output stays the step's, gates-loops.js skipSteps).
+  if ((state?.actions ?? []).find((action) => action.id === definition.id)?.skipped
+    && !(state?.attempts ?? []).some((entry) => entry.actionId === definition.id && entry.status === 'succeeded')) {
+    return { by: [SKIPPED], reviewPending: false };
+  }
   if (isReviewStep(definition) || definition.kind === 'digest') return null;
   if (features !== undefined && features?.proofLabels !== 1 && !declaredEvidence(definition).length) return null;
   const runtime = (state?.actions ?? []).find((action) => action.id === definition.id) ?? null;
@@ -1337,6 +1364,7 @@ export function formatV2ProofLabel(proof) {
   if (!proof) return null;
   const by = proof.by ?? [];
   if (by.includes('choice')) return 'accepted by choice';
+  if (by.includes(SKIPPED)) return 'skipped (nothing to fix)';
   const proven = by.filter((type) => PROOF_TYPES.includes(type));
   const checked = by.includes(ANSWER_CHECKED) ? 'answer checked' : null;
   const pending = proof.reviewPending ? 'review pending' : null;
@@ -1355,6 +1383,7 @@ function summaryProof(rows) {
   if (!labelled.length) return null;
   const byType = Object.fromEntries(PROOF_TYPES.map((type) => [type, labelled.filter((row) => row.proof.includes(type)).length]));
   const acceptedRows = labelled.filter((row) => row.proof.includes('choice'));
+  const skippedRows = labelled.filter((row) => row.proof.includes(SKIPPED));
   // Backed only by an answer that passed its schema: a well-formed claim.
   const checkedRows = labelled.filter((row) => !provenRow(row) && row.proof.includes(ANSWER_CHECKED));
   const unprovenRows = labelled.filter((row) => !row.proof.length);
@@ -1367,6 +1396,7 @@ function summaryProof(rows) {
     // agree (QA37); only the unproven names stop at four.
     ...(checkedRows.length ? { answerChecked: checkedRows.length, answerCheckedSteps: checkedRows.map((row) => row.id) } : {}),
     ...(acceptedRows.length ? { accepted: acceptedRows.length, acceptedSteps: acceptedRows.map((row) => row.id) } : {}),
+    ...(skippedRows.length ? { skipped: skippedRows.length, skippedSteps: skippedRows.map((row) => row.id) } : {}),
   };
 }
 
@@ -1391,6 +1421,10 @@ export function formatV2ProofLine(summary) {
     const names = proof.acceptedSteps ?? [];
     const more = proof.accepted - names.length;
     parts.push(`${proof.accepted} accepted by choice${names.length ? `: ${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : ''}`);
+  }
+  if (proof.skipped > 0) {
+    const names = proof.skippedSteps ?? [];
+    parts.push(`${proof.skipped} skipped (nothing to fix)${names.length ? `: ${names.join(', ')}` : ''}`);
   }
   if (proof.unproven > 0) {
     const names = proof.unprovenSteps ?? [];
@@ -1516,10 +1550,23 @@ function validateResultLoops(loops) {
   loops.forEach((entry, index) => {
     const name = `loops[${index}]`;
     resultObject(entry, name);
-    exactFields(entry, new Set(['id', 'outcome', 'rounds', 'maxRounds']), name);
+    exactFields(entry, new Set(['id', 'outcome', 'rounds', 'maxRounds', 'findings']), name);
     resultString(entry.id, `${name}.id`);
     if (!LOOP_OUTCOMES.has(entry.outcome)) resultFail(`${name}.outcome is invalid`);
     for (const key of ['rounds', 'maxRounds']) if (!Number.isInteger(entry[key]) || entry[key] < 1) resultFail(`${name}.${key} must be a positive integer`);
+    // 0.38.12: a dry loop's findings (gates-loops.js loopOutcomes); optional.
+    if (entry.findings !== undefined) {
+      const findings = entry.findings;
+      resultObject(findings, `${name}.findings`);
+      exactFields(findings, new Set(['known', 'outOfScope', 'rounds', 'stillOpen', 'dryIn', 'unreviewed']), `${name}.findings`);
+      for (const key of ['known', 'outOfScope', 'unreviewed']) {
+        if (findings[key] !== undefined && (!Array.isArray(findings[key]) || findings[key].some((item) => typeof item !== 'string'))) resultFail(`${name}.findings.${key} must be an array of strings`);
+      }
+      if (!Array.isArray(findings.known) || !Array.isArray(findings.outOfScope)) resultFail(`${name}.findings must list known and outOfScope`);
+      if (!Array.isArray(findings.rounds) || findings.rounds.some((count) => !Number.isInteger(count) || count < 0)) resultFail(`${name}.findings.rounds must be an array of counts`);
+      if (findings.stillOpen !== undefined && (!Array.isArray(findings.stillOpen) || findings.stillOpen.some((count) => !Number.isInteger(count) || count < 0))) resultFail(`${name}.findings.stillOpen must be an array of counts`);
+      if (findings.dryIn !== undefined && (!Number.isInteger(findings.dryIn) || findings.dryIn < 1)) resultFail(`${name}.findings.dryIn must be a positive integer`);
+    }
   });
 }
 

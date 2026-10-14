@@ -64,7 +64,7 @@ unless dispatch reports a readiness problem.
 | Step | one agent task | an entry in `steps`: `{id, prompt, dependsOn, …}` |
 | Phase | a label that groups steps; the dashboard groups by it | `phase` on each step |
 | Gate | the run stops there and waits for you, or only when an answer says so | an entry in `gates`: `{id, dependsOn, when?, note?}` |
-| Loop | steps that repeat until one step's answer (or evidence) says stop, at most `maxRounds` (1-5) | an entry in `loops`: `{id, steps, until, maxRounds}` |
+| Loop | steps that repeat until one step's answer (or evidence) says stop, or a review finds nothing new, at most `maxRounds` (1-5) | an entry in `loops`: `{id, steps, until, maxRounds}` |
 
 A build, then a strict review that does not read the builder's own account
 (playbook rule 6):
@@ -158,11 +158,22 @@ Lessons from real runs; each holds for this version.
    reruns the worker. Workers share one tree, so a later step can undo what an earlier
    step's check proved; put the final check where nothing runs after it
    (after integration, or on the step a gate waits behind).
-6. **Reviews that hold.** State the contract as numbered checks, make any
-   difference a finding even when the author justifies it, have it record
-   `holds` and evidence per check with `passed` true only when every check
-   holds, and add `blindTo` the author: a builder's credible reason talks a
-   reviewer who reads it out of a real finding. Let Bullswarm place the review
+6. **Reviews that hold.** State the contract as numbered checks, count any
+   difference as a finding even when the author justifies it, and add
+   `blindTo` the author: a builder's credible reason talks a reviewer who
+   reads it out of a real finding. To fix until a review is clean, loop
+   `[review, fix]` with `until: {"step": "review", "dry": 1}` ("dry": a round
+   that finds nothing new): each later review is told what is already known,
+   the fixer runs only when there is something to fix, and the loop ends
+   after one clean round. There `blindTo` names the builder outside the
+   loop, not the fixer: the review is never handed the fixer's report. A strict review of a large change rarely answers
+   `passed: true`, so a loop until `passed` runs out of rounds. Give the
+   review `areas` (2-3 angles, such as parsing, types, joins): one blind
+   reviewer per area runs in parallel each round, so no angle goes unread.
+   From 4 areas, 3 reviewers run per round and take turns, so ending dry
+   takes more clean rounds (`areasPerRound` sets how many run).
+   An area reviewer costs about one review per round, a fix round about five
+   (patterns.md 6). Let Bullswarm place the review
    by quota as for any step; add `route.independentOf` only for your own
    reason (another model family's view, the owner asked, a compliance rule),
    knowing another provider may still serve the same model, so name
@@ -192,7 +203,8 @@ Lessons from real runs; each holds for this version.
 ## 5. Read the outcome
 
 `outcome:` is `completed`, `partial` or `cancelled`, and `reason:` says why in
-one line. A completed v3 run hands nothing back: every step succeeded. The
+one line. A completed v3 run hands nothing back: every step succeeded, or
+was skipped by a dry loop with nothing to fix (the reason names it). The
 proof line says what backs each step: `proven by command` or `proven by
 schema` (a check Bullswarm ran passed), `answer checked` (its answer passed
 its schema: a well-formed claim, not proof, so it is not counted as proven),
@@ -211,8 +223,8 @@ unfinished and your options: see recovery.md.
 | a step needs you (a needs-you block), a rate limit, a usage limit or no free pool | [recovery.md](references/recovery.md) |
 | a step looks stale; pause, restart or cancel; a run ended `partial` | [recovery.md](references/recovery.md) |
 | writing a program: every field, conditions, answers, evidence, deliverables | [program.md](references/program.md) |
-| a review: the strict form and `blindTo` | [program.md](references/program.md) "Reviews", [patterns.md](references/patterns.md) 3 |
-| copying a workflow: find then check, fix until green, draft to publish, parallel slices, triage | [patterns.md](references/patterns.md) |
+| a review: the strict form and `blindTo`; fixing until it is dry, with areas | [program.md](references/program.md) "Reviews", [patterns.md](references/patterns.md) 3 and 6 |
+| copying a workflow: find then check, fix until green, fix until the review is dry, draft to publish, parallel slices, triage | [patterns.md](references/patterns.md) |
 | `workflow add` and `blocks`, `wait`, `continue`, watch modes and flags, handback fields, routing and reasoning diagnosis, view-only saved runs | [operations.md](references/operations.md) |
 | adding a provider | [providers.md](references/providers.md) |
 | you are sure you found a bug or gap in Bullswarm itself and want to tell us | [README "Reporting a problem"](https://github.com/Bulls-Work/bullswarm#reporting-a-problem-or-contributing): it is optional, ask your human first, and the repo is public |

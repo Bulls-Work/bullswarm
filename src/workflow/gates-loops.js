@@ -22,6 +22,13 @@
 // is not failed by its evidence: the attempt is recorded "checked, not
 // passed" and the condition reads false.
 //
+// A loop whose until is the dry form {step, dry} (0.38.12, dry-loops.js)
+// decides right after its review instead of at the end of the round: the
+// control pass merges the review's findings into the loop's known list, skips
+// the loop's other steps when nothing new is worth fixing, and ends the loop
+// when the review has run dry. A skipped step is settled succeeded with a
+// `skipped` marker (no worker runs), never counted as proven.
+//
 // Loop rounds and gates are what the caller declared, never automatic
 // behaviour. v2 runs have no control nodes and none of this runs for them.
 
@@ -36,7 +43,11 @@ import {
   commitV2Revision, exportV2Plan, planV2Revision, rejectedRevisionRecord, removeStaleReceipts, revisionEventPayload,
 } from './v2-revision.js';
 import { scheduleV2Actions } from './v2-scheduler.js';
+import { presentationStageStatus, stageForAction } from './v2-presentation.js';
 import { glyphs } from '../lib/glyphs.js';
+import {
+  dryContext, dryVerdict, fixStepsOf, fixersOf, groupAnswers, groupOf, isDryLoop, knownBefore, loopFindingsSummary, mergeRound, roundAnswersChanged, skippedInRound,
+} from './dry-loops.js';
 
 // Extra rounds `workflow continue --rounds` may give an out-of-rounds loop.
 export const CONTINUE_MAX_ROUNDS = 5;
@@ -64,11 +75,34 @@ export function loopOutcome(record) {
   return 'pending';
 }
 
-/** Each declared loop's outcome, `[{id, outcome, rounds, maxRounds}]`; [] for a run with none. */
+/**
+ * Each declared loop's outcome, `[{id, outcome, rounds, maxRounds, findings?}]`;
+ * [] for a run with none. `findings` only on a dry loop after its first
+ * review: {known, outOfScope, rounds, stillOpen?, dryIn?, unreviewed?}
+ * (dry-loops.js); stillOpen (per round) only once a round reported one.
+ */
 export function loopOutcomes(state) {
-  return controlRecords(state).filter((record) => record.type === 'loop').map((record) => ({
-    id: record.id, outcome: loopOutcome(record), rounds: record.round ?? 1, maxRounds: record.maxRounds,
-  }));
+  const loops = new Map((controlOf(state)?.loops ?? []).map((loop) => [loop.id, loop]));
+  return controlRecords(state).filter((record) => record.type === 'loop').map((record) => {
+    const loop = loops.get(record.id);
+    const summary = isDryLoop(loop) ? loopFindingsSummary(loop, record, groupOf(state, loop)) : null;
+    return {
+      id: record.id, outcome: loopOutcome(record), rounds: record.round ?? 1, maxRounds: record.maxRounds,
+      ...(summary ? {
+        findings: {
+          known: summary.known, outOfScope: summary.outOfScope, rounds: summary.rounds,
+          ...(summary.stillOpen.some((count) => count > 0) ? { stillOpen: summary.stillOpen } : {}),
+          ...(summary.dryIn !== undefined ? { dryIn: summary.dryIn } : {}),
+          ...(summary.unreviewed ? { unreviewed: summary.unreviewed } : {}),
+        },
+      } : {}),
+    };
+  });
+}
+
+/** The words for a loop that ended dry: `loop harden ended dry in round 3 of 4 (12 findings)`. */
+export function dryLoopText(id, round, maxRounds, known) {
+  return `loop ${id} ended dry in round ${round} of ${maxRounds} (${known} finding${known === 1 ? '' : 's'})`;
 }
 
 // The mark of a loop the caller continued: an arrow, like the other arrows
@@ -121,10 +155,16 @@ function currentAttempt(state, stepId, { succeeded = true } = {}) {
 /**
  * Read a condition ({step, field, equals} or {step, evidence: "passed"}) from
  * the step's current attempt. True or false, or null when it cannot be read
- * (no current answer, no evidence recorded).
+ * (no current answer, no evidence recorded). The dry form reads its loop's
+ * verdict (null before the review's first round is merged).
  */
 export function readCondition(state, condition) {
   if (!condition) return null;
+  if (condition.dry !== undefined) {
+    const loop = controlOf(state)?.loops.find((entry) => isDryLoop(entry) && entry.until.step === condition.step);
+    const record = loop ? controlRecords(state).find((entry) => entry.id === loop.id) : null;
+    return loop ? dryVerdict(loop, record, groupOf(state, loop))?.dry ?? null : null;
+  }
   if (condition.evidence === 'passed') {
     const results = currentAttempt(state, condition.step)?.evidenceResults;
     if (!Array.isArray(results) || !results.length) return null;
@@ -136,9 +176,13 @@ export function readCondition(state, condition) {
   return value[condition.field] === (condition.equals ?? true);
 }
 
-/** The condition in words: `check.passed is true`, `check's evidence passed`. */
-export function describeCondition(condition) {
+/**
+ * The condition in words: `check.passed is true`, `check's evidence passed`,
+ * `review finds nothing new (1 round)` (`areas`: `…, every area`).
+ */
+export function describeCondition(condition, { areas = false } = {}) {
   if (!condition) return 'no condition';
+  if (condition.dry !== undefined) return `${condition.step} finds nothing new (${condition.dry} round${condition.dry === 1 ? '' : 's'}${areas ? ', every area' : ''})`;
   if (condition.evidence === 'passed') return `${condition.step}'s evidence passed`;
   return `${condition.step}.${condition.field} is ${condition.equals === false ? 'false' : 'true'}`;
 }
@@ -151,6 +195,11 @@ export function describeCondition(condition) {
 export function evidenceIsCondition(state, action) {
   const loop = loopOfStep(state, action?.id);
   return Boolean(loop && loop.until?.evidence === 'passed' && loop.until.step === action.id);
+}
+
+// A loop's until in words, saying "every area" when its review has areas.
+function untilText(state, loop) {
+  return describeCondition(loop?.until, { areas: Boolean(groupOf(state, loop)?.areas.length) });
 }
 
 // --- the kernel's pass -------------------------------------------------------
@@ -169,10 +218,12 @@ function loopRerunRequest(state, loop, round, at) {
 
 /**
  * Rerun a loop's body through the revision rerun path. `emit(type, payload)`
- * records an event (the kernel's persists the state). Returns true when the
- * revision applied.
+ * records an event (the kernel's persists the state). `apply()` runs after the
+ * rerun changed the state and before its event, so what the round also
+ * changes (its number, the steps it skips) is saved with the rerun, never
+ * after it. Returns true when the revision applied.
  */
-function rerunLoopBody(state, loop, round, { runDir, at, emit, features = null }) {
+function rerunLoopBody(state, loop, round, { runDir, at, emit, features = null, apply = null }) {
   const request = loopRerunRequest(state, loop, round, at);
   const planned = planV2Revision(state, request, { pendingSteeringIds: [], features });
   if (!planned.ok) {
@@ -181,6 +232,7 @@ function rerunLoopBody(state, loop, round, { runDir, at, emit, features = null }
     return false;
   }
   const committed = commitV2Revision(state, planned, { request, runDir, at });
+  apply?.();
   emit('program.revised', revisionEventPayload(committed.record));
   removeStaleReceipts(runDir, committed.staleReceipts);
   return true;
@@ -231,7 +283,17 @@ function stepGate(state, gate, record, { at, emit, records }) {
 }
 
 function stepLoop(state, loop, record, { at, emit, records, rerun }) {
+  // A waiting dry loop, or one that passed dry, still learns a reviewer's new
+  // answer (a step rerun of it, or of the work it reviews): a finding it
+  // brings is never dropped, and its fixer runs with it (mergeDryRound).
+  if (isDryLoop(loop) && (record.status === 'waiting' || (record.status === 'passed' && record.reason === 'dry'))) {
+    return mergeDryRound(state, loop, record, { at, emit });
+  }
   if (record.status !== 'pending' && record.status !== 'blocked') return false;
+  // A dry loop decides right after its review, before the scheduler can
+  // start a step that comes after it, even when a step beside the review has
+  // failed: the merge is what skips the fixer on a clean round.
+  if (isDryLoop(loop) && mergeDryRound(state, loop, record, { at, emit })) return true;
   const body = loop.steps.map((id) => [id, outcomeOf(state, records, id)]);
   const failed = body.find(([, status]) => UNSUCCESSFUL.has(status));
   if (failed) {
@@ -246,14 +308,21 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
     return true;
   }
   const holds = readCondition(state, loop.until) === true;
+  if (holds && isDryLoop(loop)) {
+    // Dry since the merge; a step beside the review was still running then.
+    settle(record, 'passed', at, 'dry');
+    emitDryPassed(state, loop, record, { emit });
+    return true;
+  }
   if (holds) {
     settle(record, 'passed', at);
-    emit('loop.passed', { loopId: loop.id, round: record.round, of: record.maxRounds, condition: describeCondition(loop.until) });
+    emit('loop.passed', { loopId: loop.id, round: record.round, of: record.maxRounds, condition: untilText(state, loop) });
     return true;
   }
   if (record.round >= record.maxRounds) {
     settle(record, 'waiting', at, 'out-of-rounds');
-    emit('loop.out-of-rounds', { loopId: loop.id, round: record.round, of: record.maxRounds, condition: describeCondition(loop.until) });
+    const findings = dryOutOfRounds(state, loop, record);
+    emit('loop.out-of-rounds', { loopId: loop.id, round: record.round, of: record.maxRounds, condition: untilText(state, loop), ...(findings ? { findings } : {}) });
     return true;
   }
   return nextRound(state, loop, record, { at, emit, rerun });
@@ -261,15 +330,194 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
 
 function nextRound(state, loop, record, { at, emit, rerun }) {
   const round = record.round + 1;
-  if (!rerun(loop, round)) {
+  // A dry loop's steps before its review fix what the last round found: none
+  // of them runs when it found nothing worth fixing.
+  const last = isDryLoop(loop) ? record.findings?.rounds?.find((entry) => entry.round === round - 1) ?? null : null;
+  let skipped = [];
+  // The round number and the skips go into the rerun's own state change
+  // (one save), so a kernel that stops right after it never runs a skipped step.
+  const started = rerun(loop, round, () => {
+    record.round = round;
+    settle(record, 'pending', at);
+    if (last && last.new + last.reopened === 0) {
+      skipped = skipSteps(state, fixStepsOf(state, loop, groupOf(state, loop)).before, { loopId: loop.id, round, at });
+    }
+  });
+  if (!started) {
     settle(record, 'blocked', at, 'its next round could not start');
     emit('loop.blocked', { loopId: loop.id, round: record.round, of: record.maxRounds, why: record.reason });
     return true;
   }
-  record.round = round;
-  settle(record, 'pending', at);
-  emit('loop.round', { loopId: loop.id, round, of: record.maxRounds, condition: describeCondition(loop.until) });
+  emit('loop.round', {
+    loopId: loop.id, round, of: record.maxRounds, condition: untilText(state, loop),
+    ...(last ? { found: { new: last.new, reopened: last.reopened } } : {}),
+  });
+  emitSkipped(state, skipped, { at, emit });
   return true;
+}
+
+// --- dry loops (dry-loops.js) ---------------------------------------------------
+
+const SKIP_WHY = 'nothing new to fix';
+
+// Settle loop steps that have nothing to fix this round: succeeded, no worker,
+// marked skipped. A step that ran in an earlier round keeps pointing at that
+// run's output and checked answer, so the result still names what it did (its proof is read from
+// that attempt, v2-outcome.js). Returns the ids it settled.
+function skipSteps(state, ids, { loopId, round, at }) {
+  const settled = [];
+  for (const id of ids) {
+    const runtime = state.actions.find((action) => action.id === id);
+    if (!runtime || !['pending', 'ready'].includes(runtime.status)) continue;
+    const ran = state.attempts.findLast((attempt) => attempt.actionId === id && attempt.status === 'succeeded') ?? null;
+    Object.assign(runtime, {
+      status: 'succeeded', finishedAt: at, outputFile: ran?.outputFile ?? null, artifactIds: [], lastFailure: null,
+      skipped: { loopId, round, why: SKIP_WHY, at },
+    });
+    // Its checked answer from that run too (the round's rerun cleared it).
+    const declared = state.program.actions.find((action) => action.id === id);
+    if (declared?.answer !== undefined && ran?.answer?.ok) runtime.answer = { attemptId: ran.id, value: clone(ran.answer.value) };
+    settled.push(id);
+  }
+  return settled;
+}
+
+// The finished event of each skipped step, then its phase started and
+// completed as the kernel does for a step it settles without running (a
+// blocked one), so a phase never reads as completed before it started.
+function emitSkipped(state, ids, { at, emit }) {
+  for (const id of ids) {
+    const { loopId, round, why } = state.actions.find((action) => action.id === id).skipped;
+    const stage = stageForAction(state.presentation, id);
+    if (stage && !stage.startedAt) {
+      stage.startedAt = at;
+      emit('presentation.stage_started', { stageId: stage.id, label: stage.label, revision: stage.revision, actionIds: clone(stage.actionIds) });
+    }
+    emit('action.finished', { actionId: id, status: 'succeeded', skipped: { loopId, round, why } });
+  }
+  if (!ids.length) return;
+  for (const stage of state.presentation?.stages ?? []) {
+    if (!stage.startedAt || stage.completedAt) continue;
+    const status = presentationStageStatus(stage, state.actions);
+    if (!status.terminal) continue;
+    stage.completedAt = at;
+    emit('presentation.stage_completed', {
+      stageId: stage.id, label: stage.label, revision: stage.revision,
+      status: status.successful ? 'completed' : 'completed-with-gaps', completed: status.completed, total: status.total,
+    });
+  }
+}
+
+/**
+ * Once every reviewer of the round has succeeded, merge its findings into the
+ * loop's record (once per round, or again when a reviewer answered anew
+ * since: a `step rerun` of it or of the work it reviews), skip the steps after
+ * the review when nothing is worth fixing, and end the loop when the review
+ * ran dry and every other step of the round has succeeded or was skipped (a
+ * step beside the review may still be running; the loop then passes when it
+ * is done, in stepLoop). One state change, made before any event is written,
+ * so a kernel that stops in between never runs a fixer that should have been
+ * skipped. A blocked loop merges too (a step beside the review failed), so its
+ * skips still hold. A waiting loop only learns the round: it waits unless its
+ * review has now run dry. A loop that passed dry and is no longer dry goes
+ * back to pending in its round, so its fixer runs with the new findings; one
+ * still dry stays passed. True when it merged.
+ */
+function mergeDryRound(state, loop, record, { at, emit }) {
+  const group = groupOf(state, loop);
+  const findings = record.findings ?? { rounds: [], known: [], knownDropped: 0 };
+  const already = findings.rounds.find((entry) => entry.round === record.round) ?? null;
+  if (already ? !roundAnswersChanged(state, group, already) : record.status === 'waiting' || record.status === 'passed') return false;
+  if (!group.steps.every((id) => state.actions.find((action) => action.id === id)?.status === 'succeeded')) return false;
+  const { before, after } = fixStepsOf(state, loop, group);
+  const fixes = before.length + after.length > 0;
+  // Only a fixer mends a known finding between rounds, so only with one is
+  // a finding reported still open news (a lint beside the review is no fixer).
+  const fixers = fixersOf(state, loop, group);
+  const answers = groupAnswers(state, group, record.round);
+  // Merged again: from the list as it stood before this round.
+  const base = already ? knownBefore(findings, record.round) : { known: findings.known, knownDropped: findings.knownDropped, dropped: findings.dropped ?? [] };
+  const merged = mergeRound({ answers, ...base, round: record.round, reopen: fixers.length > 0 });
+  const worthy = merged.entry.new + merged.entry.reopened;
+  const entry = {
+    ...merged.entry, fix: !fixes ? 'none' : worthy ? 'runs' : 'skipped',
+    answers: Object.fromEntries(answers.map((answer) => [answer.step, answer.attemptId])),
+  };
+  record.findings = {
+    rounds: [...findings.rounds.filter((item) => item.round !== record.round), entry], known: merged.known, knownDropped: merged.knownDropped,
+    ...(merged.dropped.length ? { dropped: merged.dropped } : {}),
+  };
+  const skipped = worthy ? [] : skipSteps(state, after, { loopId: loop.id, round: record.round, at });
+  const verdict = dryVerdict(loop, record, group);
+  const done = loop.steps.every((id) => state.actions.find((action) => action.id === id)?.status === 'succeeded');
+  const passes = verdict.dry && done;
+  const known = merged.known.filter((item) => item.inScope).length;
+  const wasPassed = record.status === 'passed';
+  if (passes && !wasPassed) settle(record, 'passed', at, 'dry');
+  // Passed dry, and the new answer is not dry: the round goes on.
+  if (!verdict.dry && wasPassed) settle(record, 'pending', at);
+  emit('loop.findings', {
+    loopId: loop.id, round: record.round, of: record.maxRounds,
+    new: entry.new, reopened: entry.reopened, repeated: entry.repeated, outOfScope: entry.outOfScope, known,
+    areas: entry.reviewed.map((area) => group.areas[area] ?? null).filter(Boolean),
+    unreviewed: verdict.unreviewed.map((area) => group.areas[area]).filter(Boolean),
+    clean: verdict.clean, need: verdict.need, dry: verdict.dry, fix: fixWhen(entry.fix, after, fixers),
+  });
+  emitSkipped(state, skipped, { at, emit });
+  if (passes && !wasPassed) emitDryPassed(state, loop, record, { emit });
+  return true;
+}
+
+// The loop.passed event of a dry loop.
+function emitDryPassed(state, loop, record, { emit }) {
+  const group = groupOf(state, loop);
+  emit('loop.passed', {
+    loopId: loop.id, round: record.round, of: record.maxRounds, reason: 'dry',
+    known: (record.findings?.known ?? []).filter((item) => item.inScope).length,
+    areas: group.areas.length > 0, condition: untilText(state, loop),
+  });
+}
+
+// A round's fix as the watch says it: 'none' for a loop with no fixer (its
+// other steps only check); 'next' when the round found something and every
+// fixer comes before the review ([fix, review]), so the fix runs at the start
+// of the next round, never in this one; else the record's own.
+function fixWhen(fix, after, fixers) {
+  if (!fixers.length) return 'none';
+  return fix === 'runs' && !after.some((id) => fixers.includes(id)) ? 'next' : fix;
+}
+
+// What a dry loop out of rounds still lacks: {lastNew, known, unreviewed}.
+function dryOutOfRounds(state, loop, record) {
+  if (!isDryLoop(loop)) return null;
+  const group = groupOf(state, loop);
+  const summary = loopFindingsSummary(loop, record, group);
+  if (!summary) return null;
+  const lastNew = { ...summary.lastNew, fix: fixWhen(summary.lastNew.fix, fixStepsOf(state, loop, group).after, fixersOf(state, loop, group)) };
+  return { lastNew, known: summary.known.length, unreviewed: summary.unreviewed ?? [] };
+}
+
+// What a round that found something says about its fix, or null for a loop
+// with no fix step: a fix that ran after the review was not reviewed; a fix
+// before the review has not run on these findings yet.
+function lastFixText(fix) {
+  if (fix === 'next') return 'not fixed yet, the fix runs first in another round';
+  return fix === 'none' ? null : 'its fix was not reviewed';
+}
+
+// The waiting note of a dry loop out of rounds: what the last round found and
+// which areas were not reviewed since the last finding.
+function dryWaitingNote(state, loop, record) {
+  const facts = dryOutOfRounds(state, loop, record);
+  if (!facts) return null;
+  const { lastNew, unreviewed } = facts;
+  const found = lastNew.new + lastNew.reopened;
+  const parts = [`out of rounds (${record.round} of ${record.maxRounds}); the review did not run dry`];
+  parts.push(found
+    ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? `${lastNew.fix === 'next' ? ',' : ' and'} ${lastFixText(lastNew.fix)}` : ''}`
+    : `round ${lastNew.round} found nothing new`);
+  if (unreviewed.length) parts.push(`not reviewed since the last finding: ${unreviewed.join(', ')}`);
+  return parts.join('; ');
 }
 
 /**
@@ -362,7 +610,7 @@ function advanceControlNodes(state, { runDir, at, emit, rerun }) {
  */
 export function kernelControlPass(state, { runDir, at, emit, features = null, active = 0, schedulingOptions = {} }) {
   if (!controlOf(state)) return null;
-  const rerun = (loop, round) => rerunLoopBody(state, loop, round, { runDir, at, emit, features });
+  const rerun = (loop, round, apply) => rerunLoopBody(state, loop, round, { runDir, at, emit, features, apply });
   if (advanceControlNodes(state, { runDir, at, emit, rerun })) return { changed: true };
   const graph = schedulerView(state);
   const selectable = scheduleV2Actions(graph.actions, graph.states, schedulingOptions).selected.length > 0;
@@ -382,7 +630,7 @@ function waitingNodes(state) {
     if (record.type === 'gate') note = control.gates.find((gate) => gate.id === record.id)?.note;
     else {
       const loop = control.loops.find((entry) => entry.id === record.id);
-      note = `out of rounds (${record.round} of ${record.maxRounds}); ${describeCondition(loop?.until)} did not hold`;
+      note = dryWaitingNote(state, loop, record) ?? `out of rounds (${record.round} of ${record.maxRounds}); ${describeCondition(loop?.until)} did not hold`;
     }
     return { id: record.id, type: record.type, since: record.at, ...(note ? { note } : {}) };
   });
@@ -481,7 +729,7 @@ export function continueRefusal(state, nodeId, rounds) {
  */
 export function applyContinueOffline(state, intent, { runDir, at, features = null }) {
   const emit = (type, payload) => appendEvent(runDir, state, type, payload);
-  const rerun = (loop, round) => rerunLoopBody(state, loop, round, { runDir, at, emit, features });
+  const rerun = (loop, round, apply) => rerunLoopBody(state, loop, round, { runDir, at, emit, features, apply });
   const outcome = applyContinue(state, intent, { at, emit, rerun });
   markContinueApplied(runDir, intent, { at, refused: outcome.applied ? null : outcome.why });
   if (!outcome.applied) return outcome;
@@ -568,6 +816,16 @@ export function controlWatchEvent(event, { token }) {
       return {
         type: event.type, loopId: payload.loopId ?? null, round: payload.round ?? null, of: payload.of ?? null,
         rounds: payload.rounds ?? null, reason: payload.reason ?? null, why: payload.why ?? null, condition: payload.condition ?? null, token,
+        // A dry loop's facts (dry-loops.js); absent on every other loop.
+        ...(payload.found ? { found: payload.found } : {}),
+        ...(payload.findings ? { findings: payload.findings } : {}),
+        ...(Number.isInteger(payload.known) ? { known: payload.known, areas: payload.areas === true } : {}),
+      };
+    case 'loop.findings':
+      return {
+        type: event.type, loopId: payload.loopId ?? null, round: payload.round ?? null, of: payload.of ?? null,
+        new: payload.new ?? 0, reopened: payload.reopened ?? 0, repeated: payload.repeated ?? 0, outOfScope: payload.outOfScope ?? 0,
+        known: payload.known ?? 0, areas: payload.areas ?? [], unreviewed: payload.unreviewed ?? [], fix: payload.fix ?? null, token,
       };
     case 'control.continue_refused':
       return { type: event.type, nodeId: payload.nodeId ?? null, why: payload.why ?? null, token };
@@ -601,13 +859,39 @@ export function renderControlEvent(event) {
     case 'gate.blocked':
       return `${g.blocked} gate ${event.gateId} blocked · ${event.why ?? 'a dependency did not succeed'}`;
     case 'loop.round':
+      if (event.found) {
+        const found = event.found.new + event.found.reopened;
+        return `${g.retry} loop ${event.loopId} round ${event.round} of ${event.of} · ${found
+          ? `the review found ${event.found.new} new${event.found.reopened ? `, ${event.found.reopened} still open` : ''}`
+          : 'the review found nothing new, not yet dry'}`;
+      }
       return `${g.retry} loop ${event.loopId} round ${event.round} of ${event.of} · ${event.condition ?? 'its condition'} did not hold`;
+    case 'loop.findings': {
+      const counts = [`${event.new} new`, ...(event.reopened ? [`${event.reopened} still open`] : []), ...(event.repeated ? [`${event.repeated} repeated`] : []), ...(event.outOfScope ? [`${event.outOfScope} out of scope`] : [])];
+      const fix = event.fix === 'runs' ? 'fix runs'
+        : event.fix === 'next' ? (event.round < event.of ? 'fix runs next round' : 'fix needs another round')
+          : event.fix === 'skipped' ? 'fix skipped' : null;
+      return `· loop ${event.loopId} round ${event.round} of ${event.of} · review${event.areas.length ? ` (${event.areas.join(', ')})` : ''}: ${counts.join(', ')} · ${event.known} known${fix ? ` · ${fix}` : ''}`;
+    }
     case 'loop.passed':
+      if (event.reason === 'dry') {
+        return `${g.ok} loop ${event.loopId} dry in round ${event.round} of ${event.of} · no new findings${event.areas ? ', every area reviewed' : ''} · ${event.known} found in all`;
+      }
       return event.reason === 'continued'
         ? `${CONTINUED_MARK} ${continuedLoopText(event.loopId, event.round, event.of)}`
         : `${g.ok} loop ${event.loopId} passed in round ${event.round} of ${event.of} · ${event.condition ?? 'its condition'}`;
-    case 'loop.out-of-rounds':
-      return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${event.condition ?? 'its condition'} did not hold · continue: bullswarm workflow continue ${event.token} ${event.loopId} --rounds <n>`;
+    case 'loop.out-of-rounds': {
+      const continueTail = `continue: bullswarm workflow continue ${event.token} ${event.loopId} --rounds <n>`;
+      if (event.findings) {
+        const { lastNew, unreviewed = [] } = event.findings;
+        const found = lastNew.new + lastNew.reopened;
+        const said = found
+          ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? ` (${lastFixText(lastNew.fix)})` : ''}`
+          : `round ${lastNew.round} found nothing new`;
+        return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${said}${unreviewed.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''} · ${continueTail}`;
+      }
+      return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${event.condition ?? 'its condition'} did not hold · ${continueTail}`;
+    }
     case 'loop.blocked':
       return `${g.blocked} loop ${event.loopId} blocked in round ${event.round}${event.of != null ? ` of ${event.of}` : ''} · ${event.why ?? 'a step did not succeed'}`;
     case 'loop.continued':
@@ -655,20 +939,39 @@ function evidenceLines(results) {
 export function previousRoundBlock(state, action) {
   const loop = loopOfStep(state, action?.id);
   if (!loop) return null;
+  // A dry loop's reviewer gets its review block instead (dry-loops.js): it is
+  // never handed a fix step's answer or output, blindTo or not.
+  const dry = dryContext(state, action.id);
+  if (dry?.role === 'review') return null;
   const record = controlRecords(state).find((entry) => entry.id === loop.id);
   if (!record || record.round < 2) return null;
   const lines = [
     `## Previous round (loop ${loop.id}, now round ${record.round} of ${record.maxRounds})`,
-    `The loop runs its steps again because ${describeCondition(loop.until)} did not hold after round ${record.round - 1}. What its steps produced in round ${record.round - 1}:`,
+    `The loop runs its steps again because ${untilText(state, loop)} did not hold after round ${record.round - 1}. What its steps produced in round ${record.round - 1}:`,
   ];
   // A step blind to another (blindTo) sees that it ran, its status and its
-  // evidence (Bullswarm's own facts), never its answer or output file.
+  // evidence (Bullswarm's own facts), never its answer or output file. A dry
+  // loop's fix step reads the review's findings in its own block instead.
   const blind = new Set(Array.isArray(action.blindTo) ? action.blindTo : []);
+  const merged = new Set(dry ? dry.group.steps : []);
   for (const stepId of loop.steps) {
-    const attempt = previousAttempt(state, stepId);
+    // A fix step the dry loop skipped last round did not run then; its
+    // latest attempt is from an earlier round.
+    if (dry && skippedInRound(state, loop, record, stepId, record.round - 1)) {
+      lines.push(`- ${stepId}: skipped in round ${record.round - 1} (nothing new to fix)`);
+      continue;
+    }
+    // A reviewer's round-before attempt is the one that round merged; one
+    // accepted without an answer gave none (an older round's is not shown).
+    const mergedEntry = merged.has(stepId) ? record.findings?.rounds?.find((entry) => entry.round === record.round - 1) : null;
+    if (mergedEntry?.answers && (mergedEntry.answers[stepId] ?? null) === null) {
+      lines.push(`- ${stepId}: no answer in round ${record.round - 1} (accepted without one)`);
+      continue;
+    }
+    const attempt = mergedEntry?.answers ? state.attempts.find((item) => item.id === mergedEntry.answers[stepId]) ?? null : previousAttempt(state, stepId);
     if (!attempt) { lines.push(`- ${stepId}: did not run`); continue; }
     lines.push(`- ${stepId} (attempt ${attempt.id}, ${attempt.status})`);
-    if (!blind.has(stepId) && attempt.answer && attempt.answer.value !== undefined && attempt.answer.value !== null) {
+    if (!blind.has(stepId) && !merged.has(stepId) && attempt.answer && attempt.answer.value !== undefined && attempt.answer.value !== null) {
       lines.push(`  - answer: ${cut(JSON.stringify(attempt.answer.value), ANSWER_SHOWN_CHARS)}`);
     }
     lines.push(...evidenceLines(attempt.evidenceResults));
@@ -703,14 +1006,25 @@ export function v3LaunchInstruction(control, token) {
   return { purpose, command: `bullswarm workflow add ${token} --steps part.json` };
 }
 
-/** The lines `plan validate` prints for a v3 program's gates and loops. */
-export function controlSummaryLines(control) {
+/**
+ * The lines `plan validate` prints for a v3 program's gates and loops. With
+ * the program's steps, a dry loop's area reviewers read as their review.
+ */
+export function controlSummaryLines(control, actions = []) {
   const lines = [];
   for (const gate of control?.gates ?? []) {
     lines.push(`  gate ${gate.id.padEnd(19)} after ${gate.dependsOn.join(', ') || '(nothing)'}${gate.when ? ` · waits when ${describeCondition(gate.when)}` : ' · waits for you'}${gate.note ? ` · ${gate.note}` : ''}`);
   }
   for (const loop of control?.loops ?? []) {
-    lines.push(`  loop ${loop.id.padEnd(19)} steps ${loop.steps.join(', ')} · until ${describeCondition(loop.until)} · at most ${loop.maxRounds} round${loop.maxRounds === 1 ? '' : 's'}`);
+    const group = groupOf({ program: { actions } }, loop);
+    const reviewers = new Set(group?.areas.length ? group.steps : []);
+    const shown = loop.steps.filter((id) => !reviewers.has(id) || id === group.steps[0])
+      .map((id) => (reviewers.has(id) ? `${group.id} (${group.steps.length} area reviewer${group.steps.length === 1 ? '' : 's'})` : id));
+    lines.push(`  loop ${loop.id.padEnd(19)} steps ${shown.join(', ')} · until ${describeCondition(loop.until, { areas: reviewers.size > 0 })} · at most ${loop.maxRounds} round${loop.maxRounds === 1 ? '' : 's'}`);
+    if (reviewers.size) {
+      const rotating = group.perRound < group.areas.length ? ', rotating' : '';
+      lines.push(`       areas ${group.areas.join(' · ')} (${group.perRound} per round${rotating})`);
+    }
   }
   return lines;
 }

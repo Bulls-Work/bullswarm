@@ -1,6 +1,6 @@
 # Workflow patterns
 
-Five workflows to copy, each written from the four blocks (steps, phases,
+Six workflows to copy, each written from the four blocks (steps, phases,
 gates, loops). Every program below passes `bullswarm workflow plan validate`
 exactly as printed here; each `validate:` block is the command's real output
 without its last line (the launch command). A fragment passed to `workflow
@@ -131,7 +131,83 @@ now: a `fix` that has nothing to change fails `not-produced` and blocks the
 loop. Inside the loop, a failed `npm test` does not fail `check`; it makes the
 condition false and starts the next round, whose `fix` sees the failures. After
 3 rounds the loop waits for you: `bullswarm workflow continue <run>
-until-green --rounds 2`, or take over.
+until-green --rounds 2`, or take over. For a review rather than a test, use
+pattern 6.
+
+## 6. Fix until the review is dry
+
+(Numbered 6 so the other patterns keep their numbers; it follows pattern 2
+because it is the review form of it.) A build, then a loop that reviews the
+work from three angles and fixes what each round finds, until a round finds
+nothing new. "Dry" is that round: a review round that reports no new finding
+worth fixing.
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    { "id": "build", "lane": "build", "files": ["src/query/engine.py", "tests/test_engine.py"],
+      "prompt": "In /work/acme, implement SPEC.md in src/query/engine.py with tests in tests/test_engine.py.",
+      "evidence": [{ "type": "command", "cmd": "cd /work/acme && python -m pytest tests/test_engine.py", "timeoutSec": 300 }] },
+    { "id": "review", "dependsOn": ["build"], "blindTo": ["build"],
+      "areas": ["grammar and parsing", "expressions and types", "joins and aggregates"],
+      "prompt": "In /work/acme, review src/query/engine.py against SPEC.md. Every way the code breaks SPEC.md is a finding, even if it looks harmless or intended: the caller decides. Try concrete inputs. Change no file.",
+      "answer": { "type": "object", "required": ["findings"], "properties": { "findings": { "type": "array", "items": {
+        "type": "object", "required": ["title", "inScope", "where"],
+        "properties": { "title": { "type": "string" }, "inScope": { "type": "boolean" }, "stillOpen": { "type": "boolean" },
+                        "where": { "type": "string" }, "repro": { "type": "string" } } } } } } },
+    { "id": "fix", "dependsOn": ["review"], "lane": "build", "files": ["src/query/engine.py", "tests/test_engine.py"],
+      "prompt": "In /work/acme, fix every finding in the Findings to fix block in src/query/engine.py, with a regression test for each in tests/test_engine.py. Keep other workers' edits.",
+      "evidence": [{ "type": "command", "cmd": "cd /work/acme && python -m pytest tests/test_engine.py", "timeoutSec": 300 }] }
+  ],
+  "loops": [
+    { "id": "harden", "steps": ["review", "fix"], "until": { "step": "review", "dry": 1 }, "maxRounds": 3 }
+  ]
+}
+```
+
+```text
+validate:
+✓ program v3 valid: 5 steps, 0 gates, 1 loop (nothing launched)
+  build                    build/medium deliverable=files evidence=command
+  review-area-1            analyze/medium answer after build blind to build
+  review-area-2            analyze/medium answer after build blind to build
+  review-area-3            analyze/medium answer after build blind to build
+  fix                      build/medium deliverable=files evidence=command after review-area-1, review-area-2, review-area-3
+  checks   not run · add --try-checks to run each command check once now against the current tree (it may take time and must not change files)
+  loop harden              steps review (3 area reviewers), fix · until review finds nothing new (1 round, every area) · at most 3 rounds
+       areas grammar and parsing · expressions and types · joins and aggregates (3 per round)
+```
+
+Why the review comes first: the build is outside the loop, so round 1 reviews
+the build, and a build with nothing wrong ends the loop after one review and
+no fix.
+
+What each worker is told:
+
+- Each area reviewer (`review-area-1` to `review-area-3`, ordinary steps that
+  run in parallel) gets a focus line naming its area and, from round 2, the
+  "Already known" list (report a listed finding again, with `stillOpen: true`,
+  only when it is still present). It never sees the fixer's
+  answer or output.
+- The fixer runs only when the round found something new in scope (or a
+  known finding a reviewer says is `stillOpen`). It gets a "Findings to fix"
+  block: the merged findings, each in full, and the reviewers' answer files.
+  On a clean round it is skipped, recorded `skipped (nothing to fix)` (it
+  keeps the output and proof of the round it ran in), and the loop ends `dry`.
+
+Cost, with a review at about 40k output tokens and a fix round at about 200k
+(the real figures depend on the work): a round that finds something costs 3 ×
+40k + 200k = 320k, a clean round 120k, so this loop costs at most 960k, the
+same as one review over 4 rounds that all find something. More areas than
+reviewers per round (`areasPerRound`) rotate, and a dry stop then needs every
+area reviewed after the last finding, so give such a loop a round more.
+
+When it runs out of rounds the loop waits and names what the last round found
+and which areas were not reviewed since. `bullswarm workflow continue <run>
+harden --rounds 1` runs one more review round (120k), and the fix only if it
+finds something to fix (a new finding, or a known one still open);
+`continue` without `--rounds` ends it unmet.
 
 ## 3. Draft, critique, approve, publish
 

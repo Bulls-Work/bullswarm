@@ -120,6 +120,28 @@ wakes on the two that wait for you:
 → loop <loop> continued by the caller after 3 of 3 rounds (condition not met)
 ```
 
+A dry loop (until `{"step": "review", "dry": 1}`, program.md "Fix until the
+review is dry") adds a findings line after each review round and a line for
+a step it skips; neither wakes `--until trouble`. It ends `dry`, or runs out
+of rounds naming what the last round found and the areas not reviewed since
+(real output, from an echo-provider run):
+
+```text
+· loop harden round 1 of 3 · review (grammar and parsing, joins): 1 new, 1 repeated · 1 known · fix runs
+↻ loop harden round 2 of 3 · the review found 1 new
+· loop harden round 2 of 3 · review (grammar and parsing, joins): 0 new, 2 repeated · 1 known · fix skipped
+· fix skipped · loop harden round 2: nothing new to fix
+✓ loop harden dry in round 2 of 3 · no new findings, every area reviewed · 1 found in all
+⧖ loop <loop> out of rounds (2 of 2) · round 2 found nothing new · not reviewed since: types · continue: bullswarm workflow continue <shortId> <loop> --rounds <n>
+```
+
+The result's reason adds `loop harden ended dry in round 2 of 3 (1
+finding)`, its `loops[i].findings` lists the known titles (`dryIn` only for
+a dry stop), and the proof line counts a step that was skipped without ever
+running apart: `1 skipped (nothing to fix): fix`. A fix that ran in an
+earlier round keeps that run's output file and proof (its `skipped` field
+still says which round it sat out).
+
 A gate `ship` after the loop `until-green` wakes you like this (real output);
 the loop's line comes with the wake:
 

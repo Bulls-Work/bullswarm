@@ -483,6 +483,8 @@ export function applyV2Revision(state, planned, { request, at }) {
     delete runtime.acceptance;
     // A v3 step's current answer belongs to the superseded attempts.
     delete runtime.answer;
+    // So does a dry loop's skip (0.38.12): the step runs, or is skipped, anew.
+    delete runtime.skipped;
     if (redefined.has(id)) runtime.programRevision = revision;
   }
   for (const entry of planned.acceptances ?? []) {

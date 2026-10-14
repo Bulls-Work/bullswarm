@@ -33,7 +33,12 @@ const ACTION_STATE_FIELDS = new Set([
   // Program v3: the step's current answer {attemptId, value}, the parsed
   // answer of the attempt that finished it. Absent on every v2 step.
   'answer',
+  // 0.38.12: a dry loop settled this step succeeded without running it,
+  // because its review found nothing new to fix {loopId, round, why, at}.
+  // Never proof; any reset of the step clears it.
+  'skipped',
 ]);
+const SKIPPED_FIELDS = new Set(['loopId', 'round', 'why', 'at']);
 const ACCEPTANCE_FIELDS = new Set(['evidence', 'reason', 'attemptId', 'failureKind', 'at', 'revision', 'requirements']);
 const ACCEPTANCE_REASON_MAX = 500;
 // One accepted requirement on a check (F21): the reason and time of the accept
@@ -60,7 +65,9 @@ const ATTEMPT_FIELDS = new Set([
   // overwritten — the retry writes a new -attempt-N file), and `silentSec` is
   // the threshold that ended it. Absent on every attempt that did not stall,
   // and on every attempt recorded before the free-pool stall clock existed.
-  'stalled', 'partialOutput', 'silentSec',
+  // `noProgressSec` replaces `silentSec` on a step stopped because it changed
+  // no file for that long (BULLSWARM_WORKER_NO_PROGRESS_SEC).
+  'stalled', 'partialOutput', 'silentSec', 'noProgressSec',
   // Prior-attempt handoff: the finished attempt records the out file byte
   // count (whenever the file exists, including failures), the persisted
   // stream path, the diff snapshot taken at worker exit, and the file
@@ -118,7 +125,13 @@ const ATTEMPT_FIELDS = new Set([
 const ATTEMPT_ANSWER_FIELDS = new Set(['file', 'ok', 'value', 'errors']);
 const ACTION_ANSWER_FIELDS = new Set(['attemptId', 'value']);
 const WAITING_FOR_FIELDS = new Set(['id', 'type', 'since', 'note']);
-const CONTROL_NODE_FIELDS = new Set(['id', 'type', 'status', 'at', 'round', 'maxRounds', 'reason']);
+const CONTROL_NODE_FIELDS = new Set(['id', 'type', 'status', 'at', 'round', 'maxRounds', 'reason', 'findings']);
+// A dry loop's merged review rounds and known findings (dry-loops.js), present
+// only on a dry loop after its first review.
+// `dropped`: the titles past the known list's cap, as {key (16 hex), round}.
+const LOOP_FINDINGS_FIELDS = new Set(['rounds', 'known', 'knownDropped', 'dropped']);
+const FINDINGS_ROUND_FIELDS = new Set(['round', 'reviewed', 'new', 'reopened', 'repeated', 'outOfScope', 'ignored', 'fix', 'answers']);
+const KNOWN_FINDING_FIELDS = new Set(['title', 'key', 'round', 'area', 'inScope', 'from', 'reopened']);
 const CONTROL_NODE_STATUSES = new Set(['pending', 'waiting', 'passed', 'blocked']);
 const ANSWER_ERRORS_MAX = 100;
 const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried']);
@@ -585,8 +598,82 @@ function validateControlNodes(state) {
       positiveInteger(entry.round, `${at}.round`);
       positiveInteger(entry.maxRounds, `${at}.maxRounds`);
       if (entry.round > entry.maxRounds) fail(`${at}.round must not exceed maxRounds`);
-    } else if (entry.round !== undefined || entry.maxRounds !== undefined) fail(`${at} is a gate and has no rounds`);
+      if (entry.findings !== undefined) {
+        const loop = (state.program.control?.loops ?? []).find((item) => item.id === entry.id);
+        validateLoopFindings(entry.findings, `${at}.findings`, { loop, round: entry.round, actions: state.program.actions });
+      }
+    } else if (entry.round !== undefined || entry.maxRounds !== undefined || entry.findings !== undefined) fail(`${at} is a gate and has no rounds`);
   }
+}
+
+// A dry loop's findings record: integers, areas within its review's list,
+// rounds ascending and not past the loop's round.
+function validateLoopFindings(value, at, { loop, round, actions }) {
+  if (!Number.isInteger(loop?.until?.dry)) fail(`${at} is only for a loop whose until is the dry form`);
+  object(value, at);
+  noUnknown(value, LOOP_FINDINGS_FIELDS, at);
+  const reviewer = actions.find((action) => action.areaOf?.step === loop.until.step);
+  const areaCount = reviewer ? reviewer.areaOf.areas.length : 1;
+  const area = (item, name) => { if (!Number.isInteger(item) || item < 0 || item >= areaCount) fail(`${name} must be an area index from 0 to ${areaCount - 1}`); };
+  if (!Array.isArray(value.rounds) || !value.rounds.length) fail(`${at}.rounds must be a non-empty array`);
+  let last = 0;
+  for (const [index, entry] of value.rounds.entries()) {
+    const name = `${at}.rounds[${index}]`;
+    object(entry, name);
+    noUnknown(entry, FINDINGS_ROUND_FIELDS, name);
+    positiveInteger(entry.round, `${name}.round`);
+    if (entry.round <= last || entry.round > round) fail(`${name}.round must be after the round before it and not past the loop's round`);
+    last = entry.round;
+    if (!Array.isArray(entry.reviewed)) fail(`${name}.reviewed must be an array`);
+    entry.reviewed.forEach((item, k) => area(item, `${name}.reviewed[${k}]`));
+    for (const key of ['new', 'reopened', 'repeated', 'outOfScope', 'ignored']) nonNegativeInteger(entry[key], `${name}.${key}`);
+    if (!['runs', 'skipped', 'none'].includes(entry.fix)) fail(`${name}.fix must be runs|skipped|none`);
+    // The attempt each reviewer answered in that round (null: no answer).
+    if (entry.answers !== undefined) {
+      object(entry.answers, `${name}.answers`);
+      for (const [step, attemptId] of Object.entries(entry.answers)) {
+        if (attemptId !== null && (typeof attemptId !== 'string' || !attemptId)) fail(`${name}.answers.${step} must be an attempt id or null`);
+      }
+    }
+  }
+  if (!Array.isArray(value.known)) fail(`${at}.known must be an array`);
+  for (const [index, entry] of value.known.entries()) {
+    const name = `${at}.known[${index}]`;
+    object(entry, name);
+    noUnknown(entry, KNOWN_FINDING_FIELDS, name);
+    requiredString(entry.title, `${name}.title`);
+    // The whole title's hash, on a title stored cut (dry-loops.js mergeRound).
+    if (entry.key !== undefined && (typeof entry.key !== 'string' || !/^[0-9a-f]{16}$/.test(entry.key))) fail(`${name}.key must be 16 hex characters`);
+    positiveInteger(entry.round, `${name}.round`);
+    if (entry.round > round) fail(`${name}.round must not be past the loop's round`);
+    if (entry.area !== null) area(entry.area, `${name}.area`);
+    if (typeof entry.inScope !== 'boolean') fail(`${name}.inScope must be a boolean`);
+    identifier(entry.from, `${name}.from`);
+    if (!Array.isArray(entry.reopened) || entry.reopened.some((item) => !Number.isInteger(item) || item < 1 || item > round)) fail(`${name}.reopened must list rounds`);
+  }
+  nonNegativeInteger(value.knownDropped, `${at}.knownDropped`);
+  if (value.dropped !== undefined) {
+    if (!Array.isArray(value.dropped)) fail(`${at}.dropped must be an array`);
+    for (const [index, entry] of value.dropped.entries()) {
+      const name = `${at}.dropped[${index}]`;
+      object(entry, name);
+      noUnknown(entry, new Set(['key', 'round']), name);
+      if (typeof entry.key !== 'string' || !/^[0-9a-f]{16}$/.test(entry.key)) fail(`${name}.key must be 16 hex characters`);
+      positiveInteger(entry.round, `${name}.round`);
+      if (entry.round > round) fail(`${name}.round must not be past the loop's round`);
+    }
+  }
+}
+
+// A step a dry loop skipped: {loopId, round, why, at}, on a succeeded step only.
+function validateSkipped(value, at, status) {
+  object(value, at);
+  noUnknown(value, SKIPPED_FIELDS, at);
+  identifier(value.loopId, `${at}.loopId`);
+  positiveInteger(value.round, `${at}.round`);
+  requiredString(value.why, `${at}.why`);
+  timestamp(value.at, `${at}.at`);
+  if (status !== 'succeeded') fail(`${at} is only for a succeeded step`);
 }
 
 function validateWaitingForProgram(state) {
@@ -874,6 +961,7 @@ function validateActionStates(actions, program, live = false) {
     }
     if (action.acceptance !== undefined) validateAcceptance(action.acceptance, `state.actions[${index}].acceptance`);
     if (action.answer !== undefined) validateActionAnswer(action.answer, `state.actions[${index}].answer`);
+    if (action.skipped !== undefined) validateSkipped(action.skipped, `state.actions[${index}].skipped`, action.status);
     if (action.status === 'removed' && !live) fail(`state.actions[${index}] is removed, which requires an applied plan revision`);
   }
   for (const id of programIds) if (!ids.has(id)) fail(`state.actions is missing program action ${id}`);

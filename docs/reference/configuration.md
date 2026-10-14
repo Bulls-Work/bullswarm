@@ -187,10 +187,11 @@ These are the variables `src/` reads. Pool `env` values are merged into the chil
 | `BULLSWARM_HOME` | CLI, setup, meters, workflow | home directory; default `~/.bullswarm` |
 | `BULLSWARM_DEPTH` | `src/lib/state.js`, dispatch | recursion counter. Core increments it on children. When it is already set, workers must not re-delegate. Limit is `state.config.depthLimit` (default 2) |
 | `BULLSWARM_WORKER_SILENCE_SEC` | workflow dispatch | stop a worker that writes nothing for this many seconds. Default `3600`. The clock restarts on every byte |
+| `BULLSWARM_WORKER_NO_PROGRESS_SEC` | workflow dispatch | stop a `build` or `chore` worker that changes no file for this many seconds, as `stalled` (one retry on another pool). Default `3600`; `0` turns it off. The clock restarts only on a file change (an edit in the worker's event stream, or a changed file in its workspace), so output alone does not reset it |
 | `BULLSWARM_ASCII` | glyphs | force ASCII table characters. Wins over auto-detection |
 | `BULLSWARM_UNICODE` | glyphs | force Unicode table characters when ASCII was not set |
 | `BULLSWARM_NO_PACKAGED_PROVIDERS` | provider loader | `1` skips first-class and contrib providers |
-| `BULLSWARM_DISABLE_CLAUDE_PROFILES` | claude-code provider | `1` returns only the base Claude pool, no extra `CLAUDE_CONFIG_DIR` accounts |
+| `BULLSWARM_DISABLE_CLAUDE_PROFILES` | claude-code provider | `1` returns only the base Claude pool, no extra `CLAUDE_CONFIG_DIR` accounts. That pool still runs its workers with `CLAUDE_CONFIG_DIR` removed, so they use the `~/.claude` login its meter reads, not the home the caller runs under |
 | `HOME` | setup, integrate | expand `~` in `configDirs`; locate `~/.codex`, `~/.claude`, `~/.grok` |
 | `CLAUDE_CONFIG_DIR` | claude-code provider | extra Claude home used to expand account pools |
 | `PWD` | runner | set to the target directory when a pool declares `spawn.cwdMode: "pwd"` |

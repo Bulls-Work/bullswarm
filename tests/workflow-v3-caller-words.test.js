@@ -205,10 +205,13 @@ test('plan contract prints the v3 contract; --v2 was removed in 0.38.0', (t) => 
   }
   assert.deepEqual(Object.keys(contract.program.gateFields), ['id', 'dependsOn', 'when', 'note']);
   assert.deepEqual(Object.keys(contract.program.loopFields), ['id', 'steps', 'until', 'maxRounds']);
-  assert.ok(contract.program.condition.forms.length === 2);
+  // 0.38.12: the third form, {step, dry}, for a loop's until.
+  assert.ok(contract.program.condition.forms.length === 3);
   assert.ok(contract.rules.length >= 5);
   // The example validates as a v3 program.
   assert.equal(normaliseProgramV3(contract.example).steps.length, contract.example.steps.length);
+  // So does the dry loop example; its review becomes three area reviewers.
+  assert.deepEqual(normaliseProgramV3(contract.dryLoopExample).steps.map((step) => step.id), ['build', 'review-area-1', 'review-area-2', 'review-area-3', 'fix']);
   assert.match(contract.next.validate, /^bullswarm workflow plan validate 'Audit the acme notes' --program plan\.json --cwd /);
   assert.match(contract.next.launch, /--program plan\.json --json$/);
   assert.equal(existsSync(join(f.bullswarmDir, 'workflows')), false, 'contract must not create a run');

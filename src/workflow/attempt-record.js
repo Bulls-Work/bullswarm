@@ -40,6 +40,7 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     ...(record.stalled !== undefined ? { stalled: record.stalled } : {}),
     ...(record.partialOutput !== undefined ? { partialOutput: record.partialOutput } : {}),
     ...(record.silentSec !== undefined ? { silentSec: record.silentSec } : {}),
+    ...(record.noProgressSec !== undefined ? { noProgressSec: record.noProgressSec } : {}),
     // The dispatch-time byte ledger (see attemptBytes). Only the kernel's
     // 'started' call carries it; a later normalize of the same attempt leaves
     // the recorded object in place instead of erasing it.

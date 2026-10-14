@@ -4,8 +4,9 @@
 //
 // One account = one config dir (`~/.claude` by default, or CLAUDE_CONFIG_DIR).
 // Extra homes live next to it as `~/.claude-<slug>`. Credentials:
-//   macOS Keychain `Claude Code-credentials` for ~/.claude
-//   `Claude Code-credentials-<sha256(absPath)[:8]>` for any other home
+//   macOS Keychain `Claude Code-credentials` for ~/.claude (workers run with
+//   CLAUDE_CONFIG_DIR unset), `Claude Code-credentials-<sha256(absPath)[:8]>`
+//   for any other home (workers run with it set; see claudeHomeLaunch)
 //   plus `$dir/.credentials.json` on every platform.
 // No refresh flow — Claude Code rotates the token itself.
 
@@ -15,6 +16,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
+import { withPoolEnv } from '../../lib/worker-argv.js';
 import {
   buildTranscriptIndex as buildClaudeTranscriptIndex,
   readTranscriptUsage as readClaudeTranscriptUsage,
@@ -147,7 +149,7 @@ export async function discoverModels(connector, { executor = runClaudeDiscovery 
   const output = await executor({
     command,
     args: DISCOVERY_ARGS,
-    env: { ...process.env, ...(connector?.env ?? {}) },
+    env: withPoolEnv(process.env, connector),
     input: `${JSON.stringify(DISCOVERY_REQUEST)}\n`,
     timeoutMs,
   });
@@ -163,6 +165,12 @@ export class ClaudeMeterError extends Error {
     this.code = code; // no_token | expired | http | parse | network
     this.status = status;
     this.retryAfterMs = retryAfterMs;
+    // No login at all is a dead sign-in (registry.js meterSignInFailed), as a
+    // 401 is: a pool's workers read the same login its meter reads (the
+    // default home's with CLAUDE_CONFIG_DIR removed), so every step sent there
+    // would fail sign-in. It keeps the pool out of picks only while this
+    // reading holds. An expired token is not one: Claude Code refreshes it.
+    if (code === 'no_token') this.signInFailed = true;
   }
 }
 
@@ -246,10 +254,37 @@ export function defaultClaudeHome(homeDir = homedir()) {
   return resolve(join(homeDir, '.claude'));
 }
 
-export function keychainServiceForConfigDir(configDir, homeDir = homedir()) {
+/**
+ * How a worker for one Claude home is launched, and the keychain entry that
+ * worker's `claude` will read. One function answers both so the token the
+ * meter checks is always the token the worker uses.
+ *
+ * On macOS `claude` reads `Claude Code-credentials` only while
+ * CLAUDE_CONFIG_DIR is unset. Once the variable is set, even to exactly
+ * `~/.claude`, it reads `Claude Code-credentials-<first 8 hex of
+ * sha256(path)>`. So the default home is launched with the variable removed
+ * (not inherited: the caller may itself run under another home), and every
+ * other home is launched with it set to that home.
+ *
+ * Returns `{ configDir, env, unsetEnv, keychainService }`; `env` and
+ * `unsetEnv` are the pool fields of the same names.
+ */
+export function claudeHomeLaunch(configDir, homeDir = homedir()) {
   const resolved = resolve(configDir);
-  if (resolved === defaultClaudeHome(homeDir)) return DEFAULT_KEYCHAIN_SERVICE;
-  const hash = createHash('sha256').update(resolved).digest('hex').slice(0, 8);
+  const env = resolved === defaultClaudeHome(homeDir) ? {} : { CLAUDE_CONFIG_DIR: resolved };
+  return {
+    configDir: resolved,
+    env,
+    unsetEnv: env.CLAUDE_CONFIG_DIR ? [] : ['CLAUDE_CONFIG_DIR'],
+    keychainService: keychainServiceForLaunchEnv(env),
+  };
+}
+
+/** The keychain entry `claude` reads under a launch env from claudeHomeLaunch. */
+export function keychainServiceForLaunchEnv(env) {
+  const dir = env?.CLAUDE_CONFIG_DIR;
+  if (!dir) return DEFAULT_KEYCHAIN_SERVICE;
+  const hash = createHash('sha256').update(dir).digest('hex').slice(0, 8);
   return `${DEFAULT_KEYCHAIN_SERVICE}-${hash}`;
 }
 
@@ -322,7 +357,7 @@ export function readAccountCredentials(configDir, opts = {}) {
   const fileCreds = readCredentialsFile(join(configDir, '.credentials.json'));
   let keychainCreds = null;
   if (os === 'darwin') {
-    keychainCreds = keychainRead(keychainServiceForConfigDir(configDir, homeDir));
+    keychainCreds = keychainRead(claudeHomeLaunch(configDir, homeDir).keychainService);
   }
   const extraFile = resolve(configDir) === defaultClaudeHome(homeDir)
     ? readCredentialsFile(join(homeDir, '.config', 'claude', 'credentials.json'))
@@ -350,18 +385,43 @@ export function readAccountCredentials(configDir, opts = {}) {
   return null;
 }
 
-export function profileCommand(configDir, bin = 'claude') {
-  return `CLAUDE_CONFIG_DIR=${configDir} ${bin}`;
+// The shell command that opens `claude` on this home exactly as its workers
+// run, so a sign-in made with it lands in the keychain entry they read.
+// Quoted for a POSIX shell, so it can be pasted as is (a home path may
+// contain a space); left bare when it has no character a shell treats specially.
+export function profileCommand(configDir, bin = 'claude', homeDir = homedir()) {
+  const launch = claudeHomeLaunch(configDir, homeDir);
+  return launch.env.CLAUDE_CONFIG_DIR
+    ? `CLAUDE_CONFIG_DIR=${shellQuote(launch.env.CLAUDE_CONFIG_DIR)} ${shellQuote(bin)}`
+    : `env -u CLAUDE_CONFIG_DIR ${shellQuote(bin)}`;
+}
+
+function shellQuote(text) {
+  const value = String(text);
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 // The Anthropic account a home is logged into, as recorded by `claude` itself.
 // A token string cannot answer this: signing the same account in twice mints
 // two unrelated access tokens, so token equality sees two accounts where the
 // subscription — and its quota — is one.
+//
+// Read from where `claude` keeps it under the env its workers run with
+// (claudeHomeLaunch): `$CLAUDE_CONFIG_DIR/.claude.json` for a home launched
+// with the variable set, and `~/.claude.json` (the user's home directory, not
+// ~/.claude) for the default home, launched with it removed. A
+// `~/.claude/.claude.json` left by workers that once ran with the variable
+// set to ~/.claude is no longer updated, so it is not read.
+export function claudeConfigFile(configDir, homeDir = homedir()) {
+  return claudeHomeLaunch(configDir, homeDir).env.CLAUDE_CONFIG_DIR
+    ? join(resolve(configDir), '.claude.json')
+    : join(homeDir, '.claude.json');
+}
+
 export function accountIdentity(configDir, opts = {}) {
   const read = opts.readClaudeConfig ?? ((path) => readFileSync(path, 'utf8'));
   try {
-    const uuid = JSON.parse(read(join(configDir, '.claude.json')))?.oauthAccount?.accountUuid;
+    const uuid = JSON.parse(read(claudeConfigFile(configDir, opts.homeDir ?? homedir())))?.oauthAccount?.accountUuid;
     return typeof uuid === 'string' && uuid.length > 0 ? `account:${uuid}` : null;
   } catch {
     // No .claude.json, unreadable, or a home that predates the field.
@@ -384,7 +444,7 @@ export function discoverClaudeAccounts(opts = {}) {
     // does not. `dirs` starts at the default home, so first-wins keeps the
     // caller's own login and drops the duplicate — routing never hands work to
     // the subscription already running the session.
-    const key = accountIdentity(configDir, opts) ?? `token:${got.creds.accessToken}`;
+    const key = accountIdentity(configDir, { ...opts, homeDir }) ?? `token:${got.creds.accessToken}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const slug = accountSlugForConfigDir(configDir, homeDir);
@@ -392,7 +452,7 @@ export function discoverClaudeAccounts(opts = {}) {
       configDir,
       slug,
       pool: poolNameForSlug(slug),
-      command: profileCommand(configDir, opts.bin ?? 'claude'),
+      command: profileCommand(configDir, opts.bin ?? 'claude', homeDir),
       creds: got.creds,
       source: got.source,
     });
@@ -409,7 +469,8 @@ export function discoverClaudeAccounts(opts = {}) {
 
 /**
  * The packaged `claude-code` connector once per login. The default home keeps
- * the historical pool name `claude-code`; extra homes become
+ * the historical pool name `claude-code` and runs its workers with
+ * CLAUDE_CONFIG_DIR removed (`unsetEnv`); extra homes become
  * `claude-code:<slug>` with CLAUDE_CONFIG_DIR in env so spawn bills that seat.
  * Discovery is filesystem-driven — never a hardcoded profile list.
  *
@@ -421,29 +482,36 @@ export function connectors(ctx = {}) {
   if (!base) return [];
   const opts = ctx.opts ?? {};
   const env = ctx.env ?? process.env;
-  if (opts.disabled === true) return [base];
-  if (env.BULLSWARM_DISABLE_CLAUDE_PROFILES === '1') return [base];
+  const homeDir = opts.homeDir ?? ctx.home;
+  const bin = base.bin ?? 'claude';
+  // The default home's workers run with CLAUDE_CONFIG_DIR removed, so they
+  // use the same keychain entry the meter reads (claudeHomeLaunch). Set
+  // before any early return: with extra homes turned off the default pool
+  // must still not inherit the caller's home.
+  const baseEnv = { ...(base.env ?? {}) };
+  delete baseEnv.CLAUDE_CONFIG_DIR;
+  const useDefault = (defaultDir) => {
+    const launch = claudeHomeLaunch(defaultDir, homeDir);
+    base.env = { ...baseEnv, ...launch.env };
+    base.unsetEnv = launch.unsetEnv;
+    base.profile = { slug: null, configDir: launch.configDir, command: profileCommand(defaultDir, bin, homeDir) };
+  };
+  useDefault(defaultClaudeHome(homeDir));
   // node:test (and MCP children it spawns) inherit NODE_TEST_CONTEXT. Do not
   // scan the operator's real extra Claude homes unless the test injects
   // `accounts` or `homeDir`.
   if (env.NODE_TEST_CONTEXT && opts.accounts == null && opts.homeDir == null) {
     return [base];
   }
-  const homeDir = opts.homeDir ?? ctx.home;
-  const bin = base.bin ?? 'claude';
+  if (opts.disabled === true) return [base];
+  if (env.BULLSWARM_DISABLE_CLAUDE_PROFILES === '1') return [base];
   const accounts = opts.accounts ?? discoverClaudeAccounts({
     homeDir,
     envConfigDir: opts.envConfigDir,
     bin,
   });
-  const defaultDir = accounts.find((a) => a.slug == null)?.configDir
-    ?? defaultClaudeHome(homeDir);
-  base.env = { ...(base.env ?? {}), CLAUDE_CONFIG_DIR: defaultDir };
-  base.profile = {
-    slug: null,
-    configDir: defaultDir,
-    command: profileCommand(defaultDir, bin),
-  };
+  const defaultDir = accounts.find((a) => a.slug == null)?.configDir;
+  if (defaultDir) useDefault(defaultDir);
   const pools = [base];
   const names = new Set([base.name]);
   for (const account of accounts) {
@@ -458,7 +526,9 @@ export function connectors(ctx = {}) {
     // says nothing about the next one, so a dispatch never skips one for
     // another's sign-in failure (contrast the opencode provider, where three
     // pools share one relay).
-    clone.env = { ...(base.env ?? {}), CLAUDE_CONFIG_DIR: account.configDir };
+    const launch = claudeHomeLaunch(account.configDir, homeDir);
+    clone.env = { ...baseEnv, ...launch.env };
+    clone.unsetEnv = launch.unsetEnv;
     clone.configDirs = [account.configDir];
     clone.flags = { ...(base.flags ?? {}), isCaller: false };
     clone.profile = {
@@ -510,9 +580,21 @@ export function parseClaudeUsage(body, pool = 'claude-code', credentials = null)
   };
 }
 
-export async function fetchClaudeUsageWithCredentials(creds, pool = 'claude-code') {
+// The command that signs a pool's home in where its meter and workers read
+// the login (profileCommand): the pool's own when it carries one, the default
+// home's for `claude-code`, null for an extra home that was not found.
+function loginCommandFor(pool, poolName, homeDir) {
+  if (typeof pool?.profile?.command === 'string' && pool.profile.command) return pool.profile.command;
+  if (!poolName || poolName === 'claude-code' || poolName === 'claude') return profileCommand(defaultClaudeHome(homeDir), pool?.bin ?? 'claude', homeDir);
+  return null;
+}
+
+export async function fetchClaudeUsageWithCredentials(creds, pool = 'claude-code', { loginCommand = null } = {}) {
   if (!creds) {
-    throw new ClaudeMeterError('No Claude Code OAuth token. Run `claude` to log in.', 'no_token');
+    // A plain `claude` inherits the caller's CLAUDE_CONFIG_DIR and would sign
+    // in to another home's keychain entry.
+    const command = loginCommand ?? profileCommand(defaultClaudeHome());
+    throw new ClaudeMeterError(`No Claude Code OAuth token. Run \`${command}\` to log in.`, 'no_token');
   }
   if (!isUsable(creds)) {
     throw new ClaudeMeterError(
@@ -555,20 +637,33 @@ export async function fetchClaudeUsageWithCredentials(creds, pool = 'claude-code
 export async function readUsage(pool, ctx = {}) {
   const poolName = typeof pool === 'string' ? pool : pool?.name;
   const opts = ctx.opts ?? {};
-  const accounts = discoverClaudeAccounts({
+  // readKeychain, platform and nowMs are test seams (readAccountCredentials).
+  const discover = (usableOnly) => discoverClaudeAccounts({
     homeDir: opts.homeDir ?? ctx.home,
     envConfigDir: opts.envConfigDir,
+    readKeychain: opts.readKeychain,
+    platform: opts.platform,
+    nowMs: opts.nowMs,
+    usableOnly,
   });
   const slug = poolName?.startsWith('claude-code:') ? poolName.slice('claude-code:'.length) : null;
-  const account = accounts.find((a) => poolNameForSlug(a.slug) === poolName)
+  const find = (accounts) => accounts.find((a) => poolNameForSlug(a.slug) === poolName)
     ?? accounts.find((a) => a.slug === slug);
+  // A usable token first; then a lapsed one, which is a login all the same:
+  // Claude Code refreshes it on its next run, so it reads `expired`, never
+  // `no_token` (a sign-in failure that would keep the pool out of picks).
+  const account = find(discover(true)) ?? find(discover(false));
+  const homeDir = opts.homeDir ?? ctx.home;
+  const loginCommand = account?.command ?? loginCommandFor(typeof pool === 'object' ? pool : null, poolName, homeDir);
   if (!account) {
     throw new ClaudeMeterError(
-      `No Claude Code OAuth token for pool ${poolName}. Log in with CLAUDE_CONFIG_DIR pointing at that home.`,
+      loginCommand
+        ? `No Claude Code OAuth token for pool ${poolName}. Log in with \`${loginCommand}\` (it opens claude on that pool's home).`
+        : `No Claude Code OAuth token for pool ${poolName}. Log in with CLAUDE_CONFIG_DIR pointing at that home.`,
       'no_token',
     );
   }
-  return fetchClaudeUsageWithCredentials(account.creds, poolName);
+  return fetchClaudeUsageWithCredentials(account.creds, poolName, { loginCommand });
 }
 
 export function readTranscriptUsage(args = {}) {

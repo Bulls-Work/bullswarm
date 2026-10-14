@@ -3,6 +3,7 @@
 // caller's exact model and the pool's plan exclusions, with the tier's model
 // resolved per pool (preparePools, selectedModel).
 import { modelBaseId, poolCanRunModel } from '../lib/model-pin.js';
+import { modelFamily } from '../lib/model-family.js';
 import { isFree } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
@@ -112,4 +113,40 @@ export function selectedModel(pool, effort, preferredModel = null) {
   return pool.modelPolicy?.model
     ?? (assignment?.pool === pool.name ? assignment.model : null)
     ?? null;
+}
+
+/**
+ * The order a retry that moves pools tries them in, closest to what failed
+ * first: (1) pools that would run the same model the failed attempt ran,
+ * (2) pools that would run a model of the same family (`modelFamilies` in
+ * the connector, e.g. another Opus), (3) every other pool. A sign-in failure
+ * on one Claude account so goes to another Claude account on that model
+ * before a different vendor. Pace still ranks the pools inside a tier, and
+ * the dispatcher passes only the pools the router does not put last over the
+ * whole list (a 5-hour forecast past 100%, near the 5-hour limit). The
+ * list is already hard-filtered (route, pin, tier, spent windows); this is a
+ * preference for one pick, never stored (doctrine 4).
+ *
+ * `failed` is `{ pool, model }` for the failed attempt (pool as picked).
+ * Returns the non-empty tiers as `{ match, pools }` (match: 'model',
+ * 'family' or 'any'); a single 'any' tier when the failed model is unknown.
+ */
+export function retryPoolTiers(pools, failed, effort, preferredModel = null) {
+  const list = Array.isArray(pools) ? pools : [];
+  const failedModel = failed?.model && failed.model !== 'provider-default' ? failed.model : null;
+  if (!failedModel) return list.length ? [{ match: 'any', pools: list }] : [];
+  const modelOf = (pool) => selectedModel(pool, effort, preferredModel) ?? (pool.connector ?? pool).model ?? null;
+  const familyOf = (pool, model) => modelFamily(pool?.connector ?? pool, model)?.family ?? null;
+  const failedBase = modelBaseId(failedModel);
+  const failedFamily = familyOf(failed.pool, failedModel);
+  const tiers = { model: [], family: [], any: [] };
+  for (const pool of list) {
+    const model = modelOf(pool);
+    if (model && modelBaseId(model) === failedBase) tiers.model.push(pool);
+    else if (model && failedFamily && familyOf(pool, model) === failedFamily) tiers.family.push(pool);
+    else tiers.any.push(pool);
+  }
+  return ['model', 'family', 'any']
+    .filter((match) => tiers[match].length)
+    .map((match) => ({ match, pools: tiers[match] }));
 }

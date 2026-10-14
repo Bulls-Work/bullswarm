@@ -164,7 +164,7 @@ test('one stale line per attempt, from the probe the watcher is given', () => {
   assert.deepEqual(staleLines(first), ['⚠ verify looks stale: quiet 12m with no command running']);
   const second = notableWatchEvents({ state, stale, nowMs: minutesAfterLastEvent(13), memory: first.memory });
   assert.deepEqual(staleLines(second), []);
-  assert.equal(calls, 1, 'an attempt already reported is not scored again');
+  assert.equal(calls, 2, 'an attempt already reported is scored again, to see whether it made progress');
   // Once the attempt stops running it is forgotten; without a probe nothing is scored.
   const finished = { ...state, attempts: state.attempts.map((entry) => (entry.id === 'verify-1' ? { ...entry, status: 'succeeded' } : entry)) };
   assert.equal(notableWatchEvents({ state: finished, stale, memory: second.memory }).memory.staleReported.size, 0);
@@ -177,6 +177,143 @@ test('one stale line per attempt, from the probe the watcher is given', () => {
     const live = { ...attempt, taskFile: join(probeDir, 'task-verify-attempt-1.md'), streamFile: undefined, lastActivityAt: null, lastEventAt: null };
     assert.equal(probe({ attempt: live, action: state.program.actions.find((entry) => entry.id === 'verify'), state, nowMs: minutesAfterLastEvent(12) }).reasons[0], 'quiet 12m with no command running');
   } finally { rmSync(probeDir, { recursive: true, force: true }); }
+});
+
+test('a step that stays stale wakes --until trouble again each further window, with its level and time without progress', async (t) => {
+  // verify (an analyze step) went quiet at +0 and stale at +10m; the previous
+  // watcher printed the first line at +12m and exited. Its window is quiet's
+  // 10 minutes, so the second warning is due at +20m.
+  const nowMs = minutesAfterLastEvent(21);
+  const run = stagedRun(t, { nowMs });
+  const watcher = watch(run, { until: 'trouble', afterSequence: 33, sinceMs: minutesAfterLastEvent(12), now: () => nowMs });
+  assert.equal(await watcher.promise, 0);
+  assert.deepEqual(watcher.lines, [
+    '⚠ verify still looks stale (warning 2) · no output for 21m00s: quiet 21m with no command running; running 41m, over 3× the expected 14m',
+    `next: bullswarm workflow watch ${SHORT} --until trouble --after 33 --since ${new Date(nowMs).toISOString()}`,
+    `  or restart: bullswarm workflow step restart ${SHORT} verify`,
+  ]);
+  // The machine form keeps every field it had and adds the level, the time
+  // without progress, and what progress means for this step.
+  const jsonl = watch(run, { until: 'trouble', jsonl: true, afterSequence: 33, sinceMs: minutesAfterLastEvent(12), now: () => nowMs });
+  assert.equal(await jsonl.promise, 0);
+  const event = JSON.parse(jsonl.lines[0]);
+  assert.deepEqual(
+    { type: event.type, actionId: event.actionId, reasons: event.reasons, score: event.score, staleSince: event.staleSince, level: event.level, noProgressSec: event.noProgressSec, progressBy: event.progressBy },
+    { type: 'attempt.stale', actionId: 'verify', reasons: ['quiet 21m with no command running', 'running 41m, over 3× the expected 14m'], score: 3, staleSince: new Date(minutesAfterLastEvent(10)).toISOString(), level: 2, noProgressSec: 21 * 60, progressBy: 'output' },
+  );
+  // Relaunched after that wake, it stays quiet until the next window.
+  const later = minutesAfterLastEvent(25);
+  const rerun = stagedRun(t, { nowMs: later });
+  const quiet = watch(rerun, { until: 'trouble', afterSequence: 33, sinceMs: nowMs, now: () => later });
+  await sleep(250);
+  assert.deepEqual(quiet.lines, []);
+  rerun.finish('completed');
+  assert.equal(await quiet.promise, 0);
+  assert.equal(quiet.lines[0], 'outcome: completed · verified');
+});
+
+test('a writer warns again only while no file changes; a change restarts the clock but not the level, and one that ends the episode starts over', () => {
+  const run = { state: JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8')) };
+  const attempt = { ...run.state.attempts.find((entry) => entry.id === 'verify-1'), status: 'running', finishedAt: null };
+  const state = { ...run.state, attempts: [...run.state.attempts.filter((entry) => entry.id !== 'verify-1'), attempt] };
+  const T0 = Date.parse('2026-10-14T10:00:00Z');
+  const min = (m) => T0 + m * 60_000;
+  // The probe's answer, as staleScore gives it for a build step: no file
+  // change since `changed`, stale from `since`, a 20-minute window.
+  let score = null;
+  const probe = () => score;
+  const writer = (changed, since, stale = true) => {
+    score = {
+      stale, score: stale ? 2 : 1, staleSince: stale ? min(since) : null,
+      reasons: stale ? ['no file change in 25m while 9 commands ran', 'running 30m, over 3× the expected 10m'] : [],
+      progressAt: min(changed), progressBy: 'file-change', progressWindowSec: 1200,
+    };
+  };
+  let memory = initialWatchMemory(state);
+  const poll = (atMinute) => {
+    const collected = notableWatchEvents({ state, stale: probe, nowMs: min(atMinute), memory });
+    memory = collected.memory;
+    return collected.notable.filter((event) => event.type === 'attempt.stale');
+  };
+  const lines = (events) => events.map((event) => renderWatchEvent(event));
+
+  writer(0, 25);
+  assert.deepEqual(lines(poll(26)), ['⚠ verify looks stale: no file change in 25m while 9 commands ran; running 30m, over 3× the expected 10m']);
+  assert.equal(poll(26)[0], undefined);
+  assert.deepEqual(poll(44), [], 'not a full window yet');
+  const second = poll(45);
+  assert.deepEqual(lines(second), ['⚠ verify still looks stale (warning 2) · no file change for 45m00s: no file change in 25m while 9 commands ran; running 30m, over 3× the expected 10m']);
+  assert.deepEqual({ level: second[0].level, noProgressSec: second[0].noProgressSec }, { level: 2, noProgressSec: 45 * 60 });
+  // A watcher that slept through two windows prints one line, at the level due now.
+  assert.deepEqual(poll(90).map((event) => event.level), [4]);
+
+  // A file change while it stays stale: no line, and the clock starts again;
+  // the level does not, so the next warning is one higher than the last.
+  writer(95, 25);
+  assert.deepEqual(poll(96), []);
+  assert.deepEqual(poll(115), []);
+  assert.deepEqual(poll(116).map((event) => event.level), [5]);
+
+  // A file change that ends the episode forgets it: the next one is level 1.
+  writer(120, null, false);
+  assert.deepEqual(poll(121), []);
+  assert.equal(memory.staleReported.size, 0);
+  writer(120, 140);
+  assert.deepEqual(poll(141).map((event) => event.level), [1]);
+
+  // A reading that stops being stale with no file change (output came back)
+  // ends the episode too: going stale again later is warning 1, "looks
+  // stale", and the next line a full window after it.
+  writer(120, null, false);
+  assert.deepEqual(poll(145), []);
+  assert.equal(memory.staleReported.size, 0);
+  writer(120, 187);
+  assert.deepEqual(lines(poll(187)), ['⚠ verify looks stale: no file change in 25m while 9 commands ran; running 30m, over 3× the expected 10m']);
+  assert.deepEqual(poll(200), []);
+  assert.deepEqual(poll(207).map((event) => event.level), [2]);
+});
+
+test('a watcher that first sees a step windows after it went stale prints one line at the level due, and a --since relaunch counts from a change made while stale', () => {
+  const run = { state: JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8')) };
+  const attempt = { ...run.state.attempts.find((entry) => entry.id === 'verify-1'), status: 'running', finishedAt: null };
+  const state = { ...run.state, attempts: [...run.state.attempts.filter((entry) => entry.id !== 'verify-1'), attempt] };
+  const T0 = Date.parse('2026-10-14T10:00:00Z');
+  const min = (m) => T0 + m * 60_000;
+  let score = null;
+  const probe = () => score;
+  const writer = (changed, since) => {
+    score = { stale: true, score: 2, staleSince: min(since), reasons: ['no file change in 25m while 9 commands ran'], progressAt: min(changed), progressBy: 'file-change', progressWindowSec: 1200 };
+  };
+  const levels = (memory, from, to, events = []) => {
+    const out = [];
+    for (let m = from; m <= to; m += 1) {
+      for (const [at, apply] of events) if (at === m) apply();
+      const collected = notableWatchEvents({ state, stale: probe, nowMs: min(m), memory });
+      memory = collected.memory;
+      for (const event of collected.notable.filter((item) => item.type === 'attempt.stale')) out.push([m, event.level]);
+    }
+    return out;
+  };
+  // Stale since +25 with no change since +0; a fresh watcher attaches at +50.
+  writer(0, 25);
+  assert.deepEqual(levels(initialWatchMemory(state), 50, 52), [[50, 2]], 'one line, at warning 2, not 1 then 2');
+  // A file change at +30 while still stale: a watcher there all along warns at +26, +50, +70.
+  writer(0, 25);
+  assert.deepEqual(levels(initialWatchMemory(state), 26, 80, [[30, () => writer(30, 25)]]), [[26, 1], [50, 2], [70, 3]]);
+  // One that printed +26 and exited at +48: its relaunch skips no level.
+  writer(30, 25);
+  const relaunched = initialWatchMemory(state, { sinceMs: min(48), nowMs: min(48), stale: probe });
+  assert.deepEqual(levels(relaunched, 48, 80), [[50, 2], [70, 3]]);
+  // A change at +95, windows after it went stale at +25: one there all along
+  // printed 1-4 by +85, then 5 at +115 and 6 at +135. Relaunched at +100, it
+  // carries on at 5 and 6 and repeats none of 2-4.
+  writer(0, 25);
+  assert.deepEqual(levels(initialWatchMemory(state), 25, 140, [[95, () => writer(95, 25)]]), [[25, 1], [45, 2], [65, 3], [85, 4], [115, 5], [135, 6]]);
+  writer(95, 25);
+  const late = initialWatchMemory(state, { sinceMs: min(100), nowMs: min(100), stale: probe });
+  assert.deepEqual(levels(late, 101, 140), [[115, 5], [135, 6]]);
+  // A watcher that first attaches at +100 prints one line at the level due then.
+  assert.deepEqual(levels(initialWatchMemory(state), 100, 101), [[100, 4]]);
 });
 
 test('trouble is a failed, rejected, paused, stalled or stale line, or steering for the caller', () => {

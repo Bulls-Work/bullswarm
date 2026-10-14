@@ -51,6 +51,8 @@ Steps, gates and loops share one id space: an id is kebab-case and used once.
 | `files` | no | exact relative paths the step may change (no directory, no glob); steps whose files overlap run one after the other |
 | `retry` | no | `1` (default) or `0`: the one automatic retry after a failure |
 | `timeBox` | no | whole minutes 0-240: the soft time box written into the task (0 leaves it out); a guide, never a timeout |
+| `areas` | no | 1-8 angles a review looks from (one line each, at most 80 characters); only on the review a dry loop's `until` names, as in [Fix until the review is dry](#fix-until-the-review-is-dry) |
+| `areasPerRound` | no | how many area reviewers run each round: 1 to the number of areas (at most 5); default the smaller of the number of areas and 3 |
 
 `purpose`, `affects`, `evidenceFor`, `kind`, `role`, `inputs`, `produces` and `defaults.verifyRounds` belong to v2 programs, and validate refuses them in v3 (`program.defaults.verifyRounds is not allowed; defaults take lane, effort, reasoning, retry and timeBox`). A check is an ordinary step with an `answer` and/or `evidence`.
 
@@ -71,19 +73,36 @@ When its dependencies succeeded, a gate waits for `bullswarm workflow continue <
 |---|---|---|
 | `id` | yes | kebab-case; later steps depend on the loop id |
 | `steps` | yes | the step ids that repeat, in order through their own `dependsOn`; a step is in at most one loop; no loop inside a loop |
-| `until` | yes | a condition on one of the loop's steps: true ends the loop |
+| `until` | yes | a condition on one of the loop's steps: true ends the loop; the dry form ends a review loop when a round finds nothing new |
 | `maxRounds` | yes | 1-5 |
 
-Every step of the loop runs in every round, and the condition is read when the round is over: put the deciding step last, and give every writer work each round (a build or chore step that changes no file fails `not-produced`). From round 2 on, each step's task carries a `Previous round` block with the last round's answers and evidence. When the rounds run out, the loop waits like a gate: `bullswarm workflow continue <run> <loop> --rounds <1-5>` gives it more; without `--rounds` the steps behind it run, and the loop reads `continued by the caller after N of N rounds (condition not met)` and is recorded as `continued-unmet` in `result.json`, never as passed. A step in the loop that fails (after its retry) blocks the loop.
+With a field or evidence `until`, every step of the loop runs in every round, and the condition is read when the round is over: put the deciding step last, and give every writer work each round (a build or chore step that changes no file fails `not-produced`). From round 2 on, each step's task carries a `Previous round` block with the last round's answers and evidence. When the rounds run out, the loop waits like a gate: `bullswarm workflow continue <run> <loop> --rounds <1-5>` gives it more; without `--rounds` the steps behind it run, and the loop reads `continued by the caller after N of N rounds (condition not met)` and is recorded as `continued-unmet` in `result.json`, never as passed. A step in the loop that fails (after its retry) blocks the loop.
 
-### The condition form
+A dry loop (its `until` is the dry form below) is different: the review runs first, the loop decides right after each review, and its other steps run only when that review found something to fix. A step it skips is recorded `skipped (nothing to fix)`, never proven. See [Fix until the review is dry](#fix-until-the-review-is-dry).
 
-A gate's `when` and a loop's `until` take one of two forms:
+### The condition forms
+
+A gate's `when` takes the first two forms; a loop's `until` takes any of the three (the dry form is for a loop's `until` only, and validate refuses it on a gate):
 
 - `{"step": "<id>", "field": "<name>", "equals": true}`: a boolean field that the step's object answer schema lists in `required`; `equals` is `true` (the default) or `false`.
 - `{"step": "<id>", "evidence": "passed"}`: every evidence check of that step passed. When a loop's `until` is this form, a failed check on that step reads as "not passed" and the loop goes on; with the field form, a failed check fails the step as it would outside a loop.
+- `{"step": "<id>", "dry": 1}`: the review found nothing new. "Dry" means a review round with nothing to fix: no new in-scope finding, and no known finding reported again as still open. `dry` (1-3, 1 recommended) is how many such rounds in a row end the loop. The step's answer must list `findings`, an array of objects whose required fields include `title` (string) and `inScope` (boolean); `stillOpen` (boolean) is optional.
 
 A gate's condition step must run before the gate, and a loop's must be one of its steps. There are no expressions and no else: anything more is your call, with `workflow wait` and `workflow add`.
+
+### Fix until the review is dry
+
+A strict review of a large change rarely answers `passed: true`: it finds something new each round, so a loop until `passed` runs out of rounds. To fix until the review is clean, loop `[review, fix]` (the build outside the loop) with `until: {"step": "review", "dry": 1}`:
+
+- Each round the review runs first. Its findings are merged into the loop's **known list**: a finding whose title is already known counts as repeated, not new. Titles are compared ignoring case, extra spaces and a final period. From round 2 on, every review prompt lists the findings of earlier rounds: a reviewer reports only findings not on the list, and reports a listed in-scope finding again (its exact title, with `stillOpen: true`) only when it is still present. Findings marked `inScope: false` are listed apart: they were recorded and never fixed.
+- When the round found something to fix, the fix runs with a "Findings to fix" block: each finding in full, and each reviewer's answer file. When it found nothing, the fix is skipped and the loop ends dry. A loop step that changes no file (lane `analyze`, such as a lint or a test run) gets the list for reference only.
+- A reviewer is never handed a fixer's answer or output: in `[fix, review]` order the fix is listed as a blind dependency. A read-only step the review depends on (a test run) is handed to it as usual.
+- A **fixer** is a loop step that can change files (lane `build` or `chore`). In a loop with no fixer (its only step is the review, or its other steps only check), nothing fixes a known finding between rounds, so reviews are not asked for `stillOpen` and a finding still present counts as a repeat.
+- A reviewer that answers again after its round was merged (a `step rerun` of it, or of the work it reviews) has that round merged again, even after the loop ended dry: a new finding then sends the loop back into that round, and the fix runs with it.
+
+Give the review `areas` (2-3 angles, such as "grammar and parsing" or "joins and aggregates") to look from several angles. The review becomes `areasPerRound` ordinary steps `review-area-1` … `review-area-P` that run in parallel, one area each; `dependsOn`, `blindTo` and `route.independentOf` that name `review` name them all, and the loop's `until` keeps naming `review`. With fewer reviewers than areas they take turns, and a dry stop also needs every area reviewed after the last finding. `workflow wait <run> review` waits for all of them; `step rerun` and `step accept` name one reviewer.
+
+A loop's findings are in `result.json` under `loops[i].findings`: `{known (in-scope titles), outOfScope (titles), rounds (new findings per round), stillOpen? (known findings reported still open, per round), dryIn?, unreviewed? (area names)}`. `bullswarm workflow plan contract` prints a whole dry-loop program as `dryLoopExample`.
 
 ### Rules the kernel keeps
 

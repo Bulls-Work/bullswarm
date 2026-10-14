@@ -518,6 +518,11 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
         'docs-at-high': 'a build/chore action whose ownedFiles are all *.md at high effort',
         'requirement-unchecked': 'a requirement no action lists in evidenceFor: the run can finish but that requirement is never verified',
         'suite-wider-than-files': 'an action that owns files runs a command check naming none of them (a whole-suite run): scope the command to those files, or move the whole-suite run to a check step',
+        'compile-check-only': 'every command check of an action only compiles or parses the files (py_compile, node --check, tsc --noEmit, cargo check, ...): it proves they parse, not that any test passes',
+        'review-loop-until-passed': 'a v3 loop of 3 or more rounds that ends only when an analyze step answers passed: a strict review rarely passes, so the loop tends to run out of rounds; a dry loop stops when a round finds nothing new',
+        'dry-loop-too-short': 'a v3 dry loop whose maxRounds leaves no room, after a round with findings, for the clean rounds that review every area again',
+        'review-one-area': 'a v3 review with a single area: one review with a focus line',
+        'dry-loop-fix-first': 'a v3 dry loop whose fix step runs before its review on work a step outside the loop builds: round 1 runs the fixer with nothing to fix; put the review first',
         note: 'advice only: printed by plan validate and workflow goal, stored on the run, and never a rejection or a non-zero exit',
       },
       validation: isProgramWorkflow(goalDocument) ? [

@@ -115,6 +115,21 @@ test('the label table follows NEEDS_YOU_LABELS, with the kind itself for anythin
   assert.equal(needsYouFacts(state, failedEvent('variants', { failureKind: 'failed-evidence' }), { features: MARKED }).label, 'schema evidence failed');
 });
 
+test('a step stopped for changing no file reads `worker changed no file`, not `worker went silent`', () => {
+  const state = designState();
+  state.program.actions[0] = step('variants');
+  state.attempts = [
+    attempt('variants', 1, { start: 0, minutes: 60, failureKind: 'stalled', stalled: true, noProgressSec: 3600 }),
+    attempt('variants', 2, { start: 61, minutes: 60, failureKind: 'stalled', stalled: true, noProgressSec: 3600, retryOf: { attempt: 'variants-1', how: 'other-pool' }, pool: 'pool-b' }),
+  ];
+  const facts = needsYouFacts(state, failedEvent('variants', { failureKind: 'stalled', attemptIds: ['variants-1', 'variants-2'], retries: 1, why: 'stalled: no file change for 60 min, the worker was stopped' }), { features: MARKED });
+  const lines = renderNeedsYou(facts);
+  assert.equal(lines[0], '✗ variants needs you · worker changed no file after 1 retry');
+  // A silent one keeps its label.
+  state.attempts = [attempt('variants', 1, { start: 0, minutes: 60, failureKind: 'stalled', stalled: true, silentSec: 3600 })];
+  assert.equal(needsYouFacts(state, failedEvent('variants', { failureKind: 'stalled', why: 'stalled' }), { features: MARKED }).label, 'worker went silent');
+});
+
 test('zero retries reads `not retried`, and a why line stands in for evidence on other kinds', () => {
   const state = designState();
   state.program.actions[0] = step('variants');

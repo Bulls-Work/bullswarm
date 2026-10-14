@@ -192,7 +192,7 @@ async function planValidate(opts) {
       for (const result of tried ?? []) if (result.step === action.id) console.log(tryLine(result));
     }
     if (commands && !tried) console.log(CHECKS_NOT_RUN_LINE);
-    for (const line of controlSummaryLines(control)) console.log(line);
+    for (const line of controlSummaryLines(control, accepted.program.actions)) console.log(line);
     printAdvisories(payload.advisories);
     console.log(`  launch   ${next.launch}`);
   }

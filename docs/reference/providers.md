@@ -146,6 +146,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `displayName` (a provider export) | strategy tables |
 | `bin`, `configDirs` | the default `setup` health check |
 | `env` | merged into the child process environment verbatim, never inspected |
+| `unsetEnv` | a list of variable names removed from the child process environment after `env` is applied, whoever set them (this machine, the caller, or `env`). Two kinds of name are set again afterwards and so cannot be removed: the caller's `BULLSWARM_*` variables (among them the `BULLSWARM_DEPTH` recursion guard, which no pool setting may change) and `PWD`, always the folder the worker runs in. Use it when the CLI must run without a variable rather than with an empty one: claude-code's default home runs with `CLAUDE_CONFIG_DIR` removed, because Claude Code reads a different keychain entry whenever that variable is set |
 | `conversation.newArgs`, `resumeArgs`, `followUp` | dispatch session resume and one connector-declared recovery turn |
 | `eventStream.rules`, `silenceThresholdSec`, `modelPaths`, `args`, `format` | watcher progress and silence detection |
 | `eventStream.usage` (`match`, `mode`, `fields`, optional `inclusive`) | provider-reported usage extraction; the watcher prefers this before transcript and byte fallback |

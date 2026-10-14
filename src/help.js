@@ -60,7 +60,7 @@ const top = rich({
     + 'one-step workflow, and `bullswarm workflow goal --program` runs a workflow you write from four '
     + 'blocks: steps (one agent task each, with an optional checked JSON answer), phases (a label that '
     + 'groups steps), gates (the run stops there for you) and loops (steps that repeat until an answer '
-    + 'says stop). Bare `bullswarm` opens the dashboard — '
+    + 'says stop, or until a review finds nothing new). Bare `bullswarm` opens the dashboard — '
     + 'Home, Runs, Run, Step, Budget, Stats, Fleet, Help — once this machine is configured, and the setup control '
     + "center when it is not. Reach for a specific command's --help for full options.",
   argsTitle: 'Commands',
@@ -948,7 +948,7 @@ const workflowText = rich({
     + 'blocks: steps (one agent task each, passed by facts: a clean exit, its deliverable, its evidence '
     + 'and its checked answer), phases (a label that groups steps), gates (the run stops there for you, '
     + 'or only when an answer says so) and loops (steps that repeat until one step\'s answer says stop, '
-    + 'at most 5 rounds). New programs are v3 (bullswarm.workflow.program.v3; workflow plan contract '
+    + 'or until a review round finds nothing new, at most 5 rounds). New programs are v3 (bullswarm.workflow.program.v3; workflow plan contract '
     + 'prints the format); a v2 program is refused, and a run an earlier Bullswarm started is view-only. Extend a v3 run with workflow add, read a step\'s '
     + 'answer with workflow wait, and move a waiting gate or loop on with workflow continue. With no command on a TTY, opens the dashboard '
     + '(Home, Runs, Run, Step, Budget, Stats, Fleet, Help) — the same screen bare `bullswarm` opens on a '
@@ -1011,7 +1011,11 @@ const workflowGoalText = rich({
     + 'facts: a clean exit, its deliverable produced, its evidence passed and its answer matching its schema. '
     + 'A failed step gets one automatic retry, then comes back to you; a usage limit comes back at once. A gate '
     + 'stops the steps behind it until you run workflow continue; a loop repeats its steps until its condition '
-    + 'holds, and waits for you like a gate when its rounds run out. Add steps at any time with workflow add. '
+    + 'holds, and waits for you like a gate when its rounds run out. A dry loop (until {"step": "review", "dry": 1}) '
+    + 'stops after a review round that finds nothing new: each later review is told what is already known, '
+    + 'the loop\'s other steps run only when there is something to fix, and a review with areas runs one '
+    + 'reviewer per area each round (at most 3 unless areasPerRound says more; more areas take turns). '
+    + 'Add steps at any time with workflow add. '
     + 'When nothing more can run the run finishes, and its result hands back every unfinished step and '
     + 'unread steering with your options; a completed v3 run hands nothing back. '
     + 'A bullswarm.workflow.program.v2 is refused (exit 2, nothing launched). Without a program the command '
@@ -1174,9 +1178,12 @@ const workflowResumeText = rich({
 const workflowPlanContractText = rich({
   usage: 'bullswarm workflow plan contract ["<goal>"] [--cwd <dir>] [--json]',
   purpose: 'Print everything you need to write a v3 program (bullswarm.workflow.program.v3) for a goal: the '
-    + 'step, gate and loop fields, the one condition form a gate\'s when and a loop\'s until use, the '
+    + 'step, gate and loop fields, the condition forms (a gate\'s when takes the field or evidence form; a '
+    + 'loop\'s until takes those or the dry form, which is for a loop only), the '
     + 'evidence checks Bullswarm runs after a step, the rules the kernel keeps (a step passes by facts; one '
-    + 'retry, then you; a usage limit comes to you at once), one worked example that validates, and the '
+    + 'retry, then you; a usage limit comes to you at once), two worked examples that validate (example: '
+    + 'draft, critique, approve, publish; dryLoopExample: build, then review from three areas and fix until a '
+    + 'review round finds nothing new), the findings answer a dry loop\'s review declares, and the '
     + 'validate and launch commands.',
   args: [{ name: '"<goal>"', desc: 'optional (without it the contract prints goal null and <goal> in its commands); the goal text exactly as it will be passed to workflow goal' }],
   options: [
@@ -1395,8 +1402,15 @@ const workflowWatchText = rich({
     + '`--heartbeat` is opt-in for event mode; `--classic` keeps the historical 60s heartbeat by '
     + 'default. A running step whose stale score crosses the threshold (quiet with no command running, no '
     + 'file change while commands continue, the same command repeated, wall time over 3x the expected '
-    + 'minutes) prints one `⚠ <step> looks stale: <reasons>` line; nothing is stopped, the caller decides '
-    + '(`workflow step restart`). `--until outcome` prints only trouble lines (needs you, failed, rejected, '
+    + 'minutes) prints `⚠ <step> looks stale: <reasons>`, then, while it shows no progress (no file change '
+    + 'for a step that writes: one that owns files, or a build or chore step; no output for any other), one '
+    + 'more line each further window (20 minutes for a writer, 10 otherwise), one level higher even after '
+    + 'progress that left it stale (a reading that is no longer stale ends it: a later one starts at warning 1), `⚠ <step> still looks stale (warning <n>) · no file change for <time>: <reasons>`, '
+    + 'each a trouble line that wakes the caller again; these lines stop nothing, the caller decides '
+    + '(`workflow step restart`). Separately, the dispatcher stops a worker as stalled (one retry on another '
+    + 'pool) after BULLSWARM_WORKER_SILENCE_SEC (default 3600) seconds with no output, or, for a build or '
+    + 'chore step, after BULLSWARM_WORKER_NO_PROGRESS_SEC (default 3600, 0 turns it off) seconds with no file '
+    + 'change. `--until outcome` prints only trouble lines (needs you, failed, rejected, '
     + 'scout stopped, planner stopped (saved runs only), paused, stalled, stale, steering, a gate waiting, a loop out of rounds) '
     + 'and the outcome, and exits at the outcome; in a v3 run it also prints one line per loop that finished '
     + '(`✓ loop <id> passed in round 2 of 3`, or blocked), without exiting, so a wake at a gate carries it; '
@@ -1642,7 +1656,10 @@ const workflowContinueText = rich({
     + 'succeeded (or passes by itself when its `when` condition does not hold); continue passes it and '
     + 'the steps behind it run. A loop waits when its rounds ran out and its `until` condition still does '
     + 'not hold; continue --rounds <n> gives it n more rounds, and continue without --rounds passes it as '
-    + 'it stands. A run where only waiting gates or loops are left parks as waiting: goal, watch and runs '
+    + 'it stands. In a dry loop the fix runs only when there is something to fix (a new in-scope finding, '
+    + 'or a known one a review reports still open): with the fix after the review ([review, fix]) each '
+    + 'extra round starts with the review and the fix runs when that review finds some; with the fix '
+    + 'before it ([fix, review]) the extra round starts with the fix when the round before found some. A run where only waiting gates or loops are left parks as waiting: goal, watch and runs '
     + 'print this command for each one. With a live kernel the request is applied at its next check; with '
     + 'none, it is applied here, the run goes back to running, and its kernel is relaunched in the background.',
   args: [
@@ -1705,6 +1722,8 @@ const workflowWaitText = rich({
     + 'status and facts (pool, model, duration, evidence, deliverable, output file) and its checked answer. '
     + 'Returns early when the run stops short of an id (it finished, parked, paused, or its kernel is not '
     + 'running); when it parked, each gate or loop it waits on is printed with its continue command. '
+    + 'A review with areas is named by its own id: the wait covers each of its area reviewers, and a dry '
+    + 'loop\'s line adds its findings so far. '
     + 'Reads state.json by polling; changes nothing.',
   args: [
     { name: '<runId>', desc: 'shortId or runId of a v3 program run' },

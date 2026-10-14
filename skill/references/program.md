@@ -51,6 +51,8 @@ Steps, gates and loops share one id space: an id is kebab-case and used once.
 | `files` | no | exact relative paths the step may change (no directory, no glob); steps whose files overlap run one after the other |
 | `retry` | no | `1` (default) or `0`: the one automatic retry after a failure |
 | `timeBox` | no | whole minutes 0-240: the soft time box written into the task (0 leaves it out); a guide, never a timeout |
+| `areas` | no | 1-8 angles a review looks from (one line each, at most 80 characters); only on the review a dry loop's `until` names; see "Fix until the review is dry" |
+| `areasPerRound` | no | how many area reviewers run each round: 1 to the number of areas (at most 5), default the smaller of the number of areas and 3 |
 
 `purpose`, `affects`, `evidenceFor`, `kind`, `role`, `inputs`, `produces` and
 `defaults.verifyRounds` belonged to v2 programs and are refused
@@ -77,7 +79,7 @@ failure's own needs-you block is your wake-up.
 |---|---|---|
 | `id` | yes | kebab-case; later steps depend on the loop id |
 | `steps` | yes | the step ids that repeat, in order through their own `dependsOn`; a step is in at most one loop; no loop inside a loop |
-| `until` | yes | a condition on one of the loop's steps: true ends the loop |
+| `until` | yes | a condition on one of the loop's steps: true ends the loop; the dry form ends a review loop when a round finds nothing new |
 | `maxRounds` | yes | 1-5 |
 
 Each round reruns the same step ids; earlier rounds stay on record as
@@ -91,9 +93,15 @@ rounds run out, the loop waits like a gate: `workflow continue <run> <loop>
 the loop is recorded as `continued-unmet` (condition not met), never passed.
 A step in the loop that fails (after its retry) blocks the loop.
 
+A dry loop (its `until` is the dry form below) is different: the review runs
+first, the loop checks right after it, and the other steps run only when there
+is something to fix (a skipped step is recorded `skipped`, never proven). See
+"Fix until the review is dry".
+
 ## The condition form
 
-A gate's `when` and a loop's `until` take one of two forms:
+A gate's `when` and a loop's `until` take one of these forms (the third is
+for a loop's `until` only):
 
 - `{"step": "<id>", "field": "<name>", "equals": true}`: a boolean field that
   the step's object answer schema lists in `required`; `equals` is `true` (the
@@ -102,6 +110,15 @@ A gate's `when` and a loop's `until` take one of two forms:
   passed. Inside a loop, a failed check on the step `until` names does not
   fail the step: the attempt is recorded "checked, not passed" and the
   condition reads false.
+- `{"step": "<id>", "dry": 1}`: the review found nothing new. "Dry" is a
+  review round that reports no new finding worth fixing; `dry` (1-3, 1
+  recommended) is how many such rounds in a row end the loop. The step's
+  answer must list `findings`, an array of objects whose required fields
+  include `title` (string) and `inScope` (boolean). `inScope` false marks a
+  finding the contract does not require: it is recorded, never fixed, and
+  does not keep the loop going. `stillOpen: true` (optional boolean) reports a
+  known finding again because it is still present: it goes back to the fixer
+  and keeps the loop going. Loop `until` only.
 
 A gate's condition step must run before the gate, and a loop's must be one of
 its steps. There are no expressions and no else.
@@ -162,6 +179,70 @@ validate:
   build                    build/medium deliverable=files
   review                   analyze/medium answer after build blind to build
 ```
+
+### Fix until the review is dry
+
+A strict review of a large change rarely answers `passed: true`: it finds
+something new each round, so a loop until `passed` runs out of rounds. To fix
+until the review is clean, loop `[review, fix]` (the build outside the loop)
+with `until: {"step": "review", "dry": 1}` and a findings answer:
+
+- Each round the review runs first. Its findings are merged into the loop's
+  **known list**: a finding whose title is already known counts as repeated,
+  not new (titles are compared after trimming, lower-casing and collapsing
+  spaces). From round 2 on, every review prompt carries an "Already known"
+  list: a reviewer reports only findings not on it, and reports a listed
+  in-scope finding again (exact title, `stillOpen: true`) only when it is
+  still present.
+- When the round found something new in scope (or a known finding still
+  open), the fix runs with a "Findings to fix" block: the merged list, each
+  finding in full, and each reviewer's answer file. A fixer may leave a
+  finding it judges is not a problem and say why, but a fix step whose
+  deliverable is files passes only when it changes a file: one that leaves
+  every finding stops as "no file changed" and goes to you. A step of the loop
+  that changes no file (a check after the fix) gets the same list for
+  reference, not to fix. When it found nothing new,
+  the fix is skipped (recorded `skipped`, never proven by that round; a fix
+  that ran in an earlier round keeps that run's output and proof) and the
+  loop ends dry. A fix step `blindTo` the review gets no findings list.
+- A reviewer is never handed the fixer's answer or output, `blindTo` or not
+  (in `[fix, review]` order the fix is listed as a blind dependency). A
+  fixer is a loop step that can change files (lane `build` or `chore`); a
+  read-only step the review depends on (a test run) is handed to it as usual.
+- In a loop with no fixer ("find until dry": the review alone, or beside
+  read-only checks such as a lint), nothing fixes a known finding, so reviews
+  are not asked for `stillOpen` and a finding still present is a repeat.
+- The "Already known" list names only earlier rounds' findings, and lists
+  out-of-scope ones apart (recorded, never handed to the fixer).
+- **Writing titles**: one line under 160 characters, what is wrong and
+  where. The loop tells new findings from known ones by the whole title; a
+  longer one is shown cut.
+
+Give the review `areas` (2-3 angles, such as "grammar and parsing",
+"expressions and types", "joins and aggregates") to look from several angles
+each round. The review becomes `areasPerRound` ordinary steps
+`review-area-1` … `review-area-P` that run in parallel, one area each;
+`dependsOn`, `blindTo` and `route.independentOf` that name `review` now name
+them all, and the loop's `until` keeps naming `review`. With fewer reviewers
+than areas they rotate: reviewer k looks from area `((round − 1) · P + k − 1)
+mod N`, so a retry or resume keeps its area. A dry stop then also needs every
+area reviewed after the last finding, which takes `ceil(N / P)` rounds even
+when no round finds anything: validate refuses a loop whose `maxRounds` is
+smaller. A failed reviewer blocks the loop as
+any failed loop step does; accepting it (`workflow step accept`) counts its
+area as not reviewed that round. A step that depends on the reviewers
+depends on all of them: name `review`, not one `review-area-k`. `workflow
+wait <run> review` waits for all of them; `step rerun` and `step accept` name
+one reviewer. A reviewer rerun after its round was merged (a `step rerun` of
+it, or of the work it reviews) has that round merged again from its new
+answer, even after the loop ended dry: a new finding then sends the loop back
+into that round, and the fix runs with it.
+
+Cost, with a review at about 40k output tokens and a fix round at about 200k
+(the real figures depend on the work): a round that finds something costs
+`P × 40k + 200k`, a clean round `P × 40k`. Three areas reviewed every round
+with `maxRounds` 3 has the same worst case (960k) as one review over 4 rounds
+that all find something. Pattern 6 in patterns.md is the whole program.
 
 ## Deliverables
 
@@ -240,7 +321,13 @@ not counted as proven), and `finished · unproven` when it has neither.
 
 `plan validate` and `workflow goal` also report advisories: authoring advice
 that never refuses a program, changes an exit code or changes dispatch
-(`all-writers-high`, `docs-at-high`, `suite-wider-than-files`). In human mode
+(`all-writers-high`, `docs-at-high`, `suite-wider-than-files`,
+`compile-check-only`: a step whose only command check compiles or parses the
+files, such as `python -m py_compile` or `node --check`, which proves they
+parse, not that a test passes; and for loops `review-loop-until-passed`,
+`dry-loop-too-short`, `review-one-area`, and `dry-loop-fix-first`: a dry
+loop whose fix runs before its review on work a step outside the loop builds,
+so round 1 runs the fixer with nothing to fix). In human mode
 each prints once on stderr as `advisory: <code> [<step>] — <message>`. With `--json`
 nothing is printed; the JSON carries them as `advisories: [{code, actionId,
 message}]` (the detached launch JSON always, a foreground result when there
@@ -301,17 +388,20 @@ Rules the fields above do not show on their own:
   answer files.
 - **One condition, no expressions and no else.** Anything more is your call,
   with `workflow wait` and `workflow add`.
-- **Loops run every step in every round**, and read their condition when the
-  round is over. Put the deciding step last, and give every writer in the loop
+- **Loops run every step in every round** (field and evidence forms), and read
+  their condition when the round is over. Put the deciding step last, and give every writer in the loop
   work each round (rewrite the draft from the critique; do not put a revise
   step after a critique that may pass the first time). When a loop's `until`
   is the evidence form (`{"step": "check", "evidence": "passed"}`), a failed
   check on that step reads as "not passed" and the loop goes on. With the
-  field form, a failed check fails the step as it would outside a loop.
+  field form, a failed check fails the step as it would outside a loop. A
+  dry loop checks right after its review instead, and skips its other steps
+  when there is nothing new to fix.
 - **A critique asks only for what the sources can show.** A claim that
   something is missing cannot cite a line, so a critique that demands one
   never passes. Cap `maxRounds` at 2 unless a round is cheap, and decide up
-  front what you do when it runs out (continuing it is recorded as unmet).
+  front what you do when it runs out (continuing it is recorded as unmet). A
+  dry loop may use 3-4: clean rounds cost only the reviewers.
 - **Gates stop only what is behind them.** Other branches keep running. When
   only waiting gates or loops are left, the run parks with status `waiting`.
 - **Opting into `independentOf` needs a second provider.** With only one
@@ -359,6 +449,16 @@ messages:
   not one of its dependencies`
 - `loops[0].maxRounds must be a whole number from 1 to 5`,
   `steps[0].retry must be 0 or 1`
+- the dry form: `gates[0].when: the dry form ({step, dry}) is for a loop's
+  until only`, `loops[0].until.dry must be a whole number from 1 to 3`,
+  `loops[0].until.dry is 2 but maxRounds is 1; the loop could never end dry`,
+  `loops[0].until: the answer schema of step review must list findings, an
+  array of objects whose required fields include title (string) and inScope
+  (boolean); for example {…}`
+- areas: `steps[1].areas: review is not the until step of a loop that ends
+  dry …`, `steps[1].areas: an area review must be lane analyze; …`, `id
+  "review-area-2" is used twice; steps, gates and loops share one id space
+  (review's areas use review-area-1 to review-area-3)`
 - an independence the graph cannot give: `steps[1].route.independentOf names
   "a", which does not run before this step; add it to dependsOn (directly or
   through another step)`; the same for `blindTo`: `steps[1].blindTo

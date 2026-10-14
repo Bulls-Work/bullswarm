@@ -19,6 +19,7 @@ import { runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import { listAssignments } from '../src/lib/assignments.js';
 import { pickPool } from '../src/lib/route.js';
+import { retryPoolTiers } from '../src/workflow/dispatch-pools.js';
 import {
   createV2GoalDocument, createV2DurableState, deserializeV2DurableState,
 } from '../src/workflow/v2-state.js';
@@ -2823,6 +2824,113 @@ test('failure rule: a sign-in failure moves the step to an independent pool, nev
   assert.ok(refreshCalls.length >= 2, 'the second pick read the refreshed list');
   assert.deepEqual(core.pools, {}, 'nothing is written to shared state');
   assert.equal(core.decisionLog.length, 2);
+});
+
+// Claude accounts as separate pools (no shared credential), and a different
+// vendor whose pace is the best. The families mirror the claude-code connector.
+const CLAUDE_FAMILIES = [
+  { family: 'opus', match: '^claude-opus-[0-9]', tier: 'high', qualityRank: 5 },
+  { family: 'sonnet', match: '^claude-sonnet-[0-9]', tier: 'medium', qualityRank: 4 },
+];
+const claudePool = (name, model, extra = {}) => connector(name, {
+  modelFamilies: CLAUDE_FAMILIES, strategyAssignments: { low: { pool: name, model } }, ...extra,
+});
+const grokPool = (extra = {}) => connector('grok', {
+  strategyAssignments: { low: { pool: 'grok', model: 'grok-5' } }, pace: 90, ...extra,
+});
+const signInFailure = { ok: false, failureKind: 'auth', why: 'OAuth session expired', meta: { exitCode: 1, wallSec: 0.2 } };
+
+test('failure rule: after a sign-in failure the retry takes another pool on the same model before another vendor', async () => {
+  const pools = () => [
+    claudePool('claude-code', 'claude-opus-5-5'),
+    claudePool('claude-code:kipwise', 'claude-opus-5-5', { pace: -40 }),
+    claudePool('claude-code:wati', 'claude-sonnet-5', { pace: 50 }),
+    grokPool(),
+  ];
+  // Left to pace alone, the retry would go to grok.
+  assert.equal(pickPool('build', pools().slice(1), { effortTier: 'low' }).pick.pool, 'grok');
+  const { result, core } = await ruleDispatch([signInFailure, good], {
+    pools: pools(), preferredPool: 'claude-code', refreshPools: async () => pools(),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(pickedPools(result), ['claude-code', 'claude-code:kipwise']);
+  assert.equal(result.attempts[1].model, 'claude-opus-5-5');
+  assert.match(result.attempts[1].routeWhy, /retry kept to pools running the same model as the failed attempt \(claude-opus-5-5\)/);
+  assert.deepEqual(core.pools, {}, 'the preference is not stored');
+});
+
+test('failure rule: with no other pool on the same model the retry takes the same model family, then any pool', async () => {
+  const family = () => [
+    claudePool('claude-code', 'claude-opus-5-5'),
+    claudePool('claude-code:kipwise', 'claude-opus-5', { pace: -40 }),
+    claudePool('claude-code:wati', 'claude-sonnet-5', { pace: 50 }),
+    grokPool(),
+  ];
+  const first = await ruleDispatch([signInFailure, good], {
+    pools: family(), preferredPool: 'claude-code', refreshPools: async () => family(),
+  });
+  assert.deepEqual(pickedPools(first.result), ['claude-code', 'claude-code:kipwise']);
+  assert.match(first.result.attempts[1].routeWhy, /the same model family as the failed attempt/);
+  // Nothing of the same family left: pace alone picks among the rest.
+  const rest = () => [
+    claudePool('claude-code', 'claude-opus-5-5'),
+    claudePool('claude-code:wati', 'claude-sonnet-5', { pace: 50 }),
+    grokPool(),
+  ];
+  const second = await ruleDispatch([signInFailure, good], {
+    pools: rest(), preferredPool: 'claude-code', refreshPools: async () => rest(),
+  });
+  assert.deepEqual(pickedPools(second.result), ['claude-code', 'grok']);
+  assert.doesNotMatch(second.result.attempts[1].routeWhy, /retry kept to/);
+});
+
+test('failure rule: the router\'s 5-hour wall and near-limit order come before the retry\'s same-model preference', async () => {
+  // claude-code:kipwise runs the failed model but is near its 5-hour limit,
+  // then forecast past its 5-hour wall; grok is behind pace. The router over
+  // the whole list puts kipwise last, so the retry does too. (The forecast
+  // comes from the meters; the router is handed it here.)
+  const forecastPastWall = (lane, list, options) => pickPool(lane, list.map((pool) => (pool.name === 'claude-code:kipwise'
+    ? { ...pool, fiveHourUsedPct: 90, projectedFiveHourPct: 130 } : pool)), options);
+  for (const [extra, dependencies] of [[{ fiveHourUsedPct: 90 }, {}], [{}, { pickPool: forecastPastWall }]]) {
+    const pools = () => [
+      claudePool('claude-code', 'claude-opus-5-5'),
+      claudePool('claude-code:kipwise', 'claude-opus-5-5', { pace: 50, ...extra }),
+      grokPool({ pace: 10 }),
+    ];
+    const whole = (dependencies.pickPool ?? pickPool)('build', pools().slice(1), { effortTier: 'low' });
+    assert.equal(whole.pick.pool, 'grok', JSON.stringify(extra));
+    const { result } = await ruleDispatch([signInFailure, good], {
+      pools: pools(), preferredPool: 'claude-code', refreshPools: async () => pools(), dependencies,
+    });
+    assert.deepEqual(pickedPools(result), ['claude-code', 'grok'], JSON.stringify(result.attempts[1].routeCandidates));
+    assert.doesNotMatch(result.attempts[1].routeWhy, /retry kept to/);
+  }
+  // With every same-model pool within its limits the preference still holds.
+  const healthy = () => [
+    claudePool('claude-code', 'claude-opus-5-5'),
+    claudePool('claude-code:kipwise', 'claude-opus-5-5', { pace: 50, fiveHourUsedPct: 10 }),
+    grokPool({ pace: 60 }),
+  ];
+  const { result } = await ruleDispatch([signInFailure, good], {
+    pools: healthy(), preferredPool: 'claude-code', refreshPools: async () => healthy(),
+  });
+  assert.deepEqual(pickedPools(result), ['claude-code', 'claude-code:kipwise']);
+});
+
+test('retryPoolTiers orders same model, then same family, then the rest', () => {
+  const failed = claudePool('claude-code', 'claude-opus-5-5');
+  const list = [
+    grokPool(),
+    claudePool('a', 'claude-opus-5-5[1m]'),
+    claudePool('b', 'claude-opus-5'),
+    claudePool('c', 'claude-sonnet-5'),
+  ];
+  const tiers = retryPoolTiers(list, { pool: failed, model: 'claude-opus-5-5' }, 'low');
+  assert.deepEqual(tiers.map((tier) => [tier.match, tier.pools.map((pool) => pool.name)]), [
+    ['model', ['a']], ['family', ['b']], ['any', ['grok', 'c']],
+  ]);
+  // An unknown failed model gives one tier: pace decides, as before.
+  assert.deepEqual(retryPoolTiers(list, { pool: failed, model: null }, 'low').map((tier) => tier.match), ['any']);
 });
 
 test('failure rule: not-produced is retried on the same pool, forced, in a fresh session, with the failure attached', async () => {

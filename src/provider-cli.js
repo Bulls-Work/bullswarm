@@ -198,7 +198,7 @@ function schemaEnums() {
 
 // Pool fields contract section 6 names that the example document leaves out.
 const EXTRA_POOL_KEYS = [
-  'model', 'env', 'conversation', 'profile', 'upstreamGroup', 'preferredConcurrency', 'displayName',
+  'model', 'env', 'unsetEnv', 'conversation', 'profile', 'upstreamGroup', 'preferredConcurrency', 'displayName',
 ];
 
 function isStringArray(value) {
@@ -435,6 +435,7 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
     && (!pool.env || typeof pool.env !== 'object' || !Object.values(pool.env).every((v) => typeof v === 'string'))) {
     errors.push('env: must be an object of string values');
   }
+  if (pool.unsetEnv !== undefined && !isStringArray(pool.unsetEnv)) errors.push('unsetEnv: must be an array of strings');
   if (pool.lanes !== undefined && !(isStringArray(pool.lanes) && pool.lanes.every((l) => LANES.includes(l)))) {
     errors.push(`lanes: must be a subset of ${LANES.join(', ')}`);
   }
