@@ -620,7 +620,17 @@ function resolvePlanPrice({ pool = null, subscription = null, monthlyPriceUsd = 
   return provider && detected ? planPriceFor(provider, detected, { file: priceFile })?.monthlyPriceUsd ?? null : null;
 }
 
+function fiveHourOnlySnapshot(snapshot) {
+  const s = snapshot?.snapshot && typeof snapshot.snapshot === 'object' ? snapshot.snapshot : snapshot;
+  return Boolean(s && typeof s === 'object' && s.five_hour?.utilization != null
+    && Object.hasOwn(s, 'seven_day') && s.seven_day?.utilization == null
+    && s.monthly?.utilization == null);
+}
+
 function resolveWindow({ subscription = null, pool = null, startSnapshot = null, endSnapshot = null } = {}) {
+  // A 5h-only seat's quota lives in its 5h window whatever its provider
+  // declares for the plan family (claude-code declares weekly).
+  if (String(pool?.pacingWindow ?? '').trim().toLowerCase() === '5h') return '5h';
   return normalizeWindow(subscription?.window
     ?? subscription?.quotaWindow
     ?? pool?.subscription?.quotaWindow
@@ -672,7 +682,10 @@ export function subscriptionCost({
   const name = text(poolName) ?? poolNameOf(pool) ?? text(subscription?.pool);
   const startReading = startSnapshot ?? start ?? snapshots?.start ?? null;
   const endReading = endSnapshot ?? end ?? snapshots?.end ?? null;
-  const selectedWindow = normalizeWindow(window)
+  // A 5h-only seat (provider reports five_hour and seven_day null) spends its
+  // 5h window whatever the plan family declares (claude-code declares weekly).
+  const selectedWindow = (fiveHourOnlySnapshot(endReading) || fiveHourOnlySnapshot(startReading) ? '5h' : null)
+    ?? normalizeWindow(window)
     ?? normalizeWindow(quotaWindow)
     ?? resolveWindow({ subscription, pool, startSnapshot: startReading, endSnapshot: endReading });
   const monthly = resolvePlanPrice({

@@ -1,5 +1,10 @@
 # bullswarm changelog
 
+## 0.38.13 (unreleased, local)
+
+- A 5h-only seat (a Claude Team seat whose meter has no weekly window, such as `claude-code:kipwise`) now counts as expiring soon in the last 2 hours of its 5h window. Before, only weekly and monthly windows could be, so the router let that seat's unused 5h quota expire every five hours while it sent work to pools with less spare quota. Its urgency (surplus divided by the share of the window left) now ranks it first, `bullswarm pools` tags it `EXPIRING-SOON`, and the route reason says "of the 5h window left".
+- Spend rates and subscription attribution for such a seat use its 5h window, not the weekly default.
+
 ## Unreleased
 
 ## 0.38.12 — review loops stop when a round finds nothing new; a worker that changes no file for an hour is stopped; Claude workers use the login the meter checks

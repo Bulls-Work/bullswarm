@@ -720,7 +720,14 @@ export async function dispatchV2Action({
     gatePin = null;
     leaveFirst = null;
     onAttempt?.('started', clone(record));
-    const runtimeConnector = { ...connector, subscription: pool.subscription ?? connector.subscription ?? null };
+    // A 5h-only seat is paced on, and spends, its 5h window (config.js
+    // fiveHourOnlyPace): attribute its attempts to that window, not the plan
+    // family's declared weekly one.
+    const baseSubscription = pool.subscription ?? connector.subscription ?? null;
+    const attemptSubscription = pool.pacingWindow === '5h'
+      ? { ...(baseSubscription ?? {}), window: '5h', quotaWindow: '5h' }
+      : baseSubscription;
+    const runtimeConnector = { ...connector, subscription: attemptSubscription };
     // In-flight the instant the pool is picked — before the spawn, so four
     // concurrent kernel actions cannot all read this pool as idle.
     const ledgerEntry = withLedger(() => registerAssignment(bullswarmDir, {
@@ -764,7 +771,7 @@ export async function dispatchV2Action({
         runId: runId ?? runIdFromPaths(files),
         attemptId: `${action.id}-${ordinal}`,
         startedAt,
-        subscription: pool.subscription ?? connector.subscription ?? null,
+        subscription: attemptSubscription,
         attempts: (Array.isArray(ledgerAttempts) ? ledgerAttempts : [])
           .filter((attempt) => attempt?.id !== `${action.id}-${ordinal}`
             && (!attempt?.pool || attempt.pool === pool.name)),

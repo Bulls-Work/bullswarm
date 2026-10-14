@@ -477,7 +477,12 @@ export function attachSpend(pools, opts = {}) {
     // The window this pool is paced by decides which rate routing charges.
     // Default weekly: that is what every pool was paced by before 0.28.1, so
     // a pool that declares nothing keeps exactly its old numbers.
-    const pacingWindow = normalizePacingWindow(pool?.pacingWindow) ?? 'weekly';
+    // A 5h-only seat is paced on its 5h window (config.js fiveHourOnlyPace):
+    // charge and attribute it on that window, not the weekly default.
+    const pacingWindow = String(pool?.pacingWindow ?? '').trim().toLowerCase() === '5h'
+      ? '5h'
+      : normalizePacingWindow(pool?.pacingWindow) ?? 'weekly';
+    const pacingKey = pacingWindow === '5h' ? 'fiveHour' : pacingWindow;
     const rateOf = (key) => ({
       ratePerMinute: rates[key].ratePerMinute,
       source: rates[key].source,
@@ -488,14 +493,14 @@ export function attachSpend(pools, opts = {}) {
       fiveHour: rateOf('fiveHour'),
       weekly: rateOf('weekly'),
       monthly: rateOf('monthly'),
-      pacing: { window: pacingWindow, ...rateOf(pacingWindow) },
+      pacing: { window: pacingWindow, ...rateOf(pacingKey) },
     };
 
     for (const [key, field] of [
       ['fiveHour', 'projectedFiveHourPct'],
       ['weekly', 'projectedWeeklyPct'],
       ['monthly', 'projectedMonthlyPct'],
-      [pacingWindow, 'projectedPacingPct'],
+      [pacingKey, 'projectedPacingPct'],
     ]) {
       const projection = projectedUtilization({
         usedPct: currentUsedPct(pool, key, rates[key]),

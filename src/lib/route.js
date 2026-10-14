@@ -60,8 +60,8 @@
 //       run to acme on 22.9 > 13.8, and grok's 15 points expired two hours
 //       later; the owner had been pinning grok by hand.) So a pool whose
 //       PACING window resets within a fixed lead time — EXPIRING_SOON_MS: 24
-//       hours weekly, 3 days monthly, the owner's chosen values, about a
-//       seventh of a week and a tenth of a month — is ranked on
+//       hours weekly, 3 days monthly, 2 hours for a 5h-only seat, the owner's
+//       chosen values, about a seventh of a week and a tenth of a month — is ranked on
 //       urgency = effective surplus / the fraction of its window still to run
 //       (floored at MIN_WINDOW_LEFT_FRACTION so a reset seconds away cannot
 //       divide by zero) instead of on the surplus alone. Three states:
@@ -93,7 +93,7 @@
 //       a pool's 5h wall is not rescued by urgency; the near-limit and
 //       forecast-over-wall states remain eligible and are ordered accordingly.
 //       No pacing window, no parsable paceResetsAt, a reset already
-//       in the past, or any window other than weekly/monthly means there is
+//       in the past, or any window other than 5h/weekly/monthly means there is
 //       no lead time to measure and nothing about the pool changes (R8).
 //  R12. A healthy free model forms a tier ahead of metered pools while it is
 //       available; metered pools keep their R1-R11 ordering, and free-first
@@ -141,6 +141,9 @@ export const DEFAULT_INFLIGHT_PENALTY_PCT = 3;
  * Any window that is not one of these keys is never expiring soon.
  */
 export const EXPIRING_SOON_MS = {
+  // A 5h-only seat (a Claude Team seat: `seven_day` null) is paced on its 5h
+  // window and loses whatever that window leaves unused every five hours.
+  '5h': 2 * 3600_000,
   weekly: 24 * 3600_000,
   monthly: 72 * 3600_000,
 };
@@ -1152,7 +1155,7 @@ function urgencyClause(entry, detail) {
 /** `surplus 7.8 over 1.2% of the week left → urgency 650, forecast 91.0%`. */
 function urgencyArithmetic(entry, detail) {
   const { windowLeftFraction, urgency, window } = entry.expiring;
-  const word = window === 'monthly' ? 'month' : 'week';
+  const word = window === 'monthly' ? 'month' : window === '5h' ? '5h window' : 'week';
   const left = tenth(windowLeftFraction * 100);
   const tail = detail ? ` (${detail})` : '';
   return (

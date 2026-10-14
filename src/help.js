@@ -468,8 +468,8 @@ const poolsText = rich({
     + 'expected to push the window further; routing decides on the right-hand number. '
     + 'A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run: '
     + 'routing only deprioritizes a near-limit pool whose usage is ahead of its clock. '
-    + 'A pool whose weekly window resets within 24 hours, or whose monthly window resets '
-    + 'within 3 days, ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON '
+    + 'A pool whose weekly window resets within 24 hours, whose monthly window resets within 3 days, or (a 5h-only seat with no weekly limit) whose 5h window resets within 2 hours, '
+    + 'ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON '
     + 'urgency=<n>`: quota about to be lost, scored as surplus divided by the fraction '
     + 'of the window still to run, which is what routing ranks it on.',
   args: [],
