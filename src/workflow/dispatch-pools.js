@@ -8,7 +8,6 @@ import { isFree } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { poolPassesRoute } from './step-route.js';
-import { operatorLimit } from '../lib/pool-limits.js';
 
 // The models this pool's plan was seen not to include (config.js attaches
 // strategy.js planExclusionsForPool): passed over like a model turned off for
@@ -57,9 +56,10 @@ export function preparePools(pools, action, effort, {
 } = {}) {
   const available = [];
   for (const pool of pools) {
-    // A held pool, or one at its opt-in reserve (pool-limits.js), is still
-    // capable: it comes back when the hold ends or the window resets.
-    if (pool.enabled === false || (!ignoreBurstGate && (windowSpent(pool, now) || meterSignInDead(pool) || operatorLimit(pool, now)))) continue;
+    // A held pool, or one at its opt-in reserve (pool-limits.js), is left in:
+    // the router drops it (route.js R14) and its reason names it, which a
+    // filter here would hide ("why this pool").
+    if (pool.enabled === false || (!ignoreBurstGate && (windowSpent(pool, now) || meterSignInDead(pool)))) continue;
     if (routeFilter && !poolPassesRoute(pool, routeFilter)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its

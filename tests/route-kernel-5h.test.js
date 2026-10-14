@@ -101,10 +101,11 @@ test('R14 hold list: a held pool is out until its end, then back by itself', () 
   const later = NOW + 3 * HOUR;
   assert.equal(activeHold(held.find((p) => p.name === 'claude-code:kipwise'), later), null);
 
-  // Dispatch's eligibility filter drops it too; a "could run" listing keeps it.
+  // Dispatch's eligibility filter leaves it to the router, so the reason can name it.
   const action = { lane: 'build' };
-  assert.ok(!preparePools(held, action, 'medium', { now: NOW }).some((p) => p.name === 'claude-code:kipwise'));
-  assert.ok(preparePools(held, action, 'medium', { now: NOW, ignoreBurstGate: true }).some((p) => p.name === 'claude-code:kipwise'));
+  const prepared = preparePools(held, action, 'medium', { now: NOW });
+  assert.ok(prepared.some((p) => p.name === 'claude-code:kipwise'));
+  assert.match(pickPool('build', prepared, { now: NOW, candidateMinutes: 10 }).why, /kept out: claude-code:kipwise held until/);
 
   // Everything held: no pick, and the reason says why.
   const all = realPools(Object.fromEntries(FIXTURE.pools.map((p) => [p.name, { hold }])));
