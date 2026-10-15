@@ -130,8 +130,8 @@ const CONTROL_NODE_FIELDS = new Set(['id', 'type', 'status', 'at', 'round', 'max
 // only on a dry loop after its first review.
 // `dropped`: the titles past the known list's cap, as {key (16 hex), round}.
 const LOOP_FINDINGS_FIELDS = new Set(['rounds', 'known', 'knownDropped', 'dropped']);
-const FINDINGS_ROUND_FIELDS = new Set(['round', 'reviewed', 'new', 'reopened', 'repeated', 'outOfScope', 'ignored', 'fix', 'answers']);
-const KNOWN_FINDING_FIELDS = new Set(['title', 'key', 'round', 'area', 'inScope', 'from', 'reopened']);
+const FINDINGS_ROUND_FIELDS = new Set(['round', 'reviewed', 'new', 'reopened', 'repeated', 'outOfScope', 'ignored', 'belowFloor', 'fix', 'answers']);
+const KNOWN_FINDING_FIELDS = new Set(['title', 'key', 'round', 'area', 'inScope', 'severity', 'belowFloor', 'from', 'reopened']);
 const CONTROL_NODE_STATUSES = new Set(['pending', 'waiting', 'passed', 'blocked']);
 const ANSWER_ERRORS_MAX = 100;
 const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried', 'outsideCwd']);
@@ -635,6 +635,8 @@ function validateLoopFindings(value, at, { loop, round, actions }) {
     if (!Array.isArray(entry.reviewed)) fail(`${name}.reviewed must be an array`);
     entry.reviewed.forEach((item, k) => area(item, `${name}.reviewed[${k}]`));
     for (const key of ['new', 'reopened', 'repeated', 'outOfScope', 'ignored']) nonNegativeInteger(entry[key], `${name}.${key}`);
+    // Findings under the loop's severity floor (0.38.15): counted, not new.
+    if (entry.belowFloor !== undefined) nonNegativeInteger(entry.belowFloor, `${name}.belowFloor`);
     if (!['runs', 'skipped', 'none'].includes(entry.fix)) fail(`${name}.fix must be runs|skipped|none`);
     // The attempt each reviewer answered in that round (null: no answer).
     if (entry.answers !== undefined) {
@@ -656,6 +658,8 @@ function validateLoopFindings(value, at, { loop, round, actions }) {
     if (entry.round > round) fail(`${name}.round must not be past the loop's round`);
     if (entry.area !== null) area(entry.area, `${name}.area`);
     if (typeof entry.inScope !== 'boolean') fail(`${name}.inScope must be a boolean`);
+    if (entry.severity !== undefined && !['everyday', 'edge', 'obscure'].includes(entry.severity)) fail(`${name}.severity must be everyday|edge|obscure`);
+    if (entry.belowFloor !== undefined && entry.belowFloor !== true) fail(`${name}.belowFloor must be true`);
     identifier(entry.from, `${name}.from`);
     if (!Array.isArray(entry.reopened) || entry.reopened.some((item) => !Number.isInteger(item) || item < 1 || item > round)) fail(`${name}.reopened must list rounds`);
   }

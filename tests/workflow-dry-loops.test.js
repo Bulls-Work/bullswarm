@@ -1504,3 +1504,22 @@ test('a gate between the loop and a later step: reopening the loop makes the gat
   assert.deepEqual([gateEvents[0].payload.gateId, gateEvents[0].payload.loopId], ['approve', 'harden']);
   assert.match(renderControlEvent(controlWatchEvent(gateEvents[0], { token: 'x' })), /gate approve waits again/);
 });
+
+// 0.38.15 benchmark crash (yr6rri, 2026-10-15 01:14Z): the kernel stopped on
+// `findings.rounds[0].belowFloor is not allowed`. The floor's own fields
+// must survive the durable-state check on a real run, not only in mergeRound.
+test('severity floor through a real run: below-floor counts and known severities pass the durable-state check', async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  const byTurn = (turn) => (turn === 1
+    ? { findings: [finding('LIKE escape ignored', { severity: 'edge' }), finding('Collation of NUL bytes', { severity: 'obscure' })] }
+    : { findings: [finding('Rounding of 1e308 * 10', { severity: 'obscure' })] });
+  const run = await launch(f, dryProgram(), fakeDispatch(reviewAnswers(byTurn), { seen }));
+  assert.equal(run.result.status, 'completed', run.result.reason);
+  const record = node(run, 'harden');
+  assert.deepEqual([record.status, record.reason, record.round], ['passed', 'dry', 2]);
+  assert.deepEqual(record.findings.rounds.map((round) => [round.new, round.belowFloor ?? 0, round.fix]), [[1, 1, 'runs'], [0, 1, 'skipped']]);
+  assert.deepEqual(record.findings.known.map((entry) => [entry.severity, entry.belowFloor === true]), [['edge', false], ['obscure', true], ['obscure', true]]);
+  assert.equal(validateV2DurableState(run.state), true);
+  assert.equal(validateV2DurableState(deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8'))), true);
+});
