@@ -276,7 +276,9 @@ test('findingsToFixBlock: a step that changes no file gets the list for referenc
 
 // 0.38.12's rotation tests keep their areas as named: nonFunctional false
 // (0.38.15 adds a non-functional area otherwise; tested on its own below).
-const dryProgram = ({ areas = null, areasPerRound, maxRounds = 4, dry = 1, order = ['review', 'fix'], review = {}, nonFunctional = false } = {}) => ({
+// The 0.38.12 tests keep their semantics: no added non-functional area
+// (0.38.15) and no yield stop (0.38.16) unless a test asks for one.
+const dryProgram = ({ areas = null, areasPerRound, maxRounds = 4, dry = 1, order = ['review', 'fix'], review = {}, nonFunctional = false, yieldStop = false } = {}) => ({
   schemaVersion: V3,
   steps: [
     { id: 'build', lane: 'build', prompt: 'Build the acme parser.' },
@@ -288,7 +290,7 @@ const dryProgram = ({ areas = null, areasPerRound, maxRounds = 4, dry = 1, order
     { id: 'fix', dependsOn: order[0] === 'review' ? ['review'] : ['build'], lane: 'build', prompt: 'Fix the acme parser.' },
     { id: 'ship', dependsOn: ['harden'], prompt: 'Ship the acme parser.' },
   ],
-  loops: [{ id: 'harden', steps: order, until: { step: 'review', dry, ...(nonFunctional === false ? { nonFunctional: false } : {}) }, maxRounds }],
+  loops: [{ id: 'harden', steps: order, until: { step: 'review', dry, ...(nonFunctional === false ? { nonFunctional: false } : {}), ...(yieldStop === false ? { yield: false } : yieldStop === true ? {} : { yield: yieldStop }) }, maxRounds }],
 });
 
 const issuesOf = (program) => {
@@ -319,7 +321,7 @@ test('areas expand into area reviewers; references to the review are rewritten; 
   assert.deepEqual(reviewer.blindTo, ['build']);
   assert.deepEqual(normal.steps[4].dependsOn, ['review-area-1', 'review-area-2', 'review-area-3']);
   assert.deepEqual(normal.loops[0].steps, ['review-area-1', 'review-area-2', 'review-area-3', 'fix']);
-  assert.deepEqual(normal.loops[0].until, { step: 'review', dry: 1, nonFunctional: false });
+  assert.deepEqual(normal.loops[0].until, { step: 'review', dry: 1, nonFunctional: false, yield: false });
   const all = normaliseProgramV3(dryProgram({ areas: ['grammar', 'types'] }));
   assert.equal(all.steps[1].label, 'review · grammar', 'with every area each round the label names it');
   const stored = storedProgramV3(program);
@@ -445,8 +447,9 @@ function fakeDispatch(script = () => ({}), { seen = [] } = {}) {
           if (plan.fail) return { ok: false, why: 'the acme worker crashed', failureKind: plan.fail, meta: { exitCode: 1, wallSec: 1 } };
           const checked = opts.outputValidator ? opts.outputValidator('') : { ok: true };
           const structured = { ok: checked.ok, errors: checked.errors ?? [], ...(checked.value !== undefined ? { value: checked.value } : {}) };
+          const usage = plan.tokens ? { tokens: plan.tokens } : null;
           return checked.ok
-            ? { ok: true, why: 'structured output validated', structured, meta: { exitCode: 0, wallSec: 1 } }
+            ? { ok: true, why: 'structured output validated', structured, meta: { exitCode: 0, wallSec: 1, ...(usage ? { usage } : {}) } }
             : { ok: false, why: `structured output invalid: ${structured.errors.join('; ')}`, failureKind: 'schema', structured, meta: { exitCode: 0, wallSec: 1 } };
         },
         loadState: () => structuredClone(core),
@@ -954,9 +957,9 @@ test('out of rounds: the event says what the last round found; continue --rounds
   assert.deepEqual(run.waiting.map((entry) => entry.id), ['harden']);
   assert.match(run.waiting[0].note, /out of rounds \(2 of 2\); the review did not run dry; round 2 found 1 new and its fix was not reviewed/);
   const event = eventsOf(run, 'loop.out-of-rounds')[0].payload;
-  assert.deepEqual(event.findings, { lastNew: { round: 2, new: 1, reopened: 0, fix: 'runs' }, known: 2, unreviewed: [] });
+  assert.deepEqual(event.findings, { lastNew: { round: 2, new: 1, reopened: 0, fix: 'runs' }, known: 2, unreviewed: [], perRound: [1, 1] });
   const line = renderControlEvent(controlWatchEvent(eventsOf(run, 'loop.out-of-rounds')[0], { token: 'acme01' }));
-  assert.match(line, /loop harden out of rounds \(2 of 2\) · round 2 found 1 new \(its fix was not reviewed\) · continue: bullswarm workflow continue acme01 harden --rounds <n>/);
+  assert.match(line, /loop harden out of rounds \(2 of 2\) · round 2 found 1 new \(its fix was not reviewed\) · new per round 1, 1 · continue: bullswarm workflow continue acme01 harden --rounds <n>/);
   continueOffline(run, 'harden', 1);
   const seen = [];
   const done = await resume(f, run.runId, fakeDispatch(script, { seen }));
@@ -1520,6 +1523,110 @@ test('severity floor through a real run: below-floor counts and known severities
   assert.deepEqual([record.status, record.reason, record.round], ['passed', 'dry', 2]);
   assert.deepEqual(record.findings.rounds.map((round) => [round.new, round.belowFloor ?? 0, round.fix]), [[1, 1, 'runs'], [0, 1, 'skipped']]);
   assert.deepEqual(record.findings.known.map((entry) => [entry.severity, entry.belowFloor === true]), [['edge', false], ['obscure', true], ['obscure', true]]);
+  assert.equal(validateV2DurableState(run.state), true);
+  assert.equal(validateV2DurableState(deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8'))), true);
+});
+
+// --- 0.38.16 (benchmark-0.38.15-report.md, Second Mate's GO) ---------------------
+
+test('0.38.16 non-functional areas: whole words, and every part of the area must be past correctness', async () => {
+  const { isNonFunctionalArea, NON_FUNCTIONAL_AREA } = await import('../src/workflow/dry-loops.js');
+  for (const area of [NON_FUNCTIONAL_AREA, 'query speed on 100k rows', 'performance and tests', 'code structure / readability', 'test coverage']) {
+    assert.equal(isNonFunctionalArea(area), true, area);
+  }
+  // The benchmark's third area, and the unanchored 0.38.15 matches.
+  for (const area of ['errors, constraints, all-or-nothing, transactions, performance', 'scalar functions', 'test of NULL handling', 'semantics: NULLs, types, affinity, comparisons, functions, aggregates', 'grammar']) {
+    assert.equal(isNonFunctionalArea(area), false, area);
+  }
+  // The benchmark's three areas now get the non-functional area added.
+  const areas = ['semantics: NULLs, types, affinity, comparisons, functions, aggregates', 'queries: joins, subqueries, GROUP BY/HAVING, ORDER BY, UNION, LIMIT', 'errors, constraints, all-or-nothing, transactions, performance'];
+  const normal = normaliseProgramV3(dryProgram({ areas, nonFunctional: true }));
+  assert.deepEqual(normal.steps.find((step) => step.areaOf).areaOf.areas, [...areas, NON_FUNCTIONAL_AREA]);
+});
+
+test('0.38.16 yield stop: two reviewed rounds in a row that each found 1 or 2 end the loop; a still-open finding, a clean round, a fixer first or yield false do not', () => {
+  const loop = { id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1 } };
+  const group = { id: 'review', steps: ['review'], areas: [], perRound: 1 };
+  const round = (n, found, extra = {}) => ({ round: n, reviewed: [0], new: found, reopened: 0, repeated: 0, outOfScope: 0, ignored: 0, fix: 'runs', ...extra });
+  const verdict = (rounds, l = loop, g = group) => dryVerdict(l, { findings: { rounds, known: [], knownDropped: 0 } }, g);
+  assert.deepEqual([verdict([round(1, 9), round(2, 2), round(3, 1)]).dry, verdict([round(1, 9), round(2, 2), round(3, 1)]).by], [true, 'yield']);
+  // The benchmark's sequence never qualifies (4, then 3, then 5).
+  assert.equal(verdict([9, 4, 2, 4, 3, 5].map((n, i) => round(i + 1, n))).dry, false);
+  assert.equal(verdict([round(1, 9), round(2, 2), round(3, 3)]).dry, false, 'over max');
+  assert.equal(verdict([round(1, 2), round(2, 1, { reopened: 1 })]).dry, false, 'a fix that did not hold keeps it going');
+  assert.equal(verdict([round(1, 2)]).dry, false, 'one round is not two');
+  assert.equal(verdict([round(1, 2), round(2, 1)], { ...loop, until: { ...loop.until, yield: false } }).dry, false);
+  assert.equal(verdict([round(1, 2), round(2, 1)], loop, { ...group, fixFirst: true }).dry, false);
+  const three = { ...loop, until: { ...loop.until, yield: { max: 3, rounds: 3 } } };
+  assert.equal(verdict([round(1, 3), round(2, 3)], three).dry, false);
+  assert.equal(verdict([round(1, 3), round(2, 3), round(3, 1)], three).by, 'yield');
+  // With areas, the rounds in the tail must cover every area.
+  const areaGroup = { id: 'review', steps: ['review-area-1'], areas: ['a', 'b', 'c'], perRound: 1 };
+  assert.equal(verdict([round(1, 1, { reviewed: [0] }), round(2, 1, { reviewed: [1] })], loop, areaGroup).dry, false);
+  // dry 2 still needs its clean rounds: a clean round is not a low-yield round.
+  const dry2 = { ...loop, until: { ...loop.until, dry: 2 } };
+  assert.equal(verdict([round(1, 2), round(2, 0)], dry2).dry, false);
+});
+
+test('0.38.16 yield is validated on the dry until', () => {
+  assert.deepEqual(issuesOf(dryProgram({ yieldStop: { max: 1, rounds: 3 } })), []);
+  assert.deepEqual(normaliseProgramV3(dryProgram({ yieldStop: { max: 1 } })).loops[0].until.yield, { max: 1 });
+  assert.equal(normaliseProgramV3(dryProgram({ yieldStop: true })).loops[0].until.yield, undefined, 'the default is not stored');
+  assert.ok(issuesOf(dryProgram({ yieldStop: { max: 11 } })).some((issue) => /yield\.max must be a whole number from 0 to 10/.test(issue)));
+  assert.ok(issuesOf(dryProgram({ yieldStop: { rounds: 1 } })).some((issue) => /yield\.rounds must be a whole number from 2/.test(issue)));
+  assert.ok(issuesOf(dryProgram({ yieldStop: { when: 2 } })).some((issue) => /yield\.when is not allowed/.test(issue)));
+  assert.ok(issuesOf(dryProgram({ yieldStop: 'soon' })).some((issue) => /yield must be false or \{max, rounds\}/.test(issue)));
+});
+
+test('0.38.16 yield stop through a real run: the fixer runs on the last findings, the loop passes as yield, and the run state passes the durable check', async (t) => {
+  const f = fixture(t);
+  const seen = [];
+  const counts = [3, 2, 1];
+  const byTurn = (turn) => ({ findings: Array.from({ length: counts[turn - 1] ?? 0 }, (_, k) => finding(`Round ${turn} finding ${k + 1} in the acme parser`, { severity: 'edge' })) });
+  const run = await launch(f, dryProgram({ yieldStop: true, maxRounds: 5 }), fakeDispatch(reviewAnswers(byTurn), { seen }));
+  assert.equal(run.result.status, 'completed', run.result.reason);
+  const record = node(run, 'harden');
+  assert.deepEqual([record.status, record.reason, record.round], ['passed', 'yield', 3]);
+  assert.deepEqual(seen.map((entry) => entry.actionId), ['build', 'review', 'fix', 'review', 'fix', 'review', 'fix', 'ship'], 'round 3\'s fixer ran before the loop ended');
+  const passed = eventsOf(run, 'loop.passed')[0];
+  assert.deepEqual([passed.payload.reason, passed.payload.perRound, passed.payload.yieldRule], ['yield', [3, 2, 1], { max: 2, rounds: 2 }]);
+  assert.match(renderControlEvent(controlWatchEvent(passed, { token: 'acme01' })), /loop harden stopped on low yield in round 3 of 5 · new per round 3, 2, 1 · the last 2 found at most 2 each · 6 found in all/);
+  assert.equal(run.result.loops[0].findings.yieldIn, 3);
+  assert.equal(validateV2ResultEnvelope(run.result), true);
+  assert.match(run.result.reason, /loop harden ended on low yield in round 3 of 5 \(6 findings\)/);
+  assert.equal(validateV2DurableState(run.state), true);
+  assert.equal(validateV2DurableState(deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8'))), true);
+});
+
+test('0.38.16 out of rounds: the event and the watch line name new per round and the loop\'s worker tokens so far', async (t) => {
+  const f = fixture(t);
+  const byTurn = (turn) => ({ findings: [finding(`Round ${turn} finding in the acme parser`)] });
+  const tokens = { output: 1200, reasoning: 800 };
+  const script = (id, turn, task) => ({ ...reviewAnswers(byTurn)(id, turn, task), tokens });
+  const run = await launch(f, dryProgram({ maxRounds: 2 }), fakeDispatch(script));
+  const event = eventsOf(run, 'loop.out-of-rounds')[0];
+  assert.deepEqual([event.payload.findings.perRound, event.payload.findings.tokens], [[1, 1], 8000], '2 reviews and 2 fixes at 2,000 each');
+  assert.match(renderControlEvent(controlWatchEvent(event, { token: 'acme01' })), /· new per round 1, 1 · 8k worker tokens so far · continue:/);
+  assert.equal(validateV2DurableState(run.state), true);
+});
+
+// Fix 4: every field a dry loop's record can carry goes through the durable
+// check on a real kernel run (e12c114 found `belowFloor` was refused only when
+// the benchmark's kernel saved its first severity round).
+test('0.38.16 every findings field a real run writes passes the durable-state check', async (t) => {
+  const f = fixture(t);
+  const long = `Unary minus binds looser than ^ in the acme expression parser when ${'the operand is parenthesised and '.repeat(6)}nested`;
+  const byTurn = (turn) => ({ findings: turn === 1
+    ? [finding(long, { severity: 'edge' }), finding('Collation of NUL bytes', { severity: 'obscure' }), finding('Error text is not localised', { inScope: false })]
+    : turn === 2
+      ? [finding(long, { severity: 'edge', stillOpen: true }), finding('LIKE escape ignored', { severity: 'everyday' })]
+      : [] });
+  const run = await launch(f, dryProgram({ maxRounds: 4, yieldStop: true }), fakeDispatch(reviewAnswers(byTurn)));
+  const findings = node(run, 'harden').findings;
+  const roundKeys = new Set(findings.rounds.flatMap((round) => Object.keys(round)));
+  const knownKeys = new Set(findings.known.flatMap((entry) => Object.keys(entry)));
+  for (const key of ['belowFloor', 'reopened', 'outOfScope', 'answers']) assert.ok(roundKeys.has(key), `round field ${key} was written`);
+  for (const key of ['key', 'severity', 'belowFloor', 'reopened', 'inScope']) assert.ok(knownKeys.has(key), `known field ${key} was written`);
   assert.equal(validateV2DurableState(run.state), true);
   assert.equal(validateV2DurableState(deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8'))), true);
 });

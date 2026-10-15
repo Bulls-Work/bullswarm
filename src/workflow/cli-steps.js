@@ -572,8 +572,9 @@ export function waitFactLines(fact) {
   if (fact.type === 'loop' && fact.status === 'passed' && fact.reason === 'continued') {
     return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds)}`];
   }
-  if (fact.type === 'loop' && fact.findings?.dryIn !== undefined) {
-    return [`${g.ok} ${dryLoopText(fact.id, fact.findings.dryIn, fact.maxRounds, fact.findings.known.length)}`];
+  if (fact.type === 'loop' && (fact.findings?.dryIn !== undefined || fact.findings?.yieldIn !== undefined)) {
+    const yieldStop = fact.findings.yieldIn !== undefined;
+    return [`${g.ok} ${dryLoopText(fact.id, fact.findings.dryIn ?? fact.findings.yieldIn, fact.maxRounds, fact.findings.known.length, { yieldStop })}`];
   }
   if (fact.type !== 'step') {
     const mark = fact.status === 'passed' ? g.ok : fact.status === 'waiting' ? g.waiting : fact.status === 'blocked' ? g.blocked : g.pending;

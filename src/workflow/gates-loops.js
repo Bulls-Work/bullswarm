@@ -93,6 +93,7 @@ export function loopOutcomes(state) {
           known: summary.known, outOfScope: summary.outOfScope, rounds: summary.rounds,
           ...(summary.stillOpen.some((count) => count > 0) ? { stillOpen: summary.stillOpen } : {}),
           ...(summary.dryIn !== undefined ? { dryIn: summary.dryIn } : {}),
+          ...(summary.yieldIn !== undefined ? { yieldIn: summary.yieldIn } : {}),
           ...(summary.unreviewed ? { unreviewed: summary.unreviewed } : {}),
         },
       } : {}),
@@ -101,8 +102,8 @@ export function loopOutcomes(state) {
 }
 
 /** The words for a loop that ended dry: `loop harden ended dry in round 3 of 4 (12 findings)`. */
-export function dryLoopText(id, round, maxRounds, known) {
-  return `loop ${id} ended dry in round ${round} of ${maxRounds} (${known} finding${known === 1 ? '' : 's'})`;
+export function dryLoopText(id, round, maxRounds, known, { yieldStop = false } = {}) {
+  return `loop ${id} ended ${yieldStop ? 'on low yield' : 'dry'} in round ${round} of ${maxRounds} (${known} finding${known === 1 ? '' : 's'})`;
 }
 
 // The mark of a loop the caller continued: an arrow, like the other arrows
@@ -291,7 +292,7 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
   // `workflow continue`), still learns a reviewer's new answer (a step rerun
   // of it, or of the work it reviews): a finding it brings is never dropped,
   // and its fixer runs with it (mergeDryRound).
-  if (isDryLoop(loop) && (record.status === 'waiting' || (record.status === 'passed' && ['dry', 'continued'].includes(record.reason)))) {
+  if (isDryLoop(loop) && (record.status === 'waiting' || (record.status === 'passed' && ['dry', 'yield', 'continued'].includes(record.reason)))) {
     return mergeDryRound(state, loop, record, { at, emit, rerun });
   }
   if (record.status !== 'pending' && record.status !== 'blocked') return false;
@@ -314,8 +315,9 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
   }
   const holds = readCondition(state, loop.until) === true;
   if (holds && isDryLoop(loop)) {
-    // Dry since the merge; a step beside the review was still running then.
-    settle(record, 'passed', at, 'dry');
+    // Dry since the merge; a step beside the review was still running then
+    // (or, for a yield stop, the fixer had this round's findings to fix).
+    settle(record, 'passed', at, dryVerdict(loop, record, groupOf(state, loop))?.by ?? 'dry');
     emitDryPassed(state, loop, record, { emit });
     return true;
   }
@@ -494,7 +496,7 @@ function mergeDryRound(state, loop, record, { at, emit, rerun }) {
   const passes = verdict.dry && done;
   const known = merged.known.filter((item) => item.inScope).length;
   const wasPassed = record.status === 'passed';
-  if (passes && !wasPassed) settle(record, 'passed', at, 'dry');
+  if (passes && !wasPassed) settle(record, 'passed', at, verdict.by ?? 'dry');
   // Passed dry, and the new answer is not dry: the round goes on.
   const reopened = !verdict.dry && wasPassed;
   if (reopened) settle(record, 'pending', at);
@@ -503,7 +505,7 @@ function mergeDryRound(state, loop, record, { at, emit, rerun }) {
     new: entry.new, reopened: entry.reopened, repeated: entry.repeated, outOfScope: entry.outOfScope, known,
     areas: entry.reviewed.map((area) => group.areas[area] ?? null).filter(Boolean),
     unreviewed: verdict.unreviewed.map((area) => group.areas[area]).filter(Boolean),
-    clean: verdict.clean, need: verdict.need, dry: verdict.dry, fix: fixWhen(entry.fix, after, fixers),
+    clean: verdict.clean, need: verdict.need, dry: verdict.dry, ...(verdict.by ? { by: verdict.by } : {}), fix: fixWhen(entry.fix, after, fixers),
   });
   emitSkipped(state, skipped, { at, emit });
   if (passes && !wasPassed) emitDryPassed(state, loop, record, { emit });
@@ -562,8 +564,10 @@ function rerunStepsBehind(state, loop, record, { at, emit, rerun }) {
 // The loop.passed event of a dry loop.
 function emitDryPassed(state, loop, record, { emit }) {
   const group = groupOf(state, loop);
+  const verdict = dryVerdict(loop, record, group);
   emit('loop.passed', {
-    loopId: loop.id, round: record.round, of: record.maxRounds, reason: 'dry',
+    loopId: loop.id, round: record.round, of: record.maxRounds, reason: record.reason === 'yield' ? 'yield' : 'dry',
+    ...(record.reason === 'yield' && verdict?.yieldRule ? { yieldRule: verdict.yieldRule, perRound: (record.findings?.rounds ?? []).map((item) => item.new + item.reopened) } : {}),
     known: (record.findings?.known ?? []).filter((item) => item.inScope).length,
     areas: group.areas.length > 0, condition: untilText(state, loop),
   });
@@ -585,8 +589,25 @@ function dryOutOfRounds(state, loop, record) {
   const summary = loopFindingsSummary(loop, record, group);
   if (!summary) return null;
   const lastNew = { ...summary.lastNew, fix: fixWhen(summary.lastNew.fix, fixStepsOf(state, loop, group).after, fixersOf(state, loop, group)) };
-  return { lastNew, known: summary.known.length, unreviewed: summary.unreviewed ?? [] };
+  const perRound = (record.findings?.rounds ?? []).map((item) => item.new + item.reopened);
+  const tokens = loopTokens(state, loop);
+  return { lastNew, known: summary.known.length, unreviewed: summary.unreviewed ?? [], perRound, ...(tokens > 0 ? { tokens } : {}) };
 }
+
+// Worker tokens (output plus reasoning, as reported) of every attempt of the
+// loop's steps so far: what another round is weighed against (0.38.16; the
+// benchmark's rounds 5 and 6 alone cost 0.49M).
+function loopTokens(state, loop) {
+  let total = 0;
+  for (const attempt of state.attempts ?? []) {
+    if (!loop.steps.includes(attempt?.actionId)) continue;
+    const tokens = attempt.usage?.tokens;
+    if (tokens && typeof tokens === 'object') total += (Number(tokens.output) || 0) + (Number(tokens.reasoning) || 0);
+  }
+  return total;
+}
+
+const tokenText = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 
 // What a round that found something says about its fix, or null for a loop
 // with no fix step: a fix that ran after the review was not reviewed; a fix
@@ -608,6 +629,8 @@ function dryWaitingNote(state, loop, record) {
     ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? `${lastNew.fix === 'next' ? ',' : ' and'} ${lastFixText(lastNew.fix)}` : ''}`
     : `round ${lastNew.round} found nothing new`);
   if (unreviewed.length) parts.push(`not reviewed since the last finding: ${unreviewed.join(', ')}`);
+  if (facts.perRound.length > 1) parts.push(`new per round: ${facts.perRound.join(', ')}`);
+  if (facts.tokens) parts.push(`its workers used ${tokenText(facts.tokens)} tokens so far, so weigh another round against that`);
   return parts.join('; ');
 }
 
@@ -913,6 +936,8 @@ export function controlWatchEvent(event, { token }) {
         ...(payload.found ? { found: payload.found } : {}),
         ...(payload.findings ? { findings: payload.findings } : {}),
         ...(Number.isInteger(payload.known) ? { known: payload.known, areas: payload.areas === true } : {}),
+        ...(Array.isArray(payload.perRound) ? { perRound: payload.perRound } : {}),
+        ...(payload.yieldRule ? { yieldRule: payload.yieldRule } : {}),
       };
     case 'loop.findings':
       return {
@@ -969,6 +994,9 @@ export function renderControlEvent(event) {
       return `· loop ${event.loopId} round ${event.round} of ${event.of} · review${event.areas.length ? ` (${event.areas.join(', ')})` : ''}: ${counts.join(', ')} · ${event.known} known${fix ? ` · ${fix}` : ''}`;
     }
     case 'loop.passed':
+      if (event.reason === 'yield') {
+        return `${g.ok} loop ${event.loopId} stopped on low yield in round ${event.round} of ${event.of} · new per round ${(event.perRound ?? []).join(', ')} · the last ${event.yieldRule?.rounds ?? 2} found at most ${event.yieldRule?.max ?? 2} each · ${event.known} found in all`;
+      }
       if (event.reason === 'dry') {
         return `${g.ok} loop ${event.loopId} dry in round ${event.round} of ${event.of} · no new findings${event.areas ? ', every area reviewed' : ''} · ${event.known} found in all`;
       }
@@ -983,7 +1011,9 @@ export function renderControlEvent(event) {
         const said = found
           ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? ` (${lastFixText(lastNew.fix)})` : ''}`
           : `round ${lastNew.round} found nothing new`;
-        return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${said}${unreviewed.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''} · ${continueTail}`;
+        const { perRound = [], tokens } = event.findings;
+        const cost = `${perRound.length > 1 ? ` · new per round ${perRound.join(', ')}` : ''}${tokens ? ` · ${tokenText(tokens)} worker tokens so far` : ''}`;
+        return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${said}${unreviewed.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}${cost} · ${continueTail}`;
       }
       return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${event.condition ?? 'its condition'} did not hold · ${continueTail}`;
     }

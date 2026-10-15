@@ -57,6 +57,10 @@ function loopFacts(state, loop, record, token) {
   const findings = group ? loopFindingsSummary(loop, record, group) : null;
   switch (record?.status) {
     case 'passed':
+      if (record.reason === 'yield' && findings) {
+        const count = findings.known.length;
+        return { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · stopped on low yield in round ${round} of ${of} · new per round ${findings.rounds.join(', ')} · ${count} finding${count === 1 ? '' : 's'}` };
+      }
       if (record.reason === 'dry' && findings) {
         const count = findings.known.length;
         return { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · dry in round ${round} of ${of} · ${count} finding${count === 1 ? '' : 's'}` };

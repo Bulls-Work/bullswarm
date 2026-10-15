@@ -32,7 +32,7 @@ import { deliverableTypeOf } from './step-vocabulary.js';
 import { SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
 import { isReasoningLevel } from '../lib/reasoning.js';
 import {
-  AREAS_PER_ROUND_MAX, DEFAULT_FLOOR, LOOP_MAX_ROUNDS, NON_FUNCTIONAL_AREA, SEVERITIES, coverRounds, findingsSchemaIssue, isNonFunctionalArea, titleKey,
+  AREAS_PER_ROUND_MAX, DEFAULT_FLOOR, LOOP_MAX_ROUNDS, NON_FUNCTIONAL_AREA, SEVERITIES, YIELD_DEFAULT, YIELD_MAX_FINDINGS, coverRounds, findingsSchemaIssue, isNonFunctionalArea, titleKey,
 } from './dry-loops.js';
 // The limits live in dry-loops.js so action-validator.js can read them too.
 export { AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS };
@@ -217,10 +217,26 @@ function readCondition(raw, at, issues, stepsById, { groups = new Map(), loop = 
   return { step: raw.step, field: raw.field, equals: raw.equals === false ? false : true };
 }
 
+// A dry loop's yield stop (dry-loops.js YIELD_DEFAULT): false turns it off;
+// {max, rounds} changes it. Undefined: the default applies.
+function readYield(value, at, issues) {
+  if (value === undefined) return undefined;
+  if (value === false) return false;
+  if (!isObject(value)) {
+    issues.push(`${at} must be false or {max, rounds} (default max ${YIELD_DEFAULT.max}, rounds ${YIELD_DEFAULT.rounds}): the loop also ends after <rounds> rounds in a row that each found at most <max>`);
+    return undefined;
+  }
+  for (const key of Object.keys(value)) if (!['max', 'rounds'].includes(key)) issues.push(`${at}.${key} is not allowed`);
+  if (value.max !== undefined && !(Number.isInteger(value.max) && value.max >= 0 && value.max <= YIELD_MAX_FINDINGS)) issues.push(`${at}.max must be a whole number from 0 to ${YIELD_MAX_FINDINGS}`);
+  if (value.rounds !== undefined && !(Number.isInteger(value.rounds) && value.rounds >= 2 && value.rounds <= LOOP_MAX_ROUNDS)) issues.push(`${at}.rounds must be a whole number from 2 to ${LOOP_MAX_ROUNDS}`);
+  return { ...(value.max !== undefined ? { max: value.max } : {}), ...(value.rounds !== undefined ? { rounds: value.rounds } : {}) };
+}
+
 // The dry form {step, dry}: a loop's until only, on a review (or an area
 // review group) whose answer lists findings [{title, inScope, …}].
 function readDryCondition(raw, at, issues, stepsById, { groups, loop, loopSteps }) {
-  for (const key of present(raw)) if (!['step', 'dry', 'floor', 'nonFunctional'].includes(key)) issues.push(`${at}.${key} is not allowed`);
+  for (const key of present(raw)) if (!['step', 'dry', 'floor', 'nonFunctional', 'yield'].includes(key)) issues.push(`${at}.${key} is not allowed`);
+  const yieldRule = readYield(raw.yield, `${at}.yield`, issues);
   if (raw.nonFunctional !== undefined && raw.nonFunctional !== false) {
     issues.push(`${at}.nonFunctional may only be false (the review then stays on correctness: no non-functional area is added and a single reviewer is not asked about performance, structure or tests)`);
   }
@@ -249,6 +265,7 @@ function readDryCondition(raw, at, issues, stepsById, { groups, loop, loopSteps 
   return {
     step: raw.step, dry: raw.dry, ...(SEVERITIES.includes(raw.floor) ? { floor: raw.floor } : {}),
     ...(raw.nonFunctional === false ? { nonFunctional: false } : {}),
+    ...(yieldRule !== undefined ? { yield: yieldRule } : {}),
   };
 }
 

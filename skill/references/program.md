@@ -225,12 +225,22 @@ with `until: {"step": "review", "dry": 1}` and a findings answer:
   below the floor is recorded (`loops[i].findings.belowFloor` in the result)
   and handed to the fixer only in a round that runs it anyway, marked minor; a
   finding with no severity counts as at the floor.
+- **Low yield ends it too**: the loop also ends after 2 reviewed rounds in a
+  row that each found 1 or 2 new findings at or above the floor, every area
+  reviewed in them and none still open (the watch says `stopped on low yield`;
+  the result has `findings.yieldIn`). The last round's fixer still runs first.
+  Change it with `until.yield: {"max": 1, "rounds": 3}`, or turn it off with
+  `until.yield: false`; it never applies when a fixer runs before the review.
+  A loop out of rounds says its new findings per round and its workers' tokens
+  so far, so weigh another round (`continue --rounds`) against that.
 - **Past correctness**: a single reviewer is also asked about performance,
   code structure and whether the tests would catch a regression. With `areas`,
-  a review that names no non-functional area (performance, structure, tests,
-  maintainability…) gets "non-functional: performance, code structure and test
-  quality" added, and when fewer reviewers run than there are areas the last
-  one takes a non-functional area every round while the others rotate over the
+  a review gets "non-functional: performance, code structure and test
+  quality" added unless one of its areas is mainly non-functional: every part
+  of it (split on commas, semicolons, slashes and "and") names performance,
+  structure or tests. "query speed on 100k rows" counts; "errors,
+  transactions, performance" and "scalar functions" do not. When fewer
+  reviewers run than there are areas, the last one takes a non-functional area every round while the others rotate over the
   rest. `until.nonFunctional: false` keeps a review on correctness alone.
 
 Give the review `areas` (2-3 angles, such as "grammar and parsing",

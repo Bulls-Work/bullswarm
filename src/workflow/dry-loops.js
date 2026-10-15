@@ -54,6 +54,16 @@ export function atOrAboveFloor(finding, floor = DEFAULT_FLOOR) {
   return rank === -1 || rank <= Math.max(0, SEVERITIES.indexOf(floor));
 }
 
+// The yield stop (0.38.16): a dry loop also ends after `rounds` reviewed
+// rounds in a row that each found at most `max` new or still-open findings at
+// or above the floor, with every area reviewed in them. The benchmark's loop
+// found 9, 4, 2, 4, 3 and 5 and never ran dry (benchmark-0.38.15-report.md).
+// `until.yield: false` turns it off; it never applies when a fixer runs
+// before the review.
+export const YIELD_DEFAULT = Object.freeze({ max: 2, rounds: 2 });
+export const YIELD_MAX_FINDINGS = 10;
+export const yieldOf = (loop) => (loop?.until?.yield === false ? null : { ...YIELD_DEFAULT, ...(loop?.until?.yield ?? {}) });
+
 /** The floor a dry loop counts from. */
 export const floorOf = (loop) => (SEVERITIES.includes(loop?.until?.floor) ? loop.until.floor : DEFAULT_FLOOR);
 
@@ -61,8 +71,30 @@ export const floorOf = (loop) => (SEVERITIES.includes(loop?.until?.floor) ? loop
 // reviewers all read query results, and the engine lost its points on speed,
 // structure and tests. A review with areas gets this one when it names none.
 export const NON_FUNCTIONAL_AREA = 'non-functional: performance, code structure and test quality';
-const NON_FUNCTIONAL_RE = /non-?functional|perf|speed|latency|throughput|memory|scal|structure|architect|maintainab|readab|refactor|complexit|test/i;
-export const isNonFunctionalArea = (area) => NON_FUNCTIONAL_RE.test(String(area ?? ''));
+// 0.38.16: whole words only. The 0.38.15 check was unanchored, so `scal` took
+// "scalar functions", `test` took "test of NULL handling", and one word in a
+// mixed area ("errors, constraints, transactions, performance") counted the
+// whole area as non-functional; the benchmark's review then had no reviewer
+// on structure or tests (benchmark-0.38.15-report.md).
+const NON_FUNCTIONAL_TERM = new RegExp(`\\b(${[
+  'non-?functional', 'performance', 'perf', 'speed', 'fast(er)?', 'slow(ness)?', 'latency', 'throughput',
+  'memory (use|usage|footprint)', 'scalab(le|ility)', 'scaling', 'efficien(t|cy)',
+  'code structure', 'module structure', 'structure of the code', 'architecture', 'design quality', 'maintainab(le|ility)',
+  'readab(le|ility)', 'refactor(ing)?', 'complexity', 'code quality', 'duplication',
+  'tests', 'testing', 'test (quality|coverage|suite|suites)', 'testab(le|ility)', 'regression tests?',
+].join('|')})\\b`, 'i');
+// An area's parts: split on commas, semicolons, slashes and the word "and".
+const areaParts = (area) => String(area ?? '').split(/[,;/]|\band\b/i).map((part) => part.trim()).filter(Boolean);
+/**
+ * True when the area is mainly past correctness: every part of it (split on
+ * commas, semicolons, slashes and "and") names performance, structure or
+ * tests. "query speed on 100k rows" and NON_FUNCTIONAL_AREA are; "errors,
+ * transactions, performance" and "scalar functions" are not.
+ */
+export const isNonFunctionalArea = (area) => {
+  const parts = areaParts(area);
+  return parts.length > 0 && parts.every((part) => NON_FUNCTIONAL_TERM.test(part));
+};
 
 // The smallest answer schema a dry loop's review may declare; printed by the
 // validate issue and the plan contract so a caller can paste it.
@@ -145,10 +177,15 @@ export function groupOf(state, loop) {
   const reviewers = (state.program?.actions ?? [])
     .filter((action) => action.areaOf?.step === loop.until.step && loop.steps.includes(action.id))
     .sort((a, b) => a.areaOf.slot - b.areaOf.slot);
-  if (reviewers.length) {
-    return { id: loop.until.step, steps: reviewers.map((action) => action.id), areas: [...reviewers[0].areaOf.areas], perRound: reviewers.length };
-  }
-  return { id: loop.until.step, steps: [loop.until.step], areas: [], perRound: 1 };
+  const group = reviewers.length
+    ? { id: loop.until.step, steps: reviewers.map((action) => action.id), areas: [...reviewers[0].areaOf.areas], perRound: reviewers.length }
+    : { id: loop.until.step, steps: [loop.until.step], areas: [], perRound: 1 };
+  // A fixer that runs before the review ([fix, review]) would leave the last
+  // round's findings unfixed if a yield stop ended the loop there.
+  const fixers = fixersOf(state, loop, group);
+  const { after } = fixStepsOf(state, loop, group);
+  if (fixers.some((id) => !after.includes(id))) group.fixFirst = true;
+  return group;
 }
 
 // How many areas a group covers: a review without areas has one implicit area.
@@ -379,7 +416,20 @@ export function dryVerdict(loop, record, group) {
   const seen = new Set(since.flatMap((round) => round.reviewed));
   const unreviewed = [...Array(areaCount(group)).keys()].filter((area) => !seen.has(area));
   const need = loop.until.dry;
-  return { dry: clean >= need && !unreviewed.length, clean, need, lastFind, unreviewed };
+  const dry = clean >= need && !unreviewed.length;
+  // The yield stop: the last `rounds` rounds were reviewed, covered every
+  // area, and each found at most `max` (YIELD_DEFAULT).
+  const rule = group?.fixFirst ? null : yieldOf(loop);
+  const tail = rule ? rounds.slice(-rule.rounds) : [];
+  const tailSeen = new Set(tail.flatMap((round) => round.reviewed));
+  const lowYield = !dry && rule != null && tail.length === rule.rounds
+    // A finding whose fix did not hold (still open) always keeps it going.
+    && tail.every((round) => round.reviewed.length > 0 && round.reopened === 0 && round.new >= 1 && round.new <= rule.max)
+    && [...Array(areaCount(group)).keys()].every((area) => tailSeen.has(area));
+  return {
+    dry: dry || lowYield, ...(lowYield ? { by: 'yield', yieldRule: rule } : {}),
+    clean, need, lastFind, unreviewed: lowYield ? [] : unreviewed,
+  };
 }
 
 /**
@@ -403,7 +453,8 @@ export function loopFindingsSummary(loop, record, group) {
     stillOpen: findings.rounds.map((round) => round.reopened),
     lastNew: { round: last.round, new: last.new, reopened: last.reopened, fix: last.fix },
     ...(record.status === 'passed' && record.reason === 'dry' ? { dryIn: record.round } : {}),
-    ...(names.length && !(record.status === 'passed' && record.reason === 'dry') ? { unreviewed: names } : {}),
+    ...(record.status === 'passed' && record.reason === 'yield' ? { yieldIn: record.round } : {}),
+    ...(names.length && !(record.status === 'passed' && ['dry', 'yield'].includes(record.reason)) ? { unreviewed: names } : {}),
   };
 }
 

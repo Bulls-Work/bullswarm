@@ -689,8 +689,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
   const unmet = loops.filter((loop) => loop.outcome === 'continued-unmet')
     .map((loop) => ` · ${continuedLoopText(loop.id, loop.rounds, loop.maxRounds)}`).join('');
   // A loop that ended dry says so, with how many findings its reviews made.
-  const dry = loops.filter((loop) => loop.findings?.dryIn !== undefined)
-    .map((loop) => ` · ${dryLoopText(loop.id, loop.findings.dryIn, loop.maxRounds, loop.findings.known.length)}`).join('');
+  const dry = loops.filter((loop) => loop.findings?.dryIn !== undefined || loop.findings?.yieldIn !== undefined)
+    .map((loop) => ` · ${dryLoopText(loop.id, loop.findings.dryIn ?? loop.findings.yieldIn, loop.maxRounds, loop.findings.known.length, { yieldStop: loop.findings.yieldIn !== undefined })}`).join('');
   const result = {
     schemaVersion: V2_RESULT_SCHEMA_VERSION,
     runId: state.runId,
@@ -1559,7 +1559,7 @@ function validateResultLoops(loops) {
     if (entry.findings !== undefined) {
       const findings = entry.findings;
       resultObject(findings, `${name}.findings`);
-      exactFields(findings, new Set(['known', 'outOfScope', 'rounds', 'stillOpen', 'dryIn', 'unreviewed']), `${name}.findings`);
+      exactFields(findings, new Set(['known', 'outOfScope', 'rounds', 'stillOpen', 'dryIn', 'yieldIn', 'unreviewed']), `${name}.findings`);
       for (const key of ['known', 'outOfScope', 'unreviewed']) {
         if (findings[key] !== undefined && (!Array.isArray(findings[key]) || findings[key].some((item) => typeof item !== 'string'))) resultFail(`${name}.findings.${key} must be an array of strings`);
       }
@@ -1567,6 +1567,7 @@ function validateResultLoops(loops) {
       if (!Array.isArray(findings.rounds) || findings.rounds.some((count) => !Number.isInteger(count) || count < 0)) resultFail(`${name}.findings.rounds must be an array of counts`);
       if (findings.stillOpen !== undefined && (!Array.isArray(findings.stillOpen) || findings.stillOpen.some((count) => !Number.isInteger(count) || count < 0))) resultFail(`${name}.findings.stillOpen must be an array of counts`);
       if (findings.dryIn !== undefined && (!Number.isInteger(findings.dryIn) || findings.dryIn < 1)) resultFail(`${name}.findings.dryIn must be a positive integer`);
+      if (findings.yieldIn !== undefined && (!Number.isInteger(findings.yieldIn) || findings.yieldIn < 1)) resultFail(`${name}.findings.yieldIn must be a positive integer`);
     }
   });
 }
