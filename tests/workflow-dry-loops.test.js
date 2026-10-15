@@ -1636,7 +1636,7 @@ test('0.38.16 an area named plainly "structure" (or design, readability, refacto
   for (const area of ['structure', 'structure, tests', 'structural quality', 'design', 'code design', 'readability', 'refactoring', 'code quality', 'architecture', 'maintainability', 'tests']) {
     assert.equal(isNonFunctionalArea(area), true, area);
   }
-  for (const area of ['data structures and NULL handling', 'data structure correctness']) assert.equal(isNonFunctionalArea(area), false, area);
+  for (const area of ['data structures and NULL handling', 'data structure correctness', 'schema design', 'table structure and constraints', 'database design', 'table design']) assert.equal(isNonFunctionalArea(area), false, area);
   const areas = ['grammar and parsing', 'joins and subqueries', 'structure, tests'];
   const normal = normaliseProgramV3(dryProgram({ areas, nonFunctional: true }));
   assert.deepEqual(normal.steps.find((step) => step.areaOf).areaOf.areas, areas, 'nothing added');
