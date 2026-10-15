@@ -1,6 +1,10 @@
 # bullswarm changelog
 
-## 0.38.16 (unreleased, local)
+## Unreleased
+
+## 0.38.16 — review areas must be mainly non-functional, a low-yield stop, and pool holds, reserves and 5h-seat routing
+
+Published 2026-10-15. 0.38.12 to 0.38.15 were never published on their own; their notes below ship in this release.
 
 Why: the 0.38.15 benchmark (benchmark-0.38.15-report.md, checked by Second Mate) showed the severity floor works but the loop still never ran dry (9, 4, 2, 4, 3, 5 new a round), the orchestrator extended it to 6 rounds (rounds 5 and 6 alone cost 0.49M worker tokens), and the non-functional area was never added because one word in a mixed area counted.
 
@@ -9,7 +13,7 @@ Why: the 0.38.15 benchmark (benchmark-0.38.15-report.md, checked by Second Mate)
 - A loop out of rounds names its new findings per round and its workers' tokens so far (output plus reasoning, as reported): in the event (`findings.perRound`, `findings.tokens`), the watch line and the waiting note, so an extension is weighed against its cost.
 - Every findings field a real run writes (severity, belowFloor, long-title keys, still-open rounds, out of scope) and the new `yieldIn` result field are checked through the durable-state and result checks on a real kernel run, as e12c114 did for `belowFloor`.
 
-## 0.38.15 (unreleased, local)
+## 0.38.15 (not published separately; ships in 0.38.16)
 
 Why: in the 2026-10-14 minisql benchmark on 0.38.12 the orchestrator used the dry review loop with three area reviewers, but the loop never ran dry (38, 23, 15, 16 and 15 new findings a round, the tail mostly obscure), and all three areas were about query results: nobody reviewed speed, structure or the tests, which is where the blind judges ranked the engine last (architecture 3.5, tests 4) and where a 2,000-row update took 24.7 s.
 
@@ -22,7 +26,7 @@ Why: in the 2026-10-14 minisql benchmark on 0.38.12 the orchestrator used the dr
 - The run state accepts the severity floor's own fields (`findings.rounds[].belowFloor`, `known[].severity`, `known[].belowFloor`); before this the kernel stopped on `belowFloor is not allowed` the first time a review round was saved (benchmark run yr6rri).
 - `bullswarm pools`: a 5h reading whose reset has passed is 0% of a fresh window, not near its limit and not burst-gated, until a new reading lands (seen at 23:00:41Z: a 22:58 reading of kipwise at 76%, reset 23:00, still showed `5h=76% NEAR-5H-LIMIT`).
 
-## 0.38.14 (unreleased, local)
+## 0.38.14 (not published separately; ships in 0.38.16)
 
 ### Routing: hold list, opt-in reserve, fit before reset, stale meters, 5h seats (BS-kernel-5h)
 
@@ -45,14 +49,12 @@ Why: on 2026-10-14 ten or more Bullswarm processes read the same usage endpoint 
 - `bullswarm pools --pool a,b`: reads and shows only those pools; the others are not polled. An unknown pool exits 2.
 - Every provider usage call appends one line to `~/.bullswarm/meters/reads.jsonl` (time, pool, pid, forced, ok, error), so endpoint load can be counted.
 
-## 0.38.13 (unreleased, local)
+## 0.38.13 (not published separately; ships in 0.38.16)
 
 - A 5h-only seat (a Claude Team seat whose meter has no weekly window, such as `claude-code:kipwise`) now counts as expiring soon in the last 2 hours of its 5h window. Before, only weekly and monthly windows could be, so the router let that seat's unused 5h quota expire every five hours while it sent work to pools with less spare quota. Its urgency (surplus divided by the share of the window left) now ranks it first, `bullswarm pools` tags it `EXPIRING-SOON`, and the route reason says "of the 5h window left".
 - Spend rates and subscription attribution for such a seat use its 5h window, not the weekly default.
 
-## Unreleased
-
-## 0.38.12 — review loops stop when a round finds nothing new; a worker that changes no file for an hour is stopped; Claude workers use the login the meter checks
+## 0.38.12 (not published separately; ships in 0.38.16) — review loops stop when a round finds nothing new; a worker that changes no file for an hour is stopped; Claude workers use the login the meter checks
 
 Why: in a benchmark run on 2026-10-12, a fix-and-review loop that waited for the review to pass never ended (each round's reviewer found 12 to 22 new things), every reviewer looked from the same angle so 3 parser bugs got through, and a tests step passed on a compile check alone. This release lets a loop end when its review finds nothing new, spreads reviews over different angles, and warns about each of those program shapes.
 
