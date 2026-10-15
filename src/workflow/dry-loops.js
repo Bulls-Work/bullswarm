@@ -79,7 +79,9 @@ export const NON_FUNCTIONAL_AREA = 'non-functional: performance, code structure 
 const NON_FUNCTIONAL_TERM = new RegExp(`\\b(${[
   'non-?functional', 'performance', 'perf', 'speed', 'fast(er)?', 'slow(ness)?', 'latency', 'throughput',
   'memory (use|usage|footprint)', 'scalab(le|ility)', 'scaling', 'efficien(t|cy)',
-  'code structure', 'module structure', 'structure of the code', 'architecture', 'design quality', 'maintainab(le|ility)',
+  // Plain "structure" counts (Second Mate, 0.38.16 check); "data structure"
+  // is about correctness and does not.
+  '(?<!data )structure', 'structural', 'architecture', 'design', 'maintainab(le|ility)',
   'readab(le|ility)', 'refactor(ing)?', 'complexity', 'code quality', 'duplication',
   'tests', 'testing', 'test (quality|coverage|suite|suites)', 'testab(le|ility)', 'regression tests?',
 ].join('|')})\\b`, 'i');

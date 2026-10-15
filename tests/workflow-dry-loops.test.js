@@ -1630,3 +1630,15 @@ test('0.38.16 every findings field a real run writes passes the durable-state ch
   assert.equal(validateV2DurableState(run.state), true);
   assert.equal(validateV2DurableState(deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8'))), true);
 });
+
+test('0.38.16 an area named plainly "structure" (or design, readability, refactoring, code quality) counts, so no second non-functional area is added', async () => {
+  const { isNonFunctionalArea, NON_FUNCTIONAL_AREA } = await import('../src/workflow/dry-loops.js');
+  for (const area of ['structure', 'structure, tests', 'structural quality', 'design', 'code design', 'readability', 'refactoring', 'code quality', 'architecture', 'maintainability', 'tests']) {
+    assert.equal(isNonFunctionalArea(area), true, area);
+  }
+  for (const area of ['data structures and NULL handling', 'data structure correctness']) assert.equal(isNonFunctionalArea(area), false, area);
+  const areas = ['grammar and parsing', 'joins and subqueries', 'structure, tests'];
+  const normal = normaliseProgramV3(dryProgram({ areas, nonFunctional: true }));
+  assert.deepEqual(normal.steps.find((step) => step.areaOf).areaOf.areas, areas, 'nothing added');
+  assert.ok(!normal.steps.find((step) => step.areaOf).areaOf.areas.includes(NON_FUNCTIONAL_AREA));
+});
