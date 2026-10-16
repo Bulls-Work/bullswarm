@@ -1642,3 +1642,51 @@ test('0.38.16 an area named plainly "structure" (or design, readability, refacto
   assert.deepEqual(normal.steps.find((step) => step.areaOf).areaOf.areas, areas, 'nothing added');
   assert.ok(!normal.steps.find((step) => step.areaOf).areaOf.areas.includes(NON_FUNCTIONAL_AREA));
 });
+
+// --- 0.38.17 (benchmark-0.38.16-report.md, Second Mate's order 2026-10-16) ---------
+
+// The 0.38.16 benchmark loop (run 65xiua): 3 reviewers over 4 areas (the 4th
+// non-functional, reviewed every round), new per round 3, 4, 6, 3, 3, 1, and a
+// finding reported still open in rounds 3 and 4.
+const BENCH_REVIEWED = [[0, 1, 3], [2, 0, 3], [1, 2, 3], [0, 1, 3], [2, 0, 3], [1, 2, 3]];
+const benchRounds = (news, reopened = []) => news.map((found, i) => ({
+  round: i + 1, reviewed: BENCH_REVIEWED[i % BENCH_REVIEWED.length], new: found, reopened: reopened[i] ?? 0, repeated: 0, outOfScope: 0, ignored: 0, fix: 'runs',
+}));
+const benchLoop = { id: 'harden', steps: ['review-area-1', 'review-area-2', 'review-area-3', 'fix'], until: { step: 'review', dry: 1 } };
+const benchGroup = { id: 'review', steps: ['review-area-1', 'review-area-2', 'review-area-3'], areas: ['grammar', 'expressions', 'joins', 'performance and tests'], perRound: 3 };
+const benchVerdict = (rounds) => dryVerdict(benchLoop, { findings: { rounds, known: [], knownDropped: 0 } }, benchGroup);
+
+test('0.38.17 default yield {max 3, rounds 2}: the benchmark\'s 3, 4, 6, 3, 3, 1 stops after round 6 and not before', async () => {
+  const { YIELD_DEFAULT } = await import('../src/workflow/dry-loops.js');
+  assert.deepEqual(YIELD_DEFAULT, { max: 3, rounds: 2 });
+  const news = [3, 4, 6, 3, 3, 1];
+  const reopened = [0, 0, 1, 1, 0, 0];
+  for (let n = 1; n <= 5; n += 1) assert.equal(benchVerdict(benchRounds(news.slice(0, n), reopened)).dry, false, `not after round ${n}`);
+  const six = benchVerdict(benchRounds(news, reopened));
+  assert.deepEqual([six.dry, six.by, six.yieldRule], [true, 'yield', { max: 3, rounds: 2 }]);
+});
+
+test('0.38.17 the yield stop does not fire early: 3, 4, 6, 5, 4 keeps going, and a round with a fix that did not hold never counts', () => {
+  for (const news of [[3, 4, 6, 5], [3, 4, 6, 5, 4], [6, 4, 5, 6]]) {
+    for (let n = 1; n <= news.length; n += 1) assert.equal(benchVerdict(benchRounds(news.slice(0, n))).dry, false, `${news.slice(0, n)}`);
+  }
+  // 3, 3 qualifies on counts, but round 2's still-open finding keeps it going.
+  assert.equal(benchVerdict(benchRounds([3, 3], [0, 1])).dry, false);
+  assert.equal(benchVerdict(benchRounds([3, 3])).by, 'yield');
+});
+
+test('0.38.17 one perRound definition: new findings only, reopened carried beside it, the same in the event, the loop record and the result', async (t) => {
+  const f = fixture(t);
+  // Round 1 finds 2; round 2 finds 1 new and reports round 1's first finding still open.
+  const byTurn = (turn) => ({ findings: turn === 1
+    ? [finding('Parser drops unary minus', { severity: 'edge' }), finding('LIKE ignores escape', { severity: 'edge' })]
+    : [finding('Parser drops unary minus', { severity: 'edge', stillOpen: true }), finding('ORDER BY position off by one', { severity: 'edge' })] });
+  const run = await launch(f, dryProgram({ maxRounds: 2, yieldStop: false }), fakeDispatch(reviewAnswers(byTurn)));
+  const event = eventsOf(run, 'loop.out-of-rounds')[0];
+  assert.deepEqual([event.payload.findings.perRound, event.payload.findings.reopenedPerRound], [[2, 1], [0, 1]]);
+  assert.deepEqual(run.result.loops[0].findings.rounds, event.payload.findings.perRound, 'the result\'s rounds and the event\'s perRound agree');
+  assert.deepEqual(run.result.loops[0].findings.stillOpen, [0, 1]);
+  assert.match(renderControlEvent(controlWatchEvent(event, { token: 'acme01' })), /· new per round 2, 1 · reopened per round 0, 1 ·/);
+  assert.match(run.waiting[0].note, /new per round: 2, 1; reopened per round: 0, 1/);
+  assert.equal(validateV2DurableState(run.state), true);
+});
