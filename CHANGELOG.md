@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Why: the 0.38.16 benchmark (benchmark-0.38.16-report.md) found 3, 4, 6, 3, 3, 1 new findings a round. The low-yield stop never fired, because it needed two rounds in a row of 1 or 2. The out-of-rounds wake also said "new per round 3, 4, 7, 4", but the result's `findings.rounds` said 3, 4, 6, 3: the event added findings reported still open again, and the result did not.
+
+- One per-round definition. `perRound` counts new findings only, everywhere: the out-of-rounds event, the low-yield `loop.passed` event, the watch lines and the waiting note. It now matches the result's `findings.rounds`. Findings reported still open again are carried beside it as `reopenedPerRound`, which matches the result's `findings.stillOpen`, and are labelled `reopened per round …`. The field is present only when some round reopened one.
+- The low-yield stop's default is now `{max: 3, rounds: 2}` (was `{max: 2, rounds: 2}`). The loop ends after 2 reviewed rounds in a row that each found 1 to 3 new findings at or above the floor, with every area reviewed in them. Only new findings count toward `max`. A round in which a finding was reported still open again never counts toward the stop, because a fix that did not hold keeps the loop going. On the benchmark's sequence, with its rounds 3 and 4 reopening one finding each, the loop now stops after round 6 and not before. 3, 4, 6, 5, 4 keeps going. `until.yield: {max, rounds}` and `until.yield: false` work as before.
+
 ## 0.38.16 — review areas must be mainly non-functional, a low-yield stop, and pool holds, reserves and 5h-seat routing
 
 Published 2026-10-15. 0.38.12 to 0.38.15 were never published on their own; their notes below ship in this release.

@@ -1545,7 +1545,8 @@ test('0.38.16 non-functional areas: whole words, and every part of the area must
 });
 
 test('0.38.16 yield stop: two reviewed rounds in a row that each found 1 or 2 end the loop; a still-open finding, a clean round, a fixer first or yield false do not', () => {
-  const loop = { id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1 } };
+  // The 0.38.16 default, pinned (0.38.17 made max 3 the default).
+  const loop = { id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1, yield: { max: 2, rounds: 2 } } };
   const group = { id: 'review', steps: ['review'], areas: [], perRound: 1 };
   const round = (n, found, extra = {}) => ({ round: n, reviewed: [0], new: found, reopened: 0, repeated: 0, outOfScope: 0, ignored: 0, fix: 'runs', ...extra });
   const verdict = (rounds, l = loop, g = group) => dryVerdict(l, { findings: { rounds, known: [], knownDropped: 0 } }, g);
@@ -1583,7 +1584,7 @@ test('0.38.16 yield stop through a real run: the fixer runs on the last findings
   const seen = [];
   const counts = [3, 2, 1];
   const byTurn = (turn) => ({ findings: Array.from({ length: counts[turn - 1] ?? 0 }, (_, k) => finding(`Round ${turn} finding ${k + 1} in the acme parser`, { severity: 'edge' })) });
-  const run = await launch(f, dryProgram({ yieldStop: true, maxRounds: 5 }), fakeDispatch(reviewAnswers(byTurn), { seen }));
+  const run = await launch(f, dryProgram({ yieldStop: { max: 2, rounds: 2 }, maxRounds: 5 }), fakeDispatch(reviewAnswers(byTurn), { seen }));
   assert.equal(run.result.status, 'completed', run.result.reason);
   const record = node(run, 'harden');
   assert.deepEqual([record.status, record.reason, record.round], ['passed', 'yield', 3]);
@@ -1684,9 +1685,28 @@ test('0.38.17 one perRound definition: new findings only, reopened carried besid
   const run = await launch(f, dryProgram({ maxRounds: 2, yieldStop: false }), fakeDispatch(reviewAnswers(byTurn)));
   const event = eventsOf(run, 'loop.out-of-rounds')[0];
   assert.deepEqual([event.payload.findings.perRound, event.payload.findings.reopenedPerRound], [[2, 1], [0, 1]]);
-  assert.deepEqual(run.result.loops[0].findings.rounds, event.payload.findings.perRound, 'the result\'s rounds and the event\'s perRound agree');
-  assert.deepEqual(run.result.loops[0].findings.stillOpen, [0, 1]);
   assert.match(renderControlEvent(controlWatchEvent(event, { token: 'acme01' })), /· new per round 2, 1 · reopened per round 0, 1 ·/);
   assert.match(run.waiting[0].note, /new per round: 2, 1; reopened per round: 0, 1/);
   assert.equal(validateV2DurableState(run.state), true);
+  // End the loop (condition not met) and read the result the caller gets.
+  continueOffline(run, 'harden');
+  const done = await resume(f, run.runId, fakeDispatch(reviewAnswers(byTurn)));
+  assert.deepEqual(done.result.loops[0].findings.rounds, event.payload.findings.perRound, 'the result\'s rounds and the event\'s perRound agree');
+  assert.deepEqual(done.result.loops[0].findings.stillOpen, event.payload.findings.reopenedPerRound);
+  assert.equal(validateV2ResultEnvelope(done.result), true);
+});
+
+test('0.38.17 the new default through a real run: 4, 3, 1 stops on low yield in round 3, and the state and result pass their checks', async (t) => {
+  const f = fixture(t);
+  const counts = [4, 3, 1];
+  const byTurn = (turn) => ({ findings: Array.from({ length: counts[turn - 1] ?? 0 }, (_, k) => finding(`Round ${turn} finding ${k + 1} in the acme parser`, { severity: 'edge' })) });
+  const run = await launch(f, dryProgram({ yieldStop: true, maxRounds: 5 }), fakeDispatch(reviewAnswers(byTurn)));
+  assert.equal(run.result.status, 'completed', run.result.reason);
+  assert.deepEqual([node(run, 'harden').reason, node(run, 'harden').round], ['yield', 3]);
+  const passed = eventsOf(run, 'loop.passed')[0];
+  assert.deepEqual([passed.payload.perRound, passed.payload.reopenedPerRound, passed.payload.yieldRule], [[4, 3, 1], undefined, { max: 3, rounds: 2 }]);
+  assert.match(renderControlEvent(controlWatchEvent(passed, { token: 'acme01' })), /stopped on low yield in round 3 of 5 · new per round 4, 3, 1 · the last 2 found at most 3 each/);
+  assert.deepEqual(run.result.loops[0].findings.rounds, [4, 3, 1]);
+  assert.equal(validateV2ResultEnvelope(run.result), true);
+  assert.equal(validateV2DurableState(deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8'))), true);
 });

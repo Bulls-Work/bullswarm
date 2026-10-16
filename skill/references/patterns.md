@@ -200,7 +200,7 @@ What each worker is told:
   (`review-no-severity`): in a 2026-10 benchmark such a loop found 38, 23, 15,
   16 and 15 findings a round and never ran dry. With severities the next one
   found 9, 4, 2, 4, 3 and 5: real edge cases keep coming on a large change, so
-  the loop also ends on low yield (2 rounds in a row of 1 or 2 new,
+  the loop also ends on low yield (2 rounds in a row of 1 to 3 new,
   `until.yield`), and an extension past `maxRounds` should be weighed against
   the tokens the out-of-rounds line reports.
 - Each area reviewer (`review-area-1` to `review-area-3`, ordinary steps that

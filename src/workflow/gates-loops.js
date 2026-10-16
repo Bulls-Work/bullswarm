@@ -561,13 +561,29 @@ function rerunStepsBehind(state, loop, record, { at, emit, rerun }) {
   return rerunDone;
 }
 
+// New findings per round, and findings reported still open again per round
+// (0.38.17: one definition everywhere). `perRound` is new findings only, the
+// same as the result's `findings.rounds`; `reopenedPerRound` is present only
+// when some round reopened one, and matches `findings.stillOpen`. 0.38.16's
+// events added the two, so the out-of-rounds wake said 3, 4, 7, 4 where the
+// result said 3, 4, 6, 3 (benchmark-0.38.16-report.md).
+function perRoundFacts(record) {
+  const rounds = record.findings?.rounds ?? [];
+  const reopened = rounds.map((item) => item.reopened);
+  return { perRound: rounds.map((item) => item.new), ...(reopened.some((n) => n > 0) ? { reopenedPerRound: reopened } : {}) };
+}
+
+const perRoundText = ({ perRound = [], reopenedPerRound }, sep = ' ') => (perRound.length > 1
+  ? `new per round${sep}${perRound.join(', ')}${reopenedPerRound ? `${sep === ' ' ? ' · ' : '; '}reopened per round${sep}${reopenedPerRound.join(', ')}` : ''}`
+  : '');
+
 // The loop.passed event of a dry loop.
 function emitDryPassed(state, loop, record, { emit }) {
   const group = groupOf(state, loop);
   const verdict = dryVerdict(loop, record, group);
   emit('loop.passed', {
     loopId: loop.id, round: record.round, of: record.maxRounds, reason: record.reason === 'yield' ? 'yield' : 'dry',
-    ...(record.reason === 'yield' && verdict?.yieldRule ? { yieldRule: verdict.yieldRule, perRound: (record.findings?.rounds ?? []).map((item) => item.new + item.reopened) } : {}),
+    ...(record.reason === 'yield' && verdict?.yieldRule ? { yieldRule: verdict.yieldRule, ...perRoundFacts(record) } : {}),
     known: (record.findings?.known ?? []).filter((item) => item.inScope).length,
     areas: group.areas.length > 0, condition: untilText(state, loop),
   });
@@ -589,9 +605,8 @@ function dryOutOfRounds(state, loop, record) {
   const summary = loopFindingsSummary(loop, record, group);
   if (!summary) return null;
   const lastNew = { ...summary.lastNew, fix: fixWhen(summary.lastNew.fix, fixStepsOf(state, loop, group).after, fixersOf(state, loop, group)) };
-  const perRound = (record.findings?.rounds ?? []).map((item) => item.new + item.reopened);
   const tokens = loopTokens(state, loop);
-  return { lastNew, known: summary.known.length, unreviewed: summary.unreviewed ?? [], perRound, ...(tokens > 0 ? { tokens } : {}) };
+  return { lastNew, known: summary.known.length, unreviewed: summary.unreviewed ?? [], ...perRoundFacts(record), ...(tokens > 0 ? { tokens } : {}) };
 }
 
 // Worker tokens (output plus reasoning, as reported) of every attempt of the
@@ -629,7 +644,7 @@ function dryWaitingNote(state, loop, record) {
     ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? `${lastNew.fix === 'next' ? ',' : ' and'} ${lastFixText(lastNew.fix)}` : ''}`
     : `round ${lastNew.round} found nothing new`);
   if (unreviewed.length) parts.push(`not reviewed since the last finding: ${unreviewed.join(', ')}`);
-  if (facts.perRound.length > 1) parts.push(`new per round: ${facts.perRound.join(', ')}`);
+  if (facts.perRound.length > 1) parts.push(perRoundText(facts, ': '));
   if (facts.tokens) parts.push(`its workers used ${tokenText(facts.tokens)} tokens so far, so weigh another round against that`);
   return parts.join('; ');
 }
@@ -937,6 +952,7 @@ export function controlWatchEvent(event, { token }) {
         ...(payload.findings ? { findings: payload.findings } : {}),
         ...(Number.isInteger(payload.known) ? { known: payload.known, areas: payload.areas === true } : {}),
         ...(Array.isArray(payload.perRound) ? { perRound: payload.perRound } : {}),
+        ...(Array.isArray(payload.reopenedPerRound) ? { reopenedPerRound: payload.reopenedPerRound } : {}),
         ...(payload.yieldRule ? { yieldRule: payload.yieldRule } : {}),
       };
     case 'loop.findings':
@@ -995,7 +1011,7 @@ export function renderControlEvent(event) {
     }
     case 'loop.passed':
       if (event.reason === 'yield') {
-        return `${g.ok} loop ${event.loopId} stopped on low yield in round ${event.round} of ${event.of} · new per round ${(event.perRound ?? []).join(', ')} · the last ${event.yieldRule?.rounds ?? 2} found at most ${event.yieldRule?.max ?? 2} each · ${event.known} found in all`;
+        return `${g.ok} loop ${event.loopId} stopped on low yield in round ${event.round} of ${event.of} · ${perRoundText({ perRound: event.perRound ?? [], reopenedPerRound: event.reopenedPerRound }) || `new per round ${(event.perRound ?? []).join(', ')}`} · the last ${event.yieldRule?.rounds ?? 2} found at most ${event.yieldRule?.max ?? 2} each · ${event.known} found in all`;
       }
       if (event.reason === 'dry') {
         return `${g.ok} loop ${event.loopId} dry in round ${event.round} of ${event.of} · no new findings${event.areas ? ', every area reviewed' : ''} · ${event.known} found in all`;
@@ -1011,8 +1027,9 @@ export function renderControlEvent(event) {
         const said = found
           ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? ` (${lastFixText(lastNew.fix)})` : ''}`
           : `round ${lastNew.round} found nothing new`;
-        const { perRound = [], tokens } = event.findings;
-        const cost = `${perRound.length > 1 ? ` · new per round ${perRound.join(', ')}` : ''}${tokens ? ` · ${tokenText(tokens)} worker tokens so far` : ''}`;
+        const { tokens } = event.findings;
+        const rounds = perRoundText(event.findings);
+        const cost = `${rounds ? ` · ${rounds}` : ''}${tokens ? ` · ${tokenText(tokens)} worker tokens so far` : ''}`;
         return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${said}${unreviewed.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}${cost} · ${continueTail}`;
       }
       return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${event.condition ?? 'its condition'} did not hold · ${continueTail}`;
