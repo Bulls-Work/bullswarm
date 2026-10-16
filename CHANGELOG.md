@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.17 — one per-round count; the low-yield stop fires at 1 to 3 new
+
 Why: the 0.38.16 benchmark (benchmark-0.38.16-report.md) found 3, 4, 6, 3, 3, 1 new findings a round. The low-yield stop never fired, because it needed two rounds in a row of 1 or 2. The out-of-rounds wake also said "new per round 3, 4, 7, 4", but the result's `findings.rounds` said 3, 4, 6, 3: the event added findings reported still open again, and the result did not.
 
 - One per-round definition. `perRound` counts new findings only, everywhere: the out-of-rounds event, the low-yield `loop.passed` event, the watch lines and the waiting note. It now matches the result's `findings.rounds`. Findings reported still open again are carried beside it as `reopenedPerRound`, which matches the result's `findings.stillOpen`, and are labelled `reopened per round …`. The field is present only when some round reopened one.
