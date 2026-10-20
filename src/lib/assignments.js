@@ -23,6 +23,7 @@ import {
   unlinkSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { callerIdentity, normalizeCaller } from './caller.js';
 
 /** An assignment this old is stale by definition, live pids or not (A3). */
 export const ASSIGNMENT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -153,7 +154,8 @@ function round(value, places = 2) {
  *                               runId/actionId/attempt/expectedMinutes/
  *                               expectedSource/workerPid/startedAt/id and the
  *                               optional single-task identity fields
- *                               project/cwd/taskFile/outFile/streamFile
+ *                               project/cwd/taskFile/outFile/streamFile,
+ *                               and caller ({herdrPane, claudeSession, cwd})
  * @returns {object} the stored record
  */
 export function registerAssignment(bullswarmDir, fields = {}) {
@@ -194,6 +196,9 @@ export function registerAssignment(bullswarmDir, fields = {}) {
     streamFile: fields.streamFile ?? null,
     expectedMinutes,
     expectedSource: fields.expectedSource ?? (expectedMinutes == null ? 'none' : 'caller'),
+    // Who asked for this work (src/lib/caller.js): the caller a run recorded
+    // at launch when one is given, otherwise this process.
+    caller: normalizeCaller(fields.caller) ?? callerIdentity(),
   };
   return writeRecord(dir, record);
 }

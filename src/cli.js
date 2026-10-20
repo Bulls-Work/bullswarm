@@ -285,7 +285,8 @@ function cmdAssignments(opts) {
     console.log(
       `${poolLabel(r.pool, getBullswarmDir()).padEnd(14)} ${work.padEnd(14)} ${(r.source ?? '-').padEnd(11)} ${target} `
       + `age=${view.elapsedMinutes ?? '?'}m expected=${expected} `
-      + `worker=${r.workerPid ?? 'spawning'}`,
+      + `worker=${r.workerPid ?? 'spawning'}`
+      + (r.caller?.herdrPane ? ` caller=${r.caller.herdrPane}` : ''),
     );
   }
   return 0;

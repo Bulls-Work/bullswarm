@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
 import { BULLSWARM_DIR, legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
 import { appendRollupIndex, readRollup, rollupIndexPath, writeLegacyRollup, writeRunRollup } from './rollup.js';
-import { readGoalProject } from './goal.js';
+import { readGoalCaller, readGoalProject } from './goal.js';
 import { goalColumnText } from './goal-column.js';
 import { projectName } from '../lib/project.js';
 import { isTerminalWorkflowStatus } from './status.js';
@@ -296,13 +296,17 @@ function runsShow(idToken, opts) {
   const liveness = v2RunnerLiveness(state, { runDir });
   const kernelStderrTail = !liveness.alive ? readKernelStderrTail(runDir) : [];
 
+  // Who launched it (caller.json); null for a run started before callers were recorded.
+  const caller = readGoalCaller(runDir);
+
   if (opts.json) {
-    jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing, state, report, ...(kernelStderrTail.length ? { kernelStderrTail } : {}) }, opts);
+    jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing, caller, state, report, ...(kernelStderrTail.length ? { kernelStderrTail } : {}) }, opts);
     return 0;
   }
   console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
   console.log(`# dir  ${runDir}`);
   console.log(`# goal  ${state.intent?.goal ?? '?'}`);
+  if (caller) console.log(`# caller  pane ${caller.herdrPane ?? '—'} · session ${caller.claudeSession ?? '—'} · cwd ${caller.cwd ?? '—'}`);
   // A run whose kernel died still says "running" on disk. Report what is
   // true: it stopped, why, and how to continue it.
   const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle?.status);
