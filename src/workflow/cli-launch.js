@@ -15,10 +15,11 @@ import { v2PlannerMode } from './v2-state.js';
 import { runV2AutonomousWorkflow } from './v2-runtime.js';
 import { formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
+import { callerIdentity } from '../lib/caller.js';
 
-export async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initialPlannerResponse = null, advisories = null }) {
+export async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initialPlannerResponse = null, advisories = null, caller = null }) {
   const result = await runV2AutonomousWorkflow({
-    bullswarmDir: BULLSWARM_DIR(), goalDocument: doc, pools, runId, resumeRunId, initialPlannerResponse,
+    bullswarmDir: BULLSWARM_DIR(), goalDocument: doc, pools, runId, resumeRunId, initialPlannerResponse, caller,
   });
   if (!result.result && result.state?.lifecycle?.status === 'interrupted') {
     const interrupted = { action: 'workflow-interrupted', runId: result.runId, shortId: result.shortId, status: 'interrupted', next: `bullswarm workflow goal --resume ${result.shortId ?? result.runId}` };
@@ -177,6 +178,9 @@ export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = n
     runId,
     document: doc,
     ...(initialPlannerResponse ? { initialPlannerResponse } : {}),
+    // The detached child starts in the goal's cwd, so the launching
+    // process's identity (pane, session, cwd) travels in the request.
+    caller: callerIdentity(),
   }, null, 2)}\n`);
 
   const spawned = spawnDetachedGoalChild(goalDir, [

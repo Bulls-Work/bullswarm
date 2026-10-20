@@ -93,6 +93,8 @@ export async function wfGoal(opts) {
   let doc;
   let resumeRunId = null;
   let initialPlannerResponse = null;
+  // A --request relaunch carries the launching process's identity (cli-launch.js).
+  let requestCaller = null;
 
   if (opts.resume) {
     const resolvedRun = resolveRunId(BULLSWARM_DIR(), opts.resume);
@@ -129,6 +131,7 @@ export async function wfGoal(opts) {
       if (request.runId !== opts['run-id']) throw new Error('goal request runId mismatch');
       doc = request.document;
       initialPlannerResponse = request.initialPlannerResponse ?? null;
+      requestCaller = request.caller ?? null;
     } catch (err) {
       console.error(`✗ cannot load goal request: ${err.message}`);
       return 1;
@@ -212,5 +215,6 @@ export async function wfGoal(opts) {
     resumeRunId,
     initialPlannerResponse,
     advisories: launchAdvisories,
+    caller: requestCaller,
   });
 }

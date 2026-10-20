@@ -21,6 +21,7 @@ import {
   expectedMinutesFromSpendModel, registerAssignment, releaseAssignment, updateAssignment,
   withLedger,
 } from '../lib/assignments.js';
+import { readGoalCaller } from './goal.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
 import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
@@ -735,6 +736,9 @@ export async function dispatchV2Action({
       pool: pool.name, model: record.model, lane: action.lane ?? 'chore', effort,
       source: 'workflow-v2', runId: runId ?? runIdFromPaths(files),
       actionId: action.id, attempt: ordinal, startedAt, ...expected,
+      // The caller the run recorded at launch; none (a direct dispatch, or a run
+      // started before callers were recorded) records this process instead.
+      caller: runDir ? readGoalCaller(runDir) : null,
     }));
     let workerPid = null;
     let verdict;
