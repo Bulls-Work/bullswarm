@@ -48,6 +48,44 @@ export function parsePools(stdout: string): BullswarmPool[] {
     })
 }
 
+/** The schema `bullswarm pools --json --max-age` writes its shared cache under. */
+const POOLS_CACHE_SCHEMA = 'bullswarm.pools-cache.v1'
+/** How far the reader's clock may run behind the writer's and still count the file as fresh. */
+const CLOCK_SLACK_MS = 10_000
+
+/**
+ * The pools from the shared cache file, when it is at most `maxAgeMs` old;
+ * null when it is older, unreadable or not the cache's schema, and the mod
+ * then asks the CLI (which rebuilds it once for every session).
+ *
+ * @param text the cache file's contents
+ * @param nowMs the reader's clock
+ * @param maxAgeMs the oldest result to take
+ */
+export function freshPools(text: string, nowMs: number, maxAgeMs: number): BullswarmPool[] | null {
+  let doc: { schema?: unknown; savedAt?: unknown }
+  try {
+    doc = JSON.parse(text) as typeof doc
+  } catch {
+    return null
+  }
+  const savedAt = num(doc?.savedAt)
+  if (doc?.schema !== POOLS_CACHE_SCHEMA || savedAt === null) return null
+  const age = nowMs - savedAt
+  if (age > maxAgeMs || age < -CLOCK_SLACK_MS) return null
+  return parsePools(text)
+}
+
+/** The cache file a `pools --json --max-age` reply names, or null. */
+export function cacheFileOf(stdout: string): string | null {
+  try {
+    const doc = JSON.parse(stdout) as { cache?: { file?: unknown } }
+    return str(doc?.cache?.file)
+  } catch {
+    return null
+  }
+}
+
 const WINDOW_MS: Record<string, number> = { '5h': 5 * 3600_000, '7d': 7 * 86_400_000 }
 
 /** The meter windows of one pool record, with elapsed% from each reset time. */

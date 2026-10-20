@@ -15,6 +15,8 @@ import type { Host } from './host'
 import {
   contextSignature,
   contextText,
+  cacheFileOf,
+  freshPools,
   parsePools,
   parseRungs,
   poolLine,
@@ -52,6 +54,13 @@ const BUSY_REFRESH_MS = 20_000
 const STEP_REFRESH_MS = 4_000
 const STEP_TICK_MS = 1_000
 const POOLS_TIMEOUT_MS = 30_000
+/**
+ * Every session reads one shared pools result at most this old: the file
+ * when it is young, else `pools --json --max-age`, where one caller rebuilds
+ * and the rest answer with the last good set. Each CLI process is ~300 MB,
+ * and 11 sessions refreshing at once on 2026-10-20 took about 3 GB.
+ */
+const POOLS_MAX_AGE_SEC = 60
 /**
  * `bullswarm run --timeout`, seconds: under the 10-minute cap on `$.process.run`.
  * The process budget holds one attempt, which is why the run gets `--no-retry`
@@ -133,6 +142,8 @@ export function register(on: On, options: PluginOptions = {}) {
   let cwd = ''
   let depth: string | undefined
   let pools: BullswarmPool[] = []
+  /** Where the CLI keeps the shared pools cache, as its last `--max-age` reply named it. */
+  let poolsCacheFile: string | null = null
   let runs: BullswarmRun[] = []
   let assignments: BullswarmAssignment[] = []
   let nowMs = Date.now()
@@ -203,9 +214,20 @@ export function register(on: On, options: PluginOptions = {}) {
   }
 
   async function readPools(h: Host): Promise<BullswarmPool[]> {
-    const r = await h.run(['bullswarm', 'pools', '--json'], { timeoutMs: POOLS_TIMEOUT_MS })
+    if (poolsCacheFile) {
+      try {
+        const fresh = freshPools(await h.read(poolsCacheFile), await h.now(), POOLS_MAX_AGE_SEC * 1000)
+        if (fresh) return fresh
+      } catch {
+        // No file yet, or it went away: the CLI below answers and rewrites it.
+      }
+    }
+    const r = await h.run(['bullswarm', 'pools', '--json', '--max-age', String(POOLS_MAX_AGE_SEC)], {
+      timeoutMs: POOLS_TIMEOUT_MS,
+    })
     if (r.exitCode !== 0)
       throw new Error(r.stderr.trim().split('\n')[0] || `pools exited ${r.exitCode}`)
+    poolsCacheFile = cacheFileOf(r.stdout) ?? poolsCacheFile
     return parsePools(r.stdout)
   }
 

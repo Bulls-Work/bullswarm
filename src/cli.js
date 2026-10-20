@@ -10,6 +10,7 @@ import { buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { refusalResetKnown } from './meters/framework.js';
 import { judgeContent } from './lib/verify.js';
+import { writePoolsCache } from './lib/pools-cache.js';
 import { getVersion } from './lib/version.js';
 import { runUpdate } from './lib/update.js';
 import { cmdWorkflow } from './workflow/cli.js';
@@ -167,8 +168,36 @@ function cmdPoolsLabel(opts) {
   }
 }
 
+async function livePools(now, { force = false, only = null } = {}) {
+  const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
+    packaged: true,
+    force,
+    getReadings: getAllMeterReadings,
+    only,
+  });
+  // Current cross-process load, from the shared ledger rather than this
+  // process's own memory: work another Bullswarm started still shows here —
+  // plus the spend rates that turn that load into a projected utilization.
+  attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
+  return pools;
+}
+
+/** The whole pool set for the shared cache's rebuild (bin's `pools --json --max-age` path). */
+export async function livePoolsForCache() {
+  const { ensureSetup } = await import('./setup.js');
+  ensureSetup(getBullswarmDir());
+  return livePools(Date.now());
+}
+
 async function cmdPools(opts) {
   if (opts.rest[0] === 'label') return cmdPoolsLabel(opts);
+  if (opts['max-age'] !== undefined) {
+    // bin/bullswarm.js answers the valid form from the cache before the CLI
+    // loads; reaching here means the form is not one the cache can answer.
+    console.error('✗ --max-age needs whole seconds (1-3600) with --json, and no --pool or --force: '
+      + 'it answers from the shared pools cache, which holds the whole set as last read');
+    return 2;
+  }
   if (opts.rest.length) {
     console.error(`✗ unknown pools subcommand "${opts.rest[0]}"`);
     console.error(`usage: ${usageLine(['pools'])}`);
@@ -189,17 +218,12 @@ async function cmdPools(opts) {
     }
   }
   const now = Date.now();
-  const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
-    packaged: true,
-    force: opts.force === true,
-    getReadings: getAllMeterReadings,
-    only,
-  });
-  // Current cross-process load, from the shared ledger rather than this
-  // process's own memory: work another Bullswarm started still shows here —
-  // plus the spend rates that turn that load into a projected utilization.
-  attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
+  const pools = await livePools(now, { force: opts.force === true, only });
   if (opts.json) {
+    // Every whole-set read refreshes the shared cache the mods read.
+    if (!only) {
+      try { writePoolsCache(getBullswarmDir(), pools, now); } catch { /* the answer still stands */ }
+    }
     console.log(JSON.stringify({ pools }, null, 2));
     return 0;
   }

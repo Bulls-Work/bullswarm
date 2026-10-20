@@ -452,7 +452,7 @@ const healthText = rich({
 });
 
 const poolsText = rich({
-  usage: 'bullswarm pools [label ...] [--pool <name,...>] [--force] [--json]',
+  usage: 'bullswarm pools [label ...] [--pool <name,...>] [--force] [--json] [--max-age <seconds>]',
   purpose: 'Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, '
     + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and whether a '
     + 'window is spent. The status after the columns is `disabled`, or `ready` followed by '
@@ -477,6 +477,7 @@ const poolsText = rich({
     { flag: '--pool', desc: 'read and show only these pools (comma-separated ids); the others are not polled', default: 'every enabled pool' },
     { flag: '--force', desc: 'bypass the meter cache and the snapshot directory and re-read live usage for every pool read; parallel forced reads of one pool share a single provider call', default: 'off (cached meter readings reused within their TTL)' },
     { flag: '--json', desc: 'machine-readable { pools }, each pool carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, paceResetsAt, resetSource (provider | declared | null), and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
+    { flag: '--max-age <seconds>', desc: 'with --json only (no --pool, no --force): answer from the shared pools cache (<home>/cache/pools.json) when it is at most this old, without loading the rest of the CLI. When it is older, one caller takes the cache lock and rebuilds while the others answer at once with the last good set; the reply adds cache {source: cache | built | stale, savedAt, file}. Every whole-set pools --json refreshes the cache. This is what the Claude mod asks on its timer, so N sessions cost one meter read', default: 'off (every call reads live)' },
   ],
   safety: [
     'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages, unless the reading is cached; one process per pool calls it at a time and the rest take its reading',
@@ -489,6 +490,7 @@ const poolsText = rich({
     { cmd: 'bullswarm pools --force' },
     { cmd: 'bullswarm pools --json --force --pool grok,claude-code:kipwise', note: 'a sampler refreshing just the pools it has no other source for' },
     { cmd: 'bullswarm pools --json', note: 'the same facts, with each pool\'s meter snapshot and spend rates' },
+    { cmd: 'bullswarm pools --json --max-age 60', note: 'a status line: the shared answer, rebuilt at most once a minute across every caller' },
   ],
   next: 'bullswarm assignments to see which run and action each in-flight entry belongs to.',
 });

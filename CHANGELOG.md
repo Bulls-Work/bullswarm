@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
+
+- A shared pools cache. `bullswarm pools --json --max-age <seconds>` answers from `<home>/cache/pools.json` when it is at most that old, before the rest of the CLI loads (measured: 46 MB and 0.07 s, against 363 MB and 2.7 s for a rebuild). When the cache is older, one caller takes a file lock (`pools.lock`) and rebuilds it. The others answer at once with the last good set (`cache.source: "stale"`), or wait for the build if there is no cache yet. A lock older than two minutes belongs to a refresher that died and is broken. Every whole-set `pools --json` refreshes the cache. `--max-age` refuses `--pool` and `--force`.
+- The mod reads that file directly while it is under 60 s old, so a refresh starts no process. When the file is older it asks `pools --json --max-age 60`. N sessions now cost one meter build a minute, not N.
+
 ## 0.38.17 — one per-round count; the low-yield stop fires at 1 to 3 new
 
 Why: the 0.38.16 benchmark (benchmark-0.38.16-report.md) found 3, 4, 6, 3, 3, 1 new findings a round. The low-yield stop never fired, because it needed two rounds in a row of 1 or 2. The out-of-rounds wake also said "new per round 3, 4, 7, 4", but the result's `findings.rounds` said 3, 4, 6, 3: the event added findings reported still open again, and the result did not.
