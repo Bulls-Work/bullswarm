@@ -6,6 +6,7 @@
 import { join } from 'node:path';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
 import { projectOf } from '../lib/project.js';
+import { normalizeCaller } from '../lib/caller.js';
 
 export const GOAL_PROJECT_SCHEMA_VERSION = 'bullswarm.workflow.project.v1';
 
@@ -55,6 +56,36 @@ export function readGoalProject(runDir) {
   if (!document || typeof document !== 'object') return null;
   if (document.schemaVersion !== GOAL_PROJECT_SCHEMA_VERSION) return null;
   return document;
+}
+
+export const GOAL_CALLER_SCHEMA_VERSION = 'bullswarm.workflow.caller.v1';
+
+// Who launched the run (src/lib/caller.js), kept beside goal.json for the same
+// reason as project.json: the goal document is a closed, hashed schema.
+function goalCallerPath(runDir) {
+  return join(runDir, 'caller.json');
+}
+
+/** Record the run's caller at launch. Never throws; returns null on failure. */
+export function recordGoalCaller(runDir, caller, { now = () => new Date().toISOString() } = {}) {
+  try {
+    const document = {
+      schemaVersion: GOAL_CALLER_SCHEMA_VERSION,
+      caller: normalizeCaller(caller) ?? { herdrPane: null, claudeSession: null, cwd: null },
+      recordedAt: now(),
+    };
+    writeJsonAtomic(goalCallerPath(runDir), document);
+    return document;
+  } catch {
+    return null;
+  }
+}
+
+/** The caller a run recorded at launch, or null (a run started before callers were recorded). */
+export function readGoalCaller(runDir) {
+  const document = readJsonSafe(goalCallerPath(runDir), null);
+  if (!document || typeof document !== 'object' || document.schemaVersion !== GOAL_CALLER_SCHEMA_VERSION) return null;
+  return normalizeCaller(document.caller);
 }
 
 export function extractScoutUnitIds(report) {
