@@ -37,6 +37,7 @@ import { routeSummary } from './step-route.js';
 import { parkedFailures, parkedWaitingFor, waitingDocument, waitingOutcomeLines } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
 import { resultAnswerLines } from './answers.js';
+import { writeCache } from '../lib/pools-cache.js';
 
 // A v3 run reports facts per step, so its printed result leaves out the v2
 // fields the stored envelope still carries: `verified`, the implicit goal
@@ -123,6 +124,7 @@ function parseRunsFlags(argv) {
     ['until', 'until'],
     ['started-before', 'until'],
     ['to', 'until'],
+    ['max-age', 'maxAge'],
   ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -154,7 +156,41 @@ function parseRunsFlags(argv) {
   return out;
 }
 
+/** What plain `workflow runs --json` prints: the ongoing runs, newest first, no filters. */
+export function ongoingRunsDoc() {
+  const ongoing = listRuns(BULLSWARM_DIR()).filter((r) => r.ongoing);
+  return runsDoc(newestFirst(ongoing), { all: false, historical: false, name: null }, {});
+}
+
+function newestFirst(runs) {
+  return runs.sort((a, b) => (runStartedAt(b) ?? '').localeCompare(runStartedAt(a) ?? ''));
+}
+
+function runsDoc(filtered, opts, initiatedRange) {
+  return {
+    ongoing: opts.all || !opts.historical,
+    historical: opts.all || opts.historical,
+    name: opts.name ?? null,
+    initiatedRange: {
+      field: 'startedAt',
+      sinceInclusive: initiatedRange.sinceMs == null
+        ? null
+        : new Date(initiatedRange.sinceMs).toISOString(),
+      untilExclusive: initiatedRange.untilMs == null
+        ? null
+        : new Date(initiatedRange.untilMs).toISOString(),
+    },
+    count: filtered.length,
+    runs: filtered.map(summarize),
+  };
+}
+
 function runsList(opts) {
+  if (opts.maxAge !== undefined) {
+    // bin/bullswarm.js answers `workflow runs --json --max-age <s>` from the
+    // shared cache before the CLI loads; anything else with it is refused.
+    return err('--max-age needs whole seconds (1-3600) with --json and no filter: it answers from the shared runs cache', 2);
+  }
   let initiatedRange;
   try {
     initiatedRange = resolveInitiatedRange(opts);
@@ -183,30 +219,18 @@ function runsList(opts) {
     });
   }
   // Newest first.
-  filtered.sort((a, b) => {
-    const ta = runStartedAt(a) ?? '';
-    const tb = runStartedAt(b) ?? '';
-    return tb.localeCompare(ta);
-  });
+  newestFirst(filtered);
   if (opts.limit && opts.limit > 0) filtered = filtered.slice(0, opts.limit);
 
   if (opts.json) {
-    jsonOut({
-      ongoing: opts.all || !opts.historical,
-      historical: opts.all || opts.historical,
-      name: opts.name ?? null,
-      initiatedRange: {
-        field: 'startedAt',
-        sinceInclusive: initiatedRange.sinceMs == null
-          ? null
-          : new Date(initiatedRange.sinceMs).toISOString(),
-        untilExclusive: initiatedRange.untilMs == null
-          ? null
-          : new Date(initiatedRange.untilMs).toISOString(),
-      },
-      count: filtered.length,
-      runs: filtered.map(summarize),
-    }, opts);
+    const doc = runsDoc(filtered, opts, initiatedRange);
+    // The unfiltered ongoing list is the shared answer the mods read.
+    const unfiltered = !opts.all && !opts.historical && !opts.name && !opts.limit
+      && initiatedRange.sinceMs == null && initiatedRange.untilMs == null;
+    if (unfiltered) {
+      try { writeCache(BULLSWARM_DIR(), 'runs', doc); } catch { /* the answer still stands */ }
+    }
+    jsonOut(doc, opts);
     return 0;
   }
 

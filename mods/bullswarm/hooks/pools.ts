@@ -48,35 +48,51 @@ export function parsePools(stdout: string): BullswarmPool[] {
     })
 }
 
-/** The schema `bullswarm pools --json --max-age` writes its shared cache under. */
-const POOLS_CACHE_SCHEMA = 'bullswarm.pools-cache.v1'
 /** How far the reader's clock may run behind the writer's and still count the file as fresh. */
 const CLOCK_SLACK_MS = 10_000
 
+/** The shared caches the CLI writes under `<home>/cache/<name>.json`. */
+export type CacheName = 'pools' | 'runs' | 'assignments'
+
 /**
- * The pools from the shared cache file, when it is at most `maxAgeMs` old;
- * null when it is older, unreadable or not the cache's schema, and the mod
- * then asks the CLI (which rebuilds it once for every session).
+ * A shared cache file's doc, when it is at most `maxAgeMs` old; null when it
+ * is older, unreadable or another cache's schema, and the mod then asks the
+ * CLI's `--json --max-age` form (which rebuilds it once for every session).
  *
  * @param text the cache file's contents
+ * @param name which cache the file should be
  * @param nowMs the reader's clock
  * @param maxAgeMs the oldest result to take
  */
-export function freshPools(text: string, nowMs: number, maxAgeMs: number): BullswarmPool[] | null {
-  let doc: { schema?: unknown; savedAt?: unknown }
+export function freshDoc(text: string, name: CacheName, nowMs: number, maxAgeMs: number): Raw | null {
+  let doc: Raw
   try {
-    doc = JSON.parse(text) as typeof doc
+    doc = JSON.parse(text) as Raw
   } catch {
     return null
   }
   const savedAt = num(doc?.savedAt)
-  if (doc?.schema !== POOLS_CACHE_SCHEMA || savedAt === null) return null
+  if (doc?.schema !== `bullswarm.${name}-cache.v1` || savedAt === null) return null
   const age = nowMs - savedAt
   if (age > maxAgeMs || age < -CLOCK_SLACK_MS) return null
-  return parsePools(text)
+  return doc
 }
 
-/** The cache file a `pools --json --max-age` reply names, or null. */
+/** The pools from the shared cache file while it is young enough, else null. */
+export function freshPools(text: string, nowMs: number, maxAgeMs: number): BullswarmPool[] | null {
+  return freshDoc(text, 'pools', nowMs, maxAgeMs) ? parsePools(text) : null
+}
+
+/**
+ * How old a shared answer the mod takes, in seconds: a minute while nothing
+ * is in flight, and younger while work is, so progress does not lag behind
+ * the refresh cadence (20 s busy, 4 s on an open running step).
+ */
+export function cacheMaxAgeSec(state: { stepOpen: boolean; busy: boolean }): number {
+  return state.stepOpen ? 3 : state.busy ? 15 : 60
+}
+
+/** The cache file a `--json --max-age` reply names, or null. */
 export function cacheFileOf(stdout: string): string | null {
   try {
     const doc = JSON.parse(stdout) as { cache?: { file?: unknown } }

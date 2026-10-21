@@ -79,7 +79,7 @@ const TABLE = {
   health: ['json'],
   pools: ['force', 'json', 'pool', 'max-age'],
   'pools label': ['list', 'clear', 'json'],
-  assignments: ['json'],
+  assignments: ['json', 'max-age'],
   doctor: ['json'],
   home: [],
   'home snapshot': ['runs', 'recent', 'since', 'no-streams', 'json'],
@@ -189,11 +189,11 @@ const TABLE = {
   // --since/--until option descriptions rather than as their own labels.
   'workflow runs': [
     'all', 'historical', 'name', 'since', 'started-after', 'from', 'until',
-    'started-before', 'to', 'limit', 'json',
+    'started-before', 'to', 'limit', 'json', 'max-age',
   ],
   'workflow runs list': [
     'all', 'historical', 'name', 'since', 'started-after', 'from', 'until',
-    'started-before', 'to', 'limit', 'json',
+    'started-before', 'to', 'limit', 'json', 'max-age',
   ],
   'workflow runs show': ['json'],
   'workflow runs result': ['json', 'summary'],

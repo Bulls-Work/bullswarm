@@ -522,7 +522,7 @@ const poolsLabelText = rich({
 });
 
 const assignmentsText = rich({
-  usage: 'bullswarm assignments [--json]',
+  usage: 'bullswarm assignments [--json] [--max-age <seconds>]',
   purpose: 'List the work in flight RIGHT NOW across every Bullswarm process — one line per '
     + 'live assignment with its pool, lane/effort, source, run/action, age in minutes, expected '
     + 'duration, and worker pid. This is the shared ledger `bullswarm pools` counts as '
@@ -530,6 +530,7 @@ const assignmentsText = rich({
   args: [],
   options: [
     { flag: '--json', desc: 'machine-readable array of live assignment records', default: 'one human-readable line per assignment' },
+    { flag: '--max-age <seconds>', desc: 'with --json only: answer from the shared cache (<home>/cache/assignments.json) when it is at most this old, without loading the rest of the CLI; when it is older one caller takes the lock and rebuilds while the others answer with the last good list. Same array shape. Every assignments --json refreshes the cache. This is what the Claude mod asks on its timer', default: 'off (every call reads the ledger)' },
   ],
   safety: [
     'reads ~/.bullswarm/assignments/ only — no meters, no network, no pool build',
@@ -1807,6 +1808,7 @@ const workflowRunsListOptions = [
   { flag: '--until <time>', desc: 'upper bound on start time (exclusive); aliases --to, --started-before', default: 'no upper bound' },
   { flag: '--limit <n>', desc: 'cap the number of results; must be a positive integer, and anything else exits 2', default: 'no cap' },
   { flag: '--json', desc: 'machine-readable output', default: 'human-readable one-line-per-run summary' },
+  { flag: '--max-age <seconds>', desc: 'with --json and no filter (the ongoing list): answer from the shared cache (<home>/cache/runs.json) when it is at most this old, without loading the rest of the CLI; when it is older one caller takes the lock and rebuilds while the others answer with the last good list. The reply adds cache {source: cache | built | stale, savedAt, file}. Every unfiltered runs --json refreshes the cache. This is what the Claude mod asks on its timer', default: 'off (every call reads the run directories)' },
 ];
 
 const runsTimeFilterNote = 'Time filters compare each run\'s initiation timestamp and accept ISO '
@@ -1817,7 +1819,7 @@ const legacyRunNote = 'Legacy authored-graph runs are listed as read-only rows m
   + 'files remain under <dir>` and exits 2.';
 
 const workflowRunsText = rich({
-  usage: 'bullswarm workflow runs [list] [--all|--historical] [--name <goal>] [--since <time>] [--until <time>] [--limit <n>] [--json]',
+  usage: 'bullswarm workflow runs [list] [--all|--historical] [--name <goal>] [--since <time>] [--until <time>] [--limit <n>] [--json] [--max-age <seconds>]',
   purpose: 'Search ongoing and historical workflow run instances, including read-only legacy '
     + `rows, or drill into one with show/result/delete. ${legacyRunNote} ${runsTimeFilterNote}`,
   argsTitle: 'Commands',
@@ -1834,7 +1836,7 @@ const workflowRunsText = rich({
 });
 
 const workflowRunsListText = rich({
-  usage: 'bullswarm workflow runs list [--all|--historical] [--name <goal>] [--since <time>] [--until <time>] [--limit <n>] [--json]',
+  usage: 'bullswarm workflow runs list [--all|--historical] [--name <goal>] [--since <time>] [--until <time>] [--limit <n>] [--json] [--max-age <seconds>]',
   purpose: 'Search ongoing and/or historical workflow runs, including read-only legacy rows, by '
     + `name and initiation-time window. ${legacyRunNote} Explicit form of the runs default. ${runsTimeFilterNote}`,
   args: [],

@@ -10,9 +10,20 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  POOLS_CACHE_SCHEMA, poolsCachePaths, readPoolsCache, servePools, writePoolsCache,
+  cachePaths, readCache, serveCached, writePoolsCache,
 } from '../src/lib/pools-cache.js';
 import { freshPools } from '../mods/bullswarm/hooks/pools.ts';
+
+const POOLS_CACHE_SCHEMA = 'bullswarm.pools-cache.v1';
+const poolsCachePaths = (h) => cachePaths(h, 'pools');
+function readPoolsCache(h) {
+  const cached = readCache(h, 'pools');
+  return cached && { savedAt: cached.savedAt, pools: cached.doc.pools };
+}
+async function servePools({ build, ...rest }) {
+  const served = await serveCached({ ...rest, name: 'pools', build: async () => ({ pools: await build() }) });
+  return { savedAt: served.savedAt, pools: served.doc.pools, source: served.source };
+}
 
 const BIN = fileURLToPath(new URL('../bin/bullswarm.js', import.meta.url));
 const POOLS = [{ name: 'grok', enabled: true, usedPct: 10, elapsedPct: 40, pace: 30 }];

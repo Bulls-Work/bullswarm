@@ -10,7 +10,7 @@ import { buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { refusalResetKnown } from './meters/framework.js';
 import { judgeContent } from './lib/verify.js';
-import { writePoolsCache } from './lib/pools-cache.js';
+import { writeCache, writePoolsCache } from './lib/pools-cache.js';
 import { getVersion } from './lib/version.js';
 import { runUpdate } from './lib/update.js';
 import { cmdWorkflow } from './workflow/cli.js';
@@ -182,11 +182,14 @@ async function livePools(now, { force = false, only = null } = {}) {
   return pools;
 }
 
-/** The whole pool set for the shared cache's rebuild (bin's `pools --json --max-age` path). */
-export async function livePoolsForCache() {
+/** One shared cache's rebuild (bin's `--json --max-age` path): the doc the plain form prints. */
+export async function liveDocForCache(name) {
   const { ensureSetup } = await import('./setup.js');
   ensureSetup(getBullswarmDir());
-  return livePools(Date.now());
+  if (name === 'pools') return { pools: await livePools(Date.now()) };
+  if (name === 'assignments') return { assignments: assignmentsJson(Date.now()) };
+  if (name === 'runs') return (await import('./workflow/runs-cli.js')).ongoingRunsDoc();
+  throw new Error(`no cache named ${name}`);
 }
 
 async function cmdPools(opts) {
@@ -286,17 +289,27 @@ async function cmdPools(opts) {
 // The in-flight ledger, read straight from disk: no meters, no network, no
 // pool build — just what is running right now across every Bullswarm process.
 
+/** What `assignments --json` prints: every in-flight record with its label and timing. */
+function assignmentsJson(now) {
+  return listAssignments(getBullswarmDir(), { now })
+    .map((r) => ({ ...r, poolLabel: poolLabel(r.pool, getBullswarmDir()), ...describeAssignment(r, now) }));
+}
+
 function cmdAssignments(opts) {
+  if (opts['max-age'] !== undefined) {
+    // bin/bullswarm.js answers the valid form from the cache before the CLI loads.
+    console.error('✗ --max-age needs whole seconds (1-3600) with --json: it answers from the shared assignments cache');
+    return 2;
+  }
   const now = Date.now();
-  const records = listAssignments(getBullswarmDir(), { now });
   if (opts.json) {
-    console.log(JSON.stringify(
-      records.map((r) => ({ ...r, poolLabel: poolLabel(r.pool, getBullswarmDir()), ...describeAssignment(r, now) })),
-      null,
-      2,
-    ));
+    const records = assignmentsJson(now);
+    // Every --json read refreshes the shared cache the mods read.
+    try { writeCache(getBullswarmDir(), 'assignments', { assignments: records }, now); } catch { /* the answer still stands */ }
+    console.log(JSON.stringify(records, null, 2));
     return 0;
   }
+  const records = listAssignments(getBullswarmDir(), { now });
   if (!records.length) {
     console.log('no in-flight assignments');
     return 0;

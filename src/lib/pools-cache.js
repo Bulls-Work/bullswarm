@@ -1,9 +1,10 @@
-// The shared pools cache: one `pools --json` build serves every caller for a
-// while. Each Claude session's mod asks for the pools on a timer, and a build
-// is a full CLI load plus every meter read (260-345 MB RSS each; 11 ran at once
-// on 2026-10-20). With `--max-age`, a young cache is the answer, and when it
-// is old one caller takes a file lock and rebuilds while the rest answer with
-// the last good result.
+// The shared status cache: one build of `pools --json`, `workflow runs --json`
+// or `assignments --json` serves every caller for a while. Each Claude
+// session's mod asks all three on a timer, and each is a full CLI load
+// (~280 MB RSS; a pools build adds every meter read, 260-345 MB, and 11 ran at
+// once on 2026-10-20). With `--max-age`, a young cache is the answer, and when
+// it is old one caller takes a file lock and rebuilds while the rest answer
+// with the last good result.
 //
 // Only node built-ins here: bin/bullswarm.js imports this before the CLI, so a
 // cache hit never loads the rest of Bullswarm.
@@ -14,36 +15,38 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export const POOLS_CACHE_SCHEMA = 'bullswarm.pools-cache.v1';
-/** A lock older than this belongs to a refresher that died; pools has a 30 s budget in the mod. */
+/** A lock older than this belongs to a refresher that died; each read has a 30 s budget in the mod. */
 const LOCK_STALE_MS = 120_000;
 /** How long a caller with nothing cached waits for another caller's build. */
 const WAIT_MS = 45_000;
 
-export function poolsCachePaths(home) {
+/** Each cache is `<home>/cache/<name>.json` (pools, runs, assignments) under its own schema. */
+const schemaOf = (name) => `bullswarm.${name}-cache.v1`;
+
+export function cachePaths(home, name) {
   const dir = join(home, 'cache');
-  return { dir, file: join(dir, 'pools.json'), lock: join(dir, 'pools.lock') };
+  return { dir, file: join(dir, `${name}.json`), lock: join(dir, `${name}.lock`) };
 }
 
-/** The cached `{ savedAt, pools }`, or null when there is none or it is unreadable. */
-export function readPoolsCache(home) {
+/** The cached `{ savedAt, doc }`, or null when there is none or it is unreadable. */
+export function readCache(home, name) {
   try {
-    const doc = JSON.parse(readFileSync(poolsCachePaths(home).file, 'utf8'));
-    if (doc?.schema !== POOLS_CACHE_SCHEMA || !Number.isFinite(doc.savedAt) || !Array.isArray(doc.pools)) return null;
-    return { savedAt: doc.savedAt, pools: doc.pools };
+    const { schema, savedAt, ...doc } = JSON.parse(readFileSync(cachePaths(home, name).file, 'utf8'));
+    if (schema !== schemaOf(name) || !Number.isFinite(savedAt)) return null;
+    return { savedAt, doc };
   } catch {
     return null;
   }
 }
 
 /** Writes the cache whole or not at all: a reader never sees half a file. */
-export function writePoolsCache(home, pools, savedAt = Date.now()) {
-  const { dir, file } = poolsCachePaths(home);
+export function writeCache(home, name, doc, savedAt = Date.now()) {
+  const { dir, file } = cachePaths(home, name);
   mkdirSync(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   const fd = openSync(tmp, 'w', 0o600);
   try {
-    writeSync(fd, `${JSON.stringify({ schema: POOLS_CACHE_SCHEMA, savedAt, pools }, null, 2)}\n`);
+    writeSync(fd, `${JSON.stringify({ schema: schemaOf(name), savedAt, ...doc }, null, 2)}\n`);
   } finally {
     closeSync(fd);
   }
@@ -75,28 +78,28 @@ function dropLock(lock) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * The pools for a `--max-age` caller: `source` is `cache` (young enough),
+ * The doc for a `--max-age` caller: `source` is `cache` (young enough),
  * `built` (this caller rebuilt it), or `stale` (another caller is rebuilding;
  * this is the last good result).
  */
-export async function servePools({
-  home, maxAgeMs, build, now = Date.now, waitMs = WAIT_MS, waitStepMs = 250,
+export async function serveCached({
+  home, name, maxAgeMs, build, now = Date.now, waitMs = WAIT_MS, waitStepMs = 250,
 }) {
-  const { dir, lock } = poolsCachePaths(home);
+  const { dir, lock } = cachePaths(home, name);
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const cached = readPoolsCache(home);
+    const cached = readCache(home, name);
     if (cached && now() - cached.savedAt <= maxAgeMs) return { ...cached, source: 'cache' };
     mkdirSync(dir, { recursive: true });
     if (takeLock(lock)) {
       try {
         // Another caller may have finished between our read and our lock.
-        const again = readPoolsCache(home);
+        const again = readCache(home, name);
         if (again && now() - again.savedAt <= maxAgeMs) return { ...again, source: 'cache' };
-        const pools = await build();
+        const doc = await build();
         const savedAt = now();
-        writePoolsCache(home, pools, savedAt);
-        return { savedAt, pools, source: 'built' };
+        writeCache(home, name, doc, savedAt);
+        return { savedAt, doc, source: 'built' };
       } finally {
         dropLock(lock);
       }
@@ -105,39 +108,56 @@ export async function servePools({
     // Nothing to answer with yet: wait for the build in flight, then build
     // ourselves if it never lands (its lock goes stale, or the wait runs out).
     if (Date.now() >= deadline) {
-      const pools = await build();
-      return { savedAt: now(), pools, source: 'built' };
+      const doc = await build();
+      return { savedAt: now(), doc, source: 'built' };
     }
     await sleep(waitStepMs);
   }
 }
 
+/** `pools --json` writes the cache as `{ pools }`, the shape its plain form prints. */
+export function writePoolsCache(home, pools, savedAt = Date.now()) {
+  writeCache(home, 'pools', { pools }, savedAt);
+}
+
+// --- the CLI forms the cache answers ------------------------------------------
+
 /**
- * The max age, in ms, of a `pools … --max-age <s>` argv that the cache may
- * answer: exactly `pools`, `--json` and `--max-age`, in any order. null when
- * the argv is anything else (the full CLI then answers, or refuses it).
+ * Which cache an argv asks, and how old an answer it takes: exactly
+ * `pools`, `assignments` or `workflow runs`, with `--json` and
+ * `--max-age <seconds>` in any order. null for anything else (the full CLI
+ * then answers, or refuses it).
  */
-export function cachedPoolsMaxAge(argv) {
-  if (argv[0] !== 'pools') return null;
+export function cachedCall(argv) {
+  const [name, flags] = argv[0] === 'pools' ? ['pools', argv.slice(1)]
+    : argv[0] === 'assignments' ? ['assignments', argv.slice(1)]
+      : argv[0] === 'workflow' && argv[1] === 'runs' ? ['runs', argv.slice(2)]
+        : [null, []];
+  if (!name) return null;
   let json = false;
   let seconds = null;
-  for (let i = 1; i < argv.length; i += 1) {
-    const arg = argv[i];
+  for (let i = 0; i < flags.length; i += 1) {
+    const arg = flags[i];
     if (arg === '--json') json = true;
-    else if (arg === '--max-age' && i + 1 < argv.length) seconds = argv[++i];
+    else if (arg === '--max-age' && i + 1 < flags.length) seconds = flags[++i];
     else if (arg.startsWith('--max-age=')) seconds = arg.slice('--max-age='.length);
     else return null;
   }
   if (!json || seconds === null || !/^\d+$/.test(seconds)) return null;
   const n = Number(seconds);
-  return n >= 1 && n <= 3600 ? n * 1000 : null;
+  return n >= 1 && n <= 3600 ? { name, maxAgeMs: n * 1000 } : null;
 }
 
-/** The `pools --json --max-age` answer: the pools, and where they came from. */
-export function servedJson(served, home) {
+/**
+ * What a `--max-age` caller prints: the plain form's JSON, plus `cache`
+ * {source, savedAt, file} where the plain form is an object. `assignments`
+ * stays the bare array its plain form prints.
+ */
+export function servedJson(served, home, name = 'pools') {
+  if (name === 'assignments') return JSON.stringify(served.doc.assignments ?? [], null, 2);
   return JSON.stringify({
-    pools: served.pools,
-    cache: { source: served.source, savedAt: served.savedAt, file: poolsCachePaths(home).file },
+    ...served.doc,
+    cache: { source: served.source, savedAt: served.savedAt, file: cachePaths(home, name).file },
   }, null, 2);
 }
 
@@ -147,15 +167,16 @@ export function bullswarmHome() {
   return h && h.length ? h : join(homedir(), '.bullswarm');
 }
 
-/** `bullswarm pools --json --max-age <s>`: exit code; the full CLI loads only to rebuild. */
-export async function cachedPoolsMain(argv) {
-  const maxAgeMs = cachedPoolsMaxAge(argv);
+/** A `--max-age` call: exit code; the full CLI loads only to rebuild. */
+export async function cachedCallMain(argv) {
+  const { name, maxAgeMs } = cachedCall(argv);
   const home = bullswarmHome();
-  const served = await servePools({
+  const served = await serveCached({
     home,
+    name,
     maxAgeMs,
-    build: async () => (await import('../cli.js')).livePoolsForCache(),
+    build: async () => (await import('../cli.js')).liveDocForCache(name),
   });
-  console.log(servedJson(served, home));
+  console.log(servedJson(served, home, name));
   return 0;
 }

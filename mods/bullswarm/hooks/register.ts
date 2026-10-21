@@ -16,7 +16,9 @@ import {
   contextSignature,
   contextText,
   cacheFileOf,
-  freshPools,
+  cacheMaxAgeSec,
+  freshDoc,
+  type CacheName,
   parsePools,
   parseRungs,
   poolLine,
@@ -55,10 +57,11 @@ const STEP_REFRESH_MS = 4_000
 const STEP_TICK_MS = 1_000
 const POOLS_TIMEOUT_MS = 30_000
 /**
- * Every session reads one shared pools result at most this old: the file
- * when it is young, else `pools --json --max-age`, where one caller rebuilds
- * and the rest answer with the last good set. Each CLI process is ~300 MB,
- * and 11 sessions refreshing at once on 2026-10-20 took about 3 GB.
+ * Every session reads one shared pools, runs and assignments result (the
+ * file while it is young, else `--json --max-age`, where one caller rebuilds
+ * and the rest answer with the last good set) at most cacheMaxAgeSec old.
+ * Each CLI process is ~300 MB, and 11 sessions refreshing at once on
+ * 2026-10-20 took about 3 GB.
  */
 const POOLS_MAX_AGE_SEC = 60
 /**
@@ -142,8 +145,8 @@ export function register(on: On, options: PluginOptions = {}) {
   let cwd = ''
   let depth: string | undefined
   let pools: BullswarmPool[] = []
-  /** Where the CLI keeps the shared pools cache, as its last `--max-age` reply named it. */
-  let poolsCacheFile: string | null = null
+  /** Where the CLI keeps the shared caches, as a `--max-age` reply's cache file named it. */
+  let cacheDir: string | null = null
   let runs: BullswarmRun[] = []
   let assignments: BullswarmAssignment[] = []
   let nowMs = Date.now()
@@ -213,22 +216,34 @@ export function register(on: On, options: PluginOptions = {}) {
     tick()
   }
 
-  async function readPools(h: Host): Promise<BullswarmPool[]> {
-    if (poolsCacheFile) {
+  /**
+   * One shared read: the cache file when it is young enough (no process),
+   * else the CLI's `--json --max-age` form, whose reply names the file.
+   */
+  async function readCached<T>(h: Host, name: CacheName, argv: readonly string[], parse: (s: string) => T): Promise<T> {
+    // Meters move slowly and a pools build reads every one: a minute always.
+    const maxAgeSec = name === 'pools'
+      ? POOLS_MAX_AGE_SEC
+      : cacheMaxAgeSec({ stepOpen: runningStepOpen(), busy: assignments.length > 0 || runs.length > 0 })
+    if (cacheDir) {
       try {
-        const fresh = freshPools(await h.read(poolsCacheFile), await h.now(), POOLS_MAX_AGE_SEC * 1000)
-        if (fresh) return fresh
+        const text = await h.read(`${cacheDir}/${name}.json`)
+        const doc = freshDoc(text, name, await h.now(), maxAgeSec * 1000)
+        if (doc) return parse(name === 'assignments' ? JSON.stringify(doc.assignments ?? []) : text)
       } catch {
         // No file yet, or it went away: the CLI below answers and rewrites it.
       }
     }
-    const r = await h.run(['bullswarm', 'pools', '--json', '--max-age', String(POOLS_MAX_AGE_SEC)], {
-      timeoutMs: POOLS_TIMEOUT_MS,
-    })
+    const r = await h.run([...argv, '--json', '--max-age', String(maxAgeSec)], { timeoutMs: POOLS_TIMEOUT_MS })
     if (r.exitCode !== 0)
-      throw new Error(r.stderr.trim().split('\n')[0] || `pools exited ${r.exitCode}`)
-    poolsCacheFile = cacheFileOf(r.stdout) ?? poolsCacheFile
-    return parsePools(r.stdout)
+      throw new Error(r.stderr.trim().split('\n')[0] || `${argv[1]} exited ${r.exitCode}`)
+    const file = cacheFileOf(r.stdout)
+    if (file) cacheDir = file.slice(0, file.lastIndexOf('/'))
+    return parse(r.stdout)
+  }
+
+  function readPools(h: Host): Promise<BullswarmPool[]> {
+    return readCached(h, 'pools', ['bullswarm', 'pools'], parsePools)
   }
 
   async function readJson<T>(h: Host, argv: readonly string[], parse: (s: string) => T): Promise<T> {
@@ -272,8 +287,8 @@ export function register(on: On, options: PluginOptions = {}) {
   async function refresh(h: Host): Promise<BullswarmPool[]> {
     const [p, r, a, g] = await Promise.allSettled([
       readPools(h),
-      readJson(h, ['bullswarm', 'workflow', 'runs', '--json'], parseRuns),
-      readJson(h, ['bullswarm', 'assignments', '--json'], parseAssignments),
+      readCached(h, 'runs', ['bullswarm', 'workflow', 'runs'], parseRuns),
+      readCached(h, 'assignments', ['bullswarm', 'assignments'], parseAssignments),
       paneOpen ? readJson(h, ['bullswarm', 'strategy', 'rungs', '--json'], parseRungs) : Promise.resolve(rungs),
     ])
     if (g.status === 'fulfilled') rungs = g.value
