@@ -3,7 +3,9 @@
 // full CLI load (~280 MB), once per Claude session (2026-10-21).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, utimesSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -137,4 +139,47 @@ test('mod: the max age tightens while work is in flight', () => {
   assert.equal(cacheMaxAgeSec({ stepOpen: false, busy: false }), 60);
   assert.equal(cacheMaxAgeSec({ stepOpen: false, busy: true }), 15);
   assert.equal(cacheMaxAgeSec({ stepOpen: true, busy: true }), 3);
+});
+
+// Hardening from an independent review of the lock (grok run qnkeas, 2026-10-21).
+test('a lock older than two minutes whose holder is still alive is not broken', async () => {
+  const h = home();
+  writeCache(h, 'runs', { old: true }, 1_000);
+  const { lock } = cachePaths(h, 'runs');
+  writeFileSync(lock, `${process.pid} 1000 live-token\n`);
+  const old = new Date(Date.now() - 180_000);
+  utimesSync(lock, old, old);
+  let builds = 0;
+  const served = await serveCached({ home: h, name: 'runs', maxAgeMs: 60_000, build: async () => { builds += 1; return {}; } });
+  assert.equal(builds, 0);
+  assert.equal(served.source, 'stale');
+  assert.equal(existsSync(lock), true, 'the live holder keeps its lock');
+});
+
+test('releasing never removes a lock another caller has taken since', async () => {
+  const h = home();
+  const { lock } = cachePaths(h, 'runs');
+  const served = serveCached({
+    home: h, name: 'runs', maxAgeMs: 60_000,
+    build: async () => {
+      // Someone broke our lock and took the path while we built.
+      unlinkSync(lock);
+      writeFileSync(lock, '99999 1 their-token\n');
+      return { runs: [] };
+    },
+  });
+  await served;
+  assert.equal(readFileSync(lock, 'utf8'), '99999 1 their-token\n');
+});
+
+test('a waiter that gives up on another build stores what it built', async () => {
+  const h = home();
+  const { lock } = cachePaths(h, 'runs');
+  mkdirSync(cachePaths(h, 'runs').dir, { recursive: true });
+  writeFileSync(lock, `${process.pid} ${Date.now()} live-token\n`);
+  const served = await serveCached({
+    home: h, name: 'runs', maxAgeMs: 60_000, waitMs: 60, waitStepMs: 20, build: async () => ({ runs: ['mine'] }),
+  });
+  assert.equal(served.source, 'built');
+  assert.deepEqual(readCache(h, 'runs')?.doc.runs, ['mine']);
 });
