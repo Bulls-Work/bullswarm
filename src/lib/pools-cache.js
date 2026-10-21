@@ -15,7 +15,7 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/** A lock older than this belongs to a refresher that died; each read has a 30 s budget in the mod. */
+/** A lock older than this whose holder is gone belongs to a refresher that died; each read has a 30 s budget in the mod. */
 const LOCK_STALE_MS = 120_000;
 /** How long a caller with nothing cached waits for another caller's build. */
 const WAIT_MS = 45_000;
@@ -53,25 +53,51 @@ export function writeCache(home, name, doc, savedAt = Date.now()) {
   renameSync(tmp, file);
 }
 
-/** true when this caller now holds the lock. A dead refresher's lock is broken once. */
+/** The `<pid> <ms> <token>` a lock file holds, or null when it is gone or unreadable. */
+function lockOwner(lock) {
+  try {
+    const [pid, , token] = readFileSync(lock, 'utf8').trim().split(' ');
+    return { pid: Number(pid), token: token ?? null };
+  } catch {
+    return null;
+  }
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+/**
+ * This caller's token when it now holds the lock, else null. A lock is broken
+ * only when it is over two minutes old and its holder is gone.
+ */
 function takeLock(lock) {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = openSync(lock, 'wx', 0o600);
-      try { writeSync(fd, `${process.pid} ${Date.now()}\n`); } finally { closeSync(fd); }
-      return true;
+      try { writeSync(fd, `${process.pid} ${Date.now()} ${token}\n`); } finally { closeSync(fd); }
+      return token;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       let age;
       try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
-      if (age < LOCK_STALE_MS) return false;
+      if (age < LOCK_STALE_MS || processAlive(lockOwner(lock)?.pid)) return null;
       try { unlinkSync(lock); } catch { /* another caller broke it first */ }
     }
   }
-  return false;
+  return null;
 }
 
-function dropLock(lock) {
+/** Removes the lock only while it is still ours: a successor's lock stays. */
+function dropLock(lock, token) {
+  if (lockOwner(lock)?.token !== token) return;
   try { unlinkSync(lock); } catch { /* already gone */ }
 }
 
@@ -91,7 +117,8 @@ export async function serveCached({
     const cached = readCache(home, name);
     if (cached && now() - cached.savedAt <= maxAgeMs) return { ...cached, source: 'cache' };
     mkdirSync(dir, { recursive: true });
-    if (takeLock(lock)) {
+    const token = takeLock(lock);
+    if (token) {
       try {
         // Another caller may have finished between our read and our lock.
         const again = readCache(home, name);
@@ -101,7 +128,7 @@ export async function serveCached({
         writeCache(home, name, doc, savedAt);
         return { savedAt, doc, source: 'built' };
       } finally {
-        dropLock(lock);
+        dropLock(lock, token);
       }
     }
     if (cached) return { ...cached, source: 'stale' };
@@ -109,7 +136,9 @@ export async function serveCached({
     // ourselves if it never lands (its lock goes stale, or the wait runs out).
     if (Date.now() >= deadline) {
       const doc = await build();
-      return { savedAt: now(), doc, source: 'built' };
+      const savedAt = now();
+      writeCache(home, name, doc, savedAt);
+      return { savedAt, doc, source: 'built' };
     }
     await sleep(waitStepMs);
   }

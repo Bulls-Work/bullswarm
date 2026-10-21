@@ -8,6 +8,10 @@ Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. O
 - The mod reads that file directly while it is under 60 s old, so a refresh starts no process. When the file is older it asks `pools --json --max-age 60`. N sessions now cost one meter build a minute, not N.
 - The same shared cache for the mod's other two reads, `workflow runs --json` and `assignments --json`, each a full CLI load (~280 MB). On 2026-10-21 there were 14 of each in two minutes across 14 sessions, up to 9 at once. Each cache is its own file (`runs.json`, `assignments.json`, each with its own lock). Their `--max-age` forms print exactly what the plain form prints, plus `cache` on the runs object; `assignments` stays a bare array. Every unfiltered plain `--json` read refreshes its file. A filtered runs list (`--all`, `--name`, …) never touches it, and `--max-age` refuses one.
 - The mod takes runs and assignments at most 60 s old while nothing is in flight, 15 s while something is, and 3 s with a running step open, so progress keeps pace with its refresh. Pools stay at 60 s.
+- The cache lock, after an independent review (grok, run qnkeas):
+  - A lock over two minutes old is broken only when its holder process is gone.
+  - A caller releases the lock only while it still holds its own token.
+  - A caller that stops waiting for another's build now stores what it built.
 
 ## 0.38.17 — one per-round count; the low-yield stop fires at 1 to 3 new
 
