@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
+
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
 
 - A shared pools cache. `bullswarm pools --json --max-age <seconds>` answers from `<home>/cache/pools.json` when it is at most that old, before the rest of the CLI loads (measured: 46 MB and 0.07 s, against 363 MB and 2.7 s for a rebuild). When the cache is older, one caller takes a file lock (`pools.lock`) and rebuilds it. The others answer at once with the last good set (`cache.source: "stale"`), or wait for the build if there is no cache yet. A lock older than two minutes belongs to a refresher that died and is broken. Every whole-set `pools --json` refreshes the cache. `--max-age` refuses `--pool` and `--force`.
