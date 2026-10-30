@@ -4,7 +4,7 @@
 // resolved per pool (preparePools, selectedModel).
 import { modelBaseId, poolCanRunModel } from '../lib/model-pin.js';
 import { modelFamily } from '../lib/model-family.js';
-import { isFree } from '../lib/route.js';
+import { isFree, modelFamilyOf } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { poolPassesRoute } from './step-route.js';
@@ -130,26 +130,59 @@ export function selectedModel(pool, effort, preferredModel = null) {
  * list is already hard-filtered (route, pin, tier, spent windows); this is a
  * preference for one pick, never stored (doctrine 4).
  *
+ * A failure that records no model (a sign-in that dies before any model
+ * event; the packaged claude-code connector names none) uses the model the
+ * failed pool would run for this tier, when that model is known. The order
+ * is then the same as a known model. When it is not, pools of the same
+ * provider (`modelFamilyOf`) come before the rest. A known model never
+ * gains that provider tier: its order stays model, family, any.
+ *
  * `failed` is `{ pool, model }` for the failed attempt (pool as picked).
- * Returns the non-empty tiers as `{ match, pools }` (match: 'model',
- * 'family' or 'any'); a single 'any' tier when the failed model is unknown.
+ * Returns the non-empty tiers as `{ match, pools, failedModel }` (match:
+ * 'model', 'family', 'provider' or 'any'). `failedModel` is the model the
+ * tiers were built from, including one read off the failed pool.
  */
 export function retryPoolTiers(pools, failed, effort, preferredModel = null) {
   const list = Array.isArray(pools) ? pools : [];
-  const failedModel = failed?.model && failed.model !== 'provider-default' ? failed.model : null;
-  if (!failedModel) return list.length ? [{ match: 'any', pools: list }] : [];
-  const modelOf = (pool) => selectedModel(pool, effort, preferredModel) ?? (pool.connector ?? pool).model ?? null;
+  const modelOf = (pool) => selectedModel(pool, effort, preferredModel) ?? (pool?.connector ?? pool)?.model ?? null;
+  let failedModel = failed?.model && failed.model !== 'provider-default' ? failed.model : null;
+  if (!failedModel && failed?.pool) {
+    const tierModel = modelOf(failed.pool);
+    if (tierModel && tierModel !== 'provider-default') failedModel = tierModel;
+  }
+  if (!list.length) return [];
+  if (!failedModel && !failed?.pool) return [{ match: 'any', pools: list, failedModel: null }];
   const familyOf = (pool, model) => modelFamily(pool?.connector ?? pool, model)?.family ?? null;
-  const failedBase = modelBaseId(failedModel);
-  const failedFamily = familyOf(failed.pool, failedModel);
-  const tiers = { model: [], family: [], any: [] };
+  const failedBase = failedModel ? modelBaseId(failedModel) : null;
+  const failedFamily = failedModel ? familyOf(failed.pool, failedModel) : null;
+  // A known model keeps today's order. The provider tier exists only while
+  // the model stays unknown.
+  const failedProvider = failedModel ? null : modelFamilyOf(failed.pool);
+  const tiers = { model: [], family: [], provider: [], any: [] };
   for (const pool of list) {
     const model = modelOf(pool);
-    if (model && modelBaseId(model) === failedBase) tiers.model.push(pool);
-    else if (model && failedFamily && familyOf(pool, model) === failedFamily) tiers.family.push(pool);
+    if (failedBase && model && modelBaseId(model) === failedBase) tiers.model.push(pool);
+    else if (failedFamily && model && familyOf(pool, model) === failedFamily) tiers.family.push(pool);
+    else if (failedProvider && modelFamilyOf(pool) === failedProvider) tiers.provider.push(pool);
     else tiers.any.push(pool);
   }
-  return ['model', 'family', 'any']
+  return ['model', 'family', 'provider', 'any']
     .filter((match) => tiers[match].length)
-    .map((match) => ({ match, pools: tiers[match] }));
+    .map((match) => ({ match, pools: tiers[match], failedModel }));
+}
+
+/**
+ * What the retry was kept to, for the route note ("retry kept to <this>").
+ * A failure that recorded no model had its model read off the failed pool's
+ * tier (`tier.failedModel`); the note says so rather than claiming the
+ * attempt ran it.
+ */
+export function retryTierNote(tier, recordedModel, failedPool) {
+  if (tier.match === 'provider') return `pools of the same provider as the failed attempt (${modelFamilyOf(failedPool)})`;
+  const shown = tier.failedModel ?? recordedModel;
+  const recorded = Boolean(recordedModel) && recordedModel !== 'provider-default';
+  const what = tier.match === 'family' ? 'model family' : 'model';
+  return recorded
+    ? `pools running the same ${what} as the failed attempt (${shown})`
+    : `pools running the ${what} the failed pool would run (${shown}); the attempt recorded none`;
 }

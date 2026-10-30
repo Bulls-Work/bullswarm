@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- routing: a retry after a failure that recorded no model (a sign-in failure before any model event, on a connector that names none) stays with that pool's provider before another vendor. When the failed pool would have run a known model for the tier, that model is used, and the order stays same model, then same model family, then the rest. A failure that already names a model is unchanged. Before, the null model was one pace tier, so Grok could be picked over another Claude login.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

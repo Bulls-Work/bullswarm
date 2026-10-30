@@ -9,7 +9,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './retry-handoff.js';
 import { outsideBlockers } from './time-box.js';
 import {
-  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool,
+  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, modelFamilyOf, pickPool,
 } from '../lib/route.js';
 import {
   assertDepthAllowed, childDepthEnv, loadState, updateState, upstreamGroupOf,
@@ -36,7 +36,7 @@ import {
   attemptSilenceTimeoutSec, noProgressLimitApplies, workerNoProgressTimeoutSec, workerSilenceTimeoutSec,
 } from './dispatch-silence.js';
 import { createFileChangeClock } from '../lib/stale.js';
-import { preparePools, retryPoolTiers, selectedModel } from './dispatch-pools.js';
+import { preparePools, retryPoolTiers, retryTierNote, selectedModel } from './dispatch-pools.js';
 import { attemptPaths, evidenceLogFile, fileBytes, runIdFromPaths, withAttemptArtifacts } from './dispatch-attempt-files.js';
 import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
@@ -538,7 +538,9 @@ export async function dispatchV2Action({
     };
     // A retry that moves pools (after a sign-in failure or any other) tries
     // the pools running the failed attempt's model first, then its model
-    // family, then the rest; pace ranks inside each tier (retryPoolTiers).
+    // family, then the rest. A failure that recorded no model uses the model
+    // that pool would run for the tier; with none, the same provider comes
+    // before the rest (retryPoolTiers). Pace ranks inside each tier.
     // The router's own ordering comes first: a pool it puts behind the others
     // over the whole list (a 5-hour forecast past 100%, or near its 5-hour
     // limit while another pool is behind pace) is kept out of the tiers while
@@ -560,7 +562,8 @@ export async function dispatchV2Action({
         if (!tierRoute.pick) continue;
         route = tierRoute;
         if (tier.pools.length < routingPools.length) {
-          tierNote = `retry kept to pools running ${tier.match === 'model' ? 'the same model as' : 'the same model family as'} the failed attempt (${failedAttempt.model})`;
+          const kept = retryTierNote(tier, failedAttempt.model, lastPool);
+          tierNote = `retry kept to ${kept}`;
         }
         break;
       }

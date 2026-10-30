@@ -51,7 +51,8 @@ user-scope MCP servers a worker with skipped permissions must not start (the
 flag also leaves it no plugin or claude.ai connector server; named homes keep
 theirs); and has
 a retry that moves pools try the same model, then the same model family,
-first (`retryPoolTiers`).
+first, and a failure that recorded no model stays with that provider
+(`retryPoolTiers`).
 
 ## Non-negotiable doctrine
 
@@ -85,8 +86,11 @@ first (`retryPoolTiers`).
    failure kind `auth`: the step's retry skips every pool in the dead
    credential's group (`upstreamGroupOf`), a choice held for that dispatch
    only and never stored. A retry that moves pools tries the pools running
-   the failed attempt's model first, then its model family, then the rest,
-   pace ranking inside each tier (`retryPoolTiers`, one pick only), after the
+   the failed attempt's model first, then its model family, then the rest.
+   When that attempt recorded no model, the model the failed pool would run
+   for the tier is used; with none, pools of the same provider
+   (`modelFamilyOf`) come before the rest. A named model keeps the order
+   above. Pace ranks inside each tier (`retryPoolTiers`, one pick only), after the
    router's own 5-hour wall and near-limit ordering over the whole list. A step's `route`, the run's pin and the step's
    capability tier are hard filters applied before pace ranks what is left. The failure rule is one automatic retry per step (a
    process failure on another eligible pool, a gate failure on the same pool
