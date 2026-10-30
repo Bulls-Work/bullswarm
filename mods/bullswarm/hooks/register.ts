@@ -23,6 +23,7 @@ import {
   parseRungs,
   poolLine,
   refreshErrorText,
+  rungErrorText,
 } from './pools'
 import { argvOf, decide, type AgentArgs } from './route'
 import { aliasesOf, displayNames, withDisplayNames } from './names'
@@ -595,7 +596,7 @@ export function register(on: On, options: PluginOptions = {}) {
         argumentHint: '[pools|on|off|refresh|routed]',
       })
     } catch (error) {
-      const reason = messageOf(error)
+      const reason = rungErrorText(messageOf(error))
       if (!/is the user's/.test(reason)) $.ui.log(`/${COMMAND} not registered: ${reason}`)
     }
 
@@ -668,7 +669,7 @@ export function register(on: On, options: PluginOptions = {}) {
     } catch (error) {
       inflight -= 1
       settle(h)
-      $.ui.notice(e.tool_use_id, `bullswarm: ${messageOf(error)} → running in-session`)
+      $.ui.notice(e.tool_use_id, `bullswarm: ${rungErrorText(messageOf(error))} → running in-session`)
       return next(e)
     }
     inflight -= 1
@@ -696,7 +697,7 @@ export function register(on: On, options: PluginOptions = {}) {
     } catch (error) {
       $.ui.notice(
         e.tool_use_id,
-        `bullswarm: output unreadable (${messageOf(error)}) → running in-session`,
+        `bullswarm: output unreadable (${rungErrorText(messageOf(error))}) → running in-session`,
       )
       return next(e)
     }

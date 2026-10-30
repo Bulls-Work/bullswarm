@@ -273,6 +273,12 @@ export function refreshErrorText(message: string, loaded: boolean): string | nul
   return loaded ? null : 'meters not ready yet'
 }
 
+/** A failed `bullswarm run` rung, as the notice says it: the abort sentence becomes `took too long`. */
+export function rungErrorText(message: string): string {
+  const text = message.trim()
+  return PROCESS_ABORT.test(text) ? 'took too long' : text
+}
+
 /** The status line under the prompt. */
 export function statusText(
   pools: readonly BullswarmPool[],

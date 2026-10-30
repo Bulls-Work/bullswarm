@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A `--max-age` read with nothing cached waits at most 20s for the one live builder, then exits with `cache not ready` instead of starting a second build. A lock whose holder is already dead is cleared at once, even when the lock is younger than two minutes. When a cache file already exists, the command prints that copy and rebuilds in a detached child, so the mod's 30s spawn is not spent inside a meter read. The Claude mod keeps the last good meters instead of showing `$.process.run(...) aborted: still running after Nms`, and says `meters not ready yet` only when nothing has loaded. (#38)
+- A `--max-age` read starts no background process. With nothing cached it waits at most 20s (under the mod's 30s spawn budget) for the one live builder, then exits with `cache not ready` instead of starting a second build. With a stale cache it prints that copy while a live holder builds, and builds in-process when it wins the lock. A lock whose holder is dead is cleared at once. A lock whose holder is alive but older than 5 minutes (a hung meter read, a reused pid) is taken over by the next caller, and the stuck holder can no longer release or overwrite the new holder's lock or cache. The Claude mod keeps the last good meters instead of showing `$.process.run(...) aborted: still running after Nms`, says `meters not ready yet` only when nothing has loaded, and a routed rung that hits that abort says `took too long → running in-session`. (#38)
 
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
