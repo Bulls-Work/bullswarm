@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- dispatch: an `analyze` worker that does nothing new for `BULLSWARM_WORKER_NO_NEW_GROUND_SEC` (default 3600 seconds, `0` turns it off) is stopped as `stalled` (`stalled: no new file or command for 60 min, the worker was stopped`) and gets the step's one retry on another pool. The silence limit restarts on any output and the no-progress limit covers only `build` and `chore` steps, so an analyze worker that kept re-reading the same files was never stopped (2026-10-12 benchmark: over an hour). The clock restarts only on a tool call that is new in this attempt (its tool name or arguments, paths resolved against the step's directory, were not used before; descriptive fields like `description`, `timeout` and `run_in_background` are ignored), a new reply longer than 200 characters, or an edit in the event stream. The attempt records `noNewGroundSec`, the run meta `stalledBy: 'no-new-ground'`, and the needs-you header reads `worker kept repeating the same reads`. Build, chore, `act` and outward steps are unchanged.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

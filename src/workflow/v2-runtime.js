@@ -705,6 +705,7 @@ async function runV2Kernel({
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
               silentSec: record.silentSec ?? null,
               ...(record.noProgressSec != null ? { noProgressSec: record.noProgressSec } : {}),
+              ...(record.noNewGroundSec != null ? { noNewGroundSec: record.noNewGroundSec } : {}),
             } : {}),
           });
         }

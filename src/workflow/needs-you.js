@@ -8,7 +8,7 @@
 // the state (retries are the attempts minus one when no `retryOf` fact exists).
 
 import { glyphs } from '../lib/glyphs.js';
-import { countRetries, declaredEvidence, NEEDS_YOU_LABELS, REFUSAL_TEXT, roleOf, STALLED_NO_PROGRESS_LABEL, wasRefusedAtStart } from './step-vocabulary.js';
+import { countRetries, declaredEvidence, NEEDS_YOU_LABELS, REFUSAL_TEXT, roleOf, STALLED_NO_NEW_GROUND_LABEL, STALLED_NO_PROGRESS_LABEL, wasRefusedAtStart } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
 import { formatDuration } from './format-duration.js';
 import { isProgramV3 } from './program-v3.js';
@@ -198,6 +198,7 @@ export function needsYouFacts(state, event, { token = null, runDir = null, featu
   const labels = NEEDS_YOU_LABELS[failureKind];
   const label = checkFault ? CHECK_FAULT_LABEL
     : failureKind === 'stalled' && last?.noProgressSec != null ? STALLED_NO_PROGRESS_LABEL
+    : failureKind === 'stalled' && last?.noNewGroundSec != null ? STALLED_NO_NEW_GROUND_LABEL
     : labels && typeof labels === 'object' ? labels[failing[0]?.type === 'schema' ? 'schema' : 'command']
       : labels ?? failureKind ?? 'failed';
   const act = flags.failureRule && retries === 0 && roleOf(definitionOf(state, stepId)) === 'act';

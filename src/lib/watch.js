@@ -213,6 +213,8 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         // The follow-up only asks for the report; it changes no file.
         noProgressTimeoutSec: null,
         fileChangedAt: null,
+        newGroundTimeoutSec: null,
+        newGroundAt: null,
         streamFile: originalStreamFile ? `${originalStreamFile}.follow-up` : null,
         stdoutFile: originalStdoutFile ? `${originalStdoutFile}.follow-up` : null,
       });
@@ -569,6 +571,8 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     verdict = { ok: false, why: 'workflow cancellation requested', cancelled: true };
   } else if (obs.stalled && obs.stalledBy === 'no-progress') {
     verdict = { ok: false, why: `stalled: no file change for ${minutesOrSeconds(opts.noProgressTimeoutSec)}, the worker was stopped`, failureKind: 'stalled' };
+  } else if (obs.stalled && obs.stalledBy === 'no-new-ground') {
+    verdict = { ok: false, why: `stalled: no new file or command for ${minutesOrSeconds(opts.newGroundTimeoutSec)}, the worker was stopped`, failureKind: 'stalled' };
   } else if (obs.stalled) {
     verdict = { ok: false, why: `stalled: the worker wrote nothing for ${minutesOrSeconds(opts.silenceTimeoutSec)} and was stopped`, failureKind: 'stalled' };
   } else if (obs.timedOut) {

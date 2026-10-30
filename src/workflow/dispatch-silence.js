@@ -60,6 +60,29 @@ export function noProgressLimitApplies(action) {
   return roleOf(action) !== 'act' && deliverableTypeOf(action.deliverable) !== 'outward' && actionWrites(action);
 }
 
+// An analyze step changes no file, so the clock above cannot judge it. This
+// one restarts only on new ground (src/lib/new-ground.js): a tool call on a
+// target this attempt has not used, a new reply longer than 200 characters, or
+// a file change. An analyze worker that keeps re-reading the same files is
+// stopped as `stalled` after this long (2026-10-12 benchmark: one kept reading
+// for over an hour). It marks the attempt `stalledBy: 'no-new-ground'` and
+// records `noNewGroundSec`.
+const DEFAULT_WORKER_NO_NEW_GROUND_SEC = 60 * 60;
+
+/** The no-new-ground limit in seconds; 0 turns it off. */
+export function workerNoNewGroundTimeoutSec(env = process.env) {
+  const value = env?.BULLSWARM_WORKER_NO_NEW_GROUND_SEC;
+  if (value === undefined || value === null || String(value).trim() === '') return DEFAULT_WORKER_NO_NEW_GROUND_SEC;
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_WORKER_NO_NEW_GROUND_SEC;
+}
+
+/** Whether the no-new-ground limit applies: an analyze step that is not `act` or outward. */
+export function noNewGroundLimitApplies(action) {
+  if (!action || action.lane !== 'analyze') return false;
+  return roleOf(action) !== 'act' && deliverableTypeOf(action.deliverable) !== 'outward';
+}
+
 function recordedRung(decisionLog, poolName, effort) {
   // A stall is a transport failure, not a real duration sample. Excluding it
   // here keeps the free-pool threshold from tightening after each timeout even
