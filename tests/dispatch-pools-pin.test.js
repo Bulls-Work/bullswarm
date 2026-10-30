@@ -43,7 +43,7 @@ test('a model with no slash pins no provider and keeps every pool that can run i
   assert.deepEqual(names(prepare({ preferredModel: 'plainmodel' })), ['a', 'b', 'c']);
 });
 
-test('a leading slash is not a provider prefix', () => {
+test('a leading slash pins no provider; the model check alone drops a pool that does not list it', () => {
   assert.deepEqual(names(prepare({ preferredModel: '/plainmodel' })).includes('a'), false,
     'a pool that does not list "/plainmodel" is dropped by the model check, not the provider check');
 });
