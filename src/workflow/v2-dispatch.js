@@ -36,7 +36,7 @@ import {
   attemptSilenceTimeoutSec, noProgressLimitApplies, workerNoProgressTimeoutSec, workerSilenceTimeoutSec,
 } from './dispatch-silence.js';
 import { createFileChangeClock } from '../lib/stale.js';
-import { preparePools, retryPoolTiers, selectedModel } from './dispatch-pools.js';
+import { preparePools, retryPoolTiers, retryTierNote, selectedModel } from './dispatch-pools.js';
 import { attemptPaths, evidenceLogFile, fileBytes, runIdFromPaths, withAttemptArtifacts } from './dispatch-attempt-files.js';
 import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
@@ -562,12 +562,7 @@ export async function dispatchV2Action({
         if (!tierRoute.pick) continue;
         route = tierRoute;
         if (tier.pools.length < routingPools.length) {
-          const shown = tier.failedModel ?? failedAttempt.model;
-          const kept = tier.match === 'model'
-            ? `pools running the same model as the failed attempt (${shown})`
-            : tier.match === 'provider'
-              ? `pools of the same provider as the failed attempt (${modelFamilyOf(lastPool)})`
-              : `pools running the same model family as the failed attempt (${shown})`;
+          const kept = retryTierNote(tier, failedAttempt.model, lastPool);
           tierNote = `retry kept to ${kept}`;
         }
         break;

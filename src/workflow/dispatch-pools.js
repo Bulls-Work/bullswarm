@@ -170,3 +170,19 @@ export function retryPoolTiers(pools, failed, effort, preferredModel = null) {
     .filter((match) => tiers[match].length)
     .map((match) => ({ match, pools: tiers[match], failedModel }));
 }
+
+/**
+ * What the retry was kept to, for the route note ("retry kept to <this>").
+ * A failure that recorded no model had its model read off the failed pool's
+ * tier (`tier.failedModel`); the note says so rather than claiming the
+ * attempt ran it.
+ */
+export function retryTierNote(tier, recordedModel, failedPool) {
+  if (tier.match === 'provider') return `pools of the same provider as the failed attempt (${modelFamilyOf(failedPool)})`;
+  const shown = tier.failedModel ?? recordedModel;
+  const recorded = Boolean(recordedModel) && recordedModel !== 'provider-default';
+  const what = tier.match === 'family' ? 'model family' : 'model';
+  return recorded
+    ? `pools running the same ${what} as the failed attempt (${shown})`
+    : `pools running the ${what} the failed pool would run (${shown}); the attempt recorded none`;
+}

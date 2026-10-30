@@ -19,7 +19,7 @@ import { runStepEvidence } from '../src/workflow/evidence-runner.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import { listAssignments } from '../src/lib/assignments.js';
 import { pickPool } from '../src/lib/route.js';
-import { retryPoolTiers } from '../src/workflow/dispatch-pools.js';
+import { retryPoolTiers, retryTierNote } from '../src/workflow/dispatch-pools.js';
 import {
   createV2GoalDocument, createV2DurableState, deserializeV2DurableState,
 } from '../src/workflow/v2-state.js';
@@ -2935,6 +2935,26 @@ test('retryPoolTiers orders same model, then same family, then the rest', () => 
   assert.deepEqual(retryPoolTiers(list, { pool: failed, model: null }, 'low').map((tier) => [tier.match, tier.pools.map((pool) => pool.name)]), [
     ['model', ['a']], ['family', ['b']], ['any', ['grok', 'c']],
   ]);
+});
+
+test('retryTierNote says the model was inferred only when the failed attempt recorded none', () => {
+  const failed = claudePool('claude-code', 'claude-sonnet-5');
+  const model = { match: 'model', failedModel: 'claude-sonnet-5' };
+  const family = { match: 'family', failedModel: 'claude-sonnet-5' };
+  assert.equal(retryTierNote(model, 'claude-sonnet-5', failed), 'pools running the same model as the failed attempt (claude-sonnet-5)');
+  assert.equal(retryTierNote(family, 'claude-sonnet-5', failed), 'pools running the same model family as the failed attempt (claude-sonnet-5)');
+  assert.equal(retryTierNote(model, null, failed), 'pools running the model the failed pool would run (claude-sonnet-5); the attempt recorded none');
+  assert.equal(retryTierNote(family, null, failed), 'pools running the model family the failed pool would run (claude-sonnet-5); the attempt recorded none');
+  assert.equal(retryTierNote(model, 'provider-default', failed), 'pools running the model the failed pool would run (claude-sonnet-5); the attempt recorded none');
+});
+
+test('retryPoolTiers: a failure that names a model never yields a provider tier', () => {
+  const failed = claudePool('claude-code', 'claude-opus-5-5');
+  // The failure names sonnet; a same-provider pool runs opus (other family).
+  const list = [grokPool(), claudePool('claude-code:b', 'claude-opus-5-5')];
+  const tiers = retryPoolTiers(list, { pool: failed, model: 'claude-sonnet-5' }, 'low');
+  assert.ok(!tiers.some((tier) => tier.match === 'provider'), JSON.stringify(tiers.map((tier) => [tier.match, tier.pools.map((pool) => pool.name)])));
+  assert.deepEqual(tiers.map((tier) => [tier.match, tier.pools.map((pool) => pool.name)]), [['any', ['grok', 'claude-code:b']]]);
 });
 
 test('retryPoolTiers with a null model and no tier model puts the failed pool\'s provider ahead of another vendor', () => {
