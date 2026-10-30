@@ -10,7 +10,7 @@ import { buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { refusalResetKnown } from './meters/framework.js';
 import { judgeContent } from './lib/verify.js';
-import { writeCache, writePoolsCache } from './lib/pools-cache.js';
+import { readCache, writeCache, writePoolsCache } from './lib/pools-cache.js';
 import { getVersion } from './lib/version.js';
 import { runUpdate } from './lib/update.js';
 import { cmdWorkflow } from './workflow/cli.js';
@@ -30,6 +30,7 @@ import { meterSignInDead, meterSignInText } from './workflow/dispatch-pools.js';
 import { previewStepPick } from './workflow/pick-preview.js';
 import { runOneStep } from './workflow/run-one-step.js';
 import { runVerdictJson, runVerdictLines } from './workflow/run-verdict.js';
+import { formatPlace, placeCaller } from './lib/place.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -326,6 +327,102 @@ function cmdAssignments(opts) {
     );
   }
   return 0;
+}
+
+// --- place ------------------------------------------------------------------
+// Which Claude Code login a long-lived caller should start on. It changes no
+// routing, state or cache. Flags are checked before any meter is read; the
+// pools come from the shared cache when it is young enough, else from the same
+// unforced read `pools --pool <claude pools>` does (which may refresh those
+// pools' own meter files). A non-Claude pool is never polled.
+
+function placeFlag(opts, name) {
+  if (opts[name] === undefined) return null;
+  if (typeof opts[name] !== 'string' || !opts[name].trim()) {
+    return { error: `✗ --${name} needs a value` };
+  }
+  return opts[name].trim();
+}
+
+async function cmdPlace(opts) {
+  if (opts.rest.length) {
+    console.error(`✗ unknown place argument "${opts.rest[0]}"`);
+    console.error(`usage: ${usageLine(['place'])}`);
+    return 2;
+  }
+  const role = placeFlag(opts, 'role');
+  if (role?.error) { console.error(role.error); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  if (!role) { console.error('✗ --role is required (lead, stage, or watcher)'); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  if (!['lead', 'stage', 'watcher'].includes(role)) {
+    console.error(`✗ unknown role "${role}" (lead, stage, or watcher)`);
+    console.error(`usage: ${usageLine(['place'])}`);
+    return 2;
+  }
+  const current = placeFlag(opts, 'current');
+  if (current?.error) { console.error(current.error); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  const pin = placeFlag(opts, 'pin');
+  if (pin?.error) { console.error(pin.error); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  let avoid = [];
+  if (opts.avoid !== undefined) {
+    if (typeof opts.avoid !== 'string' || !opts.avoid.trim()) {
+      console.error('✗ --avoid needs a comma-separated login list');
+      console.error(`usage: ${usageLine(['place'])}`);
+      return 2;
+    }
+    avoid = opts.avoid.split(',').map((token) => token.trim()).filter(Boolean);
+    if (!avoid.length) {
+      console.error('✗ --avoid needs a comma-separated login list');
+      console.error(`usage: ${usageLine(['place'])}`);
+      return 2;
+    }
+  }
+  let fiveHourCap = 70;
+  if (opts['five-hour-cap'] !== undefined) {
+    if (typeof opts['five-hour-cap'] !== 'string' || !/^\d+(\.\d+)?$/.test(opts['five-hour-cap'].trim())) {
+      console.error('✗ --five-hour-cap needs a percentage from 0 to 100');
+      console.error(`usage: ${usageLine(['place'])}`);
+      return 2;
+    }
+    fiveHourCap = Number(opts['five-hour-cap']);
+  }
+  let maxAge = 300;
+  if (opts['max-age'] !== undefined) {
+    if (typeof opts['max-age'] !== 'string' || !/^\d+$/.test(opts['max-age'].trim())) {
+      console.error('✗ --max-age needs whole seconds (0 reads the meters again)');
+      console.error(`usage: ${usageLine(['place'])}`);
+      return 2;
+    }
+    maxAge = Number(opts['max-age']);
+  }
+  const now = Date.now();
+  const home = getBullswarmDir();
+  const cached = maxAge > 0 ? readCache(home, 'pools') : null;
+  const ageMs = cached ? Math.max(0, now - cached.savedAt) : null;
+  let pools;
+  let source;
+  if (cached && Array.isArray(cached.doc.pools) && ageMs <= maxAge * 1000) {
+    pools = cached.doc.pools.filter((pool) => pool?.connector?.bin === 'claude');
+    source = { source: 'cache', cacheAgeSeconds: Math.floor(ageMs / 1000) };
+  } else {
+    const connectors = loadConnectors(home, { packaged: true });
+    const only = Object.keys(connectors).filter((name) => connectors[name]?.bin === 'claude');
+    pools = only.length ? await livePools(now, { only }) : [];
+    source = { source: 'live' };
+  }
+  try {
+    const doc = { ...placeCaller(pools, { role, current, pin, avoid, fiveHourCap, now }), ...source };
+    if (opts.json) console.log(JSON.stringify(doc, null, 2));
+    else {
+      console.log(formatPlace(doc));
+      console.log(doc.source === 'cache' ? `meters: cache, ${doc.cacheAgeSeconds}s old` : 'meters: live read');
+    }
+    return doc.pick ? 0 : 3;
+  } catch (error) {
+    if (error?.code !== 'PLACE_USAGE') throw error;
+    console.error(`✗ ${error.message}`);
+    console.error(`usage: ${usageLine(['place'])}`);
+    return 2;
+  }
 }
 
 // --- run --------------------------------------------------------------------
@@ -705,6 +802,8 @@ export async function main(argv) {
       return cmdHealth(opts);
     case 'pools':
       return cmdPools(opts);
+    case 'place':
+      return cmdPlace(opts);
     case 'assignments':
       return cmdAssignments(opts);
     case 'doctor':

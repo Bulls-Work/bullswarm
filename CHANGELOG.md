@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `bullswarm place` answers which Claude Code login a new long-lived caller (a lead, a watcher, or a pipeline stage) should start on, and whether an existing one should move. It changes no routing, state or cache: flags are checked before any meter is read, a pools cache at most `--max-age` seconds old (default 300) answers with no read, and on a miss it does the same unforced read `bullswarm pools --pool <claude pools>` would (which may refresh those pools' meter files), never polling codex, grok or other pools. A first run on a new home creates the home, like every verb.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

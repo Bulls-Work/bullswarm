@@ -79,6 +79,7 @@ const TABLE = {
   health: ['json'],
   pools: ['force', 'json', 'pool', 'max-age'],
   'pools label': ['list', 'clear', 'json'],
+  place: ['role', 'current', 'pin', 'avoid', 'five-hour-cap', 'max-age', 'json'],
   assignments: ['json', 'max-age'],
   doctor: ['json'],
   home: [],
