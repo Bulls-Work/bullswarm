@@ -306,6 +306,11 @@ export async function runUpdate({
   }
   result.updated = true;
   say(`updated ${PACKAGE_NAME} ${before ?? '?'} → ${after}`);
+  if (pnpm) {
+    result.notes.push(
+      'if `bullswarm integrate status` reports a skill or mod as stale, run `bullswarm integrate install --yes`',
+    );
+  }
   if (lookupShellBinary) {
     const target = shellBinaryTarget(exec);
     // pnpm's shim is a shell script in its own global bin directory, outside

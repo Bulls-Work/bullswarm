@@ -67,7 +67,7 @@ claude   skill ✓; awareness ✓
 grok     skill ✓; awareness ✓
 ```
 
-Exit 0 means every selected agent has both. `skill missing` means nothing is linked yet; `skill conflict` means the path holds a real file or directory instead of Bullswarm's symlink — install refuses to replace it, and `remove` leaves it alone. The check resolves symlink chains to their real target, so a global install reached through `npm link` still reports installed.
+Exit 0 means every selected agent has both. `skill missing` means nothing is linked yet. `skill stale` means the symlink points at another copy of this package (an older pnpm store path, for example) or the target is gone — `install` replaces it and `remove` deletes it. `skill conflict` means the path holds a real file or directory, or a symlink that is not this package — install refuses to replace it, and `remove` leaves it alone. The check resolves symlink chains to their real target, so a global install reached through `npm link` still reports installed. A pnpm global install links `node_modules/bullswarm`, which pnpm retargets on upgrade, rather than the versioned store directory.
 
 `--json` adds `skillSource`, each agent's resolved `target`, and a `legacyOffload` block. `status` never needs `--yes` and is the default subcommand when none is given.
 

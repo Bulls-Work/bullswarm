@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A pnpm global install links the skill and the Claude mod through `node_modules/bullswarm`, the path pnpm retargets on upgrade, instead of the versioned `.pnpm/bullswarm@<version>` store directory. A link into another copy of this package, including one whose target has been deleted, is `stale`: `integrate install` replaces it and `integrate remove` deletes it. A real file, or a symlink that is not this package, stays `conflict` and is still left alone. After a pnpm upgrade, `bullswarm update` says to run `integrate install --yes` when status reports stale. (#40)
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

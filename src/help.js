@@ -423,7 +423,7 @@ const updateText = rich({
     { cmd: 'bullswarm update --check', note: 'is a newer version published?' },
     { cmd: 'bullswarm update', note: 'upgrade in place' },
   ],
-  next: 'bullswarm version to confirm, then bullswarm integrate status if a skill link looks stale.',
+  next: 'bullswarm version to confirm. If `bullswarm integrate status` reports a skill or mod as stale, run `bullswarm integrate install --yes`.',
 });
 
 // --- health, pools, doctor -----------------------------------------------------

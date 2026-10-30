@@ -8,9 +8,10 @@ import {
   existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { helpText } from './help.js';
+import { detectInstall } from './lib/update.js';
 
 const SKILL_SOURCE = fileURLToPath(new URL('../skill', import.meta.url));
 // The Claude Mod: function hooks that put Bullswarm into Claude Code's own
@@ -232,9 +233,11 @@ function installSkillLink(skillPath, skillSource) {
   if (current.status === 'conflict') {
     throw new Error(`refusing to replace non-Bullswarm skill path: ${skillPath}`);
   }
+  const target = linkTargetFor(skillSource);
+  if (current.status === 'stale') unlinkSync(skillPath);
   mkdirSync(dirname(skillPath), { recursive: true });
-  symlinkSync(skillSource, skillPath, 'dir');
-  return { changed: true, status: 'installed', path: skillPath, target: skillSource };
+  symlinkSync(target, skillPath, 'dir');
+  return { changed: true, status: 'installed', path: skillPath, target };
 }
 
 function removeSkillLink(skillPath, skillSource) {
@@ -257,11 +260,49 @@ function skillLinkStatus(skillPath, skillSource) {
   // global install, for example). What matters is where the chain ends, so
   // compare real paths; a dangling chain keeps its first hop for the report.
   const endsAt = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
-  return {
-    status: endsAt(target) === endsAt(skillSource) ? 'installed' : 'conflict',
-    path: skillPath,
-    target,
-  };
+  if (endsAt(target) === endsAt(skillSource)) return { status: 'installed', path: skillPath, target };
+  // Another copy of this package — a pnpm store path that an upgrade left
+  // behind, or the same shape with the directory already deleted — is ours
+  // to replace. A real file, or a symlink that does not land in a bullswarm
+  // package, stays a conflict.
+  if (isOtherBullswarmLink(target)) return { status: 'stale', path: skillPath, target };
+  return { status: 'conflict', path: skillPath, target };
+}
+
+const BULLSWARM_SKILL_TAIL = ['node_modules', 'bullswarm', 'skill'];
+const BULLSWARM_MOD_TAIL = ['node_modules', 'bullswarm', 'mods', 'bullswarm'];
+
+function isOtherBullswarmLink(target) {
+  return endsWithSegments(target, BULLSWARM_SKILL_TAIL) || endsWithSegments(target, BULLSWARM_MOD_TAIL);
+}
+
+function endsWithSegments(path, segments) {
+  const parts = path.split(sep).filter((part) => part && part !== '.');
+  if (parts.length < segments.length) return false;
+  return segments.every((segment, index) => parts[parts.length - segments.length + index] === segment);
+}
+
+// pnpm retargets <prefix>/node_modules/bullswarm on upgrade and deletes the
+// versioned store directory. A link to that stable path keeps resolving at
+// the running copy; a link to .pnpm/bullswarm@<version>/... does not.
+function linkTargetFor(source) {
+  const root = packageRootFromSource(source);
+  if (!root) return source;
+  const install = detectInstall({ packageRoot: root });
+  if (install.kind !== 'pnpm-global' || !install.prefix) return source;
+  const stable = join(install.prefix, 'node_modules', 'bullswarm', relative(root, source));
+  try {
+    if (realpathSync(stable) === realpathSync(source)) return stable;
+  } catch { /* no stable link, or it points at a different copy */ }
+  return source;
+}
+
+function packageRootFromSource(source) {
+  if (basename(source) === 'skill') return dirname(source);
+  if (basename(source) === 'bullswarm' && basename(dirname(source)) === 'mods') {
+    return dirname(dirname(source));
+  }
+  return null;
 }
 
 function readOptional(filePath) {
