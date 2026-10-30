@@ -1,7 +1,8 @@
 // "New ground" for an analyze worker: the last moment it did something it had
 // not done before in this attempt. A tool call counts when its target (the
-// tool name plus its full arguments, paths made absolute; the event kind plus
-// its summary when there are none) has not been used yet; a reply counts when it is longer
+// tool name plus its arguments, paths made absolute and descriptive fields such
+// as `description` ignored; the event kind plus its summary when there are
+// none) has not been used yet; a reply counts when it is longer
 // than 200 characters and not identical to an earlier one, because the worker
 // is then writing its analysis. A worker that only repeats earlier reads never
 // moves it (2026-10-12 benchmark: an analyze worker re-read the same files for
@@ -16,6 +17,15 @@ const NOT_A_TARGET = /^(response|result|usage|agent|thinking|reasoning|error|sta
 
 const MAX_REMEMBERED = 20_000;
 const PATH_KEYS = new Set(['file_path', 'path', 'notebook_path']);
+// Top-level arguments that never change what a call does: the model's wording
+// of it (Bash and Task `description`) and how it is run (`timeout`,
+// `run_in_background`). Dropped from the identity, the rest is kept.
+const DESCRIPTIVE_KEYS = new Set(['description', 'timeout', 'run_in_background']);
+
+function withoutDescriptive(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+  return Object.fromEntries(Object.entries(args).filter(([k]) => !DESCRIPTIVE_KEYS.has(k)));
+}
 
 // Stable JSON: sorted keys, path-like string values resolved against cwd.
 function stable(value, cwd, key) {
@@ -35,7 +45,7 @@ function targetOf(event, fullSummary, cwd) {
   const args = event?.arguments;
   if (args !== undefined && args !== null) {
     const name = String(event?.toolName ?? kind);
-    return `${name}\u0000${JSON.stringify(stable(args, cwd))}`;
+    return `${name}\u0000${JSON.stringify(stable(withoutDescriptive(args), cwd))}`;
   }
   const raw = typeof fullSummary === 'string' ? fullSummary : event?.summary;
   const summary = typeof raw === 'string' ? raw.trim() : '';
