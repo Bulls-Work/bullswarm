@@ -12,6 +12,7 @@ import {
   packagedConnectorSources, retiredConnectorCopies, syncConnectorCopies,
 } from '../src/lib/connector-copies.js';
 import { loadProviders } from '../src/lib/providers.js';
+import { loadState } from '../src/lib/state.js';
 import { buildPools } from '../src/lib/config.js';
 import { modelProfile } from '../src/lib/usage.js';
 import { upgradeConnectorMetadata } from '../src/setup.js';
@@ -185,4 +186,98 @@ test('every shipped connector.json is covered by its connector-history.json', ()
         `${source.name}.${key} is not in ${historyFileName}; run node scripts/connector-history.mjs`);
     }
   }
+});
+
+function writeJson(dir, file, value) {
+  writeFileSync(join(dir, file), `${JSON.stringify(value, null, 2)}\n`);
+}
+const readJson = (dir, file) => JSON.parse(readFileSync(join(dir, file), 'utf8'));
+
+test('with no connector copy present, the opencode2 state, routing, providers and meters are renamed', () => {
+  const h = home();
+  try {
+    mkdirSync(join(h.dir, 'meters'), { recursive: true });
+    writeJson(h.dir, 'state.json', { version: 1, pools: { opencode2: { enabled: false } } });
+    writeJson(h.dir, 'routing.json', { build: { order: ['opencode2', 'codex'] } });
+    writeJson(h.dir, 'providers.json', { enabled: ['opencode2'] });
+    writeJson(join(h.dir, 'meters'), 'opencode2.json', { pool: 'opencode2' });
+    const state = loadState(h.dir);
+    assert.deepEqual(Object.keys(state.pools), ['opencode']);
+    assert.equal(state.pools.opencode.enabled, false);
+    assert.deepEqual(readJson(h.dir, 'routing.json').build.order, ['opencode', 'codex']);
+    assert.deepEqual(readJson(h.dir, 'providers.json').enabled, ['opencode']);
+    assert.deepEqual(readdirSync(join(h.dir, 'meters')), ['opencode.json']);
+  } finally { h.cleanup(); }
+});
+
+test('retiring a copy in the same process lets the next load rename the opencode2 keys', () => {
+  const h = home({ 'opencode2.json': preRenameOpenCodeCopy() });
+  try {
+    writeJson(h.dir, 'state.json', { version: 1, pools: { opencode2: { enabled: false } } });
+    assert.deepEqual(Object.keys(loadState(h.dir).pools), ['opencode2']);
+    syncConnectorCopies(h.dir, { loader: LOADER });
+    assert.deepEqual(Object.keys(loadState(h.dir).pools), ['opencode']);
+    // Removing the file by hand behaves the same.
+    writeFileSync(join(h.dir, 'connectors', 'opencode2.json'), preRenameOpenCodeCopy({ operatorNote: 'x' }));
+    writeJson(h.dir, 'state.json', { version: 1, pools: { opencode2: { enabled: false } } });
+    assert.deepEqual(Object.keys(loadState(h.dir).pools), ['opencode2']);
+    rmSync(join(h.dir, 'connectors', 'opencode2.json'));
+    assert.deepEqual(Object.keys(loadState(h.dir).pools), ['opencode']);
+  } finally { h.cleanup(); }
+});
+
+test('providers.json keeps opencode2 enabled while an edited copy is live', () => {
+  const h = home({ 'opencode2.json': preRenameOpenCodeCopy({ operatorNote: 'keep' }) });
+  try {
+    writeJson(h.dir, 'state.json', { version: 1, pools: { opencode2: { enabled: true } } });
+    writeJson(h.dir, 'providers.json', { enabled: ['opencode2'] });
+    const state = loadState(h.dir);
+    assert.deepEqual(readJson(h.dir, 'providers.json').enabled, ['opencode2']);
+    assert.deepEqual(Object.keys(state.pools), ['opencode2']);
+    const pools = buildPools(h.dir, Date.now(), {}, LOADER).pools;
+    assert.equal(pools.find((p) => p.name === 'opencode2')?.enabled, true);
+    assert.equal(pools.find((p) => p.name === 'opencode')?.enabled ?? false, false);
+  } finally { h.cleanup(); }
+});
+
+test('a malformed opencode2.json does not block the rename and is still reported as broken', () => {
+  const h = home({ 'opencode2.json': '{bad' });
+  try {
+    writeJson(h.dir, 'state.json', { version: 1, pools: { opencode2: { enabled: false } } });
+    assert.deepEqual(Object.keys(loadState(h.dir).pools), ['opencode']);
+    const [copy] = inspectConnectorCopies(h.dir, { loader: LOADER });
+    assert.equal(copy.status, 'unreadable');
+    assert.match(connectorCopyWarnings([copy]).join('\n'), /opencode2\.json: not valid JSON/);
+  } finally { h.cleanup(); }
+});
+
+test('routing and meters keep the opencode2 name while an edited copy is live', () => {
+  const h = home({ 'opencode2.json': preRenameOpenCodeCopy({ operatorNote: 'keep' }) });
+  try {
+    mkdirSync(join(h.dir, 'meters', 'history'), { recursive: true });
+    writeJson(h.dir, 'state.json', { version: 1, pools: { opencode2: { enabled: false }, 'opencode2:orbit': { enabled: true } } });
+    writeJson(h.dir, 'routing.json', { build: { order: ['opencode2', 'opencode2:orbit', 'codex'] } });
+    writeJson(join(h.dir, 'meters'), 'opencode2.json', { pool: 'opencode2' });
+    writeFileSync(join(h.dir, 'meters', 'history', 'opencode2.jsonl'), `${JSON.stringify({ pool: 'opencode2' })}\n`);
+    const state = loadState(h.dir);
+    assert.deepEqual(Object.keys(state.pools).sort(), ['opencode2', 'opencode2:orbit']);
+    assert.deepEqual(readJson(h.dir, 'routing.json').build.order, ['opencode2', 'opencode2:orbit', 'codex']);
+    assert.deepEqual(readdirSync(join(h.dir, 'meters')).sort(), ['history', 'opencode2.json']);
+    assert.deepEqual(readdirSync(join(h.dir, 'meters', 'history')), ['opencode2.jsonl']);
+    assert.equal(readJson(join(h.dir, 'meters'), 'opencode2.json').pool, 'opencode2');
+  } finally { h.cleanup(); }
+});
+
+test('a home with both opencode2.json and opencode.json copies keeps each pool apart', () => {
+  const edited = preRenameOpenCodeCopy({ operatorNote: 'keep' });
+  const packaged = readFileSync(join(REPO, 'providers', 'contrib', 'opencode', 'connector.json'), 'utf8');
+  const h = home({ 'opencode2.json': edited, 'opencode.json': packaged });
+  try {
+    writeJson(h.dir, 'state.json', { version: 1, pools: { opencode2: { enabled: false }, opencode: { enabled: true } } });
+    const state = loadState(h.dir);
+    assert.deepEqual(state.pools, { opencode2: { enabled: false }, opencode: { enabled: true } });
+    const copies = inspectConnectorCopies(h.dir, { loader: LOADER });
+    assert.deepEqual(copies.map((c) => [c.file, c.status]).sort(), [['opencode.json', 'current'], ['opencode2.json', 'edited']]);
+    assert.deepEqual(syncConnectorCopies(h.dir, { loader: LOADER }), []);
+  } finally { h.cleanup(); }
 });
