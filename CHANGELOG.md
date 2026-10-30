@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A `--max-age` read with nothing cached waits at most 20s for the one live builder, then exits with `cache not ready` instead of starting a second build. A lock whose holder is already dead is cleared at once, even when the lock is younger than two minutes. When a cache file already exists, the command prints that copy and rebuilds in a detached child, so the mod's 30s spawn is not spent inside a meter read. The Claude mod keeps the last good meters instead of showing `$.process.run(...) aborted: still running after Nms`, and says `meters not ready yet` only when nothing has loaded. (#38)
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

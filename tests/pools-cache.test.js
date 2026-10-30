@@ -103,9 +103,9 @@ test('a live lock with a stale cache answers stale without building', async () =
 });
 
 // Issue #38: the mod kills a `pools|workflow runs|assignments --max-age`
-// spawn at 30s. With no cache file, WAIT_MS is 45s, so that spawn is still
-// inside serveCached when Claude aborts it. A short injected wait keeps this
-// red test fast; the assertion is the missing "do not build" path.
+// spawn at 30s. With no cache and a live lock, the caller must stop inside
+// that budget and must not start a second build. A short injected wait keeps
+// the test fast.
 test('a live lock with no cache settles inside 30s and does not build', async () => {
   const h = home();
   const { dir, lock } = poolsCachePaths(h);

@@ -172,14 +172,20 @@ test('releasing never removes a lock another caller has taken since', async () =
   assert.equal(readFileSync(lock, 'utf8'), '99999 1 their-token\n');
 });
 
-test('a waiter that gives up on another build stores what it built', async () => {
+test('a waiter with no cache does not build over a live holder', async () => {
   const h = home();
   const { lock } = cachePaths(h, 'runs');
   mkdirSync(cachePaths(h, 'runs').dir, { recursive: true });
   writeFileSync(lock, `${process.pid} ${Date.now()} live-token\n`);
-  const served = await serveCached({
-    home: h, name: 'runs', maxAgeMs: 60_000, waitMs: 60, waitStepMs: 20, build: async () => ({ runs: ['mine'] }),
-  });
-  assert.equal(served.source, 'built');
-  assert.deepEqual(readCache(h, 'runs')?.doc.runs, ['mine']);
+  let builds = 0;
+  await assert.rejects(
+    serveCached({
+      home: h, name: 'runs', maxAgeMs: 60_000, waitMs: 60, waitStepMs: 20,
+      build: async () => { builds += 1; return { runs: ['mine'] }; },
+    }),
+    /cache not ready/,
+  );
+  assert.equal(builds, 0);
+  assert.equal(readCache(h, 'runs'), null);
+  assert.equal(existsSync(lock), true, 'the live holder keeps its lock');
 });

@@ -9,16 +9,20 @@
 // Only node built-ins here: bin/bullswarm.js imports this before the CLI, so a
 // cache hit never loads the rest of Bullswarm.
 
+import { spawn } from 'node:child_process';
 import {
   closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/** A lock older than this whose holder is gone belongs to a refresher that died; each read has a 30 s budget in the mod. */
+/** A lock older than this whose holder is gone belongs to a refresher that died. A dead pid is cleared at once. */
 const LOCK_STALE_MS = 120_000;
-/** How long a caller with nothing cached waits for another caller's build. */
-const WAIT_MS = 45_000;
+/**
+ * How long a caller with nothing cached waits for another caller's build.
+ * Under the mod's 30s `$.process.run` budget (mods/bullswarm/hooks/register.ts).
+ */
+const WAIT_MS = 20_000;
 
 /** Each cache is `<home>/cache/<name>.json` (pools, runs, assignments) under its own schema. */
 const schemaOf = (name) => `bullswarm.${name}-cache.v1`;
@@ -74,8 +78,10 @@ function processAlive(pid) {
 }
 
 /**
- * This caller's token when it now holds the lock, else null. A lock is broken
- * only when it is over two minutes old and its holder is gone.
+ * This caller's token when it now holds the lock, else null. A live holder
+ * keeps the lock at any age. A dead holder loses it at once, even when the
+ * file is younger than two minutes. An unreadable lock is broken only once
+ * it is that old.
  */
 function takeLock(lock) {
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -88,7 +94,11 @@ function takeLock(lock) {
       if (error.code !== 'EEXIST') throw error;
       let age;
       try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
-      if (age < LOCK_STALE_MS || processAlive(lockOwner(lock)?.pid)) return null;
+      const owner = lockOwner(lock);
+      const alive = processAlive(owner?.pid);
+      if (alive) return null;
+      const deadPid = owner != null && Number.isInteger(owner.pid) && owner.pid > 0;
+      if (!deadPid && age < LOCK_STALE_MS) return null;
       try { unlinkSync(lock); } catch { /* another caller broke it first */ }
     }
   }
@@ -112,7 +122,7 @@ export async function serveCached({
   home, name, maxAgeMs, build, now = Date.now, waitMs = WAIT_MS, waitStepMs = 250,
 }) {
   const { dir, lock } = cachePaths(home, name);
-  const deadline = Date.now() + waitMs;
+  const deadline = Date.now() + Math.min(Math.max(0, waitMs), WAIT_MS);
   for (;;) {
     const cached = readCache(home, name);
     if (cached && now() - cached.savedAt <= maxAgeMs) return { ...cached, source: 'cache' };
@@ -132,9 +142,10 @@ export async function serveCached({
       }
     }
     if (cached) return { ...cached, source: 'stale' };
-    // Nothing to answer with yet: wait for the build in flight, then build
-    // ourselves if it never lands (its lock goes stale, or the wait runs out).
+    // Nothing cached, and a live holder still has the lock. Stay inside the
+    // mod's process budget: do not start a second build.
     if (Date.now() >= deadline) {
+      if (processAlive(lockOwner(lock)?.pid)) throw new Error('cache not ready');
       const doc = await build();
       const savedAt = now();
       writeCache(home, name, doc, savedAt);
@@ -196,8 +207,21 @@ export function bullswarmHome() {
   return h && h.length ? h : join(homedir(), '.bullswarm');
 }
 
-/** A `--max-age` call: exit code; the full CLI loads only to rebuild. */
-export async function cachedCallMain(argv) {
+/** A detached rebuild, so a meter read can outlive the mod's 30s spawn. */
+function spawnRebuild(argv) {
+  try {
+    const child = spawn(process.execPath, [process.argv[1], ...argv], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, BULLSWARM_CACHE_REBUILD: '1' },
+    });
+    child.unref();
+  } catch {
+    // The caller still answers from the last cache, or with "cache not ready".
+  }
+}
+
+async function rebuildInline(argv) {
   const { name, maxAgeMs } = cachedCall(argv);
   const home = bullswarmHome();
   const served = await serveCached({
@@ -208,4 +232,38 @@ export async function cachedCallMain(argv) {
   });
   console.log(servedJson(served, home, name));
   return 0;
+}
+
+/**
+ * A `--max-age` call: exit code. A young cache is printed here, before the
+ * CLI loads. A stale cache is printed at once and rebuilt in a detached
+ * child. With no cache, this process waits at most WAIT_MS for that child
+ * and then raises `cache not ready` without building itself.
+ */
+export async function cachedCallMain(argv) {
+  if (process.env.BULLSWARM_CACHE_REBUILD === '1') return rebuildInline(argv);
+  const { name, maxAgeMs } = cachedCall(argv);
+  const home = bullswarmHome();
+  const cached = readCache(home, name);
+  if (cached && Date.now() - cached.savedAt <= maxAgeMs) {
+    console.log(servedJson({ ...cached, source: 'cache' }, home, name));
+    return 0;
+  }
+  const { dir, lock } = cachePaths(home, name);
+  mkdirSync(dir, { recursive: true });
+  if (!processAlive(lockOwner(lock)?.pid)) spawnRebuild(argv);
+  if (cached) {
+    console.log(servedJson({ ...cached, source: 'stale' }, home, name));
+    return 0;
+  }
+  const deadline = Date.now() + WAIT_MS;
+  while (Date.now() < deadline) {
+    const again = readCache(home, name);
+    if (again) {
+      console.log(servedJson({ ...again, source: 'built' }, home, name));
+      return 0;
+    }
+    await sleep(250);
+  }
+  throw new Error('cache not ready');
 }
