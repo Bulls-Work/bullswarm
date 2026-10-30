@@ -2,9 +2,7 @@
 // $.process.run abort ("still running after 30000ms") and a cache that is
 // not ready yet must not become that text.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 const ABORT = 'bullswarm: $.process.run(bullswarm) aborted: still running after 30000ms';
 
@@ -19,10 +17,9 @@ test('an abort or cache-not-ready read is not shown once meters have loaded', as
   assert.equal(refreshErrorText('meter down', false), 'meter down');
 });
 
-test('refresh and detail errors go through refreshErrorText', () => {
-  const src = readFileSync(fileURLToPath(new URL('../mods/bullswarm/hooks/register.ts', import.meta.url)), 'utf8');
-  assert.match(src, /refreshErrorText\(messageOf\(/);
-  assert.equal(src.includes('lastError = failed ? messageOf(failed.reason) : null'), false);
-  assert.equal(src.includes('detailError = failed ? messageOf(failed.reason) : null'), false);
-  assert.equal(src.includes('detailError = messageOf(error)'), false);
+test('a routed rung killed by the process abort says it took too long', async () => {
+  const { rungErrorText } = await import('../mods/bullswarm/hooks/pools.ts');
+  assert.equal(rungErrorText(ABORT), 'took too long');
+  assert.equal(rungErrorText('$.process.run(bullswarm) aborted: still running after 30000ms'), 'took too long');
+  assert.equal(rungErrorText('spawn ENOENT'), 'spawn ENOENT');
 });

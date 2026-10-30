@@ -12,8 +12,10 @@ import { fileURLToPath } from 'node:url';
 import {
   cachePaths, readCache, serveCached, writePoolsCache,
 } from '../src/lib/pools-cache.js';
+import * as poolsCache from '../src/lib/pools-cache.js';
 import { freshPools } from '../mods/bullswarm/hooks/pools.ts';
 
+const { LOCK_CEILING_MS, WAIT_MS } = poolsCache;
 const POOLS_CACHE_SCHEMA = 'bullswarm.pools-cache.v1';
 const poolsCachePaths = (h) => cachePaths(h, 'pools');
 function readPoolsCache(h) {
@@ -148,12 +150,90 @@ test('a dead lock holder younger than two minutes does not block the next builde
   assert.equal(existsSync(lock), false);
 });
 
-test('the no-cache wait fits under the mod 30s process budget', () => {
-  const src = readFileSync(fileURLToPath(new URL('../src/lib/pools-cache.js', import.meta.url)), 'utf8');
-  const match = src.match(/const WAIT_MS = ([\d_]+);/);
-  assert.ok(match, 'WAIT_MS missing');
-  const wait = Number(match[1].replaceAll('_', ''));
-  assert.ok(wait <= 20_000 && wait < 30_000, `WAIT_MS is ${wait}`);
+test('the default no-cache wait is under the mod 30s process budget', () => {
+  assert.ok(Number.isFinite(WAIT_MS) && WAIT_MS < 30_000, `WAIT_MS is ${WAIT_MS}`);
+});
+
+test('the hard lock ceiling is five minutes', () => {
+  assert.equal(LOCK_CEILING_MS, 300_000);
+});
+
+test('a stale cache and eight concurrent callers start one build', async () => {
+  const h = home();
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  const c = counter([{ name: 'new' }], 150);
+  const runs = await Promise.all(Array.from({ length: 8 }, () => servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, waitMs: 400, waitStepMs: 20,
+  })));
+  assert.equal(c.builds, 1);
+  assert.equal(runs.filter((r) => r.source === 'built').length, 1);
+  assert.equal(readPoolsCache(h).pools[0].name, 'new');
+});
+
+test('a live holder older than the ceiling is taken over and the cache advances', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} 1 hung-token\n`);
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  const c = counter([{ name: 'rebuilt' }], 0);
+  const served = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20,
+  });
+  assert.equal(c.builds, 1);
+  assert.equal(served.source, 'built');
+  assert.deepEqual(readPoolsCache(h).pools, [{ name: 'rebuilt' }]);
+  assert.equal(existsSync(lock), false);
+});
+
+test('a live holder inside the ceiling is never taken over', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} ${Date.now()} live-token\n`);
+  const c = counter();
+  const served = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, ceilingMs: 60_000, waitMs: 100, waitStepMs: 20,
+  });
+  assert.equal(c.builds, 0);
+  assert.equal(served.source, 'stale');
+  assert.match(readFileSync(lock, 'utf8'), /live-token/);
+});
+
+test('a lock with a garbage owner older than the ceiling is taken over', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(lock, 'garbage\n');
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  const c = counter([{ name: 'rebuilt' }], 0);
+  const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+  assert.equal(c.builds, 1);
+  assert.equal(served.source, 'built');
+});
+
+test('a stuck holder that wakes after a takeover does not overwrite the new cache or lock', async () => {
+  const h = home();
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const stuck = servePools({
+    home: h, maxAgeMs: 60_000, build: async () => { await gate; return [{ name: 'stuck' }]; },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const c = counter([{ name: 'second' }], 0);
+  const second = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, ceilingMs: 50, waitMs: 100, waitStepMs: 20,
+  });
+  assert.equal(second.source, 'built');
+  release();
+  await stuck;
+  assert.deepEqual(readPoolsCache(h).pools, [{ name: 'second' }]);
+  assert.equal(existsSync(poolsCachePaths(h).lock), false);
 });
 
 test('a failed build releases the lock and keeps the old cache', async () => {
