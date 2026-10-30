@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync,
-  rmSync, symlinkSync, writeFileSync,
+  realpathSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -176,6 +176,236 @@ test('the Claude integration links the mod and sets the function-hooks flag, and
     assert.equal(after.env.OTHER, 'kept');
     assert.equal(removed.status.ok, false);
   } finally { cleanup(); }
+});
+
+// Two published copies, laid out the way pnpm stores them: each version has
+// its own .pnpm/bullswarm@<version>/node_modules/bullswarm tree.
+function plantBullswarmPackage(root) {
+  mkdirSync(join(root, 'skill'), { recursive: true });
+  writeFileSync(join(root, 'skill', 'SKILL.md'), '---\nname: bullswarm\n---\n');
+  mkdirSync(join(root, 'mods', 'bullswarm', '.claude-plugin'), { recursive: true });
+  writeFileSync(join(root, 'mods', 'bullswarm', '.claude-plugin', 'plugin.json'), '{"name":"bullswarm"}\n');
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'bullswarm' }));
+}
+
+test('a link into another bullswarm version is stale and install replaces it', () => {
+  const { home, cleanup } = sandbox();
+  const store = mkdtempSync(join(tmpdir(), 'bullswarm-pnpm-versions-'));
+  try {
+    const oldRoot = join(store, '.pnpm', 'bullswarm@0.35.5', 'node_modules', 'bullswarm');
+    const newRoot = join(store, '.pnpm', 'bullswarm@0.35.6', 'node_modules', 'bullswarm');
+    plantBullswarmPackage(oldRoot);
+    plantBullswarmPackage(newRoot);
+    const oldSkill = join(oldRoot, 'skill');
+    const oldMod = join(oldRoot, 'mods', 'bullswarm');
+    const newSkill = join(newRoot, 'skill');
+    const newMod = join(newRoot, 'mods', 'bullswarm');
+    const sources = (skillSource, modSource) => ({
+      homeDir: home, agents: ['claude'], approved: true, skillSource, modSource,
+    });
+
+    installIntegration(sources(oldSkill, oldMod));
+    const stale = integrationStatus({
+      homeDir: home, agents: ['claude'], skillSource: newSkill, modSource: newMod,
+    });
+    const entry = stale.agents[0];
+    assert.equal(stale.ok, false);
+    assert.equal(entry.skill.status, 'stale');
+    assert.equal(entry.mod.status, 'stale');
+
+    const replaced = installIntegration(sources(newSkill, newMod));
+    assert.equal(replaced.status.ok, true);
+    assert.equal(realpathSync(entry.skillPath), realpathSync(newSkill));
+    assert.equal(realpathSync(entry.modPath), realpathSync(newMod));
+
+    const removed = removeIntegration(sources(newSkill, newMod));
+    assert.equal(removed.changes[0].skill.status, 'missing');
+    assert.equal(removed.changes[0].skill.changed, true);
+    assert.equal(removed.changes[0].mod.status, 'missing');
+    assert.equal(removed.changes[0].mod.changed, true);
+    assert.equal(existsSync(entry.skillPath), false);
+    assert.equal(existsSync(entry.modPath), false);
+
+    installIntegration(sources(oldSkill, oldMod));
+    rmSync(oldRoot, { recursive: true, force: true });
+    const dangling = integrationStatus({
+      homeDir: home, agents: ['claude'], skillSource: newSkill, modSource: newMod,
+    });
+    assert.equal(dangling.agents[0].skill.status, 'stale');
+    assert.equal(dangling.agents[0].mod.status, 'stale');
+    const healed = installIntegration(sources(newSkill, newMod));
+    assert.equal(healed.status.agents[0].skill.status, 'installed');
+    assert.equal(healed.status.agents[0].mod.status, 'installed');
+    assert.equal(realpathSync(join(home, '.claude', 'skills', 'bullswarm')), realpathSync(newSkill));
+    assert.equal(realpathSync(join(home, '.claude', 'skills', 'bullswarm-mod')), realpathSync(newMod));
+  } finally {
+    cleanup();
+    rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test('a pnpm-global install links the stable node_modules path, not the versioned store', () => {
+  const { home, cleanup } = sandbox();
+  const store = mkdtempSync(join(tmpdir(), 'bullswarm-pnpm-stable-'));
+  try {
+    const prefix = join(store, 'global', '5');
+    const versioned = join(prefix, '.pnpm', 'bullswarm@0.35.6', 'node_modules', 'bullswarm');
+    const next = join(prefix, '.pnpm', 'bullswarm@0.35.7', 'node_modules', 'bullswarm');
+    plantBullswarmPackage(versioned);
+    plantBullswarmPackage(next);
+    const stableRoot = join(prefix, 'node_modules', 'bullswarm');
+    mkdirSync(join(prefix, 'node_modules'), { recursive: true });
+    symlinkSync(versioned, stableRoot);
+
+    installIntegration({
+      homeDir: home, agents: ['claude'], approved: true,
+      skillSource: join(versioned, 'skill'),
+      modSource: join(versioned, 'mods', 'bullswarm'),
+    });
+    assert.equal(
+      readlinkSync(join(home, '.claude', 'skills', 'bullswarm')),
+      join(stableRoot, 'skill'),
+    );
+    assert.equal(
+      readlinkSync(join(home, '.claude', 'skills', 'bullswarm-mod')),
+      join(stableRoot, 'mods', 'bullswarm'),
+    );
+
+    // pnpm retargets the stable link on upgrade and may delete the old store.
+    rmSync(stableRoot);
+    symlinkSync(next, stableRoot);
+    rmSync(versioned, { recursive: true, force: true });
+    const after = integrationStatus({
+      homeDir: home, agents: ['claude'],
+      skillSource: join(next, 'skill'),
+      modSource: join(next, 'mods', 'bullswarm'),
+    });
+    assert.equal(after.ok, true);
+    assert.equal(after.agents[0].skill.status, 'installed');
+    assert.equal(after.agents[0].mod.status, 'installed');
+  } finally {
+    cleanup();
+    rmSync(store, { recursive: true, force: true });
+  }
+});
+
+function pnpmLayout(prefix, version) {
+  const root = join(prefix, '.pnpm', `bullswarm@${version}`, 'node_modules', 'bullswarm');
+  plantBullswarmPackage(root);
+  return { root, skill: join(root, 'skill'), mod: join(root, 'mods', 'bullswarm') };
+}
+
+test('a link to an unrelated folder that merely has bullswarm in its path stays a conflict', () => {
+  const { home, cleanup } = sandbox();
+  const elsewhere = mkdtempSync(join(tmpdir(), 'bullswarm-lookalike-'));
+  try {
+    const wanted = pnpmLayout(join(elsewhere, 'real'), '0.35.6');
+    const shapes = [
+      join(elsewhere, 'x', 'bullswarm-tools', 'skill'),
+      join(elsewhere, 'x', 'bullswarm', 'skill'),
+      join(elsewhere, 'other', 'node_modules', 'bullswarm-tools', 'skill'),
+    ];
+    for (const target of shapes) {
+      mkdirSync(target, { recursive: true });
+      const skillPath = join(home, '.claude', 'skills', 'bullswarm');
+      mkdirSync(join(home, '.claude', 'skills'), { recursive: true });
+      rmSync(skillPath, { force: true });
+      symlinkSync(target, skillPath, 'dir');
+      const status = integrationStatus({
+        homeDir: home, agents: ['claude'], skillSource: wanted.skill, modSource: wanted.mod,
+      });
+      assert.equal(status.agents[0].skill.status, 'conflict', target);
+      assert.throws(() => installIntegration({
+        homeDir: home, agents: ['claude'], approved: true,
+        skillSource: wanted.skill, modSource: wanted.mod,
+      }), /refusing to replace/, target);
+      assert.equal(readlinkSync(skillPath), target);
+      assert.equal(existsSync(target), true);
+      const removed = removeIntegration({
+        homeDir: home, agents: ['claude'], approved: true,
+        skillSource: wanted.skill, modSource: wanted.mod,
+      });
+      assert.equal(removed.changes[0].skill.changed, false);
+      assert.equal(readlinkSync(skillPath), target);
+    }
+  } finally {
+    cleanup();
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test('a dangling link into a real bullswarm package shape is stale; a dangling lookalike is a conflict', () => {
+  const { home, cleanup } = sandbox();
+  const elsewhere = mkdtempSync(join(tmpdir(), 'bullswarm-dangling-'));
+  try {
+    const wanted = pnpmLayout(join(elsewhere, 'real'), '0.35.6');
+    const skillPath = join(home, '.claude', 'skills', 'bullswarm');
+    mkdirSync(join(home, '.claude', 'skills'), { recursive: true });
+    const statusOf = () => integrationStatus({
+      homeDir: home, agents: ['claude'], skillSource: wanted.skill, modSource: wanted.mod,
+    }).agents[0].skill.status;
+    symlinkSync(join(elsewhere, 'gone', 'bullswarm-tools', 'skill'), skillPath, 'dir');
+    assert.equal(statusOf(), 'conflict');
+    rmSync(skillPath);
+    symlinkSync(join(elsewhere, 'gone', 'node_modules', 'bullswarm', 'skill'), skillPath, 'dir');
+    assert.equal(statusOf(), 'stale');
+  } finally {
+    cleanup();
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test('when the stable path points at a different copy, install links the source as given', () => {
+  const { home, cleanup } = sandbox();
+  const store = mkdtempSync(join(tmpdir(), 'bullswarm-pnpm-fallback-'));
+  try {
+    const prefix = join(store, 'global', '5');
+    const running = pnpmLayout(prefix, '0.35.6');
+    const other = pnpmLayout(prefix, '0.35.7');
+    mkdirSync(join(prefix, 'node_modules'), { recursive: true });
+    symlinkSync(other.root, join(prefix, 'node_modules', 'bullswarm'));
+    installIntegration({
+      homeDir: home, agents: ['claude'], approved: true,
+      skillSource: running.skill, modSource: running.mod,
+    });
+    assert.equal(readlinkSync(join(home, '.claude', 'skills', 'bullswarm')), running.skill);
+    assert.equal(readlinkSync(join(home, '.claude', 'skills', 'bullswarm-mod')), running.mod);
+  } finally {
+    cleanup();
+    rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test('on pnpm-global, install migrates a live link to the versioned store path onto the stable path', () => {
+  const { home, cleanup } = sandbox();
+  const store = mkdtempSync(join(tmpdir(), 'bullswarm-pnpm-migrate-'));
+  try {
+    const prefix = join(store, 'global', '5');
+    const running = pnpmLayout(prefix, '0.35.6');
+    const stableRoot = join(prefix, 'node_modules', 'bullswarm');
+    mkdirSync(join(prefix, 'node_modules'), { recursive: true });
+    symlinkSync(running.root, stableRoot);
+    const args = { homeDir: home, agents: ['claude'], approved: true, skillSource: running.skill, modSource: running.mod };
+    const skillPath = join(home, '.claude', 'skills', 'bullswarm');
+    const modPath = join(home, '.claude', 'skills', 'bullswarm-mod');
+    mkdirSync(join(home, '.claude', 'skills'), { recursive: true });
+    symlinkSync(running.skill, skillPath, 'dir');
+    symlinkSync(running.mod, modPath, 'dir');
+
+    const first = installIntegration(args);
+    assert.equal(first.changes[0].skill.changed, true);
+    assert.equal(first.changes[0].mod.changed, true);
+    assert.equal(first.status.ok, true);
+    assert.equal(readlinkSync(skillPath), join(stableRoot, 'skill'));
+    assert.equal(readlinkSync(modPath), join(stableRoot, 'mods', 'bullswarm'));
+
+    const second = installIntegration(args);
+    assert.equal(second.changes[0].skill.changed, false);
+    assert.equal(second.changes[0].mod.changed, false);
+  } finally {
+    cleanup();
+    rmSync(store, { recursive: true, force: true });
+  }
 });
 
 test('a settings.json that is not a JSON object is left alone and reported', () => {
