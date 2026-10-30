@@ -618,7 +618,7 @@ outright. `kind: 'adversarial-acceptance'` routes such an action to analyze/high
 
 ## Where a long-lived caller should start
 
-`bullswarm place` answers which Claude Code login a new lead, watcher, or pipeline stage should start on, and whether one that is already running should move. It reads the same meters as `bullswarm pools` and writes nothing: no state, no status cache, no forced meter refresh.
+`bullswarm place` answers which Claude Code login a new lead, watcher, or pipeline stage should start on, and whether one that is already running should move. It changes no routing, state or cache. A pools cache at most `--max-age` seconds old (default 300; 0 disables it) answers with no meter read. On a miss it does the same unforced read `bullswarm pools --pool <claude pools>` would, which may refresh those pools' meter files; codex, grok and other pools are never polled, and place never writes the pools cache. `--json` and the last plain line say which source was used (`meters: cache, 42s old` or `meters: live read`). A first run on a new home creates the home, like every verb.
 
 ```bash
 bullswarm place --role lead
@@ -626,7 +626,7 @@ bullswarm place --role stage --current personal --json
 bullswarm place --role watcher --pin claude-code:work --five-hour-cap 60
 ```
 
-`--role` is `lead` (high-tier model), `stage` (medium), or `watcher` (low). The first line is the login, `CLAUDE_CONFIG_DIR` (`(unset)` for the default login), and the model id to pass as `claude --model`. Do not send `/model`; that rewrites the login's default. A login at or above the 5-hour cap (70% unless `--five-hour-cap` says otherwise), a spent pacing window, a held or reserved pool, a bad meter, or a name in `--avoid` is skipped with a reason. `--pin` considers only that login and still answers it, with a warning, when it is excluded. Exit 0 with a pick, exit 3 when nothing qualifies, exit 2 on bad usage.
+`--role` is `lead` (high-tier model), `stage` (medium), or `watcher` (low). The first line is the login, `CLAUDE_CONFIG_DIR` (`(unset)` for the default login), and the model id to pass as `claude --model`. Do not send `/model`; that rewrites the login's default. A login at or above the 5-hour cap (70% unless `--five-hour-cap` says otherwise), a spent pacing window, a held or reserved pool, a bad meter, or a name in `--avoid` is skipped with a reason. `--pin` considers only that login and still answers it, with a warning, when it is excluded. With `--current` and no eligible login, no move is suggested: the reason says the current login is past its limit and nothing better is free, with its 5-hour numbers. Flags are checked before any meter is read. Exit 0 with a pick, exit 3 when nothing qualifies, exit 2 on bad usage.
 
 ## Routing and model policy
 

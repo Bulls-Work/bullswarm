@@ -1,8 +1,8 @@
 // Which Claude Code login a long-lived caller (a lead, a watcher, a pipeline
 // stage) should start on, and whether an existing one should move.
 //
-// Read-only. No meter read, no cache write, no state write: the caller hands
-// in the pool list `livePools` already built. Ranking is the pacing-window
+// Pure: no meter read, no cache write, no state write. The caller hands in the
+// pool list it already has (the pools cache, or a live read of the claude pools). Ranking is the pacing-window
 // catch-up routing uses as pace surplus, highest first.
 
 const FIVE_HOUR_MS = 5 * 3600_000;
@@ -125,9 +125,16 @@ function moveOf(currentPool, pick, now, reason) {
   const used = currentPool.fiveHourUsedPct;
   const elapsed = fiveHourElapsedPct(currentPool.fiveHourResetsAt, now);
   const numbers = `5h ${numText(used)}% used, ${numText(elapsed)}% elapsed`;
-  if (!pick || pick.login === login) {
-    const why = pick ? `${login} is the pick (${numbers})` : `no eligible login (${numbers})`;
-    return { login, moveSuggested: false, moveReason: why };
+  if (!pick) {
+    const why = reason ?? 'no limit hit';
+    return {
+      login,
+      moveSuggested: false,
+      moveReason: `${login} is past its limit (${why}) and nothing better is free (${numbers})`,
+    };
+  }
+  if (pick.login === login) {
+    return { login, moveSuggested: false, moveReason: `${login} is the pick (${numbers})` };
   }
   if (Number.isFinite(used) && used > 85) {
     return { login, moveSuggested: true, moveReason: `${login} ${numbers}; 5h used > 85%` };

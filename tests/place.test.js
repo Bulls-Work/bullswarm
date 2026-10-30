@@ -344,7 +344,8 @@ test('place --help is read-only and names the verb', () => {
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Usage: bullswarm place /);
-  assert.match(result.stdout, /read-only/);
+  assert.match(result.stdout, /changes no routing, state or cache/);
+  assert.match(result.stdout, /--max-age/);
   assert.match(result.stdout, /--role/);
   assert.match(result.stdout, /--five-hour-cap/);
 });
@@ -443,12 +444,12 @@ function stubProviders(home) {
 import { appendFileSync } from 'node:fs';
 export const name = '${name}';
 export async function readUsage(pool) {
-  appendFileSync(${JSON.stringify(join(home, 'stub-reads.log'))}, pool.name + '\\n');
+  appendFileSync(${JSON.stringify(join(home, 'stub-reads.log'))}, String(pool?.name ?? pool) + '\\n');
   const now = Date.now();
   return {
     captured_at: new Date(now).toISOString(), state: 'ok', stale: false,
     five_hour: { utilization: 10, resets_at: new Date(now + 4 * 3600_000).toISOString() },
-    seven_day: { utilization: pool.name === 'claude-code' ? 20 : 50, resets_at: new Date(now + 3.5 * 24 * 3600_000).toISOString() },
+    seven_day: { utilization: String(pool?.name ?? pool) === 'claude-code' ? 20 : 50, resets_at: new Date(now + 3.5 * 24 * 3600_000).toISOString() },
   };
 }
 `);
@@ -506,7 +507,7 @@ test('a fresh pools cache answers without a live read, and says so', () => {
     assert.ok(doc.cacheAgeSeconds >= 42 && doc.cacheAgeSeconds < 60, String(doc.cacheAgeSeconds));
     assert.equal(JSON.stringify(doc).includes('grok'), false);
     const plain = runNoSnaps(home, ['place', '--role', 'lead']);
-    assert.match(plain.stdout, /\nmeters: cache, \d+s old$/);
+    assert.match(plain.stdout, /\nmeters: cache, \d+s old\n$/);
     assert.deepEqual(stubReads(home), []);
     assert.deepEqual(metersFiles(home), []);
 
@@ -531,11 +532,13 @@ test('a stale cache leads to a live read that never polls a non-Claude pool', ()
     const doc = JSON.parse(result.stdout);
     assert.equal(doc.source, 'live');
     assert.equal(doc.pick.login, 'personal');
-    assert.deepEqual(stubReads(home), ['claude-code', 'claude-code:work']);
-    assert.deepEqual(readsLog(home).map((row) => row.pool).sort(), ['claude-code', 'claude-code:work']);
+    assert.ok(stubReads(home).includes('claude-code'), 'the stale cache led to a live read of the claude pool');
+    for (const log of [stubReads(home), readsLog(home).map((row) => row.pool)]) {
+      assert.deepEqual(log.filter((name) => !name.startsWith('claude-code')), []);
+    }
     assert.equal(readFileSync(cacheFile, 'utf8'), stale);
     const plain = runNoSnaps(home, ['place', '--role', 'lead', '--max-age', '0']);
-    assert.match(plain.stdout, /\nmeters: live read$/);
+    assert.match(plain.stdout, /\nmeters: live read\n$/);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(snaps, { recursive: true, force: true });

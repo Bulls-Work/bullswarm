@@ -523,7 +523,7 @@ const poolsLabelText = rich({
 });
 
 const placeText = rich({
-  usage: 'bullswarm place --role <lead|stage|watcher> [--current <login>] [--pin <login>] [--avoid <login,...>] [--five-hour-cap <pct>] [--json]',
+  usage: 'bullswarm place --role <lead|stage|watcher> [--current <login>] [--pin <login>] [--avoid <login,...>] [--five-hour-cap <pct>] [--max-age <seconds>] [--json]',
   purpose: 'Answer which Claude Code login a new long-lived caller session — a lead, a watcher, or a pipeline '
     + 'stage — should start on, and whether an existing session should move. The caller passes the printed model '
     + 'on its own launch (`claude --model <id>`). Bullswarm never sends /model, which would rewrite that login\'s default.',
@@ -534,11 +534,16 @@ const placeText = rich({
     { flag: '--pin <login>', desc: 'consider only this login. an excluded pin is still the answer, with a warning', default: 'every Claude login' },
     { flag: '--avoid <login,...>', desc: 'comma-separated logins or pool names to skip' },
     { flag: '--five-hour-cap <pct>', desc: 'skip a login whose 5-hour window is used at or above this percentage', default: '70' },
-    { flag: '--json', desc: 'machine-readable { role, pick, candidates, excluded, current?, warning? }' },
+    { flag: '--max-age <seconds>', desc: 'use the shared pools cache when it is at most this old; 0 always reads the meters', default: '300' },
+    { flag: '--json', desc: 'machine-readable { role, pick, candidates, excluded, current?, warning?, source, cacheAgeSeconds? }; source is cache or live' },
   ],
   safety: [
-    'read-only: reads the same meters as bullswarm pools, writes nothing',
-    'no state write, no status-cache write, no forced meter refresh',
+    'changes no routing, state or cache, and never writes the pools cache',
+    'a fresh pools cache answers with no meter read; on a miss it does the same unforced read as `bullswarm pools --pool <claude pools>`, which may refresh those pools\' own meter files',
+    'only Claude pools are read; codex, grok and other pools are never polled',
+    'flags are checked before any meter is read, so a usage error reads nothing',
+    'a first run on a new home creates the home, as every verb does',
+    'with --current and no eligible login: no move is suggested, and the reason says the current login is past its limit and nothing better is free, with its 5-hour numbers',
     'exit 0 with a pick, exit 3 when nothing qualifies, exit 2 on bad usage',
   ],
   examples: [
