@@ -102,6 +102,60 @@ test('a live lock with a stale cache answers stale without building', async () =
   assert.deepEqual(served.pools, [{ name: 'old' }]);
 });
 
+// Issue #38: the mod kills a `pools|workflow runs|assignments --max-age`
+// spawn at 30s. With no cache file, WAIT_MS is 45s, so that spawn is still
+// inside serveCached when Claude aborts it. A short injected wait keeps this
+// red test fast; the assertion is the missing "do not build" path.
+test('a live lock with no cache settles inside 30s and does not build', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(lock, `${process.pid} ${Date.now()} live-token\n`);
+  const c = counter();
+  const started = Date.now();
+  await assert.rejects(
+    serveCached({
+      home: h,
+      name: 'pools',
+      maxAgeMs: 60_000,
+      build: async () => {
+        c.builds += 1;
+        return { pools: POOLS };
+      },
+      waitMs: 80,
+      waitStepMs: 20,
+    }),
+    /cache not ready/,
+  );
+  assert.equal(c.builds, 0);
+  assert.ok(Date.now() - started < 30_000);
+});
+
+test('a dead lock holder younger than two minutes does not block the next builder', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(lock, '99999 1 dead-token\n');
+  const c = counter([{ name: 'rebuilt' }], 0);
+  const started = Date.now();
+  const served = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, waitMs: 400, waitStepMs: 20,
+  });
+  assert.ok(Date.now() - started < 200, `waited ${Date.now() - started}ms`);
+  assert.equal(c.builds, 1);
+  assert.equal(served.source, 'built');
+  assert.deepEqual(served.pools, [{ name: 'rebuilt' }]);
+  assert.equal(existsSync(lock), false);
+});
+
+test('the no-cache wait fits under the mod 30s process budget', () => {
+  const src = readFileSync(fileURLToPath(new URL('../src/lib/pools-cache.js', import.meta.url)), 'utf8');
+  const match = src.match(/const WAIT_MS = ([\d_]+);/);
+  assert.ok(match, 'WAIT_MS missing');
+  const wait = Number(match[1].replaceAll('_', ''));
+  assert.ok(wait <= 20_000 && wait < 30_000, `WAIT_MS is ${wait}`);
+});
+
 test('a failed build releases the lock and keeps the old cache', async () => {
   const h = home();
   writePoolsCache(h, [{ name: 'old' }], 1_000);
