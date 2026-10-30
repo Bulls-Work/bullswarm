@@ -58,22 +58,53 @@ const POOL_VALUE_KEYS = new Set([
 ]);
 
 /**
+ * Pool names still defined by a connector file in `<home>/connectors/`.
+ * The rename migration must leave those keys and references alone: an edited
+ * pre-rename `opencode2.json` is a live pool, and moving its settings onto
+ * `opencode` makes every later read miss them.
+ */
+function legacyConnectorPoolNames(bullswarmDir) {
+  const names = new Set();
+  const dir = join(bullswarmDir, 'connectors');
+  let files;
+  try { files = readdirSync(dir); } catch { return names; }
+  for (const file of files) {
+    if (!file.endsWith('.json') || file.startsWith('_') || file.startsWith('.')) continue;
+    names.add(file.slice(0, -'.json'.length));
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+      if (typeof parsed?.name === 'string' && parsed.name) names.add(parsed.name);
+    } catch { /* the file stem still names the connector */ }
+  }
+  return names;
+}
+
+function isPreservedPoolName(value, preserved) {
+  if (!preserved || preserved.size === 0 || typeof value !== 'string') return false;
+  if (preserved.has(value)) return true;
+  const colon = value.indexOf(':');
+  return colon > 0 && preserved.has(value.slice(0, colon));
+}
+
+/**
  * Rename pool-keyed objects and the pool references nested in state reports
  * and routing telemetry. This deliberately does not touch arbitrary prose,
- * model ids, paths, or workflow run records.
+ * model ids, paths, or workflow run records. A name in `preserved` is still
+ * a connector loaded from `<home>/connectors/` and is left as it is.
  */
-function migratePoolReferences(value, filePath, warnings, parentKey = '') {
+function migratePoolReferences(value, filePath, warnings, parentKey = '', preserved = null) {
   let changed = false;
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
       if (POOL_VALUE_KEYS.has(parentKey) && typeof value[i] === 'string') {
+        if (isPreservedPoolName(value[i], preserved)) continue;
         const next = migratedPoolName(value[i]);
         if (next !== value[i]) {
           value[i] = next;
           changed = true;
         }
       } else {
-        changed = migratePoolReferences(value[i], filePath, warnings, parentKey) || changed;
+        changed = migratePoolReferences(value[i], filePath, warnings, parentKey, preserved) || changed;
       }
     }
     return changed;
@@ -82,6 +113,7 @@ function migratePoolReferences(value, filePath, warnings, parentKey = '') {
 
   const originalKeys = Object.keys(value);
   for (const key of originalKeys) {
+    if (isPreservedPoolName(key, preserved)) continue;
     const target = migratedPoolName(key);
     if (target !== key) {
       if (Object.prototype.hasOwnProperty.call(value, target)) {
@@ -101,23 +133,27 @@ function migratePoolReferences(value, filePath, warnings, parentKey = '') {
 
   for (const [key, child] of Object.entries(value)) {
     if (POOL_VALUE_KEYS.has(key) && typeof child === 'string') {
-      const next = migratedPoolName(child);
-      if (next !== child) {
-        value[key] = next;
-        changed = true;
+      if (!isPreservedPoolName(child, preserved)) {
+        const next = migratedPoolName(child);
+        if (next !== child) {
+          value[key] = next;
+          changed = true;
+        }
       }
       continue;
     }
     // incumbents is lane -> poolName rather than poolName -> record.
     if (parentKey === 'incumbents' && typeof child === 'string') {
-      const next = migratedPoolName(child);
-      if (next !== child) {
-        value[key] = next;
-        changed = true;
+      if (!isPreservedPoolName(child, preserved)) {
+        const next = migratedPoolName(child);
+        if (next !== child) {
+          value[key] = next;
+          changed = true;
+        }
       }
       continue;
     }
-    changed = migratePoolReferences(child, filePath, warnings, key) || changed;
+    changed = migratePoolReferences(child, filePath, warnings, key, preserved) || changed;
   }
   return changed;
 }
@@ -141,7 +177,7 @@ function migrateStateFile(bullswarmDir, warnings) {
   const raw = parseJson(path);
   const state = normalizedState(raw);
   if (!state) return { state: null, changed: false };
-  const changed = migratePoolReferences(state, path, warnings);
+  const changed = migratePoolReferences(state, path, warnings, '', legacyConnectorPoolNames(bullswarmDir));
   if (changed) saveState(bullswarmDir, state);
   return { state, changed };
 }
@@ -150,12 +186,13 @@ function migrateRoutingFile(bullswarmDir, warnings) {
   const path = join(bullswarmDir, 'routing.json');
   const value = parseJson(path);
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const preserved = legacyConnectorPoolNames(bullswarmDir);
   let changed = false;
   for (const lane of Object.values(value)) {
     if (!Array.isArray(lane?.order)) continue;
     const next = [];
     for (const pool of lane.order) {
-      const renamed = migratedPoolName(pool);
+      const renamed = isPreservedPoolName(pool, preserved) ? pool : migratedPoolName(pool);
       if (renamed !== pool) changed = true;
       if (!next.includes(renamed)) next.push(renamed);
     }
@@ -183,12 +220,12 @@ function migrateProvidersFile(bullswarmDir) {
   return changed;
 }
 
-function migrateMeterContents(content, extension) {
+function migrateMeterContents(content, extension, preserved = null) {
   if (extension === '.json') {
     try {
       const value = JSON.parse(content);
       const warnings = new Set();
-      const changed = migratePoolReferences(value, '<meter>', warnings);
+      const changed = migratePoolReferences(value, '<meter>', warnings, '', preserved);
       return { content: changed ? `${JSON.stringify(value, null, 2)}\n` : content, value };
     } catch {
       return { content, value: null };
@@ -202,7 +239,7 @@ function migrateMeterContents(content, extension) {
       try {
         const value = JSON.parse(line);
         const warnings = new Set();
-        if (migratePoolReferences(value, '<meter>', warnings)) changed = true;
+        if (migratePoolReferences(value, '<meter>', warnings, '', preserved)) changed = true;
         return JSON.stringify(value);
       } catch {
         return line;
@@ -213,8 +250,8 @@ function migrateMeterContents(content, extension) {
   return { content, value: null };
 }
 
-function equivalentMeterContents(oldContent, targetContent, extension) {
-  const oldMigrated = migrateMeterContents(oldContent, extension);
+function equivalentMeterContents(oldContent, targetContent, extension, preserved = null) {
+  const oldMigrated = migrateMeterContents(oldContent, extension, preserved);
   if (extension === '.json' && oldMigrated.value != null) {
     try { return deepEqual(oldMigrated.value, JSON.parse(targetContent)); } catch { return false; }
   }
@@ -231,6 +268,7 @@ function equivalentMeterContents(oldContent, targetContent, extension) {
 function migrateMeterFiles(bullswarmDir, warnings) {
   const meters = join(bullswarmDir, 'meters');
   const dirs = [meters, join(meters, 'history')];
+  const preserved = legacyConnectorPoolNames(bullswarmDir);
   let changed = false;
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
@@ -240,6 +278,8 @@ function migrateMeterFiles(bullswarmDir, warnings) {
       const extension = dir === join(meters, 'history') ? '.jsonl' : '.json';
       if (!(file.endsWith(extension))) continue;
       const stem = file.slice(0, -extension.length);
+      // A meter file for a connector that is still loaded keeps its name.
+      if (isPreservedPoolName(stem, preserved)) continue;
       const renamedStem = migratedPoolName(stem);
       if (renamedStem === stem) continue;
       const oldPath = join(dir, file);
@@ -249,14 +289,14 @@ function migrateMeterFiles(bullswarmDir, warnings) {
       if (existsSync(targetPath)) {
         let targetContent;
         try { targetContent = readFileSync(targetPath, 'utf8'); } catch { targetContent = null; }
-        if (targetContent != null && equivalentMeterContents(oldContent, targetContent, extension)) {
+        if (targetContent != null && equivalentMeterContents(oldContent, targetContent, extension, preserved)) {
           try { unlinkSync(oldPath); changed = true; } catch { /* best effort */ }
         } else {
           warnings.add(targetPath);
         }
         continue;
       }
-      const migrated = migrateMeterContents(oldContent, extension);
+      const migrated = migrateMeterContents(oldContent, extension, preserved);
       try {
         renameSync(oldPath, targetPath);
         if (migrated.content !== oldContent) atomicWriteFileSync(targetPath, migrated.content);
@@ -270,23 +310,25 @@ function migrateMeterFiles(bullswarmDir, warnings) {
   return changed;
 }
 
-function containsMigratablePoolReference(value, parentKey = '') {
+function containsMigratablePoolReference(value, parentKey = '', preserved = null) {
   if (Array.isArray(value)) {
     return value.some((child) => (
       POOL_VALUE_KEYS.has(parentKey) && typeof child === 'string'
-        ? migratedPoolName(child) !== child
-        : containsMigratablePoolReference(child, parentKey)
+        ? migratedPoolName(child) !== child && !isPreservedPoolName(child, preserved)
+        : containsMigratablePoolReference(child, parentKey, preserved)
     ));
   }
   if (!value || typeof value !== 'object') {
     return (POOL_VALUE_KEYS.has(parentKey) || parentKey === 'incumbents')
-      && typeof value === 'string' && migratedPoolName(value) !== value;
+      && typeof value === 'string' && migratedPoolName(value) !== value
+      && !isPreservedPoolName(value, preserved);
   }
   return Object.entries(value).some(([key, child]) => (
-    migratedPoolName(key) !== key
+    (migratedPoolName(key) !== key && !isPreservedPoolName(key, preserved))
     || ((POOL_VALUE_KEYS.has(key) || parentKey === 'incumbents')
-      && typeof child === 'string' && migratedPoolName(child) !== child)
-    || containsMigratablePoolReference(child, key)
+      && typeof child === 'string' && migratedPoolName(child) !== child
+      && !isPreservedPoolName(child, preserved))
+    || containsMigratablePoolReference(child, key, preserved)
   ));
 }
 
@@ -313,19 +355,27 @@ function homeMigrationNeeded(bullswarmDir) {
 }
 
 function homeMigrationNeededUncached(bullswarmDir) {
+  const preserved = legacyConnectorPoolNames(bullswarmDir);
   const state = parseJson(join(bullswarmDir, 'state.json'));
-  if (state && containsMigratablePoolReference(state)) return true;
+  if (state && containsMigratablePoolReference(state, '', preserved)) return true;
   const routing = parseJson(join(bullswarmDir, 'routing.json'));
   if (routing && Object.values(routing).some((lane) =>
-    Array.isArray(lane?.order) && lane.order.some((pool) => migratedPoolName(pool) !== pool))) return true;
+    Array.isArray(lane?.order) && lane.order.some((pool) =>
+      migratedPoolName(pool) !== pool && !isPreservedPoolName(pool, preserved)))) return true;
   const providers = parseJson(join(bullswarmDir, 'providers.json'));
   if (providers?.enabled?.some?.((pool) => migratedPoolName(pool) !== pool)) return true;
   for (const dir of [join(bullswarmDir, 'meters'), join(bullswarmDir, 'meters', 'history')]) {
     try {
-      if (readdirSync(dir).some((file) => file === `${RENAMED_POOL_FROM}.json`
-        || file.startsWith(`${RENAMED_POOL_FROM}:`) && (file.endsWith('.json') || file.endsWith('.jsonl'))
-        || file === `${RENAMED_POOL_FROM}.jsonl`
-        || containsMigratablePoolReference(parseJson(join(dir, file))))) return true;
+      if (readdirSync(dir).some((file) => {
+        const extension = file.endsWith('.jsonl') ? '.jsonl' : file.endsWith('.json') ? '.json' : '';
+        if (!extension) return false;
+        const stem = file.slice(0, -extension.length);
+        if (isPreservedPoolName(stem, preserved)) return false;
+        return file === `${RENAMED_POOL_FROM}.json`
+          || file.startsWith(`${RENAMED_POOL_FROM}:`) && (file.endsWith('.json') || file.endsWith('.jsonl'))
+          || file === `${RENAMED_POOL_FROM}.jsonl`
+          || containsMigratablePoolReference(parseJson(join(dir, file)), '', preserved);
+      })) return true;
     } catch { /* absent/unreadable */ }
   }
   return false;

@@ -21,7 +21,9 @@
 //        names its stale fields (those that differ from the package) and says
 //        whether the copy is read at all.
 //   CC4. A copy with no packaged counterpart is the operator's own local
-//        provider. It is never moved or reported.
+//        provider. It is never moved or reported. The counterpart is the
+//        packaged connector under the pool's current name, so a pre-rename
+//        `opencode2.json` is a copy of contrib `opencode`, not a local provider.
 //   CC5. Zero dependencies; a malformed file or history degrades to "report
 //        it, touch nothing".
 
@@ -34,6 +36,7 @@ import { atomicWriteFileSync } from './fsjson.js';
 import {
   loadProviders, providersConfigPath, readProvidersConfig, REPO_ROOT,
 } from './providers.js';
+import { migratedPoolName } from './state.js';
 
 export const historyFileName = 'connector-history.json';
 export const RETIRED_DIR = 'retired';
@@ -98,6 +101,15 @@ export function historyFromVersions(name, versions) {
     connector: name,
     fields,
   };
+}
+
+/** The packaged connector a `<home>/connectors/<file>` copy belongs to, by its current pool name. */
+function packagedSourceFor(file, sources) {
+  if (sources.has(file)) return sources.get(file);
+  const stem = file.slice(0, -'.json'.length);
+  const migrated = migratedPoolName(stem);
+  if (migrated === stem) return null;
+  return sources.get(`${migrated}.json`) ?? null;
 }
 
 /**
@@ -181,13 +193,13 @@ export function inspectConnectorCopies(bullswarmDir, opts = {}) {
   const sources = new Map(packagedConnectorSources(opts).map((source) => [source.file, source]));
   let files = [];
   try {
-    files = readdirSync(dir).sort().filter((file) => file.endsWith('.json') && sources.has(file));
+    files = readdirSync(dir).sort().filter((file) => file.endsWith('.json') && packagedSourceFor(file, sources));
   } catch { return []; }
   if (!files.length) return [];
   const loaded = loadProviders(bullswarmDir, opts.loader ?? {});
   const copies = [];
   for (const file of files) {
-    const source = sources.get(file);
+    const source = packagedSourceFor(file, sources);
     const path = join(dir, file);
     const base = { file, path, provider: source.name, tier: source.tier };
     let copy;
@@ -199,7 +211,18 @@ export function inspectConnectorCopies(bullswarmDir, opts = {}) {
       copies.push({ ...base, pool: null, status: 'unreadable', error: err.message, staleFields: [], editedFields: [], read: false, servedBy: null });
       continue;
     }
-    const { staleFields, editedFields } = compareCopy(copy, packaged, readHistory(source.dir));
+    // The pre-rename pool name is not an operator edit. Compare it as the
+    // name the package ships now, and still retire a body that matches.
+    const comparable = isPlainObject(copy) ? { ...copy } : copy;
+    const packagedName = typeof packaged?.name === 'string' && packaged.name ? packaged.name : source.name;
+    const historicalName = isPlainObject(comparable) && typeof comparable.name === 'string'
+      && comparable.name !== packagedName && migratedPoolName(comparable.name) === packagedName;
+    if (historicalName) comparable.name = packagedName;
+    let { staleFields, editedFields } = compareCopy(comparable, packaged, readHistory(source.dir));
+    const renamedFile = file !== source.file && migratedPoolName(file.slice(0, -'.json'.length)) === source.name;
+    if (editedFields.length === 0 && (historicalName || renamedFile) && !staleFields.includes('name')) {
+      staleFields = ['name', ...staleFields].sort();
+    }
     const pool = typeof copy?.name === 'string' ? copy.name : null;
     const entry = loaded.providers.find((provider) => provider.dir === path);
     const owner = pool
@@ -250,7 +273,11 @@ export function syncConnectorCopies(bullswarmDir, opts = {}) {
       const enabled = [...new Set([...config.enabled, copy.provider])];
       const trial = loadProviders(bullswarmDir, { ...(opts.loader ?? {}), enabled });
       const contrib = trial.providers.find((provider) => provider.tier === 'contrib' && provider.name === copy.provider);
-      if (!contrib?.pools.includes(copy.pool)) continue;
+      // The copy may still carry the pre-rename pool name. The contrib
+      // provider defines the name it has now.
+      const accepted = new Set([copy.pool, migratedPoolName(copy.pool), copy.provider]
+        .filter((name) => typeof name === 'string' && name));
+      if (!contrib.pools.some((name) => accepted.has(name))) continue;
       atomicWriteFileSync(providersConfigPath(bullswarmDir), `${JSON.stringify({ ...config, enabled }, null, 2)}\n`);
       actions.push({
         file: copy.file, action: 'retired', servedBy: copy.provider, enabledProvider: copy.provider,
