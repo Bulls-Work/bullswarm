@@ -229,12 +229,15 @@ function pathsFor(homeDir, agent) {
 
 function installSkillLink(skillPath, skillSource) {
   const current = skillLinkStatus(skillPath, skillSource);
-  if (current.status === 'installed') return { changed: false, ...current };
   if (current.status === 'conflict') {
     throw new Error(`refusing to replace non-Bullswarm skill path: ${skillPath}`);
   }
   const target = linkTargetFor(skillSource);
-  if (current.status === 'stale') unlinkSync(skillPath);
+  // A live link that already names the wanted target stays; one that reaches
+  // the same copy by a different path (a versioned pnpm store directory) is
+  // moved onto the stable path so the next upgrade does not strand it.
+  if (current.status === 'installed' && (target === skillSource || current.target === target)) return { changed: false, ...current };
+  if (current.status !== 'missing') unlinkSync(skillPath);
   mkdirSync(dirname(skillPath), { recursive: true });
   symlinkSync(target, skillPath, 'dir');
   return { changed: true, status: 'installed', path: skillPath, target };
