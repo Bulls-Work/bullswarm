@@ -128,6 +128,27 @@ test('update: a pnpm global install is upgraded with pnpm add -g and verified th
   assert.equal(result.verifiedAt, link);
 });
 
+test('update: a pnpm install tells the person how to heal stale agent links; a plain npm one does not', async () => {
+  const run = async (root, exec) => {
+    const io = quiet();
+    await runUpdate({
+      packageRoot: root, exists: () => false, currentVersion: '0.29.1',
+      fetchImpl: async () => okJson({ version: '0.30.0' }),
+      exec, readVersion: () => '0.30.0', lookupShellBinary: false, json: true, ...io,
+    });
+    return JSON.parse(io.out.at(-1)).notes.join('\n');
+  };
+  const pnpmRoot = '/home/u/Library/pnpm/global/5/.pnpm/bullswarm@0.29.1/node_modules/bullswarm';
+  assert.match(
+    await run(pnpmRoot, fakeExec({ 'pnpm add': '' }).exec),
+    /integrate status.*stale.*bullswarm integrate install --yes/s,
+  );
+  assert.doesNotMatch(
+    await run('/usr/local/lib/node_modules/bullswarm', fakeExec({ 'npm install': '', 'npm root': '/usr/local/lib/node_modules\n' }).exec),
+    /integrate install/,
+  );
+});
+
 test('update: the pnpm copy that is verified is the one pnpm names now, not the one found before', async () => {
   // pnpm's global directory is configurable, and the running copy was found in
   // whichever one was current when IT was installed. Trusting that stale path
