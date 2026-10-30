@@ -242,8 +242,9 @@ An `analyze` step has its own counterpart, `BULLSWARM_WORKER_NO_NEW_GROUND_SEC`
 (default 3600 seconds, `0` turns it off): a worker that keeps re-reading the
 same files is stopped as `stalled` with the reason
 `stalled: no new file or command for 60 min, the worker was stopped`. Its clock
-restarts only on a tool call whose target (kind plus command, file or pattern)
-the attempt has not used yet, a new reply longer than 200 characters, or an
+restarts only on a tool call that is new in the attempt (its tool name or
+arguments, paths made absolute, were not used before; descriptive fields like
+`description` are ignored), a new reply longer than 200 characters, or an
 edit. It never applies to a `build`, `chore`, `act` or outward step. The attempt
 records `noNewGroundSec`, and the needs-you header reads
 `worker kept repeating the same reads`.
