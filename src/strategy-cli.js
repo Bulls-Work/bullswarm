@@ -859,6 +859,12 @@ function setProviderEnabled(bullswarmDir, pool, enabled) {
     state.pools[pool] ??= {};
     state.pools[pool].enabled = enabled;
   });
+  // The next load renames pool keys. Report the flag that load actually
+  // keeps, not the value this call asked to write.
+  const saved = loadState(bullswarmDir).pools?.[pool]?.enabled;
+  if (saved !== enabled) {
+    throw new Error(`pool "${pool}" enabled flag did not stick (saved ${saved}, wanted ${enabled})`);
+  }
   return { action: 'provider-updated', pool, enabled };
 }
 
