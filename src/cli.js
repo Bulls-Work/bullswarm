@@ -30,6 +30,7 @@ import { meterSignInDead, meterSignInText } from './workflow/dispatch-pools.js';
 import { previewStepPick } from './workflow/pick-preview.js';
 import { runOneStep } from './workflow/run-one-step.js';
 import { runVerdictJson, runVerdictLines } from './workflow/run-verdict.js';
+import { formatPlace, placeCaller } from './lib/place.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -326,6 +327,69 @@ function cmdAssignments(opts) {
     );
   }
   return 0;
+}
+
+// --- place ------------------------------------------------------------------
+// Which Claude Code login a long-lived caller should start on. Reads the same
+// meters as `pools` and writes nothing: no status cache, no forced meter read.
+
+function placeFlag(opts, name) {
+  if (opts[name] === undefined) return null;
+  if (typeof opts[name] !== 'string' || !opts[name].trim()) {
+    return { error: `✗ --${name} needs a value` };
+  }
+  return opts[name].trim();
+}
+
+async function cmdPlace(opts) {
+  if (opts.rest.length) {
+    console.error(`✗ unknown place argument "${opts.rest[0]}"`);
+    console.error(`usage: ${usageLine(['place'])}`);
+    return 2;
+  }
+  const role = placeFlag(opts, 'role');
+  if (role?.error) { console.error(role.error); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  if (!role) { console.error('✗ --role is required (lead, stage, or watcher)'); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  const current = placeFlag(opts, 'current');
+  if (current?.error) { console.error(current.error); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  const pin = placeFlag(opts, 'pin');
+  if (pin?.error) { console.error(pin.error); console.error(`usage: ${usageLine(['place'])}`); return 2; }
+  let avoid = [];
+  if (opts.avoid !== undefined) {
+    if (typeof opts.avoid !== 'string' || !opts.avoid.trim()) {
+      console.error('✗ --avoid needs a comma-separated login list');
+      console.error(`usage: ${usageLine(['place'])}`);
+      return 2;
+    }
+    avoid = opts.avoid.split(',').map((token) => token.trim()).filter(Boolean);
+    if (!avoid.length) {
+      console.error('✗ --avoid needs a comma-separated login list');
+      console.error(`usage: ${usageLine(['place'])}`);
+      return 2;
+    }
+  }
+  let fiveHourCap = 70;
+  if (opts['five-hour-cap'] !== undefined) {
+    if (typeof opts['five-hour-cap'] !== 'string' || !/^\d+(\.\d+)?$/.test(opts['five-hour-cap'].trim())) {
+      console.error('✗ --five-hour-cap needs a percentage from 0 to 100');
+      console.error(`usage: ${usageLine(['place'])}`);
+      return 2;
+    }
+    fiveHourCap = Number(opts['five-hour-cap']);
+  }
+  const now = Date.now();
+  const pools = await livePools(now);
+  try {
+    const doc = placeCaller(pools, { role, current, pin, avoid, fiveHourCap, now });
+    if (opts.json) console.log(JSON.stringify(doc, null, 2));
+    else console.log(formatPlace(doc));
+    return doc.pick ? 0 : 3;
+  } catch (error) {
+    if (error?.code !== 'PLACE_USAGE') throw error;
+    console.error(`✗ ${error.message}`);
+    console.error(`usage: ${usageLine(['place'])}`);
+    return 2;
+  }
 }
 
 // --- run --------------------------------------------------------------------
@@ -705,6 +769,8 @@ export async function main(argv) {
       return cmdHealth(opts);
     case 'pools':
       return cmdPools(opts);
+    case 'place':
+      return cmdPlace(opts);
     case 'assignments':
       return cmdAssignments(opts);
     case 'doctor':

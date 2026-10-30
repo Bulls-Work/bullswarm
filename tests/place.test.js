@@ -219,7 +219,11 @@ test('does not suggest a move when the pick is the current login', () => {
     fiveHourUsedPct: 90,
     fiveHourResetsAt: fiveReset(20),
   });
-  const doc = place([only, pool({ name: 'claude-code:off', enabled: false })], { role: 'lead', current: 'personal' });
+  // 90% is over the default 70% cap, so the cap is raised: the login can be the
+  // pick and still be past the 85% move line. Same login means stay.
+  const doc = place([only, pool({ name: 'claude-code:off', enabled: false })], {
+    role: 'lead', current: 'personal', fiveHourCap: 100,
+  });
   assert.equal(doc.pick.login, 'personal');
   assert.equal(doc.current.moveSuggested, false);
   assert.match(doc.current.moveReason, /90%/);

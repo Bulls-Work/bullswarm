@@ -616,6 +616,18 @@ summary}` verdict or any other hand-rolled JSON shape: the program validator
 rejects response-format directives, and that older verdict shape is refused
 outright. `kind: 'adversarial-acceptance'` routes such an action to analyze/high.
 
+## Where a long-lived caller should start
+
+`bullswarm place` answers which Claude Code login a new lead, watcher, or pipeline stage should start on, and whether one that is already running should move. It reads the same meters as `bullswarm pools` and writes nothing: no state, no status cache, no forced meter refresh.
+
+```bash
+bullswarm place --role lead
+bullswarm place --role stage --current personal --json
+bullswarm place --role watcher --pin claude-code:work --five-hour-cap 60
+```
+
+`--role` is `lead` (high-tier model), `stage` (medium), or `watcher` (low). The first line is the login, `CLAUDE_CONFIG_DIR` (`(unset)` for the default login), and the model id to pass as `claude --model`. Do not send `/model`; that rewrites the login's default. A login at or above the 5-hour cap (70% unless `--five-hour-cap` says otherwise), a spent pacing window, a held or reserved pool, a bad meter, or a name in `--avoid` is skipped with a reason. `--pin` considers only that login and still answers it, with a warning, when it is excluded. Exit 0 with a pick, exit 3 when nothing qualifies, exit 2 on bad usage.
+
 ## Routing and model policy
 
 Inspect current capability and quota evidence with:
