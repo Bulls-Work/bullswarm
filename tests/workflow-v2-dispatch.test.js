@@ -2929,8 +2929,46 @@ test('retryPoolTiers orders same model, then same family, then the rest', () => 
   assert.deepEqual(tiers.map((tier) => [tier.match, tier.pools.map((pool) => pool.name)]), [
     ['model', ['a']], ['family', ['b']], ['any', ['grok', 'c']],
   ]);
-  // An unknown failed model gives one tier: pace decides, as before.
-  assert.deepEqual(retryPoolTiers(list, { pool: failed, model: null }, 'low').map((tier) => tier.match), ['any']);
+  // A null recorded model still uses the model this pool would run for the
+  // tier, so the order stays the known-model order above. It is not one
+  // 'any' tier.
+  assert.deepEqual(retryPoolTiers(list, { pool: failed, model: null }, 'low').map((tier) => [tier.match, tier.pools.map((pool) => pool.name)]), [
+    ['model', ['a']], ['family', ['b']], ['any', ['grok', 'c']],
+  ]);
+});
+
+test('retryPoolTiers with a null model and no tier model puts the failed pool\'s provider ahead of another vendor', () => {
+  // The packaged claude-code connector names no model, and a sign-in failure
+  // records none. claude-code:b runs a different model; only the shared
+  // provider keeps it ahead of grok.
+  const failed = connector('claude-code', { strategyAssignments: {} });
+  const sibling = connector('claude-code:b', {
+    modelFamilies: CLAUDE_FAMILIES,
+    strategyAssignments: { low: { pool: 'claude-code:b', model: 'claude-sonnet-5' } },
+    pace: -40,
+  });
+  const tiers = retryPoolTiers([grokPool(), sibling], { pool: failed, model: null }, 'low');
+  const indexOf = (name) => tiers.findIndex((tier) => tier.pools.some((pool) => pool.name === name));
+  assert.ok(indexOf('claude-code:b') >= 0 && indexOf('claude-code:b') < indexOf('grok'), JSON.stringify(tiers.map((tier) => [tier.match, tier.pools.map((pool) => pool.name)])));
+  assert.notEqual(tiers[indexOf('claude-code:b')].match, 'any');
+  assert.notEqual(indexOf('claude-code:b'), indexOf('grok'));
+});
+
+test('failure rule: a sign-in failure with no model retries another pool of the same provider before a faster vendor', async () => {
+  const unnamed = (name, extra = {}) => connector(name, { strategyAssignments: {}, ...extra });
+  const pools = () => [
+    unnamed('claude-code'),
+    unnamed('claude-code:b', { pace: -40 }),
+    grokPool(),
+  ];
+  // Left to pace alone, the retry would go to grok.
+  assert.equal(pickPool('build', pools().slice(1), { effortTier: 'low' }).pick.pool, 'grok');
+  const { result } = await ruleDispatch([signInFailure, good], {
+    pools: pools(), preferredPool: 'claude-code', refreshPools: async () => pools(),
+  });
+  assert.equal(result.attempts[0].model, null);
+  assert.equal(result.attempts[0].failureKind, 'auth');
+  assert.deepEqual(pickedPools(result), ['claude-code', 'claude-code:b']);
 });
 
 test('failure rule: not-produced is retried on the same pool, forced, in a fresh session, with the failure attached', async () => {
