@@ -237,19 +237,29 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       : null;
     let stalledBy = null;
     const spawnedAtMs = Date.now();
-    const progressPoll = noProgressMs == null ? null : setInterval(() => {
+    const stopWhenStill = (limitMs, readAt, reason) => setInterval(() => {
       if (stalled || cancelled || timedOut) return;
-      let changedAt = null;
-      try { changedAt = opts.fileChangedAt(); } catch { changedAt = null; }
-      if (!Number.isFinite(changedAt)) return;
-      if (Date.now() - Math.max(spawnedAtMs, changedAt) < noProgressMs) return;
+      let at = null;
+      try { at = readAt(); } catch { at = null; }
+      if (!Number.isFinite(at)) return;
+      if (Date.now() - Math.max(spawnedAtMs, at) < limitMs) return;
       stalled = true;
-      stalledBy = 'no-progress';
+      stalledBy = reason;
       if (silenceTimer) clearTimeout(silenceTimer);
       stopChild('SIGTERM');
       forceKillTimer ??= setTimeout(() => stopChild('SIGKILL'), 2000);
-    }, Math.min(60_000, Math.max(250, Math.floor(noProgressMs / 4))));
+    }, Math.min(60_000, Math.max(250, Math.floor(limitMs / 4))));
+    const progressPoll = noProgressMs == null ? null
+      : stopWhenStill(noProgressMs, () => opts.fileChangedAt(), 'no-progress');
     progressPoll?.unref?.();
+    // No new ground: an analyze step's counterpart, from `newGroundAt()` (the
+    // last tool call on an unused target, new analysis text or file change).
+    const newGroundMs = Number(opts.newGroundTimeoutSec) > 0 && typeof opts.newGroundAt === 'function'
+      ? Number(opts.newGroundTimeoutSec) * 1000
+      : null;
+    const newGroundPoll = newGroundMs == null ? null
+      : stopWhenStill(newGroundMs, () => opts.newGroundAt(), 'no-new-ground');
+    newGroundPoll?.unref?.();
     const cancelPoll = typeof opts.shouldCancel === 'function' ? setInterval(() => {
       if (cancelled || !opts.shouldCancel()) return;
       cancelled = true;
@@ -323,6 +333,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
       if (progressPoll) clearInterval(progressPoll);
+      if (newGroundPoll) clearInterval(newGroundPoll);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
@@ -359,6 +370,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
       if (progressPoll) clearInterval(progressPoll);
+      if (newGroundPoll) clearInterval(newGroundPoll);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);

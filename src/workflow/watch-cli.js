@@ -650,6 +650,8 @@ export function notableWatchEvents({
         // Set instead when the step was stopped for changing no file.
         ...((payload.noProgressSec ?? record?.noProgressSec) != null
           ? { noProgressSec: payload.noProgressSec ?? record?.noProgressSec } : {}),
+        ...((payload.noNewGroundSec ?? record?.noNewGroundSec) != null
+          ? { noNewGroundSec: payload.noNewGroundSec ?? record?.noNewGroundSec } : {}),
         partialOutput: payload.partialOutput ?? record?.partialOutput ?? null,
         willRetry: payload.willRetry === true,
       });
@@ -1168,7 +1170,9 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
       return `${glyphs().warn} ${event.actionId} stalled on ${event.pool ?? '?'} · `
         + (event.noProgressSec != null
           ? `no file change for ${formatDuration(event.noProgressSec)} · `
-          : `silent for ${formatDuration(event.silentSec)} · `)
+          : event.noNewGroundSec != null
+            ? `no new file or command for ${formatDuration(event.noNewGroundSec)} · `
+            : `silent for ${formatDuration(event.silentSec)} · `)
         + (event.willRetry ? 'retrying on another pool' : 'no retry left');
     case 'attempt.quota':
       return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · `

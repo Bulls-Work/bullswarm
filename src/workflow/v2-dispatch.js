@@ -33,9 +33,11 @@ import {
   restoreChangedOutOfScope, runStepEvidence,
 } from './evidence-runner.js';
 import {
-  attemptSilenceTimeoutSec, noProgressLimitApplies, workerNoProgressTimeoutSec, workerSilenceTimeoutSec,
+  attemptSilenceTimeoutSec, noNewGroundLimitApplies, noProgressLimitApplies, workerNoNewGroundTimeoutSec,
+  workerNoProgressTimeoutSec, workerSilenceTimeoutSec,
 } from './dispatch-silence.js';
 import { createFileChangeClock } from '../lib/stale.js';
+import { createNewGroundTracker } from '../lib/new-ground.js';
 import { preparePools, retryPoolTiers, selectedModel } from './dispatch-pools.js';
 import { attemptPaths, evidenceLogFile, fileBytes, runIdFromPaths, withAttemptArtifacts } from './dispatch-attempt-files.js';
 import {
@@ -222,6 +224,7 @@ export async function dispatchV2Action({
   // Seconds a build or chore step may change no file before its worker is
   // stopped as `stalled`; null reads BULLSWARM_WORKER_NO_PROGRESS_SEC, 0 is off.
   noProgressTimeoutSec = null,
+  noNewGroundTimeoutSec = null,
   shouldCancel = null,
   onAttempt = null,
   onSpawn = null,
@@ -309,6 +312,11 @@ export async function dispatchV2Action({
     ? (noProgressTimeoutSec !== null && noProgressTimeoutSec !== undefined
       ? Number(noProgressTimeoutSec)
       : workerNoProgressTimeoutSec(parentEnv))
+    : 0;
+  const noNewGroundSec = noNewGroundLimitApplies(action)
+    ? (noNewGroundTimeoutSec !== null && noNewGroundTimeoutSec !== undefined
+      ? Number(noNewGroundTimeoutSec)
+      : workerNoNewGroundTimeoutSec(parentEnv))
     : 0;
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
   const failedProbes = new Set();
@@ -737,6 +745,9 @@ export async function dispatchV2Action({
       actionId: action.id, attempt: ordinal, startedAt, ...expected,
     }));
     let workerPid = null;
+    // Analyze steps: the last new tool target, new analysis text or edit.
+    const newGround = noNewGroundSec > 0 ? createNewGroundTracker({ cwd: targetDir, startedAtMs: Date.parse(startedAt) }) : null;
+    const editClock = newGround ? createFileChangeClock({ streamFile: files.streamFile, targetDir: null, action, startedAtMs: Date.parse(startedAt) }) : null;
     let verdict;
     let snapshot = { ok: false, statText: '', changedFiles: [] };
     let deliverableFact = null;
@@ -755,6 +766,10 @@ export async function dispatchV2Action({
             streamFile: files.streamFile, targetDir, action, startedAtMs: Date.parse(startedAt),
           }),
         } : {}),
+        ...(newGround ? {
+          newGroundTimeoutSec: noNewGroundSec,
+          newGroundAt: () => Math.max(newGround.lastAt(), editClock() ?? 0),
+        } : {}),
         processGroup: true,
         onSpawn: (pid) => {
           workerPid = pid;
@@ -763,7 +778,7 @@ export async function dispatchV2Action({
         },
         outputValidator,
         onActivity,
-        onAgentEvent,
+        onAgentEvent: newGround ? (event, fullSummary) => { newGround.observe(event, fullSummary); onAgentEvent?.(event, fullSummary); } : onAgentEvent,
         onAgentProgress,
         bullswarmDir,
         poolName: pool.name,
@@ -1118,8 +1133,10 @@ export async function dispatchV2Action({
       ...(kind === 'stalled'
         ? {
           stalled: true, partialOutput: files.outFile,
-          // The limit that stopped it: silence, or no file change.
-          ...(verdict?.meta?.stalledBy === 'no-progress' ? { noProgressSec } : { silentSec: attemptSilenceSec }),
+          // The limit that stopped it: silence, no file change, or no new ground.
+          ...(verdict?.meta?.stalledBy === 'no-progress' ? { noProgressSec }
+            : verdict?.meta?.stalledBy === 'no-new-ground' ? { noNewGroundSec }
+              : { silentSec: attemptSilenceSec }),
         }
         : {}),
     });
@@ -1223,7 +1240,9 @@ export async function dispatchV2Action({
     } else if (kind === 'stalled') {
       fallbackWhy = verdict?.meta?.stalledBy === 'no-progress'
         ? `fallback from ${pool.name} after no file change for ${Math.round(noProgressSec)}s`
-        : `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
+        : verdict?.meta?.stalledBy === 'no-new-ground'
+          ? `fallback from ${pool.name} after no new file or command for ${Math.round(noNewGroundSec)}s`
+          : `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
     }
   }
 

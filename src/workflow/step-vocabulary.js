@@ -243,6 +243,8 @@ export function poolCausedPools(attempts, actionId) {
 // The needs-you header label of a `stalled` step stopped for changing no file
 // (its attempt records noProgressSec): it kept working, it did not go silent.
 export const STALLED_NO_PROGRESS_LABEL = 'worker changed no file';
+// The same for an analyze step stopped for only repeating earlier reads.
+export const STALLED_NO_NEW_GROUND_LABEL = 'worker kept repeating the same reads';
 
 // The needs-you header label per failureKind (stage-3 §2.5). `failed-evidence`
 // has two: the caller picks by the type of the first failing item.

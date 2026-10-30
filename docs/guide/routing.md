@@ -87,6 +87,8 @@ The silence clock bounds silence, not run time: it restarts on every byte a work
 
 Output alone restarts the silence clock, so a `build` or `chore` worker that keeps reading files but changes none is also stopped as stalled after `BULLSWARM_WORKER_NO_PROGRESS_SEC` (default 3600 seconds, `0` turns it off) without a file change, counted from the attempt's start or its last file change. The reason reads `stalled: no file change for 60 min, the worker was stopped`, and the fallback below applies the same way.
 
+An `analyze` worker that keeps re-reading the same files is stopped as stalled after `BULLSWARM_WORKER_NO_NEW_GROUND_SEC` (default 3600 seconds, `0` turns it off) without new ground: a tool call on a target it has not used in this attempt, a new reply longer than 200 characters, or an edit. The reason reads `stalled: no new file or command for 60 min, the worker was stopped`.
+
 When an attempt stalls, the run does not stop and the work is not lost:
 
 - the worker's process is ended and **whatever it had already written stays on disk** — the retry writes a new `out-<action>-attempt-<n>` file beside it, never over it;

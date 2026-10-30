@@ -66,8 +66,10 @@ const ATTEMPT_FIELDS = new Set([
   // the threshold that ended it. Absent on every attempt that did not stall,
   // and on every attempt recorded before the free-pool stall clock existed.
   // `noProgressSec` replaces `silentSec` on a step stopped because it changed
-  // no file for that long (BULLSWARM_WORKER_NO_PROGRESS_SEC).
-  'stalled', 'partialOutput', 'silentSec', 'noProgressSec',
+  // no file for that long (BULLSWARM_WORKER_NO_PROGRESS_SEC); `noNewGroundSec`
+  // on an analyze step that only repeated earlier work for that long
+  // (BULLSWARM_WORKER_NO_NEW_GROUND_SEC).
+  'stalled', 'partialOutput', 'silentSec', 'noProgressSec', 'noNewGroundSec',
   // Prior-attempt handoff: the finished attempt records the out file byte
   // count (whenever the file exists, including failures), the persisted
   // stream path, the diff snapshot taken at worker exit, and the file
