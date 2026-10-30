@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A pre-rename `connectors/opencode2.json` is a copy of the contrib opencode connector. An unmodified copy is retired. An edited copy is kept and reported, and its enabled flag, reasoning, tiers and pins stay on `opencode2`, so `strategy set-provider opencode2 off` turns that pool off. `set-provider` fails when the saved flag is not the value it just wrote. (#39)
+- A pre-rename `connectors/opencode2.json` is a copy of the contrib opencode connector. An unmodified copy is retired. An edited copy is kept and reported, and its enabled flag, reasoning, tiers and pins stay on `opencode2`, so `strategy set-provider opencode2 off` turns that pool off, and `providers.json` keeps `opencode2` enabled. A copy that is not valid JSON defines no pool and does not block the rename; it is still reported as broken. Retiring a copy renames the `opencode2` keys on the next load in the same process. `set-provider` fails when the saved flag is not the value it just wrote. (#39)
 
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 

@@ -70,11 +70,13 @@ function legacyConnectorPoolNames(bullswarmDir) {
   try { files = readdirSync(dir); } catch { return names; }
   for (const file of files) {
     if (!file.endsWith('.json') || file.startsWith('_') || file.startsWith('.')) continue;
+    let parsed;
+    // An unparsable copy defines no pool: the loader skips it, so it must not
+    // block the rename. The connector-copy warnings still report it as broken.
+    try { parsed = JSON.parse(readFileSync(join(dir, file), 'utf8')); } catch { continue; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
     names.add(file.slice(0, -'.json'.length));
-    try {
-      const parsed = JSON.parse(readFileSync(join(dir, file), 'utf8'));
-      if (typeof parsed?.name === 'string' && parsed.name) names.add(parsed.name);
-    } catch { /* the file stem still names the connector */ }
+    if (typeof parsed.name === 'string' && parsed.name) names.add(parsed.name);
   }
   return names;
 }
@@ -206,10 +208,11 @@ function migrateProvidersFile(bullswarmDir) {
   const path = join(bullswarmDir, 'providers.json');
   const value = parseJson(path);
   if (!value || typeof value !== 'object' || !Array.isArray(value.enabled)) return false;
+  const preserved = legacyConnectorPoolNames(bullswarmDir);
   const next = [];
   let changed = false;
   for (const provider of value.enabled) {
-    const renamed = migratedPoolName(provider);
+    const renamed = isPreservedPoolName(provider, preserved) ? provider : migratedPoolName(provider);
     if (renamed !== provider) changed = true;
     if (!next.includes(renamed)) next.push(renamed);
   }
@@ -334,15 +337,27 @@ function containsMigratablePoolReference(value, parentKey = '', preserved = null
 
 // The check parses state.json (hundreds of decision-log entries) and walks
 // every value; every state load asks it. The answer only changes when one
-// of the three files does, so it is remembered per file fingerprint.
+// of the three files, or the connector copies they are checked against,
+// does, so it is remembered per file fingerprint.
 const migrationCheckCache = new Map();
 function homeMigrationFingerprint(bullswarmDir) {
-  return ['state.json', 'routing.json', 'providers.json'].map((name) => {
+  const stamp = (path) => {
     try {
-      const stat = statSync(join(bullswarmDir, name));
+      const stat = statSync(path);
       return `${stat.size}:${stat.mtimeMs}`;
     } catch { return 'absent'; }
-  }).join('|');
+  };
+  const files = ['state.json', 'routing.json', 'providers.json']
+    .map((name) => stamp(join(bullswarmDir, name)));
+  let copies = 'absent';
+  try {
+    copies = readdirSync(join(bullswarmDir, 'connectors'))
+      .filter((file) => file.endsWith('.json'))
+      .sort()
+      .map((file) => `${file}=${stamp(join(bullswarmDir, 'connectors', file))}`)
+      .join(',');
+  } catch { /* no connectors directory */ }
+  return `${files.join('|')}|${copies}`;
 }
 
 function homeMigrationNeeded(bullswarmDir) {
@@ -363,7 +378,8 @@ function homeMigrationNeededUncached(bullswarmDir) {
     Array.isArray(lane?.order) && lane.order.some((pool) =>
       migratedPoolName(pool) !== pool && !isPreservedPoolName(pool, preserved)))) return true;
   const providers = parseJson(join(bullswarmDir, 'providers.json'));
-  if (providers?.enabled?.some?.((pool) => migratedPoolName(pool) !== pool)) return true;
+  if (providers?.enabled?.some?.((pool) =>
+    migratedPoolName(pool) !== pool && !isPreservedPoolName(pool, preserved))) return true;
   for (const dir of [join(bullswarmDir, 'meters'), join(bullswarmDir, 'meters', 'history')]) {
     try {
       if (readdirSync(dir).some((file) => {
