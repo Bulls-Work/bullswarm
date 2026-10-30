@@ -12,8 +12,10 @@ import {
   packagedConnectorSources, retiredConnectorCopies, syncConnectorCopies,
 } from '../src/lib/connector-copies.js';
 import { loadProviders } from '../src/lib/providers.js';
+import { buildPools } from '../src/lib/config.js';
 import { modelProfile } from '../src/lib/usage.js';
 import { upgradeConnectorMetadata } from '../src/setup.js';
+import { cmdStrategy } from '../src/strategy-cli.js';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 // Byte-for-byte what `bullswarm setup` 0.28.8 copied into <home>/connectors/.
@@ -130,6 +132,45 @@ test('a field removed from the copy that every version shipped counts as an edit
     { staleFields: [], editedFields: ['bin'] });
   // An emptied list is not a shipped value.
   assert.deepEqual(compareCopy({ name: 'x', bin: 'x', lanes: [], added: 1 }, packaged, history).editedFields, ['lanes']);
+});
+
+/** The packaged contrib connector, under the pre-rename pool name a 0.28 setup wrote. */
+function preRenameOpenCodeCopy(extra = {}) {
+  const copy = JSON.parse(readFileSync(join(REPO, 'providers', 'contrib', 'opencode', 'connector.json'), 'utf8'));
+  copy.name = 'opencode2';
+  Object.assign(copy, extra);
+  return `${JSON.stringify(copy, null, 2)}\n`;
+}
+
+test('a pre-rename opencode2.json copy is not a live pool that ignores set-provider off', async () => {
+  const unmodified = home({ 'opencode2.json': preRenameOpenCodeCopy() });
+  try {
+    const copies = inspectConnectorCopies(unmodified.dir, { loader: LOADER });
+    assert.equal(copies.length, 1);
+    assert.equal(copies[0].provider, 'opencode');
+    assert.equal(copies[0].file, 'opencode2.json');
+    assert.equal(copies[0].status, 'older-copy');
+    const actions = syncConnectorCopies(unmodified.dir, { loader: LOADER });
+    assert.deepEqual(actions.map(({ file, action }) => ({ file, action })),
+      [{ file: 'opencode2.json', action: 'retired' }]);
+    assert.equal(existsSync(join(unmodified.dir, 'connectors', 'opencode2.json')), false);
+    assert.equal(loadProviders(unmodified.dir, LOADER).connectors.opencode2, undefined);
+  } finally { unmodified.cleanup(); }
+});
+
+test('an edited pre-rename opencode2.json copy keeps set-provider off', async () => {
+  const edited = home({ 'opencode2.json': preRenameOpenCodeCopy({ operatorNote: 'keep this copy' }) });
+  try {
+    const code = await cmdStrategy(['set-provider', 'opencode2', 'off', '--yes'], { bullswarmDir: edited.dir });
+    assert.equal(code, 0);
+    const pool = buildPools(edited.dir, Date.now(), {}, LOADER).pools.find((entry) => entry.name === 'opencode2');
+    assert.equal(pool?.enabled, false);
+    const [copy] = inspectConnectorCopies(edited.dir, { loader: LOADER });
+    assert.equal(copy.provider, 'opencode');
+    assert.equal(copy.status, 'edited');
+    assert.match(connectorCopyWarnings([copy]).join('\n'), /opencode2\.json/);
+    assert.equal(existsSync(join(edited.dir, 'connectors', 'opencode2.json')), true);
+  } finally { edited.cleanup(); }
 });
 
 test('every shipped connector.json is covered by its connector-history.json', () => {
