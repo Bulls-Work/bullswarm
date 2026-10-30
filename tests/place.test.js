@@ -3,7 +3,7 @@
 // snapshot directory so the real bin never calls a provider.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -324,6 +324,7 @@ function runPlace(home, snaps, argv) {
     cwd: ROOT,
     env: {
       ...process.env,
+      HOME: home,
       BULLSWARM_HOME: home,
       BULLSWARM_NO_PACKAGED_PROVIDERS: '1',
       BULLSWARM_DISABLE_CLAUDE_PROFILES: '1',
@@ -398,4 +399,155 @@ test('the real bin picks from snapshot meters and writes neither state nor the p
     rmSync(home, { recursive: true, force: true });
     rmSync(snaps, { recursive: true, force: true });
   }
+});
+
+// --- what place reads, and what it must never touch --------------------------
+
+function metersFiles(home) {
+  const dir = join(home, 'meters');
+  return existsSync(dir) ? readdirSync(dir) : [];
+}
+
+function readsLog(home) {
+  const path = join(home, 'meters', 'reads.jsonl');
+  return existsSync(path)
+    ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    : [];
+}
+
+function cachedPool(name, bin, used, fiveHour) {
+  return {
+    ...pool({ name, bin, usedPct: used, fiveHourUsedPct: fiveHour, fiveHourResetsAt: new Date(Date.now() + 4 * 3600_000).toISOString() }),
+    meterSnapshot: { state: 'ok', stale: false },
+  };
+}
+
+function writePoolsCacheFile(home, savedAt, pools) {
+  mkdirSync(join(home, 'cache'), { recursive: true });
+  writeFileSync(join(home, 'cache', 'pools.json'), JSON.stringify({
+    schema: 'bullswarm.pools-cache.v1', savedAt, pools,
+  }));
+}
+
+// Stand-in providers: each readUsage appends its pool to stub-reads.log and
+// returns a fresh reading, so a live read is visible and no real provider is
+// ever called.
+function stubProviders(home) {
+  const dirs = { 'claude-code': ['/tmp/default-claude', 'claude'], codex: [undefined, 'codex'], grok: [undefined, 'grok'] };
+  for (const [name, [configDir, bin]] of Object.entries(dirs)) {
+    // The provider's own connector.json replaces the plain one cliHome wrote.
+    rmSync(join(home, 'connectors', `${name}.json`), { force: true });
+    mkdirSync(join(home, 'providers', name), { recursive: true });
+    writeFileSync(join(home, 'providers', name, 'connector.json'), JSON.stringify(connector(name, { bin, ...(configDir ? { configDirs: [configDir] } : {}) })));
+    writeFileSync(join(home, 'providers', name, 'provider.mjs'), `
+import { appendFileSync } from 'node:fs';
+export const name = '${name}';
+export async function readUsage(pool) {
+  appendFileSync(${JSON.stringify(join(home, 'stub-reads.log'))}, pool.name + '\\n');
+  const now = Date.now();
+  return {
+    captured_at: new Date(now).toISOString(), state: 'ok', stale: false,
+    five_hour: { utilization: 10, resets_at: new Date(now + 4 * 3600_000).toISOString() },
+    seven_day: { utilization: pool.name === 'claude-code' ? 20 : 50, resets_at: new Date(now + 3.5 * 24 * 3600_000).toISOString() },
+  };
+}
+`);
+  }
+}
+
+function stubReads(home) {
+  const path = join(home, 'stub-reads.log');
+  return existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).sort() : [];
+}
+
+function runNoSnaps(home, argv) {
+  // No snapshot dir. A throwaway HOME hides real credentials, and node:test's
+  // context is dropped so the stub providers under <home>/providers load.
+  const env = { ...process.env, HOME: home, BULLSWARM_HOME: home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1', BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' };
+  for (const key of ['BULLSWARM_METER_SNAPSHOT_DIR', 'FORCE_COLOR', 'NO_COLOR', 'NODE_TEST_CONTEXT']) delete env[key];
+  return spawnSync(process.execPath, [BIN, ...argv], { cwd: ROOT, env, encoding: 'utf8', input: '', timeout: 60_000 });
+}
+
+test('a usage error reads no meter and creates no meter file', () => {
+  const { home, snaps } = cliHome();
+  try {
+    stubProviders(home);
+    for (const argv of [
+      ['place', '--role', 'bogus'],
+      ['place', '--role', 'lead', '--five-hour-cap', 'x'],
+      ['place', '--role', 'lead', '--avoid', ' , '],
+      ['place', '--role', 'lead', '--max-age', 'soon'],
+    ]) {
+      const result = runNoSnaps(home, argv);
+      assert.equal(result.status, 2, `${argv.join(' ')}: ${result.stdout}${result.stderr}`);
+    }
+    assert.deepEqual(stubReads(home), []);
+    assert.deepEqual(metersFiles(home), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(snaps, { recursive: true, force: true });
+  }
+});
+
+test('a fresh pools cache answers without a live read, and says so', () => {
+  const { home, snaps } = cliHome();
+  try {
+    stubProviders(home);
+    writePoolsCacheFile(home, Date.now() - 42_000, [
+      cachedPool('claude-code', 'claude', 20, 10),
+      cachedPool('claude-code:work', 'claude', 50, 10),
+      cachedPool('grok', 'grok', 5, 5),
+    ]);
+    const json = runNoSnaps(home, ['place', '--role', 'lead', '--json']);
+    assert.equal(json.status, 0, json.stderr);
+    const doc = JSON.parse(json.stdout);
+    assert.equal(doc.pick.login, 'personal');
+    assert.equal(doc.source, 'cache');
+    assert.ok(doc.cacheAgeSeconds >= 42 && doc.cacheAgeSeconds < 60, String(doc.cacheAgeSeconds));
+    assert.equal(JSON.stringify(doc).includes('grok'), false);
+    const plain = runNoSnaps(home, ['place', '--role', 'lead']);
+    assert.match(plain.stdout, /\nmeters: cache, \d+s old$/);
+    assert.deepEqual(stubReads(home), []);
+    assert.deepEqual(metersFiles(home), []);
+
+    const off = runNoSnaps(home, ['place', '--role', 'lead', '--max-age', '0', '--json']);
+    assert.equal(off.status, 0, off.stderr);
+    assert.equal(JSON.parse(off.stdout).source, 'live');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(snaps, { recursive: true, force: true });
+  }
+});
+
+test('a stale cache leads to a live read that never polls a non-Claude pool', () => {
+  const { home, snaps } = cliHome();
+  try {
+    stubProviders(home);
+    const cacheFile = join(home, 'cache', 'pools.json');
+    writePoolsCacheFile(home, Date.now() - 3600_000, [cachedPool('claude-code', 'claude', 99, 99)]);
+    const stale = readFileSync(cacheFile, 'utf8');
+    const result = runNoSnaps(home, ['place', '--role', 'lead', '--json']);
+    assert.equal(result.status, 0, result.stderr);
+    const doc = JSON.parse(result.stdout);
+    assert.equal(doc.source, 'live');
+    assert.equal(doc.pick.login, 'personal');
+    assert.deepEqual(stubReads(home), ['claude-code', 'claude-code:work']);
+    assert.deepEqual(readsLog(home).map((row) => row.pool).sort(), ['claude-code', 'claude-code:work']);
+    assert.equal(readFileSync(cacheFile, 'utf8'), stale);
+    const plain = runNoSnaps(home, ['place', '--role', 'lead', '--max-age', '0']);
+    assert.match(plain.stdout, /\nmeters: live read$/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(snaps, { recursive: true, force: true });
+  }
+});
+
+test('no eligible pick still explains the move numbers for a current login past its limit', () => {
+  const over = pool({ name: 'claude-code:a', fiveHourUsedPct: 90, fiveHourResetsAt: fiveReset(40) });
+  const doc = place([over], { role: 'lead', current: 'a' });
+  assert.equal(doc.pick, null);
+  assert.equal(doc.current.moveSuggested, false);
+  assert.match(doc.current.moveReason, /past its limit/);
+  assert.match(doc.current.moveReason, /nothing better is free/);
+  assert.match(doc.current.moveReason, /90% used/);
 });
