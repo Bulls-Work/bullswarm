@@ -83,7 +83,7 @@ test('top-level run validates heartbeat interval before dispatch', () => {
     const result = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '0', 'TASK', '--json']);
     assert.equal(result.status, 2);
     assert.match(result.stderr, /heartbeat.*greater than or equal to 1/);
-    assert.equal(result.stdout, '');
+    assert.match(JSON.parse(result.stdout).message, /heartbeat.*greater than or equal to 1/);
     const missing = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '--json', 'TASK']);
     assert.equal(missing.status, 2);
     assert.match(missing.stderr, /heartbeat.*greater than or equal to 1/);
@@ -353,7 +353,7 @@ test('run rejects an unknown or valueless --reasoning with exit 2 before dispatc
     const bogus = run(f.home, ['run', '--lane', 'chore', '--reasoning', 'ludicrous', 'TASK', '--json']);
     assert.equal(bogus.status, 2);
     assert.match(bogus.stderr, /--reasoning must be one of low, medium, high, xhigh, max, default/);
-    assert.equal(bogus.stdout, '');
+    assert.match(JSON.parse(bogus.stdout).message, /--reasoning must be one of low, medium, high, xhigh, max, default/);
     const missing = run(f.home, ['run', '--lane', 'chore', '--reasoning', '--json', 'TASK']);
     assert.equal(missing.status, 2);
     assert.match(missing.stderr, /--reasoning requires a value/);

@@ -31,6 +31,7 @@ import { isTerminalWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
 import { aggregateAttemptUsage } from './rollup.js';
 import { helpText, usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { poolLabel } from '../lib/pool-labels.js';
 import { routeSummary } from './step-route.js';
@@ -71,6 +72,7 @@ export function cmdRuns(args, { alias = ['workflow', 'runs'] } = {}) {
   const SUBS = ['list', 'show', 'result', 'delete'];
   if (sub && !SUBS.includes(sub)) {
     console.error(runsUsage());
+    reportUsageError({ message: `"${alias.join(' ')} ${sub}" is not a subcommand`, usage: usageLine(alias) });
     return 2;
   }
   // Same gate as every other command path, against this subcommand's row of
@@ -105,7 +107,7 @@ function typedFlagErrors(opts, path) {
   }
   if (!problems.length) return null;
   for (const problem of problems) console.error(`✗ ${problem}`);
-  console.error(`usage: ${usageLine(path)}`);
+  console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: problems.join('\n'), usage: usageLine(path) });
   return 2;
 }
 
@@ -189,12 +191,14 @@ function runsList(opts) {
   if (opts.maxAge !== undefined) {
     // bin/bullswarm.js answers `workflow runs --json --max-age <s>` from the
     // shared cache before the CLI loads; anything else with it is refused.
+    reportUsageError({ message: '--max-age needs whole seconds (1-3600) with --json and no filter', usage: usageLine(['workflow', 'runs']) });
     return err('--max-age needs whole seconds (1-3600) with --json and no filter: it answers from the shared runs cache', 2);
   }
   let initiatedRange;
   try {
     initiatedRange = resolveInitiatedRange(opts);
   } catch (error) {
+    reportUsageError({ message: error.message, usage: usageLine(['workflow', 'runs']) });
     return err(error.message, 2);
   }
   const all = listRuns(BULLSWARM_DIR());
@@ -306,7 +310,7 @@ function printV2Advisories(state) {
 }
 
 function runsShow(idToken, opts) {
-  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2);
+  if (!idToken) { reportUsageError({ message: 'missing run id', usage: usageLine(['workflow', 'runs', 'show']) }); return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2); }
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -386,7 +390,7 @@ function attemptBytesText(bytes) {
 }
 
 function runsResult(idToken, opts) {
-  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2);
+  if (!idToken) { reportUsageError({ message: 'missing run id', usage: usageLine(['workflow', 'runs', 'result']) }); return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2); }
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -469,7 +473,7 @@ function runsResult(idToken, opts) {
 }
 
 function runsDelete(idToken, opts, rest) {
-  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2);
+  if (!idToken) { reportUsageError({ message: 'missing run id', usage: usageLine(['workflow', 'runs', 'delete']) }); return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2); }
   if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`, 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
@@ -519,6 +523,7 @@ export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent =
     else if (arg === '--force') opts.force = true;
     else if (arg.startsWith('-')) {
       console.error(`✗ unknown flag ${flagName(arg) ? `--${flagName(arg)}` : arg} for workflow reindex`);
+      reportUsageError({ message: `unknown flag ${flagName(arg) ? `--${flagName(arg)}` : arg} for workflow reindex`, usage: usageLine(['workflow', 'reindex']) });
       return 2;
     }
   }

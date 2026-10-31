@@ -44,14 +44,14 @@ function listFlag(opts, flag, what) {
 function readSchemaFile(path) {
   let text;
   try { text = readFileSync(resolve(path), 'utf8'); }
-  catch (error) { return { error: `cannot read --answer-schema ${path}: ${error.message}` }; }
+  catch (error) { return { error: `cannot read --answer-schema ${path}: ${error.message}`, input: true }; }
   try { return { schema: JSON.parse(text) }; }
-  catch (error) { return { error: `--answer-schema ${path} is not valid JSON: ${error.message}` }; }
+  catch (error) { return { error: `--answer-schema ${path} is not valid JSON: ${error.message}`, input: true }; }
 }
 
 /**
  * Read `bullswarm run` options (parseArgs output). Returns `{ request }`, or
- * `{ error }` for a usage error. `answerSchema` stands in for reading the
+ * `{ error }` for a usage error, `{ error, input: true }` for a file that cannot be read. `answerSchema` stands in for reading the
  * `--answer-schema` file.
  */
 export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {}) {
@@ -95,14 +95,14 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
   if (answer === undefined && opts['answer-schema'] !== undefined) {
     if (missing(opts['answer-schema'])) return { error: '--answer-schema requires a file (a JSON schema)' };
     const read = readSchemaFile(opts['answer-schema']);
-    if (read.error) return { error: read.error };
+    if (read.error) return { error: read.error, input: true };
     answer = read.schema;
   }
 
   let taskText;
   if (taskFile) {
     try { taskText = readFileSync(taskFile, 'utf8'); }
-    catch (error) { return { error: `cannot read --task-file ${taskFile}: ${error.message}` }; }
+    catch (error) { return { error: `cannot read --task-file ${taskFile}: ${error.message}`, input: true }; }
   } else taskText = opts.prompt ?? rest.join(' ');
   if (!taskText.trim()) return { error: 'empty task: pass --task-file, --prompt, or the task as arguments' };
 
