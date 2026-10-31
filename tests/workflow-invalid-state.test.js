@@ -133,3 +133,36 @@ test('a verb that loads a repaired state removes the marker', (t) => {
   cli(r.home, ['steer', r.token, '--message', 'hi']);
   assert.equal(existsSync(join(r.runDir, 'state-invalid.json')), false);
 });
+
+test('a marker goes stale once state.json changes, so a hand-repaired run is not shown as invalid', async () => {
+  const { writeInvalidStateMarker, readInvalidStateMarker } = await import('../src/workflow/invalid-state.js');
+  const { mkdtempSync, rmSync, writeFileSync, utimesSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const runDir = mkdtempSync(join(tmpdir(), 'bullswarm-invalid-stale-'));
+  try {
+    const file = join(runDir, 'state.json');
+    writeFileSync(file, '{"broken":');
+    utimesSync(file, new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+    writeInvalidStateMarker(runDir, 'Invalid V2 autonomous workflow data: broken', 'steer');
+    assert.ok(readInvalidStateMarker(runDir), 'the marker reads while state.json is untouched');
+    writeFileSync(file, '{"repaired": true}\n');
+    assert.equal(readInvalidStateMarker(runDir), null, 'a changed state.json makes the marker stale');
+  } finally { rmSync(runDir, { recursive: true, force: true }); }
+});
+
+test('an unreadable state.json is refused like an invalid one, never thrown', { skip: process.getuid?.() === 0 }, async () => {
+  const { invalidStateOf } = await import('../src/workflow/invalid-state.js');
+  const { chmodSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const runDir = mkdtempSync(join(tmpdir(), 'bullswarm-invalid-unreadable-'));
+  const file = join(runDir, 'state.json');
+  try {
+    writeFileSync(file, '{}');
+    chmodSync(file, 0o000);
+    let result;
+    assert.doesNotThrow(() => { result = invalidStateOf(runDir); });
+    assert.match(result?.message ?? '', /EACCES|permission/i);
+  } finally { chmodSync(file, 0o600); rmSync(runDir, { recursive: true, force: true }); }
+});
