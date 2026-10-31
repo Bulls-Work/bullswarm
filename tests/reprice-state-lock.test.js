@@ -104,3 +104,85 @@ test('a row removed mid-reprice is reported as a failure and not resurrected', (
     assert.match(report.failures[0].error, /row-b/);
   } finally { f.cleanup(); }
 });
+
+// ---- rows matched by full content, not by a (possibly shifting) key ----
+
+function anonRow(n) {
+  const row = taskRow(`anon-${n}`);
+  delete row.id;
+  delete row.outFile;
+  row.wallSec = 10 + n; // distinguishes otherwise-equal rows
+  return row;
+}
+
+// Each reader call returns a distinct token count: 100 + call number (scan order).
+function countingReader() {
+  let n = 0;
+  return () => {
+    n += 1;
+    return { ...exactReader(), tokens: { ...exactReader().tokens, standardRead: 100 + n } };
+  };
+}
+
+function writeLog(home, rows) {
+  writeFileSync(join(home, 'state.json'), JSON.stringify({
+    strategy: { subscriptions: { codex: { monthlyPriceUsd: 30, quotaWindow: 'weekly' } } },
+    decisionLog: rows,
+  }));
+}
+
+test('rows without id/outFile: a removal before them never moves usage onto another row', () => {
+  const f = fixture();
+  try {
+    writeLog(f.home, [anonRow(1), anonRow(2), anonRow(3)]);
+    let injected = false;
+    const report = run(f.home, {
+      readTranscriptUsage: countingReader(),
+      onRow: () => {
+        if (injected) return;
+        injected = true;
+        updateState(f.home, (s) => { s.decisionLog.shift(); });
+      },
+    });
+    const log = stateOf(f.home).decisionLog;
+    assert.deepEqual(log.map((r) => r.wallSec), [12, 13]);
+    // scan order gave anon-2 -> 102, anon-3 -> 103; each keeps only its own.
+    assert.equal(log[0].usage.tokens.standardRead, 102);
+    assert.equal(log[1].usage.tokens.standardRead, 103);
+    assert.equal(report.failures.length, 1); // anon-1 is gone
+  } finally { f.cleanup(); }
+});
+
+test('two rows with the same id both get their own new usage', () => {
+  const f = fixture();
+  try {
+    writeLog(f.home, [taskRow('dup'), { ...taskRow('dup'), wallSec: 99 }]);
+    const report = run(f.home, { readTranscriptUsage: countingReader() });
+    const log = stateOf(f.home).decisionLog;
+    assert.equal(report.failures.length, 0);
+    assert.equal(log[0].usage.tokens.standardRead, 101);
+    assert.equal(log[1].usage.tokens.standardRead, 102);
+  } finally { f.cleanup(); }
+});
+
+test('a row changed concurrently with the same ts is reported, not overwritten', () => {
+  const f = fixture();
+  try {
+    let injected = false;
+    const report = run(f.home, {
+      onRow: () => {
+        if (injected) return;
+        injected = true;
+        updateState(f.home, (s) => {
+          const row = s.decisionLog.find((r) => r.id === 'row-b');
+          row.usage = { ...row.usage, tokens: { ...row.usage.tokens, standardRead: 4242 } };
+        });
+      },
+    });
+    const log = stateOf(f.home).decisionLog;
+    assert.equal(log.find((r) => r.id === 'row-b').usage.tokens.standardRead, 4242);
+    assert.equal(log.find((r) => r.id === 'row-a').usage.tokens.standardRead, 500);
+    assert.equal(report.failures.length, 1);
+    assert.match(report.failures[0].error, /row-b/);
+  } finally { f.cleanup(); }
+});
