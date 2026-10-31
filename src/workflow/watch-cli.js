@@ -9,6 +9,7 @@ import { withV2Cancellation } from './v2-cancellation.js';
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { MAX_TIMEOUT_SEC } from '../lib/run-delegate.js';
 import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, readKernelStderrTail } from './short-id.js';
 import { legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
 import { glyphs } from '../lib/glyphs.js';
@@ -1548,6 +1549,11 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         return 0;
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, Math.max(100, intervalMs)));
+    await new Promise((resolve) => setTimeout(resolve, pollDelayMs(intervalMs)));
   }
+}
+
+/** The watch's wait between polls: at least 100 ms, at most MAX_TIMEOUT_SEC (a timer fires after 1 ms past 2^31-1 ms). */
+export function pollDelayMs(intervalMs) {
+  return Math.min(MAX_TIMEOUT_SEC * 1000, Math.max(100, intervalMs));
 }

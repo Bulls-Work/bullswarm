@@ -24,7 +24,7 @@ import { attachForecast } from './lib/forecast.js';
 import {
   clearPoolLabel, poolLabel, poolLabelEntries, resolvePoolId, setPoolLabel, withPoolLabels,
 } from './lib/pool-labels.js';
-import { NO_CALLER_NOTICE, runStepProgram, runStepRequest } from './lib/run-step.js';
+import { NO_CALLER_NOTICE, runStepProgram, runStepRequest, unknownAvoidWarnings } from './lib/run-step.js';
 import { normaliseProgramV3 } from './workflow/program-v3.js';
 import { meterSignInDead, meterSignInText } from './workflow/dispatch-pools.js';
 import { previewStepPick } from './workflow/pick-preview.js';
@@ -358,6 +358,7 @@ async function cmdRun(opts) {
     // A preview is a pure read (D3): no strategy refresh, no ledger entry, no
     // decision log, no run folder.
     const { pools } = await buildPoolsLive(home, Date.now(), { getReadings: getAllMeterReadings });
+    for (const line of unknownAvoidWarnings(request, pools)) console.error(line);
     const [action] = normaliseProgramV3(runStepProgram(request)).steps;
     verdict = await previewStepPick({
       action, pools, bullswarmDir: home, coreState: state, targetDir: request.targetDir, runReasoning: request.reasoning,
@@ -366,6 +367,7 @@ async function cmdRun(opts) {
     // Only an explicitly approved strategy policy may change assignments.
     await maybeRefreshStrategy(home);
     const { pools } = await buildPoolsLive(home, Date.now(), { getReadings: getAllMeterReadings });
+    for (const line of unknownAvoidWarnings(request, pools)) console.error(line);
     verdict = await runOneStep({ bullswarmDir: home, request, pools });
   }
   emitRun(verdict, opts);

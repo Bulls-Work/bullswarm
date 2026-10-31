@@ -22,15 +22,25 @@ function toolOrCommandEvent(event) {
   return /\btool\b|\bcommand\b|\bfunction\b|\bshell\b/.test(kind);
 }
 
+/** The longest wall-clock limit a caller may set on a worker: 7 days. */
+export const MAX_TIMEOUT_SEC = 604_800;
+
 /**
  * Run one delegate and return the raw observation.
  * @returns Promise<{exitCode, signal, stdout, stderr, timedOut, cancelled}>
  */
+/**
+ * Seconds as a timer delay in ms, capped at MAX_TIMEOUT_SEC: setTimeout and
+ * setInterval fire after 1 ms for a delay above 2^31-1 ms (24.8 days). Null
+ * for no limit (missing, not a number, or 0 and below).
+ */
+export function timerMs(seconds) {
+  const sec = seconds == null ? NaN : Number(seconds);
+  return Number.isFinite(sec) && sec > 0 ? Math.min(sec, MAX_TIMEOUT_SEC) * 1000 : null;
+}
+
 export function runDelegate(connector, taskFile, targetDir, opts = {}) {
-  const configuredTimeout = opts.timeoutSec == null ? null : Number(opts.timeoutSec);
-  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
-    ? configuredTimeout * 1000
-    : null;
+  const timeoutMs = timerMs(opts.timeoutSec);
   const argv = opts.argv ?? argvWithModel(connector, {
     taskFile,
     cwd: resolve(targetDir),
@@ -213,7 +223,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     }, timeoutMs);
     // Silence, not run time: the clock restarts on every byte the worker
     // writes, so only a worker that has gone completely quiet is stopped.
-    const silenceMs = Number(opts.silenceTimeoutSec) > 0 ? Number(opts.silenceTimeoutSec) * 1000 : null;
+    const silenceMs = timerMs(opts.silenceTimeoutSec);
     let stalled = false;
     let silenceTimer = null;
     const armSilence = () => {

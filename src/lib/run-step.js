@@ -12,6 +12,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { MAX_TIMEOUT_SEC } from './run-delegate.js';
+import { modelFamilyOf } from './route.js';
 import { isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS } from './reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE } from '../workflow/action-validator.js';
 import { implicitV3Requirements, normaliseProgramV3, PROGRAM_V3_SCHEMA_VERSION } from '../workflow/program-v3.js';
@@ -50,6 +52,21 @@ function readSchemaFile(path) {
 }
 
 /**
+ * One warning per --avoid-pool / --avoid-provider name that matches no pool
+ * or provider here. The run goes on: a caller may pass one list to several machines.
+ */
+export function unknownAvoidWarnings(request, pools) {
+  const names = new Set((pools ?? []).map((pool) => pool?.name));
+  const providers = new Set((pools ?? []).map((pool) => modelFamilyOf(pool)));
+  const warn = (flag, list, known, what) => (list ?? []).filter((name) => !known.has(name))
+    .map((name) => `warning: --${flag} ${name} matches no ${what} (bullswarm pools lists them)`);
+  return [
+    ...warn('avoid-pool', request.route?.pools?.avoid, names, 'pool'),
+    ...warn('avoid-provider', request.route?.providers?.avoid, providers, 'provider'),
+  ];
+}
+
+/**
  * Read `bullswarm run` options (parseArgs output). Returns `{ request }`, or
  * `{ error }` for a usage error. `answerSchema` stands in for reading the
  * `--answer-schema` file.
@@ -59,8 +76,8 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
   if (lane === undefined || missing(lane)) return { error: `--lane is required (${LANES.join('|')})` };
   if (!LANES.includes(lane)) return { error: `--lane must be ${LANES.join(', ')} (got "${lane}")` };
   const heartbeatSec = opts.heartbeat == null || missing(opts.heartbeat) ? null : Number(opts.heartbeat);
-  if (missing(opts.heartbeat) || (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
-    return { error: '--heartbeat must be a number of seconds greater than or equal to 1' };
+  if (missing(opts.heartbeat) || (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1 || heartbeatSec > MAX_TIMEOUT_SEC))) {
+    return { error: `--heartbeat must be a number of seconds from 1 to ${MAX_TIMEOUT_SEC}` };
   }
   const effort = opts.effort ?? DEFAULT_EFFORT_BY_LANE[lane] ?? 'medium';
   if (!EFFORTS.includes(effort)) return { error: '--effort must be high, medium, or low' };
@@ -70,8 +87,9 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
   }
   if (missing(opts.model)) return { error: 'usage: --model requires a model id' };
   const timeoutSec = opts.timeout == null ? null : Number(opts.timeout);
-  if (missing(opts.timeout) || (timeoutSec != null && !(Number.isFinite(timeoutSec) && timeoutSec > 0))) {
-    return { error: '--timeout must be a number of seconds greater than 0' };
+  if (missing(opts.timeout)
+    || (timeoutSec != null && !(/^\d+(\.\d+)?$/.test(String(opts.timeout)) && timeoutSec >= 1 && timeoutSec <= MAX_TIMEOUT_SEC))) {
+    return { error: `--timeout must be a number of seconds from 1 to ${MAX_TIMEOUT_SEC}` };
   }
   if (missing(opts['add-dir'])) return { error: 'usage: --add-dir requires a directory' };
 
