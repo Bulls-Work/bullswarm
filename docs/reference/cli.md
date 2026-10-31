@@ -330,8 +330,8 @@ A refusal whose reset the provider named outlives a successful meter read: a
 live reading (say 52% used) does not lift it, and routing, `pools --json`
 (`quotaRefusal`) and the dashboard keep showing the pool refused until that
 reset. Only a read that shows the refused window began again lifts it earlier
-(the window's reset is more than 60 seconds later than the named one, or, for
-the 5-hour window, later at all). A refusal whose reset was measured or guessed
+(the window's reset is more than 60 seconds later than the named one: a
+provider names its reset to the minute, the meter to the second). A refusal whose reset was measured or guessed
 is replaced by the next live read, as before.
 
 A limit notice that says a usage window, a quota or a balance is spent is a

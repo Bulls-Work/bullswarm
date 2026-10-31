@@ -274,8 +274,7 @@ const NEW_WINDOW_SLACK_MS = 60_000;
  * Does the cached refusal marker still hold against a successful live read?
  * Only a marker whose reset the provider named does, while now is before that
  * reset, and not when the live reading shows the refused window began again:
- * its reset is later than the marker's by more than 60 s, or, for the 5h
- * window, later at all.
+ * its reset is later than the marker's by more than 60 s.
  */
 function namedRefusalHolds(cached, live, nowMs) {
   const marker = quotaRefusalOf(cached);
@@ -284,8 +283,9 @@ function namedRefusalHolds(cached, live, nowMs) {
   const key = MARKER_WINDOW_KEYS[marker.window];
   if (resetMs == null || !key || nowMs >= resetMs) return false;
   const liveResetMs = finiteMs(Date.parse(live[key]?.resets_at ?? ''));
-  const slack = key === 'five_hour' ? 0 : NEW_WINDOW_SLACK_MS;
-  return !(liveResetMs != null && liveResetMs > resetMs + slack);
+  // The provider names its reset to the minute and the meter's carries
+  // seconds: within 60 s it is the same window, for 5h as for weekly.
+  return !(liveResetMs != null && liveResetMs > resetMs + NEW_WINDOW_SLACK_MS);
 }
 
 /** The live reading with the cached marker and its refused window put back. */
