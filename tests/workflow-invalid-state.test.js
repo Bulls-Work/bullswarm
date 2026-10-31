@@ -59,14 +59,14 @@ const untouched = (r) => {
 };
 
 for (const how of ['bogus', 'not-json']) {
-  test(`${how} state: resume, cancel, steer, continue, add and runs result exit 1 naming the file, and write nothing`, (t) => {
+  test(`${how} state: resume, cancel, steer, continue and add exit 1 naming the file, and write only the marker`, (t) => {
     const r = brokenRun(t, how);
     const before = readFileSync(r.file, 'utf8');
     writeFileSync(join(r.home, 'part.json'), JSON.stringify({ steps: [{ id: 'more', prompt: 'More.' }] }));
     const T = r.token;
     const verbs = [
       ['resume', T], ['cancel', T], ['steer', T, '--message', 'hi'], ['continue', T, 'review'],
-      ['add', T, '--steps', join(r.home, 'part.json'), '--wait', '0'], ['runs', 'result', T],
+      ['add', T, '--steps', join(r.home, 'part.json'), '--wait', '0'],
     ];
     for (const args of verbs) {
       const out = cli(r.home, args);
@@ -78,28 +78,58 @@ for (const how of ['bogus', 'not-json']) {
     }
     untouched(r);
     assert.equal(readFileSync(r.file, 'utf8'), before, 'the state is not repaired');
+    const marker = JSON.parse(readFileSync(join(r.runDir, 'state-invalid.json'), 'utf8'));
+    assert.ok(marker.message.includes(r.message), marker.message);
+    assert.ok(marker.at && !Number.isNaN(Date.parse(marker.at)));
+    assert.ok(['resume', 'cancel', 'steer', 'continue', 'add'].includes(marker.by), marker.by);
   });
-
-  test(`${how} state: watch --until outcome exits 1 at once instead of waiting`, (t) => {
+  test(`${how} state with a marker: watch exits 1 at once, show and result report it`, (t) => {
     const r = brokenRun(t, how);
+    writeFileSync(join(r.runDir, 'state-invalid.json'), JSON.stringify({ message: r.message, at: new Date().toISOString(), by: 'resume' }));
     const started = Date.now();
-    const out = cli(r.home, ['watch', r.token, '--until', 'outcome', '--timeout', '30'], 20_000);
-    assert.equal(out.status, 1, `${out.stdout}${out.stderr}`);
-    assert.ok(Date.now() - started < 10_000, 'returned within a few seconds');
-    assert.ok(`${out.stdout}${out.stderr}`.includes(`has invalid saved state: `));
-    assert.ok(`${out.stdout}${out.stderr}`.includes(r.message));
-  });
-
-  test(`${how} state: runs show and the runs list say invalid state, not ongoing, exit 0`, (t) => {
-    const r = brokenRun(t, how);
+    for (const args of [['watch', r.token, '--until', 'outcome', '--timeout', '30'], ['watch', r.token, '--once'], ['runs', 'result', r.token]]) {
+      const out = cli(r.home, args, 20_000);
+      assert.equal(out.status, 1, `${args.join(' ')}: ${out.stdout}${out.stderr}`);
+      assert.ok(`${out.stdout}${out.stderr}`.includes(`✗ run ${r.token} has invalid saved state: ${r.message}`), `${args.join(' ')}: ${out.stdout}${out.stderr}`);
+    }
+    assert.ok(Date.now() - started < 15_000, 'returned within a few seconds');
     const shown = cli(r.home, ['runs', 'show', r.token]);
     assert.equal(shown.status, 0, shown.stderr);
     assert.match(shown.stdout, /invalid state/);
-    assert.doesNotMatch(shown.stdout, /\(ongoing\)/);
     assert.ok(shown.stdout.includes(r.message), shown.stdout);
     const list = cli(r.home, ['runs', '--all']);
     assert.equal(list.status, 0, list.stderr);
     assert.match(list.stdout, /invalid state/);
-    assert.ok(readdirSync(r.runDir).includes('state.json'));
+  });
+
+  test(`${how} state with NO marker: runs show and the list do not validate (as on main)`, (t) => {
+    const r = brokenRun(t, how);
+    const shown = cli(r.home, ['runs', 'show', r.token]);
+    assert.doesNotMatch(shown.stdout + shown.stderr, /invalid state|invalid saved state/);
+    const list = cli(r.home, ['runs', '--all']);
+    assert.doesNotMatch(list.stdout + list.stderr, /invalid state|invalid saved state/);
+    const watched = cli(r.home, ['watch', r.token, '--until', 'outcome', '--timeout', '2'], 20_000);
+    assert.doesNotMatch(watched.stdout + watched.stderr, /invalid saved state/);
+    assert.equal(existsSync(join(r.runDir, 'state-invalid.json')), false);
+  });
+
+  test(`${how} state: a kernel started on it writes the marker before exiting`, (t) => {
+    const r = brokenRun(t, how);
+    const out = cli(r.home, ['goal', '--resume', r.token, '--json', '--quiet']);
+    assert.notEqual(out.status, 0, `${out.stdout}${out.stderr}`);
+    const marker = JSON.parse(readFileSync(join(r.runDir, 'state-invalid.json'), 'utf8'));
+    assert.equal(marker.by, 'kernel');
+    assert.ok(marker.message.includes(r.message), marker.message);
   });
 }
+
+test('a verb that loads a repaired state removes the marker', (t) => {
+  const r = brokenRun(t, 'bogus');
+  assert.equal(cli(r.home, ['steer', r.token, '--message', 'hi']).status, 1);
+  assert.ok(existsSync(join(r.runDir, 'state-invalid.json')));
+  const state = JSON.parse(readFileSync(r.file, 'utf8'));
+  state.lifecycle.status = 'running';
+  writeFileSync(r.file, JSON.stringify(state));
+  cli(r.home, ['steer', r.token, '--message', 'hi']);
+  assert.equal(existsSync(join(r.runDir, 'state-invalid.json')), false);
+});
