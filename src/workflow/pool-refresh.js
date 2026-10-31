@@ -21,6 +21,15 @@ import { getAllMeterReadings } from '../meters/registry.js';
 /** Default: rebuild at most once every 15s unless forced. */
 export const DEFAULT_REFRESH_INTERVAL_MS = 15_000;
 
+// A caller's pools bound the run. When `initialPools` is a non-empty list, a
+// refreshed list keeps only the pools whose name is in it, with their fresh
+// readings and in the live list's order. A pool that vanishes from the live
+// list stays out; a pool that appears mid-run is NOT added (the trade-off for
+// the bound). Why: buildPoolsLive discovers every login on the machine, and a
+// temp BULLSWARM_HOME does not isolate that discovery, so an unbounded
+// refresh let a test run reach a real pool. An empty `initialPools` keeps the
+// live set, for a caller that has no list. `bullswarm run` and `workflow goal`
+// pass the full live list, so for them only mid-run appearances change.
 export function createPoolRefresher({
   bullswarmDir,
   initialPools = [],
@@ -32,6 +41,9 @@ export function createPoolRefresher({
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) {
     throw new TypeError('bullswarmDir is required');
   }
+  const bounded = Array.isArray(initialPools) && initialPools.length
+    ? new Set(initialPools.map((p) => p?.name))
+    : null;
   let lastPools = Array.isArray(initialPools) ? initialPools : [];
   let lastAtMs = null;
   let inFlight = null;
@@ -53,7 +65,7 @@ export function createPoolRefresher({
       try {
         const built = await buildPoolsLive(bullswarmDir, atMs, { force, getReadings });
         const pools = Array.isArray(built) ? built : built?.pools;
-        if (Array.isArray(pools)) lastPools = pools;
+        if (Array.isArray(pools)) lastPools = bounded ? pools.filter((p) => bounded.has(p?.name)) : pools;
       } catch {
         // A refresh failure is never fatal: the run keeps dispatching from the
         // last list that was known good.
