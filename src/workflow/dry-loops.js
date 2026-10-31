@@ -199,18 +199,23 @@ const areaCount = (group) => group.areas.length || 1;
  * The area each reviewer slot takes in `round` (indexes, by slot). With every
  * area in one round, or one reviewer a round, it is the plain rotation
  * (areaFor). Otherwise, when the review has a non-functional area (0.38.15:
- * a round is never all semantic), the last slot takes the non-functional
- * areas in turn and the other slots rotate over the rest.
+ * a round is never all semantic), the slots split in two groups: the last
+ * slots take the non-functional areas and the others the rest, at least one
+ * slot to each. Each group rotates over its own list, so a round never gives
+ * two slots the same area (0.38.19) and every area is reached by coverRounds.
  */
 export function roundAreas(areas, perRound, round) {
   const plain = () => Array.from({ length: perRound }, (_, k) => areaFor(k + 1, round, perRound, areas.length));
   const nonFunctional = areas.map((area, index) => (isNonFunctionalArea(area) ? index : -1)).filter((index) => index >= 0);
   const rest = areas.map((_, index) => index).filter((index) => !nonFunctional.includes(index));
   if (perRound >= areas.length || perRound < 2 || !nonFunctional.length || !rest.length) return plain();
-  const slots = perRound - 1;
-  const picked = Array.from({ length: slots }, (_, k) => rest[areaFor(k + 1, round, slots, rest.length)]);
-  picked.push(nonFunctional[(round - 1) % nonFunctional.length]);
-  return picked;
+  const restSlots = Math.min(perRound - 1, rest.length);
+  const nfSlots = perRound - restSlots;
+  const take = (list, size, k) => list[((round - 1) * size + k) % list.length];
+  return [
+    ...Array.from({ length: restSlots }, (_, k) => take(rest, restSlots, k)),
+    ...Array.from({ length: nfSlots }, (_, k) => take(nonFunctional, nfSlots, k)),
+  ];
 }
 
 /** How many rounds it takes for every area to be reviewed once (roundAreas). */
@@ -220,7 +225,8 @@ export function coverRounds(areas, perRound) {
   const nonFunctional = areas.filter(isNonFunctionalArea).length;
   const rest = n - nonFunctional;
   if (!nonFunctional || !rest) return Math.ceil(n / perRound);
-  return Math.max(Math.ceil(rest / (perRound - 1)), nonFunctional);
+  const restSlots = Math.min(perRound - 1, rest);
+  return Math.max(Math.ceil(rest / restSlots), Math.ceil(nonFunctional / (perRound - restSlots)));
 }
 
 function areaOfSlot(group, index, round) {
