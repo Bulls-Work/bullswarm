@@ -78,7 +78,7 @@ test('an old pretty-printed file still loads', () => {
   } finally { cleanup(); }
 });
 
-test('a file written here is plain JSON that origin/main loadState reads', () => {
+test('a file written here is plain JSON that origin/main loadState reads', (t) => {
   const { dir, cleanup } = tmp();
   try {
     const state = loadState(dir);
@@ -88,7 +88,7 @@ test('a file written here is plain JSON that origin/main loadState reads', () =>
     let old;
     try {
       old = execFileSync('git', ['show', 'origin/main:src/lib/state.js'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch { return; } // no origin/main here: the JSON.parse check above stands
+    } catch { t.skip('origin/main not available'); return; }
     const src = join(dir, 'oldsrc');
     mkdirSync(join(src, 'lib'), { recursive: true });
     writeFileSync(join(src, 'lib', 'state.js'), old);

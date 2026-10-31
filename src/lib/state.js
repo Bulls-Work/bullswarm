@@ -423,8 +423,6 @@ export function loadState(bullswarmDir, { skipMigration = false } = {}) {
   }
 }
 
-const DECISION_LOG_MARK = '\u0000decisionLog\u0000';
-
 /**
  * The one serializer for ~/.bullswarm/state.json. The top level is 2-space
  * indented as before, but the decision log (thousands of ~7 KB rows) is one
@@ -434,11 +432,18 @@ const DECISION_LOG_MARK = '\u0000decisionLog\u0000';
 export function serializeState(state) {
   const log = state?.decisionLog;
   if (!Array.isArray(log)) return `${JSON.stringify(state, null, 2)}\n`;
-  const head = JSON.stringify({ ...state, decisionLog: DECISION_LOG_MARK }, null, 2);
-  const rows = log.length
-    ? `[\n${log.map((r) => `    ${JSON.stringify(r) ?? 'null'}`).join(',\n')}\n  ]`
-    : '[]';
-  return `${head.replace(`"${DECISION_LOG_MARK.replace(/\u0000/g, '\\u0000')}"`, () => rows)}\n`;
+  // Stringify with an empty log, then put the rows on that key's line. The
+  // line is exactly two spaces + the key: nested keys are indented deeper and
+  // a string value cannot hold a raw newline (JSON escapes it), so no value
+  // can collide with it. Key order and every value stay JSON.stringify's.
+  const lines = JSON.stringify({ ...state, decisionLog: [] }, null, 2).split('\n');
+  const at = lines.findIndex((l) => l === '  "decisionLog": []' || l === '  "decisionLog": [],');
+  if (at < 0) return `${JSON.stringify(state, null, 2)}\n`;
+  if (log.length) {
+    const comma = lines[at].endsWith(',') ? ',' : '';
+    lines[at] = `  "decisionLog": [\n${log.map((r) => `    ${JSON.stringify(r) ?? 'null'}`).join(',\n')}\n  ]${comma}`;
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 export function saveState(bullswarmDir, state) {
