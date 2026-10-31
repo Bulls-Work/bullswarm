@@ -23,7 +23,6 @@ const MOD_FLAG = 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS';
 const CLAUDE_SETTINGS = ['.claude', 'settings.json'];
 const MARKER_BEGIN = '<!-- bullswarm:begin v3 -->';
 const MARKER_END = '<!-- bullswarm:end -->';
-const MARKER_RE = /<!-- bullswarm:begin v\d+ -->[\s\S]*?<!-- bullswarm:end -->\n?/;
 
 const AGENT_LAYOUT = {
   codex: { skill: ['.codex', 'skills', 'bullswarm'], instructions: ['.codex', 'AGENTS.md'] },
@@ -44,12 +43,31 @@ Do not recurse when \`BULLSWARM_DEPTH\` is already set.
 ${MARKER_END}`;
 }
 
-// The file is the person's own text, so the edit is conservative: it parses
-// complete blocks (begin ... end, no begin between) and stray markers, and
-// touches nothing when a marker has no partner. Markers inside a fenced code
-// block are NOT told apart from real ones; a file that shows the markers as an
-// example is read as having them, and the person fixes it by hand.
-const MARKER_TOKEN_RE = /<!-- bullswarm:begin v(\d+) -->|<!-- bullswarm:end -->/g;
+// The file is the person's own text, so no byte of it is ever changed except
+// the Bullswarm block itself. The file is read and written as latin1, which
+// round-trips every byte (a BOM and non-UTF-8 text included); the markers are
+// ASCII. Nothing is trimmed anywhere.
+//
+// A marker counts only when it is the whole line: the marker text, optional
+// trailing spaces or tabs, then the line break (or the end of the file). A
+// marker sharing a line with other text is user text and is left alone. Lines
+// between a closed pair of code fences (``` or ~~~, up to 3 leading spaces,
+// closed by a line starting with the same character at least as many times)
+// are user text too; a fence that never closes is not a fence, so a block
+// appended after it is still found next time. A begin or end marker with no
+// partner changes nothing.
+//
+// Install on a file with no block appends: the file's own bytes, a line break
+// if it does not end in one, one blank line, the block, a line break. Remove
+// deletes exactly the block's lines and the one blank line before it when
+// present. So install then remove returns the original bytes when the file
+// ended in a line break, and the original plus one line break when it did not.
+// A bare-CR file (old Mac) is one long line: it gets "\n" appended and its
+// existing bytes are never altered.
+const BEGIN_LINE_RE = /^<!-- bullswarm:begin v(\d+) -->[ \t]*$/;
+const END_LINE_RE = /^<!-- bullswarm:end -->[ \t]*$/;
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+const BOM = 'ï»¿';
 const CURRENT_VERSION = Number(/v(\d+)/.exec(MARKER_BEGIN)[1]);
 
 export function applyAwarenessBlock(filePath, { approved }) {
@@ -66,12 +84,11 @@ export function applyAwarenessBlock(filePath, { approved }) {
   const block = awarenessBlock().replace(/\n/g, eol);
   let next;
   if (!parsed.blocks.length) {
-    const head = existing.trimEnd();
-    next = head ? `${head}${eol}${eol}${block}${eol}` : `${block}${eol}`;
+    const close = existing && !existing.endsWith('\n') ? eol : '';
+    next = `${existing}${close}${existing ? eol : ''}${block}${eol}`;
   } else {
     const [first, ...rest] = parsed.blocks;
-    const tail = removeSpans(existing.slice(first.end), rest.map((b) => ({ start: b.start - first.end, end: b.end - first.end })));
-    next = `${existing.slice(0, first.start)}${block}${first.eol || eol}${tail}`;
+    next = `${existing.slice(0, first.start)}${block}${first.eol || eol}${cutSpans(existing.slice(first.end), rest, first.end)}`;
   }
   if (next === existing) return { changed: false, reason: 'already current' };
   const written = writeText(filePath, next);
@@ -90,54 +107,79 @@ export function removeAwarenessBlock(filePath, { approved }) {
   const parsed = parseBlocks(read.text);
   if (parsed.stray) return malformed(filePath, parsed.stray);
   if (!parsed.blocks.length) return { changed: false, reason: 'not installed' };
-  const next = removeSpans(read.text, parsed.blocks);
-  const written = writeText(filePath, next);
+  const written = writeText(filePath, cutSpans(read.text, parsed.blocks, 0));
   if (written) return written;
   return { changed: true, reason: 'removed', removedBlocks: parsed.blocks.length };
 }
 
+function splitLines(text) {
+  const lines = [];
+  let start = 0;
+  while (start < text.length) {
+    const nl = text.indexOf('\n', start);
+    const next = nl === -1 ? text.length : nl + 1;
+    const raw = text.slice(start, nl === -1 ? next : nl);
+    lines.push({ start, next, eol: nl === -1 ? '' : (raw.endsWith('\r') ? '\r\n' : '\n'), content: raw.endsWith('\r') ? raw.slice(0, -1) : raw });
+    start = next;
+  }
+  return lines;
+}
+
+function fencedLines(lines) {
+  const fenced = new Array(lines.length).fill(false);
+  let open = null;
+  lines.forEach((line, index) => {
+    const match = FENCE_RE.exec(line.content);
+    if (!open) {
+      if (match) open = { index, char: match[1][0], size: match[1].length };
+    } else if (match && match[1][0] === open.char && match[1].length >= open.size) {
+      for (let i = open.index; i <= index; i += 1) fenced[i] = true;
+      open = null;
+    }
+  });
+  return fenced;
+}
+
+// Complete blocks (begin ... end), each with `cut`, the start of the blank line
+// before it when there is one: the span that remove deletes.
 function parseBlocks(text) {
+  const lines = splitLines(text);
+  const fenced = fencedLines(lines);
   const blocks = [];
   let open = null;
-  const lineOf = (index) => text.slice(0, index).split('\n').length;
-  for (const match of text.matchAll(MARKER_TOKEN_RE)) {
-    if (match[1] !== undefined) {
-      if (open) return { blocks, stray: `begin marker at line ${lineOf(open.start)} has no end marker` };
-      open = { start: match.index, version: Number(match[1]) };
-    } else if (!open) {
-      return { blocks, stray: `end marker at line ${lineOf(match.index)} has no begin marker` };
-    } else {
-      let end = match.index + match[0].length;
-      const eol = /^\r?\n/.exec(text.slice(end))?.[0] ?? '';
-      end += eol.length;
-      blocks.push({ ...open, end, eol });
+  let floor = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (fenced[index]) continue;
+    const line = lines[index];
+    const content = index === 0 && line.content.startsWith(BOM) ? line.content.slice(BOM.length) : line.content;
+    const offset = line.content.length - content.length;
+    const begin = BEGIN_LINE_RE.exec(content);
+    if (begin) {
+      if (open) return { blocks, stray: `begin marker at line ${open.line} has no end marker` };
+      open = { index, line: index + 1, start: line.start + offset, version: Number(begin[1]) };
+    } else if (END_LINE_RE.test(content)) {
+      if (!open) return { blocks, stray: `end marker at line ${index + 1} has no begin marker` };
+      const before = lines[open.index - 1];
+      const blank = before && open.index - 1 >= floor && before.content === '' && before.eol ? before.start : open.start;
+      blocks.push({ start: open.start, cut: blank, end: line.next, eol: line.eol, version: open.version });
+      floor = index + 1;
       open = null;
     }
   }
-  if (open) return { blocks, stray: `begin marker at line ${lineOf(open.start)} has no end marker` };
+  if (open) return { blocks, stray: `begin marker at line ${open.line} has no end marker` };
   return { blocks, stray: null };
 }
 
-// Cut each span out. Right around a cut, at most one blank line is left: when
-// the text before already ends in a blank line (or the file starts here), the
-// blank line after the block goes; at the end of the file the trailing blanks go.
-function removeSpans(text, spans) {
-  const eol = lineEnding(text);
+// Cut each block (and its blank line before) out of text, which starts at
+// `base` in the file the blocks were parsed from. Nothing else is touched.
+function cutSpans(text, blocks, base) {
   let out = '';
   let cursor = 0;
-  for (const { start, end } of spans) {
-    out += text.slice(cursor, start);
-    cursor = end;
-    const blankBefore = out === '' || /(\r?\n)[ \t]*\r?\n$/.test(out);
-    if (blankBefore) {
-      const blank = /^[ \t]*\r?\n/.exec(text.slice(cursor));
-      if (blank) cursor += blank[0].length;
-    }
+  for (const block of blocks) {
+    out += text.slice(cursor, block.cut - base);
+    cursor = block.end - base;
   }
-  out += text.slice(cursor);
-  if (!out.trim()) return '';
-  if (spans.length && !text.slice(spans[spans.length - 1].end).trim()) return `${out.trimEnd()}${eol}`;
-  return out;
+  return out + text.slice(cursor);
 }
 
 function lineEnding(text) {
@@ -152,7 +194,7 @@ function malformed(filePath, detail) {
 
 // Only a missing file reads as empty; any other failure leaves the file alone.
 function readExisting(filePath) {
-  try { return { text: readFileSync(filePath, 'utf8') }; } catch (error) {
+  try { return { text: readFileSync(filePath).toString('latin1') }; } catch (error) {
     if (error?.code === 'ENOENT') return { text: '' };
     return { problem: { changed: false, reason: 'unreadable', detail: error?.message ?? String(error), path: filePath } };
   }
@@ -161,15 +203,26 @@ function readExisting(filePath) {
 function writeText(filePath, text) {
   try {
     mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, text);
+    writeFileSync(filePath, Buffer.from(text, 'latin1'));
     return null;
   } catch (error) {
     return { changed: false, reason: 'unwritable', detail: error?.message ?? String(error), path: filePath };
   }
 }
 
+// What `integrate status` shows for an instruction file, read the way apply
+// reads it: present, missing, or a problem named as such (unreadable,
+// malformed) instead of a plain "missing".
+export function awarenessState(filePath) {
+  const read = readExisting(filePath);
+  if (read.problem) return { present: false, problem: { reason: read.problem.reason, detail: read.problem.detail } };
+  const parsed = parseBlocks(read.text);
+  if (parsed.stray) return { present: false, problem: { reason: 'malformed', detail: parsed.stray } };
+  return { present: parsed.blocks.length > 0, problem: null };
+}
+
 export function awarenessBlockPresent(filePath) {
-  return MARKER_RE.test(readOptional(filePath));
+  return awarenessState(filePath).present;
 }
 
 export function parseIntegrationAgents(value) {
@@ -192,12 +245,14 @@ export function integrationStatus({
   const selected = parseIntegrationAgents(agents);
   const entries = selected.map((agent) => {
     const paths = pathsFor(homeDir, agent);
+    const state = awarenessState(paths.instructionsPath);
     const entry = {
       agent,
       skillPath: paths.skillPath,
       skill: skillLinkStatus(paths.skillPath, skillSource),
       instructionsPath: paths.instructionsPath,
-      awareness: awarenessBlockPresent(paths.instructionsPath),
+      awareness: state.present,
+      ...(state.problem ? { awarenessProblem: state.problem } : {}),
     };
     if (agent === 'claude') {
       entry.modPath = join(homeDir, ...MOD_LINK);
@@ -447,7 +502,9 @@ function printIntegrationResult(result) {
   const status = result.status ?? result;
   for (const entry of status.agents ?? []) {
     const skill = entry.skill.status === 'installed' ? 'skill ✓' : `skill ${entry.skill.status}`;
-    const awareness = entry.awareness ? 'awareness ✓' : 'awareness missing';
+    const awareness = entry.awareness ? 'awareness ✓'
+      : entry.awarenessProblem ? `awareness ${entry.awarenessProblem.reason} (${entry.awarenessProblem.detail}; ${entry.instructionsPath})`
+        : 'awareness missing';
     const mod = entry.mod
       ? `; mod ${entry.mod.status === 'installed' ? '✓' : entry.mod.status}; function hooks ${entry.hooksFlag ? '✓' : 'flag missing'}`
       : '';

@@ -210,7 +210,7 @@ test('F2: removing the only block keeps the BOM and the user whitespace around i
 test('F3: marker text that shares a line with other text is user text', () => {
   const { file, cleanup } = sandbox();
   try {
-    const tail = '<!-- bullswarm:begin v3 -->\nold\n<!-- bullswarm:end --> tail text\n';
+    const tail = 'see <!-- bullswarm:begin v3 -->\nold\nthen <!-- bullswarm:end --> tail text\n';
     put(file, tail);
     assert.equal(apply(file).reason, 'installed');
     assert.ok(get(file).startsWith(tail));
