@@ -106,8 +106,10 @@ test('2 functional + 3 non-functional areas, 2 per round, 3 rounds, dry 1: advic
 });
 
 test('no areasPerRound is suggested when none covers the areas in the rounds left', () => {
-  const areas = [...FUNCTIONAL.slice(0, 5), ...NON_FUNCTIONAL];
-  const message = dryAdvice(areas, 1, 2, 1);
+  const areas = [...FUNCTIONAL, ...NON_FUNCTIONAL.slice(0, 2)];
+  assert.equal(coverRounds(areas, 4), 2);
+  assert.equal(coverRounds(areas, 5), 2);
+  const message = dryAdvice(areas, 4, 2, 1);
   assert.ok(message, 'the loop is too short');
   assert.doesNotMatch(message, /areasPerRound to/);
 });
