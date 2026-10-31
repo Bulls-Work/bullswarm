@@ -674,6 +674,13 @@ function applyContinue(state, intent, { at, emit, rerun }) {
     emit('loop.passed', { loopId: loop.id, round: record.round, of: record.maxRounds, reason: 'continued', source: intent.source ?? 'cli' });
     return { applied: true, why: null };
   }
+  // The same 1-5 limit as the CLI parser, checked here too because an intent
+  // file need not come through it. A bad value is refused like any other
+  // continue, never thrown. There is no cap on the total across several
+  // continues: each one is a person's explicit choice.
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > CONTINUE_MAX_ROUNDS) {
+    return { applied: false, why: `--rounds must be a whole number from 1 to ${CONTINUE_MAX_ROUNDS}; got ${JSON.stringify(rounds)}` };
+  }
   record.maxRounds += rounds;
   emit('loop.continued', { loopId: loop.id, rounds, of: record.maxRounds, source: intent.source ?? 'cli' });
   nextRound(state, loop, record, { at, emit, rerun });
@@ -861,7 +868,10 @@ export function applyContinueOffline(state, intent, { runDir, at, features = nul
   const rerun = (loop, round, apply, extra = {}) => rerunLoopBody(state, loop, round, { runDir, at, emit, features, apply, ...extra });
   const outcome = applyContinue(state, intent, { at, emit, rerun });
   markContinueApplied(runDir, intent, { at, refused: outcome.applied ? null : outcome.why });
-  if (!outcome.applied) return outcome;
+  if (!outcome.applied) {
+    emit('control.continue_refused', { nodeId: intent.nodeId, why: outcome.why });
+    return outcome;
+  }
   if (state.lifecycle.status === 'waiting') {
     clearWaitingFor(state);
     state.lifecycle.status = 'running';
@@ -968,9 +978,12 @@ export function controlWatchEvent(event, { token }) {
   }
 }
 
-/** `watch --until trouble` wakes on a gate or loop that starts waiting. */
+/**
+ * `watch --until trouble` wakes on a gate or loop that starts waiting, and on
+ * a `workflow continue` the kernel refused (the caller is waiting on it).
+ */
 export function controlTrouble(event) {
-  return event?.type === 'gate.waiting' || event?.type === 'loop.out-of-rounds' ? 'waiting' : null;
+  return event?.type === 'gate.waiting' || event?.type === 'loop.out-of-rounds' || event?.type === 'control.continue_refused' ? 'waiting' : null;
 }
 
 /**

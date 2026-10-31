@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `workflow continue` no longer crashes the kernel on a bad `rounds`: the 1-5
+  limit is checked where the continue is applied, not only in the CLI parser,
+  so a continue intent with a value outside it is refused with a reason and
+  marked handled. Totals across several continues stay uncapped. A refused
+  continue now also wakes `watch --until trouble`, instead of leaving the
+  caller waiting for a wake that never came.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
