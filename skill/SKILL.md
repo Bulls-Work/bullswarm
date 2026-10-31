@@ -141,7 +141,9 @@ Lessons from real runs; each holds for this version.
    items, and chunks cannot make them.
 2. **Write the judgement down.** A step whose decisions are spelled out (a
    numbered spec, the rulings) runs well at `effort` `medium` or `low`; open
-   design needs `high`. Capability is model and reasoning together: the
+   design needs `high`. A review loop's reviewers are such steps: at
+   `high` they cost 2.3 to 3.4 times as much on the benchmark for the same
+   score. Capability is model and reasoning together: the
    effort tier picks both per pool (`bullswarm strategy rungs --json` shows
    each rung), and a step's `reasoning` overrides only the level.
 3. **A contract first.** When parallel steps must fit together, a first step

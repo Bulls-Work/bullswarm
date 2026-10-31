@@ -217,6 +217,16 @@ with `until: {"step": "review", "dry": 1}` and a findings answer:
 - **Writing titles**: one line under 160 characters, what is wrong and
   where. The loop tells new findings from known ones by the whole title; a
   longer one is shown cut.
+- **Reviewer effort**: leave the review at its default `effort` (`medium`
+  for the analyze lane) unless it needs open design judgement. The effort
+  tier picks the model as well as the reasoning level (on claude-code,
+  `high` is Opus and `medium` is Sonnet), so it is the tier's price. On the
+  benchmark's two review-loop tasks, one run at `high` each (2026-10-31):
+  t2 scored 32/32 at $4.02, against 32/32 at $1.19-1.75 in three runs at
+  `medium`; t4 scored 141/141 at $9.55, against 141/141 at $3.50 and 140/141
+  at $3.67 (a timing test that failed under load) at `medium`. That is 2.3
+  to 3.4 times the cost for the same result. Every area reviewer runs every
+  round, so the tier is paid reviewers x rounds times.
 - **Severity and the floor**: give the findings a `severity` (`everyday`,
   `edge` or `obscure`; every reviewer is told what each means). A round is dry
   when it has no new in-scope finding at or above the loop's floor:
