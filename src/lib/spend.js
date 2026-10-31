@@ -18,6 +18,7 @@ import {
   monthlyWindowMs,
   normalizePacingWindow,
   projectedUtilization,
+  usedPctOf,
 } from '../meters/framework.js';
 import { readMeterHistory } from '../meters/registry.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
@@ -277,7 +278,7 @@ function seriesFor(history, meta) {
   const out = [];
   for (const entry of Array.isArray(history) ? history : []) {
     const window = entry?.[meta.history] ?? entry?.[meta.snapshot];
-    const usedPct = num(window?.utilization);
+    const usedPct = usedPctOf(window?.utilization);
     if (usedPct == null) continue;
     const capturedAtMs = num(entry.capturedAtMs) ?? num(Date.parse(entry.captured_at ?? ''));
     if (capturedAtMs == null) continue;
@@ -290,7 +291,7 @@ function seriesFor(history, meta) {
 /** The current reading for one window out of a live snapshot. */
 function currentFor(snapshot, meta, nowMs) {
   const window = snapshot?.[meta.snapshot] ?? snapshot?.[meta.history];
-  const usedPct = num(window?.utilization);
+  const usedPct = usedPctOf(window?.utilization);
   if (usedPct == null) return null;
   return {
     capturedAtMs: num(Date.parse(snapshot?.captured_at ?? '')) ?? nowMs,

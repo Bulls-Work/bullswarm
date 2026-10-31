@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import {
   MeterCache, paceSnapshot, FRESH_MS, STALE_MS, WINDOW_MS,
-  normalizePacingWindow, meterResolutionPct, monotonicIntervalDelta, refusalResetKnown,
+  normalizePacingWindow, meterResolutionPct, usedPctOf, monotonicIntervalDelta, refusalResetKnown,
 } from './framework.js';
 import { loadProviders, providerFor } from '../lib/providers.js';
 import { migratePoolNameHome } from '../lib/state.js';
@@ -44,10 +44,10 @@ function readSnapshotFile(dir, pool) {
 
 const SNAPSHOT_WINDOWS = ['five_hour', 'seven_day', 'monthly'];
 
-function windowUsable(window, nowMs) {
+export function windowUsable(window, nowMs) {
   if (!window || typeof window !== 'object') return false;
   const reset = Date.parse(window.resets_at ?? '');
-  return Number.isFinite(Number(window.utilization)) && Number.isFinite(reset) && reset > nowMs;
+  return usedPctOf(window.utilization) != null && Number.isFinite(reset) && reset > nowMs;
 }
 
 /**
@@ -519,10 +519,10 @@ function windowDeclaredByConnector(connector, subscription) {
   return pacing === 'monthly' ? 'monthly' : pacing === 'weekly' ? 'seven_day' : null;
 }
 
-function windowHasData(snapshot, key) {
+export function windowHasData(snapshot, key) {
   const window = snapshot?.[key];
   if (!window || typeof window !== 'object') return false;
-  return Number.isFinite(Number(window.utilization)) || finiteMs(window.resets_at) != null;
+  return usedPctOf(window.utilization) != null || finiteMs(window.resets_at) != null;
 }
 
 function quotaWindowFor(snapshot, connector, subscription) {
@@ -770,9 +770,8 @@ export function meterHistoryEntry(snapshot, opts = {}) {
     const raw = window?.utilization;
     // M4: a window the provider did not report is absent from the line, never
     // a zero — Number(null) is 0 and that zero would read as "spent nothing".
-    if (raw == null || raw === '' || typeof raw === 'boolean') continue;
-    const utilization = Number(raw);
-    if (!Number.isFinite(utilization)) continue;
+    const utilization = usedPctOf(raw);
+    if (utilization == null) continue;
     hasWindow = true;
     const resolutionPct = meterResolutionPct({
       pool: opts.pool ?? snapshot.pool,
@@ -799,8 +798,8 @@ export function meterHistoryEntry(snapshot, opts = {}) {
 function historyWindowValue(entry, key) {
   const value = entry?.[key];
   if (!value || typeof value !== 'object') return null;
-  const usedPct = Number(value.used_pct ?? value.usedPct ?? value.utilization);
-  if (!Number.isFinite(usedPct)) return null;
+  const usedPct = usedPctOf(value.used_pct ?? value.usedPct ?? value.utilization);
+  if (usedPct == null) return null;
   return {
     usedPct,
     resetsAt: value.resets_at ?? value.resetsAt ?? null,

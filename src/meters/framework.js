@@ -28,14 +28,32 @@
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as numberOrNull } from '../lib/num.js';
 
+const DECIMAL = /^[+-]?(\d+\.?\d*|\.\d+)$/;
+
+/**
+ * A window's utilization as a percent, or null when it is no reading. A finite
+ * number, or a string of a decimal number (trimmed, non-empty), gives that
+ * number; '', whitespace, booleans, arrays, objects, NaN, Infinity and
+ * anything below 0 give null: garbage is no reading, never "unused" (M4). A
+ * value above 100 is kept (the pool is over its limit); pacing caps it at 100.
+ * The one rule for meterReadingOf, windowPace, paceSnapshot and windowSpent.
+ */
+export function usedPctOf(raw) {
+  let n = null;
+  if (typeof raw === 'number') n = raw;
+  else if (typeof raw === 'string' && DECIMAL.test(raw.trim())) n = Number(raw.trim());
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 export const WINDOW_MS = {
   '5h': 5 * 3600_000,
   weekly: 7 * 24 * 3600_000,
 };
 
 /** Compute pace for one window from a provider reading. */
-export function windowPace({ usedPct, resetsAtMs, windowMs, nowMs = Date.now() }) {
-  if (![usedPct, resetsAtMs, windowMs].every(Number.isFinite) || windowMs <= 0) {
+export function windowPace({ usedPct: rawUsedPct, resetsAtMs, windowMs, nowMs = Date.now() }) {
+  const usedPct = usedPctOf(rawUsedPct);
+  if (usedPct == null || ![resetsAtMs, windowMs].every(Number.isFinite) || windowMs <= 0) {
     return null;
   }
   const startMs = resetsAtMs - windowMs;
@@ -117,7 +135,7 @@ export const FIVE_HOUR_NEAR_LIMIT_PCT = 75;
  * and one that names no reset counts until the next reading replaces it.
  */
 function atLimit(usedPct, resetsAt, nowMs) {
-  const used = numberOrNull(usedPct);
+  const used = usedPctOf(usedPct);
   if (used == null || used < BURST_BLOCK_PCT) return false;
   const resetMs = resetMsOf(resetsAt);
   return !Number.isFinite(resetMs) || resetMs > nowMs;
@@ -171,7 +189,7 @@ export function windowSpent(pool, nowMs = Date.now()) {
   if (!pool || typeof pool !== 'object') return null;
   const snapshot = pool.meterSnapshot && typeof pool.meterSnapshot === 'object' ? pool.meterSnapshot : {};
   const counts = (key) => !guessedRefusalWindow(snapshot[key]);
-  const fiveHourUsed = pool.fiveHourUsedPct ?? snapshot.five_hour?.utilization
+  const fiveHourUsed = usedPctOf(pool.fiveHourUsedPct) ?? usedPctOf(snapshot.five_hour?.utilization)
     ?? (pool.burstGate === true ? BURST_BLOCK_PCT : null);
   const readings = [
     ...(counts('five_hour') ? [['5-hour', fiveHourUsed, pool.fiveHourResetsAt ?? snapshot.five_hour?.resets_at]] : []),
@@ -210,7 +228,7 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
   const windows = {};
   for (const kind of ['five_hour', 'seven_day', 'monthly']) {
     const w = snapshot[kind];
-    if (!w || w.utilization == null || guessedRefusalWindow(w)) continue;
+    if (!w || usedPctOf(w.utilization) == null || guessedRefusalWindow(w)) continue;
     const resetsAtMs = w.resets_at ? Date.parse(w.resets_at) : NaN;
     const windowMs =
       kind === 'five_hour' ? WINDOW_MS['5h']
@@ -226,8 +244,8 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
 
   const chosen = pickPacingWindow(windows, opts.pacingWindow);
   const fiveHour = guessedRefusalWindow(snapshot.five_hour) ? null : snapshot.five_hour;
-  const fiveHourUsed = fiveHour?.utilization;
-  const fiveHourUsedPct = Number.isFinite(fiveHourUsed) ? fiveHourUsed : null;
+  const fiveHourUsedRaw = usedPctOf(fiveHour?.utilization);
+  const fiveHourUsedPct = fiveHourUsedRaw == null ? null : Math.min(100, fiveHourUsedRaw);
   // resets_at is reported straight from the snapshot (M2): no reading, no
   // deadline — never a locally assumed one.
   const fiveHourResetsMs = fiveHour?.resets_at
