@@ -83,3 +83,27 @@ test('a real pool or provider name prints no warning', (t) => {
   const provider = dryRun(f, ['--avoid-provider', 'echo']);
   assert.doesNotMatch(provider.stderr, /warning:/);
 });
+
+test('--heartbeat above 604800 seconds is refused like --timeout', () => {
+  const ask = (heartbeat) => runStepRequest({ lane: 'analyze', prompt: 'hi', rest: [], heartbeat }, { cwd: '/tmp' });
+  assert.match(ask('3000000').error ?? '', /--heartbeat must be a number of seconds from 1 to 604800/);
+  assert.equal(ask('60').error, undefined);
+});
+
+test('no worker timer is handed a delay a 32-bit timer cannot hold', async () => {
+  const { timerMs } = await import('../src/lib/run-delegate.js');
+  assert.equal(timerMs(3_000_000), 604_800_000);
+  assert.equal(timerMs(90), 90_000);
+  assert.equal(timerMs(0), null);
+  assert.equal(timerMs('abc'), null);
+  const { createRunHeartbeat } = await import('../src/lib/run-heartbeat.js');
+  const delays = [];
+  const real = globalThis.setInterval;
+  globalThis.setInterval = (fn, ms) => { delays.push(ms); return real(() => {}, 1e9); };
+  try {
+    const beat = createRunHeartbeat({ intervalSec: 3_000_000, write: () => {} });
+    beat.start();
+    beat.stop?.();
+  } finally { globalThis.setInterval = real; }
+  assert.ok(delays.length === 1 && delays[0] <= 2_147_483_647, `heartbeat delay ${delays[0]}`);
+});
