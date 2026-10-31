@@ -74,6 +74,11 @@ first (`retryPoolTiers`).
    price, not a spent or dead pool: the pool stays pickable with its other
    models, and the record ends when the subscription changes or the operator
    turns the model back on (`src/lib/strategy.js`).
+   A sign-in failure at dispatch (failure kind `auth`) is the other outlived
+   fact: `state.pools[pool].authHold` holds the pool and its credential group
+   out of picks for 15 minutes, then 30 and 60 for each further failure after
+   it ends; a successful attempt clears it, a meter read does not, and a pinned
+   pool is still dispatched (`src/lib/auth-hold.js`).
    A pool whose latest meter reading is a sign-in failure (a 401, or a 403
    its provider calls an auth error) is out of picks until a later reading
    succeeds; it is that latest reading, not a remembered state.

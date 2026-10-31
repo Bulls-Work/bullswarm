@@ -197,7 +197,9 @@ Lessons from real runs; each holds for this version.
     failed check. A refusal at start (a sign-in failure or a model the plan
     does not include, before any work) is picked again and does not use it.
     A pool whose meter read says the sign-in failed is out of picks until a
-    later read succeeds.
+    later read succeeds. A worker sign-in failure at dispatch holds the pool
+    and its credential group out of later runs for 15 minutes (30, then 60 on
+    repeats); a successful attempt clears it, a meter read does not.
     A worker whose check or deliverable failed and whose report
     lists `- outside: <blocker>` under `## Not done` comes back at once. Fix
     the cause with `workflow add` rather than rerunning the same step.

@@ -18,7 +18,7 @@ or a model the plan does not include, before any work) is picked again at once
 and does not use the step's one retry (at most 3 times per step; never for an
 `act` or `outward` step or `retry: 0`). A pool whose latest meter reading is a
 sign-in failure reads `sign-in failed (meter read 401)` and is out of picks
-until a later reading succeeds. A gate failure (`failed-evidence`,
+until a later reading succeeds. A sign-in failure of a worker (failure kind `auth`) also holds that pool and its credential group out of later runs' picks for 15 minutes, then 30 and 60 for each further failure after the hold ends; a successful attempt clears it and a successful meter read does not (`bullswarm pools` shows `sign-in failed at dispatch <age> ago, retry after <time>`; a pinned pool is still dispatched). A gate failure (`failed-evidence`,
 `not-produced`, `schema`, or `semantic`) retries on the same pool with the
 failure attached; a gate retry spends the same one-step budget. A failed
 check or deliverable whose report lists `- outside: <blocker>` under

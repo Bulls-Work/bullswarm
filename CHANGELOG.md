@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A sign-in failure at dispatch now holds the pool for later runs. On 2026-10-25, 10-27 and 10-28 a scheduled job started six `bullswarm run`s 7-15 s apart and every one picked claude-code and failed with `auth` in 2-9 s (18 failures), because the meter read kept succeeding while the worker was signed out. A failed attempt of kind `auth` now stores `state.pools[pool].authHold`: the pool and every pool in its credential group are out of picks for 15 minutes, 30 after a further failure once it ends, then 60. A successful attempt on the pool clears it; a successful meter read does not. Routing excludes it like a meter sign-in failure and says `sign-in failed at dispatch <age> ago, retry after <time>`, `bullswarm pools` shows it, a run with no other pool comes back with that reason, and a pinned pool is still dispatched with the hold named in its route reason.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
