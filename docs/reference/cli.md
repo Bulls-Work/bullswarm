@@ -15,7 +15,7 @@ bullswarm --help
 bullswarm run --help
 ```
 
-`--help` / `-h` / a trailing `help` never reads or writes state, calls a network endpoint, or spawns a process. Every other command self-initializes `~/.bullswarm/state.json` (or `$BULLSWARM_HOME`) on first use. An unrecognized option prints `unknown flag --name` plus that command's synopsis and exits 2, before routing or spawning anything. Malformed values (a missing `--lane`, a `--limit` that is not a positive integer) are rejected at the same boundary with exit 2.
+`--help` / `-h` / a trailing `help` never reads or writes state, calls a network endpoint, or spawns a process. Every other command self-initializes `~/.bullswarm/state.json` (or `$BULLSWARM_HOME`) on first use; a `state.json` that cannot be read as a JSON object is kept as `state.json.unreadable-<time>` before the next write starts a fresh one, with one line on stderr. An unrecognized option prints `unknown flag --name` plus that command's synopsis and exits 2, before routing or spawning anything. Malformed values (a missing `--lane`, a `--limit` that is not a positive integer) are rejected at the same boundary with exit 2.
 
 Bare `bullswarm` opens setup until the installation is configured, then opens
 the dashboard. It accepts every option that setup documents. `--yes` on the

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- An unreadable `state.json` (truncated, a bad byte, or JSON that is not an object) is no longer overwritten by the next write: `updateState` first renames it to `state.json.unreadable-<time>` and prints one line to stderr, then starts a fresh state. Readers still see defaults and never rename. If the rename fails, the write is refused with an error naming the path.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
