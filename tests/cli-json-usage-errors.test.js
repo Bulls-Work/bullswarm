@@ -66,3 +66,44 @@ test('--json=false keeps the plain text', () => {
   assert.equal(r.code, 2);
   assert.equal(r.out, '');
 });
+
+// Not usage errors: refusals, validation and I/O failures exit 2 too, but they
+// are not usage errors, so stdout stays empty as on main.
+const NOT_USAGE = [
+  { name: 'runs delete without --yes', args: ['workflow', 'runs', 'delete', 'abcdef', '--json'] },
+  { name: 'plan validate with a missing program file', args: ['workflow', 'plan', 'validate', 'x', '--program', '/nonexistent-bs.json', '--json'] },
+  { name: 'provider validate of a missing path', args: ['provider', 'validate', '/nonexistent-bs', '--json'] },
+];
+
+for (const c of NOT_USAGE) {
+  test(`json: a non-usage exit-2 refusal prints no usage object: ${c.name}`, () => {
+    const r = bullswarm(c.args);
+    assert.equal(r.code, 2);
+    assert.equal(r.out, '');
+    assert.ok(r.err.length > 0);
+  });
+}
+
+test('json: the message is the reason alone and usage is the run synopsis, never "usage error"', () => {
+  const r = bullswarm(['run', '--lane', 'build', '--prompt', '--json']);
+  assert.equal(r.code, 2);
+  const body = JSON.parse(r.out);
+  assert.equal(body.error, 'usage');
+  assert.equal(body.message, '--prompt and --task-file require a value');
+  assert.notEqual(body.message, 'usage error');
+  assert.ok(body.usage === null || /^bullswarm run /.test(body.usage), String(body.usage));
+});
+
+test('json: a --json token after -- is task text, not the mode', () => {
+  const r = bullswarm(['run', '--lane', 'build', '--', '--json']);
+  assert.equal(r.out.trim().startsWith('{') && r.out.includes('"error": "usage"'), false);
+});
+
+test('json: a help-dump usage error has a one-line message', () => {
+  const r = bullswarm(['strategy', 'bogus', '--json']);
+  assert.equal(r.code, 2);
+  const body = JSON.parse(r.out);
+  assert.equal(body.error, 'usage');
+  assert.ok(!body.message.includes('\n'), body.message);
+  assert.ok(!/^usage:/i.test(body.message), body.message);
+});
