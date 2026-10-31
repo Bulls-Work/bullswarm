@@ -110,7 +110,7 @@ const OLD_KERNEL_HINT = (id) => `  the run's kernel predates step rerun/accept: 
 
 // The failed (or cancelled, interrupted) step at the root of why `stepId`
 // cannot run, with its status.
-function blockingRoot(state, stepId, seen = new Set()) {
+export function blockingRoot(state, stepId, seen = new Set()) {
   const definitions = new Map(state.program.actions.map((action) => [action.id, action]));
   const statusOf = (id) => state.actions.find((action) => action.id === id)?.status;
   for (const dependency of definitions.get(stepId)?.dependsOn ?? []) {

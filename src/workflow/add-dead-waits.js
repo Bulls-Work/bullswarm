@@ -3,13 +3,17 @@
 // failed, cancelled or blocked. The add still applies (a person may rerun the
 // dependency afterwards); the caller is told which steps stay blocked.
 
+import { blockingRoot } from './cli-step-verbs.js';
+
 const DEAD = new Set(['failed', 'cancelled', 'blocked']);
 
 /**
  * [{step, dependency, status}] in added order: `step` is an added step,
  * `dependency` the failed, cancelled or blocked step it waits on. `state` is
  * the run as the add left it (a cancelled step the reopen ran again is
- * pending, not dead); `added` the added step definitions.
+ * pending, not dead); `added` the added step definitions. A blocked
+ * dependency also names `blockedBy`, the failed step at its root: rerun
+ * refuses a blocked step, so that is the one to run again.
  */
 export function waitsOnFinishedSteps(state, added) {
   const statusOf = new Map((state?.actions ?? []).map((action) => [action.id, action.status]));
@@ -29,14 +33,18 @@ export function waitsOnFinishedSteps(state, added) {
   const found = [];
   for (const action of added) {
     const dependency = deadDependency(action.id, new Set());
-    if (dependency) found.push({ step: action.id, dependency, status: statusOf.get(dependency) });
+    if (!dependency) continue;
+    const status = statusOf.get(dependency);
+    const root = status === 'blocked' && state?.program ? blockingRoot(state, dependency) : null;
+    found.push({ step: action.id, dependency, status, ...(root ? { blockedBy: { step: root.id, status: root.status } } : {}) });
   }
   return found;
 }
 
 const WORDS = { failed: 'failed', cancelled: 'was cancelled', blocked: 'is blocked' };
 
-/** The warning line for one entry; `rerun(dependency)` is the command that runs it again. */
+/** The warning line for one entry; `rerun(step)` is the command that runs that step again. */
 export function waitsOnFinishedLine(entry, rerun) {
-  return `⚠ ${entry.step} waits on ${entry.dependency}, which ${WORDS[entry.status]}: it stays blocked until you run \`${rerun(entry.dependency)}\``;
+  const which = entry.blockedBy ? `is blocked by ${entry.blockedBy.step} (${entry.blockedBy.status})` : WORDS[entry.status];
+  return `⚠ ${entry.step} waits on ${entry.dependency}, which ${which}: it stays blocked until you run \`${rerun(entry.blockedBy?.step ?? entry.dependency)}\``;
 }
