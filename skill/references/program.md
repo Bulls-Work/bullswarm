@@ -217,6 +217,13 @@ with `until: {"step": "review", "dry": 1}` and a findings answer:
 - **Writing titles**: one line under 160 characters, what is wrong and
   where. The loop tells new findings from known ones by the whole title; a
   longer one is shown cut.
+- **Reviewer effort**: leave the review at its default `effort` (`medium`
+  for the analyze lane) unless it needs open design judgement. On the
+  benchmark's two review-loop tasks, reviewers at `high` scored the same
+  hidden tests for about 2.5 times the cost (t2: 32/32 at $4.02 against
+  $1.41-1.75 at medium; t4: 141/141 at $9.55 against $3.50-3.67), one
+  `high` run each, 2026-10-31. Every area reviewer runs every round, so the
+  tier is paid reviewers x rounds times.
 - **Severity and the floor**: give the findings a `severity` (`everyday`,
   `edge` or `obscure`; every reviewer is told what each means). A round is dry
   when it has no new in-scope finding at or above the loop's floor:
