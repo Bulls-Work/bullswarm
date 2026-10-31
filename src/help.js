@@ -1099,6 +1099,7 @@ const workflowGoalText = rich({
     { flag: '--max-actions <n>', desc: 'soft planning target for total steps, added steps included; essential steps may exceed it', default: '100' },
     { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file (not-produced) comes back at once)', default: '1' },
+    { flag: '--out-of-rounds <wait|end>', desc: 'what a review loop does when it runs out of rounds: wait parks the run for `workflow continue`; end settles the loop with its condition unmet (rounds-spent) and runs the steps behind it', default: 'wait' },
     { flag: '--resume <shortId|runId>', desc: 'resume a v3 run; a run an earlier Bullswarm started is view-only and exits 2 before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
     { flag: '--again', desc: 'start another copy even when an ongoing run already has the same goal text in the same --cwd; the lookup happens before anything is validated or launched, and only a new launch is checked', default: 'off (a duplicate of an ongoing goal is refused)' },
@@ -1173,6 +1174,7 @@ const workflowPlanValidateText = rich({
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target for the previewed run', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency for the previewed run', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file (not-produced) comes back at once)', default: '1' },
+    { flag: '--out-of-rounds <wait|end>', desc: 'what a review loop does when it runs out of rounds: wait parks the run for `workflow continue`; end settles the loop with its condition unmet (rounds-spent) and runs the steps behind it', default: 'wait' },
   ],
   safety: [
     'read-only without --try-checks — nothing is launched, dispatched, or written; the exit code is the verdict (0 valid, 2 invalid, 1 bad cwd)',
@@ -1252,6 +1254,7 @@ const workflowPlanContractText = rich({
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target recorded in the contract settings', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency recorded in the contract settings', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file (not-produced) comes back at once)', default: '1' },
+    { flag: '--out-of-rounds <wait|end>', desc: 'what a review loop does when it runs out of rounds: wait parks the run for `workflow continue`; end settles the loop with its condition unmet (rounds-spent) and runs the steps behind it', default: 'wait' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the contract echoes back', default: 'auto (routing decides per action)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the worker model the contract echoes back', default: 'auto' },
     { flag: '--worker-reasoning <level>', desc: 'run-wide worker thinking level the contract echoes back', default: 'the strategy setting for the action effort tier' },

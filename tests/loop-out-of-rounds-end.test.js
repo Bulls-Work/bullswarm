@@ -165,6 +165,10 @@ test('(c2) a loop already waiting stays waiting under `end`; `continue --rounds`
   const saved = deserializeV2DurableState(readFileSync(file, 'utf8'));
   saved.config.settings.outOfRounds = 'end';
   writeFileSync(file, serializeV2DurableState(saved));
+  const goalFile = join(run.runDir, 'goal.json');
+  const goal = JSON.parse(readFileSync(goalFile, 'utf8'));
+  goal.config.settings.outOfRounds = 'end';
+  writeFileSync(goalFile, JSON.stringify(goal));
   const still = await resume(f, run.runId, never);
   assert.deepEqual([node(still, 'polish').status, node(still, 'polish').reason], ['waiting', 'out-of-rounds'], 'unchanged');
   const intent = requestContinue(run.runDir, { nodeId: 'polish', rounds: 1 });
