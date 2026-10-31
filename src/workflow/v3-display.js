@@ -5,7 +5,7 @@
 // Pure: reads state and events, returns plain facts and text.
 
 import { glyphs } from '../lib/glyphs.js';
-import { CONTINUED_MARK, CONTINUE_MAX_ROUNDS, controlRecords, describeCondition, parkedWaitingFor, readCondition } from './gates-loops.js';
+import { CONTINUED_MARK, CONTINUE_MAX_ROUNDS, ROUNDS_SPENT, isUnmetEnd, controlRecords, describeCondition, parkedWaitingFor, readCondition } from './gates-loops.js';
 import { groupOf, isDryLoop, loopFindingsSummary } from './dry-loops.js';
 import { declaredControl, isV3State } from './v3-phases.js';
 
@@ -65,7 +65,8 @@ function loopFacts(state, loop, record, token) {
         const count = findings.known.length;
         return { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · dry in round ${round} of ${of} · ${count} finding${count === 1 ? '' : 's'}` };
       }
-      return record.reason === 'continued' || holds !== true
+      if (record.reason === ROUNDS_SPENT) return { glyph: CONTINUED_MARK, role: 'passed', text: `loop ${loop.id} · ended at its last round (${round} of ${of}), condition not met (--out-of-rounds end)` };
+      return isUnmetEnd(record.reason) || holds !== true
         ? { glyph: CONTINUED_MARK, role: 'passed', text: `loop ${loop.id} · continued by the caller after ${round} of ${of} rounds (condition not met)` }
         : { glyph: g.ok, role: 'passed', text: `loop ${loop.id} · passed in round ${round} of ${of} · ${until}` };
     case 'waiting':

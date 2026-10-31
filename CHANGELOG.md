@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `workflow goal --out-of-rounds <wait|end>` (default `wait`, today's behaviour). With `end`, a loop that reaches `maxRounds` with its condition unmet settles `passed` with reason `rounds-spent` in the same pass (event `loop.passed`, `source: flag`), the steps behind it run, and the run never parks for it; every view reads it like `continued-unmet`. Evidence: in 14 days 16 of 16 loops that ran out of rounds were ended by hand with `workflow continue` (median 0.4 min, nobody added rounds). The setting is saved with the run, so resume and `workflow continue` keep it (`docs/design/0.38.19-loops-end-themselves.md`).
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

@@ -885,9 +885,12 @@ bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --progra
 | `--max-actions <n>` | soft planning target for total steps, added steps included; essential steps may exceed it | `100` |
 | `--concurrency <n>` | max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap | `4` |
 | `--retry-attempts <0..3>` | automatic retries per step before it comes back to you; a process failure retries elsewhere, a gate failure retries on the same pool with its failure attached | `1` |
+| `--out-of-rounds <wait\|end>` | what a loop does when it runs out of rounds: `wait` parks the run until `workflow continue` (today's behaviour); `end` settles it `passed` with reason `rounds-spent` (condition not met, read like `continued-unmet`) and runs the steps behind it. Kept in the run's saved settings, so resume and `workflow continue` keep it. A later round given by `continue --rounds` that runs out ends by itself too | `wait` |
 | `--resume <shortId\|runId>` | resume a v3 run; a run an earlier Bullswarm started is view-only and exits 2 before dispatch | starts a new goal |
 | `--detach` | rarely needed — explicitly requests the default independent-launch behavior; cannot combine with `--watch` | the default launch already detaches |
 | `--again` | start another copy even when an ongoing run already has the same goal text in the same `--cwd`; only a new launch is checked, never `--resume` or the internal `--request` relaunch | off (a duplicate of an ongoing goal is refused) |
+
+A loop that reaches `maxRounds` with its condition unmet parks the run until `workflow continue <run> <loop>` (`--rounds <1-5>` gives it more rounds; without `--rounds` it ends `continued`, condition not met). With `--out-of-rounds end` the loop ends itself at that point instead: reason `rounds-spent`, event `loop.passed` with `source: flag`, the steps behind it run, and the outcome reads as `continued-unmet`. A loop parked before the setting changed stays parked, and a round added by `continue --rounds` that runs out again ends by itself.
 
 Workers keep their edits even when their action fails. Failed dependencies skip downstream actions and independent branches finish. A resumed v3 run keeps its original completion and isolation policy.
 
@@ -926,6 +929,7 @@ bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd 
 | `--max-expansion-rounds <n>` | advisory gap-round target recorded in the contract settings | `2` |
 | `--concurrency <n>` | execution concurrency recorded in the contract settings | `4` |
 | `--retry-attempts <0..3>` | automatic retries per step recorded in the contract settings | `1` |
+| `--out-of-rounds <wait\|end>` | same as `workflow goal` | `wait` |
 | `--worker-pool <pool\|auto>` | pin the worker pool the contract echoes back | `auto` |
 | `--worker-model <model\|auto>` | pin the worker model the contract echoes back | `auto` |
 | `--worker-reasoning <level>` | run-wide worker thinking level the contract echoes back | the strategy setting for the action effort tier |
@@ -956,6 +960,7 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 | `--max-expansion-rounds <n>` | advisory gap-round target for the previewed run | `2` |
 | `--concurrency <n>` | execution concurrency for the previewed run | `4` |
 | `--retry-attempts <0..3>` | automatic retries per step for the previewed run | `1` |
+| `--out-of-rounds <wait\|end>` | same as `workflow goal` | `wait` |
 
 Read-only. Exit 0 valid, 2 invalid, 1 bad cwd. Advisories (authoring advice such as `suite-wider-than-files`, never a refusal) print on stderr as `advisory: <code> [<step>] — <message>`; with `--json` they are only in the JSON document, as `advisories`.
 

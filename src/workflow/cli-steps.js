@@ -24,7 +24,7 @@ import { writeJsonAtomic } from '../lib/fsjson.js';
 import { glyphs } from '../lib/glyphs.js';
 import { usageLine } from '../help.js';
 import {
-  CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
+  CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, isUnmetEnd, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, blocksIssues, fragmentShapeIssues } from './revision-v3.js';
@@ -569,8 +569,8 @@ export async function waitV3Nodes({
 /** The printed lines of one `workflow wait` fact. */
 export function waitFactLines(fact) {
   const g = glyphs();
-  if (fact.type === 'loop' && fact.status === 'passed' && fact.reason === 'continued') {
-    return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds)}`];
+  if (fact.type === 'loop' && fact.status === 'passed' && isUnmetEnd(fact.reason)) {
+    return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds, { reason: fact.reason })}`];
   }
   if (fact.type === 'loop' && (fact.findings?.dryIn !== undefined || fact.findings?.yieldIn !== undefined)) {
     const yieldStop = fact.findings.yieldIn !== undefined;

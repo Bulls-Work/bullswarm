@@ -112,6 +112,10 @@ test('watch and wait output: waiting at a gate, the loop round, and the answers 
   // QA37: a loop the caller continued is named as such, never as passed.
   const continued = watchContext('→ loop polish continued by the caller after 3 of 3 rounds (condition not met)');
   assert.match(continued, /The loop polish continued by the caller after 3 of 3 rounds \(condition not met\)\./);
+  // A loop that ended by itself under --out-of-rounds end is named as such: condition not met, never passed.
+  // The watch event line and `workflow wait`'s fact line both print it this way (continuedLoopText).
+  const spent = watchContext('→ loop polish ended at its last round (3 of 3), condition not met (--out-of-rounds end)');
+  assert.match(spent ?? '', /The loop polish ended at its last round \(3 of 3\), condition not met \(--out-of-rounds end\)\./);
   assert.equal(watchContext('✓ count finished · unproven · 35s'), null, 'nothing v3 to say about a plain step line');
 });
 
