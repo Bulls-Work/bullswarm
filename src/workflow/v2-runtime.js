@@ -61,6 +61,7 @@ import { actStoppedDuringChecksWhy, clearEvidenceRunning, reconcileResume } from
 import { acceptCallerPlannerResponse } from './caller-planner.js';
 import { clearRejectedRerunIntent } from './run-control.js';
 import { earlierWorkFor } from './earlier-work.js';
+import { STALE_RECORD_EVERY_MS, createStaleRecorder } from './stale-recorder.js';
 
 const ACTIVE_RUNS = new Set();
 const DEFAULTS = Object.freeze({
@@ -248,6 +249,12 @@ async function runV2Kernel({
     onEvent?.(event);
     return event;
   };
+  // Saves each stale warning as an event (stale-recorder.js). The check
+  // cadence and the thresholds are injectable for tests.
+  const staleCheckMs = dependencies.staleCheckMs ?? STALE_RECORD_EVERY_MS;
+  const staleRecorder = createStaleRecorder({
+    runDir, emit, everyMs: staleCheckMs, thresholds: dependencies.staleThresholds,
+  });
   const startPresentationStage = (actionId) => {
     const stage = stageForAction(state.presentation, actionId);
     if (!stage || stage.startedAt) return;
@@ -319,6 +326,10 @@ async function runV2Kernel({
   state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
   persist();
   emit(resuming ? 'workflow.resumed' : 'workflow.started', { runId: id, shortId: state.shortId, intentId: state.intentId, goal: state.intent.goal });
+  // The marker a watch reads to print this run's saved stale warnings instead
+  // of scoring its own. An event, not a state key: a build that predates it
+  // skips an unknown event type but refuses an unknown state key.
+  emit('stale.recording', {});
   // An act step whose kernel died during its checks (F14) finished as failed
   // in reconcileResume, before the event log was open: say so now.
   for (const { actionId, why } of actStepsToCaller) {
@@ -674,6 +685,7 @@ async function runV2Kernel({
             if (record.status === 'succeeded') recordReturnedEarly(attempt);
           }
           addUsage(state, attempt ? { ...record, usage: attempt.usage } : record);
+          staleRecorder.finish(currentAttemptId, action.id);
           emit('attempt.finished', {
             actionId: action.id,
             attemptId: currentAttemptId,
@@ -704,6 +716,7 @@ async function runV2Kernel({
               stalled: true,
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
               silentSec: record.silentSec ?? null,
+              ...(record.stalledBy ? { stalledBy: record.stalledBy } : {}),
               ...(record.noProgressSec != null ? { noProgressSec: record.noProgressSec } : {}),
             } : {}),
           });
@@ -1145,6 +1158,12 @@ async function runV2Kernel({
     }
   }, 10_000);
   heartbeat.unref?.();
+  // Its own real timer: a test that stubs the heartbeat's interval must not
+  // capture this one.
+  const staleTick = setInterval(() => {
+    try { staleRecorder.check(state, Date.now()); } catch { /* never breaks the run */ }
+  }, staleCheckMs);
+  staleTick.unref?.();
   ACTIVE_RUNS.add(runDir);
   process.on('SIGTERM', onSignal);
   process.on('SIGINT', onSignal);
@@ -1266,6 +1285,9 @@ async function runV2Kernel({
   } finally {
     await Promise.allSettled(activeTasks.values());
     stopInterval(heartbeat);
+    // Every episode still open is closed in the record before the timer stops.
+    try { staleRecorder.close(Date.now()); } catch { /* the run is over */ }
+    clearInterval(staleTick);
     process.removeListener('SIGTERM', onSignal);
     process.removeListener('SIGINT', onSignal);
     ACTIVE_RUNS.delete(runDir);
