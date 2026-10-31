@@ -39,19 +39,19 @@ const ASSIGNMENTS = [{ pool: 'grok', lane: 'analyze', startedAt: '2026-10-21T00:
 for (const name of ['runs', 'assignments']) {
   test(`${name}: eight concurrent callers on a stale cache cost one build`, async () => {
     const h = home();
-    writeCache(h, name, { old: true }, 1_000);
+    writeCache(h, name, { [name]: ['old'] }, 1_000);
     let builds = 0;
     const build = async () => {
       builds += 1;
       await new Promise((r) => setTimeout(r, 150));
-      return { fresh: true };
+      return { [name]: ['fresh'] };
     };
     const served = await Promise.all(Array.from({ length: 8 }, () =>
       serveCached({ home: h, name, maxAgeMs: 60_000, build })));
     assert.equal(builds, 1);
     assert.equal(served.filter((s) => s.source === 'stale').length, 7);
     assert.equal(existsSync(cachePaths(h, name).lock), false);
-    assert.deepEqual(readCache(h, name).doc, { fresh: true });
+    assert.deepEqual(readCache(h, name).doc, { [name]: ['fresh'] });
   });
 }
 
@@ -144,7 +144,7 @@ test('mod: the max age tightens while work is in flight', () => {
 // Hardening from an independent review of the lock (grok run qnkeas, 2026-10-21).
 test('a lock older than two minutes whose holder is still alive is not broken', async () => {
   const h = home();
-  writeCache(h, 'runs', { old: true }, 1_000);
+  writeCache(h, 'runs', { runs: ['old'] }, 1_000);
   const { lock } = cachePaths(h, 'runs');
   writeFileSync(lock, `${process.pid} 1000 live-token\n`);
   const old = new Date(Date.now() - 180_000);

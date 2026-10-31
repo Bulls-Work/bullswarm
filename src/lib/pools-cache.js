@@ -28,11 +28,25 @@ export function cachePaths(home, name) {
   return { dir, file: join(dir, `${name}.json`), lock: join(dir, `${name}.lock`) };
 }
 
-/** The cached `{ savedAt, doc }`, or null when there is none or it is unreadable. */
-export function readCache(home, name) {
+/** How far ahead of now a savedAt may be: clock skew between the processes that write and read the cache. */
+const CLOCK_SKEW_MS = 60_000;
+/** The array each cache's doc holds, as writeCache stores it. */
+const ARRAY_FIELD = { pools: 'pools', runs: 'runs', assignments: 'assignments' };
+
+/**
+ * The cached `{ savedAt, doc }`, or null when there is none, it is unreadable,
+ * it has the wrong shape, or it was saved in the future (a clock jump or a
+ * hand-edited file would otherwise read as fresh until the clock caught up).
+ */
+export function readCache(home, name, now = Date.now) {
   try {
-    const { schema, savedAt, ...doc } = JSON.parse(readFileSync(cachePaths(home, name).file, 'utf8'));
+    const parsed = JSON.parse(readFileSync(cachePaths(home, name).file, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const { schema, savedAt, ...doc } = parsed;
     if (schema !== schemaOf(name) || !Number.isFinite(savedAt)) return null;
+    if (savedAt > now() + CLOCK_SKEW_MS) return null;
+    const field = ARRAY_FIELD[name];
+    if (field && !Array.isArray(doc[field])) return null;
     return { savedAt, doc };
   } catch {
     return null;
@@ -114,14 +128,14 @@ export async function serveCached({
   const { dir, lock } = cachePaths(home, name);
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const cached = readCache(home, name);
+    const cached = readCache(home, name, now);
     if (cached && now() - cached.savedAt <= maxAgeMs) return { ...cached, source: 'cache' };
     mkdirSync(dir, { recursive: true });
     const token = takeLock(lock);
     if (token) {
       try {
         // Another caller may have finished between our read and our lock.
-        const again = readCache(home, name);
+        const again = readCache(home, name, now);
         if (again && now() - again.savedAt <= maxAgeMs) return { ...again, source: 'cache' };
         const doc = await build();
         const savedAt = now();
