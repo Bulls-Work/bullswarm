@@ -11,7 +11,8 @@ import { isProgramV3, v3IssueWording } from './program-v3.js';
 import { validateV2GoalDocument } from './v2-state.js';
 import { V2PlannerValidationError, workspacePathIssues } from './v2-planner.js';
 import { runWorkflowWatch } from './watch-cli.js';
-import { helpText } from '../help.js';
+import { helpText, usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { flagErrors, removedFlagExit } from './workflow-flags.js';
 import { BULLSWARM_DIR, drivableRunRefusal } from './cli-run-lookup.js';
 import { modelPoolIssues, pinnedPoolIssues, routePoolIssues, livePoolNames } from './cli-pool-checks.js';
@@ -85,10 +86,11 @@ export async function wfGoal(opts) {
   if (flagExit !== null) return flagExit;
   if (opts.watch && (opts.detach || opts.foreground || opts.json || opts.resume || opts.request)) {
     console.error('✗ --watch is only valid for a new human-readable independent launch; do not combine it with --detach, --foreground, --json, --resume, or --request');
+    reportUsageError({ message: '--watch is only valid for a new human-readable independent launch; do not combine it with --detach, --foreground, --json, --resume, or --request', usage: usageLine(['workflow', 'goal']) });
     return 2;
   }
   // --planner was removed in 0.27.0: the caller writes the program.
-  if (opts.planner !== undefined) { console.error('✗ --planner was removed: pass --program <file.json>; you write the program'); return 2; }
+  if (opts.planner !== undefined) { console.error('✗ --planner was removed: pass --program <file.json>; you write the program'); reportUsageError({ message: '--planner was removed: pass --program <file.json>; you write the program', usage: usageLine(['workflow', 'goal']) }); return 2; }
   const { names, pools } = await livePoolNames();
   let doc;
   let resumeRunId = null;
@@ -114,10 +116,12 @@ export async function wfGoal(opts) {
     }
     if (opts['worker-pool'] || opts['worker-model'] || opts['worker-reasoning']) {
       console.error('✗ V2 resume preserves its durable routing contract; routing overrides are valid only when starting a new goal');
+      reportUsageError({ message: 'V2 resume preserves its durable routing contract; routing overrides are valid only when starting a new goal', usage: usageLine(['workflow', 'goal']) });
       return 2;
     }
     if (opts.program || opts.isolation !== undefined) {
       console.error(`✗ a resumed run keeps its program and workspace mode; to add steps use: bullswarm workflow add ${resolvedRun.shortId ?? resumeRunId} --steps <file.json>`);
+      reportUsageError({ message: `a resumed run keeps its program and workspace mode; to add steps use: bullswarm workflow add ${resolvedRun.shortId ?? resumeRunId} --steps <file.json>`, usage: usageLine(['workflow', 'goal']) });
       return 2;
     }
   } else if (opts.request) {
@@ -140,6 +144,7 @@ export async function wfGoal(opts) {
     const goal = opts.rest.join(' ').trim();
     if (!goal) {
       console.error(goalUsage());
+      reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'goal']) });
       return 2;
     }
     // A new launch only: --resume continues the run it names, and the internal
@@ -150,13 +155,17 @@ export async function wfGoal(opts) {
       if (duplicate) return refuseDuplicateGoal(goal, opts, duplicate, cwd);
     }
     if (!opts.program) return refuseProgramRequired(goal, opts);
+    let building = false;
     try {
       initialPlannerResponse = loadCallerProgram(opts);
+      building = true;
       doc = buildNewGoalDocument(goal, opts);
     } catch (err) {
       if (err instanceof ProgramV2RefusedError) return refuseProgramV2(opts);
       if (err instanceof V2PlannerValidationError) return refuseProgramInvalid(goal, opts, err.issues);
       console.error(`✗ invalid goal options: ${err.message}`);
+      // A program file that cannot be read is an input error, not a usage error.
+      if (building) reportUsageError({ message: `invalid goal options: ${err.message}`, usage: usageLine(['workflow', 'goal']) });
       return 2;
     }
   }

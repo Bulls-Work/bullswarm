@@ -202,6 +202,7 @@ async function cmdPools(opts) {
     // loads; reaching here means the form is not one the cache can answer.
     console.error('✗ --max-age needs whole seconds (1-3600) with --json, and no --pool or --force: '
       + 'it answers from the shared pools cache, which holds the whole set as last read');
+    reportUsageError({ message: '--max-age needs whole seconds (1-3600) with --json, and no --pool or --force', usage: usageLine(['pools']) });
     return 2;
   }
   if (opts.rest.length) {
@@ -221,6 +222,12 @@ async function cmdPools(opts) {
       console.error(only.length
         ? `✗ unknown pool${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')} (bullswarm pools lists them)`
         : '✗ --pool needs a pool name or a comma-separated list');
+      reportUsageError({
+        message: only.length
+          ? `unknown pool${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`
+          : '--pool needs a pool name or a comma-separated list',
+        usage: usageLine(['pools']),
+      });
       return 2;
     }
   }
@@ -303,6 +310,7 @@ function cmdAssignments(opts) {
   if (opts['max-age'] !== undefined) {
     // bin/bullswarm.js answers the valid form from the cache before the CLI loads.
     console.error('✗ --max-age needs whole seconds (1-3600) with --json: it answers from the shared assignments cache');
+    reportUsageError({ message: '--max-age needs whole seconds (1-3600) with --json', usage: usageLine(['assignments']) });
     return 2;
   }
   const now = Date.now();
@@ -340,11 +348,14 @@ async function cmdRun(opts) {
   const parsed = runStepRequest(opts);
   if (parsed.error) {
     console.error(parsed.error);
-    const flagged = /^usage: /.test(parsed.error);
-    reportUsageError({
-      message: parsed.error.replace(/^usage: /, ''),
-      usage: flagged ? usageLine(['run']) : null,
-    });
+    // A file that cannot be read is an input error, not a usage error.
+    if (!parsed.input) {
+      const flagged = /^usage: /.test(parsed.error);
+      reportUsageError({
+        message: parsed.error.replace(/^usage: /, ''),
+        usage: flagged ? usageLine(['run']) : null,
+      });
+    }
     return 2;
   }
   const { request } = parsed;

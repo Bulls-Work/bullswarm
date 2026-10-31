@@ -153,7 +153,7 @@ const GUARD = [
   ['workflow', 'task', 'show', '--json'],
   ['workflow', 'plan', 'nope', '--json'],
   ['workflow', 'plan', 'validate', '--json'],
-  ['workflow', 'plan', 'contract', '--json'],
+  ['workflow', 'plan', 'contract', '--planner', 'x', '--json'],
   ['workflow', 'runs', 'nope', '--json'],
   ['workflow', 'runs', '--since', 'garbage', '--json'],
   ['workflow', 'runs', 'show', '--json'],
@@ -197,3 +197,10 @@ for (const args of GUARD) {
     assert.ok(lines.length > 1 && r.out.trim().startsWith('{') && r.out.trim().endsWith('}'));
   });
 }
+
+test('json: on a command without --json, another unknown flag is the reported error', () => {
+  const both = JSON.parse(bullswarm(['strategy', 'hold', '--bogus', '--json']).out);
+  assert.equal(both.message, 'unknown flag --bogus');
+  const only = JSON.parse(bullswarm(['strategy', 'hold', '--json']).out);
+  assert.equal(only.message, 'unknown flag --json');
+});

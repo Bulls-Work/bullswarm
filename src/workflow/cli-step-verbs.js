@@ -459,7 +459,7 @@ export async function wfStep(opts) {
   const viewOnly = drivableRunRefusal(token, opts, `step ${verb}`);
   if (viewOnly !== null) return viewOnly;
   const waitSec = opts.wait == null ? (verb === 'restart' ? 60 : 120) : Number(opts.wait);
-  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); reportUsageError({ message: '--wait must be a non-negative number of seconds', usage: usageLine(path) }); return 2; }
   if (verb === 'rerun') {
     const result = await rerunV2Step({
       bullswarmDir: BULLSWARM_DIR(), token, stepId, avoid: listFlag(opts.avoid),

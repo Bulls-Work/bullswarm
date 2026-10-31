@@ -158,9 +158,9 @@ export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, lau
   const [token, nodeId] = opts.rest;
   if (!token || !nodeId || opts.rest.length > 2) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return 2; }
   let rounds;
-  try { rounds = parseContinueRounds(opts.rounds); } catch (err) { console.error(`✗ ${err.message}`); return 2; }
+  try { rounds = parseContinueRounds(opts.rounds); } catch (err) { console.error(`✗ ${err.message}`); reportUsageError({ message: err.message, usage: usageLine(path) }); return 2; }
   const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
-  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); reportUsageError({ message: '--wait must be a non-negative number of seconds', usage: usageLine(path) }); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, 'continue');
   if (viewOnly !== null) return viewOnly;
   const resolved = resolveRunId(bullswarmDir, token);
@@ -325,9 +325,9 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   const fromFile = typeof opts.steps === 'string' ? opts.steps : null;
   const fromAnswer = typeof opts['from-answer'] === 'string' ? opts['from-answer'] : null;
   if (!token || opts.rest.length > 1 || (!fromFile && !fromAnswer)) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return 2; }
-  if (fromFile && fromAnswer) { console.error('✗ --steps and --from-answer are mutually exclusive: add from a file or from a step\'s answer'); return 2; }
+  if (fromFile && fromAnswer) { console.error('✗ --steps and --from-answer are mutually exclusive: add from a file or from a step\'s answer'); reportUsageError({ message: '--steps and --from-answer are mutually exclusive: add from a file or from a step\'s answer', usage: usageLine(path) }); return 2; }
   const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
-  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); reportUsageError({ message: '--wait must be a non-negative number of seconds', usage: usageLine(path) }); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, 'add');
   if (viewOnly !== null) return viewOnly;
   let fragment = null;
@@ -624,7 +624,7 @@ export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
   const [token, ...ids] = opts.rest;
   if (!token || !ids.length) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return 2; }
   const timeoutSec = opts.timeout === undefined ? null : Number(opts.timeout);
-  if (timeoutSec !== null && (!Number.isFinite(timeoutSec) || timeoutSec < 0)) { console.error('✗ --timeout must be a non-negative number of seconds'); return 2; }
+  if (timeoutSec !== null && (!Number.isFinite(timeoutSec) || timeoutSec < 0)) { console.error('✗ --timeout must be a non-negative number of seconds'); reportUsageError({ message: '--timeout must be a non-negative number of seconds', usage: usageLine(path) }); return 2; }
   const result = await waitV3Nodes({ bullswarmDir, token, ids: [...new Set(ids)], timeoutMs: timeoutSec === null ? null : timeoutSec * 1000 });
   const { code, ...payload } = result;
   if (opts.json) { console.log(JSON.stringify({ action: 'workflow-wait', ...payload }, null, 2)); return code; }

@@ -23,15 +23,16 @@ export function wfEvents(opts) {
     console.error(`usage: ${usageLine(['workflow', 'events'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'events']) });
     return 2;
   }
+  const after = Number(opts.after ?? 0);
+  if (!Number.isInteger(after) || after < 0) {
+    console.error('✗ --after must be a non-negative integer');
+    reportUsageError({ message: '--after must be a non-negative integer', usage: usageLine(['workflow', 'events']) });
+    return 2;
+  }
   const resolved = resolveRunId(BULLSWARM_DIR(), token);
   if (!resolved) {
     console.error(`✗ no run found for "${token}"`);
     return 1;
-  }
-  const after = Number(opts.after ?? 0);
-  if (!Number.isInteger(after) || after < 0) {
-    console.error('✗ --after must be a non-negative integer');
-    return 2;
   }
   const events = readEvents(resolved.runDir, { after });
   console.log(JSON.stringify({ action: 'events', runId: resolved.runId, shortId: resolved.shortId, after, count: events.length, events }, null, 2));
@@ -52,6 +53,7 @@ export async function wfWatch(opts) {
   // of notable events to wake up on, so it cannot combine with --next.
   if (opts.classic === true && opts.next === true) {
     console.error('✗ --classic cannot combine with --next (--next only applies to event mode)');
+    reportUsageError({ message: '--classic cannot combine with --next (--next only applies to event mode)', usage: usageLine(['workflow', 'watch']) });
     return 2;
   }
   // --until is its own stopping rule and prints only trouble and the outcome.
@@ -59,11 +61,13 @@ export async function wfWatch(opts) {
   if (opts.until != null) {
     if (!['outcome', 'trouble'].includes(opts.until)) {
       console.error(`✗ --until must be outcome or trouble (got "${opts.until}")`);
+      reportUsageError({ message: `--until must be outcome or trouble (got "${opts.until}")`, usage: usageLine(['workflow', 'watch']) });
       return 2;
     }
     const clash = ['next', 'once', 'classic', 'heartbeat'].filter((flag) => opts[flag] != null);
     if (clash.length) {
       console.error(`✗ --until cannot combine with ${clash.map((flag) => `--${flag}`).join(', ')}: it prints only trouble and the outcome`);
+      reportUsageError({ message: `--until cannot combine with ${clash.map((flag) => `--${flag}`).join(', ')}: it prints only trouble and the outcome`, usage: usageLine(['workflow', 'watch']) });
       return 2;
     }
     until = opts.until;
@@ -75,11 +79,13 @@ export async function wfWatch(opts) {
   if (!Number.isFinite(intervalSec) || intervalSec < 0.1 ||
       (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
     console.error('✗ --interval must be >= 0.1 seconds and --heartbeat must be >= 1 second');
+    reportUsageError({ message: '--interval must be >= 0.1 seconds and --heartbeat must be >= 1 second', usage: usageLine(['workflow', 'watch']) });
     return 2;
   }
   const stallAfterSec = Number(opts['stall-after'] ?? 300);
   if (!Number.isFinite(stallAfterSec) || stallAfterSec < 1) {
     console.error('✗ --stall-after must be >= 1 second');
+    reportUsageError({ message: '--stall-after must be >= 1 second', usage: usageLine(['workflow', 'watch']) });
     return 2;
   }
   // Continuity for a relaunched watcher: both values come from the `next:` line
@@ -89,6 +95,7 @@ export async function wfWatch(opts) {
     afterSequence = Number(opts.after);
     if (!Number.isInteger(afterSequence) || afterSequence < 0) {
       console.error('✗ --after must be a non-negative integer');
+      reportUsageError({ message: '--after must be a non-negative integer', usage: usageLine(['workflow', 'watch']) });
       return 2;
     }
   }
@@ -99,10 +106,12 @@ export async function wfWatch(opts) {
     const timeoutSec = Number(opts.timeout);
     if (!Number.isFinite(timeoutSec) || timeoutSec < 1) {
       console.error('✗ --timeout must be >= 1 second');
+      reportUsageError({ message: '--timeout must be >= 1 second', usage: usageLine(['workflow', 'watch']) });
       return 2;
     }
     if (opts.once === true || opts.classic === true) {
       console.error('✗ --timeout cannot combine with --once or --classic: it applies to event mode');
+      reportUsageError({ message: '--timeout cannot combine with --once or --classic: it applies to event mode', usage: usageLine(['workflow', 'watch']) });
       return 2;
     }
     timeoutMs = timeoutSec * 1000;
@@ -112,6 +121,7 @@ export async function wfWatch(opts) {
     sinceMs = Date.parse(opts.since);
     if (!Number.isFinite(sinceMs)) {
       console.error('✗ --since must be an ISO 8601 timestamp');
+      reportUsageError({ message: '--since must be an ISO 8601 timestamp', usage: usageLine(['workflow', 'watch']) });
       return 2;
     }
   }

@@ -183,9 +183,10 @@ export async function wfResume(opts) {
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'resume'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'resume']) }); return 2; }
-  if (opts.watch && (opts.foreground || opts.json)) { console.error('✗ --watch cannot combine with --foreground or --json'); return 2; }
+  if (opts.watch && (opts.foreground || opts.json)) { console.error('✗ --watch cannot combine with --foreground or --json'); reportUsageError({ message: '--watch cannot combine with --foreground or --json', usage: usageLine(['workflow', 'resume']) }); return 2; }
   if (opts.program || opts.orchestrator !== undefined || opts['strict-orchestrator'] !== undefined || opts.scout || opts['suggested-plan'] !== undefined || opts.isolation !== undefined) {
     console.error(`✗ a resumed run keeps its durable planner mode and routing; to add steps use: bullswarm workflow add ${token} --steps <file.json>`);
+    reportUsageError({ message: `a resumed run keeps its durable planner mode and routing; to add steps use: bullswarm workflow add ${token} --steps <file.json>`, usage: usageLine(['workflow', 'resume']) });
     return 2;
   }
   const viewOnly = drivableRunRefusal(token, opts, 'resume');

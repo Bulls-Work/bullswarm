@@ -72,6 +72,7 @@ export function cmdRuns(args, { alias = ['workflow', 'runs'] } = {}) {
   const SUBS = ['list', 'show', 'result', 'delete'];
   if (sub && !SUBS.includes(sub)) {
     console.error(runsUsage());
+    reportUsageError({ message: `"${alias.join(' ')} ${sub}" is not a subcommand`, usage: usageLine(alias) });
     return 2;
   }
   // Same gate as every other command path, against this subcommand's row of
@@ -190,12 +191,14 @@ function runsList(opts) {
   if (opts.maxAge !== undefined) {
     // bin/bullswarm.js answers `workflow runs --json --max-age <s>` from the
     // shared cache before the CLI loads; anything else with it is refused.
+    reportUsageError({ message: '--max-age needs whole seconds (1-3600) with --json and no filter', usage: usageLine(['workflow', 'runs']) });
     return err('--max-age needs whole seconds (1-3600) with --json and no filter: it answers from the shared runs cache', 2);
   }
   let initiatedRange;
   try {
     initiatedRange = resolveInitiatedRange(opts);
   } catch (error) {
+    reportUsageError({ message: error.message, usage: usageLine(['workflow', 'runs']) });
     return err(error.message, 2);
   }
   const all = listRuns(BULLSWARM_DIR());

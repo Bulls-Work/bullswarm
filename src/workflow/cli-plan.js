@@ -83,6 +83,7 @@ export async function wfPlan(rest) {
     case 'validate': return planValidate(opts);
     default:
       console.error(helpText(['workflow', 'plan']));
+      reportUsageError({ message: `unknown command "workflow plan ${sub}"`, usage: usageLine(['workflow', 'plan']) });
       return 2;
   }
 }
@@ -93,10 +94,10 @@ function planningGoalDocument(opts, path, { allowProgram = false } = {}) {
   const goal = opts.rest.join(' ').trim();
   if (!goal) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return { exit: 2 }; }
   const flagError = contractFlagError(opts, { allowProgram });
-  if (flagError) { console.error(`✗ ${flagError}`); return { exit: 2 }; }
+  if (flagError) { console.error(`✗ ${flagError}`); reportUsageError({ message: flagError, usage: usageLine(path) }); return { exit: 2 }; }
   let doc;
   try { doc = buildNewGoalDocument(goal, opts); }
-  catch (err) { console.error(`✗ invalid goal options: ${err.message}`); return { exit: 2 }; }
+  catch (err) { console.error(`✗ invalid goal options: ${err.message}`); reportUsageError({ message: `invalid goal options: ${err.message}`, usage: usageLine(path) }); return { exit: 2 }; }
   if (!existsSync(doc.intent.cwd) || !statSync(doc.intent.cwd).isDirectory()) {
     console.error(`✗ goal cwd is not an existing directory: ${doc.intent.cwd}`);
     return { exit: 1 };

@@ -248,7 +248,10 @@ export function flagNames(argv) {
 export function unknownFlagExit(names, path, { error = console.error } = {}) {
   const known = knownFlags(path);
   if (!known || !names?.length) return null;
-  const unknown = names.filter((name) => !known.includes(name));
+  const all = names.filter((name) => !known.includes(name));
+  // --json on a command without it is a mistake, but when another flag is
+  // unknown too, that one is the real error a JSON caller needs to see.
+  const unknown = all.length > 1 ? all.filter((name) => name !== 'json') : all;
   if (!unknown.length) return null;
   for (const name of unknown) error(`✗ unknown flag --${name}`);
   error(`usage: ${usageLine(path)}`);
