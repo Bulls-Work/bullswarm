@@ -98,7 +98,7 @@ test('a valid state.json creates no unreadable file and no message', (t) => {
 test('when the rename fails updateState throws naming the path and writes nothing', (t) => {
   const dir = home(t);
   writeFileSync(join(dir, 'state.json'), '{"pools":');
-  // A directory squatting on every plausible target makes renameSync fail.
+  // A directory squatting on every name the move may pick makes it fail.
   const real = Date;
   const frozen = new real('2026-01-02T03:04:05.000Z');
   globalThis.Date = class extends real {
@@ -106,9 +106,9 @@ test('when the rename fails updateState throws naming the path and writes nothin
     static now() { return frozen.getTime(); }
   };
   t.after(() => { globalThis.Date = real; });
-  const target = join(dir, 'state.json.unreadable-2026-01-02T03-04-05.000Z');
-  mkdirSyncCompat(target);
-  writeFileSync(join(target, 'x'), 'x');
+  // Every name the move may pick (the stamp, then -2 to -100) is taken.
+  const base = join(dir, 'state.json.unreadable-2026-01-02T03-04-05.000Z');
+  for (let n = 1; n <= 100; n += 1) mkdirSyncCompat(n > 1 ? `${base}-${n}` : base);
 
   assert.throws(
     () => captureStderr(() => updateState(dir, append)),
@@ -148,5 +148,5 @@ test('two unreadable files moved aside in the same millisecond are both kept', (
   globalThis.Date = RealDate;
   const contents = kept(dir).map((name) => readFileSync(join(dir, name), 'utf8')).sort();
   assert.deepEqual(contents, ['AAA', 'BBB']);
-  assert.equal(kept(dir).filter((name) => stderr.includes(name)).length, 1);
+  assert.equal(kept(dir).filter((name) => stderr.includes(`kept it as ${name} and`)).length, 1);
 });

@@ -18,7 +18,7 @@
 //       (audit finding D5, 2026-09-09).
 
 import {
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
+  closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -461,9 +461,21 @@ function keepUnreadableState(bullswarmDir) {
     reason = err.message;
   }
   if (reason === null) return;
-  const name = `state.json.unreadable-${new Date().toISOString().replaceAll(':', '-')}`;
+  const stamp = new Date().toISOString().replaceAll(':', '-');
+  // link + unlink rather than rename: link fails on a name already taken, so
+  // an earlier unreadable copy with the same timestamp is never replaced.
+  let name = null;
   try {
-    renameSync(path, join(bullswarmDir, name));
+    for (let n = 1; name === null; n += 1) {
+      const candidate = `state.json.unreadable-${stamp}${n > 1 ? `-${n}` : ''}`;
+      try {
+        linkSync(path, join(bullswarmDir, candidate));
+        name = candidate;
+      } catch (err) {
+        if (err.code !== 'EEXIST' || n >= 100) throw err;
+      }
+    }
+    unlinkSync(path);
   } catch (err) {
     throw new Error(`state.json at ${path} could not be read (${reason}) and could not be moved aside: ${err.message}`);
   }
