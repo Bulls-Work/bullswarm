@@ -54,7 +54,8 @@ test('pools resume and strategy set-pausing are unknown commands now: exit 2, th
       // What `strategy` answers every subcommand it does not know.
       assert.equal(pausing.stderr, run(home, ['strategy', 'frobnicate']).stderr, argv.join(' '));
       assert.match(pausing.stderr, /^✗ Usage: bullswarm strategy /);
-      assert.equal(pausing.stdout, '');
+      if (argv.includes('--json')) assert.match(JSON.parse(pausing.stdout).usage, /^bullswarm strategy /);
+      else assert.equal(pausing.stdout, '');
     }
     assert.equal(readFileSync(join(home, 'state.json'), 'utf8'), before, 'nothing was written');
   } finally {

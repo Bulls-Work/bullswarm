@@ -31,10 +31,10 @@ export async function withJsonUsageErrors(argv, run) {
   }
   if (code === 2 && !wrote) {
     const text = lines.join('\n').split('\n');
-    const usage = text.find((l) => l.startsWith('usage: ')) ?? null;
-    const message = text.filter((l) => !l.startsWith('usage: ') && l.trim()).map((l) => l.replace(/^✗ /, '')).join('\n')
+    const usage = text.find((l) => /^(✗ )?[Uu]sage: /.test(l)) ?? null;
+    const message = text.filter((l) => !/^usage: /.test(l) && l.trim()).map((l) => l.replace(/^✗ /, '')).join('\n')
       || 'usage error';
-    console.log(JSON.stringify({ error: 'usage', message, usage: usage ? usage.slice('usage: '.length) : null }, null, 2));
+    console.log(JSON.stringify({ error: 'usage', message, usage: usage ? usage.replace(/^(✗ )?[Uu]sage: /, '') : null }, null, 2));
   }
   return code;
 }
