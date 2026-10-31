@@ -1,0 +1,17 @@
+{
+ "task": "08-status-lock-holder",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 2.6,
+  "tail": "\n    - [\n    -   'mine'\n    - ]\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected:\n    0: 'mine'\n  operator: 'deepStrictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///private/tmp/claude-501/-Users-cowcow02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vA/08-status-lock-holder/tests/status-cache.test.js:184:10)\n    async Test.run (node:internal/test_runner/test:1054:7)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n1..12\n# tests 12\n# suites 0\n# pass 9\n# fail 3\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 2501.068625\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 2.3,
+  "tail": "two minutes whose holder is still alive is not broken\n  ---\n  duration_ms: 1.187375\n  type: 'test'\n  ...\n# Subtest: releasing never removes a lock another caller has taken since\nok 11 - releasing never removes a lock another caller has taken since\n  ---\n  duration_ms: 0.938708\n  type: 'test'\n  ...\n# Subtest: a waiter that gives up on another build stores what it built\nok 12 - a waiter that gives up on another build stores what it built\n  ---\n  duration_ms: 66.017792\n  type: 'test'\n  ...\n1..12\n# tests 12\n# suites 0\n# pass 12\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 2229.662416\n"
+ },
+ "verified": true
+}

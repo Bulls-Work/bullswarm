@@ -1,0 +1,10 @@
+{
+ "repo": "A",
+ "parent": "a6325b1",
+ "fixCommit": "1d27342",
+ "checkFiles": [
+  "tests/cli-remediation.test.js"
+ ],
+ "checkCmd": "node --test tests/cli-remediation.test.js",
+ "timeoutSec": 600
+}

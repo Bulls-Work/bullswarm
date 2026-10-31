@@ -1,0 +1,3 @@
+`bullswarm workflow goal ... --watch` sometimes dies a moment after launch with "no run found" and exit code 1. It happens mostly on slow machines and on CI: the goal run is started detached, and the watcher looks for the run's state before the new process has written it, so it gives up at once.
+
+What I expect: the watcher waits a bounded time for a freshly launched run to show up before it reports "no run found". `runWorkflowWatch` should take an option for how long to wait (in milliseconds), and `goal --watch` should use about 30 seconds. A run that never appears must still fail with the same error once the wait is over, and the default (no option) must behave as it does today.

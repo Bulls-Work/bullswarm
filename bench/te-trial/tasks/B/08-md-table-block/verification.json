@@ -1,0 +1,17 @@
+{
+ "task": "08-md-table-block",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 1.4,
+  "tail": " to the header width; pipes without outer bars work\nAssertionError: expected 'text' to be 'table' // Object.is equality\n\nExpected: \u001b[32m\"t\u001b[7mable\u001b[27m\"\u001b[39m\nReceived: \u001b[31m\"t\u001b[7mext\u001b[27m\"\u001b[39m\n\n \u276f tests/command-post/md.test.ts:57:24\n     55|     const r = md.mdToBlocks('Signal | Meaning\\n:--- | ---:\\n**red** | \u2026\n     56|     const [table, after] = ordered(r);\n     57|     expect(table.type).toBe('table');\n       |                        ^\n     58|     expect(table.cells).toHaveLength(3);\n     59|     expect(table.cells[1][0]).toEqual([{ t: 'red', b: true }]);\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[2/2]\u23af\n\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 1.4,
+  "tail": "\n RUN  v3.2.7 /private/tmp/claude-501/-Users-cowcow02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vB/08-md-table-block\n\n \u2713 tests/command-post/md.test.ts (17 tests) 12ms\n\n Test Files  1 passed (1)\n      Tests  17 passed (17)\n   Start at  02:40:15\n   Duration  519ms (transform 50ms, setup 0ms, collect 47ms, tests 12ms, environment 145ms, prepare 78ms)\n\n"
+ },
+ "verified": true
+}

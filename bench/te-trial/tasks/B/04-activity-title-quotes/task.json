@@ -1,0 +1,10 @@
+{
+ "repo": "B",
+ "parent": "9101d9b",
+ "fixCommit": "3b30945",
+ "checkFiles": [
+  "tests/sync/delete-forever.test.ts"
+ ],
+ "checkCmd": "npx vitest run tests/sync/delete-forever.test.ts",
+ "timeoutSec": 600
+}

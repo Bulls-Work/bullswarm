@@ -1,0 +1,10 @@
+{
+ "repo": "B",
+ "parent": "d88d47c",
+ "fixCommit": "2ed1afd",
+ "checkFiles": [
+  "tests/scripts/to-artifact.test.ts"
+ ],
+ "checkCmd": "npx vitest run tests/scripts/to-artifact.test.ts",
+ "timeoutSec": 600
+}

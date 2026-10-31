@@ -1,0 +1,17 @@
+{
+ "task": "01-late-window-claude",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 1.2,
+  "tail": "s 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af\n\n FAIL  tests/sync/resolve-caps.test.ts > resolveCaps > waits for a window.claude that is installed after the script starts\nAssertionError: expected null to be { doc: [Function doc], \u2026(1) } // Object.is equality\n\n\u001b[32m- Expected:\u001b[39m \n{\n  \"collection\": [Function collection],\n  \"doc\": [Function doc],\n}\n\n\u001b[31m+ Received:\u001b[39m \nnull\n\n \u276f tests/sync/resolve-caps.test.ts:15:21\n     13|     }, 120);\n     14|     const caps = await resolveCaps({ waitMs: 2000 });\n     15|     expect(caps.db).toBe(db);\n       |                     ^\n     16|   });\n     17| \n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 1.5,
+  "tail": "\n RUN  v3.2.7 /private/tmp/claude-501/-Users-cowcow02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vB/01-late-window-claude\n\n \u2713 tests/sync/resolve-caps.test.ts (2 tests) 265ms\n\n Test Files  1 passed (1)\n      Tests  2 passed (2)\n   Start at  02:39:14\n   Duration  758ms (transform 46ms, setup 0ms, collect 43ms, tests 265ms, environment 155ms, prepare 89ms)\n\n"
+ },
+ "verified": true
+}

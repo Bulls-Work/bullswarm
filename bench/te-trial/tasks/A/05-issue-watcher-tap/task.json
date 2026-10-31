@@ -1,0 +1,10 @@
+{
+ "repo": "A",
+ "parent": "cba4789",
+ "fixCommit": "6e6dcc6",
+ "checkFiles": [
+  "tests/issue-watcher.test.js"
+ ],
+ "checkCmd": "node --test tests/issue-watcher.test.js",
+ "timeoutSec": 600
+}

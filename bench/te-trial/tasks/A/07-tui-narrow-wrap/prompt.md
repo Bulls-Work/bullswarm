@@ -1,0 +1,3 @@
+In the workflow run view on a narrow terminal (a 60-column phone, for example), the agent detail, technical details and planner overview text is wrapped to about 22 characters per line inside a pane that is about 58 characters wide, and the rest of the pane stays empty. Under 100 columns the layout draws that pane at full width, but the text was wrapped as if it still sat in the right-hand column next to the 34-column sidebar.
+
+What I expect: the text wraps to the width of the pane it will actually be drawn in. That is the full width on a narrow terminal and the right-hand column otherwise. On wide terminals nothing should change.

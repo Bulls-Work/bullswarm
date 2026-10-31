@@ -1,0 +1,10 @@
+{
+ "repo": "B",
+ "parent": "4fbf827",
+ "fixCommit": "4aace81",
+ "checkFiles": [
+  "tests/ui/shell/shortcuts.test.tsx"
+ ],
+ "checkCmd": "npx vitest run tests/ui/shell/shortcuts.test.tsx",
+ "timeoutSec": 600
+}
