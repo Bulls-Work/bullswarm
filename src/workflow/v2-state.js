@@ -132,7 +132,7 @@ const CONTROL_NODE_FIELDS = new Set(['id', 'type', 'status', 'at', 'round', 'max
 const LOOP_FINDINGS_FIELDS = new Set(['rounds', 'known', 'knownDropped', 'dropped']);
 const FINDINGS_ROUND_FIELDS = new Set(['round', 'reviewed', 'new', 'reopened', 'repeated', 'outOfScope', 'ignored', 'belowFloor', 'fix', 'answers']);
 const KNOWN_FINDING_FIELDS = new Set(['title', 'key', 'round', 'area', 'inScope', 'severity', 'belowFloor', 'from', 'reopened']);
-const CONTROL_NODE_STATUSES = new Set(['pending', 'waiting', 'passed', 'blocked']);
+const CONTROL_NODE_STATUSES = new Set(['pending', 'waiting', 'passed', 'blocked', 'cancelled']);
 const ANSWER_ERRORS_MAX = 100;
 const ATTEMPT_DELIVERABLE_FIELDS = new Set(['type', 'gated', 'produced', 'written', 'missing', 'carried', 'outsideCwd']);
 const ATTEMPT_TIME_BOX_FIELDS = new Set(['minutes', 'wrapUpMinutes', 'source', 'n', 'medianMinutes', 'startClock']);
@@ -591,7 +591,7 @@ function validateControlNodes(state) {
     if (typeof entry.id !== 'string' || nodes.get(entry.id) !== entry.type) fail(`${at}.id must name a gate or loop of the program`);
     if (seen.has(entry.id)) fail(`${at}.id ${entry.id} is listed twice`);
     seen.add(entry.id);
-    if (!CONTROL_NODE_STATUSES.has(entry.status)) fail(`${at}.status must be pending|waiting|passed|blocked`);
+    if (!CONTROL_NODE_STATUSES.has(entry.status)) fail(`${at}.status must be pending|waiting|passed|blocked|cancelled`);
     timestamp(entry.at, `${at}.at`);
     if (entry.reason !== undefined) requiredString(entry.reason, `${at}.reason`);
     if (entry.type === 'loop') {

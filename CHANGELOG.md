@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A cancelled run no longer shows its loop as still pending. When a run is cancelled, every gate or loop that was pending or waiting is recorded `cancelled` (a loop keeps its round and maxRounds), the result lists the loop's outcome as `cancelled`, and the timeline row reads `loop <id> · cancelled in round N of M`. Reopening the run (`workflow add`, `workflow resume`) puts a cancelled node back to pending at the same round, so a loop still finishes in the round it stopped in without rerunning its earlier steps.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

@@ -38,7 +38,7 @@ import { isProgramV3 } from './program-v3.js';
 import { viewOnlyRunLine } from './cli-run-lookup.js';
 import { PROGRAM_V2_REFUSAL, ProgramV2RefusedError } from './cli-program-checks.js';
 import { settleStepAnswer, stepAnswerHooks } from './answers.js';
-import { continuePending, evidenceIsCondition, kernelControlPass, schedulerView, unblockControlNodes } from './gates-loops.js';
+import { cancelControlNodes, continuePending, evidenceIsCondition, kernelControlPass, schedulerView, unblockControlNodes } from './gates-loops.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace } from './v2-workspace.js';
 import { presentationStageStatus, stageForAction } from './v2-presentation.js';
@@ -904,6 +904,8 @@ async function runV2Kernel({
     // Guidance nobody acted on no longer holds a run open: the result lists
     // it, and the caller decides whether it still matters.
     const unreadSteering = peekSteering(state, runDir);
+    // A cancelled run's pending or waiting loops and gates are recorded cancelled before the result reads them.
+    if (state.cancellation.requested) cancelControlNodes(state, { at: finishedAt });
     const workspace = programExecution ? buildWorkspaceReport(state.intent.cwd, workspaceBaseline, state.program.actions, captureStatus) : null;
     const retainedRoot = join(runDir, 'workspaces');
     if (workspace && existsSync(retainedRoot)) for (const entry of readdirSync(retainedRoot, { withFileTypes: true })) {

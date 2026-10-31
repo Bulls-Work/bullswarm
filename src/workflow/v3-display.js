@@ -38,6 +38,8 @@ function gateFacts(state, gate, record, token) {
         : { glyph: g.ok, role: 'passed', text: `gate ${gate.id} · passed · continued by the caller` };
     case 'blocked':
       return { glyph: g.blocked, role: 'blocked', text: `gate ${gate.id} · blocked · ${record.reason ?? 'a dependency did not succeed'}` };
+    case 'cancelled':
+      return { glyph: g.stopped, role: 'cancelled', text: `gate ${gate.id} · cancelled with the run` };
     default:
       return {
         glyph: g.pending, role: 'pending',
@@ -76,6 +78,8 @@ function loopFacts(state, loop, record, token) {
       };
     case 'blocked':
       return { glyph: g.blocked, role: 'blocked', text: `loop ${loop.id} · blocked in round ${round} of ${of} · ${record.reason ?? 'a step did not succeed'}` };
+    case 'cancelled':
+      return { glyph: g.stopped, role: 'cancelled', text: `loop ${loop.id} · cancelled in round ${round} of ${of} · until ${until}` };
     default: {
       if (findings && round > 1) {
         const before = findings.lastNew.round === round - 1 ? findings.lastNew : null;

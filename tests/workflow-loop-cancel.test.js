@@ -12,6 +12,7 @@ import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
+import { controlRows } from '../src/workflow/v3-display.js';
 import { addV3Steps } from '../src/workflow/cli-steps.js';
 
 const cli = resolve('bin/bullswarm.js');
@@ -143,14 +144,19 @@ test('a run cancelled in round 2 records its loop as cancelled, shows it so, and
   // The views: no word of the loop being pending.
   const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
   delete env.BULLSWARM_DEPTH;
-  for (const args of [['runs', 'show', run.shortId], ['result', run.shortId]]) {
+  for (const args of [['runs', 'show', run.shortId], ['runs', 'result', run.shortId]]) {
     const out = spawnSync(process.execPath, [cli, 'workflow', ...args], { encoding: 'utf8', env });
     const text = out.stdout + out.stderr;
     assert.match(text, /polish/, `workflow ${args.join(' ')} names the loop: ${text}`);
     assert.doesNotMatch(text, /loop polish[^\n]*(pending|round 2 of 3 · until)/i, `workflow ${args.join(' ')} must not call the loop pending: ${text}`);
   }
   const result = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
-  assert.notEqual(result.loops.find((entry) => entry.id === 'polish').outcome, 'pending');
+  assert.equal(result.loops.find((entry) => entry.id === 'polish').outcome, 'cancelled');
+  // The row the timeline and the dashboard draw.
+  const [row] = controlRows(state);
+  assert.equal(row.status, 'cancelled');
+  assert.equal(row.role, 'cancelled');
+  assert.match(row.text, /loop polish · cancelled in round 2 of 3/);
 
   // Reopen: add a step, resume. The loop is pending again in round 2, passes
   // there, and never reruns fix or exceeds its rounds.
