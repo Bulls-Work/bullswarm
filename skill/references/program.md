@@ -253,12 +253,14 @@ each round. The review becomes `areasPerRound` ordinary steps
 `dependsOn`, `blindTo` and `route.independentOf` that name `review` now name
 them all, and the loop's `until` keeps naming `review`. With fewer reviewers
 than areas they rotate: reviewer k looks from area `((round − 1) · P + k − 1)
-mod N`, except that with a non-functional area the last reviewer takes the
-non-functional areas in turn and the others rotate over the rest by the same
-rule; the area depends only on the round, so a retry or resume keeps it. A dry
-stop then also needs every area reviewed after the last finding, which takes
-`ceil(N / P)` rounds (with a non-functional area, `ceil(rest / (P − 1))`) even
-when no round finds anything: validate refuses a loop whose `maxRounds` is
+mod N`, except that with a non-functional area the reviewers split in two
+groups: the rest slots (`min(P − 1, functional areas)`) take the functional
+areas and the remaining slots take the non-functional ones, each group rotating
+over its own list, so a round never repeats an area; the area depends only on
+the round, so a retry or resume keeps it. A dry stop then also needs every area
+reviewed after the last finding, which takes `ceil(N / P)` rounds (with a
+non-functional area, `max(ceil(functional / rest slots), ceil(non-functional /
+non-functional slots))`) even when no round finds anything: validate refuses a loop whose `maxRounds` is
 smaller. A failed reviewer blocks the loop as
 any failed loop step does; accepting it (`workflow step accept`) counts its
 area as not reviewed that round. A step that depends on the reviewers

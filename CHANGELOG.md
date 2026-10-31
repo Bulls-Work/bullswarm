@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A review round no longer gives two reviewers the same area. With more non-functional areas than the one slot for them and fewer other areas than the remaining slots, the rotation repeated an area inside a round (measured: 4 areas at 3 per round took 3 rounds to cover, plain rotation needs 2). The slots now split in two groups, each rotating over its own areas; `coverRounds` follows. One non-functional area rotates exactly as before. The `dry-loop-too-short` advice names an `areasPerRound` only when `coverRounds` for it fits the rounds left (the smallest such value above the current one), and none otherwise; before, it used plain rotation and could name a value that still needed too many rounds.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

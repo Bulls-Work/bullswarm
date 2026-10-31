@@ -180,12 +180,16 @@ function reviewLoopAdvisories(program) {
     // (clean > maxRounds); this is the loop that can, but only that way.
     if (clean <= loop.maxRounds && loop.maxRounds < 1 + clean) {
       // Only values validation accepts: maxRounds 1-5, areasPerRound 1 to
-      // min(areas, 5), and enough reviewers to cover every area in the rounds left.
+      // min(areas, 5), and enough reviewers to cover every area in the rounds
+      // left (coverRounds: the real rotation, non-functional areas included).
       const left = loop.maxRounds - 1;
-      const enough = left >= until.dry && left > 0 ? Math.ceil(areas / left) : null;
+      const areaList = reviewers.length ? reviewers[0].areaOf.areas : [];
+      const enough = reviewers.length && left >= until.dry && left > 0
+        ? Array.from({ length: Math.min(areas, AREAS_PER_ROUND_MAX) }, (_, k) => k + 1).find((p) => p > perRound && coverRounds(areaList, p) <= left) ?? null
+        : null;
       const fix = [
         ...(1 + clean <= LOOP_MAX_ROUNDS ? [`raise maxRounds to ${1 + clean}`] : []),
-        ...(reviewers.length && enough !== null && enough > perRound && enough <= Math.min(areas, AREAS_PER_ROUND_MAX) ? [`areasPerRound to ${enough}`] : []),
+        ...(reviewers.length && enough !== null ? [`areasPerRound to ${enough}`] : []),
         ...(until.dry === clean && loop.maxRounds - 1 >= cover && loop.maxRounds - 1 >= 1 ? [`lower until.dry to ${loop.maxRounds - 1}`] : []),
       ];
       // Name what sets the count: the rotation over the areas, until.dry, or both.
