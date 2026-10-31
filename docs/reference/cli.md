@@ -1201,7 +1201,7 @@ bullswarm workflow watch ab12cd --until trouble
 | `--once` | print a single current snapshot and exit immediately instead of following | off |
 | `--verbose` | include started, retry, and steering-delivered lines in event mode, and per-agent action detail with `--classic` | off (compact) |
 
-Read-only. Exits 0 if the run reaches a delivered status (or on `--once`), 1 if it reaches a non-delivered terminal status. `--next` exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running. `--until trouble` prints a cursor-bearing relaunch line and, for stale work, the exact `workflow step restart` command. `--until` cannot combine with `--next`, `--once`, `--classic`, or `--heartbeat`.
+Stale warnings are saved in the run's events (`attempt.stale`, `attempt.stale_cleared`) by the process that runs it; the watch prints those, and works out its own only for an older run that has none. Read-only. Exits 0 if the run reaches a delivered status (or on `--once`), 1 if it reaches a non-delivered terminal status. `--next` exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running. `--until trouble` prints a cursor-bearing relaunch line and, for stale work, the exact `workflow step restart` command. `--until` cannot combine with `--next`, `--once`, `--classic`, or `--heartbeat`.
 
 ### step rerun
 

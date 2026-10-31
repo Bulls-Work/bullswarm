@@ -722,6 +722,18 @@ next: bullswarm workflow watch euqrni --until trouble --after 33 --since 2026-09
   or restart: bullswarm workflow step restart euqrni verify
 ```
 
+The process that runs the attempts saves each of these warnings in the run's
+`events.jsonl`, so a run nobody watched still leaves a count. `attempt.stale`
+carries the step, attempt, pool, model, score, reasons, `staleSince`, `level`,
+`noProgressSec` and `progressBy`; it is written at warning 1 and at each
+further level, checked about every 30 seconds. `attempt.stale_cleared`
+(`actionId`, `attemptId`, `level`, `staleSec`) is written when the attempt
+shows progress again or ends. `workflow watch` prints the saved warnings once
+(live or replayed) and scores nothing itself for such a run; for an older run
+with no saved warnings it works out its own, as before. A stop for silence or
+for no file change is saved on the attempt and its `attempt.finished` event as
+`stalledBy` (`silence` or `no-progress`) with `silentSec` or `noProgressSec`.
+
 The watcher's lines restart nothing on their own. Separately, the dispatcher
 stops a `build` or `chore` worker that changed no file for
 `BULLSWARM_WORKER_NO_PROGRESS_SEC` seconds (default 3600, `0` turns it off) as
