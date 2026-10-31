@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A dry loop's reviewers are told, from round 2 on, which files the fix before
+  their review changed: `Round N-1's fix changed these files: a, b, c.` (the
+  union of the fixers' latest attempts' `changedFiles`, at most 30 sorted
+  paths, then `(and N more)`), or `Round N-1's fix recorded no changed file.`
+  when a fixer succeeded and recorded none. No line when the fix was skipped
+  or failed. A reviewer blind to the fixer gets it too: it is a fact about the
+  tree, not the fixer's account. Reviewers no longer rediscover the changed
+  files themselves.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

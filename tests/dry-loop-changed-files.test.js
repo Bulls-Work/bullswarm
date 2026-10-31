@@ -49,7 +49,7 @@ test('round 2 lists the files the round before changed', () => {
   assert.equal(lineOf(block), "Round 1's fix changed these files: src/a.js, src/b.js.");
   const lines = block.split('\n');
   assert.match(lines[lines.indexOf(lineOf(block)) - 1], /^Round 1's findings went to fix/, 'the line follows the findings-went-to line');
-  assert.doesNotMatch(block, /skip|ignore/i.test(lineOf(block)) ? /x^/ : /\bskip\b/, 'facts only');
+  assert.doesNotMatch(lineOf(block), /skip|ignore|need not/i, 'facts only');
 });
 
 test('round 1 has no such line', () => {
@@ -94,8 +94,8 @@ test('only the previous round counts: earlier rounds and the latest attempt per 
     round: 3,
     attempts: [
       { step: 'fix', at: 5, files: ['src/round1.js'] },
-      { step: 'fix', at: 15, status: 'failed', files: ['src/stale.js'] },
-      { step: 'fix', at: 16, files: ['src/round2.js'] },
+      { step: 'fix', at: 25, status: 'failed', files: ['src/stale.js'] },
+      { step: 'fix', at: 26, files: ['src/round2.js'] },
     ],
   });
   assert.equal(lineOf(reviewRoundBlock(state, { id: 'review' })), "Round 2's fix changed these files: src/round2.js.");
@@ -104,7 +104,7 @@ test('only the previous round counts: earlier rounds and the latest attempt per 
 test('a fixer that runs before the review: the fix that ran before this review counts', () => {
   const state = stateOf({
     round: 2, fixFirst: true,
-    attempts: [{ step: 'fix', at: 5, files: ['src/old.js'] }, { step: 'fix', at: 12, files: ['src/new.js'] }],
+    attempts: [{ step: 'fix', at: 5, files: ['src/old.js'] }, { step: 'fix', at: 25, files: ['src/new.js'] }],
   });
   assert.equal(lineOf(reviewRoundBlock(state, { id: 'review' })), "Round 1's fix changed these files: src/new.js.");
 });
