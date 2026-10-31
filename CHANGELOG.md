@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `workflow reprice --apply` now updates the home `state.json` under the state lock (`updateState`) instead of rewriting a copy read earlier, so a decision row appended by a dispatch while reprice was scanning is no longer lost. A row that vanished or changed since the scan is skipped and reported as a failure.
+- `workflow reprice --apply` now updates the home `state.json` under the state lock (`updateState`) instead of rewriting a copy read earlier, so a decision row appended by a dispatch while reprice was scanning is no longer lost. Each row is re-found by its full content as scanned (equal rows pair in order), so a row without an id, a duplicate id or a row edited meanwhile can never receive another row's usage; a row that vanished or changed since the scan is skipped and reported as a failure.
 
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
