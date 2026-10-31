@@ -19,7 +19,7 @@
 
 import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
-  renameSync, rmSync, statSync, unlinkSync, writeSync,
+  renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWriteFileSync } from './fsjson.js';
@@ -407,19 +407,50 @@ export function resolveRetention(state) {
   return { enabled: invalid.length ? false : enabled, workspacesDays, invalid };
 }
 
-export function loadState(bullswarmDir, { skipMigration = false } = {}) {
+// A decisionLog that is present but not an array (object, string, number) would
+// make every append throw. Readers see it as empty; only the locked writer in
+// updateState sets the bad value aside on disk.
+function badDecisionLog(state) {
+  return state.decisionLog !== undefined && !Array.isArray(state.decisionLog);
+}
+
+function readState(bullswarmDir, { skipMigration = false } = {}) {
   const p = join(bullswarmDir, 'state.json');
   if (!skipMigration && homeMigrationNeeded(bullswarmDir)) migratePoolNameHome(bullswarmDir);
-  if (!existsSync(p)) return structuredClone(DEFAULT_STATE);
+  if (!existsSync(p)) return { state: structuredClone(DEFAULT_STATE), badLog: undefined };
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8'));
-    return {
+    const state = {
       ...structuredClone(DEFAULT_STATE),
       ...raw,
       config: { ...DEFAULT_STATE.config, ...(raw.config ?? {}) },
     };
+    if (!badDecisionLog(state)) return { state, badLog: undefined };
+    const badLog = state.decisionLog;
+    state.decisionLog = [];
+    return { state, badLog: { value: badLog } };
   } catch {
-    return structuredClone(DEFAULT_STATE);
+    return { state: structuredClone(DEFAULT_STATE), badLog: undefined };
+  }
+}
+
+export function loadState(bullswarmDir, opts = {}) {
+  return readState(bullswarmDir, opts).state;
+}
+
+/** Save a non-array decisionLog next to state.json, never overwriting; warn once. */
+function setAsideDecisionLog(bullswarmDir, value) {
+  mkdirSync(bullswarmDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  for (let n = 0; ; n += 1) {
+    const name = `state.decisionLog-${stamp}${n ? `-${n}` : ''}.json`;
+    try {
+      writeFileSync(join(bullswarmDir, name), `${JSON.stringify(value, null, 2) ?? 'null'}\n`, { flag: 'wx' });
+      process.stderr.write(`bullswarm: state.json decisionLog was not an array; saved it as ${name} and started a new log\n`);
+      return name;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
   }
 }
 
@@ -514,8 +545,10 @@ export function updateState(bullswarmDir, mutator, opts = {}) {
     // The caller already owns the S5 lock. State migration must therefore run
     // inline instead of trying to acquire the same lock a second time.
     if (homeMigrationNeeded(bullswarmDir)) migrateHomeLocked(bullswarmDir);
-    const state = loadState(bullswarmDir, { skipMigration: true });
-    if (mutator(state) !== false) saveState(bullswarmDir, state);
+    const { state, badLog } = readState(bullswarmDir, { skipMigration: true });
+    if (badLog) setAsideDecisionLog(bullswarmDir, badLog.value);
+    // Save even when the mutator aborts, so a set-aside value is not set aside again.
+    if (mutator(state) !== false || badLog) saveState(bullswarmDir, state);
     return state;
   } finally {
     releaseStateLock(lock);
