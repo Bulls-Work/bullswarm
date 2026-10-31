@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `integrate install` and `remove` no longer lose the person's own text in CLAUDE.md or AGENTS.md. The file is parsed into complete Bullswarm blocks and stray markers: a begin marker with no end (or the reverse) changes nothing and is reported as `malformed` with the line, a warning, and exit 1. Only a missing file reads as empty; an unreadable file or a directory is reported `unreadable` and a failed write `unwritable`, and the file is never overwritten. Install replaces the first block in place and removes any further ones (`removedExtra`); remove removes every block. A block from a newer Bullswarm is left alone by install (`newer`) and removed by remove. A CRLF file keeps CRLF, and user lines are not rewritten. Markers inside code fences are not told apart.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

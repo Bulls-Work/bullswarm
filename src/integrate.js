@@ -44,25 +44,128 @@ Do not recurse when \`BULLSWARM_DEPTH\` is already set.
 ${MARKER_END}`;
 }
 
+// The file is the person's own text, so the edit is conservative: it parses
+// complete blocks (begin ... end, no begin between) and stray markers, and
+// touches nothing when a marker has no partner. Markers inside a fenced code
+// block are NOT told apart from real ones; a file that shows the markers as an
+// example is read as having them, and the person fixes it by hand.
+const MARKER_TOKEN_RE = /<!-- bullswarm:begin v(\d+) -->|<!-- bullswarm:end -->/g;
+const CURRENT_VERSION = Number(/v(\d+)/.exec(MARKER_BEGIN)[1]);
+
 export function applyAwarenessBlock(filePath, { approved }) {
   if (!approved) return { changed: false, reason: 'not approved' };
-  const existing = readOptional(filePath);
-  const stripped = existing.replace(MARKER_RE, '').trimEnd();
-  const next = stripped ? `${stripped}\n\n${awarenessBlock()}\n` : `${awarenessBlock()}\n`;
-  mkdirSync(dirname(filePath), { recursive: true });
+  const read = readExisting(filePath);
+  if (read.problem) return read.problem;
+  const existing = read.text;
+  const parsed = parseBlocks(existing);
+  if (parsed.stray) return malformed(filePath, parsed.stray);
+  if (parsed.blocks.some((block) => block.version > CURRENT_VERSION)) {
+    return { changed: false, reason: 'newer', path: filePath };
+  }
+  const eol = lineEnding(existing);
+  const block = awarenessBlock().replace(/\n/g, eol);
+  let next;
+  if (!parsed.blocks.length) {
+    const head = existing.trimEnd();
+    next = head ? `${head}${eol}${eol}${block}${eol}` : `${block}${eol}`;
+  } else {
+    const [first, ...rest] = parsed.blocks;
+    const tail = removeSpans(existing.slice(first.end), rest.map((b) => ({ start: b.start - first.end, end: b.end - first.end })));
+    next = `${existing.slice(0, first.start)}${block}${first.eol || eol}${tail}`;
+  }
   if (next === existing) return { changed: false, reason: 'already current' };
-  writeFileSync(filePath, next);
-  return { changed: true, reason: existing.match(MARKER_RE) ? 'updated' : 'installed' };
+  const written = writeText(filePath, next);
+  if (written) return written;
+  return {
+    changed: true,
+    reason: parsed.blocks.length ? 'updated' : 'installed',
+    ...(parsed.blocks.length > 1 ? { removedExtra: parsed.blocks.length - 1 } : {}),
+  };
 }
 
 export function removeAwarenessBlock(filePath, { approved }) {
   if (!approved) return { changed: false, reason: 'not approved' };
-  if (!existsSync(filePath)) return { changed: false, reason: 'not installed' };
-  const existing = readFileSync(filePath, 'utf8');
-  const next = existing.replace(MARKER_RE, '').trimEnd();
-  if (next === existing.trimEnd()) return { changed: false, reason: 'not installed' };
-  writeFileSync(filePath, next ? `${next}\n` : '');
-  return { changed: true, reason: 'removed' };
+  const read = readExisting(filePath);
+  if (read.problem) return read.problem;
+  const parsed = parseBlocks(read.text);
+  if (parsed.stray) return malformed(filePath, parsed.stray);
+  if (!parsed.blocks.length) return { changed: false, reason: 'not installed' };
+  const next = removeSpans(read.text, parsed.blocks);
+  const written = writeText(filePath, next);
+  if (written) return written;
+  return { changed: true, reason: 'removed', removedBlocks: parsed.blocks.length };
+}
+
+function parseBlocks(text) {
+  const blocks = [];
+  let open = null;
+  const lineOf = (index) => text.slice(0, index).split('\n').length;
+  for (const match of text.matchAll(MARKER_TOKEN_RE)) {
+    if (match[1] !== undefined) {
+      if (open) return { blocks, stray: `begin marker at line ${lineOf(open.start)} has no end marker` };
+      open = { start: match.index, version: Number(match[1]) };
+    } else if (!open) {
+      return { blocks, stray: `end marker at line ${lineOf(match.index)} has no begin marker` };
+    } else {
+      let end = match.index + match[0].length;
+      const eol = /^\r?\n/.exec(text.slice(end))?.[0] ?? '';
+      end += eol.length;
+      blocks.push({ ...open, end, eol });
+      open = null;
+    }
+  }
+  if (open) return { blocks, stray: `begin marker at line ${lineOf(open.start)} has no end marker` };
+  return { blocks, stray: null };
+}
+
+// Cut each span out. Right around a cut, at most one blank line is left: when
+// the text before already ends in a blank line (or the file starts here), the
+// blank line after the block goes; at the end of the file the trailing blanks go.
+function removeSpans(text, spans) {
+  const eol = lineEnding(text);
+  let out = '';
+  let cursor = 0;
+  for (const { start, end } of spans) {
+    out += text.slice(cursor, start);
+    cursor = end;
+    const blankBefore = out === '' || /(\r?\n)[ \t]*\r?\n$/.test(out);
+    if (blankBefore) {
+      const blank = /^[ \t]*\r?\n/.exec(text.slice(cursor));
+      if (blank) cursor += blank[0].length;
+    }
+  }
+  out += text.slice(cursor);
+  if (!out.trim()) return '';
+  if (spans.length && !text.slice(spans[spans.length - 1].end).trim()) return `${out.trimEnd()}${eol}`;
+  return out;
+}
+
+function lineEnding(text) {
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const lf = (text.match(/\n/g) ?? []).length - crlf;
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+function malformed(filePath, detail) {
+  return { changed: false, reason: 'malformed', detail, path: filePath };
+}
+
+// Only a missing file reads as empty; any other failure leaves the file alone.
+function readExisting(filePath) {
+  try { return { text: readFileSync(filePath, 'utf8') }; } catch (error) {
+    if (error?.code === 'ENOENT') return { text: '' };
+    return { problem: { changed: false, reason: 'unreadable', detail: error?.message ?? String(error), path: filePath } };
+  }
+}
+
+function writeText(filePath, text) {
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, text);
+    return null;
+  } catch (error) {
+    return { changed: false, reason: 'unwritable', detail: error?.message ?? String(error), path: filePath };
+  }
 }
 
 export function awarenessBlockPresent(filePath) {
@@ -210,12 +313,34 @@ export function cmdIntegrate(opts) {
     }
     if (opts.json) console.log(JSON.stringify(result, null, 2));
     else printIntegrationResult(result);
+    const blocked = reportBlockProblems(result);
     const ok = result.status?.ok ?? result.ok;
-    return ok === false && subcommand === 'status' ? 1 : 0;
+    return blocked || (ok === false && subcommand === 'status') ? 1 : 0;
   } catch (error) {
     console.error(`✗ ${error.message}`);
     return 1;
   }
+}
+
+// An instruction file the edit would not touch is a failed install or remove:
+// say which file, which line and how to fix it, and let the command exit 1 like
+// its other failures. A newer block is left on purpose, so it only warns.
+function reportBlockProblems(result) {
+  let failed = false;
+  for (const change of result.changes ?? []) {
+    const a = change.awareness;
+    if (!a || a.changed) continue;
+    if (a.reason === 'malformed') {
+      failed = true;
+      console.error(`⚠ ${a.path}: left unchanged; ${a.detail}. Delete or complete that marker by hand (a block is <!-- bullswarm:begin vN --> ... <!-- bullswarm:end -->), then run the command again.`);
+    } else if (a.reason === 'unreadable' || a.reason === 'unwritable') {
+      failed = true;
+      console.error(`⚠ ${a.path}: left unchanged; ${a.reason} (${a.detail}). Fix its permissions or type, then run the command again.`);
+    } else if (a.reason === 'newer') {
+      console.error(`⚠ ${a.path}: holds a Bullswarm block from a newer version; left as is. Update bullswarm, or run 'bullswarm integrate remove --yes' to drop it.`);
+    }
+  }
+  return failed;
 }
 
 function pathsFor(homeDir, agent) {

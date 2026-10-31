@@ -125,7 +125,6 @@ test('R2: a CRLF file stays CRLF and its user lines are byte-identical', () => {
     assert.equal(apply(file).reason, 'installed');
     const installed = readFileSync(file, 'utf8');
     assert.ok(installed.startsWith(user));
-    assert.equal(installed.replace(/\r\n/g, ''), installed.replace(/\r\n/g, '').replace(/[\r\n]/g, ''));
     assert.equal(/[^\r]\n/.test(installed), false, 'every newline is CRLF');
     assert.equal(apply(file).reason, 'already current');
 
