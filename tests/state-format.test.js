@@ -5,7 +5,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { loadState, saveState, updateState } from '../src/lib/state.js';
+import { loadState, saveState, serializeState, updateState } from '../src/lib/state.js';
+import { repriceRuns } from '../src/workflow/reprice.js';
 
 function tmp() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-statefmt-'));
@@ -123,4 +124,84 @@ test('4,000 rows of ~7 KB: compact file is at least 35% smaller and parses faste
     console.log(`pretty ${pretty.length} B parse ${prettyMs.toFixed(0)} ms; compact ${compact.length} B parse ${compactMs.toFixed(0)} ms; ${(100 * (1 - compact.length / pretty.length)).toFixed(1)}% smaller`);
     assert.ok(compact.length <= pretty.length * 0.65, `compact ${compact.length} vs pretty ${pretty.length}`);
   } finally { cleanup(); }
+});
+
+test('workflow reprice --apply keeps the home state.json in the compact layout', () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const state = loadState(dir);
+    state.decisionLog = [
+      { ts: '2026-09-19T15:15:14.719Z', picked: 'codex', ok: true, wallSec: 12.6, model: 'gpt-5.6-luna', outFile: '/x/runs/out-1-a.md' },
+      { ts: '2026-09-19T15:16:14.719Z', picked: 'codex', ok: true, wallSec: 3, model: 'gpt-5.6-luna', outFile: '/x/runs/out-2-b.md' },
+    ];
+    saveState(dir, state);
+    const connectors = {
+      codex: {
+        name: 'codex', model: 'gpt-5.6-luna',
+        subscription: { quotaWindow: 'weekly', monthlyPriceUsd: 30 },
+        modelProfiles: [{ id: 'gpt-5.6-luna', pricing: { inputUsdPerMillion: 0.2, cacheReadUsdPerMillion: 0.02, outputUsdPerMillion: 1.2 }, pricingSource: 'fixture', pricingUpdatedAt: '2026-08-27' }],
+      },
+    };
+    const report = repriceRuns({
+      bullswarmDir: dir, transcriptHome: dir, connectors, apply: true,
+      readTranscriptUsage: () => ({ tokens: {}, confidence: 'none' }),
+    });
+    assert.ok(report.changedTasks > 0, `reprice changed no task: ${JSON.stringify(report.failures)}`);
+    const text = readFileSync(join(dir, 'state.json'), 'utf8');
+    const back = JSON.parse(text);
+    const lines = text.split('\n');
+    const start = lines.indexOf('  "decisionLog": [');
+    assert.ok(start > 0, 'decisionLog opener missing');
+    assert.equal(lines[start + 1], `    ${JSON.stringify(back.decisionLog[0])},`, 'row 0 must be one compact line');
+    assert.equal(text, serializeState(back));
+  } finally { cleanup(); }
+});
+
+const OLD_SENTINEL = '\u0000decisionLog\u0000';
+
+test('serializeState: a value equal to the old sentinel earlier in key order is not swapped', () => {
+  const state = { a: OLD_SENTINEL, b: `x"${OLD_SENTINEL}"y`, decisionLog: [{ n: 1 }, { n: 2 }] };
+  const text = serializeState(state);
+  assert.deepEqual(JSON.parse(text), state);
+  assert.deepEqual(Object.keys(JSON.parse(text)), ['a', 'b', 'decisionLog']);
+  assert.ok(text.includes('\n    {"n":1},\n    {"n":2}\n  ]'));
+});
+
+test('serializeState: strings containing a decisionLog line, and a nested decisionLog key', () => {
+  const state = {
+    note: 'a\n  "decisionLog": []\nb',
+    nested: { decisionLog: [1, 2, { z: 1 }], deeper: { decisionLog: [] } },
+    decisionLog: [{ n: 1 }],
+  };
+  const text = serializeState(state);
+  assert.deepEqual(JSON.parse(text), state);
+  assert.ok(text.includes('\n    {"n":1}\n  ]'));
+  // nested keys keep JSON.stringify's pretty layout
+  assert.ok(text.includes('"nested": {\n    "decisionLog": [\n      1,'));
+  const first = { decisionLog: [], tail: { decisionLog: [] } };
+  assert.deepEqual(JSON.parse(serializeState({ ...first, decisionLog: [{ q: 1 }] })), { ...first, decisionLog: [{ q: 1 }] });
+});
+
+test('serializeState: unicode, undefined fields, NaN/Infinity match JSON.stringify values', () => {
+  const state = {
+    name: 'héllo 日本語 😀 \u2028 \ud800',
+    gone: undefined,
+    nan: NaN,
+    inf: Infinity,
+    decisionLog: [{ s: '日本語 😀', n: NaN, i: -Infinity, u: undefined, d: new Date(0) }],
+  };
+  const text = serializeState(state);
+  assert.deepEqual(JSON.parse(text), JSON.parse(JSON.stringify(state)));
+  assert.ok(!('gone' in JSON.parse(text)));
+  assert.equal(JSON.parse(text).nan, null);
+  assert.ok(text.includes(`    ${JSON.stringify(state.decisionLog[0])}\n`));
+});
+
+test('serializeState: undefined/function rows become null; missing or non-array log is plain JSON', () => {
+  const rows = serializeState({ decisionLog: [undefined, () => 1, { a: 1 }] });
+  assert.deepEqual(JSON.parse(rows).decisionLog, [null, null, { a: 1 }]);
+  assert.ok(rows.includes('\n    null,\n    null,\n    {"a":1}\n  ]'));
+  for (const s of [{ a: 1 }, { a: 1, decisionLog: null }, { a: 1, decisionLog: 'x' }, { a: 1, decisionLog: { 0: 1 } }, {}]) {
+    assert.equal(serializeState(s), `${JSON.stringify(s, null, 2)}\n`);
+  }
 });
