@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stopped and stalled dispatches no longer count as duration samples. One 10-minute run plus two cancels at 20 s showed a median of 0.33 minutes in `bullswarm strategy` and `workflow usage`; it now shows 10. A cancelled dispatch (or one with the fixed cancellation message) and a stalled one add no minutes to `medianMinutes` or to the expected minutes behind the remaining-time and silence clocks, and no longer count toward the 3-sample threshold. Dispatch counts and ok shares are unchanged, and a false failure keeps its minutes (`isDurationSample` in `src/lib/spend.js`).
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

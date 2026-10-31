@@ -197,10 +197,27 @@ export function remainingMinutesOf(record, nowMs = Date.now()) {
 // --- expected duration -------------------------------------------------------
 
 /**
+ * Whether a recorded dispatch says how long the work takes. A dispatch someone
+ * stopped (failureKind `cancelled`, or the dispatcher's fixed cancellation
+ * message on older rows) was cut short, and a stalled one (`stalled: true` or
+ * failureKind `stalled`) is a transport failure: neither is a duration sample.
+ * A failure later shown false (`falseFailure`) ran its full length and keeps
+ * its minutes. Dispatch counts and ok shares are decided elsewhere and do not
+ * use this.
+ */
+export function isDurationSample(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (row.stalled === true || row.failureKind === 'stalled') return false;
+  if (row.failureKind === 'cancelled' || row.why === 'workflow cancellation requested') return false;
+  return true;
+}
+
+/**
  * How long an assignment on this lane and effort tier is expected to run.
  *
  * History wins when the decision log holds at least MIN_DURATION_SAMPLES
- * matching attempts with a real positive wall time: the median of those, never
+ * matching attempts with a real positive wall time (stopped and stalled
+ * dispatches are not samples, see isDurationSample): the median of those, never
  * below MIN_EXPECTED_MINUTES. Otherwise the documented default for the pair.
  *
  * @param {{lane?: string, effort?: string, effortTier?: string}} assignment
@@ -216,6 +233,7 @@ export function expectedMinutesFor(assignment = {}, opts = {}) {
   for (const entry of log) {
     if (laneOf(entry) !== lane) continue;
     if (effortOf(entry) !== effort) continue;
+    if (!isDurationSample(entry)) continue;
     const window = attemptWindow(entry);
     if (window) minutes.push(window.minutes);
   }
