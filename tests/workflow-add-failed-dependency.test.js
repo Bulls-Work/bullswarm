@@ -212,3 +212,12 @@ test('waitsOnFinishedSteps: one entry per dead dependency, cancelled counts, a b
   ]);
   assert.deepEqual(waitsOnFinishedSteps(state, [{ id: 'w', dependsOn: ['p'] }]), []);
 });
+
+test('waitsOnFinishedSteps: a blocked step whose root was interrupted (it resumes) is not dead', async () => {
+  const { waitsOnFinishedSteps } = await import('../src/workflow/add-dead-waits.js');
+  const state = {
+    program: { actions: [{ id: 'i' }, { id: 'b3', dependsOn: ['i'] }] },
+    actions: [{ id: 'i', status: 'interrupted' }, { id: 'b3', status: 'blocked' }],
+  };
+  assert.deepEqual(waitsOnFinishedSteps(state, [{ id: 'x', dependsOn: ['b3'] }]), []);
+});
