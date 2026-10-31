@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A `--max-age` read starts no background process. With nothing cached it waits at most 20s (under the mod's 30s spawn budget) for the one live builder, then exits with `cache not ready` instead of starting a second build. With a stale cache it prints that copy while a live holder builds, and builds in-process when it wins the lock. A lock whose holder is dead is cleared at once. A lock whose holder is alive but older than 5 minutes (a hung meter read, a reused pid) is taken over by the next caller, and the stuck holder can no longer release or overwrite the new holder's lock or cache. The Claude mod keeps the last good meters instead of showing `$.process.run(...) aborted: still running after Nms`, says `meters not ready yet` only when nothing has loaded, and a routed rung that hits that abort says `took too long → running in-session`. The lock takeover renames the lock aside before it deletes it, so it never removes a successor's lock. (#38)
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

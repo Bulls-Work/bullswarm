@@ -22,6 +22,8 @@ import {
   parsePools,
   parseRungs,
   poolLine,
+  refreshErrorText,
+  rungErrorText,
 } from './pools'
 import { argvOf, decide, type AgentArgs } from './route'
 import { aliasesOf, displayNames, withDisplayNames } from './names'
@@ -309,7 +311,13 @@ export function register(on: On, options: PluginOptions = {}) {
     ])
     names = displayNames(identities, aliases, coreLabels)
     const failed = [p, r, a].find((x): x is PromiseRejectedResult => x.status === 'rejected')
-    lastError = failed ? messageOf(failed.reason) : null
+    if (failed) {
+      const loaded = pools.length > 0 || runs.length > 0 || assignments.length > 0
+      const note = refreshErrorText(messageOf(failed.reason), loaded)
+      if (note !== null) lastError = note
+    } else {
+      lastError = null
+    }
     nowMs = await h.now()
     if (selectedTaskId && !standaloneTasks(assignments).some(task => task.id === selectedTaskId)) {
       selectedTaskId = null
@@ -367,7 +375,8 @@ export function register(on: On, options: PluginOptions = {}) {
           parseStep(text, Date.now()),
         )
       } catch (error) {
-        detailError = messageOf(error)
+        const note = refreshErrorText(messageOf(error), detail != null || step != null)
+        if (note !== null) detailError = note
       }
       syncStepTick(h)
       schedule(h)
@@ -396,7 +405,12 @@ export function register(on: On, options: PluginOptions = {}) {
     }
     if (shown.status === 'fulfilled') detail = shown.value
     const failed = [frame, shown].find((x): x is PromiseRejectedResult => x.status === 'rejected')
-    detailError = failed ? messageOf(failed.reason) : null
+    if (failed) {
+      const note = refreshErrorText(messageOf(failed.reason), detail != null || overview != null)
+      if (note !== null) detailError = note
+    } else {
+      detailError = null
+    }
 
     // The open step: its record and latest attempt as the TUI's agent panel
     // shows them, the head of its task file, and the tail of its output.
@@ -409,7 +423,8 @@ export function register(on: On, options: PluginOptions = {}) {
           parseStep(text, Date.now()),
         )
       } catch (error) {
-        detailError = messageOf(error)
+        const note = refreshErrorText(messageOf(error), detail != null || step != null)
+        if (note !== null) detailError = note
       }
       const taskFile = step?.attempt?.taskFile ?? null
       if (taskFile) {
@@ -581,7 +596,7 @@ export function register(on: On, options: PluginOptions = {}) {
         argumentHint: '[pools|on|off|refresh|routed]',
       })
     } catch (error) {
-      const reason = messageOf(error)
+      const reason = rungErrorText(messageOf(error))
       if (!/is the user's/.test(reason)) $.ui.log(`/${COMMAND} not registered: ${reason}`)
     }
 
@@ -654,7 +669,7 @@ export function register(on: On, options: PluginOptions = {}) {
     } catch (error) {
       inflight -= 1
       settle(h)
-      $.ui.notice(e.tool_use_id, `bullswarm: ${messageOf(error)} → running in-session`)
+      $.ui.notice(e.tool_use_id, `bullswarm: ${rungErrorText(messageOf(error))} → running in-session`)
       return next(e)
     }
     inflight -= 1
@@ -682,7 +697,7 @@ export function register(on: On, options: PluginOptions = {}) {
     } catch (error) {
       $.ui.notice(
         e.tool_use_id,
-        `bullswarm: output unreadable (${messageOf(error)}) → running in-session`,
+        `bullswarm: output unreadable (${rungErrorText(messageOf(error))}) → running in-session`,
       )
       return next(e)
     }

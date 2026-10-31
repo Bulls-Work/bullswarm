@@ -258,6 +258,27 @@ export function contextSignature(
   )
 }
 
+const PROCESS_ABORT = /\$\.process\.run\([^)]*\) aborted: still running after \d+ms/
+
+/**
+ * The note a refresh may store. Claude's `$.process.run` abort sentence and
+ * `cache not ready` are never shown. When nothing has loaded, those become
+ * `meters not ready yet`. When something has loaded, null means keep the
+ * previous note.
+ */
+export function refreshErrorText(message: string, loaded: boolean): string | null {
+  const text = message.trim()
+  const quiet = PROCESS_ABORT.test(text) || text === 'cache not ready'
+  if (!quiet) return text
+  return loaded ? null : 'meters not ready yet'
+}
+
+/** A failed `bullswarm run` rung, as the notice says it: the abort sentence becomes `took too long`. */
+export function rungErrorText(message: string): string {
+  const text = message.trim()
+  return PROCESS_ABORT.test(text) ? 'took too long' : text
+}
+
 /** The status line under the prompt. */
 export function statusText(
   pools: readonly BullswarmPool[],

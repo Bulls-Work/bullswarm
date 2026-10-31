@@ -3,7 +3,7 @@
 // 260-345 MB each from the mod's status line).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,8 +12,10 @@ import { fileURLToPath } from 'node:url';
 import {
   cachePaths, readCache, serveCached, writePoolsCache,
 } from '../src/lib/pools-cache.js';
+import * as poolsCache from '../src/lib/pools-cache.js';
 import { freshPools } from '../mods/bullswarm/hooks/pools.ts';
 
+const { LOCK_CEILING_MS, WAIT_MS } = poolsCache;
 const POOLS_CACHE_SCHEMA = 'bullswarm.pools-cache.v1';
 const poolsCachePaths = (h) => cachePaths(h, 'pools');
 function readPoolsCache(h) {
@@ -100,6 +102,311 @@ test('a live lock with a stale cache answers stale without building', async () =
   assert.equal(c.builds, 0);
   assert.equal(served.source, 'stale');
   assert.deepEqual(served.pools, [{ name: 'old' }]);
+});
+
+// Issue #38: the mod kills a `pools|workflow runs|assignments --max-age`
+// spawn at 30s. With no cache and a live lock, the caller must stop inside
+// that budget and must not start a second build. A short injected wait keeps
+// the test fast.
+test('a live lock with no cache settles inside 30s and does not build', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(lock, `${process.pid} ${Date.now()} live-token\n`);
+  const c = counter();
+  const started = Date.now();
+  await assert.rejects(
+    serveCached({
+      home: h,
+      name: 'pools',
+      maxAgeMs: 60_000,
+      build: async () => {
+        c.builds += 1;
+        return { pools: POOLS };
+      },
+      waitMs: 80,
+      waitStepMs: 20,
+    }),
+    /cache not ready/,
+  );
+  assert.equal(c.builds, 0);
+  assert.ok(Date.now() - started < 30_000);
+});
+
+test('a dead lock holder younger than two minutes does not block the next builder', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(lock, '99999 1 dead-token\n');
+  const c = counter([{ name: 'rebuilt' }], 0);
+  const started = Date.now();
+  const served = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, waitMs: 400, waitStepMs: 20,
+  });
+  assert.ok(Date.now() - started < 200, `waited ${Date.now() - started}ms`);
+  assert.equal(c.builds, 1);
+  assert.equal(served.source, 'built');
+  assert.deepEqual(served.pools, [{ name: 'rebuilt' }]);
+  assert.equal(existsSync(lock), false);
+});
+
+test('the default no-cache wait is under the mod 30s process budget', () => {
+  assert.ok(Number.isFinite(WAIT_MS) && WAIT_MS < 30_000, `WAIT_MS is ${WAIT_MS}`);
+});
+
+test('the hard lock ceiling is five minutes', () => {
+  assert.equal(LOCK_CEILING_MS, 300_000);
+});
+
+test('a stale cache and eight concurrent callers start one build', async () => {
+  const h = home();
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  const c = counter([{ name: 'new' }], 150);
+  const runs = await Promise.all(Array.from({ length: 8 }, () => servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, waitMs: 400, waitStepMs: 20,
+  })));
+  assert.equal(c.builds, 1);
+  assert.equal(runs.filter((r) => r.source === 'built').length, 1);
+  assert.equal(readPoolsCache(h).pools[0].name, 'new');
+});
+
+test('a live holder older than the ceiling is taken over and the cache advances', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} 1 hung-token\n`);
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  const c = counter([{ name: 'rebuilt' }], 0);
+  const served = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20,
+  });
+  assert.equal(c.builds, 1);
+  assert.equal(served.source, 'built');
+  assert.deepEqual(readPoolsCache(h).pools, [{ name: 'rebuilt' }]);
+  assert.equal(existsSync(lock), false);
+});
+
+test('a live holder inside the ceiling is never taken over', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} ${Date.now()} live-token\n`);
+  const c = counter();
+  const served = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, ceilingMs: 60_000, waitMs: 100, waitStepMs: 20,
+  });
+  assert.equal(c.builds, 0);
+  assert.equal(served.source, 'stale');
+  assert.match(readFileSync(lock, 'utf8'), /live-token/);
+});
+
+test('a lock with a garbage owner older than the ceiling is taken over', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(lock, 'garbage\n');
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  const c = counter([{ name: 'rebuilt' }], 0);
+  const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+  assert.equal(c.builds, 1);
+  assert.equal(served.source, 'built');
+});
+
+test('a stuck holder that wakes after a takeover does not overwrite the new cache or lock', async () => {
+  const h = home();
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const stuck = servePools({
+    home: h, maxAgeMs: 60_000, build: async () => { await gate; return [{ name: 'stuck' }]; },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const c = counter([{ name: 'second' }], 0);
+  const second = await servePools({
+    home: h, maxAgeMs: 60_000, build: c.build, ceilingMs: 50, waitMs: 100, waitStepMs: 20,
+  });
+  assert.equal(second.source, 'built');
+  release();
+  await stuck;
+  assert.deepEqual(readPoolsCache(h).pools, [{ name: 'second' }]);
+  assert.equal(existsSync(poolsCachePaths(h).lock), false);
+});
+
+test('a successor lock that appears between the judgment and the break is left alone', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} 1 hung-token\n`);
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  let fired = 0;
+  poolsCache.__testHooks.beforeBreak = () => {
+    fired += 1;
+    // Another caller breaks the same lock and creates its own live one.
+    unlinkSync(lock);
+    writeFileSync(lock, `${process.pid} ${Date.now()} successor-token\n`);
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(fired, 1);
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.match(readFileSync(lock, 'utf8'), /successor-token/);
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+  }
+});
+
+test('a break sweeps old .broken files and leaves fresh ones', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  const oldBroken = `${lock}.old-token.broken`;
+  const freshBroken = `${lock}.fresh-token.broken`;
+  writeFileSync(oldBroken, `${process.pid} 1 old-token\n`);
+  writeFileSync(freshBroken, `${process.pid} 1 fresh-token\n`);
+  // A file's ctime cannot be set; report an old one for the crashed break's leftover.
+  poolsCache.__testHooks.statOf = (path) => {
+    const real = statSync(path);
+    return path === oldBroken ? { ...real, ctimeMs: Date.now() - LOCK_CEILING_MS - 60_000 } : real;
+  };
+  // A young lock whose holder is dead is broken at once.
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  const c = counter([{ name: 'ours' }], 0);
+  const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build });
+  assert.equal(served.source, 'built');
+  assert.equal(c.builds, 1);
+  poolsCache.__testHooks.statOf = statSync;
+  assert.equal(existsSync(oldBroken), false, 'the old .broken file is swept');
+  assert.equal(existsSync(freshBroken), true, 'the fresh .broken file stays');
+});
+
+test('a successor lock grabbed by the rename is put back unless a newer lock exists', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  poolsCache.__testHooks.beforeBreak = () => {
+    unlinkSync(lock);
+    writeFileSync(lock, `${process.pid} ${Date.now()} s1-token\n`);
+  };
+  let renamed = 0;
+  poolsCache.__testHooks.afterRename = () => {
+    renamed += 1;
+    // A third caller creates its own lock after our rename, before our link-back.
+    writeFileSync(lock, `${process.pid} ${Date.now()} s2-token\n`);
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(renamed, 1);
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.match(readFileSync(lock, 'utf8'), /s2-token/);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith('.broken')), []);
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+    poolsCache.__testHooks.afterRename = null;
+  }
+});
+
+test('a rename error on a dead lock answers stale and does not throw', { skip: process.getuid?.() === 0 }, async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  chmodSync(dir, 0o555);
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+  } finally {
+    chmodSync(dir, 0o755);
+  }
+});
+
+test('a successor lock still empty (between open and write) is not taken for the judged empty lock', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, '');
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  let held;
+  poolsCache.__testHooks.beforeBreak = () => {
+    // Keep the old inode alive so the successor cannot reuse its number.
+    held = openSync(lock, 'r');
+    unlinkSync(lock);
+    writeFileSync(lock, '');
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.equal(existsSync(lock), true, 'the successor lock stays');
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+    if (held != null) closeSync(held);
+  }
+});
+
+test('a successor that reuses the judged inode number is still told apart by mtime and token', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} 1 hung-token\n`);
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  let judged;
+  poolsCache.__testHooks.beforeBreak = () => {
+    judged = statSync(lock);
+    unlinkSync(lock);
+    writeFileSync(lock, `${process.pid} ${Date.now()} successor-token\n`);
+  };
+  // Simulate ext4 reusing the freed inode number: the successor reports the judged dev and ino.
+  poolsCache.__testHooks.statOf = (path) => {
+    const real = statSync(path);
+    if (!path.endsWith('.broken')) return real;
+    return { dev: judged.dev, ino: judged.ino, mtimeMs: real.mtimeMs, ctimeMs: real.ctimeMs, size: real.size };
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.match(readFileSync(lock, 'utf8'), /successor-token/);
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+    poolsCache.__testHooks.statOf = statSync;
+  }
+});
+
+test('a .broken file with an old mtime but a fresh ctime (just renamed) is not swept', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  const renamedAside = `${lock}.other-token.broken`;
+  writeFileSync(renamedAside, `${process.pid} 1 other-token\n`);
+  const past = new Date(Date.now() - LOCK_CEILING_MS - 60_000);
+  utimesSync(renamedAside, past, past); // old mtime; the change sets ctime to now, as a rename does
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  const c = counter([{ name: 'ours' }], 0);
+  await servePools({ home: h, maxAgeMs: 60_000, build: c.build });
+  assert.equal(existsSync(renamedAside), true, 'a file renamed just now is not swept');
 });
 
 test('a failed build releases the lock and keeps the old cache', async () => {

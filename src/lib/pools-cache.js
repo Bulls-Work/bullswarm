@@ -10,15 +10,25 @@
 // cache hit never loads the rest of Bullswarm.
 
 import {
-  closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync,
+  closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync,
+  writeSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-/** A lock older than this whose holder is gone belongs to a refresher that died; each read has a 30 s budget in the mod. */
+/** An unreadable lock this old belongs to a refresher that died mid-write. A dead pid is cleared at once. */
 const LOCK_STALE_MS = 120_000;
-/** How long a caller with nothing cached waits for another caller's build. */
-const WAIT_MS = 45_000;
+/**
+ * How long a caller with nothing cached waits for another caller's build.
+ * Under the mod's 30s `$.process.run` budget (mods/bullswarm/hooks/register.ts).
+ */
+export const WAIT_MS = 20_000;
+/**
+ * A lock older than this is stuck, even when its holder is alive (a hung
+ * meter read, or a pid reused by another process): the next caller takes it
+ * over. This bounds extra builders to one per ceiling.
+ */
+export const LOCK_CEILING_MS = 300_000;
 
 /** Each cache is `<home>/cache/<name>.json` (pools, runs, assignments) under its own schema. */
 const schemaOf = (name) => `bullswarm.${name}-cache.v1`;
@@ -74,10 +84,39 @@ function processAlive(pid) {
 }
 
 /**
- * This caller's token when it now holds the lock, else null. A lock is broken
- * only when it is over two minutes old and its holder is gone.
+ * Test seams: `beforeBreak(lock)` runs between judging a lock and breaking it,
+ * `afterRename(lock)` between the rename aside and the read of what we hold,
+ * `statOf(path)` the stat of an aside or `.broken` file (default `statSync`).
  */
-function takeLock(lock) {
+export const __testHooks = { beforeBreak: null, afterRename: null, statOf: statSync };
+
+/**
+ * This caller's token when it now holds the lock, else null. A live holder
+ * keeps a lock younger than `ceilingMs`; past it the lock is stuck and taken
+ * over. A dead holder loses it at once, even when the file is young. An
+ * unreadable lock is broken only once it is two minutes old.
+ *
+ * A judged lock is broken by renaming it aside (atomic on one filesystem), not
+ * by deleting it: between our last look and a delete another caller may have
+ * broken the same lock and created its own, and a delete would remove that
+ * live lock. The judged lock is identified by {dev, ino, mtimeMs, size, token}
+ * taken at judgment (token is null when the lock has none yet). The inode alone
+ * is not enough: a filesystem that reuses freed inode numbers (ext4) can give a
+ * successor's new lock the number of the lock it replaced, so mtime and size
+ * must match too, and the token whenever the judged lock had one. After the
+ * rename, the same identity: delete it and retry the create. A different one is
+ * a successor's lock: link it back (this fails when a newer lock already
+ * exists, which then stays) and return null. A rename error other than ENOENT
+ * means we do not hold the lock: null, never a throw. A crash in between leaves
+ * a `.broken` file, which a later break sweeps once its ctime (set by the
+ * rename, unlike mtime) is older than the ceiling.
+ *
+ * Known limit: during a put-back the lock path is briefly missing, so a third
+ * caller can build alongside the successor. Only the lock holder's write lands
+ * (writeCache is token-guarded), so the cache is never written twice; at worst
+ * one extra build.
+ */
+function takeLock(lock, ceilingMs) {
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -86,13 +125,65 @@ function takeLock(lock) {
       return token;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      let age;
-      try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
-      if (age < LOCK_STALE_MS || processAlive(lockOwner(lock)?.pid)) return null;
-      try { unlinkSync(lock); } catch { /* another caller broke it first */ }
+      let judgedStat;
+      try { judgedStat = statSync(lock); } catch { continue; }
+      const age = Date.now() - judgedStat.mtimeMs;
+      const owner = lockOwner(lock);
+      const judged = { dev: judgedStat.dev, ino: judgedStat.ino, mtimeMs: judgedStat.mtimeMs, size: judgedStat.size, token: owner?.token ?? null };
+      const alive = processAlive(owner?.pid);
+      if (alive && age < ceilingMs) return null;
+      const deadPid = owner != null && Number.isInteger(owner.pid) && owner.pid > 0;
+      if (!alive && !deadPid && age < LOCK_STALE_MS) return null;
+      __testHooks.beforeBreak?.(lock);
+      if (!breakLock(lock, token, judged)) return null;
     }
   }
   return null;
+}
+
+/**
+ * Breaks the lock we judged, by rename. True when the create may be retried
+ * (we removed our judged lock, or another caller already had); false when we
+ * do not hold the lock: a successor's lock grabbed by the rename is put back,
+ * and a failed rename leaves the lock as it was.
+ */
+function breakLock(lock, token, judged) {
+  const aside = `${lock}.${token}.broken`;
+  try {
+    renameSync(lock, aside);
+  } catch (error) {
+    return error.code === 'ENOENT';
+  }
+  try {
+    __testHooks.afterRename?.(lock);
+    let grabbed;
+    try { grabbed = __testHooks.statOf(aside); } catch { return false; }
+    const sameFile = grabbed.dev === judged.dev && grabbed.ino === judged.ino
+      && grabbed.mtimeMs === judged.mtimeMs && grabbed.size === judged.size;
+    if (sameFile && (judged.token == null || lockOwner(aside)?.token === judged.token)) {
+      try { unlinkSync(aside); } catch { /* best effort */ }
+      return true;
+    }
+    try { linkSync(aside, lock); } catch { /* a newer lock exists: it stays */ }
+    try { unlinkSync(aside); } catch { /* best effort */ }
+    return false;
+  } finally {
+    sweepBroken(lock);
+  }
+}
+
+/** Removes `.broken` files a crashed break left behind. Best effort, never throws. */
+function sweepBroken(lock) {
+  try {
+    const dir = dirname(lock);
+    for (const entry of readdirSync(dir)) {
+      if (!entry.endsWith('.broken')) continue;
+      try {
+        const path = join(dir, entry);
+        if (Date.now() - __testHooks.statOf(path).ctimeMs > LOCK_CEILING_MS) unlinkSync(path);
+      } catch { /* gone or busy */ }
+    }
+  } catch { /* unreadable dir */ }
 }
 
 /** Removes the lock only while it is still ours: a successor's lock stays. */
@@ -110,14 +201,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export async function serveCached({
   home, name, maxAgeMs, build, now = Date.now, waitMs = WAIT_MS, waitStepMs = 250,
+  ceilingMs = LOCK_CEILING_MS,
 }) {
   const { dir, lock } = cachePaths(home, name);
-  const deadline = Date.now() + waitMs;
+  const deadline = Date.now() + Math.min(Math.max(0, waitMs), WAIT_MS);
   for (;;) {
     const cached = readCache(home, name);
     if (cached && now() - cached.savedAt <= maxAgeMs) return { ...cached, source: 'cache' };
     mkdirSync(dir, { recursive: true });
-    const token = takeLock(lock);
+    const token = takeLock(lock, ceilingMs);
     if (token) {
       try {
         // Another caller may have finished between our read and our lock.
@@ -125,21 +217,17 @@ export async function serveCached({
         if (again && now() - again.savedAt <= maxAgeMs) return { ...again, source: 'cache' };
         const doc = await build();
         const savedAt = now();
-        writeCache(home, name, doc, savedAt);
+        // A holder taken over as stuck must not overwrite its successor's cache.
+        if (lockOwner(lock)?.token === token) writeCache(home, name, doc, savedAt);
         return { savedAt, doc, source: 'built' };
       } finally {
         dropLock(lock, token);
       }
     }
     if (cached) return { ...cached, source: 'stale' };
-    // Nothing to answer with yet: wait for the build in flight, then build
-    // ourselves if it never lands (its lock goes stale, or the wait runs out).
-    if (Date.now() >= deadline) {
-      const doc = await build();
-      const savedAt = now();
-      writeCache(home, name, doc, savedAt);
-      return { savedAt, doc, source: 'built' };
-    }
+    // Nothing cached, and a live holder still has the lock. Stay inside the
+    // mod's process budget: do not start a second build.
+    if (Date.now() >= deadline) throw new Error('cache not ready');
     await sleep(waitStepMs);
   }
 }
@@ -196,7 +284,7 @@ export function bullswarmHome() {
   return h && h.length ? h : join(homedir(), '.bullswarm');
 }
 
-/** A `--max-age` call: exit code; the full CLI loads only to rebuild. */
+/** A `--max-age` call: exit code. A young cache is printed before the CLI loads. */
 export async function cachedCallMain(argv) {
   const { name, maxAgeMs } = cachedCall(argv);
   const home = bullswarmHome();
