@@ -120,7 +120,7 @@ remain unchanged in Bullswarm records.
 herdr tells a Claude pane's working from idle by looking for Claude's spinner line ("✻ Verb… (12s · esc to interrupt)") in the bottom 12 non-empty screen lines. Two things of bullswarm's can hide it (issue #41):
 
 - The model starts `bullswarm workflow watch` in the background, so the turn ends and the spinner goes away. The skill now says to run the watch in the foreground with `--timeout` under herdr.
-- The strip above the prompt can push the spinner out of the 12-line window. When `HERDR_PANE_ID` is set (herdr sets it), the strip stays within 5 rows, header included, and its header counts the runs it hides.
+- The strip above the prompt can push the spinner out of the 12-line window. When `HERDR_PANE_ID` is set (herdr sets it), the strip stays within 5 rows, header included, and its header shows the total run count.
 
 Keep herdr's own Claude integration current: `herdr integration status` shows it. The real fix is upstream, in herdr.
 
