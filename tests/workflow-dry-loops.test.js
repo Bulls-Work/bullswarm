@@ -134,7 +134,7 @@ test('mergeRound with reopen false (a loop with no fix step) reads stillOpen as 
 });
 
 test('dryVerdict: dry 1 and 2; an unvisited area or a round with no answer is not dry; a reopened finding counts as found', () => {
-  const loop = (dry) => ({ until: { step: 'review', dry } });
+  const loop = (dry) => ({ until: { step: 'review', dry, yield: false } });
   const record = (...rounds) => ({ findings: { rounds: rounds.map(([n, reviewed, found = 0, reopened = 0]) => ({ round: n, reviewed, new: found, reopened })) } });
   const plain = { areas: [] };
   const three = { areas: ['a', 'b', 'c'] };
@@ -1353,7 +1353,7 @@ const echoProgram = ({ areas, areasPerRound, maxRounds }) => ({
     },
     { id: 'fix', dependsOn: ['review'], lane: 'build', prompt: 'Fix the acme parser. TOUCH:fixed.txt' },
   ],
-  loops: [{ id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1, nonFunctional: false }, maxRounds }],
+  loops: [{ id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1, nonFunctional: false, yield: false }, maxRounds }],
 });
 
 test('end to end with the echo worker: the finding is carried forward, the fixer runs once, the loop ends dry in round 2', { timeout: 120_000 }, (t) => {
@@ -1544,7 +1544,7 @@ test('0.38.16 non-functional areas: whole words, and every part of the area must
   assert.deepEqual(normal.steps.find((step) => step.areaOf).areaOf.areas, [...areas, NON_FUNCTIONAL_AREA]);
 });
 
-test('0.38.16 yield stop: two reviewed rounds in a row that each found 1 or 2 end the loop; a still-open finding, a clean round, a fixer first or yield false do not', () => {
+test('0.38.16 yield stop: two reviewed rounds in a row that each found 1 or 2 end the loop; a still-open finding, a clean round after a big one, a fixer first or yield false do not', () => {
   // The 0.38.16 default, pinned (0.38.17 made max 3 the default).
   const loop = { id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1, yield: { max: 2, rounds: 2 } } };
   const group = { id: 'review', steps: ['review'], areas: [], perRound: 1 };
@@ -1564,9 +1564,9 @@ test('0.38.16 yield stop: two reviewed rounds in a row that each found 1 or 2 en
   // With areas, the rounds in the tail must cover every area.
   const areaGroup = { id: 'review', steps: ['review-area-1'], areas: ['a', 'b', 'c'], perRound: 1 };
   assert.equal(verdict([round(1, 1, { reviewed: [0] }), round(2, 1, { reviewed: [1] })], loop, areaGroup).dry, false);
-  // dry 2 still needs its clean rounds: a clean round is not a low-yield round.
+  // dry 2 still needs its clean rounds: one clean round after a big one is neither dry nor low yield.
   const dry2 = { ...loop, until: { ...loop.until, dry: 2 } };
-  assert.equal(verdict([round(1, 2), round(2, 0)], dry2).dry, false);
+  assert.equal(verdict([round(1, 9), round(2, 0)], dry2).dry, false);
 });
 
 test('0.38.16 yield is validated on the dry until', () => {

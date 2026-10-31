@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The low-yield stop counts a reviewed round that found nothing new. Before, new per round 3, 0, 2 never stopped because the 0 broke the tail of 2 rounds; now the tail may include rounds of 0 as long as it has at least one finding (a tail of all zeros is left to `until.dry`), every area is covered and nothing is reopened.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
