@@ -8,7 +8,7 @@ import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 
 const BIN = join(new URL('..', import.meta.url).pathname.replace(/\/$/, ''), 'bin', 'bullswarm.js');
-const RUN_ID = 'wf-invalid-state-abcdef';
+const RUN_ID = 'wf-invalidstate-abcdef';
 const SHORT = 'inv234';
 
 // A parked v3 run on disk whose state.json is then broken one of two ways.

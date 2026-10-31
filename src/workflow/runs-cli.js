@@ -1,3 +1,4 @@
+import { invalidStateLine, readInvalidStateMarker } from './invalid-state.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 // bullswarm workflow runs — instance management.
 //
@@ -38,7 +39,6 @@ import { parkedFailures, parkedWaitingFor, waitingDocument, waitingOutcomeLines 
 import { isProgramV3 } from './program-v3.js';
 import { resultAnswerLines } from './answers.js';
 import { writeCache } from '../lib/pools-cache.js';
-import { invalidStateLine, invalidStateOf } from './invalid-state.js';
 
 // A v3 run reports facts per step, so its printed result leaves out the v2
 // fields the stored envelope still carries: `verified`, the implicit goal
@@ -200,7 +200,7 @@ function runsList(opts) {
   }
   const all = listRuns(BULLSWARM_DIR());
   for (const r of all) {
-    const invalid = r.legacy ? null : invalidStateOf(r.runDir);
+    const invalid = r.legacy ? null : readInvalidStateMarker(r.runDir);
     if (invalid) { r.invalid = invalid; r.ongoing = false; }
   }
   let filtered = all;
@@ -323,8 +323,9 @@ function runsShow(idToken, opts) {
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
   if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
-  // A state that fails validation is never ongoing: nothing can drive it.
-  const invalid = invalidStateOf(runDir);
+  // A marker left by a verb or kernel that found the state invalid. Nothing
+  // here validates: without a marker this behaves as before.
+  const invalid = readInvalidStateMarker(runDir);
   if (invalid) {
     if (opts.json) jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing: false, invalidState: invalid }, opts);
     else {
@@ -411,11 +412,11 @@ function runsResult(idToken, opts) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
-  const invalid = invalidStateOf(resolved.runDir);
-  if (invalid) return err(invalidStateLine(resolved.shortId ?? resolved.runId, invalid));
 
   const { runId, runDir } = resolved;
   if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
+  const invalid = readInvalidStateMarker(runDir);
+  if (invalid) return err(invalidStateLine(resolved.shortId ?? runId, invalid));
   const state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json')), runDir);
   const ongoing = isOngoing(runDir, state);
   const liveness = v2RunnerLiveness(state, { runDir });

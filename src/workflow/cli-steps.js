@@ -163,7 +163,7 @@ export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, lau
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, 'continue');
   if (viewOnly !== null) return viewOnly;
-  const invalid = invalidStateRefusal(bullswarmDir, token);
+  const invalid = invalidStateRefusal(bullswarmDir, token, 'continue');
   if (invalid !== null) return invalid;
   const resolved = resolveRunId(bullswarmDir, token);
   let type = null;
@@ -332,7 +332,7 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, 'add');
   if (viewOnly !== null) return viewOnly;
-  const invalid = invalidStateRefusal(bullswarmDir, token);
+  const invalid = invalidStateRefusal(bullswarmDir, token, 'add');
   if (invalid !== null) return invalid;
   let fragment = null;
   if (fromFile) {
