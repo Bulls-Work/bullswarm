@@ -44,7 +44,7 @@ function readSnapshotFile(dir, pool) {
 
 const SNAPSHOT_WINDOWS = ['five_hour', 'seven_day', 'monthly'];
 
-function windowUsable(window, nowMs) {
+export function windowUsable(window, nowMs) {
   if (!window || typeof window !== 'object') return false;
   const reset = Date.parse(window.resets_at ?? '');
   return Number.isFinite(Number(window.utilization)) && Number.isFinite(reset) && reset > nowMs;
@@ -519,7 +519,7 @@ function windowDeclaredByConnector(connector, subscription) {
   return pacing === 'monthly' ? 'monthly' : pacing === 'weekly' ? 'seven_day' : null;
 }
 
-function windowHasData(snapshot, key) {
+export function windowHasData(snapshot, key) {
   const window = snapshot?.[key];
   if (!window || typeof window !== 'object') return false;
   return Number.isFinite(Number(window.utilization)) || finiteMs(window.resets_at) != null;
