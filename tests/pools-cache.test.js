@@ -3,7 +3,7 @@
 // 260-345 MB each from the mod's status line).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -234,6 +234,33 @@ test('a stuck holder that wakes after a takeover does not overwrite the new cach
   await stuck;
   assert.deepEqual(readPoolsCache(h).pools, [{ name: 'second' }]);
   assert.equal(existsSync(poolsCachePaths(h).lock), false);
+});
+
+test('a successor lock that appears between the judgment and the break is left alone', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} 1 hung-token\n`);
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  let fired = 0;
+  poolsCache.__testHooks.beforeBreak = () => {
+    fired += 1;
+    // Another caller breaks the same lock and creates its own live one.
+    unlinkSync(lock);
+    writeFileSync(lock, `${process.pid} ${Date.now()} successor-token\n`);
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(fired, 1);
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.match(readFileSync(lock, 'utf8'), /successor-token/);
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+  }
 });
 
 test('a failed build releases the lock and keeps the old cache', async () => {

@@ -82,6 +82,9 @@ function processAlive(pid) {
   }
 }
 
+/** Test seam: `beforeBreak(lock)` runs between judging a lock and breaking it. */
+export const __testHooks = { beforeBreak: null };
+
 /**
  * This caller's token when it now holds the lock, else null. A live holder
  * keeps a lock younger than `ceilingMs`; past it the lock is stuck and taken
@@ -106,6 +109,7 @@ function takeLock(lock, ceilingMs) {
       if (!alive && !deadPid && age < LOCK_STALE_MS) return null;
       // Break only the lock we judged: a successor's fresh lock stays.
       if (lockOwner(lock)?.token !== (owner?.token ?? null)) return null;
+      __testHooks.beforeBreak?.(lock);
       try { unlinkSync(lock); } catch { /* another caller broke it first */ }
     }
   }
