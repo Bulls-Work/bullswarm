@@ -198,6 +198,11 @@ function taskTimes(entry) {
   return { startedAt, endedAt };
 }
 
+function canonicalJson(value) {
+  return JSON.stringify(value, (_key, v) => (v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v));
+}
+
 export function taskEntries(state) {
   return (Array.isArray(state?.decisionLog) ? state.decisionLog : [])
     .map((entry, index) => ({
@@ -777,6 +782,8 @@ export function repriceRuns({
     for (const entry of taskEntries(taskState)) {
       if (!eligible(entry, { sinceMs, pool })) continue;
       report.scannedTasks += 1;
+      // Fingerprint of the row exactly as scanned; the apply re-finds it by this.
+      const fingerprint = canonicalJson(entry.task);
       const oldUsage = entry.attempt.usage && typeof entry.attempt.usage === 'object'
         ? entry.attempt.usage : null;
       let candidate;
@@ -813,7 +820,7 @@ export function repriceRuns({
         oldUsage,
       });
       if (candidate.projectChanged) report.changedProjects += 1;
-      taskRows.push({ entry, candidate, usage: candidate.usage, row });
+      taskRows.push({ entry, candidate, usage: candidate.usage, row, fingerprint });
       report.rows.push(row);
       onRow?.(row);
     }
@@ -825,10 +832,17 @@ export function repriceRuns({
       const missing = [];
       try {
         updateState(bullswarmDir, (fresh) => {
-          const byId = new Map(taskEntries(fresh).map((e) => [e.attemptId, e]));
-          for (const { entry, candidate, usage } of taskRows) {
-            const current = byId.get(entry.attemptId);
-            if (!current || current.task.ts !== entry.task.ts) {
+          // Pair the k-th scanned copy with the k-th deep-equal fresh row, so
+          // keys (id/outFile/position) never decide: equality does.
+          const queues = new Map();
+          for (const e of taskEntries(fresh)) {
+            const key = canonicalJson(e.task);
+            if (!queues.has(key)) queues.set(key, []);
+            queues.get(key).push(e);
+          }
+          for (const { entry, candidate, usage, fingerprint } of taskRows) {
+            const current = queues.get(fingerprint)?.shift();
+            if (!current) {
               missing.push(entry.attemptId);
               continue;
             }
