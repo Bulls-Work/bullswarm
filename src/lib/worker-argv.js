@@ -8,22 +8,23 @@ import { appliedReasoningLevel, reasoningArgs } from './reasoning.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+// Every placeholder is replaced in one pass with a function replacer, so a
+// value is inserted literally: JavaScript's replacement patterns ($&, $', $`,
+// $$) in it are not expanded and it is never rescanned for another name.
+function fillPlaceholders(text, values) {
+  return text.replace(/\{(\w+)\}/g, (whole, name) => (
+    Object.hasOwn(values, name) ? String(values[name]) : whole
+  ));
+}
+
 export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
-  return cmdTemplate.map((a) =>
-    a
-      .replaceAll('{taskFile}', taskFile)
-      .replaceAll('{bullswarmDir}', BULLSWARM_DIR)
-      .replaceAll('{cwd}', cwd),
-  );
+  const values = { taskFile, bullswarmDir: BULLSWARM_DIR, cwd };
+  return cmdTemplate.map((a) => fillPlaceholders(a, values));
 }
 
 function substituteFollowUpArgv(cmdTemplate, { taskFile, cwd, sessionId, prompt }) {
-  return cmdTemplate.map((arg) => String(arg)
-    .replaceAll('{taskFile}', taskFile)
-    .replaceAll('{bullswarmDir}', BULLSWARM_DIR)
-    .replaceAll('{cwd}', cwd)
-    .replaceAll('{sessionId}', sessionId)
-    .replaceAll('{prompt}', prompt));
+  const values = { taskFile, bullswarmDir: BULLSWARM_DIR, cwd, sessionId, prompt };
+  return cmdTemplate.map((arg) => fillPlaceholders(String(arg), values));
 }
 
 export function followUpArgv(connector, { taskFile, cwd, sessionId, prompt }) {
@@ -60,7 +61,7 @@ export function argvWithModel(connector, paths, model = null, conversation = nul
     const template = conversation.resume
       ? connector.conversation.resumeArgs
       : connector.conversation.newArgs;
-    argv.push(...(template ?? []).map((arg) => String(arg).replaceAll('{sessionId}', conversation.sessionId)));
+    argv.push(...(template ?? []).map((arg) => fillPlaceholders(String(arg), { sessionId: conversation.sessionId })));
   }
   const reasoningLevel = appliedReasoningLevel(reasoning);
   if (reasoningLevel) {
