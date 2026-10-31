@@ -22,14 +22,18 @@ function toolOrCommandEvent(event) {
   return /\btool\b|\bcommand\b|\bfunction\b|\bshell\b/.test(kind);
 }
 
+/** The longest wall-clock limit a caller may set on a worker: 7 days. */
+export const MAX_TIMEOUT_SEC = 604_800;
+
 /**
  * Run one delegate and return the raw observation.
  * @returns Promise<{exitCode, signal, stdout, stderr, timedOut, cancelled}>
  */
 export function runDelegate(connector, taskFile, targetDir, opts = {}) {
   const configuredTimeout = opts.timeoutSec == null ? null : Number(opts.timeoutSec);
+  // Clamp: setTimeout fires after 1 ms for a delay above 2^31-1 ms (24.8 days).
   const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
-    ? configuredTimeout * 1000
+    ? Math.min(configuredTimeout, MAX_TIMEOUT_SEC) * 1000
     : null;
   const argv = opts.argv ?? argvWithModel(connector, {
     taskFile,

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `bullswarm run --timeout` takes a plain decimal number of seconds from 1 to 604800 (7 days); hex, exponents, signs and anything else exit 2. A value above 2147483 s used to make Node clamp the timer to 1 ms and kill the worker right after it started. The worker timer itself now clamps to the same maximum, so the probe's `--timeout` cannot overflow either.
+- `--avoid-pool` and `--avoid-provider` print `warning: --avoid-pool <name> matches no pool (bullswarm pools lists them)` on stderr for each name that matches no configured pool or provider, and the run still goes on (`--json` keeps stdout the verdict).
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
