@@ -62,11 +62,16 @@ function kindOf(state) {
   return steps.length <= 1 ? 'task' : 'workflow';
 }
 
-function outcomeOf(state, result) {
+// A run still marked running, paused or waiting whose last recorded event is
+// more than a day before the window's end is abandoned (its process is gone):
+// it counts as failed, not open.
+function outcomeOf(state, result, lastEventMs, untilMs) {
   const status = result?.status ?? state.lifecycle?.status ?? 'unknown';
   if (status === 'completed') return 'success';
   if (status === 'cancelled') return 'cancelled';
-  if (status === 'running' || status === 'paused' || status === 'waiting') return 'open';
+  if (status === 'running' || status === 'paused' || status === 'waiting') {
+    return lastEventMs != null && untilMs - lastEventMs > 86_400_000 ? 'failed' : 'open';
+  }
   return 'failed';
 }
 
@@ -99,8 +104,9 @@ function loadRuns(home, fromMs, toMs) {
   return runs.sort((a, b) => a.started - b.started);
 }
 
-function runFacts(run) {
+function runFacts(run, untilMs) {
   const { state, result } = run;
+  const lastEventMs = Math.max(...run.events.map((event) => ms(event.at ?? event.ts) ?? 0), run.started);
   const attempts = state.attempts ?? [];
   const finished = ms(state.lifecycle.finishedAt);
   const wallMin = finished != null ? (finished - run.started) / 60_000 : null;
@@ -110,13 +116,15 @@ function runFacts(run) {
     list.push(attempt);
     byAction.set(attempt.actionId, list);
   }
-  // A failover: the next attempt of the same step ran on another pool.
+  // A failover: after a failed attempt, the next attempt of the same step
+  // ran on another pool. A switch after a success (a later loop round or a
+  // rerun) is not a failover.
   let sameModelFailovers = 0;
   let crossModelFailovers = 0;
   for (const list of byAction.values()) {
     list.sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
     for (let i = 1; i < list.length; i += 1) {
-      if (list[i].pool === list[i - 1].pool) continue;
+      if (list[i].pool === list[i - 1].pool || list[i - 1].status !== 'failed') continue;
       if (list[i].model === list[i - 1].model) sameModelFailovers += 1;
       else crossModelFailovers += 1;
     }
@@ -134,7 +142,7 @@ function runFacts(run) {
     dir: run.dir,
     goal: String(state.intent?.goal ?? '').split('\n')[0].slice(0, 120),
     kind: kindOf(state),
-    outcome: outcomeOf(state, result),
+    outcome: outcomeOf(state, result, lastEventMs, untilMs),
     stalled: attempts.some(stalledAttempt),
     stalledAttempts: attempts.filter(stalledAttempt).length,
     wallMin,
@@ -184,12 +192,26 @@ function routingFacts(rows) {
   }
   const kinds = {};
   for (const row of rows) if (row.failureKind) kinds[row.failureKind] = (kinds[row.failureKind] ?? 0) + 1;
+  // Infrastructure failures (quota, auth, process, schema: not the work's own
+  // failed evidence, not a cancel) by the pool's 5h use when it was picked.
+  // Denominator: every dispatch row in the bucket that was not cancelled.
+  const infra = new Set(['quota', 'auth', 'process', 'schema', 'stalled']);
+  const byFiveHour = {};
+  for (const row of rows) {
+    const pct = row.routing?.fiveHourUsedPct;
+    if (!Number.isFinite(pct) || row.failureKind === 'cancelled') continue;
+    const bucket = pct < 70 ? '<70' : pct < 85 ? '70-84' : pct < 95 ? '85-94' : '95+';
+    const b = (byFiveHour[bucket] ??= { dispatches: 0, infraFailures: 0 });
+    b.dispatches += 1;
+    if (infra.has(row.failureKind)) b.infraFailures += 1;
+  }
   return {
     dispatches: rows.length,
     judged,
     matchedPacer: matched,
     notMatched: judged - matched,
     notMatchedByRule: rules,
+    infraFailuresByFiveHourAtPick: byFiveHour,
     notMatchedSamples: off.filter((o) => o.rule === 'other').slice(-5),
     authErrors: kinds.auth ?? 0,
     quotaErrors: kinds.quota ?? 0,
@@ -223,6 +245,7 @@ function reviewFacts(facts) {
     firstTries,
     firstTryPassed: firstPassed,
     firstTryPassRate: firstTries ? round(firstPassed / firstTries, 3) : null,
+    reviewsWithFindings: findings.length,
     findingsPerReview: findings.length ? round(sum(findings) / findings.length, 2) : null,
     findingsBySeverity: severity,
   };
@@ -233,18 +256,22 @@ function reviewFacts(facts) {
 // another CLAIMED_DONE) needed rework after "done".
 function reworkFacts(ordersDir, fromMs, toMs) {
   if (!ordersDir || !existsSync(ordersDir)) return null;
-  const all = { claimedDone: 0, reopened: 0, byProject: {} };
+  const all = { claimedDone: 0, reopened: 0, backToWork: 0, failedOnly: 0, byProject: {} };
   for (const name of readdirSync(ordersDir).filter((n) => n.endsWith('.json'))) {
     const order = readJson(join(ordersDir, name));
     const history = Array.isArray(order?.history) ? order.history : [];
     const claims = history.filter((h) => h.state === 'CLAIMED_DONE' && ms(h.at) >= fromMs && ms(h.at) < toMs);
     if (!claims.length) continue;
     const first = ms(claims[0].at);
-    const reopened = history.some((h) => ms(h.at) > first && !['VERIFIED', 'CANCELED', 'CLAIMED_DONE'].includes(h.state));
-    const project = order.project ?? 'unknown';
+    const later = history.filter((h) => ms(h.at) > first).map((h) => h.state);
+    const reopened = later.some((state) => !['VERIFIED', 'CANCELED', 'CLAIMED_DONE'].includes(state));
+    const backToWork = later.some((state) => state === 'WORKING' || state === 'INPUT_REQUIRED');
+    const project = String(order.project ?? 'unknown').toLowerCase();
     const p = (all.byProject[project] ??= { claimedDone: 0, reopened: 0 });
     all.claimedDone += 1; p.claimedDone += 1;
     if (reopened) { all.reopened += 1; p.reopened += 1; }
+    if (reopened && backToWork) all.backToWork += 1;
+    else if (reopened) all.failedOnly += 1;
   }
   all.reworkRate = all.claimedDone ? round(all.reopened / all.claimedDone, 3) : null;
   return all;
@@ -297,21 +324,23 @@ function markdown(card) {
   const lines = [];
   lines.push(`# Bullswarm scorecard ${card.window.from.slice(0, 10)} → ${card.window.until.slice(0, 10)}`, '');
   lines.push(`Measured from ${card.source.home} (${card.source.runDirs} run directories in the window, ${card.routing.dispatches} dispatch rows). Scorecard v${card.version}.`, '');
+  lines.push('Definitions: a run is in the window when it started in it. review = the goal starts with the word "Review" (the blind reviews leads launch; other reviews inside workflows count as workflow); task = any other run with one step (`bullswarm run`); workflow = the rest. success = result completed; failed = partial, interrupted, or abandoned (still marked running with no event for over a day); wall time counts every finished run (completed, partial, cancelled).', '');
   lines.push('## Runs', '', '| kind | runs | success | failed | cancelled | stalled | open | wall p50 (min) | wall p90 (min) | tokens / successful run (all) | output tokens / successful run | API-equivalent USD |', '|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const [kind, s] of Object.entries(k)) lines.push(`| ${kind} | ${s.runs} | ${s.success} | ${s.failed} | ${s.cancelled} | ${s.stalled} | ${s.open} | ${s.wallMinP50 ?? '—'} | ${s.wallMinP90 ?? '—'} | ${s.tokensPerSuccessfulRun?.toLocaleString('en-US') ?? '—'} | ${s.outputTokensPerSuccessfulRun?.toLocaleString('en-US') ?? '—'} | ${s.apiUsdEquivalent} |`);
   lines.push('', 'Tokens per merged or accepted outcome: not recorded (Bullswarm does not know which outputs were merged).', '');
   const r = card.routing;
   lines.push('## Routing', '');
   lines.push(`- dispatches: ${r.dispatches}; with two or more candidates: ${r.judged}; went to the most-behind candidate: ${r.matchedPacer} (${r.judged ? round((100 * r.matchedPacer) / r.judged) : '—'}%), not: ${r.notMatched} (by the router's rule: ${JSON.stringify(r.notMatchedByRule)})`);
-  lines.push(`- failovers between attempts of one step: same model ${card.failovers.sameModel}, cross model ${card.failovers.crossModel}`);
+  lines.push(`- failovers (after a failed attempt, the step's next attempt ran on another pool): same model ${card.failovers.sameModel}, cross model ${card.failovers.crossModel}`);
+  lines.push(`- infrastructure failures (quota, auth, process, schema, stalled) by the pool's 5h use at pick; denominator: dispatches not cancelled: ${Object.entries(r.infraFailuresByFiveHourAtPick).map(([k, v]) => `${k}: ${v.infraFailures}/${v.dispatches} (${round((100 * v.infraFailures) / v.dispatches)}%)`).join(', ')}`);
   lines.push(`- auth errors ${r.authErrors}, quota errors ${r.quotaErrors}; all failure kinds: ${JSON.stringify(r.failureKinds)}`);
   lines.push(`- dispatches by pool: ${JSON.stringify(r.byPool)}`);
   lines.push('- subscription points per pool: not attributable from the records (each dispatch records the meter change over its own window, which overlaps other dispatches; read the pool meters at the start and end of the eval instead)', '');
   const s = card.stalls;
-  lines.push('## Stalls', '', `- runs with a stalled attempt: ${s.stalledRuns} (${s.stalledAttempts} attempts)`, `- stale-warning events persisted: ${s.staleEvents}`, `- cancelled while an attempt had been silent ≥ 10 min (a hang a person stopped): ${s.hungAtCancel}`, '');
+  lines.push('## Stalls', '', `- runs with a stalled attempt: ${s.stalledRuns} (${s.stalledAttempts} attempts)`, '- stale warnings: not measurable (the watch prints them; no stale event is ever saved to a run\'s events)', `- cancelled while an attempt had been silent ≥ 10 min (a hang a person stopped): ${s.hungAtCancel}`, '');
   const q = card.quality;
-  lines.push('## Quality', '', `- reviews with a checked answer: ${q.reviews}; passed ${q.passed}`, `- first try per reviewed change: ${q.firstTryPassed}/${q.firstTries} passed (${q.firstTryPassRate == null ? '—' : `${round(q.firstTryPassRate * 100)}%`})`, `- findings per review: ${q.findingsPerReview ?? '—'}; by severity ${JSON.stringify(q.findingsBySeverity)}`);
-  if (card.rework) lines.push(`- fleet orders claimed done in the window: ${card.rework.claimedDone}; reopened afterwards: ${card.rework.reopened} (${card.rework.reworkRate == null ? '—' : `${round(card.rework.reworkRate * 100)}%`}); bullswarm: ${JSON.stringify(card.rework.byProject.bullswarm ?? null)}`);
+  lines.push('## Quality', '', `- reviews with a checked answer: ${q.reviews}; passed ${q.passed}`, `- first try per reviewed change: ${q.firstTryPassed}/${q.firstTries} passed (${q.firstTryPassRate == null ? '—' : `${round(q.firstTryPassRate * 100)}%`})`, `- findings per review (reviews whose answer has a findings list: ${q.reviewsWithFindings}): ${q.findingsPerReview ?? '—'}; by severity ${JSON.stringify(q.findingsBySeverity)}`);
+  if (card.rework) lines.push(`- fleet orders claimed done in the window: ${card.rework.claimedDone}; not accepted as done afterwards: ${card.rework.reopened} (${card.rework.reworkRate == null ? '—' : `${round(card.rework.reworkRate * 100)}%`}): back to work ${card.rework.backToWork}, failed verification only ${card.rework.failedOnly}. Order files only (orders kept only in closed.jsonl are not counted).`);
   else lines.push('- rework after done: not recorded (no --orders directory given)');
   lines.push('', '## Five most expensive runs (API-equivalent USD)', '', '| run | kind | outcome | USD | tokens | attempts | wall (min) | failures | goal |', '|---|---|---|---|---|---|---|---|---|');
   for (const e of card.expensive) lines.push(`| ${e.id} | ${e.kind} | ${e.outcome} | ${e.usd} | ${e.tokens.toLocaleString('en-US')} | ${e.attempts} | ${e.wallMin ?? '—'} | ${e.failures.join(', ') || '—'} | ${e.goal.replace(/\|/g, '\\|')} |`);
@@ -327,7 +356,7 @@ export function scorecard({ home, days, until, orders = null, previous = null })
   if (toMs == null) throw new Error('--until must be an ISO time');
   const fromMs = toMs - days * 86_400_000;
   const runs = loadRuns(home, fromMs, toMs);
-  const facts = runs.map(runFacts);
+  const facts = runs.map((run) => runFacts(run, toMs));
   const rows = decisionRows(home, fromMs, toMs);
   const card = {
     version: SCORECARD_VERSION,
