@@ -2,7 +2,7 @@
 // instead of the 1-hour price. BULLSWARM_CLAUDE_CACHE_5M is `off` (default,
 // also unset or any value not named here), `analyze` (attempts in the analyze
 // lane only) or `all`. It relies on FORCE_PROMPT_CACHING_5M, an undocumented
-// Claude Code variable; see docs/reference/cli.md.
+// Claude Code variable; see docs/guide/cost.md.
 import { modelFamilyOf } from '../lib/route.js';
 
 export const CLAUDE_CACHE_5M_ENV = 'BULLSWARM_CLAUDE_CACHE_5M';
