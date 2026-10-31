@@ -1,0 +1,3 @@
+When an agent creates a page or appends blocks from markdown through nic-mcp (`create_page`, `append_blocks`) or through the knowledge-base importer, a markdown table turns into a markdown code block holding the raw rows. It should be a real table.
+
+What I expect: a markdown table becomes a native table block with a header row. Cells are rich text. That means inline marks such as bold are kept, `<br>` becomes a line break, and `\|` is a literal pipe. Rows shorter than the header are padded to the header's width. Tables written without outer pipes and with alignment colons in the separator row work too. `mdToBlocks` should also accept an option (`tablesAsCode`) that keeps the old behaviour, the rows as one markdown code block, for comparing pages imported earlier.

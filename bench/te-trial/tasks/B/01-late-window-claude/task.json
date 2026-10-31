@@ -1,0 +1,10 @@
+{
+ "repo": "B",
+ "parent": "704f5a6",
+ "fixCommit": "e4b4dcb",
+ "checkFiles": [
+  "tests/sync/resolve-caps.test.ts"
+ ],
+ "checkCmd": "npx vitest run tests/sync/resolve-caps.test.ts",
+ "timeoutSec": 600
+}

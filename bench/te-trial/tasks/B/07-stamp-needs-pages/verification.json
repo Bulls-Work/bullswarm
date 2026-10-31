@@ -1,0 +1,17 @@
+{
+ "task": "07-stamp-needs-pages",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 3.4,
+  "tail": ".mjs > stamp refuses a folder that is not a mirror (a mistyped path) and creates nothing; a mirror with pages/ is stamped\nAssertionError: expected +0 to be 2 // Object.is equality\n\n\u001b[32m- Expected\u001b[39m\n\u001b[31m+ Received\u001b[39m\n\n\u001b[32m- 2\u001b[39m\n\u001b[31m+ 0\u001b[39m\n\n \u276f tests/mcp/writes.test.ts:359:22\n    357|     const typo = join(tmp(), 'second-mirror');\n    358|     const r = cpSync('stamp', typo);\n    359|     expect(r.status).toBe(2);\n       |                      ^\n    360|     expect(r.stderr).toMatch(/not a mirror/);\n    361|     expect(existsSync(typo)).toBe(false);\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 3.2,
+  "tail": "\n RUN  v3.2.7 /private/tmp/claude-501/-Users-cowcow02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vB/07-stamp-needs-pages\n\n \u2713 tests/mcp/writes.test.ts (26 tests) 1826ms\n\n Test Files  1 passed (1)\n      Tests  26 passed (26)\n   Start at  02:40:07\n   Duration  2.47s (transform 148ms, setup 0ms, collect 245ms, tests 1.83s, environment 126ms, prepare 46ms)\n\nstderr | tests/mcp/writes.test.ts\nWarning: KaTeX doesn't work in quirks mode. Make sure your website has a suitable doctype.\n\n"
+ },
+ "verified": true
+}

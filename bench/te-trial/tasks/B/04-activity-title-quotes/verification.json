@@ -1,0 +1,17 @@
+{
+ "task": "04-activity-title-quotes",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 6.4,
+  "tail": "ge \\\"renamedWelcome\\\"\",\u001b[39m\n\u001b[31m+   \"Moved \\\" renamedWelcome \\\"\",\u001b[39m\n\u001b[31m+   \"Created page \\\" renamedWelcome \\\"\",\u001b[39m\n\u001b[2m  ]\u001b[22m\n\n \u276f tests/sync/delete-forever.test.ts:210:19\n    208|     ws.archivePage(b);\n    209|     const sumsA = (await ws.loadActivity(a)).entries.map(([, e]) => e.\u2026\n    210|     expect(sumsA).toEqual(['Moved \"renamedWelcome\"', 'Created page \"re\u2026\n       |                   ^\n    211|     const sumsB = (await ws.loadActivity(b)).entries.map(([, e]) => e.\u2026\n    212|     expect(sumsB).toEqual(['Moved to trash \"Untitled\"', 'Created page \u2026\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 6.5,
+  "tail": "63-8b5611d530b8/scratchpad/te/work/vB/04-activity-title-quotes\n\n \u2713 tests/sync/delete-forever.test.ts (13 tests) 5158ms\n   \u2713 rename activity > logs one \"Renamed\" entry when typing in the title pauses, not one per keystroke  1702ms\n   \u2713 rename activity > logs nothing when the title ends where it started  1703ms\n   \u2713 activity review fixes (30 Oct) > an agent rename is logged as the agent, after the delay  1703ms\n\n Test Files  1 passed (1)\n      Tests  13 passed (13)\n   Start at  02:39:40\n   Duration  5.81s (transform 134ms, setup 0ms, collect 160ms, tests 5.16s, environment 170ms, prepare 46ms)\n\n"
+ },
+ "verified": true
+}

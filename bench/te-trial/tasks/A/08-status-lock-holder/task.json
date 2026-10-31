@@ -1,0 +1,11 @@
+{
+ "repo": "A",
+ "parent": "84079ac",
+ "fixCommit": "d3b6e6e",
+ "checkFiles": [
+  "tests/status-cache.test.js"
+ ],
+ "checkCmd": "node --test tests/status-cache.test.js",
+ "timeoutSec": 600,
+ "testsFrom": "f15c078"
+}

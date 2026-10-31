@@ -1,0 +1,17 @@
+{
+ "task": "02-csv-names",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 2.5,
+  "tail": " screen, not as ids\nAssertionError: expected 'Alpha,u_ada,p_5ad1mf85fvq4' to contain 'Ada Sample'\n\nExpected: \u001b[32m\"A\u001b[7mda Sample\u001b[27m\"\u001b[39m\nReceived: \u001b[31m\"A\u001b[7mlpha,u_ada,p_5ad1mf85fvq4\u001b[27m\"\u001b[39m\n\n \u276f tests/ui/db/export-csv.test.tsx:135:18\n    133|     const text = mock.downloads.log[0].data as string;\n    134|     const line = text.split('\\r\\n').find((l) => l.startsWith(ws.page(r\u2026\n    135|     expect(line).toContain(me!);\n       |                  ^\n    136|     expect(line).toContain(ws.page(rows.b)!.title);\n    137|     expect(line).not.toContain(rows.b);\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 2.4,
+  "tail": "\n RUN  v3.2.7 /private/tmp/claude-501/-Users-cowcow02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vB/02-csv-names\n\n \u2713 tests/ui/db/export-csv.test.tsx (10 tests) 539ms\n\n Test Files  1 passed (1)\n      Tests  10 passed (10)\n   Start at  02:39:21\n   Duration  1.63s (transform 469ms, setup 0ms, collect 650ms, tests 539ms, environment 162ms, prepare 44ms)\n\n"
+ },
+ "verified": true
+}

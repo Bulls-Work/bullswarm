@@ -1,0 +1,11 @@
+{
+ "repo": "A",
+ "parent": "ab39bad",
+ "fixCommit": "17c8efe",
+ "checkFiles": [
+  "tests/workflow-context-diet-measurement.test.js",
+  "tests/workflow-result-summary.test.js"
+ ],
+ "checkCmd": "node --test tests/workflow-context-diet-measurement.test.js tests/workflow-result-summary.test.js",
+ "timeoutSec": 600
+}

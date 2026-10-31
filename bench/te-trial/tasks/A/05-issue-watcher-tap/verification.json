@@ -1,0 +1,17 @@
+{
+ "task": "05-issue-watcher-tap",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 20.0,
+  "tail": "t: install.mjs --dry-run prints a plist with the PATH, the dir and --once, and writes nothing\nok 24 - install.mjs --dry-run prints a plist with the PATH, the dir and --once, and writes nothing\n  ---\n  duration_ms: 57.692375\n  type: 'test'\n  ...\n# Subtest: install.mjs seeds state, copies the watcher and bootstraps launchd \u2014 and is idempotent\nok 25 - install.mjs seeds state, copies the watcher and bootstraps launchd \u2014 and is idempotent\n  ---\n  duration_ms: 587.224166\n  type: 'test'\n  ...\n1..25\n# tests 25\n# suites 0\n# pass 24\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 19986.217208\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 20.2,
+  "tail": "t: install.mjs --dry-run prints a plist with the PATH, the dir and --once, and writes nothing\nok 24 - install.mjs --dry-run prints a plist with the PATH, the dir and --once, and writes nothing\n  ---\n  duration_ms: 51.744208\n  type: 'test'\n  ...\n# Subtest: install.mjs seeds state, copies the watcher and bootstraps launchd \u2014 and is idempotent\nok 25 - install.mjs seeds state, copies the watcher and bootstraps launchd \u2014 and is idempotent\n  ---\n  duration_ms: 624.814292\n  type: 'test'\n  ...\n1..25\n# tests 25\n# suites 0\n# pass 25\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 20193.486458\n"
+ },
+ "verified": true
+}

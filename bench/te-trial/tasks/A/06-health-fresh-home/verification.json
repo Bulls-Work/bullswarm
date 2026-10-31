@@ -1,0 +1,17 @@
+{
+ "task": "06-health-fresh-home",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 3.4,
+  "tail": "ation_ms: 238.564666\n  type: 'test'\n  ...\n# Subtest: a pool whose connector declares no reasoning is dispatched without a flag\nok 11 - a pool whose connector declares no reasoning is dispatched without a flag\n  ---\n  duration_ms: 112.007583\n  type: 'test'\n  ...\n# Subtest: run rejects an unknown or valueless --reasoning with exit 2 before dispatching\nok 12 - run rejects an unknown or valueless --reasoning with exit 2 before dispatching\n  ---\n  duration_ms: 138.123291\n  type: 'test'\n  ...\n1..12\n# tests 12\n# suites 0\n# pass 11\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3308.081917\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 3.3,
+  "tail": "ation_ms: 216.150416\n  type: 'test'\n  ...\n# Subtest: a pool whose connector declares no reasoning is dispatched without a flag\nok 11 - a pool whose connector declares no reasoning is dispatched without a flag\n  ---\n  duration_ms: 104.780208\n  type: 'test'\n  ...\n# Subtest: run rejects an unknown or valueless --reasoning with exit 2 before dispatching\nok 12 - run rejects an unknown or valueless --reasoning with exit 2 before dispatching\n  ---\n  duration_ms: 154.862625\n  type: 'test'\n  ...\n1..12\n# tests 12\n# suites 0\n# pass 12\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3262.485041\n"
+ },
+ "verified": true
+}

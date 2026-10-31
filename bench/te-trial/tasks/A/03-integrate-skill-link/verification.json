@@ -1,0 +1,17 @@
+{
+ "task": "03-integrate-skill-link",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 0.4,
+  "tail": "directory\nok 4 - integration refuses to replace an unmanaged skill directory\n  ---\n  duration_ms: 2.615125\n  type: 'test'\n  ...\n# Subtest: legacy offload retirement is explicit and recoverable\nok 5 - legacy offload retirement is explicit and recoverable\n  ---\n  duration_ms: 5.294584\n  type: 'test'\n  ...\n# Subtest: integrate CLI works non-interactively with an isolated HOME\nok 6 - integrate CLI works non-interactively with an isolated HOME\n  ---\n  duration_ms: 240.290583\n  type: 'test'\n  ...\n1..6\n# tests 6\n# suites 0\n# pass 5\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 319.773959\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 0.4,
+  "tail": "directory\nok 4 - integration refuses to replace an unmanaged skill directory\n  ---\n  duration_ms: 1.644041\n  type: 'test'\n  ...\n# Subtest: legacy offload retirement is explicit and recoverable\nok 5 - legacy offload retirement is explicit and recoverable\n  ---\n  duration_ms: 3.845125\n  type: 'test'\n  ...\n# Subtest: integrate CLI works non-interactively with an isolated HOME\nok 6 - integrate CLI works non-interactively with an isolated HOME\n  ---\n  duration_ms: 220.054167\n  type: 'test'\n  ...\n1..6\n# tests 6\n# suites 0\n# pass 6\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 320.435334\n"
+ },
+ "verified": true
+}
