@@ -23,6 +23,7 @@ import { join, resolve } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
 import { glyphs } from '../lib/glyphs.js';
 import { usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import {
   CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
@@ -155,7 +156,7 @@ export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, lau
   const flagExit = flagErrors(opts, path);
   if (flagExit !== null) return flagExit;
   const [token, nodeId] = opts.rest;
-  if (!token || !nodeId || opts.rest.length > 2) { console.error(`usage: ${usageLine(path)}`); return 2; }
+  if (!token || !nodeId || opts.rest.length > 2) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return 2; }
   let rounds;
   try { rounds = parseContinueRounds(opts.rounds); } catch (err) { console.error(`✗ ${err.message}`); return 2; }
   const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
@@ -323,7 +324,7 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   const [token] = opts.rest;
   const fromFile = typeof opts.steps === 'string' ? opts.steps : null;
   const fromAnswer = typeof opts['from-answer'] === 'string' ? opts['from-answer'] : null;
-  if (!token || opts.rest.length > 1 || (!fromFile && !fromAnswer)) { console.error(`usage: ${usageLine(path)}`); return 2; }
+  if (!token || opts.rest.length > 1 || (!fromFile && !fromAnswer)) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return 2; }
   if (fromFile && fromAnswer) { console.error('✗ --steps and --from-answer are mutually exclusive: add from a file or from a step\'s answer'); return 2; }
   const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
@@ -621,7 +622,7 @@ export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
   const flagExit = flagErrors(opts, path);
   if (flagExit !== null) return flagExit;
   const [token, ...ids] = opts.rest;
-  if (!token || !ids.length) { console.error(`usage: ${usageLine(path)}`); return 2; }
+  if (!token || !ids.length) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return 2; }
   const timeoutSec = opts.timeout === undefined ? null : Number(opts.timeout);
   if (timeoutSec !== null && (!Number.isFinite(timeoutSec) || timeoutSec < 0)) { console.error('✗ --timeout must be a non-negative number of seconds'); return 2; }
   const result = await waitV3Nodes({ bullswarmDir, token, ids: [...new Set(ids)], timeoutMs: timeoutSec === null ? null : timeoutSec * 1000 });

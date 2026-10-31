@@ -8,6 +8,7 @@ import { controlSummaryLines, programControl } from './gates-loops.js';
 import { routeSummary } from './step-route.js';
 import { V2PlannerValidationError, workspacePathIssues } from './v2-planner.js';
 import { helpText, usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { buildV3Contract } from './contract-v3.js';
 import { parseFlags, flagErrors, removedFlagExit } from './workflow-flags.js';
@@ -90,7 +91,7 @@ export async function wfPlan(rest) {
 // guard a launch applies. Returns { doc } or { exit } after printing.
 function planningGoalDocument(opts, path, { allowProgram = false } = {}) {
   const goal = opts.rest.join(' ').trim();
-  if (!goal) { console.error(`usage: ${usageLine(path)}`); return { exit: 2 }; }
+  if (!goal) { console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(path) }); return { exit: 2 }; }
   const flagError = contractFlagError(opts, { allowProgram });
   if (flagError) { console.error(`✗ ${flagError}`); return { exit: 2 }; }
   let doc;
@@ -123,7 +124,7 @@ function planContract(opts) {
 // same preview state a launch uses, without creating a run.
 async function planValidate(opts) {
   if (opts.help) { console.log(helpText(['workflow', 'plan', 'validate'])); return 0; }
-  if (!opts.program) { console.error(`usage: ${usageLine(['workflow', 'plan', 'validate'])}`); return 2; }
+  if (!opts.program) { console.error(`usage: ${usageLine(['workflow', 'plan', 'validate'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'plan', 'validate']) }); return 2; }
   // Read once: a program from /dev/stdin or a pipe cannot be read twice.
   let response = null, loadError = null;
   try { response = loadCallerProgram(opts); } catch (err) { loadError = err; }

@@ -19,6 +19,7 @@ import { cmdIntegrate, installIntegration } from './integrate.js';
 import { cmdProvider } from './provider-cli.js';
 import { helpForArgs, usageLine } from './help.js';
 import { flagNames, unknownFlagExit } from './lib/cli-flags.js';
+import { UsageFault, reportUsageError } from './lib/json-usage-error.js';
 import { describeAssignment, listAssignments } from './lib/assignments.js';
 import { attachForecast } from './lib/forecast.js';
 import {
@@ -137,6 +138,7 @@ function cmdPoolsLabel(opts) {
   if (opts.list === true) {
     if (opts.rest.length !== 1) {
       console.error(`usage: ${usageLine(['pools', 'label'])}`);
+      reportUsageError({ message: 'wrong number of arguments', usage: usageLine(['pools', 'label']) });
       return 2;
     }
     const entries = poolLabelEntries(home);
@@ -150,20 +152,21 @@ function cmdPoolsLabel(opts) {
   try {
     let result;
     if (opts.clear === true) {
-      if (!typed || opts.rest.length !== 2) throw new Error(`usage: ${usageLine(['pools', 'label'])}`);
+      if (!typed || opts.rest.length !== 2) throw new UsageFault('wrong number of arguments', usageLine(['pools', 'label']));
       result = clearPoolLabel(home, pool, knownPoolIds(home));
       if (opts.json) console.log(JSON.stringify(result, null, 2));
       else console.log(result.cleared ? `cleared label for ${pool}` : `${pool} had no label`);
       return 0;
     }
     const label = opts.rest[2];
-    if (!typed || !label || opts.rest.length !== 3) throw new Error(`usage: ${usageLine(['pools', 'label'])}`);
+    if (!typed || !label || opts.rest.length !== 3) throw new UsageFault('wrong number of arguments', usageLine(['pools', 'label']));
     result = setPoolLabel(home, pool, label, knownPoolIds(home));
     if (opts.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`${result.pool} displays as ${result.poolLabel}`);
     return 0;
   } catch (error) {
     console.error(`✗ ${error.message}`);
+    if (error instanceof UsageFault) reportUsageError({ message: error.reason, usage: error.usage });
     return 2;
   }
 }
@@ -204,6 +207,7 @@ async function cmdPools(opts) {
   if (opts.rest.length) {
     console.error(`✗ unknown pools subcommand "${opts.rest[0]}"`);
     console.error(`usage: ${usageLine(['pools'])}`);
+    reportUsageError({ message: `unknown pools subcommand "${opts.rest[0]}"`, usage: usageLine(['pools']) });
     return 2;
   }
   let only = null;
@@ -336,6 +340,11 @@ async function cmdRun(opts) {
   const parsed = runStepRequest(opts);
   if (parsed.error) {
     console.error(parsed.error);
+    const flagged = /^usage: /.test(parsed.error);
+    reportUsageError({
+      message: parsed.error.replace(/^usage: /, ''),
+      usage: flagged ? usageLine(['run']) : null,
+    });
     return 2;
   }
   const { request } = parsed;
@@ -737,6 +746,7 @@ export async function main(argv) {
       });
     default:
       console.error(`unknown verb "${verb}". Run "bullswarm --help" for the list of commands.`);
+      reportUsageError({ message: `unknown verb "${verb}"`, usage: usageLine([]) });
       return 2;
   }
 }

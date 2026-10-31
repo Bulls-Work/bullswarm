@@ -9,6 +9,7 @@ import { readEvents } from './events.js';
 import { routeSummary } from './step-route.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
 import { stepJsonModel } from './step-json.js';
@@ -19,7 +20,7 @@ import { BULLSWARM_DIR, legacyRunRefusal } from './cli-run-lookup.js';
 export function wfEvents(opts) {
   const token = opts.rest[0];
   if (!token) {
-    console.error(`usage: ${usageLine(['workflow', 'events'])}`);
+    console.error(`usage: ${usageLine(['workflow', 'events'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'events']) });
     return 2;
   }
   const resolved = resolveRunId(BULLSWARM_DIR(), token);
@@ -44,7 +45,7 @@ export async function wfWatch(opts) {
   if (flagError != null) return flagError;
   const token = opts.rest[0];
   if (!token) {
-    console.error(`usage: ${usageLine(['workflow', 'watch'])}`);
+    console.error(`usage: ${usageLine(['workflow', 'watch'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'watch']) });
     return 2;
   }
   // --classic forces the older heartbeat-based watcher, which has no notion
@@ -189,7 +190,7 @@ function v2ActionJson(resolved, state, actionId) {
 export function wfAction(opts) {
   const [sub, token, actionId] = opts.rest;
   if (sub !== 'show' || !token || !actionId) {
-    console.error(`usage: ${usageLine(['workflow', 'action', 'show'])}`);
+    console.error(`usage: ${usageLine(['workflow', 'action', 'show'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'action', 'show']) });
     return 2;
   }
   // The refusal is the same single line every other verb prints; --json asks
@@ -227,7 +228,7 @@ function taskRecordFor(home, token) {
 export function wfTask(opts, home) {
   const [sub, token] = opts.rest;
   if (sub !== 'show' || !token) {
-    console.error(`usage: ${usageLine(['workflow', 'task', 'show'])}`);
+    console.error(`usage: ${usageLine(['workflow', 'task', 'show'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'task', 'show']) });
     return 2;
   }
   try {

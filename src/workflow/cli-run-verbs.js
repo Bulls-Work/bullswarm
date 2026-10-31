@@ -12,6 +12,7 @@ import { requestCancel } from './dashboard.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { queueSteering } from './steering.js';
 import { helpText, usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, drivableRunRefusal, legacyRunRefusal, loadV2RunState } from './cli-run-lookup.js';
 import { livePoolNames } from './cli-pool-checks.js';
@@ -22,7 +23,7 @@ export async function wfPause(opts) {
   const flagExit = flagErrors(opts, ['workflow', 'pause']);
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
-  if (!token) { console.error(`usage: ${usageLine(['workflow', 'pause'])}`); return 2; }
+  if (!token) { console.error(`usage: ${usageLine(['workflow', 'pause'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'pause']) }); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, 'pause');
   if (viewOnly !== null) return viewOnly;
   let run;
@@ -56,7 +57,7 @@ export async function wfCancel(opts) {
   const flagExit = flagErrors(opts, ['workflow', 'cancel']);
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
-  if (!token) { console.error(`usage: ${usageLine(['workflow', 'cancel'])}`); return 2; }
+  if (!token) { console.error(`usage: ${usageLine(['workflow', 'cancel'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'cancel']) }); return 2; }
   const legacy = legacyRunRefusal(token, opts);
   if (legacy !== null) return legacy;
   let resolvedRun;
@@ -181,7 +182,7 @@ export async function wfResume(opts) {
   const flagExit = flagErrors(opts, ['workflow', 'resume']);
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
-  if (!token) { console.error(`usage: ${usageLine(['workflow', 'resume'])}`); return 2; }
+  if (!token) { console.error(`usage: ${usageLine(['workflow', 'resume'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'resume']) }); return 2; }
   if (opts.watch && (opts.foreground || opts.json)) { console.error('✗ --watch cannot combine with --foreground or --json'); return 2; }
   if (opts.program || opts.orchestrator !== undefined || opts['strict-orchestrator'] !== undefined || opts.scout || opts['suggested-plan'] !== undefined || opts.isolation !== undefined) {
     console.error(`✗ a resumed run keeps its durable planner mode and routing; to add steps use: bullswarm workflow add ${token} --steps <file.json>`);
@@ -242,7 +243,7 @@ export function wfSteer(opts) {
   const token = opts.rest[0];
   const message = opts.message ?? opts.rest.slice(1).join(' ');
   if (!token || !message) {
-    console.error(`usage: ${usageLine(['workflow', 'steer'])}`);
+    console.error(`usage: ${usageLine(['workflow', 'steer'])}`); reportUsageError({ message: 'missing or invalid arguments', usage: usageLine(['workflow', 'steer']) });
     return 2;
   }
   const viewOnly = drivableRunRefusal(token, opts, 'steer');
