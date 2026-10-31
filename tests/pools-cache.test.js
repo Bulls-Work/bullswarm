@@ -3,7 +3,7 @@
 // 260-345 MB each from the mod's status line).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, existsSync, openSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -311,6 +311,50 @@ test('a successor lock grabbed by the rename is put back unless a newer lock exi
   } finally {
     poolsCache.__testHooks.beforeBreak = null;
     poolsCache.__testHooks.afterRename = null;
+  }
+});
+
+test('a rename error on a dead lock answers stale and does not throw', { skip: process.getuid?.() === 0 }, async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  chmodSync(dir, 0o555);
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+  } finally {
+    chmodSync(dir, 0o755);
+  }
+});
+
+test('a successor lock still empty (between open and write) is not taken for the judged empty lock', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, '');
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  let held;
+  poolsCache.__testHooks.beforeBreak = () => {
+    // Keep the old inode alive so the successor cannot reuse its number.
+    held = openSync(lock, 'r');
+    unlinkSync(lock);
+    writeFileSync(lock, '');
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.equal(existsSync(lock), true, 'the successor lock stays');
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+    if (held != null) closeSync(held);
   }
 });
 
