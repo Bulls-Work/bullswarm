@@ -97,9 +97,17 @@ test('the dry-loop-too-short advice names an areasPerRound that covers every are
   assert.ok(advised > 0, 'the sweep produced advice to check');
 });
 
-test('2 functional + 3 non-functional areas, 2 per round, 3 rounds, dry 1: no areasPerRound is suggested', () => {
+test('2 functional + 3 non-functional areas, 2 per round, 3 rounds, dry 1: advice skips 3 (needs 3 rounds) and names 4', () => {
   const areas = [...FUNCTIONAL.slice(0, 2), ...NON_FUNCTIONAL];
+  assert.equal(coverRounds(areas, 3), 3);
+  assert.equal(coverRounds(areas, 4), 2);
   const message = dryAdvice(areas, 2, 3, 1);
+  assert.match(message, /raise maxRounds to 4 or areasPerRound to 4$/);
+});
+
+test('no areasPerRound is suggested when none covers the areas in the rounds left', () => {
+  const areas = [...FUNCTIONAL.slice(0, 5), ...NON_FUNCTIONAL];
+  const message = dryAdvice(areas, 1, 2, 1);
   assert.ok(message, 'the loop is too short');
   assert.doesNotMatch(message, /areasPerRound to/);
 });
