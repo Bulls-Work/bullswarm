@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A `state.json` whose `decisionLog` is present but not an array (an object, a string, a number) no longer makes every dispatch throw after the worker ran. The first locked write saves the bad value as `state.decisionLog-<timestamp>.json` next to `state.json` (never overwriting), prints one stderr warning naming it, and starts a new `[]` log. Read-only commands treat it as empty and write nothing.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
