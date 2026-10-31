@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A placeholder after `outside:` is not a blocker. A report line `- outside: none` (or `n/a`, `na`, `nothing`, `no`, `-`, `nil`, `null`, `none found`, `no blockers`, `no blocker`; any case, trailing punctuation or markdown emphasis) was read as a blocker, so a failed check skipped its one automatic retry and the failure said a blocker sat outside the worker's reach. `outsideBlockers` now drops only those whole-value placeholders; a named blocker, including one that starts with a placeholder word such as `N/A: the repo is read-only`, still skips the retry.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
