@@ -37,6 +37,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { usedPctOf } from '../meters/framework.js';
 
 /**
  * Provider phrases that mean "you have no quota left right now", each marked
@@ -538,9 +539,9 @@ export function meterReadingOf(snapshot, { now = Date.now() } = {}) {
   for (const [key, label] of METER_WINDOWS) {
     const entry = snapshot[key];
     if (!entry || typeof entry !== 'object' || entry.source === 'quota-refusal') continue;
-    const usedPct = Number(entry.utilization);
+    const usedPct = usedPctOf(entry.utilization);
     const resetMs = toMs(entry.resets_at ?? null);
-    if (entry.utilization == null || !Number.isFinite(usedPct)) continue;
+    if (usedPct == null) continue;
     if (resetMs == null || resetMs <= nowMs) continue;
     windows.push({ window: label, usedPct: Math.round(usedPct * 10) / 10, resetsAt: isoOf(resetMs) });
   }

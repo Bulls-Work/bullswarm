@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A meter window's utilization now reads the same way in every path (`usedPctOf` in `src/meters/framework.js`): a number or a decimal-number string is a reading; `''`, whitespace, booleans, arrays, objects, `NaN`, `Infinity` and anything below 0 are no reading for that window, never 0% used (a weekly `-20` used to rank the pool as almost unused and win routing; `''` and `[]` read as 0%, `true` as 1%). Above 100 is kept and paced as 100. `meterReadingOf`, `windowPace`, `paceSnapshot` and `windowSpent` agree, so a numeric string `'80'` is no longer dropped by pacing.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
