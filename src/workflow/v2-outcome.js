@@ -1544,7 +1544,7 @@ function summaryLoops(envelope, state) {
   return isProgramV3(state?.program) ? loopOutcomes(state) : [];
 }
 
-const LOOP_OUTCOMES = new Set(['passed', 'continued-unmet', 'out-of-rounds', 'blocked', 'cancelled', 'pending']);
+const LOOP_OUTCOMES = new Set(['passed', 'continued-unmet', 'out-of-rounds', 'blocked', 'pending']);
 
 function validateResultLoops(loops) {
   if (!Array.isArray(loops)) resultFail('loops must be an array');

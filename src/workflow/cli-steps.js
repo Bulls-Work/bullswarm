@@ -27,6 +27,7 @@ import {
   CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
+import { showsCancelled } from './control-nodes.js';
 import { appendedProgramV3, blocksIssues, fragmentShapeIssues } from './revision-v3.js';
 import { isProgramV3Run, readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isLegacyRunDir, resolveRunId, v2RunnerLiveness } from './short-id.js';
@@ -567,7 +568,7 @@ export async function waitV3Nodes({
 }
 
 /** The printed lines of one `workflow wait` fact. */
-export function waitFactLines(fact) {
+export function waitFactLines(fact, { runStatus } = {}) {
   const g = glyphs();
   if (fact.type === 'loop' && fact.status === 'passed' && fact.reason === 'continued') {
     return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds)}`];
@@ -575,6 +576,10 @@ export function waitFactLines(fact) {
   if (fact.type === 'loop' && (fact.findings?.dryIn !== undefined || fact.findings?.yieldIn !== undefined)) {
     const yieldStop = fact.findings.yieldIn !== undefined;
     return [`${g.ok} ${dryLoopText(fact.id, fact.findings.dryIn ?? fact.findings.yieldIn, fact.maxRounds, fact.findings.known.length, { yieldStop })}`];
+  }
+  if (fact.type !== 'step' && showsCancelled(runStatus, fact.status)) {
+    const round = fact.type === 'loop' ? ` · round ${fact.round} of ${fact.maxRounds}` : '';
+    return [`${g.stopped} ${fact.type} ${fact.id} cancelled${round}${fact.note ? ` · ${fact.note}` : ''}`];
   }
   if (fact.type !== 'step') {
     const mark = fact.status === 'passed' ? g.ok : fact.status === 'waiting' ? g.waiting : fact.status === 'blocked' ? g.blocked : g.pending;
@@ -629,7 +634,7 @@ export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
   if (opts.json) { console.log(JSON.stringify({ action: 'workflow-wait', ...payload }, null, 2)); return code; }
   if (result.status === 'error') { console.error(`✗ ${result.why}`); return code; }
   const id = result.shortId ?? result.runId ?? token;
-  for (const fact of [...(result.loops ?? []), ...(result.nodes ?? [])]) for (const line of waitFactLines(fact)) console.log(line);
+  for (const fact of [...(result.loops ?? []), ...(result.nodes ?? [])]) for (const line of waitFactLines(fact, { runStatus: result.run })) console.log(line);
   if (result.status === 'timeout') console.log(`${glyphs().waiting} timed out after ${timeoutSec}s; the run is ${result.run ?? 'unreadable'}. Wait again: bullswarm workflow wait ${id} ${ids.join(' ')}`);
   if (result.status === 'stopped') {
     console.log(`${glyphs().stopped} ${result.why}; not every id finished. See bullswarm workflow runs show ${id}`);

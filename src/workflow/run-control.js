@@ -20,7 +20,7 @@ import { v2RetryPlan } from './v2-outcome.js';
 import { clearStepRestart, readStepRestarts } from './v2-dispatch.js';
 import { roleOf } from './step-vocabulary.js';
 import { readRunFeatures, runFeatureFlags } from './run-features.js';
-import { clearWaitingFor, reopenCancelledControlNodes } from './gates-loops.js';
+import { clearWaitingFor } from './gates-loops.js';
 import { deriveV2LiveStages } from './v2-presentation.js';
 import { peekSteering } from './steering.js';
 import { isProgramWorkflow } from './execution-policy.js';
@@ -142,7 +142,6 @@ function commitRevisionUnderLease(runDir, request, { now }) {
       });
       requeued.push(action.id);
     }
-    reopenCancelledControlNodes(state, { at });
     if (requeued.length) state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
     const kept = keptCancelled.length ? { keptCancelled } : {};
     reopened = { previousStatus, archivedResult: hadResult ? archived : null, requeued, ...kept };
@@ -206,7 +205,6 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
       });
       rmSync(join(runDir, `completion-${action.id}.json`), { force: true });
     }
-    reopenCancelledControlNodes(state, { at });
     state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
     const archivedResult = hadResult ? archived : null;
     appendEvent(runDir, state, 'workflow.reopened', { previousStatus, source: 'resume', archivedResult, requeued });

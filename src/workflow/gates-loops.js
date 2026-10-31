@@ -13,9 +13,6 @@
 //   passed   counts as success for the scheduler: its dependents run
 //   blocked  a dependency or a body step failed or was blocked; its dependents
 //            are blocked (the failure's own block is the caller's wake-up)
-//   cancelled the run was cancelled while the node was pending or waiting
-//            (round and maxRounds kept); reopening the run puts it back to
-//            pending at the same round
 //
 // A gate waits once its dependencies succeeded, or passes by itself when its
 // `when` condition does not hold. A loop reruns its body steps under their
@@ -69,14 +66,12 @@ export { controlOf, controlRecords };
  * How a loop ended, from its record: `passed` (its condition held),
  * `continued-unmet` (the caller continued it after its rounds ran out, so its
  * condition never held), `out-of-rounds` (waiting on the caller), `blocked`,
- * `cancelled` (the run was cancelled before it finished), or `pending` (not
- * finished).
+ * or `pending` (not finished).
  */
 export function loopOutcome(record) {
   if (record?.status === 'passed') return record.reason === 'continued' ? 'continued-unmet' : 'passed';
   if (record?.status === 'waiting') return 'out-of-rounds';
   if (record?.status === 'blocked') return 'blocked';
-  if (record?.status === 'cancelled') return 'cancelled';
   return 'pending';
 }
 
@@ -707,29 +702,6 @@ export function unblockControlNodes(state, { at }) {
     }
     if (!moved) break;
   }
-}
-
-/**
- * A cancelled run: every gate or loop that was pending or waiting is recorded
- * cancelled, round and maxRounds kept, so no view shows it as still going.
- * Passed and blocked nodes keep what they say.
- */
-export function cancelControlNodes(state, { at }) {
-  if (!controlOf(state)) return;
-  ensureRecords(state);
-  for (const record of state.controlNodes) {
-    if (record.status === 'pending' || record.status === 'waiting') settle(record, 'cancelled', at);
-  }
-}
-
-/**
- * Reopening a cancelled run (workflow add, resume): a cancelled gate or loop
- * goes back to pending at the same round, so the rounds already used and the
- * steps that already passed count exactly as before the cancel.
- */
-export function reopenCancelledControlNodes(state, { at }) {
-  if (!(state.controlNodes ?? []).some((record) => record.status === 'cancelled')) return;
-  for (const record of state.controlNodes) if (record.status === 'cancelled') settle(record, 'pending', at);
 }
 
 /**

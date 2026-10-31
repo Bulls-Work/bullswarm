@@ -6,6 +6,7 @@
 
 import { glyphs } from '../lib/glyphs.js';
 import { CONTINUED_MARK, CONTINUE_MAX_ROUNDS, controlRecords, describeCondition, parkedWaitingFor, readCondition } from './gates-loops.js';
+import { showsCancelled } from './control-nodes.js';
 import { groupOf, isDryLoop, loopFindingsSummary } from './dry-loops.js';
 import { declaredControl, isV3State } from './v3-phases.js';
 
@@ -29,6 +30,9 @@ function gateFacts(state, gate, record, token) {
   const g = glyphs();
   const when = gate.when ? describeCondition(gate.when) : null;
   const note = gate.note ? ` · ${gate.note}` : '';
+  if (showsCancelled(state.lifecycle?.status, record?.status ?? 'pending')) {
+    return { glyph: g.stopped, role: 'cancelled', text: `gate ${gate.id} · cancelled with the run` };
+  }
   switch (record?.status) {
     case 'waiting':
       return { glyph: g.waiting, role: 'waiting', text: `gate ${gate.id} · waiting for you${note}`, command: continueCommand(token, { id: gate.id, type: 'gate' }) };
@@ -38,8 +42,6 @@ function gateFacts(state, gate, record, token) {
         : { glyph: g.ok, role: 'passed', text: `gate ${gate.id} · passed · continued by the caller` };
     case 'blocked':
       return { glyph: g.blocked, role: 'blocked', text: `gate ${gate.id} · blocked · ${record.reason ?? 'a dependency did not succeed'}` };
-    case 'cancelled':
-      return { glyph: g.stopped, role: 'cancelled', text: `gate ${gate.id} · cancelled with the run` };
     default:
       return {
         glyph: g.pending, role: 'pending',
@@ -57,6 +59,9 @@ function loopFacts(state, loop, record, token) {
   const holds = readCondition(state, loop.until);
   // A dry loop's findings so far (dry-loops.js), or null.
   const findings = group ? loopFindingsSummary(loop, record, group) : null;
+  if (showsCancelled(state.lifecycle?.status, record?.status ?? 'pending')) {
+    return { glyph: g.stopped, role: 'cancelled', text: `loop ${loop.id} · cancelled with the run in round ${round} of ${of} · until ${until}` };
+  }
   switch (record?.status) {
     case 'passed':
       if (record.reason === 'yield' && findings) {
@@ -78,8 +83,6 @@ function loopFacts(state, loop, record, token) {
       };
     case 'blocked':
       return { glyph: g.blocked, role: 'blocked', text: `loop ${loop.id} · blocked in round ${round} of ${of} · ${record.reason ?? 'a step did not succeed'}` };
-    case 'cancelled':
-      return { glyph: g.stopped, role: 'cancelled', text: `loop ${loop.id} · cancelled in round ${round} of ${of} · until ${until}` };
     default: {
       if (findings && round > 1) {
         const before = findings.lastNew.round === round - 1 ? findings.lastNew : null;
