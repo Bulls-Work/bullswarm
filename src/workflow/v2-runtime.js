@@ -239,8 +239,6 @@ async function runV2Kernel({
       pid: process.pid,
       startedAt: runnerStartedAt,
       lastHeartbeatAt: now(),
-      // This runner saves stale warnings as events; a watch then prints those.
-      recordsStale: true,
     };
     serializeV2DurableState(state);
     writeJsonAtomic(statePath(runDir), state);
@@ -335,6 +333,10 @@ async function runV2Kernel({
   state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
   persist();
   emit(resuming ? 'workflow.resumed' : 'workflow.started', { runId: id, shortId: state.shortId, intentId: state.intentId, goal: state.intent.goal });
+  // The marker a watch reads to print this run's saved stale warnings instead
+  // of scoring its own. An event, not a state key: a build that predates it
+  // skips an unknown event type but refuses an unknown state key.
+  emit('stale.recording', {});
   // An act step whose kernel died during its checks (F14) finished as failed
   // in reconcileResume, before the event log was open: say so now.
   for (const { actionId, why } of actStepsToCaller) {
@@ -1290,6 +1292,8 @@ async function runV2Kernel({
   } finally {
     await Promise.allSettled(activeTasks.values());
     stopInterval(heartbeat);
+    // Every episode still open is closed in the record before the timer stops.
+    try { staleRecorder.close(Date.now()); } catch { /* the run is over */ }
     clearInterval(staleTick);
     process.removeListener('SIGTERM', onSignal);
     process.removeListener('SIGINT', onSignal);
