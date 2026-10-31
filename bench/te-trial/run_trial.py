@@ -212,6 +212,9 @@ def stray_processes(out_dir, te_home):
         pid, _, cmd = ln.partition(" ")
         if not pid.isdigit() or int(pid) == me:
             continue
+        # The trial runners themselves name te_home on their command line: not strays.
+        if "run_trial.py" in cmd or "run_bench.py" in cmd:
+            continue
         if any(n and n in cmd for n in needles) and " ps -axo" not in cmd:
             found.append((int(pid), cmd.strip()))
     return found
