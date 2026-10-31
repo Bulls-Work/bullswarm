@@ -42,7 +42,7 @@ The rest of this page is those six steps in detail.
 
 ## Eligibility
 
-A pool has to be enabled, declare the lane, hold any capabilities the work requires, not be exhausted (a metered window — 5-hour, weekly or monthly — at 100% until that window resets), and have an allowed model for the effort tier. A disabled pool simply is not a candidate. Nothing in the later steps can rescue a pool that fails here. Nothing else from a pool's past counts: Bullswarm never pauses or benches a pool after a failure, so a pool that failed one step is a candidate for the next whenever its meters allow it. When a single `bullswarm run` still picks a pool, it names the pools it left out for a spent window at the end of its reason — `(burst-gated: pool-a, pool-b at its weekly limit)`, where a bare name is at its 5-hour limit.
+A pool has to be enabled, declare the lane, hold any capabilities the work requires, not be exhausted (the 5-hour window at 99% or more, or a weekly or monthly window at 100%, until that window resets), and have an allowed model for the effort tier. A disabled pool simply is not a candidate. Nothing in the later steps can rescue a pool that fails here. Nothing else from a pool's past counts: Bullswarm never pauses or benches a pool after a failure, so a pool that failed one step is a candidate for the next whenever its meters allow it. When a single `bullswarm run` still picks a pool, it names the pools it left out for a spent window at the end of its reason — `(burst-gated: pool-a, pool-b at its weekly limit)`, where a bare name is at its 5-hour limit.
 
 ## Pace and surplus
 
