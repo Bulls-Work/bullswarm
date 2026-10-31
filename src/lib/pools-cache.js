@@ -99,14 +99,22 @@ export const __testHooks = { beforeBreak: null, afterRename: null, statOf: statS
  * A judged lock is broken by renaming it aside (atomic on one filesystem), not
  * by deleting it: between our last look and a delete another caller may have
  * broken the same lock and created its own, and a delete would remove that
- * live lock. The judged lock is identified by file identity (dev and ino taken
- * at judgment), not by token: a successor caught between its create and its
- * write has no token yet. After the rename, the same identity: delete it and
- * retry the create. A different one is a successor's lock: link it back (this
- * fails when a newer lock already exists, which then stays) and return null.
- * A rename error other than ENOENT means we do not hold the lock: null, never
- * a throw. A crash in between leaves a `.broken` file, which a later break
- * sweeps once it is older than the ceiling.
+ * live lock. The judged lock is identified by {dev, ino, mtimeMs, size, token}
+ * taken at judgment (token is null when the lock has none yet). The inode alone
+ * is not enough: a filesystem that reuses freed inode numbers (ext4) can give a
+ * successor's new lock the number of the lock it replaced, so mtime and size
+ * must match too, and the token whenever the judged lock had one. After the
+ * rename, the same identity: delete it and retry the create. A different one is
+ * a successor's lock: link it back (this fails when a newer lock already
+ * exists, which then stays) and return null. A rename error other than ENOENT
+ * means we do not hold the lock: null, never a throw. A crash in between leaves
+ * a `.broken` file, which a later break sweeps once its ctime (set by the
+ * rename, unlike mtime) is older than the ceiling.
+ *
+ * Known limit: during a put-back the lock path is briefly missing, so a third
+ * caller can build alongside the successor. Only the lock holder's write lands
+ * (writeCache is token-guarded), so the cache is never written twice; at worst
+ * one extra build.
  */
 function takeLock(lock, ceilingMs) {
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -121,12 +129,13 @@ function takeLock(lock, ceilingMs) {
       try { judgedStat = statSync(lock); } catch { continue; }
       const age = Date.now() - judgedStat.mtimeMs;
       const owner = lockOwner(lock);
+      const judged = { dev: judgedStat.dev, ino: judgedStat.ino, mtimeMs: judgedStat.mtimeMs, size: judgedStat.size, token: owner?.token ?? null };
       const alive = processAlive(owner?.pid);
       if (alive && age < ceilingMs) return null;
       const deadPid = owner != null && Number.isInteger(owner.pid) && owner.pid > 0;
       if (!alive && !deadPid && age < LOCK_STALE_MS) return null;
       __testHooks.beforeBreak?.(lock);
-      if (!breakLock(lock, token, judgedStat)) return null;
+      if (!breakLock(lock, token, judged)) return null;
     }
   }
   return null;
@@ -138,7 +147,7 @@ function takeLock(lock, ceilingMs) {
  * do not hold the lock: a successor's lock grabbed by the rename is put back,
  * and a failed rename leaves the lock as it was.
  */
-function breakLock(lock, token, judgedStat) {
+function breakLock(lock, token, judged) {
   const aside = `${lock}.${token}.broken`;
   try {
     renameSync(lock, aside);
@@ -149,7 +158,9 @@ function breakLock(lock, token, judgedStat) {
     __testHooks.afterRename?.(lock);
     let grabbed;
     try { grabbed = __testHooks.statOf(aside); } catch { return false; }
-    if (grabbed.dev === judgedStat.dev && grabbed.ino === judgedStat.ino) {
+    const sameFile = grabbed.dev === judged.dev && grabbed.ino === judged.ino
+      && grabbed.mtimeMs === judged.mtimeMs && grabbed.size === judged.size;
+    if (sameFile && (judged.token == null || lockOwner(aside)?.token === judged.token)) {
       try { unlinkSync(aside); } catch { /* best effort */ }
       return true;
     }
@@ -169,7 +180,7 @@ function sweepBroken(lock) {
       if (!entry.endsWith('.broken')) continue;
       try {
         const path = join(dir, entry);
-        if (Date.now() - __testHooks.statOf(path).mtimeMs > LOCK_CEILING_MS) unlinkSync(path);
+        if (Date.now() - __testHooks.statOf(path).ctimeMs > LOCK_CEILING_MS) unlinkSync(path);
       } catch { /* gone or busy */ }
     }
   } catch { /* unreadable dir */ }

@@ -272,14 +272,18 @@ test('a break sweeps old .broken files and leaves fresh ones', async () => {
   const freshBroken = `${lock}.fresh-token.broken`;
   writeFileSync(oldBroken, `${process.pid} 1 old-token\n`);
   writeFileSync(freshBroken, `${process.pid} 1 fresh-token\n`);
-  const past = new Date(Date.now() - LOCK_CEILING_MS - 60_000);
-  utimesSync(oldBroken, past, past);
+  // A file's ctime cannot be set; report an old one for the crashed break's leftover.
+  poolsCache.__testHooks.statOf = (path) => {
+    const real = statSync(path);
+    return path === oldBroken ? { ...real, ctimeMs: Date.now() - LOCK_CEILING_MS - 60_000 } : real;
+  };
   // A young lock whose holder is dead is broken at once.
   writeFileSync(lock, '999999999 1 dead-token\n');
   const c = counter([{ name: 'ours' }], 0);
   const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build });
   assert.equal(served.source, 'built');
   assert.equal(c.builds, 1);
+  poolsCache.__testHooks.statOf = statSync;
   assert.equal(existsSync(oldBroken), false, 'the old .broken file is swept');
   assert.equal(existsSync(freshBroken), true, 'the fresh .broken file stays');
 });
