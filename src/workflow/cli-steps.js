@@ -27,6 +27,7 @@ import {
   CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
+import { waitsOnFinishedLine, waitsOnFinishedSteps } from './add-dead-waits.js';
 import { appendedProgramV3, blocksIssues, fragmentShapeIssues } from './revision-v3.js';
 import { isProgramV3Run, readRunFeatures, runFeatureFlags } from './run-features.js';
 import { isLegacyRunDir, resolveRunId, v2RunnerLiveness } from './short-id.js';
@@ -292,8 +293,13 @@ export async function addV3Steps({
     ...(waits.length ? { waits } : {}),
   };
   if (outcome.status === 'rejected') return { code: 2, status: 'rejected', issues: outcome.record?.issues ?? [], ...result };
-  if (outcome.status === 'queued') return { code: 0, status: 'queued', programRevision: null, appliedBy: null, relaunch: null, ...result };
+  if (outcome.status === 'queued') {
+    const queuedWaits = waitsOnFinishedSteps(state, precheck.desired.filter((action) => precheck.changes.added.includes(action.id)));
+    return { code: 0, status: 'queued', programRevision: null, appliedBy: null, relaunch: null, ...result, ...(queuedWaits.length ? { waitsOnFinished: queuedWaits } : {}) };
+  }
   const paused = outcome.state?.lifecycle?.status === 'paused';
+  const waitsOnFinished = waitsOnFinishedSteps(outcome.state ?? state, precheck.desired.filter((action) => precheck.changes.added.includes(action.id)));
+  if (waitsOnFinished.length) result.waitsOnFinished = waitsOnFinished;
   let relaunched = null;
   if (outcome.appliedBy === 'offline' && !paused && typeof relaunch === 'function') {
     try { relaunched = await relaunch(state.runId); }
@@ -370,6 +376,7 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   try { state = readState(resolveRunId(bullswarmDir, id)?.runDir ?? ''); } catch { state = null; }
   for (const line of addedLines(result, state)) console.log(`  added    ${line}`);
   for (const entry of result.waits ?? []) console.log(`  waits    step ${entry.step} now also waits for ${entry.waitsFor.join(', ')}`);
+  for (const entry of result.waitsOnFinished ?? []) console.log(waitsOnFinishedLine(entry, (dependency) => `bullswarm workflow step rerun ${id} ${dependency}`));
   if (result.paused) console.log(`  resume   bullswarm workflow resume ${id}`);
   console.log(`  wait     ${payload.next.wait}`);
   return code;
