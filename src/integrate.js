@@ -210,19 +210,19 @@ function writeText(filePath, text) {
   }
 }
 
-// What `integrate status` shows for an instruction file, read the way apply
-// reads it: present, missing, or a problem named as such (unreadable,
-// malformed) instead of a plain "missing".
-export function awarenessState(filePath) {
+// `integrate status` reads the file the way apply does. Present means a
+// complete block; a file that cannot be read or has a stray marker is a
+// problem named as such, not "missing".
+export function awarenessBlockPresent(filePath) {
   const read = readExisting(filePath);
-  if (read.problem) return { present: false, problem: { reason: read.problem.reason, detail: read.problem.detail } };
-  const parsed = parseBlocks(read.text);
-  if (parsed.stray) return { present: false, problem: { reason: 'malformed', detail: parsed.stray } };
-  return { present: parsed.blocks.length > 0, problem: null };
+  return !read.problem && !parseBlocks(read.text).stray && parseBlocks(read.text).blocks.length > 0;
 }
 
-export function awarenessBlockPresent(filePath) {
-  return awarenessState(filePath).present;
+function awarenessProblem(filePath) {
+  const read = readExisting(filePath);
+  if (read.problem) return { reason: read.problem.reason, detail: read.problem.detail };
+  const { stray } = parseBlocks(read.text);
+  return stray ? { reason: 'malformed', detail: stray } : null;
 }
 
 export function parseIntegrationAgents(value) {
@@ -245,14 +245,15 @@ export function integrationStatus({
   const selected = parseIntegrationAgents(agents);
   const entries = selected.map((agent) => {
     const paths = pathsFor(homeDir, agent);
-    const state = awarenessState(paths.instructionsPath);
+    const awareness = awarenessBlockPresent(paths.instructionsPath);
+    const problem = awareness ? null : awarenessProblem(paths.instructionsPath);
     const entry = {
       agent,
       skillPath: paths.skillPath,
       skill: skillLinkStatus(paths.skillPath, skillSource),
       instructionsPath: paths.instructionsPath,
-      awareness: state.present,
-      ...(state.problem ? { awarenessProblem: state.problem } : {}),
+      awareness,
+      ...(problem ? { awarenessProblem: problem } : {}),
     };
     if (agent === 'claude') {
       entry.modPath = join(homeDir, ...MOD_LINK);
