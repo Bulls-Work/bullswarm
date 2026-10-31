@@ -679,7 +679,7 @@ function applyContinue(state, intent, { at, emit, rerun }) {
   // continue, never thrown. There is no cap on the total across several
   // continues: each one is a person's explicit choice.
   if (!Number.isInteger(rounds) || rounds < 1 || rounds > CONTINUE_MAX_ROUNDS) {
-    return { applied: false, why: `--rounds must be a whole number from 1 to ${CONTINUE_MAX_ROUNDS}; got ${JSON.stringify(rounds)}` };
+    return { applied: false, why: `--rounds must be a whole number from 1 to ${CONTINUE_MAX_ROUNDS}; got ${typeof rounds === 'string' ? JSON.stringify(rounds) : String(rounds)}` };
   }
   record.maxRounds += rounds;
   emit('loop.continued', { loopId: loop.id, rounds, of: record.maxRounds, source: intent.source ?? 'cli' });
