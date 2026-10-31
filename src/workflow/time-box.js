@@ -295,7 +295,17 @@ export function outsideBlockers(text) {
   return parseNotDone(text).items
     .filter((item) => OUTSIDE.test(item))
     .map((item) => item.replace(OUTSIDE, '').trim())
-    .filter(Boolean);
+    .filter((blocker) => blocker && !notABlocker(blocker));
+}
+
+// What follows `outside:` when the worker names no blocker. notAnItem covers
+// "none", "nothing", "n/a" and "nil" with a reason; these whole-value
+// placeholders are too short to widen it, since "no tests pass" is work.
+const NO_BLOCKER = new Set(['none', 'n/a', 'na', 'nothing', 'no', '-', 'nil', 'null', 'none found', 'no blockers', 'no blocker']);
+
+function notABlocker(blocker) {
+  const bare = blocker.replace(/^[*_`]+|[*_`]+$/g, '').trim().toLowerCase().replace(/[.!?;:,\s]+$/, '');
+  return !bare || NO_BLOCKER.has(bare) || notAnItem(blocker);
 }
 
 // --- display ---------------------------------------------------------------
