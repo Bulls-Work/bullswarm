@@ -134,7 +134,10 @@ function fencedLines(lines) {
     const match = FENCE_RE.exec(line.content);
     if (!open) {
       if (match) open = { index, char: match[1][0], size: match[1].length };
-    } else if (match && match[1][0] === open.char && match[1].length >= open.size) {
+    // A closing fence is only fence characters (CommonMark): ```js inside an
+    // example is content, not the end of it.
+    } else if (match && match[1][0] === open.char && match[1].length >= open.size
+      && line.content.slice(line.content.indexOf(match[1]) + match[1].length).trim() === '') {
       for (let i = open.index; i <= index; i += 1) fenced[i] = true;
       open = null;
     }
