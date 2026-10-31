@@ -46,7 +46,8 @@ test('any metered window at 100% exhausts a pool until its reset', () => {
   const at = (hours) => new Date(NOW + hours * HOUR).toISOString();
   assert.equal(isExhausted({ fiveHourUsedPct: 100 }, NOW), true, 'a reading with no reset counts');
   assert.equal(isExhausted({ fiveHourUsedPct: 100, fiveHourResetsAt: at(-1) }, NOW), false, 'a window already over');
-  assert.equal(isExhausted({ fiveHourUsedPct: 99, fiveHourResetsAt: at(1) }, NOW), false);
+  assert.equal(isExhausted({ fiveHourUsedPct: 98, fiveHourResetsAt: at(1) }, NOW), false);
+  assert.equal(isExhausted({ fiveHourUsedPct: 99, fiveHourResetsAt: at(1) }, NOW), true, 'the 5h wall (FIVE_HOUR_WALL_PCT)');
   assert.equal(isExhausted({ burstGate: true, fiveHourResetsAt: at(1) }, NOW), true);
   assert.equal(isExhausted({ usedPct: 100, pacingWindow: 'weekly', paceResetsAt: at(72) }, NOW), true);
   assert.equal(isExhausted({ usedPct: 100, pacingWindow: 'monthly', paceResetsAt: at(-2) }, NOW), false);

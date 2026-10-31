@@ -316,7 +316,7 @@ Show every configured pool: cost rank, lanes, live meter usage/elapsed percentag
 The 5-hour column reads `5h=<reading>%` alone when nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is expected to push the window further; routing decides on the right-hand number. A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run. A pool whose weekly window resets within 24 hours, or whose monthly window resets within 3 days, ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON urgency=<n>`.
 
 The pool's status comes after the columns: `disabled`, or `ready` followed by
-`BURST-GATED` when the 5-hour window is at 100% and `NEAR-5H-LIMIT` when it is
+`BURST-GATED` when the 5-hour window is at 99% or more and `NEAR-5H-LIMIT` when it is
 near its line. A weekly or monthly window at 100% keeps the pool out of routing
 until that window resets; the meter column shows the pacing window's reading
 (`weekly used 100%`).
