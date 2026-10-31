@@ -135,3 +135,20 @@ test('routing does not pick a pool with a surviving named refusal while another 
     assert.equal(pick.pick.pool, 'other');
   } finally { f.cleanup(); }
 });
+
+// A provider names its reset to the minute ("resets 2:30am") while the meter's
+// 5h reset carries seconds: a few seconds' drift is the same window.
+test('a 5h named refusal survives a live 5h reset up to 60 s later than the named one', async () => {
+  const f = fixture();
+  try {
+    const marker = await refuse(f);
+    const named = Date.parse(marker.resets_at);
+    const t = NOW + 30 * 60_000;
+    const drift = await live(f, t, reading(t, { fiveHour: 52, fiveResetMs: named + 30_000 }));
+    assert.equal(drift.source, 'quota-refusal');
+    assert.equal(f.cache.get(POOL).quota_refusal?.resets_at, marker.resets_at);
+    const next = await live(f, t + 1000, reading(t, { fiveHour: 5, fiveResetMs: named + 61_000 }));
+    assert.equal(next.source, 'live');
+    assert.equal(f.cache.get(POOL).quota_refusal, undefined);
+  } finally { f.cleanup(); }
+});
