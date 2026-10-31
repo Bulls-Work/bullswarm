@@ -23,8 +23,9 @@ export const DEFAULT_REFRESH_INTERVAL_MS = 15_000;
 
 // A caller's pools bound the run. When `initialPools` is a non-empty list, a
 // refreshed list keeps only the pools whose name is in it, with their fresh
-// readings and in the live list's order. A pool that vanishes from the live
-// list stays out; a pool that appears mid-run is NOT added (the trade-off for
+// readings and in the live list's order. A pool missing from a live list is
+// left out of that refresh and returns when a later live list has it again; a
+// pool that was not in the run's list and appears mid-run is NOT added (the trade-off for
 // the bound). Why: buildPoolsLive discovers every login on the machine, and a
 // temp BULLSWARM_HOME does not isolate that discovery, so an unbounded
 // refresh let a test run reach a real pool. An empty `initialPools` keeps the
