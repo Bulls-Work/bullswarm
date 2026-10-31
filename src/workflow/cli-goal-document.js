@@ -24,6 +24,10 @@ function goalSettings(opts) {
       } else if (!Number.isInteger(value) || value < 1) throw new Error(`--${flag} must be a positive integer`);
       return [setting, value];
     }));
+  if (opts['out-of-rounds'] !== undefined) {
+    if (!['wait', 'end'].includes(opts['out-of-rounds'])) throw new Error('--out-of-rounds must be wait or end');
+    settings.outOfRounds = opts['out-of-rounds'];
+  }
   return settings;
 }
 
