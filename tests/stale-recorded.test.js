@@ -7,9 +7,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
@@ -17,6 +18,7 @@ import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { DEFAULT_STALE_THRESHOLDS } from '../src/lib/stale.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { STAGE3_RUN_FEATURES, withProgramFormat } from '../src/workflow/run-features.js';
+import { createStaleRecorder } from '../src/workflow/stale-recorder.js';
 import { initialWatchMemory, notableWatchEvents, renderWatchEvent } from '../src/workflow/watch-cli.js';
 
 process.env.BULLSWARM_UNICODE = '1';
@@ -84,6 +86,26 @@ const launch = (f, runId, dispatch) => runV2AutonomousWorkflow({
   },
 });
 
+// origin/main's (0.38.18) state validator, with its own imports resolved to this
+// checkout's files: a build that old must still be able to read what this one
+// writes. Null when the ref is not in this clone.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+async function mainValidator(t) {
+  let source;
+  try { source = execFileSync('git', ['-C', ROOT, 'show', 'origin/main:src/workflow/v2-state.js'], { encoding: 'utf8', maxBuffer: 1 << 26 }); } catch { return null; }
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-main-validator-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'src', 'workflow'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), '{"type":"module"}\n');
+  symlinkSync(join(ROOT, 'src', 'lib'), join(dir, 'src', 'lib'));
+  for (const name of readdirSync(join(ROOT, 'src', 'workflow'))) {
+    if (name !== 'v2-state.js') symlinkSync(join(ROOT, 'src', 'workflow', name), join(dir, 'src', 'workflow', name));
+  }
+  writeFileSync(join(dir, 'src', 'workflow', 'v2-state.js'), source);
+  return (await import(pathToFileURL(join(dir, 'src', 'workflow', 'v2-state.js')).href)).validateV2DurableState;
+}
+const savedState = (run) => JSON.parse(readFileSync(join(run.runDir, 'state.json'), 'utf8'));
+
 const typed = (runDir, ...types) => readEvents(runDir).filter((event) => types.includes(event.type));
 
 test('a quiet attempt leaves attempt.stale level 1, level 2, then attempt.stale_cleared when output resumes', async (t) => {
@@ -112,7 +134,9 @@ test('a quiet attempt leaves attempt.stale level 1, level 2, then attempt.stale_
   const cleared = marks.at(-1).payload;
   assert.deepEqual({ actionId: cleared.actionId, attemptId: cleared.attemptId, level: cleared.level }, { actionId: 'report', attemptId: 'report-1', level: 2 });
   assert.ok(cleared.staleSec >= 1);
-  assert.equal(run.state.runner.recordsStale, true);
+  // The marker is an event (an old build skips unknown event types), never a state key.
+  assert.equal(typed(run.runDir, 'stale.recording').length, 1);
+  assert.deepEqual(Object.keys(savedState(run).runner).sort(), ['lastHeartbeatAt', 'pid', 'startedAt']);
 });
 
 test('a stale attempt that ends records stale_cleared before attempt.finished', async (t) => {
@@ -134,9 +158,43 @@ test('a killed attempt names the limit that stopped it and the seconds', async (
     assert.equal(finished.stalled, true);
     assert.equal(finished.stalledBy, stalledBy);
     assert.equal(Number.isFinite(finished[key]), true, `${stalledBy}: ${key}`);
-    const attempt = run.state.attempts.find((entry) => entry.failureKind === 'stalled');
-    assert.equal(attempt.stalledBy, stalledBy);
+    // The limit is named in the event only; the attempt record keeps the seconds.
+    const attempt = savedState(run).attempts.find((entry) => entry.failureKind === 'stalled');
+    assert.equal(attempt.stalledBy, undefined);
+    assert.equal(Number.isFinite(attempt[key]), true);
   }
+});
+
+test('state.json written by this runner validates under origin/main (0.38.18)', async (t) => {
+  const validate = await mainValidator(t);
+  if (!validate) return t.skip('origin/main is not in this clone');
+  const f = fixture(t);
+  const done = await launch(f, 'wf-stalec1-abcdef', dispatchWith(async () => { await sleep(1700); return null; }));
+  assert.equal(validate(savedState(done)), true, 'a run that went stale and finished');
+  const killed = await launch(f, 'wf-stalec2-abcdef', dispatchWith(async () => ({
+    ok: false, why: 'no output for 3600s (silence)', failureKind: 'stalled',
+    meta: { stalled: true, stalledBy: 'silence', exitCode: null, wallSec: 3600 },
+  })));
+  assert.equal(validate(savedState(killed)), true, 'a run whose attempt a limit killed');
+  // The proof has teeth: the validator does refuse an unknown key.
+  const tampered = savedState(done);
+  tampered.runner.recordsStale = true;
+  assert.throws(() => validate(tampered));
+});
+
+test('the recorder closes every open episode when the run ends', () => {
+  const events = [];
+  const state = { program: { actions: [] }, attempts: [{ id: 'report-1', actionId: 'report', ordinal: 1, status: 'running' }] };
+  const probe = () => ({ stale: true, score: 2, staleSince: 1000, reasons: ['quiet'], progressWindowSec: 1, progressAt: null });
+  const recorder = createStaleRecorder({ emit: (type, payload) => events.push({ type, payload }), probe, everyMs: 0 });
+  recorder.check(state, 5000);
+  assert.deepEqual(events.map((event) => event.type), ['attempt.stale']);
+  assert.equal(typeof recorder.close, 'function', 'a close for the end of the run');
+  recorder.close(9000);
+  assert.deepEqual(events.map((event) => event.type), ['attempt.stale', 'attempt.stale_cleared']);
+  assert.equal(events[1].payload.attemptId, 'report-1');
+  recorder.close(9500);
+  assert.equal(events.length, 2, 'closed once');
 });
 
 test('a watch prints each recorded warning once and does not synthesize its own; an older run still gets synthesized ones', async (t) => {
@@ -150,15 +208,15 @@ test('a watch prints each recorded warning once and does not synthesize its own;
   const midway = { ...run.state, attempts: [attempt] };
   let probed = 0;
   const alwaysStale = () => { probed += 1; return { stale: true, score: 2, staleSince: Date.now() - 5000, reasons: ['quiet'], progressWindowSec: 1 }; };
-  const replay = notableWatchEvents({ events: recorded, state: midway, stale: alwaysStale, memory: initialWatchMemory(midway), nowMs: Date.now() });
+  const replay = notableWatchEvents({ events: recorded, state: midway, stale: alwaysStale, memory: initialWatchMemory(midway, { recordsStale: true }), nowMs: Date.now() });
   const lines = replay.notable.filter((event) => event.type === 'attempt.stale').map((event) => renderWatchEvent(event));
   assert.equal(lines.length, 1, 'the recorded warning, once, with no synthesized twin');
   const later = notableWatchEvents({ events: [], state: midway, stale: alwaysStale, memory: replay.memory, nowMs: Date.now() + 5000 });
   assert.deepEqual(later.notable.filter((event) => event.type === 'attempt.stale'), [], 'nothing further synthesized');
   assert.equal(probed, 0, 'a run that records its warnings is not scored by the watch');
 
-  // An older run (no runner flag, no recorded events) is still scored by the watch.
-  const older = { ...midway, runner: { ...midway.runner, recordsStale: undefined } };
+  // An older run (no stale.recording marker, no recorded events) is still scored by the watch.
+  const older = midway;
   const synth = notableWatchEvents({ events: [], state: older, stale: alwaysStale, memory: initialWatchMemory(older), nowMs: Date.now() });
   assert.equal(synth.notable.filter((event) => event.type === 'attempt.stale').length, 1);
   assert.ok(probed > 0);
