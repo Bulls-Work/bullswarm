@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `state.json` is written with one compact decision-log row per line (one shared `serializeState`, used by `saveState` and so by `updateState` and the migrations); the top level keeps its 2-space indent. Measured on the real file (43.3 MB, 3,862 rows): compact is 25.4 MB and parses in 138 ms against 327 ms pretty-printed, and every dispatch no longer stringifies 253 ms of indentation under the state lock. The file is plain JSON: old pretty files still load, and older versions read the new one unchanged.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
