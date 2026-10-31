@@ -10,10 +10,11 @@
 // cache hit never loads the rest of Bullswarm.
 
 import {
-  closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync,
+  closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync,
+  writeSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /** An unreadable lock this old belongs to a refresher that died mid-write. A dead pid is cleared at once. */
 const LOCK_STALE_MS = 120_000;
@@ -90,6 +91,15 @@ export const __testHooks = { beforeBreak: null };
  * keeps a lock younger than `ceilingMs`; past it the lock is stuck and taken
  * over. A dead holder loses it at once, even when the file is young. An
  * unreadable lock is broken only once it is two minutes old.
+ *
+ * A judged lock is broken by renaming it aside (atomic on one filesystem), not
+ * by deleting it: between our last look and a delete another caller may have
+ * broken the same lock and created its own, and a delete would remove that
+ * live lock. After the rename we read what we hold. Our judged token: delete
+ * it and retry the create. A successor's lock: link it back (this fails when a
+ * newer lock already exists, which then stays) and return null. A crash in
+ * between leaves a `.broken` file, which a later break sweeps once it is older
+ * than the ceiling.
  */
 function takeLock(lock, ceilingMs) {
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -110,10 +120,48 @@ function takeLock(lock, ceilingMs) {
       // Break only the lock we judged: a successor's fresh lock stays.
       if (lockOwner(lock)?.token !== (owner?.token ?? null)) return null;
       __testHooks.beforeBreak?.(lock);
-      try { unlinkSync(lock); } catch { /* another caller broke it first */ }
+      if (!breakLock(lock, token, owner?.token ?? null)) return null;
     }
   }
   return null;
+}
+
+/**
+ * Breaks the lock we judged, by rename. True when the create may be retried
+ * (we removed our judged lock, or another caller already had); false when we
+ * grabbed a successor's lock, which is put back.
+ */
+function breakLock(lock, token, judged) {
+  const aside = `${lock}.${token}.broken`;
+  try {
+    renameSync(lock, aside);
+  } catch (error) {
+    if (error.code === 'ENOENT') return true;
+    throw error;
+  }
+  const grabbed = lockOwner(aside)?.token ?? null;
+  if (grabbed === judged) {
+    try { unlinkSync(aside); } catch { /* best effort */ }
+    sweepBroken(lock);
+    return true;
+  }
+  try { linkSync(aside, lock); } catch { /* a newer lock exists: it stays */ }
+  try { unlinkSync(aside); } catch { /* best effort */ }
+  return false;
+}
+
+/** Removes `.broken` files a crashed break left behind. Best effort, never throws. */
+function sweepBroken(lock) {
+  try {
+    const dir = dirname(lock);
+    for (const entry of readdirSync(dir)) {
+      if (!entry.endsWith('.broken')) continue;
+      try {
+        const path = join(dir, entry);
+        if (Date.now() - statSync(path).mtimeMs > LOCK_CEILING_MS) unlinkSync(path);
+      } catch { /* gone or busy */ }
+    }
+  } catch { /* unreadable dir */ }
 }
 
 /** Removes the lock only while it is still ours: a successor's lock stays. */
