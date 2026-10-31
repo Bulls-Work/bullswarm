@@ -172,3 +172,26 @@ test('an indirect dependency (new c on new d on failed b) warns for both added s
     { step: 'c', dependency: 'b', status: 'failed' },
   ]);
 });
+
+test('a step added behind a blocked step names the failed step at the root, since rerun refuses a blocked step', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, {
+    schemaVersion: V3,
+    steps: [
+      { id: 'a', prompt: 'Do the acme part.' },
+      { id: 'b', prompt: 'Do the initech part.', retry: 0 },
+      { id: 'c', dependsOn: ['b'], prompt: 'Follow the initech part.' },
+    ],
+  }, fakeDispatch((id) => (id === 'b' ? { fail: 'process' } : {})));
+  assert.equal(statusOf(run.state, 'c'), 'blocked');
+  const printed = await add(f, run, [{ id: 'e', dependsOn: ['c'], prompt: 'Follow c.' }]);
+  assert.equal(printed.code, 0, printed.text);
+  const lines = printed.text.split('\n').filter((line) => line.startsWith('⚠'));
+  assert.deepEqual(lines, [
+    `⚠ e waits on c, which is blocked by b (failed): it stays blocked until you run \`bullswarm workflow step rerun ${run.shortId} b\``,
+  ]);
+  const json = await add(f, run, [{ id: 'g', dependsOn: ['c'], prompt: 'Follow c again.' }], true);
+  assert.deepEqual(JSON.parse(json.text).waitsOnFinished, [
+    { step: 'g', dependency: 'c', status: 'blocked', blockedBy: { step: 'b', status: 'failed' } },
+  ]);
+});
