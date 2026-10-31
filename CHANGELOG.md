@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `workflow reprice --apply` now updates the home `state.json` under the state lock (`updateState`) instead of rewriting a copy read earlier, so a decision row appended by a dispatch while reprice was scanning is no longer lost. Each row is re-found by its full content as scanned (equal rows pair in order), so a row without an id, a duplicate id or a row edited meanwhile can never receive another row's usage; a row that vanished or changed since the scan is skipped and reported as a failure.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
