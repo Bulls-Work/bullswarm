@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 
 const action = { id: 'do-work', lane: 'build', effort: 'low' };
@@ -20,20 +24,43 @@ const pool = (name, model, extra = {}) => ({
   strategyAssignments: { low: { pool: name, model } }, ...extra,
 });
 
+// A real throwaway git repo and a readable reply-only stream per attempt, so a
+// refusal at start can be proved to have done no work (changedFiles empty,
+// stream with no tool call); only a good verdict changes a file.
 async function dispatch(verdicts, pools, opts = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'bs-failover-tiers-'));
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  writeFileSync(join(repo, 'owned.txt'), 'base\n');
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
+  execFileSync('git', ['-C', repo, 'add', 'owned.txt']);
+  execFileSync('git', ['-C', repo, 'commit', '-qm', 'base']);
   const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
   let index = 0;
-  const result = await dispatchV2Action({
-    action, taskText: 'do it', targetDir: '/tmp', paths, pools, bullswarmDir: '/tmp/bs', ...opts,
-    dependencies: {
-      watchOnce: async () => verdicts[index++],
-      loadState: () => structuredClone(core),
-      saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
-      now: (() => { let value = Date.parse('2026-08-31T01:00:00Z'); return () => (value += 1000); })(),
-      uuid: () => 'session-fixed',
-    },
-  });
-  return result;
+  try {
+    return await dispatchV2Action({
+      action, taskText: 'do it', targetDir: repo,
+      paths: (ordinal) => ({ taskFile: join(root, `task-${ordinal}.md`), outFile: join(root, `out-${ordinal}.md`) }),
+      pools, bullswarmDir: join(root, 'bs'), ...opts,
+      dependencies: {
+        watchOnce: async (_connector, _task, _dir, files) => {
+          const verdict = verdicts[index++];
+          const streamFile = files.outFile.replace(/\.md$/, '.stream.jsonl');
+          writeFileSync(streamFile, `${JSON.stringify({ seq: 1, source: 'stdout', providerType: 'result', kind: 'response', status: 'failed', summary: verdict.why })}\n`);
+          if (verdict.ok) writeFileSync(join(repo, 'owned.txt'), `done ${index}\n`);
+          return { ...verdict, meta: { ...verdict.meta, streamFile } };
+        },
+        loadState: () => structuredClone(core),
+        saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
+        now: (() => { let value = Date.parse('2026-08-31T01:00:00Z'); return () => (value += 1000); })(),
+        uuid: () => 'session-fixed',
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 const pickedPools = (result) => result.attempts.map((attempt) => attempt.pool);
 
@@ -52,7 +79,7 @@ test('retry after an opus crash does not run opus on a pool whose plan excludes 
   assert.deepEqual([retry.pool, retry.model], ['a', 'claude-sonnet-5'], 'preparePools drops b before the tiers see it');
 });
 
-test('retry lands on the family pool when the same-model pools are refused by the router', async () => {
+test('retry lands on the family pool when the same-model pools are spent', async () => {
   const spent = { fiveHourUsedPct: 100 };
   const pools = [
     pool('p0', 'claude-opus-5-5'),
@@ -67,7 +94,7 @@ test('retry lands on the family pool when the same-model pools are refused by th
   assert.match(result.attempts[1].routeWhy, /the same model family as the failed attempt/);
 });
 
-test('today: every tier refused by the router falls back to the whole list', async () => {
+test('every tier spent (5-hour window full): the retry falls back to the whole list instead of failing the step', async () => {
   const spent = { fiveHourUsedPct: 100 };
   const pools = [
     pool('p0', 'claude-opus-5-5'),
@@ -92,4 +119,32 @@ test('a refusal at start (model-not-in-plan) is not re-picked onto a pool that e
   const next = result.attempts[1];
   assert.ok(!(next.model === 'claude-opus-5-5'), `re-pick ran ${next.model} on ${next.pool}`);
   assert.notEqual(next.pool, 'p0');
+});
+
+test('a refusal at start does not use the step\'s one retry: a later crash still gets one more attempt', async () => {
+  const pools = [
+    pool('p0', 'claude-opus-5-5'),
+    pool('y', 'claude-sonnet-5', { pace: 60 }),
+    pool('z', 'claude-haiku-5'),
+  ];
+  const result = await dispatch([notInPlan('claude-opus-5-5'), crash, good], pools, { preferredPool: 'p0' });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts.length, 3, 'refusal re-pick, then the crash, then the retry');
+  assert.equal(pickedPools(result)[0], 'p0');
+  assert.ok(result.attempts.slice(1).every((attempt) => attempt.model !== 'claude-opus-5-5' || attempt.pool !== 'p0'));
+  assert.equal(result.attempts[0].refusedAtStart, true, 'the first attempt is recorded as a refusal at start');
+  assert.match(result.attempts[1].routeWhy ?? '', /refused at start/);
+});
+
+test('retry prefers a healthy same-model pool over a family pool and a better-paced other pool', async () => {
+  const pools = [
+    pool('p0', 'claude-opus-5-5'),
+    pool('same', 'claude-opus-5-5'),
+    pool('fam', 'claude-opus-5', { pace: 90 }),
+    pool('other', 'claude-sonnet-5', { pace: 90 }),
+  ];
+  const result = await dispatch([crash, good], pools, { preferredPool: 'p0' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(pickedPools(result), ['p0', 'same']);
+  assert.equal(result.attempts[1].model, 'claude-opus-5-5');
 });
