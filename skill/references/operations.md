@@ -26,6 +26,7 @@ bullswarm workflow add <shortId> --from-answer <step>                           
 bullswarm workflow wait <shortId> <id...> [--timeout <s>] [--json]                     # facts and answers of steps, gates, loops
 bullswarm workflow continue <shortId> <gate>                                           # pass a waiting gate
 bullswarm workflow continue <shortId> <loop> [--rounds <1-5>]                          # more rounds; without --rounds it ends continued, condition not met
+# a run launched with `workflow goal --out-of-rounds end` never waits here: the loop ends by itself (rounds-spent, condition not met) and the steps behind it run
 bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]                        # run a step again with its handoff
 bullswarm workflow step accept <shortId> <step> --reason '<why>'                       # keep a failed step, as your choice
 ```

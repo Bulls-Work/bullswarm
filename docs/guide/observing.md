@@ -229,7 +229,9 @@ attempt of a step that declares an `answer` shows that answer under its row; and
 a run that stops for you says where, with the command that moves it. A **phase**
 is the label a step declares (`"phase": "writing"`). A **gate** is a point where
 the run stops until you run `bullswarm workflow continue`. A **loop** reruns its
-steps until its condition holds, for at most `maxRounds` rounds.
+steps until its condition holds, for at most `maxRounds` rounds; out of rounds
+it waits for `workflow continue`, or, in a run launched with
+`--out-of-rounds end`, ends by itself with its condition not met.
 
 A real run on grok, parked at its gate, on the Run page at 120 columns:
 

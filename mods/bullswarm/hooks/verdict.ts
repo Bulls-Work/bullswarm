@@ -192,7 +192,7 @@ export function watchContext(text: string): string | null {
   const loop = [...lines]
     .reverse()
     .map(l => {
-      const m = /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+|continued by the caller after \d+ of \d+ rounds \(condition not met\))/.exec(l)
+      const m = /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+|continued by the caller after \d+ of \d+ rounds \(condition not met\)|ended at its last round \(\d+ of \d+\), condition not met \(--out-of-rounds end\))/.exec(l)
       if (m) return m
       // wait's fact line: `✓ loop fix passed · round 2 of 3`.
       const fact = /loop (\S+) (passed|blocked) · round (\d+ of \d+)/.exec(l)
