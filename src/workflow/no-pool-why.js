@@ -35,9 +35,9 @@ export function operatorLimitPart(pool, at) {
   return [`at its ${limit.pct}% reserve (${limit.window} ${limit.levelPct}% >= ${limit.ceiling}%)`, back, false];
 }
 
-/** A pool whose latest meter read says its sign-in is dead, as a held reason, or null. */
-export function signInPart(pool) {
-  return meterSignInDead(pool) ? [meterSignInText(pool), null, false] : null;
+/** A pool whose latest meter read, or a sign-in failure at dispatch still holding it (auth-hold.js), says its sign-in is dead, as a held reason, or null. */
+export function signInPart(pool, at = Date.now()) {
+  return meterSignInDead(pool, at) ? [meterSignInText(pool, at), null, false] : null;
 }
 
 /** A pool the forecast says would run out mid-step (`{ until, forecast }`) as a held reason. */

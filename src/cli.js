@@ -112,7 +112,7 @@ export function poolStatusText(p, nowMs = Date.now()) {
   if (!p.enabled) return 'disabled';
   // A dead sign-in seen by the latest meter read: not pickable, whatever the
   // cached numbers say (dispatch-pools.js meterSignInDead).
-  if (meterSignInDead(p)) return `not ready · ${meterSignInText(p)}`;
+  if (meterSignInDead(p, nowMs)) return `not ready · ${meterSignInText(p, nowMs)}`;
   // The hold list and an opt-in reserve (pool-limits.js, route.js R14).
   const hold = activeHold(p, nowMs);
   if (hold) return `held until ${hold.until} (${hold.reason})`;

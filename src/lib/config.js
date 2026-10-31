@@ -23,6 +23,7 @@
 // paced identically. `p.pacingWindow` names the window the numbers on the
 // pool view actually came from.
 
+import { activeAuthHolds } from './auth-hold.js';
 import { loadState } from './state.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js).
 import { finiteOrNull } from './num.js';
@@ -194,6 +195,13 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
         .map((model) => model?.id).filter((id) => typeof id === 'string' && id),
     };
     pools.push(pool);
+  }
+
+  // A sign-in failure at dispatch holds the pool and its credential group
+  // (auth-hold.js); the meter reading below never clears it.
+  const authHolds = activeAuthHolds(state.pools, connectors, now);
+  for (const p of pools) {
+    if (authHolds[p.name]) p.authHold = authHolds[p.name];
   }
 
   for (const p of pools) {
