@@ -101,3 +101,14 @@ test('dispatch: a pool at 98% or with an unknown reading is still dispatched', a
   assert.deepEqual((await dispatch([connector('luna-1', { fiveHourUsedPct: 98, fiveHourResetsAt: RESET })])).started, ['luna-1']);
   assert.deepEqual((await dispatch([connector('luna-1')])).started, ['luna-1']);
 });
+
+// The pools view reads burstGate: a pool at the wall must not show as ready.
+test('pace snapshot: the burst gate closes at the 5h wall (99%), so pools does not show the pool ready', () => {
+  const NOW = Date.parse('2026-10-31T12:00:00Z');
+  const at = (utilization) => framework.paceSnapshot({
+    five_hour: { utilization, resets_at: new Date(NOW + 3600_000).toISOString() },
+    seven_day: { utilization: 18, resets_at: new Date(NOW + 3 * 86_400_000).toISOString() },
+  }, NOW);
+  assert.equal(at(framework.FIVE_HOUR_WALL_PCT).burstGate, true);
+  assert.equal(at(framework.FIVE_HOUR_WALL_PCT - 1).burstGate, false);
+});
