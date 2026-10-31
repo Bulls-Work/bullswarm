@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `BULLSWARM_CLAUDE_CACHE_5M=analyze|all` (default `off`) makes Claude Code workers write their prompt cache at the 5-minute price by setting the undocumented `FORCE_PROMPT_CACHING_5M=1`; the attempt's start event records it as `claudeCache5m`. See docs/guide/cost.md for the trade-off.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

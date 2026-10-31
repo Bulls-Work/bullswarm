@@ -261,6 +261,20 @@ notes `Durations · 15 of 15 runs recorded no active interval union; their span
 stands in until workflow reprice fills it.` A period whose records all carry an
 active union carries no such note.
 
+## Cheaper cache writes for Claude Code workers
+
+A Claude Code worker writes its prompt cache at the 1-hour price by default. `BULLSWARM_CLAUDE_CACHE_5M` makes it write at the cheaper 5-minute price:
+
+| Value | Effect |
+|---|---|
+| `off` (default; also unset, or any value not listed) | Workers run exactly as before. |
+| `analyze` | Only attempts in the analyze lane, on a claude-code pool, get the 5-minute cache. |
+| `all` | Every attempt on a claude-code pool gets it. |
+
+It sets `FORCE_PROMPT_CACHING_5M=1` in the worker's environment. That is an **undocumented Claude Code variable**: it was read from Claude Code 2.1.316 and a later release may change or drop it. Other providers are never touched.
+
+The trade-off: writes are cheaper, but the prefix that other sessions cached at the 1-hour tier is not reused (a measured one-line call read 0 cached tokens after the switch, against 11,356 before), and a tool call that runs longer than 5 minutes lets the cache expire, so the next request writes it again. Review loops, where one prompt is read by many short attempts, are the case it was added for. A started attempt records the setting as `claudeCache5m` in its `attempt.started` event, so cost can be compared with and without it. The default is off.
+
 ## Next steps
 
 - [Result envelope](/reference/result) — per-attempt, per-step, and total JSON fields.

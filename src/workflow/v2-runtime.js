@@ -593,6 +593,7 @@ async function runV2Kernel({
           emit('attempt.started', {
             actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model,
             reasoning: clone(record.reasoning ?? null),
+            ...(record.claudeCache5m ? { claudeCache5m: record.claudeCache5m } : {}),
             ...(record.handoff ? {
               handoff: {
                 from: record.handoff.from,
