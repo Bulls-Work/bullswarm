@@ -1544,7 +1544,7 @@ test('0.38.16 non-functional areas: whole words, and every part of the area must
   assert.deepEqual(normal.steps.find((step) => step.areaOf).areaOf.areas, [...areas, NON_FUNCTIONAL_AREA]);
 });
 
-test('0.38.16 yield stop: two reviewed rounds in a row that each found 1 or 2 end the loop; a still-open finding, a clean round, a fixer first or yield false do not', () => {
+test('0.38.16 yield stop: two reviewed rounds in a row that each found 1 or 2 end the loop; a still-open finding, a clean round after a big one, a fixer first or yield false do not', () => {
   // The 0.38.16 default, pinned (0.38.17 made max 3 the default).
   const loop = { id: 'harden', steps: ['review', 'fix'], until: { step: 'review', dry: 1, yield: { max: 2, rounds: 2 } } };
   const group = { id: 'review', steps: ['review'], areas: [], perRound: 1 };

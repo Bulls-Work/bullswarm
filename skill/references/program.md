@@ -232,6 +232,9 @@ with `until: {"step": "review", "dry": 1}` and a findings answer:
   the result has `findings.yieldIn`). The last round's fixer still runs first.
   Change it with `until.yield: {"max": 1, "rounds": 3}`, or turn it off with
   `until.yield: false`; it never applies when a fixer runs before the review.
+  It can end a loop before `until.dry` clean rounds: with `dry: 2`, rounds
+  that found 2 then 0 stop on low yield after one clean round. Set
+  `until.yield: false` when the loop must see `dry` clean rounds in a row.
   A loop out of rounds says its new findings per round (`perRound`, the same
   counts as the result's `findings.rounds`), the findings reported still open
   again per round when there were any (`reopenedPerRound`, the result's

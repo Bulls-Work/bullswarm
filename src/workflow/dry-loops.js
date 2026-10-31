@@ -55,8 +55,9 @@ export function atOrAboveFloor(finding, floor = DEFAULT_FLOOR) {
 }
 
 // The yield stop (0.38.16): a dry loop also ends after `rounds` reviewed
-// rounds in a row that each found 1 to `max` new findings at or above the
-// floor, none reported still open again, with every area reviewed in them.
+// rounds in a row that each found 0 to `max` new findings at or above the
+// floor (at least one of them found something), none reported still open
+// again, with every area reviewed in them.
 // The benchmark's loop found 9, 4, 2, 4, 3 and 5 and never ran dry
 // (benchmark-0.38.15-report.md). 0.38.17: `max` 3 by default; the 0.38.16
 // rerun found 3, 4, 6, 3, 3, 1 and the 2 default never fired
