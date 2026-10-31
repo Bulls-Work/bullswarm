@@ -82,11 +82,11 @@ test('top-level run validates heartbeat interval before dispatch', () => {
   try {
     const result = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '0', 'TASK', '--json']);
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /heartbeat.*greater than or equal to 1/);
+    assert.match(result.stderr, /heartbeat must be a number of seconds from 1 to 604800/);
     assert.equal(result.stdout, '');
     const missing = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '--json', 'TASK']);
     assert.equal(missing.status, 2);
-    assert.match(missing.stderr, /heartbeat.*greater than or equal to 1/);
+    assert.match(missing.stderr, /heartbeat must be a number of seconds from 1 to 604800/);
   } finally { f.cleanup(); }
 });
 
