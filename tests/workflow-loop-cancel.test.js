@@ -1,6 +1,6 @@
-// A cancelled run must not show its loop as still pending: the loop record
-// says cancelled (round and rounds kept), the views say so, and reopening the
-// run puts the loop back where it was. Made-up names only.
+// A cancelled run must not show its loop as still pending or waiting. Nothing
+// new is saved (state.json and result.json say what they always said); every
+// text view decides at display time. Made-up names only.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,12 +8,14 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { glyphs } from '../src/lib/glyphs.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
+import { reopenV2RunForRetry } from '../src/workflow/run-control.js';
 import { controlRows } from '../src/workflow/v3-display.js';
-import { addV3Steps } from '../src/workflow/cli-steps.js';
+import { addV3Steps, waitFactLines, waitFacts } from '../src/workflow/cli-steps.js';
 
 const cli = resolve('bin/bullswarm.js');
 const V3 = 'bullswarm.workflow.program.v3';
@@ -110,7 +112,7 @@ const loopProgram = () => ({
   loops: [{ id: 'polish', steps: ['fix', 'check'], until: { step: 'check', field: 'passed' }, maxRounds: 3 }],
 });
 
-test('a run cancelled in round 2 records its loop as cancelled, shows it so, and resumes in the same round', async (t) => {
+test('a run cancelled in round 2 saves its loop as before, shows it cancelled, and resumes in the same round', async (t) => {
   const f = fixture(t);
   const seen = [];
   let checks = 0;
@@ -137,26 +139,32 @@ test('a run cancelled in round 2 records its loop as cancelled, shows it so, and
   assert.equal(state.actions.find((action) => action.id === 'check').status, 'cancelled');
   assert.equal(state.actions.find((action) => action.id === 'fix').status, 'succeeded');
   const loop = node(state, 'polish');
-  assert.equal(loop.status, 'cancelled');
+  assert.equal(loop.status, 'pending', 'state.json keeps what main writes');
   assert.equal(loop.round, 2);
   assert.equal(loop.maxRounds, 3);
 
-  // The views: no word of the loop being pending.
+  // The text views: runs show and runs result never call the loop pending or
+  // waiting; the timeline row and the wait line say cancelled.
   const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
   delete env.BULLSWARM_DEPTH;
   for (const args of [['runs', 'show', run.shortId], ['runs', 'result', run.shortId]]) {
     const out = spawnSync(process.execPath, [cli, 'workflow', ...args], { encoding: 'utf8', env });
     const text = out.stdout + out.stderr;
-    assert.match(text, /polish/, `workflow ${args.join(' ')} names the loop: ${text}`);
-    assert.doesNotMatch(text, /loop polish[^\n]*(pending|round 2 of 3 · until)/i, `workflow ${args.join(' ')} must not call the loop pending: ${text}`);
+    assert.doesNotMatch(text, /loop polish[^\n]*(pending|waiting|round 2 of 3 · until)/i, `workflow ${args.join(' ')} must not call the loop pending: ${text}`);
   }
   const result = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
-  assert.equal(result.loops.find((entry) => entry.id === 'polish').outcome, 'cancelled');
-  // The row the timeline and the dashboard draw.
+  assert.equal(result.loops.find((entry) => entry.id === 'polish').outcome, 'pending', 'result.json keeps what main writes');
   const [row] = controlRows(state);
-  assert.equal(row.status, 'cancelled');
+  assert.equal(row.status, 'pending', 'the row keeps the saved status');
   assert.equal(row.role, 'cancelled');
-  assert.match(row.text, /loop polish · cancelled in round 2 of 3/);
+  assert.match(row.text, /loop polish · cancelled with the run in round 2 of 3/);
+  assert.equal(row.glyph, glyphs().stopped);
+  const [waited] = waitFacts(state, ['polish']).nodes;
+  assert.equal(waited.status, 'pending', 'the JSON fact keeps the saved status');
+  const line = waitFactLines(waited, { runStatus: state.lifecycle.status }).join('\n');
+  assert.match(line, /loop polish cancelled · round 2 of 3/);
+  assert.doesNotMatch(line, /pending|waiting/);
+  assert.ok(line.startsWith(glyphs().stopped));
 
   // Reopen: add a step, resume. The loop is pending again in round 2, passes
   // there, and never reruns fix or exceeds its rounds.
@@ -167,6 +175,7 @@ test('a run cancelled in round 2 records its loop as cancelled, shows it so, and
   assert.equal(added.status, 'applied');
   assert.equal(node(readState(run), 'polish').status, 'pending');
   assert.equal(node(readState(run), 'polish').round, 2);
+  assert.equal(controlRows(readState(run))[0].role, 'pending', 'a reopened run shows the loop going again');
   const fixRuns = seen.filter((entry) => entry.actionId === 'fix').length;
   const again = await resume(f, run.runId, fakeDispatch((id) => (id === 'check' ? { answer: { passed: true } } : {}), { seen }));
   assert.equal(again.state.lifecycle.status, 'completed');
@@ -174,4 +183,44 @@ test('a run cancelled in round 2 records its loop as cancelled, shows it so, and
   assert.deepEqual([done.status, done.round, done.maxRounds], ['passed', 2, 3]);
   assert.equal(seen.filter((entry) => entry.actionId === 'fix').length, fixRuns, 'fix does not rerun');
   assert.ok(done.round <= done.maxRounds);
+});
+
+test('a run cancelled while its finished loop waits for the caller shows it cancelled and resumes as before', async (t) => {
+  const f = fixture(t);
+  const program = loopProgram();
+  program.loops[0].maxRounds = 1;
+  const running = launch(f, program, fakeDispatch((id) => (id === 'check' ? { answer: { passed: false } } : {})));
+  const run = await running;
+  assert.equal(run.state.lifecycle.status, 'waiting', 'the run parks at the out-of-rounds loop');
+  const env = { ...process.env, BULLSWARM_HOME: f.bullswarmDir };
+  delete env.BULLSWARM_DEPTH;
+  const cancelled = spawnSync(process.execPath, [cli, 'workflow', 'cancel', run.shortId], { encoding: 'utf8', env });
+  assert.equal(cancelled.status, 0, cancelled.stdout + cancelled.stderr);
+  const state = readState(run);
+  assert.equal(state.lifecycle.status, 'cancelled');
+  assert.ok(state.actions.every((action) => action.status === 'succeeded'));
+  const loop = node(state, 'polish');
+  assert.deepEqual([loop.status, loop.round, loop.maxRounds], ['waiting', 1, 1], 'state.json keeps what main writes');
+  const result = JSON.parse(readFileSync(join(run.runDir, 'result.json'), 'utf8'));
+  assert.equal(result.loops.find((entry) => entry.id === 'polish').outcome, 'out-of-rounds');
+
+  for (const args of [['runs', 'show', run.shortId], ['runs', 'result', run.shortId]]) {
+    const out = spawnSync(process.execPath, [cli, 'workflow', ...args], { encoding: 'utf8', env });
+    const text = out.stdout + out.stderr;
+    assert.doesNotMatch(text, /loop polish[^\n]*(waiting|out of rounds)/i, `workflow ${args.join(' ')}: ${text}`);
+  }
+  const [row] = controlRows(state);
+  assert.equal(row.role, 'cancelled');
+  assert.match(row.text, /loop polish · cancelled with the run in round 1 of 1/);
+  assert.equal(row.command, undefined, 'no continue command for a cancelled run');
+  const [waited] = waitFacts(state, ['polish']).nodes;
+  assert.equal(waited.status, 'waiting');
+  const line = waitFactLines(waited, { runStatus: state.lifecycle.status }).join('\n');
+  assert.match(line, /loop polish cancelled · round 1 of 1/);
+  assert.doesNotMatch(line, /waiting|continue /);
+
+  // As on main: every step succeeded, so a resume has nothing to retry.
+  const outcome = reopenV2RunForRetry({ bullswarmDir: f.bullswarmDir, runId: run.runId });
+  assert.equal(outcome.status, 'nothing-to-retry');
+  assert.equal(node(readState(run), 'polish').status, 'waiting');
 });
