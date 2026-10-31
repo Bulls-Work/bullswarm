@@ -37,7 +37,8 @@ import {
   attemptSilenceTimeoutSec, noProgressLimitApplies, workerNoProgressTimeoutSec, workerSilenceTimeoutSec,
 } from './dispatch-silence.js';
 import { createFileChangeClock } from '../lib/stale.js';
-import { preparePools, retryPoolTiers, selectedModel } from './dispatch-pools.js';
+import { authHoldActive, preparePools, retryPoolTiers, selectedModel } from './dispatch-pools.js';
+import { authHoldText, clearAuthHolds, recordAuthFailure } from '../lib/auth-hold.js';
 import { attemptPaths, evidenceLogFile, fileBytes, runIdFromPaths, withAttemptArtifacts } from './dispatch-attempt-files.js';
 import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
@@ -355,6 +356,23 @@ export async function dispatchV2Action({
     }).filter((pool) => !failedProbes.has(pool.name) && inLiveGroup(pool));
     keptOffDraining = drainingAt(prepared, at);
     return keptOffDraining.size ? prepared.filter((pool) => !keptOffDraining.has(pool.name)) : prepared;
+  };
+  // Store (or, on a success, clear) the dispatch-time sign-in hold of a pool
+  // and its credential group in the Bullswarm home. A home that cannot be
+  // written must not fail the step.
+  const holdSignIn = (pool, failed) => {
+    if (!bullswarmDir) return;
+    const group = upstreamGroupOf(pool);
+    const names = [pool.name, ...allPools
+      .filter((other) => group && other.name !== pool.name && upstreamGroupOf(other) === group)
+      .map((other) => other.name)];
+    try {
+      if (!failed && !names.some((name) => loadState(bullswarmDir).pools?.[name]?.authHold)) return;
+      updateState(bullswarmDir, (state) => {
+        if (failed) recordAuthFailure(state, pool.name, now());
+        else if (!clearAuthHolds(state, names)) return false;
+      });
+    } catch { /* the in-dispatch dead group still applies */ }
   };
   const safeCoreState = () => {
     try { return loadCoreState(bullswarmDir); } catch { return null; }
@@ -674,7 +692,11 @@ export async function dispatchV2Action({
     const gateMoved = gatePin && pool.name !== gatePin
       ? `gate retry moved: ${gatePin} cannot take work now`
       : null;
-    const routeWhy = [gateMoved, fallbackWhy, route.why].filter(Boolean).join(' · ');
+    // A pinned pool is dispatched through a sign-in hold; say so.
+    const pinnedHold = strictPool && pool.name === strictPool && authHoldActive(pool, now())
+      ? `${pool.name} pinned, dispatched despite ${authHoldText(pool.authHold, now())}`
+      : null;
+    const routeWhy = [gateMoved, fallbackWhy, route.why, pinnedHold].filter(Boolean).join(' · ');
     fallbackWhy = null;
     // The box paragraph closes this attempt's task, after any handoff or
     // correction block, and never enters `nextTask`: the next attempt gets a
@@ -959,6 +981,10 @@ export async function dispatchV2Action({
     // this dispatch, a refresh included (`deadGroups`).
     const deadGroup = kind === 'auth' ? upstreamGroupOf(pool) : null;
     if (deadGroup) deadGroups.add(deadGroup);
+    // Later runs learn of it too: the pool and its credential group are held
+    // out of their picks (auth-hold.js). A success clears the hold.
+    if (kind === 'auth' && !verdict.ok) holdSignIn(pool, true);
+    else if (verdict.ok) holdSignIn(pool, false);
     // A refusal at start: the provider refused the sign-in or the model before
     // the worker changed a file or made a tool call. It did no work, so the
     // pick is made again at once with the new fact applied, and the step's
@@ -1284,7 +1310,7 @@ export async function dispatchV2Action({
       if (lastReset == null) parts.push(['out of quota', null, true]);
       else if (lastReset > endAt) parts.push(['out of quota', lastReset, true]);
     }
-    const signIn = signInPart(pool);
+    const signIn = signInPart(pool, endAt);
     if (signIn) parts.push(signIn);
     const spent = spentWindowPart(pool, endAt);
     if (spent) parts.push(spent);

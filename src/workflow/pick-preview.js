@@ -35,7 +35,7 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
     .filter((pool) => (pool.lanes ?? [lane]).includes(lane));
   const held = [];
   for (const pool of capable) {
-    const parts = [signInPart(pool), spentWindowPart(pool, now), operatorLimitPart(pool, now), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
+    const parts = [signInPart(pool, now), spentWindowPart(pool, now), operatorLimitPart(pool, now), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
     if (parts.length) held.push(heldEntry(pool.name, parts));
   }
   const failureKind = noPoolFailureKind(capable.length, held);

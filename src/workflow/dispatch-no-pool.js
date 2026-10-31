@@ -82,7 +82,7 @@ export function noPoolCandidates(allPools, action, effort, {
     else if (failedProbes.has(pool.name)) excluded = 'failed its probe';
     else if (!inRoute) excluded = `outside the route (${routeFilter.summary})`;
     else if (sharedWith.length) excluded = `shares provider ${provider} with ${sharedWith.join(', ')}`;
-    else if (meterSignInDead(pool)) excluded = meterSignInText(pool);
+    else if (meterSignInDead(pool, now)) excluded = meterSignInText(pool, now);
     else if (!ignoreBurstGate && windowSpent(pool, now)) excluded = 'a usage window is at its limit';
     else if (preferredModel && !poolCanRunModel(pool, preferredModel).ok) excluded = poolCanRunModel(pool, preferredModel).reason;
     else if (preferredModel && planExcludes(pool, preferredModel)) excluded = `${preferredModel} is not in ${pool.name}'s plan`;
