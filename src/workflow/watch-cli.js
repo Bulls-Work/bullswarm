@@ -369,12 +369,34 @@ function attemptOrdinal(state, attemptId) {
 // inputs instead of from the live state alone: replayedEvents are the durable
 // events this launch is about to print, and sinceMs is when the previous
 // watcher exited.
+// True when the run's events show its runner saves stale warnings.
+export function recordsStaleWarnings(events) {
+  return events.some((event) => event.type === 'stale.recording' || event.type === 'attempt.stale');
+}
+
+// What a watch that attaches fresh to a recording run shows of the past: for
+// each attempt still running, its latest saved `attempt.stale` unless a later
+// `attempt.stale_cleared` closed it. Printed once, as the saved event.
+export function openStaleWarnings(events, state) {
+  const open = new Map();
+  for (const event of events) {
+    const id = event.payload?.attemptId;
+    if (!id) continue;
+    if (event.type === 'attempt.stale') open.set(id, event);
+    else if (event.type === 'attempt.stale_cleared') open.delete(id);
+  }
+  const running = new Set(v2AttemptRecords(state).filter(({ attempt }) => attempt.status === 'running').map(({ key }) => key));
+  return [...open].filter(([id]) => running.has(id)).map(([, event]) => event);
+}
+
 export function initialWatchMemory(state, {
   replayedEvents = [],
   sinceMs = null,
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
   nowMs = Date.now(),
   stale = null,
+  // The run saves its own stale warnings (see recordsStaleWarnings).
+  recordsStale = false,
 } = {}) {
   // A stage whose action finished among the replayed events is exactly the news
   // this relaunch exists to deliver, so it must not be pre-marked as reported
@@ -406,7 +428,6 @@ export function initialWatchMemory(state, {
   // exited was reported by it: the score says when it crossed the threshold,
   // and the warnings it repeated since are one per full window up to then.
   const staleReported = new Map();
-  const recordsStale = state?.runner?.recordsStale === true;
   if (!recordsStale && sinceMs != null && typeof stale === 'function') {
     for (const record of v2AttemptRecords(state)) {
       if (record.attempt.status !== 'running') continue;
@@ -416,7 +437,7 @@ export function initialWatchMemory(state, {
       }
     }
   }
-  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map(), handoffs: new Map(), staleReported, stageSteps: new Map(), recordsStale };
+  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map(), handoffs: new Map(), staleReported, stageSteps: new Map(), recordsStale: recordsStale === true };
 }
 
 function staleFor(probe, state, { attempt, actionId }, nowMs) {
@@ -517,10 +538,10 @@ export function notableWatchEvents({
   const moving = new Map(carried.moving);
   const handoffs = new Map(carried.handoffs);
   const staleReported = new Map(carried.staleReported);
-  // A run whose runner saves its stale warnings (state.runner.recordsStale), or
-  // whose events already carry one, prints those; the watch synthesizes its
-  // own only for an older run that records none.
-  let recordsStale = carried.recordsStale === true || state?.runner?.recordsStale === true;
+  // A run whose runner saves its stale warnings (its events carry a
+  // `stale.recording` marker or an `attempt.stale`) prints those; the watch
+  // synthesizes its own only for an older run that records none.
+  let recordsStale = carried.recordsStale === true;
   const stageSteps = new Map(carried.stageSteps ?? []);
   const notable = [];
 
@@ -761,6 +782,9 @@ export function notableWatchEvents({
         // Saved by the runner: print it as it was recorded, once.
         recordsStale = true;
         notable.push({ ...payload, type: 'attempt.stale' });
+        break;
+      case 'stale.recording':
+        recordsStale = true;
         break;
       case 'planner.attempt_started':
         onAttemptStarted('workflow-planner', payload, payload.ordinal ?? null);
@@ -1289,12 +1313,16 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       let notablePrinted = 0;
       let troublePrinted = 0;
       const staleSteps = [];
+      let attachEvents = [];
       if (eventMode) {
         if (!attached) {
           attached = true;
+          const history = readEvents(resolved.runDir);
+          const recorded = recordsStaleWarnings(history);
+          if (recorded && afterSequence == null && sinceMs == null) attachEvents = openStaleWarnings(history, state);
           memory = initialWatchMemory(state, {
             replayedEvents: afterSequence == null ? [] : newEvents,
-            sinceMs, stallAfterMs, nowMs, stale: staleProbe,
+            sinceMs, stallAfterMs, nowMs, stale: staleProbe, recordsStale: recorded,
           });
           lastPrintedAt = nowMs;
           // --until prints nothing until a wake, so one start line tells a
@@ -1314,7 +1342,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           }
         }
         const collected = notableWatchEvents({
-          events: newEvents, state, memory, verbose, nowMs, stallAfterMs,
+          events: [...attachEvents, ...newEvents], state, memory, verbose, nowMs, stallAfterMs,
           stale: snapshot.interrupted ? null : staleProbe, runDir: resolved.runDir,
         });
         memory = collected.memory;

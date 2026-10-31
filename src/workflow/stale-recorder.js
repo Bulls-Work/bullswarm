@@ -6,7 +6,9 @@
 //
 // Per attempt: `attempt.stale` at the first crossing (level 1) and at each
 // further level (one per full progress window without progress), and
-// `attempt.stale_cleared` when it shows progress again or its attempt ends.
+// `attempt.stale_cleared` when the reading is no longer stale, or when its
+// attempt (or the run) ends. Progress while the score is still stale restarts
+// the clock without an event.
 // A scoring error is skipped, never allowed to break the attempt.
 import { createStaleProbe } from '../lib/stale.js';
 import { advanceStaleEpisode } from '../lib/stale-episodes.js';
@@ -61,6 +63,14 @@ export function createStaleRecorder({
       if (!episode) return;
       episodes.delete(attemptId);
       try { cleared({ key: attemptId, actionId }, episode, at); } catch { /* skip */ }
+    },
+    /** The run ends: close every episode still open. */
+    close(at = nowMs()) {
+      for (const [key, episode] of [...episodes]) {
+        episodes.delete(key);
+        lastCheckAt.delete(key);
+        try { cleared({ key, actionId: key.replace(/-\d+$/, '') }, episode, at); } catch { /* skip */ }
+      }
     },
   };
 }
