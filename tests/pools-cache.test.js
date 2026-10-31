@@ -3,7 +3,7 @@
 // 260-345 MB each from the mod's status line).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -260,6 +260,57 @@ test('a successor lock that appears between the judgment and the break is left a
     assert.match(readFileSync(lock, 'utf8'), /successor-token/);
   } finally {
     poolsCache.__testHooks.beforeBreak = null;
+  }
+});
+
+test('a break sweeps old .broken files and leaves fresh ones', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  const oldBroken = `${lock}.old-token.broken`;
+  const freshBroken = `${lock}.fresh-token.broken`;
+  writeFileSync(oldBroken, `${process.pid} 1 old-token\n`);
+  writeFileSync(freshBroken, `${process.pid} 1 fresh-token\n`);
+  const past = new Date(Date.now() - LOCK_CEILING_MS - 60_000);
+  utimesSync(oldBroken, past, past);
+  // A young lock whose holder is dead is broken at once.
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  const c = counter([{ name: 'ours' }], 0);
+  const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build });
+  assert.equal(served.source, 'built');
+  assert.equal(c.builds, 1);
+  assert.equal(existsSync(oldBroken), false, 'the old .broken file is swept');
+  assert.equal(existsSync(freshBroken), true, 'the fresh .broken file stays');
+});
+
+test('a successor lock grabbed by the rename is put back unless a newer lock exists', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  poolsCache.__testHooks.beforeBreak = () => {
+    unlinkSync(lock);
+    writeFileSync(lock, `${process.pid} ${Date.now()} s1-token\n`);
+  };
+  let renamed = 0;
+  poolsCache.__testHooks.afterRename = () => {
+    renamed += 1;
+    // A third caller creates its own lock after our rename, before our link-back.
+    writeFileSync(lock, `${process.pid} ${Date.now()} s2-token\n`);
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(renamed, 1);
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.match(readFileSync(lock, 'utf8'), /s2-token/);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith('.broken')), []);
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+    poolsCache.__testHooks.afterRename = null;
   }
 });
 

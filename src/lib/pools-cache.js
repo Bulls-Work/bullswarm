@@ -83,8 +83,11 @@ function processAlive(pid) {
   }
 }
 
-/** Test seam: `beforeBreak(lock)` runs between judging a lock and breaking it. */
-export const __testHooks = { beforeBreak: null };
+/**
+ * Test seams: `beforeBreak(lock)` runs between judging a lock and breaking it,
+ * `afterRename(lock)` between the rename aside and the read of what we hold.
+ */
+export const __testHooks = { beforeBreak: null, afterRename: null };
 
 /**
  * This caller's token when it now holds the lock, else null. A live holder
@@ -139,6 +142,7 @@ function breakLock(lock, token, judged) {
     if (error.code === 'ENOENT') return true;
     throw error;
   }
+  __testHooks.afterRename?.(lock);
   const grabbed = lockOwner(aside)?.token ?? null;
   if (grabbed === judged) {
     try { unlinkSync(aside); } catch { /* best effort */ }
