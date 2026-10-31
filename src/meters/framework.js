@@ -189,7 +189,7 @@ export function windowSpent(pool, nowMs = Date.now()) {
   if (!pool || typeof pool !== 'object') return null;
   const snapshot = pool.meterSnapshot && typeof pool.meterSnapshot === 'object' ? pool.meterSnapshot : {};
   const counts = (key) => !guessedRefusalWindow(snapshot[key]);
-  const fiveHourUsed = pool.fiveHourUsedPct ?? snapshot.five_hour?.utilization
+  const fiveHourUsed = usedPctOf(pool.fiveHourUsedPct) ?? usedPctOf(snapshot.five_hour?.utilization)
     ?? (pool.burstGate === true ? BURST_BLOCK_PCT : null);
   const readings = [
     ...(counts('five_hour') ? [['5-hour', fiveHourUsed, pool.fiveHourResetsAt ?? snapshot.five_hour?.resets_at]] : []),

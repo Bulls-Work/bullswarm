@@ -798,8 +798,8 @@ export function meterHistoryEntry(snapshot, opts = {}) {
 function historyWindowValue(entry, key) {
   const value = entry?.[key];
   if (!value || typeof value !== 'object') return null;
-  const usedPct = Number(value.used_pct ?? value.usedPct ?? value.utilization);
-  if (!Number.isFinite(usedPct)) return null;
+  const usedPct = usedPctOf(value.used_pct ?? value.usedPct ?? value.utilization);
+  if (usedPct == null) return null;
   return {
     usedPct,
     resetsAt: value.resets_at ?? value.resetsAt ?? null,

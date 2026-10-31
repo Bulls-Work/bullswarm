@@ -281,12 +281,13 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
     } else {
       // Declared / unmetered fallback
       const meter = { ...(p.connector.meter ?? {}), ...(ps.meter ?? {}) };
-      if (meter.type !== 'none' && meter.usedPct != null) {
+      const declaredUsed = usedPctOf(meter.usedPct);
+      if (meter.type !== 'none' && declaredUsed != null) {
         p.meterSource = 'declared';
-        p.usedPct = meter.usedPct;
+        p.usedPct = declaredUsed;
         // Without resets_at, elapsed is unknown → surplus is just −used,
         // which still ranks pools by remaining headroom honestly.
-        p.pace = -meter.usedPct;
+        p.pace = -declaredUsed;
       } else {
         p.meterSource = 'none';
         p.pace = 0;

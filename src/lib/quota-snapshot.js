@@ -4,16 +4,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { MeterCache } from '../meters/framework.js';
-import { meterResolutionPct } from '../meters/framework.js';
+import { meterResolutionPct, usedPctOf } from '../meters/framework.js';
 import { readMeterHistory } from '../meters/registry.js';
 import { loadProviders } from './providers.js';
 
-function finite(value) {
-  if (value == null || typeof value === 'boolean' || Array.isArray(value)) return null;
-  if (typeof value === 'string' && value.trim() === '') return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
+// A window's used percent: the one usedPctOf rule, garbage is no reading.
+const finite = usedPctOf;
 
 function text(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;

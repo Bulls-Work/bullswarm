@@ -22,6 +22,7 @@
 //   B5. Every figure with no source is null, never 0, and the model says
 //       which ones are null.
 
+import { usedPctOf } from '../meters/framework.js';
 import { DAYS_PER_MONTH, planPriceFor, priceFor, subscriptionCostUsd } from '../lib/prices.js';
 import { formatDashboardValue } from './dash-kit.js';
 import { spendFacts } from './spend-facts.js';
@@ -331,7 +332,7 @@ function modelWindowsOf(pool, now) {
   if (!snapshot) return [];
   return MODEL_WINDOW_FIELDS.flatMap(([key, field]) => {
     const raw = snapshot[field];
-    const usedPct = finite(raw?.utilization);
+    const usedPct = usedPctOf(raw?.utilization);
     if (usedPct == null) return [];
     const resetsAt = typeof raw?.resets_at === 'string' ? raw.resets_at : null;
     let elapsedPct = null;

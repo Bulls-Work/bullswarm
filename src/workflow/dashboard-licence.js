@@ -2,9 +2,9 @@
 // each pool's paced window, its daily reading and the days its window reset.
 import { join } from 'node:path';
 import { readMeterHistoryDays } from '../meters/registry.js';
-// N1: a missing measurement never becomes a confident zero. Number(null) is
-// 0 and Number.isFinite(0) is true, so every reading below goes through this.
-import { finiteOrNull } from '../lib/num.js';
+// A window's utilization is read through usedPctOf: garbage is no reading,
+// never a confident zero.
+import { usedPctOf } from '../meters/framework.js';
 
 function localDayKey(ms) {
   const date = new Date(ms);
@@ -53,7 +53,7 @@ function poolDayReadings(pool, days) {
         if (lastResetAtMs != null && Math.abs(resetAtMs - lastResetAtMs) >= RESET_TOLERANCE_MS) reading.reset = true;
         lastResetAtMs = resetAtMs;
       }
-      const value = finiteOrNull(window?.utilization);
+      const value = usedPctOf(window?.utilization);
       if (value != null) {
         reading.value = value;
         reading.resetsAt = resetsAt;
