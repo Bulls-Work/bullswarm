@@ -69,3 +69,16 @@ test('expectedMinutesFor: stalled and cancelled rows do not count as samples', (
   assert.equal(enough.samples, MIN_DURATION_SAMPLES);
   assert.equal(enough.minutes, 20);
 });
+
+test('free-pool silence clock: stopped and stalled rows do not make a single real run a trusted median', async () => {
+  const { attemptSilenceTimeoutSec } = await import('../src/workflow/dispatch-silence.js');
+  const base = { picked: 'fp', lane: 'build', effort: 'high', ts: '2026-10-01T00:00:00.000Z' };
+  const log = [
+    { ...base, wallSec: 600, ok: true },
+    { ...base, wallSec: 20, ok: false, failureKind: 'cancelled' },
+    { ...base, wallSec: 20, ok: false, why: 'workflow cancellation requested' },
+    { ...base, wallSec: 20, ok: false, stalled: true },
+  ];
+  const untrusted = attemptSilenceTimeoutSec({ name: 'fp', free: true }, 'high', [log[0]], 3600, false);
+  assert.equal(attemptSilenceTimeoutSec({ name: 'fp', free: true }, 'high', log, 3600, false), untrusted);
+});
