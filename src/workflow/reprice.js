@@ -17,6 +17,7 @@ import { attachTranscriptUsage, estimateInvocationUsage, modelProfile, needsPerR
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { updateState } from '../lib/state.js';
 import { aggregateAttemptUsage, readRollup, rollupRecord, writeRunRollup } from './rollup.js';
 import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
@@ -773,7 +774,6 @@ export function repriceRuns({
   const taskState = readJsonSafe(taskStatePath, null);
   const taskRows = [];
   if (taskState && typeof taskState === 'object') {
-    const original = JSON.stringify(taskState);
     for (const entry of taskEntries(taskState)) {
       if (!eligible(entry, { sinceMs, pool })) continue;
       report.scannedTasks += 1;
@@ -818,18 +818,34 @@ export function repriceRuns({
       onRow?.(row);
     }
     if (apply && taskRows.length) {
-      for (const { entry, candidate, usage } of taskRows) {
-        entry.task.usage = clone(usage);
-        if (candidate.cwd && !entry.task.cwd) entry.task.cwd = candidate.cwd;
-        if (candidate.projectChanged) entry.task.project = candidate.project;
+      // Only the apply runs under the state lock (updateState), on a FRESH
+      // read: rows appended by a concurrent dispatch are kept, and a row that
+      // vanished or changed identity since the scan is reported, not written.
+      let touched = false;
+      const missing = [];
+      try {
+        updateState(bullswarmDir, (fresh) => {
+          const byId = new Map(taskEntries(fresh).map((e) => [e.attemptId, e]));
+          for (const { entry, candidate, usage } of taskRows) {
+            const current = byId.get(entry.attemptId);
+            if (!current || current.task.ts !== entry.task.ts) {
+              missing.push(entry.attemptId);
+              continue;
+            }
+            const before = JSON.stringify(current.task);
+            current.task.usage = clone(usage);
+            if (candidate.cwd && !current.task.cwd) current.task.cwd = candidate.cwd;
+            if (candidate.projectChanged) current.task.project = candidate.project;
+            if (JSON.stringify(current.task) !== before) touched = true;
+          }
+          return touched ? undefined : false;
+        });
+        if (touched) report.changedTasks += 1;
+      } catch (error) {
+        report.failures.push({ runId: 'state.json', error: error.message });
       }
-      if (JSON.stringify(taskState) !== original) {
-        try {
-          writeJsonAtomic(taskStatePath, taskState);
-          report.changedTasks += 1;
-        } catch (error) {
-          report.failures.push({ runId: 'state.json', error: error.message });
-        }
+      for (const id of missing) {
+        report.failures.push({ runId: id, error: `task row ${id} is gone or changed since the scan; not written` });
       }
     }
   }
