@@ -62,6 +62,7 @@ import { actStoppedDuringChecksWhy, clearEvidenceRunning, reconcileResume } from
 import { acceptCallerPlannerResponse } from './caller-planner.js';
 import { clearRejectedRerunIntent } from './run-control.js';
 import { earlierWorkFor } from './earlier-work.js';
+import { STALE_RECORD_EVERY_MS, createStaleRecorder } from './stale-recorder.js';
 
 const ACTIVE_RUNS = new Set();
 const DEFAULTS = Object.freeze({
@@ -238,6 +239,8 @@ async function runV2Kernel({
       pid: process.pid,
       startedAt: runnerStartedAt,
       lastHeartbeatAt: now(),
+      // This runner saves stale warnings as events; a watch then prints those.
+      recordsStale: true,
     };
     serializeV2DurableState(state);
     writeJsonAtomic(statePath(runDir), state);
@@ -255,6 +258,12 @@ async function runV2Kernel({
     onEvent?.(event);
     return event;
   };
+  // Saves each stale warning as an event (stale-recorder.js). The check
+  // cadence and the thresholds are injectable for tests.
+  const staleCheckMs = dependencies.staleCheckMs ?? STALE_RECORD_EVERY_MS;
+  const staleRecorder = createStaleRecorder({
+    runDir, emit, everyMs: staleCheckMs, thresholds: dependencies.staleThresholds,
+  });
   const startPresentationStage = (actionId) => {
     const stage = stageForAction(state.presentation, actionId);
     if (!stage || stage.startedAt) return;
@@ -681,6 +690,7 @@ async function runV2Kernel({
             if (record.status === 'succeeded') recordReturnedEarly(attempt);
           }
           addUsage(state, attempt ? { ...record, usage: attempt.usage } : record);
+          staleRecorder.finish(currentAttemptId, action.id);
           emit('attempt.finished', {
             actionId: action.id,
             attemptId: currentAttemptId,
@@ -711,6 +721,7 @@ async function runV2Kernel({
               stalled: true,
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
               silentSec: record.silentSec ?? null,
+              ...(record.stalledBy ? { stalledBy: record.stalledBy } : {}),
               ...(record.noProgressSec != null ? { noProgressSec: record.noProgressSec } : {}),
             } : {}),
           });
@@ -1152,6 +1163,12 @@ async function runV2Kernel({
     }
   }, 10_000);
   heartbeat.unref?.();
+  // Its own real timer: a test that stubs the heartbeat's interval must not
+  // capture this one.
+  const staleTick = setInterval(() => {
+    try { staleRecorder.check(state, Date.now()); } catch { /* never breaks the run */ }
+  }, staleCheckMs);
+  staleTick.unref?.();
   ACTIVE_RUNS.add(runDir);
   process.on('SIGTERM', onSignal);
   process.on('SIGINT', onSignal);
@@ -1273,6 +1290,7 @@ async function runV2Kernel({
   } finally {
     await Promise.allSettled(activeTasks.values());
     stopInterval(heartbeat);
+    clearInterval(staleTick);
     process.removeListener('SIGTERM', onSignal);
     process.removeListener('SIGINT', onSignal);
     ACTIVE_RUNS.delete(runDir);

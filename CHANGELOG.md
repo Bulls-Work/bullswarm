@@ -26,6 +26,8 @@ Why: a run and an in-flight assignment did not say who started them, so a reader
 
 - `workflow goal --out-of-rounds <wait|end>` (default `wait`, today's behaviour). With `end`, a loop that reaches `maxRounds` with its condition unmet settles `passed` with reason `rounds-spent` in the same pass (event `loop.passed`, `source: flag`), the steps behind it run, and the run never parks for it; every view reads it like `continued-unmet`. Evidence: in 14 days 16 of 16 loops that ran out of rounds were ended by hand with `workflow continue` (median 0.4 min, nobody added rounds). The setting is saved with the run, so resume and `workflow continue` keep it (`docs/design/0.38.19-loops-end-themselves.md`).
 
+- Stale warnings are saved in the run. The process that runs the attempts now writes `attempt.stale` (same fields the watch printed, at level 1 and each further level) and `attempt.stale_cleared` (`actionId`, `attemptId`, `level`, `staleSec`) to the run's `events.jsonl`, checked every 30 s per running attempt, so a run nobody watched can still be counted. `workflow watch` prints the saved warnings once and no longer works out its own for such a run; an older run with none still gets the watch's own. A silence or no-progress stop now names its limit, `stalledBy: "silence" | "no-progress"`, on the attempt and its `attempt.finished` event. The level logic moved to `src/lib/stale-episodes.js`, shared by the recorder (`src/workflow/stale-recorder.js`) and the watch.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

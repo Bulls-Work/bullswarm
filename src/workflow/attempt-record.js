@@ -39,6 +39,7 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     ...(record.outputBytesObserved !== undefined ? { outputBytesObserved: record.outputBytesObserved } : {}),
     ...(record.stalled !== undefined ? { stalled: record.stalled } : {}),
     ...(record.partialOutput !== undefined ? { partialOutput: record.partialOutput } : {}),
+    ...(record.stalledBy !== undefined ? { stalledBy: record.stalledBy } : {}),
     ...(record.silentSec !== undefined ? { silentSec: record.silentSec } : {}),
     ...(record.noProgressSec !== undefined ? { noProgressSec: record.noProgressSec } : {}),
     // The dispatch-time byte ledger (see attemptBytes). Only the kernel's

@@ -67,7 +67,7 @@ const ATTEMPT_FIELDS = new Set([
   // and on every attempt recorded before the free-pool stall clock existed.
   // `noProgressSec` replaces `silentSec` on a step stopped because it changed
   // no file for that long (BULLSWARM_WORKER_NO_PROGRESS_SEC).
-  'stalled', 'partialOutput', 'silentSec', 'noProgressSec',
+  'stalled', 'partialOutput', 'silentSec', 'noProgressSec', 'stalledBy',
   // Prior-attempt handoff: the finished attempt records the out file byte
   // count (whenever the file exists, including failures), the persisted
   // stream path, the diff snapshot taken at worker exit, and the file
@@ -1421,7 +1421,7 @@ function validateState(state) {
   // Optional: written by a live kernel so readers can tell a running run from
   // one whose process died. Absent on a state no kernel has owned yet.
   if (state.runner !== undefined && state.runner !== null) {
-    noUnknown(state.runner, new Set(['pid', 'startedAt', 'lastHeartbeatAt']), 'state.runner');
+    noUnknown(state.runner, new Set(['pid', 'startedAt', 'lastHeartbeatAt', 'recordsStale']), 'state.runner');
     if (state.runner.pid !== null && !Number.isInteger(state.runner.pid)) fail('state.runner.pid must be an integer or null');
     timestamp(state.runner.startedAt, 'state.runner.startedAt');
     timestamp(state.runner.lastHeartbeatAt, 'state.runner.lastHeartbeatAt');
