@@ -189,15 +189,26 @@ function matchesType(value, name) {
   }
 }
 
+// Each pair names the types its keywords constrain: a contradiction there
+// leaves a node unsatisfiable only when the node allows no other type.
+const NUMERIC = ['number', 'integer'];
 const BOUND_PAIRS = [
-  ['minLength', 'maxLength', (low, high) => low > high],
-  ['minItems', 'maxItems', (low, high) => low > high],
-  ['minProperties', 'maxProperties', (low, high) => low > high],
-  ['minimum', 'maximum', (low, high) => low > high],
-  ['exclusiveMinimum', 'exclusiveMaximum', (low, high) => low >= high],
-  ['minimum', 'exclusiveMaximum', (low, high) => low >= high],
-  ['exclusiveMinimum', 'maximum', (low, high) => low >= high],
+  ['minLength', 'maxLength', (low, high) => low > high, ['string']],
+  ['minItems', 'maxItems', (low, high) => low > high, ['array']],
+  ['minProperties', 'maxProperties', (low, high) => low > high, ['object']],
+  ['minimum', 'maximum', (low, high) => low > high, NUMERIC],
+  ['exclusiveMinimum', 'exclusiveMaximum', (low, high) => low >= high, NUMERIC],
+  ['minimum', 'exclusiveMaximum', (low, high) => low >= high, NUMERIC],
+  ['exclusiveMinimum', 'maximum', (low, high) => low >= high, NUMERIC],
 ];
+
+// True when every type the node allows is one of `only`; a node with no (or
+// an unreadable) `type` allows every type.
+function allowsOnly(node, only) {
+  if (node.type === undefined) return false;
+  const names = Array.isArray(node.type) ? node.type : [node.type];
+  return names.length > 0 && names.every((name) => only.includes(name));
+}
 
 /**
  * Shapes in an answer schema that no value can satisfy, found in the schema
@@ -213,12 +224,12 @@ export function unsatisfiableSchemaIssues(schema, base = '') {
     if (!isObject(node) || depth > SCHEMA_MAX_DEPTH) return;
     const add = (keyword, why) => found.push({ path: `${path}.${keyword}`, message: `${path}.${keyword}: ${why}` });
     if (Array.isArray(node.enum) && !node.enum.length) add('enum', 'enum is empty, so no value matches');
-    for (const [low, high, bad] of BOUND_PAIRS) {
-      if (typeof node[low] === 'number' && typeof node[high] === 'number' && bad(node[low], node[high])) {
+    for (const [low, high, bad, only] of BOUND_PAIRS) {
+      if (allowsOnly(node, only) && typeof node[low] === 'number' && typeof node[high] === 'number' && bad(node[low], node[high])) {
         add(low, `${low} ${node[low]} and ${high} ${node[high]} leave no value that fits`);
       }
     }
-    if (node.additionalProperties === false && Array.isArray(node.required) && isObject(node.properties)) {
+    if (allowsOnly(node, ['object']) && node.additionalProperties === false && Array.isArray(node.required) && isObject(node.properties)) {
       for (const name of node.required) {
         if (typeof name === 'string' && !hasOwn(node.properties, name)) {
           add('required', `required "${name}" is not in properties and additionalProperties is false, so no object has it`);

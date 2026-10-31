@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Validate refuses an answer schema no worker can satisfy (empty `enum`, `minLength` above `maxLength`, `minimum` above `maximum`, `minItems`/`minProperties` above their max, a `required` name missing from `properties` under `additionalProperties: false`, a `const` its `enum` or `type` excludes), at the top or nested in `properties` and `items`, naming the JSON path. Before, such a step could only fail after a paid worker run.
+- Validate refuses an answer schema no worker can satisfy (empty `enum`, `minLength` above `maxLength`, `minimum` above `maximum`, `minItems`/`minProperties` above their max, a `required` name missing from `properties` under `additionalProperties: false`, a `const` its `enum` or `type` excludes; the bound and `required` checks count only when the `type` allows nothing else), at the top or nested in `properties` and `items`, naming the JSON path. Before, such a step could only fail after a paid worker run.
 
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
