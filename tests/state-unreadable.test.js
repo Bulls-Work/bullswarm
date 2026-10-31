@@ -131,3 +131,22 @@ test('a state.json that cannot be opened (no read permission) is refused, not mo
   chmodSync(path, 0o600);
   assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), GOOD);
 });
+
+test('two unreadable files moved aside in the same millisecond are both kept', (t) => {
+  const dir = home(t);
+  const RealDate = Date;
+  const fixed = RealDate.parse('2026-01-01T00:00:00.000Z');
+  globalThis.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [fixed])); }
+    static now() { return fixed; }
+  };
+  t.after(() => { globalThis.Date = RealDate; });
+  writeFileSync(join(dir, 'state.json'), 'AAA');
+  captureStderr(() => updateState(dir, append));
+  writeFileSync(join(dir, 'state.json'), 'BBB');
+  const stderr = captureStderr(() => updateState(dir, append));
+  globalThis.Date = RealDate;
+  const contents = kept(dir).map((name) => readFileSync(join(dir, name), 'utf8')).sort();
+  assert.deepEqual(contents, ['AAA', 'BBB']);
+  assert.equal(kept(dir).filter((name) => stderr.includes(name)).length, 1);
+});
