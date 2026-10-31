@@ -8,8 +8,9 @@ import { blockingRoot } from './cli-step-verbs.js';
 const DEAD = new Set(['failed', 'cancelled', 'blocked']);
 
 /**
- * [{step, dependency, status}] in added order: `step` is an added step,
- * `dependency` the failed, cancelled or blocked step it waits on. `state` is
+ * [{step, dependency, status, blockedBy?}] in added order, one entry per dead
+ * step an added step waits on: `step` is an added step, `dependency` the
+ * failed, cancelled or blocked step it waits on. `state` is
  * the run as the add left it (a cancelled step the reopen ran again is
  * pending, not dead); `added` the added step definitions. A blocked
  * dependency also names `blockedBy`, the failed step at its root: rerun
@@ -19,24 +20,29 @@ export function waitsOnFinishedSteps(state, added) {
   const statusOf = new Map((state?.actions ?? []).map((action) => [action.id, action.status]));
   const addedIds = new Set(added.map((action) => action.id));
   const dependsOf = new Map(added.map((action) => [action.id, Array.isArray(action.dependsOn) ? action.dependsOn : []]));
-  const deadDependency = (id, seen) => {
+  // Every dead step `id` waits on, each once, in dependsOn order.
+  const deadDependencies = (id, seen, out) => {
     for (const dependency of dependsOf.get(id) ?? []) {
       if (seen.has(dependency)) continue;
       seen.add(dependency);
-      if (addedIds.has(dependency)) {
-        const through = deadDependency(dependency, seen);
-        if (through) return through;
-      } else if (DEAD.has(statusOf.get(dependency))) return dependency;
+      if (addedIds.has(dependency)) deadDependencies(dependency, seen, out);
+      else if (DEAD.has(statusOf.get(dependency))) out.push(dependency);
     }
-    return null;
+    return out;
   };
   const found = [];
   for (const action of added) {
-    const dependency = deadDependency(action.id, new Set());
-    if (!dependency) continue;
-    const status = statusOf.get(dependency);
-    const root = status === 'blocked' && state?.program ? blockingRoot(state, dependency) : null;
-    found.push({ step: action.id, dependency, status, ...(root ? { blockedBy: { step: root.id, status: root.status } } : {}) });
+    for (const dependency of deadDependencies(action.id, new Set(), [])) {
+      const status = statusOf.get(dependency);
+      if (status !== 'blocked') {
+        found.push({ step: action.id, dependency, status });
+        continue;
+      }
+      // A blocked step with no failed or cancelled step above it may still
+      // run once its upstream does, and rerun refuses it: no warning.
+      const root = state?.program ? blockingRoot(state, dependency) : null;
+      if (root && root.status !== 'blocked') found.push({ step: action.id, dependency, status, blockedBy: { step: root.id, status: root.status } });
+    }
   }
   return found;
 }
