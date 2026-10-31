@@ -23,7 +23,6 @@ const MOD_FLAG = 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS';
 const CLAUDE_SETTINGS = ['.claude', 'settings.json'];
 const MARKER_BEGIN = '<!-- bullswarm:begin v3 -->';
 const MARKER_END = '<!-- bullswarm:end -->';
-const MARKER_RE = /<!-- bullswarm:begin v\d+ -->[\s\S]*?<!-- bullswarm:end -->\n?/;
 
 const AGENT_LAYOUT = {
   codex: { skill: ['.codex', 'skills', 'bullswarm'], instructions: ['.codex', 'AGENTS.md'] },
@@ -44,29 +43,191 @@ Do not recurse when \`BULLSWARM_DEPTH\` is already set.
 ${MARKER_END}`;
 }
 
+// The file is the person's own text, so no byte of it is ever changed except
+// the Bullswarm block itself. The file is read and written as latin1, which
+// round-trips every byte (a BOM and non-UTF-8 text included); the markers are
+// ASCII. Nothing is trimmed anywhere.
+//
+// A marker counts only when it is the whole line: the marker text, optional
+// trailing spaces or tabs, then the line break (or the end of the file). A
+// marker sharing a line with other text is user text and is left alone. Lines
+// between a closed pair of code fences (``` or ~~~, up to 3 leading spaces,
+// closed by a line starting with the same character at least as many times)
+// are user text too; a fence that never closes is not a fence, so a block
+// appended after it is still found next time. A begin or end marker with no
+// partner changes nothing.
+//
+// Install on a file with no block appends: the file's own bytes, a line break
+// if it does not end in one, one blank line, the block, a line break. Remove
+// deletes exactly the block's lines and the one blank line before it when
+// present. So install then remove returns the original bytes when the file
+// ended in a line break, and the original plus one line break when it did not.
+// A bare-CR file (old Mac) is one long line: it gets "\n" appended and its
+// existing bytes are never altered.
+const BEGIN_LINE_RE = /^<!-- bullswarm:begin v(\d+) -->[ \t]*$/;
+const END_LINE_RE = /^<!-- bullswarm:end -->[ \t]*$/;
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+const BOM = 'ï»¿';
+const CURRENT_VERSION = Number(/v(\d+)/.exec(MARKER_BEGIN)[1]);
+
 export function applyAwarenessBlock(filePath, { approved }) {
   if (!approved) return { changed: false, reason: 'not approved' };
-  const existing = readOptional(filePath);
-  const stripped = existing.replace(MARKER_RE, '').trimEnd();
-  const next = stripped ? `${stripped}\n\n${awarenessBlock()}\n` : `${awarenessBlock()}\n`;
-  mkdirSync(dirname(filePath), { recursive: true });
+  const read = readExisting(filePath);
+  if (read.problem) return read.problem;
+  const existing = read.text;
+  const parsed = parseBlocks(existing);
+  if (parsed.stray) return malformed(filePath, parsed.stray);
+  if (parsed.blocks.some((block) => block.version > CURRENT_VERSION)) {
+    return { changed: false, reason: 'newer', path: filePath };
+  }
+  const eol = lineEnding(existing);
+  // The file is held as latin1 text (one char per byte), so the block goes in
+  // as its UTF-8 bytes: a non-ASCII character in the block stays correct.
+  const block = Buffer.from(awarenessBlock(), 'utf8').toString('latin1').replace(/\n/g, eol);
+  let next;
+  if (!parsed.blocks.length) {
+    const close = existing && !existing.endsWith('\n') ? eol : '';
+    next = `${existing}${close}${existing ? eol : ''}${block}${eol}`;
+  } else {
+    const [first, ...rest] = parsed.blocks;
+    next = `${existing.slice(0, first.start)}${block}${first.eol || eol}${cutSpans(existing.slice(first.end), rest, first.end)}`;
+  }
   if (next === existing) return { changed: false, reason: 'already current' };
-  writeFileSync(filePath, next);
-  return { changed: true, reason: existing.match(MARKER_RE) ? 'updated' : 'installed' };
+  const written = writeText(filePath, next);
+  if (written) return written;
+  return {
+    changed: true,
+    reason: parsed.blocks.length ? 'updated' : 'installed',
+    ...(parsed.blocks.length > 1 ? { removedExtra: parsed.blocks.length - 1 } : {}),
+  };
 }
 
 export function removeAwarenessBlock(filePath, { approved }) {
   if (!approved) return { changed: false, reason: 'not approved' };
-  if (!existsSync(filePath)) return { changed: false, reason: 'not installed' };
-  const existing = readFileSync(filePath, 'utf8');
-  const next = existing.replace(MARKER_RE, '').trimEnd();
-  if (next === existing.trimEnd()) return { changed: false, reason: 'not installed' };
-  writeFileSync(filePath, next ? `${next}\n` : '');
-  return { changed: true, reason: 'removed' };
+  const read = readExisting(filePath);
+  if (read.problem) return read.problem;
+  const parsed = parseBlocks(read.text);
+  if (parsed.stray) return malformed(filePath, parsed.stray);
+  if (!parsed.blocks.length) return { changed: false, reason: 'not installed' };
+  const written = writeText(filePath, cutSpans(read.text, parsed.blocks, 0));
+  if (written) return written;
+  return { changed: true, reason: 'removed', removedBlocks: parsed.blocks.length };
 }
 
+function splitLines(text) {
+  const lines = [];
+  let start = 0;
+  while (start < text.length) {
+    const nl = text.indexOf('\n', start);
+    const next = nl === -1 ? text.length : nl + 1;
+    const raw = text.slice(start, nl === -1 ? next : nl);
+    lines.push({ start, next, eol: nl === -1 ? '' : (raw.endsWith('\r') ? '\r\n' : '\n'), content: raw.endsWith('\r') ? raw.slice(0, -1) : raw });
+    start = next;
+  }
+  return lines;
+}
+
+function fencedLines(lines) {
+  const fenced = new Array(lines.length).fill(false);
+  let open = null;
+  lines.forEach((line, index) => {
+    const match = FENCE_RE.exec(line.content);
+    if (!open) {
+      if (match) open = { index, char: match[1][0], size: match[1].length };
+    // A closing fence is only fence characters (CommonMark): ```js inside an
+    // example is content, not the end of it.
+    } else if (match && match[1][0] === open.char && match[1].length >= open.size
+      && line.content.slice(line.content.indexOf(match[1]) + match[1].length).trim() === '') {
+      for (let i = open.index; i <= index; i += 1) fenced[i] = true;
+      open = null;
+    }
+  });
+  return fenced;
+}
+
+// Complete blocks (begin ... end), each with `cut`, the start of the blank line
+// before it when there is one: the span that remove deletes.
+function parseBlocks(text) {
+  const lines = splitLines(text);
+  const fenced = fencedLines(lines);
+  const blocks = [];
+  let open = null;
+  let floor = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (fenced[index]) continue;
+    const line = lines[index];
+    const content = index === 0 && line.content.startsWith(BOM) ? line.content.slice(BOM.length) : line.content;
+    const offset = line.content.length - content.length;
+    const begin = BEGIN_LINE_RE.exec(content);
+    if (begin) {
+      if (open) return { blocks, stray: `begin marker at line ${open.line} has no end marker` };
+      open = { index, line: index + 1, start: line.start + offset, version: Number(begin[1]) };
+    } else if (END_LINE_RE.test(content)) {
+      if (!open) return { blocks, stray: `end marker at line ${index + 1} has no begin marker` };
+      const before = lines[open.index - 1];
+      const blank = before && open.index - 1 >= floor && before.content === '' && before.eol ? before.start : open.start;
+      blocks.push({ start: open.start, cut: blank, end: line.next, eol: line.eol, version: open.version });
+      floor = index + 1;
+      open = null;
+    }
+  }
+  if (open) return { blocks, stray: `begin marker at line ${open.line} has no end marker` };
+  return { blocks, stray: null };
+}
+
+// Cut each block (and its blank line before) out of text, which starts at
+// `base` in the file the blocks were parsed from. Nothing else is touched.
+function cutSpans(text, blocks, base) {
+  let out = '';
+  let cursor = 0;
+  for (const block of blocks) {
+    out += text.slice(cursor, block.cut - base);
+    cursor = block.end - base;
+  }
+  return out + text.slice(cursor);
+}
+
+function lineEnding(text) {
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const lf = (text.match(/\n/g) ?? []).length - crlf;
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+function malformed(filePath, detail) {
+  return { changed: false, reason: 'malformed', detail, path: filePath };
+}
+
+// Only a missing file reads as empty; any other failure leaves the file alone.
+function readExisting(filePath) {
+  try { return { text: readFileSync(filePath).toString('latin1') }; } catch (error) {
+    if (error?.code === 'ENOENT') return { text: '' };
+    return { problem: { changed: false, reason: 'unreadable', detail: error?.message ?? String(error), path: filePath } };
+  }
+}
+
+function writeText(filePath, text) {
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, Buffer.from(text, 'latin1'));
+    return null;
+  } catch (error) {
+    return { changed: false, reason: 'unwritable', detail: error?.message ?? String(error), path: filePath };
+  }
+}
+
+// `integrate status` reads the file the way apply does. Present means a
+// complete block; a file that cannot be read or has a stray marker is a
+// problem named as such, not "missing".
 export function awarenessBlockPresent(filePath) {
-  return MARKER_RE.test(readOptional(filePath));
+  const read = readExisting(filePath);
+  return !read.problem && !parseBlocks(read.text).stray && parseBlocks(read.text).blocks.length > 0;
+}
+
+function awarenessProblem(filePath) {
+  const read = readExisting(filePath);
+  if (read.problem) return { reason: read.problem.reason, detail: read.problem.detail };
+  const { stray } = parseBlocks(read.text);
+  return stray ? { reason: 'malformed', detail: stray } : null;
 }
 
 export function parseIntegrationAgents(value) {
@@ -89,12 +250,15 @@ export function integrationStatus({
   const selected = parseIntegrationAgents(agents);
   const entries = selected.map((agent) => {
     const paths = pathsFor(homeDir, agent);
+    const awareness = awarenessBlockPresent(paths.instructionsPath);
+    const problem = awareness ? null : awarenessProblem(paths.instructionsPath);
     const entry = {
       agent,
       skillPath: paths.skillPath,
       skill: skillLinkStatus(paths.skillPath, skillSource),
       instructionsPath: paths.instructionsPath,
-      awareness: awarenessBlockPresent(paths.instructionsPath),
+      awareness,
+      ...(problem ? { awarenessProblem: problem } : {}),
     };
     if (agent === 'claude') {
       entry.modPath = join(homeDir, ...MOD_LINK);
@@ -210,12 +374,34 @@ export function cmdIntegrate(opts) {
     }
     if (opts.json) console.log(JSON.stringify(result, null, 2));
     else printIntegrationResult(result);
+    const blocked = reportBlockProblems(result);
     const ok = result.status?.ok ?? result.ok;
-    return ok === false && subcommand === 'status' ? 1 : 0;
+    return blocked || (ok === false && subcommand === 'status') ? 1 : 0;
   } catch (error) {
     console.error(`✗ ${error.message}`);
     return 1;
   }
+}
+
+// An instruction file the edit would not touch is a failed install or remove:
+// say which file, which line and how to fix it, and let the command exit 1 like
+// its other failures. A newer block is left on purpose, so it only warns.
+function reportBlockProblems(result) {
+  let failed = false;
+  for (const change of result.changes ?? []) {
+    const a = change.awareness;
+    if (!a || a.changed) continue;
+    if (a.reason === 'malformed') {
+      failed = true;
+      console.error(`⚠ ${a.path}: left unchanged; ${a.detail}. Delete or complete that marker by hand (a block is <!-- bullswarm:begin vN --> ... <!-- bullswarm:end -->), then run the command again.`);
+    } else if (a.reason === 'unreadable' || a.reason === 'unwritable') {
+      failed = true;
+      console.error(`⚠ ${a.path}: left unchanged; ${a.reason} (${a.detail}). Fix its permissions or type, then run the command again.`);
+    } else if (a.reason === 'newer') {
+      console.error(`⚠ ${a.path}: holds a Bullswarm block from a newer version; left as is. Update bullswarm, or run 'bullswarm integrate remove --yes' to drop it.`);
+    }
+  }
+  return failed;
 }
 
 function pathsFor(homeDir, agent) {
@@ -322,7 +508,9 @@ function printIntegrationResult(result) {
   const status = result.status ?? result;
   for (const entry of status.agents ?? []) {
     const skill = entry.skill.status === 'installed' ? 'skill ✓' : `skill ${entry.skill.status}`;
-    const awareness = entry.awareness ? 'awareness ✓' : 'awareness missing';
+    const awareness = entry.awareness ? 'awareness ✓'
+      : entry.awarenessProblem ? `awareness ${entry.awarenessProblem.reason} (${entry.awarenessProblem.detail}; ${entry.instructionsPath})`
+        : 'awareness missing';
     const mod = entry.mod
       ? `; mod ${entry.mod.status === 'installed' ? '✓' : entry.mod.status}; function hooks ${entry.hooksFlag ? '✓' : 'flag missing'}`
       : '';
