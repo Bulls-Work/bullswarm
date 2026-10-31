@@ -127,3 +127,12 @@ test('an `outside: none` report still gets the failed check\'s automatic retry',
   const finished = readEvents(run.runDir).filter((e) => e.type === 'attempt.finished').map((e) => e.payload.willRetry);
   assert.deepEqual(finished, [true, false]);
 });
+
+test('a real blocker that starts with a placeholder word and a colon, semicolon or dash is kept', () => {
+  for (const blocker of [
+    'N/A: the repo is read-only', 'none: sandbox blocks writes', 'nil: db unreachable',
+    'nothing - waiting on review', 'none; npm registry 403', 'nothing left; vendor is read-only',
+  ]) {
+    assert.deepEqual(outsideBlockers(`## Not done\n- outside: ${blocker}\n`), [blocker], blocker);
+  }
+});
