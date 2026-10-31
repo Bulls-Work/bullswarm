@@ -361,7 +361,8 @@ export async function dispatchV2Action({
   // One expectation for the whole action: lane and effort do not change
   // between attempts, and the spend model is memoized per process anyway. The
   // decision log makes it a measured median instead of a documented default.
-  const spendDecisionLog = coreDecisionLog().filter((entry) => entry?.failureKind !== 'stalled');
+  // expectedMinutesFor skips stopped and stalled rows itself (isDurationSample).
+  const spendDecisionLog = coreDecisionLog();
   const expected = await expectedMinutesFromSpendModel(
     { lane: action.lane ?? 'chore', effort },
     { decisionLog: spendDecisionLog },

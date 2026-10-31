@@ -3,7 +3,7 @@
 // threshold from its recorded rung median (v2-dispatch.js applies it). And how
 // long a writing step may change no file before it is stopped the same way.
 import { rungRecord } from '../lib/strategy.js';
-import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
+import { isDurationSample, MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { deliverableTypeOf, roleOf } from './step-vocabulary.js';
 import { actionWrites } from '../lib/stale.js';
 
@@ -61,10 +61,10 @@ export function noProgressLimitApplies(action) {
 }
 
 function recordedRung(decisionLog, poolName, effort) {
-  // A stall is a transport failure, not a real duration sample. Excluding it
-  // here keeps the free-pool threshold from tightening after each timeout even
-  // when an older strategy.js has not yet applied the same guard.
-  const usable = (decisionLog ?? []).filter((entry) => entry?.failureKind !== 'stalled');
+  // Only rows that say how long the work takes (isDurationSample: not stopped,
+  // not stalled), so `dispatches` below counts real samples and a cancel or a
+  // timeout can neither tighten the threshold nor make one run look trusted.
+  const usable = (decisionLog ?? []).filter(isDurationSample);
   return rungRecord(usable, poolName, effort);
 }
 
