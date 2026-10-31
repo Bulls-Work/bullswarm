@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: a usage error (exit 2: unknown flag, bad value, missing argument) with `--json` on the command line now prints one JSON object on stdout, `{ "error": "usage", "message": ..., "usage": ... }`, instead of leaving stdout empty. The human text still goes to stderr; without `--json` nothing changes.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
