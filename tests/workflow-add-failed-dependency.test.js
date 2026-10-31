@@ -195,3 +195,20 @@ test('a step added behind a blocked step names the failed step at the root, sinc
     { step: 'g', dependency: 'c', status: 'blocked', blockedBy: { step: 'b', status: 'failed' } },
   ]);
 });
+
+test('waitsOnFinishedSteps: one entry per dead dependency, cancelled counts, a blocked step with nothing failed above it does not', async () => {
+  const { waitsOnFinishedSteps } = await import('../src/workflow/add-dead-waits.js');
+  const state = {
+    program: { actions: [{ id: 'b' }, { id: 'c' }, { id: 'p', dependsOn: ['q'] }, { id: 'q' }] },
+    actions: [{ id: 'b', status: 'failed' }, { id: 'c', status: 'cancelled' }, { id: 'p', status: 'blocked' }, { id: 'q', status: 'pending' }],
+  };
+  assert.deepEqual(waitsOnFinishedSteps(state, [{ id: 'x', dependsOn: ['b', 'c'] }]), [
+    { step: 'x', dependency: 'b', status: 'failed' },
+    { step: 'x', dependency: 'c', status: 'cancelled' },
+  ]);
+  assert.deepEqual(waitsOnFinishedSteps(state, [{ id: 'y', dependsOn: ['b'] }, { id: 'z', dependsOn: ['y', 'b'] }]), [
+    { step: 'y', dependency: 'b', status: 'failed' },
+    { step: 'z', dependency: 'b', status: 'failed' },
+  ]);
+  assert.deepEqual(waitsOnFinishedSteps(state, [{ id: 'w', dependsOn: ['p'] }]), []);
+});
