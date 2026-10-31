@@ -8,7 +8,7 @@ export const HERDR_STRIP_ROWS = 5
  */
 export function stripBudget(maxRows: number, underHerdr: boolean): number {
   const budget = Math.max(1, maxRows - 1)
-  return budget
+  return underHerdr ? Math.min(budget, HERDR_STRIP_ROWS - 1) : budget
 }
 
 /** Pool rows, then run rows, then standalone rows, each filling what the one before left. */
