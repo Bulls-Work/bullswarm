@@ -1,3 +1,5 @@
+import { timerMs } from './run-delegate.js';
+
 function compactDuration(milliseconds) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
   if (seconds < 60) return `${seconds}s`;
@@ -40,7 +42,7 @@ export function createRunHeartbeat({ intervalSec, write = (line) => process.stde
           bytes,
           idleMs: at - lastActivityAt,
         }));
-      }, intervalSec * 1000);
+      }, timerMs(intervalSec) ?? 1000);
       timer.unref?.();
     },
     activity(observation = {}) {

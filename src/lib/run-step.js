@@ -76,8 +76,8 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
   if (lane === undefined || missing(lane)) return { error: `--lane is required (${LANES.join('|')})` };
   if (!LANES.includes(lane)) return { error: `--lane must be ${LANES.join(', ')} (got "${lane}")` };
   const heartbeatSec = opts.heartbeat == null || missing(opts.heartbeat) ? null : Number(opts.heartbeat);
-  if (missing(opts.heartbeat) || (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
-    return { error: '--heartbeat must be a number of seconds greater than or equal to 1' };
+  if (missing(opts.heartbeat) || (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1 || heartbeatSec > MAX_TIMEOUT_SEC))) {
+    return { error: `--heartbeat must be a number of seconds from 1 to ${MAX_TIMEOUT_SEC}` };
   }
   const effort = opts.effort ?? DEFAULT_EFFORT_BY_LANE[lane] ?? 'medium';
   if (!EFFORTS.includes(effort)) return { error: '--effort must be high, medium, or low' };
