@@ -189,6 +189,60 @@ function matchesType(value, name) {
   }
 }
 
+const BOUND_PAIRS = [
+  ['minLength', 'maxLength', (low, high) => low > high],
+  ['minItems', 'maxItems', (low, high) => low > high],
+  ['minProperties', 'maxProperties', (low, high) => low > high],
+  ['minimum', 'maximum', (low, high) => low > high],
+  ['exclusiveMinimum', 'exclusiveMaximum', (low, high) => low >= high],
+  ['minimum', 'exclusiveMaximum', (low, high) => low >= high],
+  ['exclusiveMinimum', 'maximum', (low, high) => low >= high],
+];
+
+/**
+ * Shapes in an answer schema that no value can satisfy, found in the schema
+ * itself and recursively under `properties` and `items`: an empty enum, a
+ * lower bound above its upper bound, a required name that a closed object
+ * does not list, a const its enum or type rules out. Returns `{path, message}`
+ * per shape, the path being `base` plus the JSON path. Not a solver: a
+ * keyword the walk does not read is never refused.
+ */
+export function unsatisfiableSchemaIssues(schema, base = '') {
+  const found = [];
+  const walk = (node, path, depth) => {
+    if (!isObject(node) || depth > SCHEMA_MAX_DEPTH) return;
+    const add = (keyword, why) => found.push({ path: `${path}.${keyword}`, message: `${path}.${keyword}: ${why}` });
+    if (Array.isArray(node.enum) && !node.enum.length) add('enum', 'enum is empty, so no value matches');
+    for (const [low, high, bad] of BOUND_PAIRS) {
+      if (typeof node[low] === 'number' && typeof node[high] === 'number' && bad(node[low], node[high])) {
+        add(low, `${low} ${node[low]} and ${high} ${node[high]} leave no value that fits`);
+      }
+    }
+    if (node.additionalProperties === false && Array.isArray(node.required) && isObject(node.properties)) {
+      for (const name of node.required) {
+        if (typeof name === 'string' && !hasOwn(node.properties, name)) {
+          add('required', `required "${name}" is not in properties and additionalProperties is false, so no object has it`);
+        }
+      }
+    }
+    if (hasOwn(node, 'const')) {
+      if (Array.isArray(node.enum) && node.enum.length && !node.enum.some((option) => jsonEqual(option, node.const))) {
+        add('const', `const ${cutJson(node.const)} is not one of the enum values`);
+      }
+      const names = node.type === undefined ? null : (Array.isArray(node.type) ? node.type : [node.type]);
+      if (names && names.every((name) => typeof name === 'string' && TYPE_NAMES.has(name)) && !names.some((name) => matchesType(node.const, name))) {
+        add('const', `const ${cutJson(node.const)} does not match type ${names.join(' or ')}`);
+      }
+    }
+    if (isObject(node.properties)) {
+      for (const name of Object.keys(node.properties)) walk(node.properties[name], childPath(`${path}.properties`, name), depth + 1);
+    }
+    if (isObject(node.items)) walk(node.items, `${path}.items`, depth + 1);
+  };
+  walk(schema, base, 0);
+  return found;
+}
+
 export function jsonEqual(a, b) {
   if (a === b) return true;
   if (typeof a !== typeof b || a === null || b === null || typeof a !== 'object') return false;

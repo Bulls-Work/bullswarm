@@ -54,6 +54,8 @@ Steps, gates and loops share one id space: an id is kebab-case and used once.
 | `areas` | no | 1-8 angles a review looks from (one line each, at most 80 characters); only on the review a dry loop's `until` names, as in [Fix until the review is dry](#fix-until-the-review-is-dry) |
 | `areasPerRound` | no | how many area reviewers run each round: 1 to the number of areas (at most 5); default the smaller of the number of areas and 3 |
 
+Validate refuses an `answer` schema no worker can satisfy and names its JSON path (e.g. `steps[2].answer.properties.ok.enum`): an empty `enum`, a lower bound above its upper bound (`minLength`, `minimum`, `minItems`, `minProperties`, exclusive forms), a `required` name missing from `properties` under `additionalProperties: false`, or a `const` its `enum` or `type` rules out, at the top or nested in `properties` and `items`.
+
 `purpose`, `affects`, `evidenceFor`, `kind`, `role`, `inputs`, `produces` and `defaults.verifyRounds` belong to v2 programs, and validate refuses them in v3 (`program.defaults.verifyRounds is not allowed; defaults take lane, effort, reasoning, retry and timeBox`). A check is an ordinary step with an `answer` and/or `evidence`.
 
 ### Gate
