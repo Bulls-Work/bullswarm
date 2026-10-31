@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pickPool, isExhausted } from '../src/lib/route.js';
-import { FIVE_HOUR_WALL_PCT, windowSpent } from '../src/meters/framework.js';
+import * as framework from '../src/meters/framework.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 
 const NOW = Date.parse('2026-10-31T12:00:00Z');
@@ -16,7 +16,7 @@ const routePool = (name, fiveHourUsedPct, extra = {}) => ({
 });
 
 test('the wall is 99', () => {
-  assert.equal(FIVE_HOUR_WALL_PCT, 99);
+  assert.equal(framework.FIVE_HOUR_WALL_PCT, 99);
 });
 
 test('router: a pool at 99% is skipped when another eligible pool exists', () => {
@@ -38,7 +38,7 @@ test('router: 98%, unknown and a passed reset behave as today', () => {
   assert.equal(pickPool('build', [routePool('hot', 98)], { now: NOW }).pick.pool, 'hot');
   assert.equal(pickPool('build', [routePool('blind', null)], { now: NOW }).pick.pool, 'blind');
   const over = routePool('old', 99, { fiveHourResetsAt: '2026-10-31T11:00:00Z' });
-  assert.equal(windowSpent(over, NOW), null, 'a reading whose reset has passed is over');
+  assert.equal(framework.windowSpent(over, NOW), null, 'a reading whose reset has passed is over');
   assert.equal(pickPool('build', [over], { now: NOW }).pick.pool, 'old');
 });
 
