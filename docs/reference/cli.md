@@ -890,7 +890,7 @@ bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --progra
 | `--detach` | rarely needed — explicitly requests the default independent-launch behavior; cannot combine with `--watch` | the default launch already detaches |
 | `--again` | start another copy even when an ongoing run already has the same goal text in the same `--cwd`; only a new launch is checked, never `--resume` or the internal `--request` relaunch | off (a duplicate of an ongoing goal is refused) |
 
-A loop that reaches `maxRounds` with its condition unmet parks the run until `workflow continue <run> <loop>` (`--rounds <1-5>` gives it more rounds; without `--rounds` it ends `continued`, condition not met). With `--out-of-rounds end` the loop ends itself at that point instead: reason `rounds-spent`, event `loop.passed` with `source: flag`, the steps behind it run, and the outcome reads as `continued-unmet`. A loop already waiting stays waiting, and a round added by `continue --rounds` that runs out again ends by itself.
+A loop that reaches `maxRounds` with its condition unmet parks the run until `workflow continue <run> <loop>` (`--rounds <1-5>` gives it more rounds; without `--rounds` it ends `continued`, condition not met). With `--out-of-rounds end` the loop ends itself at that point instead: reason `rounds-spent`, event `loop.passed` with `source: flag`, the steps behind it run, and the outcome reads as `continued-unmet`. A loop parked before the setting changed stays parked, and a round added by `continue --rounds` that runs out again ends by itself.
 
 Workers keep their edits even when their action fails. Failed dependencies skip downstream actions and independent branches finish. A resumed v3 run keeps its original completion and isolation policy.
 
