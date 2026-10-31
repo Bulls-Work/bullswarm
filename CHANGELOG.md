@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Worker argv placeholders (`{cwd}`, `{taskFile}`, `{sessionId}`, `{prompt}`, `{bullswarmDir}`) are now filled in one pass and inserted literally. A value holding `$&`, `$'`, `` $` `` or `$$` used to be rewritten (cwd `/tmp/a$&b` became `/tmp/a{cwd}b`), and a value that held another placeholder's text was substituted again. An unknown `{name}` stays as written.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
