@@ -1,3 +1,4 @@
+import { clearInvalidStateMarker, writeInvalidStateMarker } from './invalid-state.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +13,7 @@ import { invalidateRequirements } from './ledger.js';
 import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
 import { scheduleV2Actions } from './v2-scheduler.js';
 import {
-  actionDefinition, actionState, assertV2Resume, createV2DurableState, deserializeV2DurableState,
+  V2StateValidationError, actionDefinition, actionState, assertV2Resume, createV2DurableState, deserializeV2DurableState,
   serializeV2DurableState, statePath, validateV2GoalDocument, writeRunState,
 } from './v2-state.js';
 import { V2_TERMINAL_STATUSES } from './status.js';
@@ -139,7 +140,13 @@ async function runV2Kernel({
   if (resuming) {
     if (!existsSync(goalPath(runDir)) || !existsSync(statePath(runDir))) throw new Error('unsupported old autonomous run: V2 goal.json and state.json are required');
     const durableGoal = JSON.parse(readFileSync(goalPath(runDir), 'utf8'));
-    state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
+    try { state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8')); }
+    catch (error) {
+      // Leave the fact where watch, runs show and runs result read it.
+      if (error instanceof V2StateValidationError) writeInvalidStateMarker(runDir, error.message, 'kernel');
+      throw error;
+    }
+    clearInvalidStateMarker(runDir);
     assertV2Resume(durableGoal, state, { runId: id });
     // 0.38.0 (D1): only a run marked programFormat 3 is driven. An earlier
     // Bullswarm's run stays view-only here too, so a direct kernel start

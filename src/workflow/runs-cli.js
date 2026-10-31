@@ -1,3 +1,4 @@
+import { invalidStateLine, readInvalidStateMarker } from './invalid-state.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 // bullswarm workflow runs — instance management.
 //
@@ -198,13 +199,17 @@ function runsList(opts) {
     return err(error.message, 2);
   }
   const all = listRuns(BULLSWARM_DIR());
+  for (const r of all) {
+    const invalid = r.legacy ? null : readInvalidStateMarker(r.runDir);
+    if (invalid) { r.invalid = invalid; r.ongoing = false; }
+  }
   let filtered = all;
   if (opts.name) filtered = filtered.filter((r) => (r.legacy ? legacyRunName(r) : r.state?.intent?.goal) === opts.name);
   // Default scope: ongoing only. `--all` includes historical.
   if (!opts.all && !opts.historical) {
-    filtered = filtered.filter((r) => r.ongoing);
+    filtered = filtered.filter((r) => r.ongoing || r.invalid);
   } else if (opts.historical) {
-    filtered = filtered.filter((r) => !r.ongoing);
+    filtered = filtered.filter((r) => !r.ongoing && !r.invalid);
   }
   if (initiatedRange.sinceMs != null) {
     filtered = filtered.filter((r) => {
@@ -245,6 +250,10 @@ function runsList(opts) {
     return 0;
   }
   for (const r of filtered) {
+    if (r.invalid) {
+      console.log(`✗  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} invalid state: ${r.invalid.message} (file: ${r.invalid.file})`);
+      continue;
+    }
     if (r.legacy) {
       // One read-only row: no step or action progress is claimed, because
       // 0.27.0 never reads far enough into a legacy state.json to know it.
@@ -314,6 +323,20 @@ function runsShow(idToken, opts) {
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
   if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
+  // A marker left by a verb or kernel that found the state invalid. Nothing
+  // here validates: without a marker this behaves as before.
+  const invalid = readInvalidStateMarker(runDir);
+  if (invalid) {
+    if (opts.json) jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing: false, invalidState: invalid }, opts);
+    else {
+      console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
+      console.log(`# dir  ${runDir}`);
+      console.log('# status  invalid state  (not ongoing)');
+      console.log(`# ${invalid.message} (file: ${invalid.file})`);
+      console.log('# nothing can drive this run; its state is not repaired here');
+    }
+    return 0;
+  }
   const state = withV2Cancellation(readJsonSafe(statePath), runDir);
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
@@ -392,6 +415,8 @@ function runsResult(idToken, opts) {
 
   const { runId, runDir } = resolved;
   if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
+  const invalid = readInvalidStateMarker(runDir);
+  if (invalid) return err(invalidStateLine(resolved.shortId ?? runId, invalid));
   const state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json')), runDir);
   const ongoing = isOngoing(runDir, state);
   const liveness = v2RunnerLiveness(state, { runDir });
@@ -604,6 +629,10 @@ export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent =
 }
 
 function summarize(r) {
+  if (r.invalid) return {
+    runId: r.runId, shortId: r.shortId, legacy: false, workflow: 'autonomous-v2', goal: null,
+    status: 'invalid state', ongoing: false, invalidState: r.invalid,
+  };
   if (r.legacy) return {
     runId: r.runId, shortId: r.shortId, legacy: true, dir: r.runDir,
     workflow: r.state?.name ?? null, goal: r.state?.goal ?? null,
