@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A meter window's utilization now reads the same way in every path (`usedPctOf` in `src/meters/framework.js`): a number or a decimal-number string is a reading; `''`, whitespace, booleans, arrays, objects, `NaN`, `Infinity` and anything below 0 are no reading for that window, never 0% used (a weekly `-20` used to rank the pool as almost unused and win routing; `''` and `[]` read as 0%, `true` as 1%). Above 100 is kept and paced as 100. `meterReadingOf`, `windowPace`, `paceSnapshot` and `windowSpent` agree, so a numeric string `'80'` is no longer dropped by pacing.
+- A meter window's utilization now reads the same way in every path (`usedPctOf` in `src/meters/framework.js`): a number or a decimal-number string is a reading; `''`, whitespace, booleans, arrays, objects, `NaN`, `Infinity` and anything below 0 are no reading for that window, never 0% used (a weekly `-20` used to rank the pool as almost unused and win routing; `''` and `[]` read as 0%, `true` as 1%). Above 100 is kept and paced as 100. `meterReadingOf`, `windowPace`, `paceSnapshot` and `windowSpent` agree, so a numeric string `'80'` is no longer dropped by pacing. The same rule now covers the 5h fallback in `buildPools`, the refusal-marker path, five-hour-only pacing, the registry's window checks and the history line (garbage stores no number). `fiveHourUsedPct` is now capped at 100 for display and routing (150 shows as 100).
 
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 

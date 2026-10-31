@@ -24,11 +24,9 @@
 // pool view actually came from.
 
 import { loadState } from './state.js';
-// One strict numeric coercion for the whole codebase (src/lib/num.js).
-import { finiteOrNull } from './num.js';
 import {
   FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow, declaredResetPacing,
-  guessedRefusalWindow, refusalResetKnown, windowPace, WINDOW_MS,
+  guessedRefusalWindow, refusalResetKnown, windowPace, usedPctOf, WINDOW_MS,
 } from '../meters/framework.js';
 import { loadProviders } from './providers.js';
 import { isFreeModel } from './usage.js';
@@ -260,7 +258,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
         const selected = p.quotaRefusalWindow === 'monthly'
           ? reading.snapshot?.monthly
           : reading.snapshot?.seven_day;
-        p.usedPct = finiteOrNull(selected?.utilization) ?? 100;
+        p.usedPct = usedPctOf(selected?.utilization) ?? 100;
         p.pacingWindow = p.quotaRefusalWindow;
         p.elapsedPct = null;
         p.pace = -100;
@@ -338,10 +336,10 @@ export function fiveHourOnlyPace(reading, nowMs = Date.now()) {
   const snapshot = reading?.snapshot;
   if (!snapshot || reading.source === 'quota-refusal') return null;
   const reported = (window) => window && typeof window === 'object'
-    && (finiteOrNull(window.utilization) != null || (window.resets_at ?? null) != null);
+    && (usedPctOf(window.utilization) != null || (window.resets_at ?? null) != null);
   if (reported(snapshot.seven_day) || reported(snapshot.monthly)) return null;
   const raw = guessedRefusalWindow(snapshot.five_hour) ? null : snapshot.five_hour;
-  const usedPct = finiteOrNull(raw?.utilization);
+  const usedPct = usedPctOf(raw?.utilization);
   if (usedPct == null) return null;
   const resetsAtMs = Date.parse(raw?.resets_at ?? '');
   if (!Number.isFinite(resetsAtMs) || resetsAtMs <= nowMs) {
@@ -358,8 +356,9 @@ export function fiveHourOnlyPace(reading, nowMs = Date.now()) {
 export function fiveHourFromReading(reading, nowMs = Date.now()) {
   // A refusal marker's guessed 5h window is not a reading (framework.js).
   const raw5h = guessedRefusalWindow(reading?.snapshot?.five_hour) ? null : reading?.snapshot?.five_hour;
-  const usedPct = finiteOrNull(reading?.fiveHourUsedPct)
-    ?? finiteOrNull(raw5h?.utilization);
+  // Capped at 100 for display and routing: 150 is a pool over its limit, shown as 100.
+  const rawUsed = usedPctOf(reading?.fiveHourUsedPct) ?? usedPctOf(raw5h?.utilization);
+  const usedPct = rawUsed == null ? null : Math.min(100, rawUsed);
   const raw = reading?.fiveHourResetsAt ?? raw5h?.resets_at ?? null;
   const resetsMs = typeof raw === 'string' ? Date.parse(raw) : NaN;
   // The reading's window has reset since it was taken (seen 2026-10-14

@@ -59,7 +59,7 @@ for (const [name, raw] of [['-30', -30], ["'1e2'", '1e2'], ["''", '']]) {
       assert.equal(alpha.fiveHourUsedPct, null);
       assert.equal(pools.find((p) => p.name === 'beta').fiveHourUsedPct, 30);
       const picked = pickPool('build', pools, { now: NOW });
-      assert.equal(picked.pick?.name, 'beta', picked.why);
+      assert.equal(picked.pick?.pool, 'beta', picked.why);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -83,7 +83,7 @@ test('refusal path: a garbage weekly utilization is treated as spent (100), -20 
   try {
     const snapshot = {
       seven_day: { utilization: -20, resets_at: WEEK_RESET },
-      quota_refusal: { refusedAt: '2026-10-09T09:55:00Z', resetsAt: WEEK_RESET, window: 'weekly', resetKnown: true },
+      quota_refusal: { refusedAt: '2026-10-09T09:55:00Z', resetsAt: WEEK_RESET, window: 'weekly', resetSource: 'named' },
     };
     const { pools } = buildPools(home, NOW, {
       alpha: { source: 'quota-refusal', snapshot, burstGate: false, quotaRefusal: snapshot.quota_refusal },
