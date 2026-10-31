@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A run whose `state.json` fails validation is now loud instead of looking alive. `workflow resume`, `cancel`, `steer`, `add`, `continue` and `runs result` print `✗ run <id> has invalid saved state: <message> (file: <path>)` to stderr and exit 1 before starting or writing anything (before this, `resume` and `cancel` printed a success and exit 0 although the kernel died at once, or no kernel would ever read the cancellation). `workflow watch` checks the state on every poll and exits 1 with the same line instead of waiting forever. `runs show` and the runs list say `invalid state` (not ongoing) with the message, exit 0. The state is never repaired. Code: `src/workflow/invalid-state.js`; test: `tests/workflow-invalid-state.test.js`.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

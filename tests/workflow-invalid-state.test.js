@@ -36,7 +36,6 @@ function brokenRun(t, how) {
     },
   });
   state.lifecycle = { status: 'running', startedAt: new Date(Date.now() - 60_000).toISOString(), finishedAt: null, resultFile: null };
-  state.runner = { pid: 999_999_999, lastHeartbeatAt: new Date().toISOString() };
   writeFileSync(join(runDir, 'goal.json'), JSON.stringify(goal));
   writeFileSync(join(runDir, 'features.json'), JSON.stringify({ programFormat: 3 }));
   writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 1, pools: {}, incumbents: {}, decisionLog: [], config: { depthLimit: 2, callerName: 'test' } }));

@@ -36,6 +36,7 @@ import { workspacePathIssues } from './v2-planner.js';
 import { acquireKernelLease } from './v2-process.js';
 import { reviseV2Program } from './run-control.js';
 import { deserializeV2DurableState, serializeV2DurableState } from './v2-state.js';
+import { invalidStateRefusal } from './invalid-state.js';
 import { formatDuration } from './format-duration.js';
 
 function readState(runDir) {
@@ -162,6 +163,8 @@ export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, lau
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, 'continue');
   if (viewOnly !== null) return viewOnly;
+  const invalid = invalidStateRefusal(bullswarmDir, token);
+  if (invalid !== null) return invalid;
   const resolved = resolveRunId(bullswarmDir, token);
   let type = null;
   try { type = resolved ? readState(resolved.runDir).program?.control?.gates?.some((gate) => gate.id === nodeId) ? 'gate' : 'loop' : null; } catch { type = null; }
@@ -329,6 +332,8 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, 'add');
   if (viewOnly !== null) return viewOnly;
+  const invalid = invalidStateRefusal(bullswarmDir, token);
+  if (invalid !== null) return invalid;
   let fragment = null;
   if (fromFile) {
     try { fragment = readFragmentFile(fromFile); } catch (err) { console.error(`✗ ${err.message}`); return 2; }

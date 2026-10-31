@@ -14,6 +14,7 @@ import { queueSteering } from './steering.js';
 import { helpText, usageLine } from '../help.js';
 import { flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, drivableRunRefusal, legacyRunRefusal, loadV2RunState } from './cli-run-lookup.js';
+import { invalidStateRefusal } from './invalid-state.js';
 import { livePoolNames } from './cli-pool-checks.js';
 import { executeGoalDocument, launchDetachedResume, printGoalLaunchInstructions } from './cli-launch.js';
 
@@ -59,6 +60,8 @@ export async function wfCancel(opts) {
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'cancel'])}`); return 2; }
   const legacy = legacyRunRefusal(token, opts);
   if (legacy !== null) return legacy;
+  const invalid = invalidStateRefusal(BULLSWARM_DIR(), token);
+  if (invalid !== null) return invalid;
   let resolvedRun;
   try { resolvedRun = loadV2RunState(token); }
   catch (err) { console.error(`✗ ${err.message}`); return 1; }
@@ -189,6 +192,8 @@ export async function wfResume(opts) {
   }
   const viewOnly = drivableRunRefusal(token, opts, 'resume');
   if (viewOnly !== null) return viewOnly;
+  const invalid = invalidStateRefusal(BULLSWARM_DIR(), token);
+  if (invalid !== null) return invalid;
   const resolvedRun = resolveRunId(BULLSWARM_DIR(), token);
   if (!resolvedRun) { console.error(`✗ no run found for "${token}"`); return 1; }
   const durableGoalPath = join(resolvedRun.runDir, 'goal.json');
@@ -247,6 +252,8 @@ export function wfSteer(opts) {
   }
   const viewOnly = drivableRunRefusal(token, opts, 'steer');
   if (viewOnly !== null) return viewOnly;
+  const invalid = invalidStateRefusal(BULLSWARM_DIR(), token);
+  if (invalid !== null) return invalid;
   try {
     const result = queueSteering(BULLSWARM_DIR(), token, message);
     const payload = {

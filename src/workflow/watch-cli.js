@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, readKernelStderrTail } from './short-id.js';
 import { legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
+import { invalidStateLine, invalidStateOf } from './invalid-state.js';
 import { glyphs } from '../lib/glyphs.js';
 import { withPoolLabels } from '../lib/pool-labels.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
@@ -1303,6 +1304,10 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   let attached = false;
   let startedMs = null;
   while (true) {
+    // A state that fails validation never changes by itself and no kernel can
+    // load it: say so and stop rather than wait for an outcome.
+    const invalid = invalidStateOf(resolved.runDir);
+    if (invalid) { console.error(invalidStateLine(resolved.shortId ?? resolved.runId, invalid)); return 1; }
     const state = withV2Cancellation(readJson(statePath), resolved.runDir);
     if (state) {
       const nowMs = now();
