@@ -61,3 +61,11 @@ failed step.
 
 - 2026-10-31: first eval (baseline), Bullswarm 0.38.18. Results:
   `~/Repo/bullswork/out/evals/2026-10-31/`.
+- Scorecard v2 (first applies to the next eval after 2026-10-31): adds
+  "Review loops" (how each v3 loop ended; `continued` = ended by the caller
+  after running out of rounds, `rounds-spent` = ended by itself under
+  `--out-of-rounds end`) and saved stale warnings (`attempt.stale` events,
+  saved from 0.38.19) with the limit that stopped each stalled attempt. All v1
+  figures are unchanged; the trend shows the new ones as — against a v1
+  scorecard. Re-run on the 2026-10-31 window it gives 16 loops ended by the
+  caller of 49 and 0 saved stale warnings, as the report said.

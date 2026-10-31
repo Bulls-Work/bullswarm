@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
-const SCORECARD_VERSION = 1;
+const SCORECARD_VERSION = 2;
 
 function args(argv) {
   const out = { home: join(homedir(), '.bullswarm'), days: 14, until: new Date().toISOString(), orders: null, previous: null, out: null };
@@ -157,8 +157,48 @@ function runFacts(run, untilMs) {
     crossModelFailovers,
     hungAtCancel,
     staleEvents: run.events.filter((event) => /stale/.test(String(event.type))).length,
+    // Stale warnings the run saved (0.38.19+; older runs saved none): one
+    // episode per level-1 warning, and the highest level reached.
+    staleWarnings: run.events.filter((event) => event.type === 'attempt.stale').length,
+    staleEpisodes: run.events.filter((event) => event.type === 'attempt.stale' && Number(event.payload?.level ?? 1) <= 1).length,
+    staleMaxLevel: Math.max(0, ...run.events.filter((event) => event.type === 'attempt.stale').map((event) => Number(event.payload?.level ?? 1))),
+    // Which limit stopped a stalled attempt: no file change, else silence.
+    stalledBy: attempts.filter(stalledAttempt).map((attempt) => attempt.stalledBy
+      ?? (attempt.noProgressSec != null ? 'no-progress' : attempt.silentSec != null ? 'silence' : 'unknown')),
+    loops: loopFacts(state),
     answers: run.answers,
     cwd: state.intent?.cwd ?? null,
+  };
+}
+
+// How each v3 loop ended: dry, yield (low yield), continued (a caller ended
+// it with `workflow continue` after it ran out of rounds: a person or agent
+// was needed), rounds-spent (ended by itself at its last round, run flag
+// --out-of-rounds end), passed (a plain loop's condition held), blocked,
+// waiting (out of rounds, nobody answered yet) or pending.
+function loopFacts(state) {
+  return (state.controlNodes ?? []).filter((node) => node?.type === 'loop').map((node) => ({
+    id: node.id,
+    dry: node.findings !== undefined,
+    end: node.status === 'passed' ? (node.reason ?? 'passed') : (node.status ?? 'pending'),
+    round: node.round ?? null,
+    maxRounds: node.maxRounds ?? null,
+  }));
+}
+
+function loopSummary(facts) {
+  const loops = facts.flatMap((f) => f.loops.map((loop) => ({ ...loop, run: f.id, usd: f.usd })));
+  const byEnd = {};
+  for (const loop of loops) byEnd[loop.end] = (byEnd[loop.end] ?? 0) + 1;
+  const person = loops.filter((loop) => loop.end === 'continued');
+  return {
+    loops: loops.length,
+    dryLoops: loops.filter((loop) => loop.dry).length,
+    byEnd,
+    neededPerson: person.length,
+    // A run counts once even with two such loops.
+    neededPersonRunUsd: round(sum([...new Map(person.map((loop) => [loop.run, loop.usd])).values()]), 2),
+    endedByItselfOutOfRounds: loops.filter((loop) => loop.end === 'rounds-spent').length,
   };
 }
 
@@ -313,6 +353,9 @@ function trend(current, previous) {
     pacerMatchRate: s.routing.judged ? s.routing.matchedPacer / s.routing.judged : null,
     firstTryPassRate: s.quality.firstTryPassRate,
     stalledRuns: s.runsByKind.all.stalled,
+    // v2 figures: absent from a v1 scorecard (shown as —).
+    loopsNeedingPerson: s.loops?.neededPerson ?? null,
+    staleEpisodes: s.stalls?.staleEpisodes ?? null,
   });
   const now = pick(current);
   const before = pick(previous);
@@ -337,7 +380,13 @@ function markdown(card) {
   lines.push(`- dispatches by pool: ${JSON.stringify(r.byPool)}`);
   lines.push('- subscription points per pool: not attributable from the records (each dispatch records the meter change over its own window, which overlaps other dispatches; read the pool meters at the start and end of the eval instead)', '');
   const s = card.stalls;
-  lines.push('## Stalls', '', `- runs with a stalled attempt: ${s.stalledRuns} (${s.stalledAttempts} attempts)`, '- stale warnings: not measurable (the watch prints them; no stale event is ever saved to a run\'s events)', `- cancelled while an attempt had been silent ≥ 10 min (a hang a person stopped): ${s.hungAtCancel}`, '');
+  lines.push('## Stalls', '', `- runs with a stalled attempt: ${s.stalledRuns} (${s.stalledAttempts} attempts; stopped by ${JSON.stringify(s.stalledBy)})`,
+    `- stale warnings saved in run events: ${s.staleWarnings} in ${s.staleEpisodes} episodes across ${s.staleRuns} runs; highest level ${s.staleMaxLevel} (runs from before 0.38.19 save none, so a low figure over a window that mixes versions is a floor)`,
+    `- cancelled while an attempt had been silent ≥ 10 min (a hang a person stopped): ${s.hungAtCancel}`, '');
+  const l = card.loops;
+  lines.push('## Review loops', '', `- v3 loops: ${l.loops} (${l.dryLoops} dry loops); how they ended: ${JSON.stringify(l.byEnd)}`,
+    `- out of rounds and ended by the caller (\`workflow continue\`, a person or agent needed): ${l.neededPerson}; those runs cost $${l.neededPersonRunUsd} API-equivalent`,
+    `- out of rounds and ended by themselves (--out-of-rounds end): ${l.endedByItselfOutOfRounds}`, '');
   const q = card.quality;
   lines.push('## Quality', '', `- reviews with a checked answer: ${q.reviews}; passed ${q.passed}`, `- first try per reviewed change: ${q.firstTryPassed}/${q.firstTries} passed (${q.firstTryPassRate == null ? '—' : `${round(q.firstTryPassRate * 100)}%`})`, `- findings per review (reviews whose answer has a findings list: ${q.reviewsWithFindings}): ${q.findingsPerReview ?? '—'}; by severity ${JSON.stringify(q.findingsBySeverity)}`);
   if (card.rework) lines.push(`- fleet orders claimed done in the window: ${card.rework.claimedDone}; not accepted as done afterwards: ${card.rework.reopened} (${card.rework.reworkRate == null ? '—' : `${round(card.rework.reworkRate * 100)}%`}): back to work ${card.rework.backToWork}, failed verification only ${card.rework.failedOnly}. Order files only (orders kept only in closed.jsonl are not counted).`);
@@ -369,8 +418,14 @@ export function scorecard({ home, days, until, orders = null, previous = null })
       stalledRuns: facts.filter((f) => f.stalled).length,
       stalledAttempts: sum(facts.map((f) => f.stalledAttempts)),
       staleEvents: sum(facts.map((f) => f.staleEvents)),
+      staleWarnings: sum(facts.map((f) => f.staleWarnings)),
+      staleEpisodes: sum(facts.map((f) => f.staleEpisodes)),
+      staleRuns: facts.filter((f) => f.staleWarnings > 0).length,
+      staleMaxLevel: Math.max(0, ...facts.map((f) => f.staleMaxLevel)),
+      stalledBy: facts.flatMap((f) => f.stalledBy).reduce((acc, by) => ({ ...acc, [by]: (acc[by] ?? 0) + 1 }), {}),
       hungAtCancel: facts.filter((f) => f.hungAtCancel).length,
     },
+    loops: loopSummary(facts),
     quality: reviewFacts(facts),
     rework: reworkFacts(orders, fromMs, toMs),
     expensive: [...facts].sort((a, b) => b.usd - a.usd).slice(0, 5).map((f) => ({
