@@ -160,8 +160,8 @@ function runFacts(run, untilMs) {
     // Stale warnings the run saved (0.38.19+; older runs saved none): one
     // episode per level-1 warning, and the highest level reached.
     staleWarnings: run.events.filter((event) => event.type === 'attempt.stale').length,
-    staleEpisodes: run.events.filter((event) => event.type === 'attempt.stale' && Number(event.payload?.level ?? 1) <= 1).length,
-    staleMaxLevel: Math.max(0, ...run.events.filter((event) => event.type === 'attempt.stale').map((event) => Number(event.payload?.level ?? 1))),
+    staleEpisodes: run.events.filter((event) => event.type === 'attempt.stale' && staleLevel(event) === 1).length,
+    staleMaxLevel: Math.max(0, ...run.events.filter((event) => event.type === 'attempt.stale').map(staleLevel).filter(Number.isFinite)),
     // Which limit stopped a stalled attempt: no file change, else silence.
     stalledBy: attempts.filter(stalledAttempt).map((attempt) => attempt.stalledBy
       ?? (attempt.noProgressSec != null ? 'no-progress' : attempt.silentSec != null ? 'silence' : 'unknown')),
@@ -170,6 +170,10 @@ function runFacts(run, untilMs) {
     cwd: state.intent?.cwd ?? null,
   };
 }
+
+// A saved warning's level: under payload (the runtime's event envelope), or
+// at the top level as the watch builds it; NaN when neither says.
+const staleLevel = (event) => Number(event.payload?.level ?? event.level ?? Number.NaN);
 
 // How each v3 loop ended: dry, yield (low yield), continued (a caller ended
 // it with `workflow continue` after it ran out of rounds: a person or agent
@@ -406,7 +410,7 @@ function markdown(card) {
   const lines = [];
   lines.push(`# Bullswarm scorecard ${card.window.from.slice(0, 10)} → ${card.window.until.slice(0, 10)}`, '');
   lines.push(`Measured from ${card.source.home} (${card.source.runDirs} run directories in the window, ${card.routing.dispatches} dispatch rows). Scorecard v${card.version}.`, '');
-  lines.push('Definitions: a run is in the window when it started in it. review = the goal starts with the word "Review" (the blind reviews leads launch; other reviews inside workflows count as workflow); task = any other run with one step (`bullswarm run`); workflow = the rest. success = result completed; failed = partial, interrupted, or abandoned (still marked running with no event for over a day); wall time counts every finished run (completed, partial, cancelled).', '');
+  lines.push('Definitions: a run is in the window when it started in it. review = the goal starts with the word "Review" (the blind reviews leads launch; other reviews inside workflows count as workflow); task = any other run with one step (`bullswarm run`); workflow = the rest. success = result completed; failed = partial, interrupted, or abandoned (still marked running with no event for over a day); wall time counts every finished run (completed, partial, cancelled). v2 figures: a loop ended `continued` when its caller ended it after it ran out of rounds, `rounds-spent` when it ended itself (--out-of-rounds end); a stale episode is a saved attempt.stale warning at level 1; a strict review is any run with a checked answer carrying a boolean `passed` (first try = first per working directory); loop reviewer answers are findings lists without `passed` in runs that have a dry loop.', '');
   lines.push('## Runs', '', '| kind | runs | success | failed | cancelled | stalled | open | wall p50 (min) | wall p90 (min) | tokens / successful run (all) | output tokens / successful run | API-equivalent USD |', '|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const [kind, s] of Object.entries(k)) lines.push(`| ${kind} | ${s.runs} | ${s.success} | ${s.failed} | ${s.cancelled} | ${s.stalled} | ${s.open} | ${s.wallMinP50 ?? '—'} | ${s.wallMinP90 ?? '—'} | ${s.tokensPerSuccessfulRun?.toLocaleString('en-US') ?? '—'} | ${s.outputTokensPerSuccessfulRun?.toLocaleString('en-US') ?? '—'} | ${s.apiUsdEquivalent} |`);
   lines.push('', 'Tokens per merged or accepted outcome: not recorded (Bullswarm does not know which outputs were merged).', '');
