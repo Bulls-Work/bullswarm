@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A cancelled run no longer shows its loop or gate as still going. The Run timeline row and the `workflow wait` line read `loop <id> · cancelled with the run in round N of M` with the stopped mark, and no continue command, for a gate or loop the run left pending or waiting. This is display only: `state.json` and `result.json` of a cancelled run are written exactly as before (the node stays pending or waiting, the result's loop outcome stays `pending` or `out-of-rounds`), so an older Bullswarm sharing the same home reads them unchanged, and resume and add behave as before. JSON views keep their values; `docs/reference/result.md` is unchanged.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

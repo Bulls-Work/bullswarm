@@ -31,6 +31,15 @@ export function controlRecords(state) {
 }
 
 /**
+ * A pending or waiting gate or loop of a cancelled run is shown cancelled.
+ * Display only: the saved record and the result keep what they say, so a
+ * version that has never heard of it reads them the same.
+ */
+export function showsCancelled(runStatus, nodeStatus) {
+  return runStatus === 'cancelled' && (nodeStatus === 'pending' || nodeStatus === 'waiting');
+}
+
+/**
  * The revision walk's edges through the run's gates and loops ([from, to]): a
  * gate's dependencies lead to the gate, a loop's steps to the loop, so a step
  * rerun or accepted before one reaches the steps behind it. A node that has
