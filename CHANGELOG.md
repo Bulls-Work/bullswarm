@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `workflow add` warns when an added step can never run. If it waits, directly or through other added steps, on a step that is failed, cancelled or blocked, the add still applies (a person may rerun that step afterwards) and prints one line per such step: `⚠ <step> waits on <dependency>, which failed: it stays blocked until you run \`bullswarm workflow step rerun <run> <dependency>\``. `--json` adds `waitsOnFinished: [{step, dependency, status}]`. The exit code is unchanged.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
