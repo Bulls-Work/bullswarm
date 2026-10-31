@@ -262,6 +262,42 @@ function routingFacts(rows) {
 
 // Reviews: a review run's answer with a boolean `passed`. The first try for a
 // change is the first review run in the window on that review checkout (cwd).
+// v1 figures read only runs whose goal starts with "Review" (kept as they
+// were, so the trend compares like with like). v2 adds every review the
+// records show: any run with a checked answer that carries a boolean
+// `passed` (a strict review whatever its goal says), and the findings
+// answers of review loops' reviewers inside workflows.
+function strictReviewFacts(facts, pick) {
+  const reviews = facts.filter(pick)
+    .map((f) => ({ ...f, answer: f.answers.find((a) => typeof a?.passed === 'boolean') ?? null }))
+    .filter((f) => f.answer);
+  const seen = new Set();
+  let firstTries = 0;
+  let firstPassed = 0;
+  for (const review of reviews) {
+    const key = review.cwd ?? review.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    firstTries += 1;
+    if (review.answer.passed) firstPassed += 1;
+  }
+  return { reviews: reviews.length, passed: reviews.filter((r) => r.answer.passed).length, firstTries, firstTryPassed: firstPassed,
+    firstTryPassRate: firstTries ? round(firstPassed / firstTries, 3) : null };
+}
+
+function loopReviewFacts(facts) {
+  const answers = facts.filter((f) => f.loops.some((loop) => loop.dry))
+    .flatMap((f) => f.answers.filter((a) => Array.isArray(a?.findings) && typeof a?.passed !== 'boolean'));
+  const counts = answers.map((a) => a.findings.length);
+  const inScope = answers.map((a) => a.findings.filter((x) => x?.inScope === true).length);
+  return {
+    reviewerAnswers: answers.length,
+    findingsPerAnswer: counts.length ? round(sum(counts) / counts.length, 2) : null,
+    inScopePerAnswer: inScope.length ? round(sum(inScope) / inScope.length, 2) : null,
+    cleanAnswers: counts.filter((n) => n === 0).length,
+  };
+}
+
 function reviewFacts(facts) {
   const reviews = facts.filter((f) => f.kind === 'review')
     .map((f) => ({ ...f, answer: f.answers.find((a) => typeof a?.passed === 'boolean') ?? null }))
@@ -288,6 +324,8 @@ function reviewFacts(facts) {
     reviewsWithFindings: findings.length,
     findingsPerReview: findings.length ? round(sum(findings) / findings.length, 2) : null,
     findingsBySeverity: severity,
+    allStrict: strictReviewFacts(facts, () => true),
+    inLoops: loopReviewFacts(facts),
   };
 }
 
@@ -352,6 +390,7 @@ function trend(current, previous) {
     outputTokensPerSuccessfulRun: s.runsByKind.all.outputTokensPerSuccessfulRun,
     pacerMatchRate: s.routing.judged ? s.routing.matchedPacer / s.routing.judged : null,
     firstTryPassRate: s.quality.firstTryPassRate,
+    firstTryPassRateAllStrict: s.quality.allStrict?.firstTryPassRate ?? null,
     stalledRuns: s.runsByKind.all.stalled,
     // v2 figures: absent from a v1 scorecard (shown as —).
     loopsNeedingPerson: s.loops?.neededPerson ?? null,
@@ -389,6 +428,12 @@ function markdown(card) {
     `- out of rounds and ended by themselves (--out-of-rounds end): ${l.endedByItselfOutOfRounds}`, '');
   const q = card.quality;
   lines.push('## Quality', '', `- reviews with a checked answer: ${q.reviews}; passed ${q.passed}`, `- first try per reviewed change: ${q.firstTryPassed}/${q.firstTries} passed (${q.firstTryPassRate == null ? '—' : `${round(q.firstTryPassRate * 100)}%`})`, `- findings per review (reviews whose answer has a findings list: ${q.reviewsWithFindings}): ${q.findingsPerReview ?? '—'}; by severity ${JSON.stringify(q.findingsBySeverity)}`);
+  if (q.allStrict) {
+    const a = q.allStrict;
+    lines.push(`- every strict review (any run with a checked answer carrying \`passed\`, whatever its goal): ${a.reviews}; passed ${a.passed}; first try per reviewed change ${a.firstTryPassed}/${a.firstTries} (${a.firstTryPassRate == null ? '—' : `${round(a.firstTryPassRate * 100)}%`})`);
+    const l = q.inLoops;
+    lines.push(`- review loops' reviewer answers (findings lists inside workflows): ${l.reviewerAnswers}; findings per answer ${l.findingsPerAnswer ?? '—'} (in scope ${l.inScopePerAnswer ?? '—'}); clean answers ${l.cleanAnswers}`);
+  }
   if (card.rework) lines.push(`- fleet orders claimed done in the window: ${card.rework.claimedDone}; not accepted as done afterwards: ${card.rework.reopened} (${card.rework.reworkRate == null ? '—' : `${round(card.rework.reworkRate * 100)}%`}): back to work ${card.rework.backToWork}, failed verification only ${card.rework.failedOnly}. Order files only (orders kept only in closed.jsonl are not counted).`);
   else lines.push('- rework after done: not recorded (no --orders directory given)');
   lines.push('', '## Five most expensive runs (API-equivalent USD)', '', '| run | kind | outcome | USD | tokens | attempts | wall (min) | failures | goal |', '|---|---|---|---|---|---|---|---|---|');

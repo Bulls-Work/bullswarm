@@ -51,9 +51,8 @@ failed step.
 - Do not change a task, its hidden tests or a program between evals unless
   a kit is wrong; when you must, say so in this file with the first eval the
   change applies to, so trends are not compared across it.
-- `t4-minisql/hidden/perf.test.js` has a 3 s budget and failed once under
-  machine load on 2026-10-31 (0.65-0.77 s when run alone): score on a quiet
-  machine.
+- `t4-minisql/hidden/perf.test.js` has a 3 s CPU budget (wall time until
+  2026-10-31, when it failed once under machine load).
 - The scorecard definitions are printed at the top of its output; change
   them only with a note here.
 
@@ -69,3 +68,12 @@ failed step.
   figures are unchanged; the trend shows the new ones as — against a v1
   scorecard. Re-run on the 2026-10-31 window it gives 16 loops ended by the
   caller of 49 and 0 saved stale warnings, as the report said.
+- Scorecard v2 also counts every strict review (any run whose checked
+  answer carries a boolean `passed`, whatever its goal says) and the review
+  loops' reviewer answers inside workflows; the v1 "goal starts with Review"
+  figures stay as they were. On the 2026-10-31 window: 97 strict reviews,
+  first try 12/75 (16%); 397 loop reviewer answers, 4.52 findings each.
+- t4 `perf.test.js` measures CPU time (`process.cpuUsage`) instead of wall
+  time from the next eval on, with the same 3 s budget: under load the wall
+  clock measured the machine. It passes with 8 busy processes running;
+  `--check-kits` still gives fixture 0/141, reference 141/141.
