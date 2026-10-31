@@ -140,6 +140,8 @@ export function register(on: On, options: PluginOptions = {}) {
   const aliases = aliasesOf(options.poolAliases)
   const stripLevel: 'runs' | 'full' | 'off' =
     options.strip === 'full' || options.strip === 'off' ? options.strip : 'runs'
+  // herdr sets HERDR_PANE_ID in its panes; read once at load.
+  const underHerdr = Boolean(process.env.HERDR_PANE_ID)
   let names = new Map<string, string>()
   let host: Host | null = null
   let cwd = ''
@@ -883,7 +885,12 @@ export function register(on: On, options: PluginOptions = {}) {
     const h = host
 
     return strip(
-      { ui: { Box, Text, Button }, columns: e.props.bodyColumns, maxRows: e.props.maxRows },
+      {
+        ui: { Box, Text, Button },
+        columns: e.props.bodyColumns,
+        maxRows: e.props.maxRows,
+        underHerdr,
+      },
       {
         pools,
         runs,

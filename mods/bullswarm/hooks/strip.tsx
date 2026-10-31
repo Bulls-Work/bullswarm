@@ -5,6 +5,7 @@ import type { ElementTable, RenderElement } from 'claude-code'
 
 import type { BullswarmAssignment, BullswarmPool, BullswarmRun } from '../types'
 import { poolRows } from './pool-rows'
+import { stripBudget, stripRowCounts } from './strip-budget'
 import { looseOf, runStatusText, stepsOf, timingOf } from './runs'
 
 export type StripUi = Pick<
@@ -38,20 +39,29 @@ export type StripActions = {
  * The strip in the AbovePrompt band, kept to one idea per row: a header
  * line with the pane button, one row per pool (bar, used/elapsed, pace,
  * what is running there), one row per ongoing run (progress, the step in
- * flight, the goal), one per standalone dispatch.
+ * flight, the goal), one per standalone dispatch. Under herdr the whole
+ * strip stays within 5 rows so the spinner line stays in the bottom 12 lines
+ * herdr reads to tell working from idle; the header shows the total run count.
  */
 export function strip(
-  kit: { ui: StripUi; columns: number; maxRows: number },
+  kit: { ui: StripUi; columns: number; maxRows: number; underHerdr?: boolean },
   model: StripModel,
   actions: StripActions,
 ): RenderElement {
   const { Box, Text, Button } = kit.ui
-  const budget = Math.max(1, kit.maxRows - 1)
-  const pools = model.level === 'full' ? model.pools.filter(p => p.enabled).slice(0, budget) : []
-  const loose = looseOf(model.runs, model.assignments)
-  const runRows = Math.max(0, budget - pools.length)
-  const runs = model.runs.slice(0, runRows)
-  const looseShown = loose.slice(0, Math.max(0, runRows - runs.length))
+  const budget = stripBudget(kit.maxRows, kit.underHerdr === true)
+  const enabled = model.level === 'full' ? model.pools.filter(p => p.enabled) : []
+  const allLoose = looseOf(model.runs, model.assignments)
+  const counts = stripRowCounts(
+    budget,
+    enabled.length,
+    model.runs.length,
+    allLoose.length,
+    kit.underHerdr === true && Boolean(model.lastError),
+  )
+  const pools = enabled.slice(0, counts.pools)
+  const runs = model.runs.slice(0, counts.runs)
+  const looseShown = allLoose.slice(0, counts.loose)
   const nameOf = (pool: string) => model.names.get(pool) ?? pool
 
   const summary = [

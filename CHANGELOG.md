@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- herdr showed a Claude pane running bullswarm as idle (#41). Under herdr (`HERDR_PANE_ID` set) the mod's strip now stays within 5 rows, header included, so Claude's spinner stays in the bottom 12 lines herdr reads; the skill tells the model to run `workflow watch` in the foreground with `--timeout` there. The upstream fix is herdr's own Claude integration.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.

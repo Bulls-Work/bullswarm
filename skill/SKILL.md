@@ -118,7 +118,9 @@ a new run refuses them, and runs they started are view-only.
 Start one watch right after launch; it prints nothing until a wake (a gate
 waiting, a loop out of rounds, a step that needs you, a pause, a stale step,
 steering, the end). Each exit is one wake: read the output, act, and start the
-printed `next:` line again. If your harness cannot wake you when a background
+printed `next:` line again. Under herdr (a pane manager that reads the screen to
+tell working from idle), run the watch in the foreground with `--timeout`
+instead, so the pane shows as working. If your harness cannot wake you when a background
 process ends, run the watch in the foreground: it blocks until the wake; give
 it a `--timeout` under your tool's time limit (`--until trouble --timeout 100`
 for 2 minutes). A restart without `--after` attaches at the newest event and
