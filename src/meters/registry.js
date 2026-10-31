@@ -267,6 +267,39 @@ function quotaRefusalOf(snapshot) {
   };
 }
 
+const MARKER_WINDOW_KEYS = Object.freeze({ '5h': 'five_hour', weekly: 'seven_day', monthly: 'monthly' });
+const NEW_WINDOW_SLACK_MS = 60_000;
+
+/**
+ * Does the cached refusal marker still hold against a successful live read?
+ * Only a marker whose reset the provider named does, while now is before that
+ * reset, and not when the live reading shows the refused window began again:
+ * its reset is later than the marker's by more than 60 s, or, for the 5h
+ * window, later at all.
+ */
+function namedRefusalHolds(cached, live, nowMs) {
+  const marker = quotaRefusalOf(cached);
+  if (marker?.resetSource !== 'named') return false;
+  const resetMs = finiteMs(Date.parse(marker.resetsAt ?? ''));
+  const key = MARKER_WINDOW_KEYS[marker.window];
+  if (resetMs == null || !key || nowMs >= resetMs) return false;
+  const liveResetMs = finiteMs(Date.parse(live[key]?.resets_at ?? ''));
+  const slack = key === 'five_hour' ? 0 : NEW_WINDOW_SLACK_MS;
+  return !(liveResetMs != null && liveResetMs > resetMs + slack);
+}
+
+/** The live reading with the cached marker and its refused window put back. */
+function withNamedRefusal(live, cached) {
+  const marker = cached.quota_refusal;
+  const key = MARKER_WINDOW_KEYS[marker.window];
+  return {
+    ...live,
+    source: 'quota-refusal',
+    quota_refusal: marker,
+    [key]: { ...(live[key] ?? {}), ...cached[key] },
+  };
+}
+
 function readingWithMarker(result, snapshot = result?.snapshot) {
   const marker = quotaRefusalOf(snapshot);
   return marker ? { ...result, source: 'quota-refusal', quotaRefusal: marker } : result;
@@ -398,13 +431,22 @@ export async function getMeterReading(pool, opts = {}) {
         logMeterRead(cache.dir, pool, { force, ok: false, error: meterErrorText(readErr) });
         throw readErr;
       }
-      // A provider reader is authoritative. If a test adapter or an older
-      // provider returns the cache object by reference, do not let the
-      // synthetic refusal metadata survive a successful live read.
-      const snapshot = rawSnapshot && typeof rawSnapshot === 'object'
+      // A provider reader is authoritative, with one exception: a refusal
+      // marker whose reset the provider NAMED outlives a successful live read
+      // until that reset, unless the read proves a new window began
+      // (namedRefusalHolds). Otherwise the pool reads 43% while its provider
+      // keeps refusing, and routing picks it again. Any other marker is
+      // cleared here, including one a test adapter or an older provider
+      // returned by reference.
+      let snapshot = rawSnapshot && typeof rawSnapshot === 'object'
         ? { ...rawSnapshot }
         : rawSnapshot;
-      if (snapshot && typeof snapshot === 'object' && quotaRefusalOf(snapshot)) {
+      const heldMarker = snapshot && typeof snapshot === 'object'
+        ? namedRefusalHolds(cached, snapshot, nowMs)
+        : false;
+      if (heldMarker) {
+        snapshot = withNamedRefusal(snapshot, cached);
+      } else if (snapshot && typeof snapshot === 'object' && quotaRefusalOf(snapshot)) {
         delete snapshot.quota_refusal;
         if (snapshot.source === 'quota-refusal') delete snapshot.source;
       }
@@ -416,7 +458,8 @@ export async function getMeterReading(pool, opts = {}) {
         dir: cache.dir,
         source: force ? 'forced' : 'live',
       });
-      return { snapshot, source: 'live', ...paceSnapshot(snapshot, nowMs) };
+      const result = { snapshot, source: 'live', ...paceSnapshot(snapshot, nowMs) };
+      return heldMarker ? readingWithMarker(result, snapshot) : result;
     } catch (err) {
       const hold = holdForError(err, nowMs);
       const holdUntil = nowMs + hold.retry_after_ms;
