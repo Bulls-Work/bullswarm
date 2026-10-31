@@ -422,13 +422,16 @@ export function dryVerdict(loop, record, group) {
   const need = loop.until.dry;
   const dry = clean >= need && !unreviewed.length;
   // The yield stop: the last `rounds` rounds were reviewed, covered every
-  // area, and each found at most `max` (YIELD_DEFAULT).
+  // area, and each found at most `max` (YIELD_DEFAULT) new findings. A round
+  // that found none counts, but the tail needs at least one finding (a tail
+  // of none is left to the dry rule).
   const rule = group?.fixFirst ? null : yieldOf(loop);
   const tail = rule ? rounds.slice(-rule.rounds) : [];
   const tailSeen = new Set(tail.flatMap((round) => round.reviewed));
   const lowYield = !dry && rule != null && tail.length === rule.rounds
     // A finding whose fix did not hold (still open) always keeps it going.
-    && tail.every((round) => round.reviewed.length > 0 && round.reopened === 0 && round.new >= 1 && round.new <= rule.max)
+    && tail.every((round) => round.reviewed.length > 0 && round.reopened === 0 && round.new >= 0 && round.new <= rule.max)
+    && tail.some((round) => round.new >= 1)
     && [...Array(areaCount(group)).keys()].every((area) => tailSeen.has(area));
   return {
     dry: dry || lowYield, ...(lowYield ? { by: 'yield', yieldRule: rule } : {}),

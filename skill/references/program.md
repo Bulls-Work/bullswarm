@@ -226,8 +226,9 @@ with `until: {"step": "review", "dry": 1}` and a findings answer:
   and handed to the fixer only in a round that runs it anyway, marked minor; a
   finding with no severity counts as at the floor.
 - **Low yield ends it too**: the loop also ends after 2 reviewed rounds in a
-  row that each found 1 to 3 new findings at or above the floor, every area
-  reviewed in them and none still open (the watch says `stopped on low yield`;
+  row that each found 0 to 3 new findings at or above the floor (at least one
+  of them found something; a tail of all zeros is left to `until.dry`), every
+  area reviewed in them and none still open (the watch says `stopped on low yield`;
   the result has `findings.yieldIn`). The last round's fixer still runs first.
   Change it with `until.yield: {"max": 1, "rounds": 3}`, or turn it off with
   `until.yield: false`; it never applies when a fixer runs before the review.
