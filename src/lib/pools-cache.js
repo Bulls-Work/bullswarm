@@ -98,11 +98,14 @@ export const __testHooks = { beforeBreak: null, afterRename: null };
  * A judged lock is broken by renaming it aside (atomic on one filesystem), not
  * by deleting it: between our last look and a delete another caller may have
  * broken the same lock and created its own, and a delete would remove that
- * live lock. After the rename we read what we hold. Our judged token: delete
- * it and retry the create. A successor's lock: link it back (this fails when a
- * newer lock already exists, which then stays) and return null. A crash in
- * between leaves a `.broken` file, which a later break sweeps once it is older
- * than the ceiling.
+ * live lock. The judged lock is identified by file identity (dev and ino taken
+ * at judgment), not by token: a successor caught between its create and its
+ * write has no token yet. After the rename, the same identity: delete it and
+ * retry the create. A different one is a successor's lock: link it back (this
+ * fails when a newer lock already exists, which then stays) and return null.
+ * A rename error other than ENOENT means we do not hold the lock: null, never
+ * a throw. A crash in between leaves a `.broken` file, which a later break
+ * sweeps once it is older than the ceiling.
  */
 function takeLock(lock, ceilingMs) {
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -113,17 +116,16 @@ function takeLock(lock, ceilingMs) {
       return token;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      let age;
-      try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
+      let judgedStat;
+      try { judgedStat = statSync(lock); } catch { continue; }
+      const age = Date.now() - judgedStat.mtimeMs;
       const owner = lockOwner(lock);
       const alive = processAlive(owner?.pid);
       if (alive && age < ceilingMs) return null;
       const deadPid = owner != null && Number.isInteger(owner.pid) && owner.pid > 0;
       if (!alive && !deadPid && age < LOCK_STALE_MS) return null;
-      // Break only the lock we judged: a successor's fresh lock stays.
-      if (lockOwner(lock)?.token !== (owner?.token ?? null)) return null;
       __testHooks.beforeBreak?.(lock);
-      if (!breakLock(lock, token, owner?.token ?? null)) return null;
+      if (!breakLock(lock, token, judgedStat)) return null;
     }
   }
   return null;
@@ -132,26 +134,30 @@ function takeLock(lock, ceilingMs) {
 /**
  * Breaks the lock we judged, by rename. True when the create may be retried
  * (we removed our judged lock, or another caller already had); false when we
- * grabbed a successor's lock, which is put back.
+ * do not hold the lock: a successor's lock grabbed by the rename is put back,
+ * and a failed rename leaves the lock as it was.
  */
-function breakLock(lock, token, judged) {
+function breakLock(lock, token, judgedStat) {
   const aside = `${lock}.${token}.broken`;
   try {
     renameSync(lock, aside);
   } catch (error) {
-    if (error.code === 'ENOENT') return true;
-    throw error;
+    return error.code === 'ENOENT';
   }
-  __testHooks.afterRename?.(lock);
-  const grabbed = lockOwner(aside)?.token ?? null;
-  if (grabbed === judged) {
+  try {
+    __testHooks.afterRename?.(lock);
+    let grabbed;
+    try { grabbed = statSync(aside); } catch { return false; }
+    if (grabbed.dev === judgedStat.dev && grabbed.ino === judgedStat.ino) {
+      try { unlinkSync(aside); } catch { /* best effort */ }
+      return true;
+    }
+    try { linkSync(aside, lock); } catch { /* a newer lock exists: it stays */ }
     try { unlinkSync(aside); } catch { /* best effort */ }
+    return false;
+  } finally {
     sweepBroken(lock);
-    return true;
   }
-  try { linkSync(aside, lock); } catch { /* a newer lock exists: it stays */ }
-  try { unlinkSync(aside); } catch { /* best effort */ }
-  return false;
 }
 
 /** Removes `.broken` files a crashed break left behind. Best effort, never throws. */
