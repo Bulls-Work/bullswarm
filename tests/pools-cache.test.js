@@ -3,7 +3,7 @@
 // 260-345 MB each from the mod's status line).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, existsSync, openSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -356,6 +356,53 @@ test('a successor lock still empty (between open and write) is not taken for the
     poolsCache.__testHooks.beforeBreak = null;
     if (held != null) closeSync(held);
   }
+});
+
+test('a successor that reuses the judged inode number is still told apart by mtime and token', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  writeFileSync(lock, `${process.pid} 1 hung-token\n`);
+  const old = new Date(Date.now() - 10 * 60_000);
+  utimesSync(lock, old, old);
+  let judged;
+  poolsCache.__testHooks.beforeBreak = () => {
+    judged = statSync(lock);
+    unlinkSync(lock);
+    writeFileSync(lock, `${process.pid} ${Date.now()} successor-token\n`);
+  };
+  // Simulate ext4 reusing the freed inode number: the successor reports the judged dev and ino.
+  poolsCache.__testHooks.statOf = (path) => {
+    const real = statSync(path);
+    if (!path.endsWith('.broken')) return real;
+    return { dev: judged.dev, ino: judged.ino, mtimeMs: real.mtimeMs, ctimeMs: real.ctimeMs, size: real.size };
+  };
+  try {
+    const c = counter([{ name: 'ours' }], 0);
+    const served = await servePools({ home: h, maxAgeMs: 60_000, build: c.build, waitMs: 100, waitStepMs: 20 });
+    assert.equal(c.builds, 0, 'we do not hold the lock, so we do not build');
+    assert.equal(served.source, 'stale');
+    assert.match(readFileSync(lock, 'utf8'), /successor-token/);
+  } finally {
+    poolsCache.__testHooks.beforeBreak = null;
+    poolsCache.__testHooks.statOf = statSync;
+  }
+});
+
+test('a .broken file with an old mtime but a fresh ctime (just renamed) is not swept', async () => {
+  const h = home();
+  const { dir, lock } = poolsCachePaths(h);
+  mkdirSync(dir, { recursive: true });
+  writePoolsCache(h, [{ name: 'old' }], 1_000);
+  const renamedAside = `${lock}.other-token.broken`;
+  writeFileSync(renamedAside, `${process.pid} 1 other-token\n`);
+  const past = new Date(Date.now() - LOCK_CEILING_MS - 60_000);
+  utimesSync(renamedAside, past, past); // old mtime; the change sets ctime to now, as a rename does
+  writeFileSync(lock, '999999999 1 dead-token\n');
+  const c = counter([{ name: 'ours' }], 0);
+  await servePools({ home: h, maxAgeMs: 60_000, build: c.build });
+  assert.equal(existsSync(renamedAside), true, 'a file renamed just now is not swept');
 });
 
 test('a failed build releases the lock and keeps the old cache', async () => {

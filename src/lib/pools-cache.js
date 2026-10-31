@@ -85,9 +85,10 @@ function processAlive(pid) {
 
 /**
  * Test seams: `beforeBreak(lock)` runs between judging a lock and breaking it,
- * `afterRename(lock)` between the rename aside and the read of what we hold.
+ * `afterRename(lock)` between the rename aside and the read of what we hold,
+ * `statOf(path)` the stat of an aside or `.broken` file (default `statSync`).
  */
-export const __testHooks = { beforeBreak: null, afterRename: null };
+export const __testHooks = { beforeBreak: null, afterRename: null, statOf: statSync };
 
 /**
  * This caller's token when it now holds the lock, else null. A live holder
@@ -147,7 +148,7 @@ function breakLock(lock, token, judgedStat) {
   try {
     __testHooks.afterRename?.(lock);
     let grabbed;
-    try { grabbed = statSync(aside); } catch { return false; }
+    try { grabbed = __testHooks.statOf(aside); } catch { return false; }
     if (grabbed.dev === judgedStat.dev && grabbed.ino === judgedStat.ino) {
       try { unlinkSync(aside); } catch { /* best effort */ }
       return true;
@@ -168,7 +169,7 @@ function sweepBroken(lock) {
       if (!entry.endsWith('.broken')) continue;
       try {
         const path = join(dir, entry);
-        if (Date.now() - statSync(path).mtimeMs > LOCK_CEILING_MS) unlinkSync(path);
+        if (Date.now() - __testHooks.statOf(path).mtimeMs > LOCK_CEILING_MS) unlinkSync(path);
       } catch { /* gone or busy */ }
     }
   } catch { /* unreadable dir */ }
