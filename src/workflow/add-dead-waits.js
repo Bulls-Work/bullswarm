@@ -6,6 +6,8 @@
 import { blockingRoot } from './cli-step-verbs.js';
 
 const DEAD = new Set(['failed', 'cancelled', 'blocked']);
+// The roots that keep a blocked step blocked; an interrupted root resumes.
+const DEAD_ROOT = new Set(['failed', 'cancelled']);
 
 /**
  * [{step, dependency, status, blockedBy?}] in added order, one entry per dead
@@ -39,9 +41,9 @@ export function waitsOnFinishedSteps(state, added) {
         continue;
       }
       // A blocked step with no failed or cancelled step above it may still
-      // run once its upstream does, and rerun refuses it: no warning.
+      // run once its upstream does (or resumes), and rerun refuses it: no warning.
       const root = state?.program ? blockingRoot(state, dependency) : null;
-      if (root && root.status !== 'blocked') found.push({ step: action.id, dependency, status, blockedBy: { step: root.id, status: root.status } });
+      if (root && DEAD_ROOT.has(root.status)) found.push({ step: action.id, dependency, status, blockedBy: { step: root.id, status: root.status } });
     }
   }
   return found;
