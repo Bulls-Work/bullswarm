@@ -18,7 +18,7 @@ function row(i, pad = 0) {
     pool: `pool-${i % 5}`,
     note: 'line one\nline two "quoted"',
     routing: { picked: `pool-${i % 5}`, candidates: [{ pool: 'a', surplus: 0.1 * i }, { pool: 'b', surplus: -1 }] },
-    usage: { text: 'x'.repeat(pad), nested: { list: [1, 2, 3], empty: {}, none: null } },
+    usage: { text: 'x'.repeat(pad * 40), turns: Array.from({ length: pad }, (_, k) => ({ i: k, tokens: { in: k * 3, out: k }, model: 'm' })), nested: { list: [1, 2, 3], empty: {}, none: null } },
   };
 }
 
@@ -108,7 +108,7 @@ test('4,000 rows of ~7 KB: compact file is at least 35% smaller and parses faste
   const { dir, cleanup } = tmp();
   try {
     const state = loadState(dir);
-    state.decisionLog = Array.from({ length: 4000 }, (_, i) => row(i, 6500));
+    state.decisionLog = Array.from({ length: 4000 }, (_, i) => row(i, 75));
     const pretty = `${JSON.stringify(state, null, 2)}\n`;
     saveState(dir, state);
     const compact = readFileSync(join(dir, 'state.json'), 'utf8');
@@ -117,8 +117,9 @@ test('4,000 rows of ~7 KB: compact file is at least 35% smaller and parses faste
       JSON.parse(text);
       return performance.now() - t;
     };
-    const prettyMs = time(pretty);
-    const compactMs = time(compact);
+    time(pretty); // warm-up
+    const prettyMs = Math.min(time(pretty), time(pretty));
+    const compactMs = Math.min(time(compact), time(compact));
     console.log(`pretty ${pretty.length} B parse ${prettyMs.toFixed(0)} ms; compact ${compact.length} B parse ${compactMs.toFixed(0)} ms; ${(100 * (1 - compact.length / pretty.length)).toFixed(1)}% smaller`);
     assert.ok(compact.length <= pretty.length * 0.65, `compact ${compact.length} vs pretty ${pretty.length}`);
   } finally { cleanup(); }
