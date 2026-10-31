@@ -107,3 +107,10 @@ test('no worker timer is handed a delay a 32-bit timer cannot hold', async () =>
   } finally { globalThis.setInterval = real; }
   assert.ok(delays.length === 1 && delays[0] <= 2_147_483_647, `heartbeat delay ${delays[0]}`);
 });
+
+test('the watch poll delay never exceeds what a 32-bit timer can hold', async () => {
+  const { pollDelayMs } = await import('../src/workflow/watch-cli.js');
+  assert.equal(pollDelayMs(3_000_000 * 1000), 604_800_000);
+  assert.equal(pollDelayMs(30), 100);
+  assert.equal(pollDelayMs(5000), 5000);
+});
