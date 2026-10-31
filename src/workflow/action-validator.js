@@ -8,6 +8,7 @@ import {
   deliverableTypeOf, laneFitsDeliverable, roleRouting,
 } from './step-vocabulary.js';
 import { normalizeBlindTo, normalizeRoute } from './step-route.js';
+import { EVIDENCE_DEFAULT_TIMEOUT_SEC, EVIDENCE_MAX_TIMEOUT_SEC } from './evidence-runner.js';
 import {
   AREAS_PER_ROUND_MAX, LOOP_MAX_ROUNDS, NON_FUNCTIONAL_AREA, coverRounds, fixStepsOf, groupOf,
 } from './dry-loops.js';
@@ -455,7 +456,6 @@ function normalizeDeliverable(raw, at, issues) {
 
 const EVIDENCE_MAX_ITEMS = 5;
 const EVIDENCE_CMD_MAX_BYTES = 2000;
-const EVIDENCE_TIMEOUT_MAX_SEC = 600;
 const EVIDENCE_OUTPUT_FILE = '$output';
 const EVIDENCE_ITEM_KEYS = Object.freeze({
   command: Object.freeze(['type', 'cmd', 'timeoutSec']),
@@ -519,8 +519,8 @@ function normalizeEvidence(raw, at, issues, { relaxedGraph, kind, evidenceFor, e
       }
     }
     if (item.timeoutSec !== undefined) {
-      if (!(Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= EVIDENCE_TIMEOUT_MAX_SEC)) {
-        issues.push(`${itemAt}.timeoutSec must be an integer from 1 to ${EVIDENCE_TIMEOUT_MAX_SEC} (default 120)`);
+      if (!(Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= EVIDENCE_MAX_TIMEOUT_SEC)) {
+        issues.push(`${itemAt}.timeoutSec must be an integer from 1 to ${EVIDENCE_MAX_TIMEOUT_SEC} (default ${EVIDENCE_DEFAULT_TIMEOUT_SEC})`);
       }
       result.timeoutSec = item.timeoutSec;
     }

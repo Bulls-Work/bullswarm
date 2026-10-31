@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Evidence command runner: a `timeoutSec` outside 1-600 or not an integer now runs with the default 120 s (the validator bound, now shared), a missing working directory fails with `working directory not found: <path>` instead of `spawn /bin/sh ENOENT`, and the header and `docs/reference/program.md` now say only the check's process group is stopped (a `setsid` descendant keeps running) and that a pipe passes on its last stage unless `set -o pipefail;` is used.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
