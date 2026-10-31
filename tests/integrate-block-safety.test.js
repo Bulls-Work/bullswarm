@@ -323,3 +323,18 @@ test('the inserted block is written as UTF-8 bytes even though the file is held 
     assert.equal(bytes.toString('utf8'), `notes → kept\n\n${awarenessBlock()}\n`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a fence line with an info string does not close a fence, so a block inside the example stays the person\'s text', async () => {
+  const { awarenessBlock, removeAwarenessBlock } = await import('../src/integrate.js');
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-integ-fence-'));
+  try {
+    const file = join(dir, 'CLAUDE.md');
+    const text = `\`\`\`md\n\`\`\`js\n${awarenessBlock()}\n\`\`\`\n`;
+    writeFileSync(file, text);
+    removeAwarenessBlock(file, { approved: true });
+    assert.equal(readFileSync(file, 'utf8'), text);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
