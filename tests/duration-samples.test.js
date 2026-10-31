@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rungRecord } from '../src/lib/strategy.js';
-import { expectedMinutesFor, isDurationSample, MIN_DURATION_SAMPLES } from '../src/lib/spend.js';
+import { expectedMinutesFor, MIN_DURATION_SAMPLES } from '../src/lib/spend.js';
 
 const row = (wallSec, extra = {}) => ({
   picked: 'p1', lane: 'build', effort: 'high', wallSec, ts: '2026-10-01T10:00:00Z', ...extra,
@@ -38,7 +38,9 @@ test('rungRecord: a false failure ran its full length and keeps its minutes', ()
   assert.equal(rec.dispatches, 2);
 });
 
-test('isDurationSample: stopped and stalled rows are out, false failures stay', () => {
+test('isDurationSample: stopped and stalled rows are out, false failures stay', async () => {
+  // Imported here so the other tests still load on a tree without it.
+  const { isDurationSample } = await import('../src/lib/spend.js');
   assert.equal(isDurationSample(ok(60)), true);
   assert.equal(isDurationSample(row(60, { failureKind: 'cancelled' })), false);
   assert.equal(isDurationSample(row(60, { why: 'workflow cancellation requested' })), false);
