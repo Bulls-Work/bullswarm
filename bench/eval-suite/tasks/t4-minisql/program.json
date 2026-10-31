@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "build",
+      "lane": "build",
+      "effort": "high",
+      "prompt": "In {cwd}, build the SQL engine README.md specifies, in src/ (export createDatabase from src/index.js as the visible tests import it), with thorough tests in tests/. Node 22 standard library only. Keep npm test passing.",
+      "evidence": [
+        {
+          "type": "command",
+          "cmd": "cd {cwd} && npm test",
+          "timeoutSec": 600
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "lane": "analyze",
+      "areas": [
+        "parser, operator precedence and literals",
+        "NULL logic, aggregates, GROUP BY and HAVING",
+        "UPDATE/DELETE, errors, LIKE, IN and BETWEEN"
+      ],
+      "areasPerRound": 2,
+      "prompt": "In {cwd}, review the code in src/ and its tests against README.md, which is the contract. Write and run small scripts against createDatabase to confirm each finding. Any behaviour that differs from README.md is a finding, even if it looks intended. Each finding: inScope true when it is a difference from README.md, a one-line title naming what is wrong and where, a severity, and a detail with a concrete input and the wrong versus expected result. Change no file.",
+      "answer": {
+        "type": "object",
+        "required": [
+          "findings"
+        ],
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "title",
+                "inScope",
+                "severity",
+                "detail"
+              ],
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "everyday",
+                    "edge",
+                    "obscure"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "stillOpen": {
+                  "type": "boolean"
+                },
+                "inScope": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "build"
+      ],
+      "blindTo": [
+        "build"
+      ]
+    },
+    {
+      "id": "fix",
+      "lane": "build",
+      "dependsOn": [
+        "review"
+      ],
+      "prompt": "In {cwd}, fix every finding you are given so the engine matches README.md, each with a regression test in tests/. Keep npm test passing.",
+      "evidence": [
+        {
+          "type": "command",
+          "cmd": "cd {cwd} && npm test",
+          "timeoutSec": 600
+        }
+      ]
+    }
+  ],
+  "loops": [
+    {
+      "id": "polish",
+      "steps": [
+        "review",
+        "fix"
+      ],
+      "until": {
+        "step": "review",
+        "dry": 1
+      },
+      "maxRounds": 4
+    }
+  ]
+}
