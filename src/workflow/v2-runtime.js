@@ -105,7 +105,7 @@ async function runV2Kernel({
   // launch, and the dispatch loop gets the same function so it can re-read
   // between its own retries.
   const refreshPools = dependencies.refreshPools
-    ?? createPoolRefresher({ bullswarmDir, initialPools: pools });
+    ?? createPoolRefresher({ bullswarmDir, initialPools: pools, ...(dependencies.poolRefresher ?? {}) });
   const syncPools = async (opts) => {
     try {
       const next = await refreshPools(opts);
