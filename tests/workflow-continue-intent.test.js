@@ -170,3 +170,20 @@ test('rounds 3 still extends the loop by 3', async (t) => {
 test('a refused continue is a wake for watch --until trouble', () => {
   assert.ok(controlTrouble({ type: 'control.continue_refused', nodeId: 'polish', why: 'rounds -1 is not a whole number from 1 to 5' }));
 });
+
+test('the watch help names a refused continue as a trouble wake', async () => {
+  const { readFileSync } = await import('node:fs');
+  const help = readFileSync(new URL('../src/help.js', import.meta.url), 'utf8');
+  assert.match(help, /at a gate waiting, a loop out of rounds or a refused continue in a v3 run/);
+});
+
+test('an in-memory NaN or true rounds is refused and named as given, not as null', async (t) => {
+  const f = fixture(t);
+  const run = await launch(f, loopProgram({ maxRounds: 2 }), never());
+  const state = deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8'));
+  for (const [rounds, named] of [[Number.NaN, 'NaN'], [true, 'true']]) {
+    const outcome = applyContinueOffline(state, { nodeId: 'polish', rounds }, { runDir: run.runDir, at: '2026-10-31T00:00:00Z' });
+    assert.equal(outcome.applied, false);
+    assert.match(outcome.why, new RegExp(`got ${named}$`));
+  }
+});
