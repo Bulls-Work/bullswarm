@@ -125,7 +125,7 @@ test('a state.json that cannot be opened (no read permission) is refused, not mo
   const path = join(dir, 'state.json');
   writeFileSync(path, JSON.stringify(GOOD));
   chmodSync(path, 0o000);
-  t.after(() => chmodSync(path, 0o600));
+  t.after(() => { try { chmodSync(path, 0o600); } catch { /* already removed */ } });
   assert.throws(() => updateState(dir, append), /state\.json .*EACCES/);
   assert.deepEqual(kept(dir), []);
   chmodSync(path, 0o600);

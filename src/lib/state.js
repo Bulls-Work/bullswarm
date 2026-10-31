@@ -437,15 +437,23 @@ export function saveState(bullswarmDir, state) {
  * A state.json that exists but is not a JSON object (truncated, one bad byte,
  * an array, null) reads as defaults, so saving over it would erase every pool
  * record, log row and setting. Called under the lock before a write: move the
- * file aside as state.json.unreadable-<time> and say so. If the move fails,
- * throw, so nothing is written over it. Readers never call this.
+ * file aside as state.json.unreadable-<time> and say so. If the file cannot
+ * be opened, or the move fails, throw, so nothing is written over it. Readers never call this.
  */
 function keepUnreadableState(bullswarmDir) {
   const path = join(bullswarmDir, 'state.json');
   if (!existsSync(path)) return;
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    // Not a damaged file but one that cannot be opened (permissions, a
+    // directory): moving it aside would hide it, so refuse the write.
+    throw new Error(`state.json at ${path} could not be opened: ${err.code ?? err.message}`);
+  }
   let reason = null;
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf8'));
+    const raw = JSON.parse(text);
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       reason = `expected a JSON object, found ${raw === null ? 'null' : Array.isArray(raw) ? 'an array' : typeof raw}`;
     }
