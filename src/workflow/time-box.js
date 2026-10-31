@@ -298,14 +298,14 @@ export function outsideBlockers(text) {
     .filter((blocker) => blocker && !notABlocker(blocker));
 }
 
-// What follows `outside:` when the worker names no blocker. notAnItem covers
-// "none", "nothing", "n/a" and "nil" with a reason; these whole-value
-// placeholders are too short to widen it, since "no tests pass" is work.
+// What follows `outside:` when the worker names no blocker: only a whole-value
+// placeholder. notAnItem is not reused here: it reads "N/A: the repo is
+// read-only" as an empty line with a reason, which is a real blocker.
 const NO_BLOCKER = new Set(['none', 'n/a', 'na', 'nothing', 'no', '-', 'nil', 'null', 'none found', 'no blockers', 'no blocker']);
 
 function notABlocker(blocker) {
   const bare = blocker.replace(/^[*_`]+|[*_`]+$/g, '').trim().toLowerCase().replace(/[.!?;:,\s]+$/, '');
-  return !bare || NO_BLOCKER.has(bare) || notAnItem(blocker);
+  return !bare || NO_BLOCKER.has(bare);
 }
 
 // --- display ---------------------------------------------------------------
