@@ -107,3 +107,93 @@ test('json: a help-dump usage error has a one-line message', () => {
   assert.ok(!body.message.includes('\n'), body.message);
   assert.ok(!/^usage:/i.test(body.message), body.message);
 });
+
+// Input errors (a file that cannot be read, a directory that does not exist)
+// also exit 2, but they are not usage errors: stdout stays empty as on main.
+const INPUT_ERRORS = [
+  { name: 'run --task-file that cannot be read', args: ['run', '--lane', 'build', '--add-dir', tmpdir(), '--task-file', '/nonexistent-bs-task', '--json'], text: /cannot read --task-file/ },
+  { name: 'run --answer-schema that cannot be read', args: ['run', '--lane', 'build', '--add-dir', tmpdir(), '--prompt', 'x', '--answer-schema', '/nonexistent-bs-schema', '--json'], text: /cannot read --answer-schema/ },
+  { name: 'run --add-dir that is not a directory', args: ['run', '--lane', 'build', '--add-dir', '/nonexistent-bs-dir', '--prompt', 'x', '--json'], text: /--add-dir is not an existing directory/ },
+];
+
+for (const c of INPUT_ERRORS) {
+  test(`json: an input error is not a usage error: ${c.name}`, () => {
+    const r = bullswarm(c.args);
+    assert.equal(r.code, 2);
+    assert.equal(r.out, '');
+    assert.match(r.err, c.text);
+  });
+}
+
+// The guard: one representative usage error per command family and per
+// producer, each with --json. Every one must leave exactly one
+// { error: 'usage' } object on stdout, a non-empty message, and exit 2. A new
+// usage exit that forgets reportUsageError fails here.
+const GUARD = [
+  ['workflow', 'continue', 'abc', 'n1', '--wait', '-1', '--json'],
+  ['workflow', 'continue', 'abc', 'n1', '--rounds', 'x', '--json'],
+  ['workflow', 'continue', '--json'],
+  ['workflow', 'add', 'abc', '--steps', 'x.json', '--from-answer', 's', '--json'],
+  ['workflow', 'add', 'abc', '--steps', 'x.json', '--wait', '-1', '--json'],
+  ['workflow', 'wait', 'abc', 's1', '--timeout', '-3', '--json'],
+  ['workflow', 'wait', '--json'],
+  ['workflow', 'step', 'restart', 'abc', 's1', '--wait', '-1', '--json'],
+  ['workflow', 'step', 'restart', '--json'],
+  ['workflow', 'resume', 'abc', '--watch', '--json'],
+  ['workflow', 'resume', '--json'],
+  ['workflow', 'pause', '--json'],
+  ['workflow', 'cancel', '--json'],
+  ['workflow', 'steer', 'abc', '--json'],
+  ['workflow', 'events', 'abc', '--after', 'x', '--json'],
+  ['workflow', 'events', '--json'],
+  ['workflow', 'watch', 'abc', '--until', 'bogus', '--json'],
+  ['workflow', 'watch', 'abc', '--classic', '--next', '--json'],
+  ['workflow', 'watch', '--json'],
+  ['workflow', 'action', 'show', '--json'],
+  ['workflow', 'task', 'show', '--json'],
+  ['workflow', 'plan', 'nope', '--json'],
+  ['workflow', 'plan', 'validate', '--json'],
+  ['workflow', 'plan', 'contract', '--json'],
+  ['workflow', 'runs', 'nope', '--json'],
+  ['workflow', 'runs', '--since', 'garbage', '--json'],
+  ['workflow', 'runs', 'show', '--json'],
+  ['workflow', 'runs', '--limit', 'x', '--json'],
+  ['workflow', 'reprice', '--since', 'garbage', '--json'],
+  ['workflow', 'goal', 'g', '--planner', 'x', '--program', 'p.json', '--json'],
+  ['workflow', 'goal', 'g', '--watch', '--json', '--program', 'x.json'],
+  ['workflow', 'goal', '--json'],
+  ['workflow', 'nope', '--json'],
+  ['integrate', 'nope', '--json'],
+  ['pools', '--max-age', 'x', '--json'],
+  ['pools', '--pool', '--json'],
+  ['pools', '--pool', 'no-such-pool', '--json'],
+  ['pools', 'nope', '--json'],
+  ['pools', 'label', '--json'],
+  ['assignments', '--max-age', 'x', '--json'],
+  ['run', '--json', '--bogus'],
+  ['run', '--json', '--lane', 'nope', '--prompt', 'x'],
+  ['strategy', 'bogus', '--json'],
+  ['strategy', 'set-reserve', '--json'],
+  ['provider', 'bogus', '--json'],
+  ['home', 'bogus', '--json'],
+  ['home', 'snapshot', '--json'],
+  ['nope-verb', '--json'],
+];
+
+test('json guard: the family list is large enough to mean something', () => {
+  assert.ok(GUARD.length >= 30, String(GUARD.length));
+});
+
+for (const args of GUARD) {
+  test(`json guard: ${args.join(' ')}`, () => {
+    const r = bullswarm(args);
+    assert.equal(r.code, 2, r.err);
+    const lines = r.out.trim().split('\n');
+    const body = JSON.parse(r.out);
+    assert.equal(body.error, 'usage', r.out);
+    assert.equal(typeof body.message, 'string');
+    assert.ok(body.message.length > 0);
+    assert.equal(Object.keys(body).join(), 'error,message,usage');
+    assert.ok(lines.length > 1 && r.out.trim().startsWith('{') && r.out.trim().endsWith('}'));
+  });
+}
