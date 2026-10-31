@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadState, updateState } from '../src/lib/state.js';
@@ -119,3 +119,15 @@ test('when the rename fails updateState throws naming the path and writes nothin
 
 import { mkdirSync } from 'node:fs';
 function mkdirSyncCompat(p) { mkdirSync(p, { recursive: true }); }
+
+test('a state.json that cannot be opened (no read permission) is refused, not moved aside or overwritten', { skip: process.getuid?.() === 0 && 'root reads any file' }, (t) => {
+  const dir = home(t);
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify(GOOD));
+  chmodSync(path, 0o000);
+  t.after(() => chmodSync(path, 0o600));
+  assert.throws(() => updateState(dir, append), /state\.json .*EACCES/);
+  assert.deepEqual(kept(dir), []);
+  chmodSync(path, 0o600);
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), GOOD);
+});
