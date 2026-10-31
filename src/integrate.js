@@ -81,7 +81,9 @@ export function applyAwarenessBlock(filePath, { approved }) {
     return { changed: false, reason: 'newer', path: filePath };
   }
   const eol = lineEnding(existing);
-  const block = awarenessBlock().replace(/\n/g, eol);
+  // The file is held as latin1 text (one char per byte), so the block goes in
+  // as its UTF-8 bytes: a non-ASCII character in the block stays correct.
+  const block = Buffer.from(awarenessBlock(), 'utf8').toString('latin1').replace(/\n/g, eol);
   let next;
   if (!parsed.blocks.length) {
     const close = existing && !existing.endsWith('\n') ? eol : '';

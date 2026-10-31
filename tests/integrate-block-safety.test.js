@@ -308,3 +308,18 @@ test('R1: status names an unreadable or malformed instruction file, not "missing
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('the inserted block is written as UTF-8 bytes even though the file is held as latin1', async () => {
+  const { awarenessBlock, applyAwarenessBlock } = await import('../src/integrate.js');
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-integ-utf8-'));
+  try {
+    const file = join(dir, 'CLAUDE.md');
+    writeFileSync(file, 'notes → kept\n');
+    applyAwarenessBlock(file, { approved: true });
+    const bytes = readFileSync(file);
+    assert.equal(bytes.toString('utf8'), `notes → kept\n\n${awarenessBlock()}\n`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
