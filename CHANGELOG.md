@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A run's live pool refresh stays inside the run's own pool set. A refreshed list keeps only the pools the run started with, with their fresh readings; a pool that appears mid-run is not added. Before, the refresh rebuilt the machine-wide list, so a run given a fake pool and a temp home still dispatched to a real login. An empty starting list still gets the live set.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
