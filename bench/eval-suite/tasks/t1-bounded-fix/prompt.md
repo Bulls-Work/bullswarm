@@ -1,0 +1,1 @@
+In the repository at {cwd}, fix the bug report in README.md: `parseCsv` in `src/csv.js` must follow every rule README.md lists. Add regression tests in tests/ for the reported cases and the rules you fixed, and keep the existing tests passing (`npm test`).
