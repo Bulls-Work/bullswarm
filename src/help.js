@@ -456,7 +456,7 @@ const poolsText = rich({
   purpose: 'Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, '
     + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and whether a '
     + 'window is spent. The status after the columns is `disabled`, or `ready` followed by '
-    + '`BURST-GATED` when the 5-hour window is at 100% and `NEAR-5H-LIMIT` when it is near its '
+    + '`BURST-GATED` when the 5-hour window is at 99% or more and `NEAR-5H-LIMIT` when it is near its '
     + 'line; a weekly or monthly window at 100% keeps the pool out of routing until that window '
     + 'resets, and the meter column shows the pacing window\'s reading. After a usage limit whose '
     + 'forced meter read failed, the meter source reads `[blocked · refused <age>]` when the '

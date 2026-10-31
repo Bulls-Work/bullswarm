@@ -248,7 +248,9 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
   const fiveHourResetsMs = fiveHour?.resets_at
     ? Date.parse(fiveHour.resets_at)
     : NaN;
-  const burstGate = atLimit(fiveHourUsedPct, fiveHourResetsMs, nowMs);
+  // Closed from the 5h wall (FIVE_HOUR_WALL_PCT), the same line routing uses,
+  // so `bullswarm pools` never shows a pool ready that dispatch will skip.
+  const burstGate = atLimit(fiveHourUsedPct, fiveHourResetsMs, nowMs, FIVE_HOUR_WALL_PCT);
 
   return {
     pacing: chosen.pacing,
