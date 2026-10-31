@@ -11,10 +11,11 @@
 //       made for a worker, so the pace order below decides alone.
 //   R6. A pool with a metered window at its limit — its 5-hour, weekly or
 //       monthly reading at 100%, until that window resets — is exhausted.
-//       Nothing else takes a pool out: no pause or bench is kept between
-//       picks.
-//   R7. A pool at/above FIVE_HOUR_NEAR_LIMIT_PCT of its 5h window is a
-//       last-mile candidate, not a hard skip. When another eligible pool is
+//       A 5-hour reading at/above FIVE_HOUR_WALL_PCT (99) takes it out the same
+//       way, pinned or not. Nothing else takes a pool out: no pause or bench
+//       is kept between picks.
+//   R7. A pool at/above FIVE_HOUR_NEAR_LIMIT_PCT (and under the 99% wall of
+//       R6) of its 5h window is a last-mile candidate, not a hard skip. When another eligible pool is
 //       behind pace, its near-limit status is a soft ordering penalty. A pick
 //       in this band says so, and that a limit the attempt hits there goes
 //       back to the caller.
