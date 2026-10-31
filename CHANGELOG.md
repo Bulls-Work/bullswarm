@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A status cache saved in the future, or of the wrong shape, is no cache. `readCache` (`src/lib/pools-cache.js`) used to serve a `savedAt` 10 days ahead of now as fresh (the age came out negative) until the clock caught up, and a `{"pools":"notarray"}` file as a good cache. A `savedAt` more than 60 s ahead of now (allowing for clock skew between processes) or a doc whose `pools`, `runs` or `assignments` field is not an array now makes the caller rebuild.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
