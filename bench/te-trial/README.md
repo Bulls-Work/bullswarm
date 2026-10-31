@@ -48,9 +48,8 @@ Rates (USD per million tokens) are read from Bullswarm's rate card,
 `src/providers/claude-code/connector.json`: sonnet-5-5 input 2, cache read 0.1 (since 2026-10-07),
 cache write 5m 2.5 / 1h 4, output 10; haiku-5-5 input 0.1, cache read 0.01, write 0.125 / 0.2,
 output 0.5, and the long-context rates when one request's prompt is over 100,000 tokens. A model
-not in the table is listed in `transcript_stats.unpriced_models` and priced at 0. Transcripts of
-sub-agents (sidechains) are not separate files in the main session transcript and are not
-separately priced; compare `cost_usd` with `reported_cost_usd`, which includes them.
+not in the table is listed in `transcript_stats.unpriced_models` and priced at 0. Only the main session transcript is read; if a run spawns sub-agents their usage may be missing
+from `cost_usd` (unverified here, no real session was run), so compare `cost_usd` with `reported_cost_usd`.
 
 ## Check it works
 
