@@ -18,6 +18,12 @@ import {
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Caller identity comes from these two variables and adds `caller=<pane>` to
+// `assignments` rows; keep these tests independent of the shell that runs them
+// (a herdr pane sets HERDR_PANE_ID). caller-identity.test.js covers the suffix.
+delete process.env.HERDR_PANE_ID;
+delete process.env.CLAUDE_CODE_SESSION_ID;
 const BIN = join(ROOT, 'bin', 'bullswarm.js');
 
 function tempHome() {

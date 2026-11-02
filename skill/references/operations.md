@@ -653,9 +653,18 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
 - `bullswarm assignments` is the ledger itself — no meters, no network. Each
   record names the pool, source (`run` / `workflow-v2`), run
   and action, `startedAt`, `elapsedMinutes`, `expectedMinutes` and
-  `remainingMinutes`. An empty list with work apparently running means the
+  `remainingMinutes`, and `caller` (`{herdrPane, claudeSession, cwd}`: who
+  asked for the work). An empty list with work apparently running means the
   dispatching process never registered it; a stale-looking entry is pruned on
   the next read once its process is gone.
+- Caller identity. A new run records who launched it in `caller.json` beside
+  goal.json: `herdrPane` from `HERDR_PANE_ID` (shaped like `w6:p1`),
+  `claudeSession` from `CLAUDE_CODE_SESSION_ID` (a UUID) and the launching
+  `cwd`. A value of any other shape is null, and no other environment
+  variable is read. `bullswarm assignments` prints `caller=<pane>` when a pane
+  is known; `workflow runs show` prints `# caller  pane … · session … · cwd …`
+  and its `--json` has `caller` (null for a run started before callers were
+  recorded).
 - Legacy authored-graph rows are read-only. Every driving command fails closed
   with the executor-removed message and leaves the historical run directory untouched.
 - `bullswarm pools` carries `inflight=<n>` next to each pool's `5h=<n>%`

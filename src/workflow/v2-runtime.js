@@ -18,7 +18,8 @@ import {
 import { V2_TERMINAL_STATUSES } from './status.js';
 import { clone } from '../lib/clone.js';
 import { validateV2PlannerResponse, V2PlannerValidationError } from './v2-planner.js';
-import { recordGoalProject } from './goal.js';
+import { recordGoalCaller, recordGoalProject } from './goal.js';
+import { callerIdentity } from '../lib/caller.js';
 import { writeRunRollup } from './rollup.js';
 import {
   consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, stepProof,
@@ -94,6 +95,10 @@ async function runV2Kernel({
   resumeRunId = null,
   initialPlannerResponse = null,
   parentEnv = process.env,
+  // Who launched the run (src/lib/caller.js). A detached launch passes the
+  // launching process's identity through its request file; otherwise this
+  // process is the caller.
+  caller = null,
   onEvent = null,
   dependencies = {},
   lease,
@@ -200,6 +205,8 @@ async function runV2Kernel({
     // checkout is there, the remote is there. Stamp it now so the rollup and
     // every later reindex agree on which project this run belongs to.
     recordGoalProject(runDir, goalDocument.intent.cwd, { now });
+    // Who asked for it, recorded once at the same moment (caller.json).
+    recordGoalCaller(runDir, caller ?? callerIdentity(), { now });
     // The run's marker (D16, E23, D28): a new run gets every key this code
     // knows; a resumed run keeps the file it was started with, never
     // rewritten. `dependencies.runFeatures` lets a test launch a run the way
