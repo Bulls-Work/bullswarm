@@ -199,8 +199,8 @@ Lessons from real runs; each holds for this version.
     A pool whose meter read says the sign-in failed is out of picks until a
     later read succeeds.
     A build or chore step that changed no file (`not-produced`) comes back at
-    once with no automatic retry (an empty report keeps its retry): that retry succeeded 1 time in 12 (2026-10-03..11-07).
-    A worker whose check failed and whose report
+    once with no automatic retry (other lanes keep it): that retry succeeded 1 time in 12 (2026-10-03..11-07).
+    A worker whose check or deliverable failed and whose report
     lists `- outside: <blocker>` under `## Not done` comes back at once. Fix
     the cause with `workflow add` rather than rerunning the same step.
 

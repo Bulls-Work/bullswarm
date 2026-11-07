@@ -125,3 +125,46 @@ test('a process failure with another pool free still moves to the other pool', a
   assert.notEqual(calls[0].pool, calls[1].pool);
   assert.equal(result.ok, true, result.attempts.at(-1)?.why);
 });
+
+test('an analyze step with an empty report keeps its same-pool retry, forced, in a fresh session, with the failure attached', async (t) => {
+  const f = repoFixture(t);
+  const conversational = (name, pace) => ({
+    ...connector(name), pace,
+    conversation: { newArgs: ['--session', '{sessionId}'], resumeArgs: ['--resume', '{sessionId}'] },
+  });
+  const launch = [conversational('pool-a', 90), conversational('pool-b', -90)];
+  const flipped = [conversational('pool-a', -90), conversational('pool-b', 90)];
+  const refreshCalls = [];
+  const tasks = [];
+  let session = 0;
+  const h = harness([() => good, ({ paths }) => { writeFileSync(paths.outFile, 'T-1001: refund pending\n'); return good; }]);
+  const inner = h.dependencies.watchOnce;
+  const action = { id: 'report', role: 'investigate', lane: 'analyze', effort: 'medium', deliverable: { type: 'report' }, retry: 1 };
+  const result = await dispatchV2Action({
+    failureRule: true,
+    action, taskText: 'triage the tickets', targetDir: f.repo,
+    paths: (ordinal) => ({ taskFile: join(f.home, `task-report-attempt-${ordinal}.md`), outFile: join(f.home, `out-report-attempt-${ordinal}.md`) }),
+    pools: launch, bullswarmDir: f.home,
+    refreshPools: async (opts) => { refreshCalls.push(opts); return refreshCalls.length === 1 ? launch : flipped; },
+    dependencies: {
+      ...h.dependencies,
+      uuid: () => `session-${++session}`,
+      watchOnce: async (c, task, dir, p, o) => { tasks.push(task); return inner(c, task, dir, p, o); },
+    },
+  });
+  assert.equal(result.ok, true, result.attempts.at(-1)?.why);
+  assert.equal(result.attempts.length, 2);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['pool-a', 'pool-a']);
+  const [first, second] = result.attempts;
+  assert.equal(first.failureKind, 'not-produced');
+  assert.equal(first.status, 'failed');
+  assert.equal(first.willRetry, true);
+  assert.ok(!first.why.includes('retry skipped'), first.why);
+  assert.deepEqual(second.retryOf, { attempt: 'report-1', how: 'same-pool' });
+  assert.match(second.routeWhy, /^pinned to pool-a \(the same pool \(gate retry\)\)/);
+  assert.notEqual(second.session.sessionId, first.session.sessionId);
+  assert.notEqual(second.continued, true);
+  assert.deepEqual(refreshCalls, [{ force: false }, { force: true }]);
+  assert.match(tasks[1], /## Prior attempt on this step/);
+  assert.match(tasks[1], /- Failure: not-produced/);
+});

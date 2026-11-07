@@ -1074,11 +1074,11 @@ export async function dispatchV2Action({
       } else if (failureClass === 'gate') {
         if (hasBudget && kind === 'schema') {
           if (typeof correctionTask === 'function') next = { how: 'same-pool', correction: true };
-        } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane)) {
+        } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane ?? 'chore')) {
           // A build or chore step that changed no file rarely does on a rerun
           // (1 in 12 over 2026-10-03..11-07): it goes to the caller now, like
           // a reported blocker. It still fails; only the automatic retry is
-          // skipped. An empty report (analyze) keeps its retry.
+          // skipped. The rule is by lane: other lanes (an empty report) keep it.
           next = null;
           verdict = { ...verdict, why: `${verdict.why ?? kind}${NOT_PRODUCED_SKIP_SUFFIX}` };
         } else if (hasBudget) {

@@ -291,11 +291,12 @@ step with one.
 | `report` | analyze | the final response is not empty |
 | `outward` | analyze | nothing to check: the step acts outside the workspace (sending, publishing) and is never retried once its worker started |
 
-A deliverable not produced is failure kind `not-produced`, and the step gets
-its same-pool retry. Outside a git repository Bullswarm lists the folder itself
-(up to 5,000 files and 64 MiB, `.git` and `node_modules` skipped) to see a
-change; in a larger folder, name the files the step changes. Inside a git
-repository, files git ignores (an `out/` in `.gitignore`) count too when
+A deliverable not produced is failure kind `not-produced`. A build or chore
+step that changed no file comes back at once with no automatic retry; on other
+lanes (an empty report) the step gets its same-pool retry. Outside a git
+repository Bullswarm lists the folder itself (up to 5,000 files and 64 MiB,
+`.git` and `node_modules` skipped) to see a change; in a larger folder, name
+the files the step changes. Inside a git repository, files git ignores (an `out/` in `.gitignore`) count too when
 their bytes change, up to 20,000 of them. Tool caches and build output
 (`__pycache__`, `.venv`, `dist`, `build`, `coverage`, `target`, `*.log`,
 `*.tsbuildinfo`) do not count; name such a file in `files` when it is the
@@ -396,8 +397,9 @@ provider enabled, an `independentOf` route cannot be served, and validate and
 One automatic retry per step (`retry: 1`): a process failure (`auth`,
 `provider`, `process`, `interrupted`, `stalled`) moves to another eligible pool
 when there is one; a failed check (`not-produced`, `failed-evidence`,
-`schema`) retries on the same pool with the failure attached. Then the step
-comes back to you. A failed check whose report lists a `## Not done` item that
+`schema`) retries on the same pool with the failure attached, except a build or
+chore step that changed no file (`not-produced`), which comes back at once.
+Then the step comes back to you. A failed check or deliverable whose report lists a `## Not done` item that
 starts with `outside:` (`- outside: tests/router.test.js fails on main before
 this change`: a blocker the step may not change) skips that retry and comes
 back at once, its `why` ending `retry skipped: the worker reported a blocker
