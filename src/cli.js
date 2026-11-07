@@ -42,14 +42,23 @@ const BOOLEAN_FLAGS = new Set([
   'wizard', 'check',
 ]);
 
-export function parseArgs(argv) {
+// `lists` names flags that take a value and may repeat (`run --check`): each
+// occurrence is collected in order into an array, a missing value as `true`.
+// Every other flag keeps its last value, as before.
+export function parseArgs(argv, { lists = [] } = {}) {
   const args = {};
   const rest = [];
+  const listed = new Set(lists);
   for (let i = 0; i < argv.length; i++) {
     if (argv[i].startsWith('--')) {
       const eq = argv[i].indexOf('=');
       const key = argv[i].slice(2, eq > 0 ? eq : undefined);
-      if (BOOLEAN_FLAGS.has(key)) args[key] = true;
+      if (listed.has(key)) {
+        let value = true;
+        if (eq > 0) value = argv[i].slice(eq + 1);
+        else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) value = argv[++i];
+        (args[key] ??= []).push(value);
+      } else if (BOOLEAN_FLAGS.has(key)) args[key] = true;
       else if (eq > 0) args[key] = argv[i].slice(eq + 1);
       else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) args[key] = argv[++i];
       else args[key] = true;
@@ -363,6 +372,8 @@ async function cmdRun(opts) {
     verdict = await previewStepPick({
       action, pools, bullswarmDir: home, coreState: state, targetDir: request.targetDir, runReasoning: request.reasoning,
     });
+    // The checks the run would prove itself by, after the worker.
+    if (request.checks) verdict = { ...verdict, checks: request.checks };
   } else {
     // Only an explicitly approved strategy policy may change assignments.
     await maybeRefreshStrategy(home);
@@ -654,7 +665,7 @@ export async function main(argv) {
   const verb = head !== undefined && /^--[A-Za-z]/.test(head) && head !== '--version'
     ? undefined
     : head;
-  const opts = parseArgs(verb === undefined && head !== undefined ? argv : tail);
+  const opts = parseArgs(verb === undefined && head !== undefined ? argv : tail, { lists: verb === 'run' ? ['check'] : [] });
 
   // Unknown flags are a usage error before anything else happens — before
   // setup self-initializes, before a pool is built, before a delegate is

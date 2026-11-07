@@ -249,6 +249,8 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--timeout <seconds>` | hard wall-clock kill timer for the delegate process | none — the delegate is allowed to run to completion |
 | `--heartbeat <seconds>` | print one compact progress heartbeat to stderr per interval without streaming delegate output | off |
 | `--answer-schema <file>` | a JSON schema for a typed answer; the verdict carries `answer` and `answerCheck`, and a mismatch is failure kind `schema` | none |
+| `--check <cmd>` | a command Bullswarm runs, read-only, in `--add-dir` after the worker finishes; exit 0 proves the step (`proof: proven by command`), a non-zero exit is failure kind `failed-evidence` with the command's tail and gets the one same-pool retry. Repeat for up to 5 checks, run in the order given | none |
+| `--check-timeout <seconds>` | time limit for each `--check` command (a number greater than 0; needs `--check`; the evidence maximum still applies) | the evidence default |
 | `--no-retry` | one attempt only | off — one retry |
 | `--avoid-pool <pool,...>` | never route this task to these pools | unset |
 | `--use-provider <provider,...>` | route only to pools of these providers | unset |

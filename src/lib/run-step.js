@@ -16,6 +16,7 @@ import { isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS } from './reasoni
 import { DEFAULT_EFFORT_BY_LANE } from '../workflow/action-validator.js';
 import { implicitV3Requirements, normaliseProgramV3, PROGRAM_V3_SCHEMA_VERSION } from '../workflow/program-v3.js';
 import { createV2GoalDocument } from '../workflow/v2-state.js';
+import { EVIDENCE_MAX_ITEMS } from '../workflow/evidence-runner.js';
 
 export const RUN_STEP_ID = 'task';
 export const NO_CALLER_NOTICE = 'bullswarm run: --no-caller is ignored; the calling agent is never a pool of its own run (removed in 0.37.0)';
@@ -39,6 +40,25 @@ function listFlag(opts, flag, what) {
   if (missing(value) || typeof value !== 'string') return { error: `--${flag} requires ${what}` };
   const list = [...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))];
   return list.length ? { list } : { error: `--${flag} requires ${what}` };
+}
+
+// `--check '<cmd>'` (repeatable, parseArgs collects it) and `--check-timeout`:
+// command evidence items on the run's step, in the order given. Returns
+// `{ checks }` (null without --check) or `{ error }`. The per-item limits
+// (command length, timeout maximum) stay the v3 validator's.
+function checksFlag(opts) {
+  const raw = opts.check;
+  const hasTimeout = opts['check-timeout'] !== undefined;
+  if (raw === undefined) return hasTimeout ? { error: '--check-timeout needs --check' } : { checks: null };
+  const values = Array.isArray(raw) ? raw : [raw];
+  if (values.some((value) => typeof value !== 'string' || !value.trim())) return { error: '--check requires a command' };
+  if (values.length > EVIDENCE_MAX_ITEMS) return { error: `--check may be given at most ${EVIDENCE_MAX_ITEMS} times (got ${values.length})` };
+  let timeoutSec = null;
+  if (hasTimeout) {
+    timeoutSec = missing(opts['check-timeout']) ? NaN : Number(opts['check-timeout']);
+    if (!(Number.isFinite(timeoutSec) && timeoutSec > 0)) return { error: '--check-timeout must be a number of seconds greater than 0' };
+  }
+  return { checks: values.map((cmd) => ({ type: 'command', cmd, ...(timeoutSec == null ? {} : { timeoutSec }) })) };
 }
 
 function readSchemaFile(path) {
@@ -90,6 +110,8 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
   const avoidProviders = listFlag(opts, 'avoid-provider', 'a provider name');
   const listError = pools.error ?? useProviders.error ?? avoidProviders.error;
   if (listError) return { error: listError };
+  const checks = checksFlag(opts);
+  if (checks.error) return { error: checks.error };
 
   let answer = answerSchema;
   if (answer === undefined && opts['answer-schema'] !== undefined) {
@@ -125,6 +147,8 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
     timeoutSec, heartbeatSec,
     dryRun: opts['dry-run'] === true,
     noCaller: opts['no-caller'] === true,
+    // Only with --check, so a run without one is the same request as before.
+    ...(checks.checks ? { checks: checks.checks } : {}),
   };
   // The v3 validator decides what the program may hold (the answer schema's
   // subset, the route lists), with its own wording.
@@ -148,6 +172,7 @@ export function runStepProgram(request) {
     ...(request.model ? { model: request.model } : {}),
     ...(request.route ? { route: request.route } : {}),
     ...(request.answer != null ? { answer: request.answer } : {}),
+    ...(request.checks?.length ? { evidence: request.checks } : {}),
   };
   return { schemaVersion: PROGRAM_V3_SCHEMA_VERSION, steps: [step] };
 }
