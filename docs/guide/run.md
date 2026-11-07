@@ -31,6 +31,8 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 | `--timeout <seconds>` | Hard wall-clock kill timer for the delegate process. | none — the delegate may run to completion |
 | `--heartbeat <seconds>` | Print one compact progress heartbeat to stderr per interval, without streaming delegate output. | off |
 | `--answer-schema <file>` | A JSON schema for a typed answer: the worker writes JSON to a file Bullswarm names; the verdict carries `answer` and `answerCheck`. A mismatch is failure kind `schema`. | none |
+| `--check <cmd>` | A command Bullswarm runs, read-only, in `--add-dir` after the worker finishes. Exit 0 proves the step (`proof: proven by command`); a non-zero exit is failure kind `failed-evidence` and gets the one same-pool retry. Up to 5, run in the order given. A command that starts with `--` is given as `--check=--x`. | none |
+| `--check-timeout <seconds>` | Time limit for each `--check` command, a whole number of seconds from 1 to 600. Needs `--check`. | 120 s (the evidence default) |
 | `--no-retry` | One attempt only. Without it the step gets its one automatic retry; a usage limit is never retried. | off — one retry |
 | `--avoid-pool <pool,...>` | Never route this task to these pools. | — |
 | `--use-provider <provider,...>` | Route only to pools of these providers. | — |
@@ -40,6 +42,14 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser"
 | `--json` | Print the compact machine-readable verdict. Its last field, `details`, is the command for the full record and per-attempt cost (`bullswarm workflow runs result <shortId> --json`). | human-readable summary ending with the run id and that command |
 
 The task itself is also accepted as trailing words: `bullswarm run --lane analyze "list every TODO in src/"`.
+
+## Prove a run with a check
+
+Give a build run a command that shows the work is right. Bullswarm runs it after the worker, and the step passes only when it exits 0:
+
+```bash
+bullswarm run --lane build --add-dir . --check 'npm test' "Fix the CSV quoting bug"
+```
 
 ## Long prompts
 

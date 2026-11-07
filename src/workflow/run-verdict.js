@@ -16,6 +16,7 @@
 import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
 import { poolLabel, withPoolLabels } from '../lib/pool-labels.js';
 import { notDoneSummary } from './time-box.js';
+import { formatV2ProofLabel, stepProof } from './v2-outcome.js';
 
 // The worker verdict's facts a caller may need, each only when present.
 const EXTRAS = [
@@ -65,6 +66,15 @@ function usageSummary(attempts, totals) {
   };
 }
 
+// `--check`: what backs the step, worded as a program step's line reads it
+// (`proven by command`). Only for a step that declares evidence, so a run
+// without --check keeps its verdict exactly.
+function proofFacts(state, stepId) {
+  const definition = (state.program?.actions ?? []).find((action) => action.id === stepId);
+  if (!Array.isArray(definition?.evidence) || !definition.evidence.length) return {};
+  return { proof: formatV2ProofLabel(stepProof(state, definition, { atFinish: true })) ?? 'unproven' };
+}
+
 const detailsCommand = (id) => `bullswarm workflow runs result ${id} --json`;
 
 /**
@@ -98,6 +108,7 @@ export function runVerdict({ run, dispatched = null, stepId }) {
     // What the worker's report left undone: a fact beside `ok`, never a
     // change to it (QA-REPORT-3, B1).
     notDone: notDoneSummary(last),
+    ...proofFacts(state, stepId),
   };
   const lastMeta = worker.meta ?? {};
   const reasoning = last?.reasoning ?? lastMeta.reasoning ?? null;
@@ -133,6 +144,8 @@ export function runVerdictLines(verdict, bullswarmDir) {
       + `rate=${f.ratePerMinute == null ? 'unmeasured' : `${f.ratePerMinute}%/min`} `
       + `basis=${f.estimateSource ?? 'none'}`);
   }
+  if (verdict.dryRun) for (const item of verdict.checks ?? []) lines.push(`check: ${item.cmd}`);
+  if (verdict.proof) lines.push(`proof: ${verdict.proof}`);
   const notDone = verdict.notDone;
   if (notDone?.count > 0) {
     const more = notDone.count - (notDone.items?.length ?? 0);

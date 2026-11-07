@@ -74,7 +74,7 @@ const TABLE = {
   run: [
     'lane', 'add-dir', 'task-file', 'prompt', 'effort', 'reasoning', 'model', 'timeout',
     'heartbeat', 'dry-run', 'json', 'no-caller', 'answer-schema', 'no-retry',
-    'avoid-pool', 'use-provider', 'avoid-provider',
+    'avoid-pool', 'use-provider', 'avoid-provider', 'check', 'check-timeout',
   ],
   health: ['json'],
   pools: ['force', 'json', 'pool', 'max-age'],

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `bullswarm run --check '<cmd>'` (up to 5, with an optional `--check-timeout <seconds>`): a single-step run can now be proven by a command. Each check is a command evidence item on the run's step, run read-only in `--add-dir` after the worker; exit 0 gives the verdict `proof: proven by command`, a failure is `failed-evidence` with the one same-pool retry, and `--dry-run` lists the checks. In the 2026-11-07 weekly review, 132 of 134 build steps that had no check came from `bullswarm run`, which had no way to declare one. A run without `--check` is unchanged.
+
 ## 0.38.19 — who launched it: caller identity on runs and assignments
 
 Why: a run and an in-flight assignment did not say who started them, so a reader watching several terminals could not tell which pane or Claude Code session had asked for the work.
