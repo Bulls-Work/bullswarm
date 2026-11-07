@@ -42,7 +42,7 @@ import { attemptPaths, evidenceLogFile, fileBytes, runIdFromPaths, withAttemptAr
 import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
 } from './dispatch-snapshot.js';
-import { deliverableVerdict, gateBaselinePaths } from './dispatch-deliverable.js';
+import { deliverableVerdict, gateBaselinePaths, NO_FILE_CHANGED_WHY } from './dispatch-deliverable.js';
 import { outsideWrites } from './outside-writes.js';
 import { durableHandoff, lastResponseEvents, streamShowsWork } from './dispatch-handoff.js';
 import { noPoolCandidates, tierOffReasons } from './dispatch-no-pool.js';
@@ -748,6 +748,8 @@ export async function dispatchV2Action({
     let verdict;
     let snapshot = { ok: false, statText: '', changedFiles: [] };
     let deliverableFact = null;
+    // The deliverable gate said "no file changed" (the case the skip below measured).
+    let noFileChanged = false;
     try {
       verdict = await watch(runtimeConnector, attemptTask, targetDir, files, {
         env: childDepthEnv(parentEnv),
@@ -836,6 +838,7 @@ export async function dispatchV2Action({
       outsideChanged,
     });
     if (gateVerdict?.ok && judged.failWhy) {
+      noFileChanged = judged.failWhy === NO_FILE_CHANGED_WHY;
       verdict = { ...verdict, ok: false, why: judged.failWhy, failureKind: 'not-produced' };
     }
     deliverableFact = judged.fact;
@@ -1075,13 +1078,13 @@ export async function dispatchV2Action({
         if (hasBudget && kind === 'schema') {
           if (typeof correctionTask === 'function') next = { how: 'same-pool', correction: true };
         } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane ?? 'chore')
-          && snapshot.ok && snapshot.changedFiles.length === 0) {
-          // A build or chore step that changed no file at all rarely does on
-          // a rerun (1 in 12 over 2026-10-03..11-07): it goes to the caller
-          // now, like a reported blocker. It still fails; only the automatic
-          // retry is skipped. Other lanes (an empty report), a step that
-          // changed files but missed its declared paths, and an attempt whose
-          // tree could not be read keep the retry.
+          && noFileChanged) {
+          // A build or chore step whose deliverable gate read "no file
+          // changed" rarely changes one on a rerun (1 in 12 over
+          // 2026-10-03..11-07): it goes to the caller now, like a reported
+          // blocker. It still fails; only the automatic retry is skipped.
+          // Every other not-produced (an empty report, declared paths missing
+          // or not written) keeps the retry.
           next = null;
           verdict = { ...verdict, why: `${verdict.why ?? kind}${NOT_PRODUCED_SKIP_SUFFIX}` };
         } else if (hasBudget) {

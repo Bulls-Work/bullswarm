@@ -1155,7 +1155,7 @@ test('docs do not overstate the failure rule: not-produced gets its gate retry e
   for (const path of PROGRAM_REFERENCES) {
     const text = flat(path);
     assert.ok(!/not-produced`\. That failure is not retried automatically/.test(text), path);
-    assert.ok(text.includes('A build or chore step that changed no file comes back to you at once with no automatic retry. On any other lane (an empty report) that failure gets one retry on the same pool in a fresh session with the failure attached, then comes back to you.'), path);
+    assert.ok(text.includes('A build or chore step that changed no file comes back to you at once with no automatic retry. Every other `not-produced` (an empty report, a declared path missing or not written) gets one retry on the same pool in a fresh session with the failure attached, then comes back to you.'), path);
     assert.ok(!text.includes('Quota never fails only because it is exhausted'), path);
     // A usage limit, or no free pool, goes to the caller; only a rate limit backs off.
     assert.ok(text.includes('`quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry'), path);

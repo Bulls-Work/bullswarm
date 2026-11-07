@@ -403,7 +403,7 @@ test('workflow step help lists restart, rerun and accept, each with its own entr
 });
 
 test('--retry-attempts reads as automatic retries per step in all three places', () => {
-  const wording = 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file comes back at once)';
+  const wording = 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file (not-produced) comes back at once)';
   for (const path of [['workflow', 'goal'], ['workflow', 'plan', 'validate'], ['workflow', 'plan', 'contract']]) {
     const text = helpText(path);
     assert.ok(text.includes(`--retry-attempts <0..3>`), path.join(' '));

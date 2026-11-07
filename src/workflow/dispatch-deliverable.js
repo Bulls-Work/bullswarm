@@ -2,6 +2,9 @@
 // the snapshot facts taken around its attempts (pure; no file access).
 import { declaredDeliverable, roleOf } from './step-vocabulary.js';
 
+/** The deliverable gate's reason when a step changed no file at all. */
+export const NO_FILE_CHANGED_WHY = 'no file changed';
+
 function pathStat(table, path) {
   if (!table) return null;
   if (typeof table.get === 'function') return table.get(path) ?? null;
@@ -94,7 +97,7 @@ export function deliverableVerdict({
     if (evidence || legacyGate === false) return { fact: null, failWhy: null };
     const judged = action?.lane === 'build' && snapshotOk === true;
     if (!judged || earlierHit) return { fact: null, failWhy: null };
-    if (!dispatchChanged) return outside.length ? producedOutside('files') : quiet(null, 'no file changed');
+    if (!dispatchChanged) return outside.length ? producedOutside('files') : quiet(null, NO_FILE_CHANGED_WHY);
     return { fact: null, failWhy: null };
   }
 
@@ -142,7 +145,7 @@ export function deliverableVerdict({
   }
   if (earlierHit) return { fact: { type: 'files', gated: false, produced: null, carried: true }, failWhy: null };
   if (!dispatchChanged) {
-    return outside.length ? producedOutside('files') : quiet({ type: 'files', gated: true, produced: false }, 'no file changed');
+    return outside.length ? producedOutside('files') : quiet({ type: 'files', gated: true, produced: false }, NO_FILE_CHANGED_WHY);
   }
   return { fact: { type: 'files', gated: true, produced: true }, failWhy: null };
 }

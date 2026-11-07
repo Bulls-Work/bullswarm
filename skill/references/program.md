@@ -292,8 +292,9 @@ step with one.
 | `outward` | analyze | nothing to check: the step acts outside the workspace (sending, publishing) and is never retried once its worker started |
 
 A deliverable not produced is failure kind `not-produced`. A build or chore
-step that changed no file comes back at once with no automatic retry; on other
-lanes (an empty report) the step gets its same-pool retry. Outside a git
+step that changed no file ("no file changed") comes back at once with no
+automatic retry; every other `not-produced` (an empty report, a declared path
+missing) gets its same-pool retry. Outside a git
 repository Bullswarm lists the folder itself (up to 5,000 files and 64 MiB,
 `.git` and `node_modules` skipped) to see a change; in a larger folder, name
 the files the step changes. Inside a git repository, files git ignores (an `out/` in `.gitignore`) count too when
