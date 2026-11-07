@@ -64,6 +64,8 @@ const OUTSIDE_SKIPS_RETRY = new Set(['failed-evidence', 'not-produced', 'semanti
 const OUTSIDE_WHY_CHARS = 160;
 // Why a not-produced step went to the caller with no automatic retry.
 const NOT_PRODUCED_SKIP_SUFFIX = ' · retry skipped: a step that changed no file rarely does on a rerun';
+// The lanes whose deliverable is a changed file: their not-produced has no automatic retry.
+const FILE_WRITING_LANES = new Set(['build', 'chore']);
 
 // The `outside:` blockers in an attempt's out file; an unreadable or missing
 // file (a killed worker) names none.
@@ -1072,14 +1074,15 @@ export async function dispatchV2Action({
       } else if (failureClass === 'gate') {
         if (hasBudget && kind === 'schema') {
           if (typeof correctionTask === 'function') next = { how: 'same-pool', correction: true };
-        } else if (hasBudget && kind === 'not-produced') {
-          // A step that changed no file rarely does on a rerun (1 in 12 over
-          // 2026-10-03..11-07): it goes to the caller now, like a reported
-          // blocker. It still fails; only the automatic retry is skipped.
+        } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane)) {
+          // A build or chore step that changed no file rarely does on a rerun
+          // (1 in 12 over 2026-10-03..11-07): it goes to the caller now, like
+          // a reported blocker. It still fails; only the automatic retry is
+          // skipped. An empty report (analyze) keeps its retry.
           next = null;
           verdict = { ...verdict, why: `${verdict.why ?? kind}${NOT_PRODUCED_SKIP_SUFFIX}` };
         } else if (hasBudget) {
-          next = { how: 'same-pool', gate: true };
+          next = { how: 'same-pool', gate: true, fresh: kind === 'not-produced' };
         }
       } else if (limitsBackoffNow) {
         // The transient rate limit's backoff decided above.
@@ -1222,9 +1225,11 @@ export async function dispatchV2Action({
     };
     if (next.gate) {
       // D5: the same pool, forced, after a live look at whether it can
-      // still take work.
+      // still take work. `not-produced` (a report step's empty report)
+      // starts a fresh session (D7).
       gatePin = pool.name;
       forceRefresh = true;
+      if (next.fresh) currentSession = null;
     } else if (next.replay) {
       replayPool = pool;
     } else if (next.sameBackoff) {

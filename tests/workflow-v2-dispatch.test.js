@@ -3114,8 +3114,8 @@ test('failure rule: a caller-written digest step is an ordinary report step, and
   assert.equal(gather.deliverable, undefined);
   assert.deepEqual([digest.kind, digest.role, digest.deliverable], [undefined, undefined, { type: 'report' }]);
   assert.deepEqual([announce.kind, announce.role], [undefined, 'act']);
-  // An empty digest fails its report gate (not-produced) and goes to the
-  // caller with no automatic retry, like every not-produced step.
+  // An empty digest fails its report gate and gets the step's one retry, on
+  // the same pool; the retry that writes the summary passes.
   await withEvidence('bs-fr-digest-', {
     action: digest,
     watches: [answer(''), answer('src holds two files: a.js and b.js.\n')],
@@ -3123,11 +3123,11 @@ test('failure rule: a caller-written digest step is an ordinary report step, and
     pools: [connector('pool-a'), connector('pool-b')],
     preferredPool: 'pool-a',
   }, ({ result }) => {
-    assert.equal(result.ok, false);
-    assert.deepEqual(pickedPools(result), ['pool-a']);
-    assert.deepEqual([result.attempts[0].failureKind, result.attempts[0].why], ['not-produced', 'report is empty · retry skipped: a step that changed no file rarely does on a rerun']);
-    assert.equal(result.attempts[0].willRetry, false);
-    assert.deepEqual(result.attempts[0].deliverable, { type: 'report', gated: true, produced: false });
+    assert.equal(result.ok, true);
+    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-a']);
+    assert.deepEqual([result.attempts[0].failureKind, result.attempts[0].why], ['not-produced', 'report is empty']);
+    assert.deepEqual(result.attempts[1].retryOf, { attempt: 'digest-1', how: 'same-pool' });
+    assert.deepEqual(result.attempts[1].deliverable, { type: 'report', gated: true, produced: true });
   });
   // A digest-kind step stored by an earlier Bullswarm has no exemption left.
   await withGate('bs-fr-digest-kind-', {

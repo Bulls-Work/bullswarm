@@ -19,9 +19,9 @@ and does not use the step's one retry (at most 3 times per step; never for an
 `act` or `outward` step or `retry: 0`). A pool whose latest meter reading is a
 sign-in failure reads `sign-in failed (meter read 401)` and is out of picks
 until a later reading succeeds. A gate failure (`failed-evidence`,
-`schema`, or `semantic`) retries on the same pool with the failure attached;
-a gate retry spends the same one-step budget. A step that changed no file
-(`not-produced`) comes back at once with no automatic retry (why ends
+`not-produced` of an empty report, `schema`, or `semantic`) retries on the same pool with the failure attached;
+a gate retry spends the same one-step budget. A build or chore step that
+changed no file (`not-produced`) comes back at once with no automatic retry (why ends
 `retry skipped: a step that changed no file rarely does on a rerun`): from
 2026-10-03 to 11-07 that retry succeeded 1 time in 12. Rerun it yourself
 (`step rerun`) only once you changed what it is given. A failed check whose
