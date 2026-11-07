@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- failure rule: a step that fails `not-produced` (it changed no file, or left its declared report or data unwritten) is no longer retried automatically on the same pool. It goes to the caller at once through the same needs-you path an `outside:` blocker uses (status `failed`, `willRetry: false`), and its why ends `· retry skipped: a step that changed no file rarely does on a rerun`. Evidence, from real run records 2026-10-03..11-07: after a build or chore attempt failed `not-produced` with no `outside:` blocker, the same-pool retry succeeded 1 time in 12 (7 of 7 failed again in the last week), each costing a full worker run. A `failed-evidence` same-pool retry succeeded 13 of 25 times and keeps its retry; process, schema, semantic, quota, auth and refusal rules are unchanged, and `step rerun` still reruns such a step on request.
+
 ## 0.38.19 — who launched it: caller identity on runs and assignments
 
 Why: a run and an in-flight assignment did not say who started them, so a reader watching several terminals could not tell which pane or Claude Code session had asked for the work.
