@@ -92,6 +92,13 @@ test('run --check-timeout sets timeoutSec on every --check item', () => {
   ]);
 });
 
+test('run --check-timeout 600, the evidence maximum, is accepted by the flag and the v3 validator', () => {
+  // runStepRequest validates the built program, so no error means both accepted it.
+  const parsed = runStepRequest({ lane: 'build', check: 'true', 'check-timeout': '600', prompt: 'x', rest: [] }, { cwd: '/tmp' });
+  assert.equal(parsed.error, undefined);
+  assert.deepEqual(runStepProgram(parsed.request).steps[0].evidence, [{ type: 'command', cmd: 'true', timeoutSec: 600 }]);
+});
+
 test('run --check: bad values are usage errors, exit 2, with and without --json, and nothing runs', (t) => {
   const f = fixture(t);
   const six = Array.from({ length: 6 }, (_, i) => ['--check', `echo ${i}`]).flat();
@@ -101,9 +108,11 @@ test('run --check: bad values are usage errors, exit 2, with and without --json,
     [['--check', '   '], /--check requires a command|empty/],
     [['--check='], /--check requires a command|empty/],
     [six, /at most 5/],
-    [['--check', 'true', '--check-timeout', '0'], /--check-timeout must be a number of seconds greater than 0/],
-    [['--check', 'true', '--check-timeout', 'soon'], /--check-timeout must be a number of seconds greater than 0/],
-    [['--check', 'true', '--check-timeout'], /--check-timeout must be a number of seconds greater than 0/],
+    [['--check', 'true', '--check-timeout', '0'], /--check-timeout must be a whole number of seconds from 1 to 600/],
+    [['--check', 'true', '--check-timeout', 'soon'], /--check-timeout must be a whole number of seconds from 1 to 600/],
+    [['--check', 'true', '--check-timeout', '0.5'], /--check-timeout must be a whole number of seconds from 1 to 600/],
+    [['--check', 'true', '--check-timeout', '601'], /--check-timeout must be a whole number of seconds from 1 to 600/],
+    [['--check', 'true', '--check-timeout'], /--check-timeout must be a whole number of seconds from 1 to 600/],
     [['--check-timeout', '30'], /--check-timeout needs --check/],
   ];
   for (const [extra, message] of cases) {

@@ -16,7 +16,7 @@ import { isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS } from './reasoni
 import { DEFAULT_EFFORT_BY_LANE } from '../workflow/action-validator.js';
 import { implicitV3Requirements, normaliseProgramV3, PROGRAM_V3_SCHEMA_VERSION } from '../workflow/program-v3.js';
 import { createV2GoalDocument } from '../workflow/v2-state.js';
-import { EVIDENCE_MAX_ITEMS } from '../workflow/evidence-runner.js';
+import { EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_TIMEOUT_SEC } from '../workflow/evidence-runner.js';
 
 export const RUN_STEP_ID = 'task';
 export const NO_CALLER_NOTICE = 'bullswarm run: --no-caller is ignored; the calling agent is never a pool of its own run (removed in 0.37.0)';
@@ -44,8 +44,8 @@ function listFlag(opts, flag, what) {
 
 // `--check '<cmd>'` (repeatable, parseArgs collects it) and `--check-timeout`:
 // command evidence items on the run's step, in the order given. Returns
-// `{ checks }` (null without --check) or `{ error }`. The per-item limits
-// (command length, timeout maximum) stay the v3 validator's.
+// `{ checks }` (null without --check) or `{ error }`. The timeout is checked
+// here so its error names the flag; the command length stays the v3 validator's.
 function checksFlag(opts) {
   const raw = opts.check;
   const hasTimeout = opts['check-timeout'] !== undefined;
@@ -56,7 +56,9 @@ function checksFlag(opts) {
   let timeoutSec = null;
   if (hasTimeout) {
     timeoutSec = missing(opts['check-timeout']) ? NaN : Number(opts['check-timeout']);
-    if (!(Number.isFinite(timeoutSec) && timeoutSec > 0)) return { error: '--check-timeout must be a number of seconds greater than 0' };
+    if (!(Number.isInteger(timeoutSec) && timeoutSec >= 1 && timeoutSec <= EVIDENCE_MAX_TIMEOUT_SEC)) {
+      return { error: `--check-timeout must be a whole number of seconds from 1 to ${EVIDENCE_MAX_TIMEOUT_SEC}` };
+    }
   }
   return { checks: values.map((cmd) => ({ type: 'command', cmd, ...(timeoutSec == null ? {} : { timeoutSec }) })) };
 }
