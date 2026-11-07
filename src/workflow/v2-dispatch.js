@@ -62,6 +62,8 @@ export const GATE_RETRY_PIN_SOURCE = 'the same pool (gate retry)';
 // schema correction and every process failure keep their retry.
 const OUTSIDE_SKIPS_RETRY = new Set(['failed-evidence', 'not-produced', 'semantic']);
 const OUTSIDE_WHY_CHARS = 160;
+// Why a not-produced step went to the caller with no automatic retry.
+const NOT_PRODUCED_SKIP_SUFFIX = ' · retry skipped: a step that changed no file rarely does on a rerun';
 
 // The `outside:` blockers in an attempt's out file; an unreadable or missing
 // file (a killed worker) names none.
@@ -1070,8 +1072,14 @@ export async function dispatchV2Action({
       } else if (failureClass === 'gate') {
         if (hasBudget && kind === 'schema') {
           if (typeof correctionTask === 'function') next = { how: 'same-pool', correction: true };
+        } else if (hasBudget && kind === 'not-produced') {
+          // A step that changed no file rarely does on a rerun (1 in 12 over
+          // 2026-10-03..11-07): it goes to the caller now, like a reported
+          // blocker. It still fails; only the automatic retry is skipped.
+          next = null;
+          verdict = { ...verdict, why: `${verdict.why ?? kind}${NOT_PRODUCED_SKIP_SUFFIX}` };
         } else if (hasBudget) {
-          next = { how: 'same-pool', gate: true, fresh: kind === 'not-produced' };
+          next = { how: 'same-pool', gate: true };
         }
       } else if (limitsBackoffNow) {
         // The transient rate limit's backoff decided above.
@@ -1214,10 +1222,9 @@ export async function dispatchV2Action({
     };
     if (next.gate) {
       // D5: the same pool, forced, after a live look at whether it can
-      // still take work. `not-produced` starts a fresh session (D7).
+      // still take work.
       gatePin = pool.name;
       forceRefresh = true;
-      if (next.fresh) currentSession = null;
     } else if (next.replay) {
       replayPool = pool;
     } else if (next.sameBackoff) {

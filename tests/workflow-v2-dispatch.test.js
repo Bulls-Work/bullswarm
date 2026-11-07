@@ -2933,38 +2933,27 @@ test('retryPoolTiers orders same model, then same family, then the rest', () => 
   assert.deepEqual(retryPoolTiers(list, { pool: failed, model: null }, 'low').map((tier) => tier.match), ['any']);
 });
 
-test('failure rule: not-produced is retried on the same pool, forced, in a fresh session, with the failure attached', async () => {
+// Measured 2026-10-03..11-07: a same-pool retry after "no file changed"
+// succeeded 1 time in 12, so a not-produced step goes to the caller at once.
+test('failure rule: not-produced is not retried; the step goes to the caller with the skip reason', async () => {
   const launch = [conversational('pool-a', { pace: 90 }), conversational('pool-b', { pace: -90 })];
-  const flipped = [conversational('pool-a', { pace: -90 }), conversational('pool-b', { pace: 90 })];
-  // Without the pin the router would move the retry to pool-b.
-  assert.equal(pickPool('build', flipped, { effortTier: 'medium' }).pick.pool, 'pool-b');
   const refreshCalls = [];
   const facts = [];
-  let session = 0;
   await withEvidence('bs-fr-notproduced-', {
     action: produceFiles(),
     watches: (repo) => [() => good, () => { writeFileSync(join(repo, 'owned.txt'), 'changed\n'); return good; }],
     pools: launch,
-    refreshPools: async (opts) => { refreshCalls.push(opts); return refreshCalls.length === 1 ? launch : flipped; },
+    refreshPools: async (opts) => { refreshCalls.push(opts); return launch; },
     handoffBlock: (value) => { facts.push(value); return handoffBlock(value); },
-    dependencies: { uuid: () => `session-${++session}` },
   }, ({ result, tasks }) => {
-    assert.equal(result.ok, true);
-    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-a']);
-    const [first, second] = result.attempts;
-    assert.equal(first.failureKind, 'not-produced');
-    assert.equal(first.status, 'failed');
-    assert.deepEqual(second.retryOf, { attempt: 'write-work-1', how: 'same-pool' });
-    assert.match(second.routeWhy, /^pinned to pool-a \(the same pool \(gate retry\)\)/);
-    // A fresh session (D7): a new id, never a resumed conversation.
-    assert.notEqual(second.session.sessionId, first.session.sessionId);
-    assert.notEqual(second.continued, true);
-    assert.deepEqual(refreshCalls, [{ force: false }, { force: true }]);
-    assert.match(tasks[1], /## Prior attempt on this step/);
-    assert.match(tasks[1], /- Failure: not-produced — /);
-    assert.equal(facts.length, 1);
-    assert.equal(facts[0].gate, true, 'the gate line is asked for (§2.3)');
-    assert.equal(facts[0].failureKind, 'not-produced');
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'not-produced');
+    assert.deepEqual(pickedPools(result), ['pool-a']);
+    assert.equal(tasks.length, 1);
+    const [only] = result.attempts;
+    assert.deepEqual([only.status, only.willRetry], ['failed', false]);
+    assert.match(only.why, / · retry skipped: a step that changed no file rarely does on a rerun$/);
+    assert.equal(facts.length, 0, 'no retry prompt was built');
   });
 });
 
@@ -3125,8 +3114,8 @@ test('failure rule: a caller-written digest step is an ordinary report step, and
   assert.equal(gather.deliverable, undefined);
   assert.deepEqual([digest.kind, digest.role, digest.deliverable], [undefined, undefined, { type: 'report' }]);
   assert.deepEqual([announce.kind, announce.role], [undefined, 'act']);
-  // An empty digest fails its report gate and gets the step's one retry, on
-  // the same pool; the retry that writes the summary passes.
+  // An empty digest fails its report gate (not-produced) and goes to the
+  // caller with no automatic retry, like every not-produced step.
   await withEvidence('bs-fr-digest-', {
     action: digest,
     watches: [answer(''), answer('src holds two files: a.js and b.js.\n')],
@@ -3134,11 +3123,11 @@ test('failure rule: a caller-written digest step is an ordinary report step, and
     pools: [connector('pool-a'), connector('pool-b')],
     preferredPool: 'pool-a',
   }, ({ result }) => {
-    assert.equal(result.ok, true);
-    assert.deepEqual(pickedPools(result), ['pool-a', 'pool-a']);
-    assert.deepEqual([result.attempts[0].failureKind, result.attempts[0].why], ['not-produced', 'report is empty']);
-    assert.deepEqual(result.attempts[1].retryOf, { attempt: 'digest-1', how: 'same-pool' });
-    assert.deepEqual(result.attempts[1].deliverable, { type: 'report', gated: true, produced: true });
+    assert.equal(result.ok, false);
+    assert.deepEqual(pickedPools(result), ['pool-a']);
+    assert.deepEqual([result.attempts[0].failureKind, result.attempts[0].why], ['not-produced', 'report is empty · retry skipped: a step that changed no file rarely does on a rerun']);
+    assert.equal(result.attempts[0].willRetry, false);
+    assert.deepEqual(result.attempts[0].deliverable, { type: 'report', gated: true, produced: false });
   });
   // A digest-kind step stored by an earlier Bullswarm has no exemption left.
   await withGate('bs-fr-digest-kind-', {

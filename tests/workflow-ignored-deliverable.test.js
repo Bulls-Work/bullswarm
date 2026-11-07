@@ -22,6 +22,7 @@ import { normalizeAttempt } from '../src/workflow/attempt-record.js';
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
 
+const SKIPPED = ' · retry skipped: a step that changed no file rarely does on a rerun';
 const good = { ok: true, why: 'structured output validated', meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10 } } };
 const connector = (name) => ({
   name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
@@ -133,7 +134,7 @@ for (const [name, write] of [
     const { result } = await dispatch(f, files, [worker, worker], { failureRule: true });
     assert.equal(result.ok, false, JSON.stringify(result.attempts[0]?.changedFiles));
     assert.equal(result.failureKind, 'not-produced');
-    assert.equal(result.attempts[0].why, 'no file changed');
+    assert.equal(result.attempts[0].why, `no file changed${SKIPPED}`);
     const legacy = await dispatch(f, { id: 'task', lane: 'build', effort: 'low', ownedFiles: [] }, [worker, worker], { failureRule: true });
     assert.equal(legacy.result.ok, false);
     assert.equal(legacy.result.failureKind, 'not-produced');
@@ -175,7 +176,7 @@ test('too many ignored files to list: the gate still runs on the other files', a
   const noop = await dispatch(f, files, [good, good], { failureRule: true });
   assert.equal(noop.result.ok, false);
   assert.equal(noop.result.failureKind, 'not-produced');
-  assert.equal(noop.result.attempts[0].why, 'no file changed');
+  assert.equal(noop.result.attempts[0].why, `no file changed${SKIPPED}`);
   const legacy = await dispatch(f, { id: 'task', lane: 'build', effort: 'low', ownedFiles: [] }, [good, good], { failureRule: true });
   assert.equal(legacy.result.ok, false);
   assert.equal(legacy.result.failureKind, 'not-produced');
@@ -194,7 +195,7 @@ test('a step that declared an ignored file counts it', async (t) => {
   assert.deepEqual(result.attempts[0].changedFiles, ['out/triage.jsonl']);
 });
 
-test('an ignored file left as it was is not work: not-produced, and neither the why nor the retry names a commit', async (t) => {
+test('an ignored file left as it was is not work: not-produced, and neither the why nor the prompt names a commit', async (t) => {
   const f = ignoringRepo(t);
   mkdirSync(join(f.repo, 'out'));
   writeFileSync(join(f.repo, 'out', 'old.jsonl'), 'old\n');
@@ -202,8 +203,8 @@ test('an ignored file left as it was is not work: not-produced, and neither the 
   const { result, tasks } = await dispatch(f, action, [good, good], { failureRule: true });
   assert.equal(result.ok, false);
   assert.equal(result.failureKind, 'not-produced');
-  assert.equal(result.attempts[0].why, 'no file changed');
-  assert.equal(tasks.length, 2, 'the gate retry ran');
+  assert.equal(result.attempts[0].why, `no file changed${SKIPPED}`);
+  assert.equal(tasks.length, 1, 'a step that changed no file is not retried');
   for (const task of tasks) assert.doesNotMatch(task, /commit (counts|was made|is made)|or a commit|no commit/i);
 });
 
@@ -229,14 +230,14 @@ test('not-produced with an `outside:` blocker in the report: no gate retry, the 
   assert.equal(Object.hasOwn(normalizeAttempt({ status: 'failed' }, { id: 'task-1', actionId: 'task', ordinal: 1 }), 'outsideBlockers'), false);
 });
 
-test('the same report without the `outside:` prefix still gets the gate retry', async (t) => {
+test('the same report without the `outside:` prefix gets the no-file-changed skip, not the blocker', async (t) => {
   const f = ignoringRepo(t);
   const action = { id: 'task', role: 'produce', lane: 'build', effort: 'medium', deliverable: { type: 'files' }, ownedFiles: [] };
   const plain = OUTSIDE_REPORT.replace('- outside: ', '- ');
   const { result, tasks } = await dispatch(f, action, [reporting(good, plain), good], { failureRule: true });
-  assert.equal(tasks.length, 2, 'the gate retry ran');
-  assert.equal(result.attempts[0].willRetry, true);
-  assert.equal(result.attempts[0].why, 'no file changed');
+  assert.equal(tasks.length, 1, 'a step that changed no file is not retried');
+  assert.equal(result.attempts[0].willRetry, false);
+  assert.equal(result.attempts[0].why, `no file changed${SKIPPED}`);
   assert.equal(Object.hasOwn(result.attempts[0], 'outsideBlockers'), false);
 });
 
