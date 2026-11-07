@@ -15,6 +15,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { pickPool } from '../src/lib/route.js';
+import { handoffBlock } from '../src/workflow/retry-handoff.js';
 
 const good = { ok: true, why: 'structured output validated', meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10 } } };
 const connector = (name) => ({
@@ -134,8 +136,11 @@ test('an analyze step with an empty report keeps its same-pool retry, forced, in
   });
   const launch = [conversational('pool-a', 90), conversational('pool-b', -90)];
   const flipped = [conversational('pool-a', -90), conversational('pool-b', 90)];
+  // Without the pin the router would move the retry to pool-b.
+  assert.equal(pickPool('analyze', flipped, { effortTier: 'medium' }).pick.pool, 'pool-b');
   const refreshCalls = [];
   const tasks = [];
+  const facts = [];
   let session = 0;
   const h = harness([() => good, ({ paths }) => { writeFileSync(paths.outFile, 'T-1001: refund pending\n'); return good; }]);
   const inner = h.dependencies.watchOnce;
@@ -146,6 +151,7 @@ test('an analyze step with an empty report keeps its same-pool retry, forced, in
     paths: (ordinal) => ({ taskFile: join(f.home, `task-report-attempt-${ordinal}.md`), outFile: join(f.home, `out-report-attempt-${ordinal}.md`) }),
     pools: launch, bullswarmDir: f.home,
     refreshPools: async (opts) => { refreshCalls.push(opts); return refreshCalls.length === 1 ? launch : flipped; },
+    handoffBlock: (value) => { facts.push(value); return handoffBlock(value); },
     dependencies: {
       ...h.dependencies,
       uuid: () => `session-${++session}`,
@@ -167,4 +173,22 @@ test('an analyze step with an empty report keeps its same-pool retry, forced, in
   assert.deepEqual(refreshCalls, [{ force: false }, { force: true }]);
   assert.match(tasks[1], /## Prior attempt on this step/);
   assert.match(tasks[1], /- Failure: not-produced/);
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].gate, true, 'the gate line is asked for (§2.3)');
+  assert.equal(facts[0].failureKind, 'not-produced');
+});
+
+test('a build step that changed files but missed its declared path keeps its same-pool retry', async (t) => {
+  // The 1-in-12 figure measured "no file changed" only; a step that wrote
+  // something keeps the retry with the missing path attached.
+  const f = repoFixture(t);
+  const action = build({ deliverable: { type: 'files', paths: ['out/a.txt'] }, retry: 1 });
+  const writeDeclared = () => { mkdirSync(join(f.repo, 'out'), { recursive: true }); writeFileSync(join(f.repo, 'out', 'a.txt'), 'done\n'); return good; };
+  const { result, calls } = await dispatch(f, action, [edit(f.repo, 'Refund pending\n'), writeDeclared]);
+  assert.equal(calls.length, 2, 'the automatic retry ran');
+  assert.equal(result.attempts[0].failureKind, 'not-produced');
+  assert.match(result.attempts[0].why, /^declared files missing: out\/a\.txt/);
+  assert.ok(!result.attempts[0].why.includes('retry skipped'), result.attempts[0].why);
+  assert.equal(result.attempts[0].willRetry, true);
+  assert.deepEqual(result.attempts[1].retryOf, { attempt: 'task-1', how: 'same-pool' });
 });
