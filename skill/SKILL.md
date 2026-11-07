@@ -43,6 +43,7 @@ changes. Use `--task-file` for long text. Options you will use:
 - `--answer-schema <file>`: a JSON schema. The worker writes its answer as JSON
   to a file Bullswarm names, and the verdict carries the checked `answer` (a
   mismatch is failure kind `schema`).
+- `--check '<cmd>'`: a command Bullswarm runs after the worker (up to 5); exit 0 proves the step. Give a build run one.
 - `--no-retry`: one attempt. Without it the step gets its one automatic retry.
 - `--avoid-pool`, `--use-provider`, `--avoid-provider`, `--model`: routing.
   `strategy set-free never --yes` stops free models being picked.
