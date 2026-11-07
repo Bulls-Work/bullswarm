@@ -199,9 +199,8 @@ Lessons from real runs; each holds for this version.
     does not include, before any work) is picked again and does not use it.
     A pool whose meter read says the sign-in failed is out of picks until a
     later read succeeds.
-    A build or chore step that changed no file (`not-produced`) comes back at
-    once with no automatic retry (every other `not-produced`, such as an empty
-    report or a missing declared path, keeps it): that retry succeeded 1 time in 12 (2026-10-03..11-07).
+    A build or chore step that read "no file changed" comes back at once, no
+    retry (it succeeded 1 time in 12); other `not-produced` keep the retry.
     A worker whose check or deliverable failed and whose report
     lists `- outside: <blocker>` under `## Not done` comes back at once. Fix
     the cause with `workflow add` rather than rerunning the same step.
