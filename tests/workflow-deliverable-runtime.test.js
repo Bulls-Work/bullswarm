@@ -331,7 +331,7 @@ test('resuming a v3 run fails an unchanged build step as not-produced', async (t
   assert.equal(seen[0].legacyGate, true);
   assert.equal(run.state.attempts[0].status, 'failed');
   assert.equal(run.state.attempts[0].failureKind, 'not-produced');
-  assert.equal(run.state.attempts[0].why, 'no file changed');
+  assert.equal(run.state.attempts[0].why, 'no file changed · retry skipped: a step that changed no file rarely does on a rerun');
   // A v3 build step declares `files`: the gate recorded that nothing was produced.
   assert.deepEqual(run.state.attempts[0].deliverable, { type: 'files', gated: true, produced: false });
 });

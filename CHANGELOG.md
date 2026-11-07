@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `bullswarm run --check '<cmd>'` (up to 5, with an optional `--check-timeout <seconds>`): a single-step run can now be proven by a command. Each check is a command evidence item on the run's step, run read-only in `--add-dir` after the worker; exit 0 gives the verdict `proof: proven by command`, a failure is `failed-evidence` with the one same-pool retry, and `--dry-run` lists the checks. In the 2026-11-07 weekly review, 132 of 134 build steps that had no check came from `bullswarm run`, which had no way to declare one. A run without `--check` is unchanged.
+- failure rule: a build or chore step that fails `not-produced` because it changed no file ("no file changed"; a declared path missing or not written still retries) is no longer retried automatically on the same pool. It goes to the caller at once through the same needs-you path an `outside:` blocker uses (status `failed`, `willRetry: false`), and its why ends `· retry skipped: a step that changed no file rarely does on a rerun`. Evidence, from real run records 2026-10-03..11-07: after a build or chore attempt failed `not-produced` with no `outside:` blocker, the same-pool retry succeeded 1 time in 12 (7 of 7 failed again in the last week), each costing a full worker run. A `failed-evidence` same-pool retry succeeded 13 of 25 times and keeps its retry; process, schema, semantic, quota, auth and refusal rules are unchanged, and `step rerun` still reruns such a step on request.
 
 ## 0.38.19 — who launched it: caller identity on runs and assignments
 

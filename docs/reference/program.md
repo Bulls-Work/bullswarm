@@ -107,7 +107,7 @@ A loop's findings are in `result.json` under `loops[i].findings`: `{known (in-sc
 ### Rules the kernel keeps
 
 - A step passes by facts only: its worker ended cleanly, its deliverable was produced, its evidence passed, and its answer (when declared) matched the schema.
-- A failed step gets one automatic retry: a process failure on another eligible pool, a failed check (answer, evidence, deliverable) on the same pool with the failure attached. Then it comes back to you. A usage limit sends the step to you at once.
+- A failed step gets one automatic retry: a process failure on another eligible pool, a failed check (answer, evidence, deliverable) on the same pool with the failure attached. A build or chore step that changed no file (`not-produced`) comes back at once with no automatic retry; every other `not-produced` keeps that retry. Then it comes back to you. A usage limit sends the step to you at once.
 - When only waiting gates or loops are left, the run parks with status `waiting` until you run `workflow continue`.
 - A v3 run's steps, gates and loops are never edited. Add work with `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when a step's answer is itself a fragment `{steps, gates?, loops?}`). The one change a fragment may make to an existing step is `blocks: {"<new step id>": ["<existing step id>", ...]}`: those steps, which must not have started and must be in no loop, also wait for the new step. A step already blocked behind a failed step stays blocked; `step accept` the failed step to release it.
 
@@ -198,7 +198,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 | Failure | Automatic action | Then |
 |---|---|---|
 | `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`, `model-not-in-plan`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`, whose retry also skips every pool that shares its credential, and `model-not-in-plan`, whose retry never goes back to the pool whose plan refused the model) | You decide |
-| `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached | You decide |
+| `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached, except `not-produced` on a build or chore step (no file changed), which gets no automatic retry | You decide |
 | `wait` | `quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry | You decide; the block shows `back at <time>` when the pool's return time is known |
 | `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
 | `stop` | `cancelled`, `paused`, `restarted`, `superseded`: no failure retry | The caller controls what runs next |
@@ -349,7 +349,7 @@ So a kind and its role alone do not always route or gate the same way:
 
 A step may give both a kind and a role only when the role is the kind's own; then only the kind is stored. The kind gate for `implement` applies to runs started by this version.
 
-When a step ends, Bullswarm checks its deliverable. A step that did not produce it fails as `not-produced`. In runs started by this version that failure gets one retry on the same pool in a fresh session with the failure attached, then comes back to you; runs started earlier do not retry it. `workflow resume` never reruns it: use `step rerun`, `step accept` or plan revise.
+When a step ends, Bullswarm checks its deliverable. A step that did not produce it fails as `not-produced`. A build or chore step that changed no file comes back to you at once with no automatic retry. Every other `not-produced` (an empty report, a declared path missing or not written) gets one retry on the same pool in a fresh session with the failure attached, then comes back to you. `workflow resume` never reruns it: use `step rerun`, `step accept` or plan revise.
 
 | Deliverable | Produced when |
 |---|---|

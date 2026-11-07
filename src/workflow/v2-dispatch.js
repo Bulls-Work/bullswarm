@@ -42,7 +42,7 @@ import { attemptPaths, evidenceLogFile, fileBytes, runIdFromPaths, withAttemptAr
 import {
   captureDiffSnapshot, hashTerritory, headCommit, statDeliverablePaths, territoryFiles, trackedFiles, uniquePaths,
 } from './dispatch-snapshot.js';
-import { deliverableVerdict, gateBaselinePaths } from './dispatch-deliverable.js';
+import { deliverableVerdict, gateBaselinePaths, NO_FILE_CHANGED_WHY } from './dispatch-deliverable.js';
 import { outsideWrites } from './outside-writes.js';
 import { durableHandoff, lastResponseEvents, streamShowsWork } from './dispatch-handoff.js';
 import { noPoolCandidates, tierOffReasons } from './dispatch-no-pool.js';
@@ -62,6 +62,10 @@ export const GATE_RETRY_PIN_SOURCE = 'the same pool (gate retry)';
 // schema correction and every process failure keep their retry.
 const OUTSIDE_SKIPS_RETRY = new Set(['failed-evidence', 'not-produced', 'semantic']);
 const OUTSIDE_WHY_CHARS = 160;
+// Why a not-produced step went to the caller with no automatic retry.
+const NOT_PRODUCED_SKIP_SUFFIX = ' · retry skipped: a step that changed no file rarely does on a rerun';
+// The lanes whose deliverable is a changed file: their not-produced has no automatic retry.
+const FILE_WRITING_LANES = new Set(['build', 'chore']);
 
 // The `outside:` blockers in an attempt's out file; an unreadable or missing
 // file (a killed worker) names none.
@@ -744,6 +748,8 @@ export async function dispatchV2Action({
     let verdict;
     let snapshot = { ok: false, statText: '', changedFiles: [] };
     let deliverableFact = null;
+    // The deliverable gate said "no file changed" (the case the skip below measured).
+    let noFileChanged = false;
     try {
       verdict = await watch(runtimeConnector, attemptTask, targetDir, files, {
         env: childDepthEnv(parentEnv),
@@ -832,6 +838,7 @@ export async function dispatchV2Action({
       outsideChanged,
     });
     if (gateVerdict?.ok && judged.failWhy) {
+      noFileChanged = judged.failWhy === NO_FILE_CHANGED_WHY;
       verdict = { ...verdict, ok: false, why: judged.failWhy, failureKind: 'not-produced' };
     }
     deliverableFact = judged.fact;
@@ -1070,6 +1077,16 @@ export async function dispatchV2Action({
       } else if (failureClass === 'gate') {
         if (hasBudget && kind === 'schema') {
           if (typeof correctionTask === 'function') next = { how: 'same-pool', correction: true };
+        } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane ?? 'chore')
+          && noFileChanged) {
+          // A build or chore step whose deliverable gate read "no file
+          // changed" rarely changes one on a rerun (1 in 12 over
+          // 2026-10-03..11-07): it goes to the caller now, like a reported
+          // blocker. It still fails; only the automatic retry is skipped.
+          // Every other not-produced (an empty report, declared paths missing
+          // or not written) keeps the retry.
+          next = null;
+          verdict = { ...verdict, why: `${verdict.why ?? kind}${NOT_PRODUCED_SKIP_SUFFIX}` };
         } else if (hasBudget) {
           next = { how: 'same-pool', gate: true, fresh: kind === 'not-produced' };
         }
@@ -1214,7 +1231,8 @@ export async function dispatchV2Action({
     };
     if (next.gate) {
       // D5: the same pool, forced, after a live look at whether it can
-      // still take work. `not-produced` starts a fresh session (D7).
+      // still take work. `not-produced` that keeps its retry (an empty
+      // report, a declared path missing or not written) starts a fresh session (D7).
       gatePin = pool.name;
       forceRefresh = true;
       if (next.fresh) currentSession = null;

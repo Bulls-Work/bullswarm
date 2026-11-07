@@ -209,7 +209,9 @@ Use command evidence for tests or other facts a command can check, and schema
 evidence when output must match a JSON or JSONL shape. Keep commands scoped to
 their step; put a whole-suite check on the step that runs alone or last. Checks
 run after the deliverable gate and must not change the deliverable. A failure
-gets one same-pool retry, then returns to you. A report can be checked with
+gets one same-pool retry, then returns to you. A build or chore step that
+changed no file (`not-produced`) returns to you at once, with no automatic retry (that retry
+succeeded 1 time in 12 in real runs). A report can be checked with
 `file: "$output"` or a command that reads `$BULLSWARM_STEP_OUTPUT`. A review
 step (one with `evidenceFor`) and a digest take no evidence: put the commands a
 reviewer must run in its prompt, or add a separate `check` step with evidence
