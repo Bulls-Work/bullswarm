@@ -1231,8 +1231,8 @@ export async function dispatchV2Action({
     };
     if (next.gate) {
       // D5: the same pool, forced, after a live look at whether it can
-      // still take work. `not-produced` (a report step's empty report)
-      // starts a fresh session (D7).
+      // still take work. `not-produced` that keeps its retry (an empty
+      // report, a declared path missing or not written) starts a fresh session (D7).
       gatePin = pool.name;
       forceRefresh = true;
       if (next.fresh) currentSession = null;

@@ -2935,7 +2935,7 @@ test('retryPoolTiers orders same model, then same family, then the rest', () => 
 
 // Measured 2026-10-03..11-07: a same-pool retry after "no file changed"
 // succeeded 1 time in 12, so a not-produced step goes to the caller at once.
-test('failure rule: not-produced is not retried; the step goes to the caller with the skip reason', async () => {
+test('failure rule: a build step whose gate reads "no file changed" is not retried; the step goes to the caller with the skip reason', async () => {
   const launch = [conversational('pool-a', { pace: 90 }), conversational('pool-b', { pace: -90 })];
   const refreshCalls = [];
   const facts = [];
