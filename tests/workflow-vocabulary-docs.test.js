@@ -999,7 +999,7 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
   // PR #72 moved the 5-hour wall to 99%: no page an agent or reader routes by
   // still says a 5-hour window gates at 100% (blind review 9ba2wi).
   const routedBy = ['docs/guide/routing.md', 'docs/guide/concepts.md', 'docs/guide/workflows.md', 'docs/guide/index.md',
-    'docs/reference/cli.md', 'docs/reference/configuration.md', 'skill/references/recovery.md',
+    'docs/reference/cli.md', 'docs/reference/configuration.md', 'docs/reference/program.md', 'skill/references/recovery.md',
     'skill/references/operations.md', 'AGENTS.md', 'src/help.js'];
   for (const path of routedBy) {
     for (const stale of ['a window at 100% keeps', 'a window it shows at 100%', 'Any metered window at 100%']) {
