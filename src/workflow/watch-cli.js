@@ -1278,7 +1278,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           Date.parse(state.lifecycle?.startedAt ?? state.startedAt ?? '') || nowMs,
         );
       }
-      const newEvents = readEvents(resolved.runDir, { after: priorSequence });
+      const readFrom = priorSequence;
+      const newEvents = readEvents(resolved.runDir, { after: readFrom });
       const eventMode = untilMode || (!oneShot && !classic);
       const beatMs = Number.isFinite(heartbeatMs) && heartbeatMs > 0 ? heartbeatMs : null;
       if (newEvents.length) {
@@ -1319,7 +1320,13 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           attached = true;
           const history = readEvents(resolved.runDir);
           const recorded = recordsStaleWarnings(history);
-          if (recorded && afterSequence == null && sinceMs == null) attachEvents = openStaleWarnings(history, state);
+          // Which warnings are open is worked out over the whole history (a
+          // later level or clear past the cursor closes an earlier one); only
+          // those at or before the cursor are shown here, because newEvents
+          // prints anything after it, now or on the next poll.
+          if (recorded && afterSequence == null && sinceMs == null) {
+            attachEvents = openStaleWarnings(history, state).filter((event) => Number(event.sequence) <= Number(readFrom));
+          }
           memory = initialWatchMemory(state, {
             replayedEvents: afterSequence == null ? [] : newEvents,
             sinceMs, stallAfterMs, nowMs, stale: staleProbe, recordsStale: recorded,
