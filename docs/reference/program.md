@@ -207,8 +207,9 @@ Nothing waits for a pool, and nothing about a failed pool is remembered. A
 limit notice is `quota` when it says a usage window, a quota or a balance is
 spent, with or without a reset named, or when the pool's meter shows the
 window full; a `too many requests` notice is `throttle`. After a `quota` the
-pool's meter is read again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and a window it shows at
-100% keeps the pool out of later steps until that window resets. A throttle that names a wait longer
+pool's meter is read again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and a window it shows at its limit (5-hour at 99% or more,
+weekly or monthly at 100%) keeps the pool out of later steps until that window
+resets. A throttle that names a wait longer
 than 2 minutes, or whose pool is no longer free for its backoff, comes back to
 you at once. When no pool that can run the step is free at its pick (nearly
 spent, or at its 5-hour, weekly or monthly limit), the step comes back to you as
