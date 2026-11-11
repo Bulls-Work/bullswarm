@@ -197,8 +197,9 @@ Lessons from real runs; each holds for this version.
 10. **Retries are for flakes.** The one automatic retry covers a crash or a
     failed check. A refusal at start (a sign-in failure or a model the plan
     does not include, before any work) is picked again and does not use it.
-    A sign-in failure (meter read or worker) keeps the pool (and its credential group) out of picks: a
-    meter one until a read succeeds, a worker one for 15, 30, then 60 min.
+    A sign-in failure (meter read or worker) keeps the pool and its
+    credential group out of picks: a meter one until a read succeeds, a
+    worker one for 15, 30, then 60 min.
     A build or chore step that read "no file changed" comes back at once, no
     retry (it succeeded 1 time in 12); other `not-produced` keep the retry.
     A worker whose check or deliverable failed and whose report
