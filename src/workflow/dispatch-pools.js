@@ -44,7 +44,7 @@ export function authHoldActive(pool, now = null) {
 export function meterSignInText(pool, now = Date.now()) {
   const parts = [];
   if (pool?.meterSignInFailed === true) parts.push(`sign-in failed (meter read ${pool?.meterError || 'auth'})`);
-  if (authHoldActive(pool)) parts.push(authHoldText(pool.authHold, now));
+  if (authHoldActive(pool, now)) parts.push(authHoldText(pool.authHold, now));
   return parts.join(' · ') || `sign-in failed (meter read ${pool?.meterError || 'auth'})`;
 }
 

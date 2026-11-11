@@ -75,7 +75,7 @@ test('with only A eligible the next run does not dispatch and names the hold', a
     const second = await f.go(T0 + 5 * MIN);
     assert.equal(second.ok, false);
     assert.deepEqual(second.attempts, []);
-    assert.match(second.verdict.why, /sign-in failed at dispatch 5m ago, retry after 2026-10-31T13:15:00\.000Z/);
+    assert.match(second.verdict.why, /sign-in failed at dispatch 5m ago until 2026-10-31T13:15:00\.000Z/);
     assert.match(second.routeCandidates[0].excluded, /sign-in failed at dispatch 5m ago/);
     assert.match(poolStatusText(f.view('a', T0 + 5 * MIN), T0 + 5 * MIN), /^not ready · sign-in failed at dispatch 5m ago/);
   } finally { f.cleanup(); }

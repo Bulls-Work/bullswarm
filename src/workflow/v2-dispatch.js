@@ -321,8 +321,9 @@ export async function dispatchV2Action({
   // Credential groups a sign-in failure in THIS dispatch showed dead: no
   // later pick of this dispatch takes a pool in one, however many pool names
   // front it (the 2026-09-11 bug: a retry walked three names for one dead
-  // credential). Nothing is stored; the next dispatch starts clean (state.js
-  // S1) and learns of a dead credential only by trying it.
+  // credential). This set lives only for this dispatch; later dispatches
+  // learn of the failure from the stored sign-in hold (holdSignIn,
+  // auth-hold.js), which keeps the pool and its credential group out.
   const deadGroups = new Set();
   const inLiveGroup = (pool) => !deadGroups.size || !deadGroups.has(upstreamGroupOf(pool));
   // A pool the router calls "expiring but draining" (its pacing window closes

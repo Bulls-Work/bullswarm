@@ -21,6 +21,7 @@ test('a longer sign-in hold wins over a shorter timed reason', () => {
   const entry = heldEntry('p', [signInPart(pool, T0), shorter]);
   assert.ok(entry.text.includes('sign-in failed at dispatch'), entry.text);
   assert.equal(entry.back, Date.parse(holdUntil));
+  assert.equal(entry.text.split(holdUntil).length - 1, 1, entry.text);
 });
 
 test('a meter-read sign-in failure has no known end', () => {
