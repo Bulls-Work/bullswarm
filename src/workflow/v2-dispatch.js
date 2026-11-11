@@ -1167,7 +1167,9 @@ export async function dispatchV2Action({
         ? {
           stalled: true, partialOutput: files.outFile,
           // The limit that stopped it: silence, or no file change.
-          ...(verdict?.meta?.stalledBy === 'no-progress' ? { noProgressSec } : { silentSec: attemptSilenceSec }),
+          ...(verdict?.meta?.stalledBy === 'no-progress'
+            ? { stalledBy: 'no-progress', noProgressSec }
+            : { stalledBy: 'silence', silentSec: attemptSilenceSec }),
         }
         : {}),
     });

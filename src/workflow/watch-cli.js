@@ -18,7 +18,8 @@ import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { isDeliveredWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, formatV2ProofLabel, formatV2ProofLine, summarizeV2Result } from './v2-outcome.js';
-import { DEFAULT_STALE_THRESHOLDS, createStaleProbe } from '../lib/stale.js';
+import { createStaleProbe } from '../lib/stale.js';
+import { advanceStaleEpisode, staleEpisodeSeenAt, staleEvent, staleLevelAt } from '../lib/stale-episodes.js';
 import { declaredEvidence, NEEDS_YOU_LABELS } from './step-vocabulary.js';
 import { needsYouFacts, needsYouJson, renderNeedsYou } from './needs-you.js';
 import { formatDuration } from './format-duration.js';
@@ -368,12 +369,34 @@ function attemptOrdinal(state, attemptId) {
 // inputs instead of from the live state alone: replayedEvents are the durable
 // events this launch is about to print, and sinceMs is when the previous
 // watcher exited.
+// True when the run's events show its runner saves stale warnings.
+export function recordsStaleWarnings(events) {
+  return events.some((event) => event.type === 'stale.recording' || event.type === 'attempt.stale');
+}
+
+// What a watch that attaches fresh to a recording run shows of the past: for
+// each attempt still running, its latest saved `attempt.stale` unless a later
+// `attempt.stale_cleared` closed it. Printed once, as the saved event.
+export function openStaleWarnings(events, state) {
+  const open = new Map();
+  for (const event of events) {
+    const id = event.payload?.attemptId;
+    if (!id) continue;
+    if (event.type === 'attempt.stale') open.set(id, event);
+    else if (event.type === 'attempt.stale_cleared') open.delete(id);
+  }
+  const running = new Set(v2AttemptRecords(state).filter(({ attempt }) => attempt.status === 'running').map(({ key }) => key));
+  return [...open].filter(([id]) => running.has(id)).map(([, event]) => event);
+}
+
 export function initialWatchMemory(state, {
   replayedEvents = [],
   sinceMs = null,
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
   nowMs = Date.now(),
   stale = null,
+  // The run saves its own stale warnings (see recordsStaleWarnings).
+  recordsStale = false,
 } = {}) {
   // A stage whose action finished among the replayed events is exactly the news
   // this relaunch exists to deliver, so it must not be pre-marked as reported
@@ -405,7 +428,7 @@ export function initialWatchMemory(state, {
   // exited was reported by it: the score says when it crossed the threshold,
   // and the warnings it repeated since are one per full window up to then.
   const staleReported = new Map();
-  if (sinceMs != null && typeof stale === 'function') {
+  if (!recordsStale && sinceMs != null && typeof stale === 'function') {
     for (const record of v2AttemptRecords(state)) {
       if (record.attempt.status !== 'running') continue;
       const score = staleFor(stale, state, record, nowMs);
@@ -414,72 +437,7 @@ export function initialWatchMemory(state, {
       }
     }
   }
-  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map(), handoffs: new Map(), staleReported, stageSteps: new Map() };
-}
-
-// One stale episode the watcher reported: when it went stale, the warning
-// level printed so far, when its clock started (the stale time, or the last
-// progress seen while it stayed stale) and the level it had then, and the
-// progress it had then. Progress while still stale restarts the clock, not
-// the level: the next warning is one level higher than the last.
-function staleEpisode(score, baseAt, baseLevel = 1) {
-  return {
-    since: score.staleSince ?? baseAt,
-    level: baseLevel,
-    baseAt,
-    baseLevel,
-    progressAt: Number.isFinite(score.progressAt) ? score.progressAt : null,
-    windowMs: staleWindowMs(score),
-  };
-}
-
-// The episode a watcher that first sees a stale attempt at `atMs` holds, as
-// one there all along would: the levels due from the stale time up to the
-// last progress the attempt made while stale, then the clock restarted at
-// that progress, at that level, and the level due at `atMs`. Only the last
-// progress is known. A file change is rare, so the stale time up to it is
-// taken as one silent stretch (the level due then): with two or more changes
-// while stale that can put it a level above what an all-along watcher
-// printed, never below. Output is not rare: a step stale for another reason
-// (the same command again, running over its time) keeps printing, so no
-// window is taken to have passed without it and the level at that progress
-// is 1. With sparse output that can repeat a level a predecessor printed; it
-// never skips one, and never prints "warning 4 · no output for 5s".
-function staleEpisodeSeenAt(score, fallback, atMs) {
-  const since = score.staleSince ?? fallback;
-  const first = staleEpisode(score, since);
-  const progressAt = Number.isFinite(score.progressAt) && score.progressAt > since ? score.progressAt : null;
-  const levelAtProgress = progressAt == null || score.progressBy === 'output' ? 1 : staleLevelAt(first, progressAt);
-  const entry = progressAt == null ? first : staleEpisode(score, progressAt, levelAtProgress);
-  entry.level = staleLevelAt(entry, atMs);
-  return entry;
-}
-
-// The repeat window: the progress window the score names, else quiet's.
-function staleWindowMs(score) {
-  const sec = Number(score?.progressWindowSec);
-  return (Number.isFinite(sec) && sec > 0 ? sec : DEFAULT_STALE_THRESHOLDS.quietSec) * 1000;
-}
-
-// Level 1 at the first warning, one more per full window without progress
-// (counted from the level the clock last restarted at).
-function staleLevelAt(entry, nowMs) {
-  return (entry.baseLevel ?? 1) + Math.max(0, Math.floor((nowMs - entry.baseAt) / entry.windowMs));
-}
-
-// The attempt.stale event for one warning. Level and the time without
-// progress were added after `reasons`, `score` and `staleSince` (0.38.12).
-function staleEvent(record, score, level, nowMs) {
-  const progressAt = Number.isFinite(score.progressAt) ? score.progressAt : null;
-  return {
-    type: 'attempt.stale', actionId: record.actionId, attemptId: record.key,
-    pool: record.attempt.pool ?? null, model: record.attempt.model ?? null,
-    score: score.score, reasons: score.reasons,
-    staleSince: score.staleSince == null ? null : new Date(score.staleSince).toISOString(),
-    level,
-    noProgressSec: progressAt == null ? null : Math.max(0, Math.round((nowMs - progressAt) / 1000)),
-    ...(score.progressBy ? { progressBy: score.progressBy } : {}),
-  };
+  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map(), handoffs: new Map(), staleReported, stageSteps: new Map(), recordsStale: recordsStale === true };
 }
 
 function staleFor(probe, state, { attempt, actionId }, nowMs) {
@@ -580,6 +538,10 @@ export function notableWatchEvents({
   const moving = new Map(carried.moving);
   const handoffs = new Map(carried.handoffs);
   const staleReported = new Map(carried.staleReported);
+  // A run whose runner saves its stale warnings (its events carry a
+  // `stale.recording` marker or an `attempt.stale`) prints those; the watch
+  // synthesizes its own only for an older run that records none.
+  let recordsStale = carried.recordsStale === true;
   const stageSteps = new Map(carried.stageSteps ?? []);
   const notable = [];
 
@@ -816,6 +778,14 @@ export function notableWatchEvents({
       case 'attempt.started':
         onAttemptStarted(payload.actionId, payload, attemptOrdinal(state, payload.attemptId));
         break;
+      case 'attempt.stale':
+        // Saved by the runner: print it as it was recorded, once.
+        recordsStale = true;
+        notable.push({ ...payload, type: 'attempt.stale' });
+        break;
+      case 'stale.recording':
+        recordsStale = true;
+        break;
       case 'planner.attempt_started':
         onAttemptStarted('workflow-planner', payload, payload.ordinal ?? null);
         break;
@@ -993,44 +963,19 @@ export function notableWatchEvents({
   // is one higher than the last); a reading that is no longer stale ends
   // the episode, so a later one warns from level 1 again. Nothing is stopped;
   // the caller decides whether to restart.
-  if (typeof stale === 'function') {
+  if (typeof stale === 'function' && !recordsStale) {
     const running = new Set();
     for (const record of v2AttemptRecords(state)) {
       if (record.attempt.status !== 'running') continue;
       running.add(record.key);
       const score = staleFor(stale, state, record, nowMs);
-      const reported = staleReported.get(record.key);
-      if (reported) {
-        if (!score) continue;
-        const progressed = Number.isFinite(score.progressAt) && reported.progressAt != null
-          && score.progressAt > reported.progressAt;
-        if (progressed) {
-          if (score.stale) staleReported.set(record.key, { ...staleEpisode(score, nowMs, reported.level), since: reported.since });
-          else staleReported.delete(record.key);
-          continue;
-        }
-        // No longer stale, progress or not: the episode ended, and a later
-        // stale reading is a new one that warns from level 1 ("looks stale",
-        // never "still" across a time it was not stale).
-        if (!score.stale) { staleReported.delete(record.key); continue; }
-        const level = staleLevelAt(reported, nowMs);
-        if (level <= reported.level) continue;
-        staleReported.set(record.key, { ...reported, level });
-        notable.push(staleEvent(record, score, level, nowMs));
-        continue;
-      }
-      if (!score?.stale) continue;
-      // First seen now: one line, at the level due now (a watcher that
-      // attaches windows after the step went stale does not print level 1
-      // and then level 2 a poll later).
-      const entry = staleEpisodeSeenAt(score, nowMs, nowMs);
-      staleReported.set(record.key, entry);
-      notable.push(staleEvent(record, score, entry.level, nowMs));
+      const { event } = advanceStaleEpisode(staleReported, record, score, nowMs);
+      if (event && !recordsStale) notable.push(event);
     }
     for (const key of [...staleReported.keys()]) if (!running.has(key)) staleReported.delete(key);
   }
 
-  return { notable, memory: { stages, stalled, retry, moving, handoffs, staleReported, stageSteps } };
+  return { notable, memory: { stages, stalled, retry, moving, handoffs, staleReported, stageSteps, recordsStale } };
 }
 
 /**
@@ -1333,7 +1278,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           Date.parse(state.lifecycle?.startedAt ?? state.startedAt ?? '') || nowMs,
         );
       }
-      const newEvents = readEvents(resolved.runDir, { after: priorSequence });
+      const readFrom = priorSequence;
+      const newEvents = readEvents(resolved.runDir, { after: readFrom });
       const eventMode = untilMode || (!oneShot && !classic);
       const beatMs = Number.isFinite(heartbeatMs) && heartbeatMs > 0 ? heartbeatMs : null;
       if (newEvents.length) {
@@ -1368,12 +1314,22 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       let notablePrinted = 0;
       let troublePrinted = 0;
       const staleSteps = [];
+      let attachEvents = [];
       if (eventMode) {
         if (!attached) {
           attached = true;
+          const history = readEvents(resolved.runDir);
+          const recorded = recordsStaleWarnings(history);
+          // Which warnings are open is worked out over the whole history (a
+          // later level or clear past the cursor closes an earlier one); only
+          // those at or before the cursor are shown here, because newEvents
+          // prints anything after it, now or on the next poll.
+          if (recorded && afterSequence == null && sinceMs == null) {
+            attachEvents = openStaleWarnings(history, state).filter((event) => Number(event.sequence) <= Number(readFrom));
+          }
           memory = initialWatchMemory(state, {
             replayedEvents: afterSequence == null ? [] : newEvents,
-            sinceMs, stallAfterMs, nowMs, stale: staleProbe,
+            sinceMs, stallAfterMs, nowMs, stale: staleProbe, recordsStale: recorded,
           });
           lastPrintedAt = nowMs;
           // --until prints nothing until a wake, so one start line tells a
@@ -1393,7 +1349,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           }
         }
         const collected = notableWatchEvents({
-          events: newEvents, state, memory, verbose, nowMs, stallAfterMs,
+          events: [...attachEvents, ...newEvents], state, memory, verbose, nowMs, stallAfterMs,
           stale: snapshot.interrupted ? null : staleProbe, runDir: resolved.runDir,
         });
         memory = collected.memory;
