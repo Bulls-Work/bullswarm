@@ -979,7 +979,8 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
       assert.ok(!flat(path).includes(phrase), `${path}: ${phrase}`);
     }
   }
-  // Any metered window at 100% keeps its pool out until the reset, and the
+  // A window at its limit (5-hour at 99%, weekly or monthly at 100%) keeps its
+  // pool out until the reset, and the
   // held list names that window.
   assert.equal(BURST_BLOCK_PCT, 100);
   const resetsAt = '2026-09-28T00:00:00.000Z';
@@ -993,8 +994,26 @@ test('the pages give the limit rules the code applies: the last-mile reason, any
   }
   assert.ok(flat('CHANGELOG.md').includes('`<pool> at its weekly limit until <time>` (or `monthly`)'));
   const concepts = flat('docs/guide/concepts.md');
-  assert.ok(concepts.includes('at 100% the pool is not dispatched at all'));
-  assert.ok(concepts.includes('Any metered window at 100% — 5-hour, weekly or monthly — keeps the pool out of every pick until that window resets.'));
+  assert.ok(concepts.includes('at 99% or more (`FIVE_HOUR_WALL_PCT`) the pool is not dispatched at all'));
+  assert.ok(concepts.includes('A 5-hour reading at 99% or more, or a weekly or monthly reading at 100%, keeps the pool out of every pick until that window resets.'));
+  // PR #72 moved the 5-hour wall to 99%: no page an agent or reader routes by
+  // still says a 5-hour window gates at 100% (blind review 9ba2wi).
+  const routedBy = ['docs/guide/routing.md', 'docs/guide/concepts.md', 'docs/guide/workflows.md', 'docs/guide/index.md',
+    'docs/reference/cli.md', 'docs/reference/configuration.md', 'skill/references/recovery.md',
+    'skill/references/operations.md', 'AGENTS.md', 'src/help.js'];
+  for (const path of routedBy) {
+    for (const stale of ['a window at 100% keeps', 'a window it shows at 100%', 'Any metered window at 100%']) {
+      assert.ok(!flat(path).includes(stale), `${path}: ${stale}`);
+    }
+  }
+  for (const [path, stale] of [
+    ['docs/guide/routing.md', 'no metered window at 100%'],
+    ['docs/guide/routing.md', 'A recorded reading at 100% (`BURST_BLOCK_PCT`) means the pool is at its limit until the window resets, and the same holds'],
+    ['AGENTS.md', 'Any metered window at 100% (5h, weekly or monthly)'],
+    ['skill/references/operations.md', 'A pool with any metered window at 100% (5-hour, weekly or monthly)'],
+    ['src/meters/framework.js', 'a 100% reading blocks dispatch outright'],
+    ['src/lib/route.js', 'the 5-hour, weekly or monthly window at 100% until its reset'],
+  ]) assert.ok(!flat(path).includes(stale), `${path}: ${stale}`);
   assert.ok(!concepts.includes('90%'));
   // The meter read after a usage limit keeps the pool out only when it shows
   // a window at 100%: a fresh 97% reading leaves the pool eligible, so no page
