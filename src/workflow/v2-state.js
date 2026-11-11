@@ -210,7 +210,7 @@ const INTENT_CONSTRAINT_FIELDS = new Set(['workspaceMutation']);
 const GOAL_SETTING_FIELDS = new Set([
   'concurrency', 'workspaceMode', 'maxAgents', 'maxActions',
   'maxExpansionRounds', 'maxMechanicalRetries', 'maxManifestFiles', 'scout',
-  'suggestedPlan', 'plannerMode', 'executionMode',
+  'suggestedPlan', 'plannerMode', 'executionMode', 'outOfRounds',
 ]);
 
 export class V2StateValidationError extends TypeError {
@@ -264,6 +264,9 @@ function goalSettings(value) {
   }
   if (value.maxMechanicalRetries !== undefined) {
     nonNegativeInteger(value.maxMechanicalRetries, 'goalDocument.config.settings.maxMechanicalRetries');
+  }
+  if (value.outOfRounds !== undefined && !['wait', 'end'].includes(value.outOfRounds)) {
+    fail('goalDocument.config.settings.outOfRounds must be wait or end');
   }
   if (value.workspaceMode !== undefined && !['shared', 'isolated'].includes(value.workspaceMode)) {
     fail('goalDocument.config.settings.workspaceMode must be shared or isolated');

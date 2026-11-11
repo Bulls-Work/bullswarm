@@ -37,6 +37,7 @@ bullswarm workflow plan contract "Make the acme tests pass" --cwd /abs/path/to/a
 | `--isolation` | per-worker worktrees and strict exact-file ownership checks | off (shared workspace, advisory territories) |
 | `--concurrency <n>` | maximum parallel dispatches | 4 |
 | `--retry-attempts <0..3>` | automatic retries per step before it comes back to you | 1 |
+| `--out-of-rounds <wait\|end>` | `end` lets a loop that runs out of rounds settle by itself (`rounds-spent`, condition not met) instead of waiting for `workflow continue` | `wait` |
 
 ## Program v3: steps, gates and loops
 
@@ -132,7 +133,9 @@ launch line: put your goal back in its place before you run it.
 
 A gate stops only the steps behind it; other branches keep running. When only
 waiting gates or loops are left (a gate waiting, or a loop out of rounds), the
-run parks with status `waiting`. `bullswarm workflow watch <run> --until
+run parks with status `waiting` (unless the run was launched with
+`--out-of-rounds end`, which ends a loop out of rounds by itself and never
+parks for it). `bullswarm workflow watch <run> --until
 trouble` wakes on it, and `runs result` prints where it waits:
 
 ```text
@@ -162,7 +165,7 @@ What moves a waiting run:
 | You want | Command |
 | --- | --- |
 | pass a waiting gate | `bullswarm workflow continue <run> <gate>` |
-| give a loop out of rounds more rounds | `bullswarm workflow continue <run> <loop> --rounds <1-5>` (without `--rounds` the steps behind it run, and the loop is recorded as `continued-unmet`) |
+| give a loop out of rounds more rounds | `bullswarm workflow continue <run> <loop> --rounds <1-5>` (without `--rounds` the steps behind it run, and the loop is recorded as `continued-unmet`). Launch with `--out-of-rounds end` to skip this wait: the loop ends at its last round the same way, recorded `rounds-spent` and read as `continued-unmet` |
 | add work that depends on an answer | `bullswarm workflow add <run> --steps part.json` (or `--from-answer <step>` when the step's answer is itself a fragment `{steps, gates?, loops?}`), then `bullswarm workflow wait <run> <added ids>` |
 
 A v3 run's steps, gates and loops are never edited. `workflow add` appends steps, gates and loops without

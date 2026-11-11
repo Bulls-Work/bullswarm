@@ -24,7 +24,7 @@ export function parseFlags(argv) {
     'worker-pool', 'worker-model', 'worker-reasoning', 'planner-reasoning', 'request', 'run-id',
     'suggested-plan', 'planner', 'program', 'summary', 'reason',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
-    'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
+    'retry-attempts', 'out-of-rounds', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
     'out', 'rerun', 'base-revision', 'wait', 'width', 'height', 'until', 'pool',
     'avoid', 'requirement', 'rounds', 'steps', 'from-answer', 'timeout',
   ]);

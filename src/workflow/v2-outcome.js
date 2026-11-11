@@ -687,7 +687,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
   // its rounds ran out is named in the reason, since it never passed (QA37).
   const loops = isProgramV3(state.program) ? loopOutcomes(state) : [];
   const unmet = loops.filter((loop) => loop.outcome === 'continued-unmet')
-    .map((loop) => ` · ${continuedLoopText(loop.id, loop.rounds, loop.maxRounds)}`).join('');
+    .map((loop) => ` · ${continuedLoopText(loop.id, loop.rounds, loop.maxRounds, { reason: loop.endedBy })}`).join('');
   // A loop that ended dry says so, with how many findings its reviews made.
   const dry = loops.filter((loop) => loop.findings?.dryIn !== undefined || loop.findings?.yieldIn !== undefined)
     .map((loop) => ` · ${dryLoopText(loop.id, loop.findings.dryIn ?? loop.findings.yieldIn, loop.maxRounds, loop.findings.known.length, { yieldStop: loop.findings.yieldIn !== undefined })}`).join('');
@@ -1434,7 +1434,7 @@ export function formatV2ProofLine(summary) {
   }
   // A loop the caller continued is no proof of its condition (QA37).
   for (const loop of summary.loops ?? []) {
-    if (loop.outcome === 'continued-unmet') parts.push(continuedLoopText(loop.id, loop.rounds, loop.maxRounds, { by: false }));
+    if (loop.outcome === 'continued-unmet') parts.push(continuedLoopText(loop.id, loop.rounds, loop.maxRounds, { by: false, reason: loop.endedBy }));
   }
   return parts.length ? `proof: ${parts.join(' · ')}` : null;
 }
@@ -1551,7 +1551,8 @@ function validateResultLoops(loops) {
   loops.forEach((entry, index) => {
     const name = `loops[${index}]`;
     resultObject(entry, name);
-    exactFields(entry, new Set(['id', 'outcome', 'rounds', 'maxRounds', 'findings']), name);
+    exactFields(entry, new Set(['id', 'outcome', 'rounds', 'maxRounds', 'endedBy', 'findings']), name);
+    if (entry.endedBy !== undefined && entry.endedBy !== 'rounds-spent') resultFail(`${name}.endedBy is invalid`);
     resultString(entry.id, `${name}.id`);
     if (!LOOP_OUTCOMES.has(entry.outcome)) resultFail(`${name}.outcome is invalid`);
     for (const key of ['rounds', 'maxRounds']) if (!Number.isInteger(entry[key]) || entry[key] < 1) resultFail(`${name}.${key} must be a positive integer`);

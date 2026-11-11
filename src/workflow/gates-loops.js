@@ -62,6 +62,13 @@ export { controlOf, controlRecords };
 
 // --- the program's control nodes ---------------------------------------------
 
+// A loop that ended with its condition not met: the caller continued it
+// (`continued`) or `--out-of-rounds end` ended it at its last round
+// (`rounds-spent`). Every view reads the two the same way.
+export const ROUNDS_SPENT = 'rounds-spent';
+export const isUnmetEnd = (reason) => reason === 'continued' || reason === ROUNDS_SPENT;
+const endsOutOfRounds = (state) => state.config?.settings?.outOfRounds === 'end';
+
 /**
  * How a loop ended, from its record: `passed` (its condition held),
  * `continued-unmet` (the caller continued it after its rounds ran out, so its
@@ -69,7 +76,7 @@ export { controlOf, controlRecords };
  * or `pending` (not finished).
  */
 export function loopOutcome(record) {
-  if (record?.status === 'passed') return record.reason === 'continued' ? 'continued-unmet' : 'passed';
+  if (record?.status === 'passed') return isUnmetEnd(record.reason) ? 'continued-unmet' : 'passed';
   if (record?.status === 'waiting') return 'out-of-rounds';
   if (record?.status === 'blocked') return 'blocked';
   return 'pending';
@@ -88,6 +95,7 @@ export function loopOutcomes(state) {
     const summary = isDryLoop(loop) ? loopFindingsSummary(loop, record, groupOf(state, loop)) : null;
     return {
       id: record.id, outcome: loopOutcome(record), rounds: record.round ?? 1, maxRounds: record.maxRounds,
+      ...(record.status === 'passed' && record.reason === ROUNDS_SPENT ? { endedBy: ROUNDS_SPENT } : {}),
       ...(summary ? {
         findings: {
           known: summary.known, outOfScope: summary.outOfScope, rounds: summary.rounds,
@@ -111,7 +119,8 @@ export function dryLoopText(id, round, maxRounds, known, { yieldStop = false } =
 export const CONTINUED_MARK = '→';
 
 /** The words for a loop the caller continued: it never passed (QA37). */
-export function continuedLoopText(id, rounds, maxRounds, { by = true } = {}) {
+export function continuedLoopText(id, rounds, maxRounds, { by = true, reason = 'continued' } = {}) {
+  if (reason === ROUNDS_SPENT) return `loop ${id} ended at its last round (${rounds} of ${maxRounds}), condition not met (--out-of-rounds end)`;
   return `loop ${id} continued${by ? ' by the caller' : ''} after ${rounds} of ${maxRounds} rounds (condition not met)`;
 }
 
@@ -292,7 +301,7 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
   // `workflow continue`), still learns a reviewer's new answer (a step rerun
   // of it, or of the work it reviews): a finding it brings is never dropped,
   // and its fixer runs with it (mergeDryRound).
-  if (isDryLoop(loop) && (record.status === 'waiting' || (record.status === 'passed' && ['dry', 'yield', 'continued'].includes(record.reason)))) {
+  if (isDryLoop(loop) && (record.status === 'waiting' || (record.status === 'passed' && ['dry', 'yield', 'continued', ROUNDS_SPENT].includes(record.reason)))) {
     return mergeDryRound(state, loop, record, { at, emit, rerun });
   }
   if (record.status !== 'pending' && record.status !== 'blocked') return false;
@@ -324,6 +333,13 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
   if (holds) {
     settle(record, 'passed', at);
     emit('loop.passed', { loopId: loop.id, round: record.round, of: record.maxRounds, condition: untilText(state, loop) });
+    return true;
+  }
+  if (record.round >= record.maxRounds && endsOutOfRounds(state)) {
+    // `--out-of-rounds end`: the declared rounds are the budget; the loop ends
+    // with its condition unmet and the steps behind it run, as after a continue.
+    settle(record, 'passed', at, ROUNDS_SPENT);
+    emit('loop.passed', { loopId: loop.id, round: record.round, of: record.maxRounds, reason: ROUNDS_SPENT, source: 'flag' });
     return true;
   }
   if (record.round >= record.maxRounds) {
@@ -1016,8 +1032,8 @@ export function renderControlEvent(event) {
       if (event.reason === 'dry') {
         return `${g.ok} loop ${event.loopId} dry in round ${event.round} of ${event.of} · no new findings${event.areas ? ', every area reviewed' : ''} · ${event.known} found in all`;
       }
-      return event.reason === 'continued'
-        ? `${CONTINUED_MARK} ${continuedLoopText(event.loopId, event.round, event.of)}`
+      return isUnmetEnd(event.reason)
+        ? `${CONTINUED_MARK} ${continuedLoopText(event.loopId, event.round, event.of, { reason: event.reason })}`
         : `${g.ok} loop ${event.loopId} passed in round ${event.round} of ${event.of} · ${event.condition ?? 'its condition'}`;
     case 'loop.out-of-rounds': {
       const continueTail = `continue: bullswarm workflow continue ${event.token} ${event.loopId} --rounds <n>`;
