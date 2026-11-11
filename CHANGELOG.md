@@ -1,6 +1,13 @@
 # bullswarm changelog
 
 ## Unreleased
+- A quota reset the provider named now outlives a meter read. Until now the
+  next successful live read deleted the refusal marker, so a pool whose
+  provider had just said "session limit · resets 2:30am" read 43% and routing
+  picked it again for nine more refused dispatches (41 dispatches in 8 waves,
+  2026-10-19..21). The marker now stays, in the cache, routing, `pools --json`
+  and the dashboard, until its reset, unless the read shows the refused window
+  began again. Measured and guessed markers are still replaced by a live read.
 
 ## 0.38.20 — prove a run with --check; no blind retry after no file changed
 

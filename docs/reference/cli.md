@@ -328,6 +328,13 @@ provider named or an earlier reading gave. When nobody knows that reset it
 reads `[refused <age> · reset unknown]` instead (with `used ?%`) and does not
 keep the pool out. Nothing pauses or benches a pool, so there is nothing to
 lift: a spent window comes back by itself when it resets.
+A refusal whose reset the provider named outlives a successful meter read: a
+live reading (say 52% used) does not lift it, and routing, `pools --json`
+(`quotaRefusal`) and the dashboard keep showing the pool refused until that
+reset. Only a read that shows the refused window began again lifts it earlier
+(the window's reset is more than 60 seconds later than the named one: a
+provider names its reset to the minute, the meter to the second). A refusal whose reset was measured or guessed
+is replaced by the next live read, as before.
 
 A limit notice that says a usage window, a quota or a balance is spent is a
 usage limit, with or without a reset named. In a workflow started by this
