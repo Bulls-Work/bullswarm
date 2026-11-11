@@ -126,3 +126,37 @@ test('a warning closed by attempt.stale_cleared is not shown on attach, and with
   await r.promise;
   assert.equal(staleLines(r).length, 2, 'exact replay prints every recorded warning after the cursor');
 });
+
+// The runner appended an event but has not saved state.json yet, so it sits
+// past the cursor a fresh watch reads from (blind reviews 57fjfi, 8h6eqi).
+function laggingEmit(run, type, payload) {
+  const lagging = JSON.parse(readFileSync(join(run.runDir, 'state.json'), 'utf8'));
+  appendEvent(run.runDir, lagging, type, payload);
+}
+
+test('an attach while events.jsonl is ahead of state.json prints only the newest warning, once', async (t) => {
+  const run = stagedRun(t);
+  run.emit('stale.recording', {});
+  run.emit('attempt.stale', stalePayload(1));
+  laggingEmit(run, 'attempt.stale', stalePayload(2));
+  const w = watch(run, {});
+  await eventually(() => staleLines(w).length >= 1, 'the open warning on attach');
+  await sleep(300);
+  run.finish();
+  await w.promise;
+  const lines = staleLines(w);
+  assert.equal(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0], /warning 2/);
+});
+
+test('an attach while a clear past the cursor closed the warning prints no warning', async (t) => {
+  const run = stagedRun(t);
+  run.emit('stale.recording', {});
+  run.emit('attempt.stale', stalePayload(1));
+  laggingEmit(run, 'attempt.stale_cleared', { actionId: 'verify', attemptId: 'verify-1', level: 1, staleSec: 40 });
+  const w = watch(run, {});
+  await sleep(400);
+  run.finish();
+  await w.promise;
+  assert.equal(staleLines(w).length, 0, w.lines.join('\n'));
+});
