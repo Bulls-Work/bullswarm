@@ -12,7 +12,7 @@
 //       a time once it passes; that pacing is labeled `declared-reset`
 //       wherever it shows (declaredResetPacing below).
 //   M3. Weekly/monthly windows pace routing; 5h windows are gates only
-//       (they never pace): a 100% reading blocks dispatch outright and
+//       (they never pace): a reading at/above FIVE_HOUR_WALL_PCT (99) blocks dispatch outright and
 //       >= FIVE_HOUR_NEAR_LIMIT_PCT is a soft last-mile ordering penalty while
 //       another eligible pool is behind pace. WHICH of weekly/monthly paces one pool
 //       is the pool's own subscription window (`quotaWindow`), not a global
@@ -92,7 +92,7 @@ export function pacingWindowFor({ connector = null, subscription = null } = {}) 
  *   - pacing window = the pool's own subscription window when it declares one
  *     ('monthly' → monthly ?? weekly, 'weekly' → weekly ?? monthly), else the
  *     default order weekly ?? monthly ?? none. Never 5h.
- *   - burst gate = the 5h window at its limit (atLimit) blocks dispatch;
+ *   - burst gate = the 5h window at FIVE_HOUR_WALL_PCT (atLimit) blocks dispatch;
  *     windowSpent applies the same rule to the weekly and monthly windows
  *   - near limit  = 5h utilization >= FIVE_HOUR_NEAR_LIMIT_PCT: still
  *     dispatchable; routing applies a soft last-mile ordering penalty when
@@ -110,15 +110,24 @@ export function pacingWindowFor({ connector = null, subscription = null } = {}) 
 export const BURST_BLOCK_PCT = 100;
 /** 5h utilization at/above which routing treats a pool as near its limit. */
 export const FIVE_HOUR_NEAR_LIMIT_PCT = 75;
+/**
+ * 5h utilization at/above which a pool is not dispatched to, pinned or not.
+ * Bullswarm's decision log, 2026-10-17..31: dispatches picked while the pool's
+ * 5h meter read 99%: 12, and all 12 failed (quota refusal, process exit or a
+ * missing answer file); at 95-98%: 4 of 10 failed; under 70%: 3.7%. Most were
+ * the only eligible pool, ranked last as "near its 5h limit" and dispatched
+ * anyway.
+ */
+export const FIVE_HOUR_WALL_PCT = 99;
 
 /**
  * Is one metered window at its limit? At/above BURST_BLOCK_PCT until its
  * reset: a reading whose reset has passed belongs to a window that is over,
  * and one that names no reset counts until the next reading replaces it.
  */
-function atLimit(usedPct, resetsAt, nowMs) {
+function atLimit(usedPct, resetsAt, nowMs, limitPct = BURST_BLOCK_PCT) {
   const used = numberOrNull(usedPct);
-  if (used == null || used < BURST_BLOCK_PCT) return false;
+  if (used == null || used < limitPct) return false;
   const resetMs = resetMsOf(resetsAt);
   return !Number.isFinite(resetMs) || resetMs > nowMs;
 }
@@ -165,7 +174,10 @@ export function guessedRefusalWindow(entry) {
  * last is named, since the pool is back only then; one whose reset is
  * unknown outlasts any known reset.
  *
- * @returns {{window: '5-hour'|'weekly'|'monthly', resetsAt: string|null}|null}
+ * The 5-hour window counts from FIVE_HOUR_WALL_PCT (99), the others at 100;
+ * a 5-hour result short of 100 carries the `usedPct` read.
+ *
+ * @returns {{window: '5-hour'|'weekly'|'monthly', resetsAt: string|null, usedPct?: number|null}|null}
  */
 export function windowSpent(pool, nowMs = Date.now()) {
   if (!pool || typeof pool !== 'object') return null;
@@ -184,10 +196,13 @@ export function windowSpent(pool, nowMs = Date.now()) {
   }
   let spent = null;
   for (const [window, usedPct, resetsAt] of readings) {
-    if (!atLimit(usedPct, resetsAt, nowMs)) continue;
+    // The 5-hour window is a wall from FIVE_HOUR_WALL_PCT, not only at 100%.
+    if (!atLimit(usedPct, resetsAt, nowMs, window === '5-hour' ? FIVE_HOUR_WALL_PCT : BURST_BLOCK_PCT)) continue;
     const resetMs = resetMsOf(resetsAt);
     const at = Number.isFinite(resetMs) ? new Date(resetMs).toISOString() : null;
-    if (!spent || (spent.resetsAt && (!at || at > spent.resetsAt))) spent = { window, resetsAt: at };
+    if (!spent || (spent.resetsAt && (!at || at > spent.resetsAt))) {
+      spent = { window, resetsAt: at, ...(window === '5-hour' && numberOrNull(usedPct) < BURST_BLOCK_PCT ? { usedPct: numberOrNull(usedPct) } : {}) };
+    }
   }
   return spent;
 }
@@ -233,7 +248,9 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
   const fiveHourResetsMs = fiveHour?.resets_at
     ? Date.parse(fiveHour.resets_at)
     : NaN;
-  const burstGate = atLimit(fiveHourUsedPct, fiveHourResetsMs, nowMs);
+  // Closed from the 5h wall (FIVE_HOUR_WALL_PCT), the same line routing uses,
+  // so `bullswarm pools` never shows a pool ready that dispatch will skip.
+  const burstGate = atLimit(fiveHourUsedPct, fiveHourResetsMs, nowMs, FIVE_HOUR_WALL_PCT);
 
   return {
     pacing: chosen.pacing,

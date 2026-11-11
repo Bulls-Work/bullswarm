@@ -6,7 +6,7 @@
 // with its reason and when it is back; a window at its limit is the first
 // reason, so a spent pool never reads as a missing tier model.
 
-import { windowSpent } from '../meters/framework.js';
+import { BURST_BLOCK_PCT, windowSpent } from '../meters/framework.js';
 import { authHoldActive, meterSignInDead, meterSignInText } from './dispatch-pools.js';
 import { operatorLimit } from '../lib/pool-limits.js';
 
@@ -19,7 +19,12 @@ function toMs(value) {
 /** A pool's window at its limit as a held reason `[text, backMs, limit]`, or null. */
 export function spentWindowPart(pool, at) {
   const spent = windowSpent(pool, at);
-  return spent ? [`at its ${spent.window} limit`, toMs(spent.resetsAt), true] : null;
+  if (!spent) return null;
+  // A 5-hour reading short of 100% is the wall (FIVE_HOUR_WALL_PCT): say the reading.
+  const text = spent.window === '5-hour' && spent.usedPct != null && spent.usedPct < BURST_BLOCK_PCT
+    ? `5h at ${spent.usedPct}%: not dispatched`
+    : `at its ${spent.window} limit`;
+  return [text, toMs(spent.resetsAt), true];
 }
 
 /**

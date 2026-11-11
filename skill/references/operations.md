@@ -631,8 +631,9 @@ Automatic routing chooses the most-behind capable eligible pool, honors the
 spent-window gates, and applies only explicitly approved model choices and
 exclusions. `strategy apply` sets each pool's model per tier and pins no tier;
 a tier goes to one pool only when someone pinned it with `strategy assign`
-(`strategy clear-assignment` removes it). A pool with any metered window at
-100% (5-hour, weekly or monthly) is never picked until that window resets. A
+(`strategy clear-assignment` removes it). A pool whose 5-hour reading is
+at 99% or more, or whose weekly or monthly reading is at 100%, is never picked
+until that window resets. A
 pool at or above 75% of its 5-hour window is still eligible: it is ordered
 after another eligible pool that is behind pace, a soft penalty, not a skip;
 `bullswarm pools` shows the reading as `5h=<n>%` with a `NEAR-5H-LIMIT` label,

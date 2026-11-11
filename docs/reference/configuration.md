@@ -61,7 +61,7 @@ The file is version `1`. Every write is atomic (temp + rename). Every mutation g
 | Field | Meaning |
 |---|---|
 | `pools.<name>.enabled` | whether the pool is in the routing set. Test-fixture pools are opt-in (`enabled === true`); every other pool is opt-out (`enabled !== false`) |
-| `pools.<name>.quarantine`, `pools.<name>.bench` | left by 0.35.6 and earlier, which paused a pool after a usage limit or a sign-in failure; ignored now, because nothing pauses a pool any more. Routing reads the live meters instead: a window at 100% keeps a pool out until that window resets |
+| `pools.<name>.quarantine`, `pools.<name>.bench` | left by 0.35.6 and earlier, which paused a pool after a usage limit or a sign-in failure; ignored now, because nothing pauses a pool any more. Routing reads the live meters instead: a window at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps a pool out until that window resets |
 | `retention` | `{ enabled, workspacesDays }`; see [Retention](#retention) |
 | `decisionLog` | last 500 dispatch records (`ts`, `lane`, `picked`, `ok`, `why`, `wallSec`, `model`, `reasoning`, `usage`, `outFile`, `forecast`). An older home may still hold `incumbents` and `keepOnClaude` fields; nothing reads them since 0.37.0 |
 | `config.depthLimit` | recursion cap. Core sets `BULLSWARM_DEPTH` on children; callers cannot widen this via flags. Default `2` |

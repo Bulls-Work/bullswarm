@@ -81,8 +81,7 @@ to another pool or retries by itself, and the rest of the run keeps going.
 Bullswarm never remembers a spent or dead pool from one step to the next:
 nothing pauses or benches a pool. The pool's meter is read again at once (when
 it cannot be read, the pool counts as full until its reset only when the
-provider named that reset or an earlier meter reading gave it), and a window
-it shows at 100% keeps the pool out of later steps until that window resets.
+provider named that reset or an earlier meter reading gave it), and a window it shows at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps the pool out of later steps until that window resets.
 
 The same happens when no pool that can run the step is free when it is picked
 (each one is nearly spent, or at its 5-hour, weekly or monthly limit): the step
@@ -313,7 +312,7 @@ never as proven.
 
 - A provider usage limit is the distinct failure kind `quota`: the attempt is
   killed at once. In a single `bullswarm run` too, the pool's meter is read
-  again at once and a window it shows at 100% keeps the pool out of later
+  again at once and a window it shows at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps the pool out of later
   work until that window resets; nothing else is remembered about the pool.
   Runs started earlier moved the action to a pool that still had quota.
   Discussing usage limits in a report is not a usage limit.
