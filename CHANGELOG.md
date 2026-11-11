@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.38.21 — named quota resets hold, sign-in holds, a 99% 5-hour wall, loops that end themselves, saved stale warnings
 
 - A quota reset the provider named now outlives a meter read. Until now the
   next successful live read deleted the refusal marker, so a pool whose
