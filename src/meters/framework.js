@@ -12,7 +12,7 @@
 //       a time once it passes; that pacing is labeled `declared-reset`
 //       wherever it shows (declaredResetPacing below).
 //   M3. Weekly/monthly windows pace routing; 5h windows are gates only
-//       (they never pace): a 100% reading blocks dispatch outright and
+//       (they never pace): a reading at/above FIVE_HOUR_WALL_PCT (99) blocks dispatch outright and
 //       >= FIVE_HOUR_NEAR_LIMIT_PCT is a soft last-mile ordering penalty while
 //       another eligible pool is behind pace. WHICH of weekly/monthly paces one pool
 //       is the pool's own subscription window (`quotaWindow`), not a global

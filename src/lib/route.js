@@ -735,7 +735,8 @@ export function expiringSoonView(pool, opts = {}) {
 
 /**
  * R6: a pool with a metered window at its limit (framework.js windowSpent:
- * the 5-hour, weekly or monthly window at 100% until its reset).
+ * the 5-hour window at/above FIVE_HOUR_WALL_PCT (99), the weekly or monthly
+ * window at 100%, until its reset).
  */
 export function isExhausted(pool, now = Date.now()) {
   return windowSpent(pool, now) != null;

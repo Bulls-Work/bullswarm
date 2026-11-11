@@ -419,7 +419,7 @@ left. The step comes back to you at once. Bullswarm does not wait for the
 pool, move the step to another pool, or retry it, and the rest of the run
 keeps going. Nothing about the pool is remembered either: Bullswarm reads the
 pool's meter again at once (when it cannot be read, the pool counts as full until its reset only when the provider named that reset or an earlier meter reading gave it), and later steps route on that
-reading, so a window it shows at 100% keeps the pool out until that window
+reading, so a window it shows at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps the pool out until that window
 resets. A limit notice that names no
 reset ends the step too; its block then prints `back at` only when every pool
 that can run the step is out and one of them has a known return. When the

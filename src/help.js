@@ -373,7 +373,7 @@ const runText = rich({
     'records the run under ~/.bullswarm/workflows/<id>/ (see bullswarm workflow runs --all) and each attempt in the decision log; --dry-run writes neither',
     'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of each attempt and releases it when the attempt ends; --dry-run registers nothing',
     'a build or chore run must change a file (else failure kind not-produced), as every workflow step must; files its worker wrote outside the cwd, named in its own tool calls, count and are listed as changed outside cwd; files git ignores count too, except caches and build output (dist, build, coverage, target, *.log); outside a git repository Bullswarm lists the folder (up to 5,000 files and 64 MiB, .git and node_modules skipped) to see it',
-    'one automatic retry (a process failure on another pool, a failed answer check or --check on the same pool) unless --no-retry; a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at 100% keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
+    'one automatic retry (a process failure on another pool, a failed answer check or --check on the same pool) unless --no-retry; a usage limit exits 1 with no retry, and the pool\'s meter is read again at once so a window it shows at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps the pool out of later picks until that window resets; nothing else about a failed pool is remembered',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },

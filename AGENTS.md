@@ -58,8 +58,9 @@ first (`retryPoolTiers`).
 1. Judge delegate output by what can be checked, never by the delegate's exit code or its own report: the content (`src/lib/verify.js`) and, when a step declares them, the command and schema evidence Bullswarm runs itself (`src/workflow/evidence-runner.js`).
 2. Pace by meter surplus = elapsed% (from provider resets_at) − used%.
    Weekly/monthly windows pace; 5h windows are burst gates only (M1–M5 in
-   `src/meters/framework.js`). Any metered window at 100% (5h, weekly or
-   monthly) keeps its pool out of every pick until that window resets.
+   `src/meters/framework.js`). A 5h reading at 99% or more (`FIVE_HOUR_WALL_PCT`), or a weekly or
+   monthly reading at 100%, keeps its pool out of every pick until that
+   window resets.
 3. Provider quirks live in the provider's directory (`src/providers/<name>/`,
    `providers/contrib/<name>/`, or `~/.bullswarm/providers/<name>/`), never in
    core logic (see `docs/reference/providers.md`).
@@ -106,7 +107,7 @@ first (`retryPoolTiers`).
    automatic move, no retry. The pool's meter is re-read after it
    (when that read fails, the refusal marker counts the pool as full only until
    a reset the provider named or a reading measured, never a guessed one), so
-   a window at 100% keeps that pool out of later steps. Finding no capable pool
+   a window at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps that pool out of later steps. Finding no capable pool
    free at the pick sends the step to the caller too. Nothing waits for a
    pool inside a run; only a transient rate limit backs off on the same pool,
    at most twice (20 s, then 60 s, or a named wait of at most 2 minutes), then

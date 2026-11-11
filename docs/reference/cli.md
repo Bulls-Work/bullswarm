@@ -259,7 +259,7 @@ Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file
 | `--no-caller` | accepted and ignored for one release: the calling agent is never a pool of its own run | removed in 0.37.0 |
 | `--json` | print the compact machine-readable verdict; top-level `pool` and `model` name who ran the last attempt (null when nothing was dispatched; `pick` keeps the same two beside the command); its last field, details, is the command for the full record and per-attempt cost (`bullswarm workflow runs result <shortId> --json`) | human-readable summary ending with the run id and that command |
 
-A run is a one-step workflow, recorded under `workflows/<id>/` (`bullswarm workflow runs --all`). It gets the step's one automatic retry unless `--no-retry`; a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at 100% keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. A build or chore run must change a file (else failure kind `not-produced`). The JSON shape is in [Result envelope](/reference/result).
+A run is a one-step workflow, recorded under `workflows/<id>/` (`bullswarm workflow runs --all`). It gets the step's one automatic retry unless `--no-retry`; a usage limit exits 1 with no retry, and the pool's meter is read again at once, so a window it shows at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps the pool out of later picks until that window resets. Nothing else about a failed pool is remembered. A build or chore run must change a file (else failure kind `not-produced`). The JSON shape is in [Result envelope](/reference/result).
 
 ```bash
 # Show the exact argv, including the clamped reasoning flag, without dispatching.
@@ -340,8 +340,7 @@ A limit notice that says a usage window, a quota or a balance is spent is a
 usage limit, with or without a reset named. In a workflow started by this
 version it ends the step and comes back to you at once; its reset, when known,
 is the `back at` time. A single `bullswarm run` makes one attempt and exits 1.
-Either way the pool's meter is read again at once, and a window it shows at
-100% keeps the pool out of later picks until that window resets.
+Either way the pool's meter is read again at once, and a window it shows at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps the pool out of later picks until that window resets.
 
 Any other rate limit — `Error: Rate limit exceeded. Please wait a moment and try again.`,
 `429 Too Many Requests`, an overload — backs off on the same pool at most twice
