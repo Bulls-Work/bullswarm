@@ -7,7 +7,7 @@
 // reason, so a spent pool never reads as a missing tier model.
 
 import { windowSpent } from '../meters/framework.js';
-import { meterSignInDead, meterSignInText } from './dispatch-pools.js';
+import { authHoldActive, meterSignInDead, meterSignInText } from './dispatch-pools.js';
 import { operatorLimit } from '../lib/pool-limits.js';
 
 function toMs(value) {
@@ -35,9 +35,18 @@ export function operatorLimitPart(pool, at) {
   return [`at its ${limit.pct}% reserve (${limit.window} ${limit.levelPct}% >= ${limit.ceiling}%)`, back, false];
 }
 
-/** A pool whose latest meter read says its sign-in is dead, as a held reason, or null. */
-export function signInPart(pool) {
-  return meterSignInDead(pool) ? [meterSignInText(pool), null, false] : null;
+/**
+ * A pool whose latest meter read, or a sign-in failure at dispatch still
+ * holding it (auth-hold.js), says its sign-in is dead, as a held reason, or
+ * null. A dispatch hold alone is back at its end; a failed meter read has no
+ * known end (back when a read succeeds).
+ */
+export function signInPart(pool, at = Date.now()) {
+  if (!meterSignInDead(pool, at)) return null;
+  const back = pool?.meterSignInFailed === true || !authHoldActive(pool, at) ? null : toMs(pool.authHold.until);
+  // heldEntry adds "until <back>", so the hold's own "retry after" goes.
+  const text = meterSignInText(pool, at);
+  return [back == null ? text : text.replace(`, retry after ${pool.authHold.until}`, ''), back, false];
 }
 
 /** A pool the forecast says would run out mid-step (`{ until, forecast }`) as a held reason. */

@@ -6,6 +6,7 @@ import { modelBaseId, poolCanRunModel } from '../lib/model-pin.js';
 import { modelFamily } from '../lib/model-family.js';
 import { isFree } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
+import { authHoldText } from '../lib/auth-hold.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { poolPassesRoute } from './step-route.js';
 
@@ -29,12 +30,22 @@ export function planExcludes(pool, model) {
 // provider called an auth error; config.js meterSignInFailed). It is out of
 // this pick however old its cached numbers are, and back as soon as a read
 // succeeds: nothing is remembered beyond that reading (doctrine 4).
-export function meterSignInDead(pool) {
-  return pool?.meterSignInFailed === true;
+export function meterSignInDead(pool, now = null) {
+  return pool?.meterSignInFailed === true || authHoldActive(pool, now);
 }
 
-export function meterSignInText(pool) {
-  return `sign-in failed (meter read ${pool?.meterError || 'auth'})`;
+// A sign-in failure at dispatch (auth-hold.js) holds the pool for later runs,
+// whatever the meter says; the list builder drops it once it has run out.
+export function authHoldActive(pool, now = null) {
+  const until = Date.parse(pool?.authHold?.until ?? '');
+  return Number.isFinite(until) && (now == null || until > now);
+}
+
+export function meterSignInText(pool, now = Date.now()) {
+  const parts = [];
+  if (pool?.meterSignInFailed === true) parts.push(`sign-in failed (meter read ${pool?.meterError || 'auth'})`);
+  if (authHoldActive(pool, now)) parts.push(authHoldText(pool.authHold, now));
+  return parts.join(' · ') || `sign-in failed (meter read ${pool?.meterError || 'auth'})`;
 }
 
 function providerIdFromModel(model) {
@@ -59,7 +70,10 @@ export function preparePools(pools, action, effort, {
     // A held pool, or one at its opt-in reserve (pool-limits.js), is left in:
     // the router drops it (route.js R14) and its reason names it, which a
     // filter here would hide ("why this pool").
-    if (pool.enabled === false || (!ignoreBurstGate && (windowSpent(pool, now) || meterSignInDead(pool)))) continue;
+    // A pinned pool is dispatched through a dispatch-time sign-in hold (the
+    // caller chose it); its route reason names the hold (v2-dispatch.js).
+    const signInDead = pool.meterSignInFailed === true || (authHoldActive(pool, now) && pool.name !== strictPool);
+    if (pool.enabled === false || (!ignoreBurstGate && (windowSpent(pool, now) || signInDead))) continue;
     if (routeFilter && !poolPassesRoute(pool, routeFilter)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its
