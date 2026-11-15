@@ -9,7 +9,7 @@ import { withV2Cancellation } from './v2-cancellation.js';
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, readKernelStderrTail } from './short-id.js';
+import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, readKernelStderrTail, runStartingFacts, startingRunLine } from './short-id.js';
 import { legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
 import { glyphs } from '../lib/glyphs.js';
 import { withPoolLabels } from '../lib/pool-labels.js';
@@ -249,15 +249,36 @@ export function renderWatchSnapshot(snapshot, {
   return lines.join('\n');
 }
 
+const RUN_ID_PATTERN = /^wf-[a-z0-9]+-[a-f0-9]{6}$/;
+
 // A freshly launched detached run may not have written state.json yet when a
 // watcher attaches (goal --watch hands off immediately). waitForRunMs bounds
-// how long the watcher polls for the run to appear before giving up.
-async function resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs) {
+// how long the watcher polls for the run to appear before giving up. A run
+// that is still starting (runStartingFacts: its kernel's lease, the launch
+// marker, or a live launcher) is waited for as long as a starting process
+// lives, whatever waitForRunMs says; onStarting is called once when that wait
+// begins. A starter that is gone with no state.json comes back as
+// `startFailed`.
+async function resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs, { onStarting = null } = {}) {
   const deadline = Date.now() + Math.max(0, waitForRunMs);
+  let announced = false;
   while (true) {
     const resolved = resolveRunId(bullswarmDir, token);
     if (resolved && existsSync(join(resolved.runDir, 'state.json'))) return resolved;
-    if (Date.now() >= deadline) {
+    // Before its folder exists, a full runId still names the launcher record.
+    const runDir = resolved?.runDir ?? (RUN_ID_PATTERN.test(token) ? join(bullswarmDir, 'workflows', token) : null);
+    const starting = runDir ? runStartingFacts(runDir) : null;
+    if (starting?.alive) {
+      if (!announced) {
+        announced = true;
+        onStarting?.({ runId: resolved?.runId ?? token, shortId: resolved?.shortId ?? null, pid: starting.pid });
+      }
+    } else if (starting) {
+      // The kernel may have written state.json and exited between the reads.
+      if (!existsSync(join(runDir, 'state.json'))) {
+        return { runId: resolved?.runId ?? token, shortId: resolved?.shortId ?? null, runDir, startFailed: starting };
+      }
+    } else if (Date.now() >= deadline) {
       if (!resolved) throw new Error(`no run found for "${token}"`);
       // The grace window is spent and there is still no state.json: by the one
       // rule every other reader uses (isLegacyRunDir) that directory is legacy
@@ -1220,7 +1241,24 @@ export async function runWorkflowWatch(bullswarmDir, token, {
     const sink = output;
     output = { write: (chunk) => sink.write(withPoolLabels(chunk, bullswarmDir)) };
   }
-  const resolved = await resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs);
+  const resolved = await resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs, {
+    // One line while the run is still starting, in the attach line's style.
+    onStarting: ({ runId, shortId, pid }) => {
+      if (jsonl) output.write(`${JSON.stringify({ type: 'starting', runId, shortId, pid })}\n`);
+      else output.write(`${glyphs().ongoing} watching ${shortId ?? runId} · starting · waiting for its kernel${pid ? ` (pid ${pid})` : ''} to write state.json\n`);
+    },
+  });
+  // The run stopped before it wrote state.json: say so plainly, never legacy.
+  if (resolved.startFailed) {
+    const reason = startingRunLine(resolved, resolved.startFailed);
+    const kernelStderrTail = readKernelStderrTail(resolved.runDir);
+    if (jsonl) output.write(`${JSON.stringify({ type: 'interrupted', status: 'interrupted', starting: true, reason, kernelStderrTail })}\n`);
+    else {
+      const kernelLog = kernelLogLines(kernelStderrTail);
+      output.write(`${glyphs().fail} ${reason}\noutcome: interrupted\n${kernelLog.length ? `${kernelLog.join('\n')}\n` : ''}`);
+    }
+    return 1;
+  }
   const statePath = join(resolved.runDir, 'state.json');
   // Nothing drives a legacy run, so there is nothing to follow: print its
   // summary once and stop, before any polling loop or output stream is set up.

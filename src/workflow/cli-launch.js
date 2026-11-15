@@ -67,7 +67,7 @@ function spawnDetachedGoalChild(goalDir, argv, cwd) {
   // Spawn failures (a cwd removed since launch, an unusable node binary) are
   // reported as an 'error' event, not thrown; without a listener they would
   // crash this process after state was already mutated.
-  const launch = { child: null, stdoutPath, stderrPath, error: null };
+  const launch = { child: null, stdoutPath, stderrPath, error: null, exited: false };
   try {
     child = spawn(process.execPath, [resolve(process.argv[1]), ...argv], {
       cwd,
@@ -76,6 +76,8 @@ function spawnDetachedGoalChild(goalDir, argv, cwd) {
       stdio: ['ignore', stdoutFd, stderrFd],
     });
     child.once('error', (err) => { launch.error = err; });
+    // A child that exits ends the launch's wait for its state.json at once.
+    child.once('exit', () => { launch.exited = true; });
     child.unref();
   } finally {
     closeSync(stdoutFd);
@@ -105,19 +107,38 @@ async function waitForKernelTakeover(runId, pid, { attempts = 400 } = {}) {
   return state;
 }
 
-async function waitForRunState(runId, { attempts = 400 } = {}) {
-  let state = null;
-  const statePath = join(BULLSWARM_DIR(), 'workflows', runId, 'state.json');
-  // A detached child can take a few seconds to publish state when the host is
-  // busy (for example while several provider/test processes are starting).
-  // Keep the launch handoff deterministic before --watch resolves the run.
-  for (let i = 0; i < attempts && !state; i++) {
-    if (existsSync(statePath)) {
-      try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* atomic state write in progress */ }
-    }
-    if (!state) await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+// How long a launch waits at most for the detached child's first state.json.
+// The child writes it after the run's first setup, which can take a minute
+// or more (a slow host, a program's first turn); 0.38.21 waited 10 s and
+// returned before it, so a watch started at once found no state.
+export const LAUNCH_STATE_WAIT_MS = 5 * 60_000;
+
+/**
+ * Wait for the detached child's state.json, for as long as the child lives,
+ * at most `limitMs`. Returns the state, or null when the child exited first
+ * or the limit passed (the launch then reports status `starting`). The clock,
+ * the sleep and the child's liveness are injectable for tests.
+ */
+export async function waitForRunState(runId, {
+  bullswarmDir = BULLSWARM_DIR(), childAlive = () => true, limitMs = LAUNCH_STATE_WAIT_MS,
+  intervalMs = 25, now = Date.now, sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
+} = {}) {
+  const statePath = join(bullswarmDir, 'workflows', runId, 'state.json');
+  const readState = () => {
+    if (!existsSync(statePath)) return null;
+    try { return JSON.parse(readFileSync(statePath, 'utf8')); } catch { return null; /* atomic state write in progress */ }
+  };
+  const deadline = now() + limitMs;
+  for (;;) {
+    const state = readState();
+    if (state) return state;
+    // One last read after the child is gone: it may have written and exited.
+    if (!childAlive()) return readState();
+    if (now() >= deadline) return null;
+    // Poll quickly at first (most launches publish within a second), then
+    // settle to a slower poll for a long start.
+    await sleep(now() - (deadline - limitMs) < 10_000 ? intervalMs : 250);
   }
-  return state;
 }
 
 function goalObserveCommands(token, { callerPlanner = false, v3 = false } = {}) {
@@ -200,7 +221,9 @@ export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = n
     stderrPath,
   }, null, 2)}\n`);
 
-  const state = await waitForRunState(runId);
+  const state = await waitForRunState(runId, {
+    childAlive: () => !spawned.error && !spawned.exited && isProcessAlive(child.pid),
+  });
   assertDetachedChildLaunched(spawned, runId);
   const callerPlanner = v2PlannerMode(doc) === 'caller';
   const token = state?.shortId ?? runId;

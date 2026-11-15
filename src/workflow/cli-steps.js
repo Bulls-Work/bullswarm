@@ -29,7 +29,7 @@ import {
 import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, blocksIssues, fragmentShapeIssues } from './revision-v3.js';
 import { isProgramV3Run, readRunFeatures, runFeatureFlags } from './run-features.js';
-import { isLegacyRunDir, resolveRunId, v2RunnerLiveness } from './short-id.js';
+import { isLegacyRunDir, resolveRunId, v2RunnerLiveness, runStartingFacts, startingRunLine } from './short-id.js';
 import { drivableRunRefusal, viewOnlyRunLine } from './cli-run-lookup.js';
 import { createRevisionRequest, exportV2Plan, planV2Revision } from './v2-revision.js';
 import { workspacePathIssues } from './v2-planner.js';
@@ -51,6 +51,14 @@ function tryLease(runDir) {
 // reads only the marker and the name resolveRunId found, before the state
 // validator, so an older run's state is never read or changed.
 function viewOnlyRefusal(resolved, status) {
+  // A run still starting has no state to drive yet: say so, never view-only.
+  const starting = runStartingFacts(resolved.runDir);
+  if (starting) {
+    return {
+      code: 2, status, starting: true, why: startingRunLine(resolved, starting),
+      runId: resolved.runId, shortId: resolved.shortId ?? null,
+    };
+  }
   if (!isLegacyRunDir(resolved.runDir) && isProgramV3Run(readRunFeatures(resolved.runDir))) return null;
   return {
     code: 2, status, viewOnly: true, why: viewOnlyRunLine(resolved.shortId ?? resolved.runId),
@@ -561,7 +569,12 @@ export async function waitV3Nodes({
         return { code: 1, status: 'stopped', why, ...base, nodes: facts.nodes, ...waitingFor };
       }
       if (Date.now() >= deadline) return { code: 2, status: 'timeout', ...base, nodes: facts.nodes };
-    } else if (Date.now() >= deadline) return { code: 2, status: 'timeout', why: 'the run state could not be read' };
+    } else {
+      // A run that stopped before it wrote state.json will never settle.
+      const starting = runStartingFacts(resolved.runDir);
+      if (starting && !starting.alive) return { code: 1, status: 'stopped', why: startingRunLine(resolved, starting) };
+      if (Date.now() >= deadline) return { code: 2, status: 'timeout', why: 'the run state could not be read' };
+    }
     await new Promise((done) => setTimeout(done, pollMs));
   }
 }

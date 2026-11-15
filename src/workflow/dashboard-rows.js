@@ -4,7 +4,7 @@ import { withV2Cancellation } from './v2-cancellation.js';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, isOngoing, readKernelStderrTail } from './short-id.js';
+import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, isOngoing, readKernelStderrTail, runStartingFacts } from './short-id.js';
 import { readEvents } from './events.js';
 import { stateStartedAt } from './dashboard-run-state.js';
 
@@ -16,6 +16,9 @@ const FINISHED_MARKERS = Object.freeze(['rollup.json', 'result.json', 'report.js
  * liveness, its step counts and the attempts in flight.
  */
 function enrichRunRow(r) {
+  // A run whose kernel has not written state.json yet: starting, or stopped
+  // before it started. Never a legacy row.
+  if (r.starting) return startingRow(r, r.starting);
   const state = r.state ?? {};
   // A legacy row is five read-only fields and a marker; its detail pane is
   // one line and it offers nothing to drive. A torn state.json lands here
@@ -56,6 +59,24 @@ function enrichRunRow(r) {
     currentPhase: stage,
     currentStep: current ?? null,
     usage: state.usage ?? null,
+  };
+}
+
+function startingRow(r, starting) {
+  return {
+    ...r,
+    legacy: false,
+    starting,
+    events: [],
+    kernelStderrTail: starting.alive ? [] : readKernelStderrTail(r.runDir),
+    status: starting.alive ? 'starting' : 'interrupted',
+    phase: 'starting',
+    stepsOk: 0,
+    stepsTotal: 0,
+    activeAgents: [],
+    currentPhase: null,
+    currentStep: null,
+    usage: null,
   };
 }
 
@@ -112,6 +133,8 @@ export function activeDashboardRows(bullswarmDir) {
 function detailRow(bullswarmDir, token) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
+  const starting = runStartingFacts(resolved.runDir);
+  if (starting) return startingRow({ ...resolved, state: null, report: null, ongoing: starting.alive }, starting);
   const legacy = isLegacyRunDir(resolved.runDir);
   const state = legacy ? null : withV2Cancellation(readJsonSafe(join(resolved.runDir, 'state.json')), resolved.runDir);
   const report = readJsonSafe(join(resolved.runDir, 'report.json'));

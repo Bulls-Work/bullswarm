@@ -7,7 +7,7 @@ import { spawnRetentionSweep } from '../lib/retention.js';
 import { statSync } from 'node:fs';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, isLegacyRunDir, legacyRunLine } from './short-id.js';
+import { listRuns, resolveRunId, isLegacyRunDir, legacyRunLine, runStartingFacts, startingRunLine } from './short-id.js';
 import { readEvents } from './events.js';
 import { glyphs } from '../lib/glyphs.js';
 import { integrationStatus, installIntegration } from '../integrate.js';
@@ -1996,6 +1996,14 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
   if (token) {
     const resolved = resolveRunId(bullswarmDir, token);
     if (!resolved) throw new Error(`no run found for "${token}"`);
+    const starting = runStartingFacts(resolved.runDir);
+    if (starting) {
+      return {
+        action: 'show', starting: true, runId: resolved.runId, shortId: resolved.shortId ?? null,
+        dir: resolved.runDir, status: starting.alive ? 'starting' : 'interrupted', pid: starting.pid,
+        message: startingRunLine(resolved, starting),
+      };
+    }
     if (isLegacyRunDir(resolved.runDir)) {
       return {
         action: 'show', legacy: true, runId: resolved.runId, shortId: resolved.shortId ?? null,

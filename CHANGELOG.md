@@ -1,5 +1,9 @@
 # bullswarm changelog
 
+## Unreleased
+
+- A run that is still starting is no longer called legacy. On 0.38.21 `workflow goal --json` returned after waiting 10 s for the detached kernel's state.json, the caller's `workflow watch <id> --until outcome` started at once and printed `legacy authored-graph run wf-...: its executor was removed in 0.27.0`, while the run was starting: its state.json appeared about 38 s after launch (2 of 4 launches in a benchmark). A run folder without state.json now counts as legacy only when nothing in it says a new run is starting (its kernel.lock, features.json with `programFormat: 3`, caller.json, or a live launcher process). `watch` waits for a starting run with one `watching <runId> · starting` line and attaches when state.json appears, or prints `run <runId> stopped before it started` with the kernel log and exits 1 when the kernel is gone first; `runs show`, `runs result`, `runs` and the dashboard show it as starting, and driving verbs say it is starting instead of view-only. The launch now waits for the state.json for as long as the child lives, at most 5 minutes (`LAUNCH_STATE_WAIT_MS`), so the shortId it returns can be watched at once; the `--json` output is unchanged.
+
 ## 0.38.21 — named quota resets hold, sign-in holds, a 99% 5-hour wall, loops that end themselves, saved stale warnings
 
 - A quota reset the provider named now outlives a meter read. Until now the

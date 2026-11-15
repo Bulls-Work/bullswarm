@@ -1109,6 +1109,9 @@ const workflowGoalText = rich({
       + 'stderr.log) and spawns a detached background '
       + '`bullswarm workflow goal --request ... --run-id ...` child process that keeps running '
       + 'after this command returns',
+    'the launch returns once the child has written the run\'s state.json, so the shortId it prints can be '
+      + 'watched at once; it waits for as long as the child lives, at most 5 minutes, and reports status '
+      + '`starting` (no shortId yet) if that passes first',
     'writes durable workflow state under ~/.bullswarm/workflows/<runId>/ throughout execution '
       + '(state.json, events, attempts)',
     'dispatches real coding-agent CLI processes per generic action, the same as bullswarm run',
@@ -1453,7 +1456,11 @@ const workflowWatchText = rich({
     + '`--classic` forces the older heartbeat-based watcher instead (transition-on-change snapshots plus '
     + 'a periodic heartbeat); it applies only to V2 runs. A legacy authored-graph run has nothing to '
     + 'follow: the watcher prints its summary once (goal, status, start and finish, minutes it can show) '
-    + 'and exits 0 before polling (`--jsonl` prints it as one object). `--next` prints no '
+    + 'and exits 0 before polling (`--jsonl` prints it as one object). A run folder with no state.json is '
+    + 'legacy only when nothing says a new run is starting there (its kernel.lock, its features.json with '
+    + 'programFormat 3, its caller.json, or a live launcher); a run still starting prints one `watching '
+    + '<runId> · starting` line and is followed once its kernel writes state.json, and one whose kernel is '
+    + 'gone first prints `run <runId> stopped before it started`, the kernel log, and exits 1. `--next` prints no '
     + 'attach line and returns after the first notable event, or immediately at a pause or terminal status '
     + '(event mode only — it cannot combine with `--classic`). '
     + 'Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and '
@@ -1505,6 +1512,7 @@ const workflowWatchText = rich({
     '--until trouble exits 0 at a trouble line while the run continues, printing `next: bullswarm workflow watch <shortId> --until trouble --after <sequence> --since <iso>` and, for a stale step, `or restart: bullswarm workflow step restart <shortId> <step>`',
     '--timeout exits 0 when it passes with no wake, printing `next: bullswarm workflow watch <shortId> [--until <mode>|--next] --after <sequence> --since <iso> --timeout <s>`',
     'a legacy authored-graph run prints its summary once and exits 0 before any polling; nothing drives it',
+    'a run still starting is waited for while its kernel lives; one that stopped before writing state.json exits 1, never as legacy',
   ],
   examples: [
     { cmd: 'bullswarm workflow watch ab12cd --until trouble', note: 'the standard background watch: one per run, silent until something needs you' },

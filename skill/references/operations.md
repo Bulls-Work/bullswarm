@@ -284,7 +284,11 @@ are view-only"); there is no migration or fallback executor.
 Legacy authored-graph runs are listed as read-only rows marked `legacy`;
 `runs show`, `runs result`, `watch` and `tui` print a bounded summary from
 their saved files, and driving commands fail closed with their short ID and
-retained run directory.
+retained run directory. A run folder without state.json is legacy only when
+nothing says a new run is starting there (kernel.lock, features.json with
+`programFormat: 3`, caller.json, or a live launcher): a run still starting
+is listed as `starting`, `watch` waits for it, and one whose kernel died
+before writing state.json is reported as stopped before it started.
 
 ## Program actions (saved v2 runs): role, kind, defaults, and advisories
 

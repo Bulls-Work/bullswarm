@@ -45,7 +45,7 @@ import { join } from 'node:path';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { projectName } from '../lib/project.js';
 import { legacyRollupRecord, readLegacyRunFacts, readRollups, rollupRecord } from './rollup.js';
-import { isLegacyRunState, isOngoing } from './short-id.js';
+import { isLegacyRunState, isOngoing, runStartingFacts } from './short-id.js';
 import { readGoalProject } from './goal.js';
 import { dayKey } from './day-key.js';
 import { sumRecords } from './metrics.js';
@@ -131,6 +131,9 @@ function uncoveredRun(bullswarmDir, name, now, projectByCwd = null) {
   // 0.27.0's rule is that a torn read is never reported as history (short-id.js
   // isLegacyRunDir). Say nothing about it rather than file half a run.
   if (hasState && state == null) return null;
+  // A run still starting (or that stopped before state.json) is no legacy
+  // record either; filing one here would stick in the index.
+  if (!hasState && runStartingFacts(runDir)) return null;
 
   if (!hasState || isLegacyRunState(state)) {
     // A legacy directory: exactly the minimal record `workflow reindex`
