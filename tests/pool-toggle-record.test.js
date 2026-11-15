@@ -58,6 +58,14 @@ function run(home, argv, env = {}) {
   });
 }
 
+// The record is exactly these fields. No environment value (a herdr pane id,
+// a Claude Code session id) is ever stored with it.
+const RECORD_KEYS = ['at', 'by', 'enabled', 'reason', 'via'];
+const CALLER_ENV = { HERDR_PANE_ID: 'w9:p2', CLAUDE_CODE_SESSION_ID: '0f1e2d3c-4b5a-4968-8776-655443322110' };
+function assertNoEnvValues(text) {
+  for (const value of Object.values(CALLER_ENV)) assert.ok(!text.includes(value), `${value} must not be recorded`);
+}
+
 const readState = (home) => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -65,7 +73,7 @@ test('set-provider off --reason and on without one each record enabled, at, by, 
   const home = echoHome();
   try {
     const before = Date.now();
-    const off = run(home, ['strategy', 'set-provider', 'echo', 'off', '--yes', '--reason', 'weekly cap reached'], { HERDR_PANE_ID: 'w9:p2' });
+    const off = run(home, ['strategy', 'set-provider', 'echo', 'off', '--yes', '--reason', 'weekly cap reached'], CALLER_ENV);
     assert.equal(off.status, 0, off.stderr);
     let state = readState(home);
     assert.equal(state.pools.echo.enabled, false);
@@ -76,7 +84,9 @@ test('set-provider off --reason and on without one each record enabled, at, by, 
     assert.equal(first.by, OS_USER);
     assert.equal(first.reason, 'weekly cap reached');
     assert.equal(first.via, 'set-provider');
-    assert.equal(first.caller?.herdrPane, 'w9:p2', 'the existing caller identity rides along');
+    assert.deepEqual(Object.keys(first).sort(), RECORD_KEYS);
+    assertNoEnvValues(readFileSync(join(home, 'state.json'), 'utf8'));
+    assertNoEnvValues(off.stdout);
     // The command's own answer names the record too.
     assert.deepEqual(JSON.parse(off.stdout).toggle, first);
 
@@ -123,7 +133,6 @@ test('the history keeps the last 20 toggles per pool, newest last', async () => 
   assert.deepEqual(record.latest, record.history.at(-1));
   assert.deepEqual(record.latest, {
     enabled: true, at: '2026-11-11T03:24:00.000Z', by: 'alice', reason: 'r24', via: 'set-provider',
-    caller: record.latest.caller,
   });
   assert.equal(state.pools.echo.enabled, true);
   // Another pool keeps its own history.
@@ -148,13 +157,26 @@ test('a write that changes nothing is not recorded when only changes count (conf
 });
 
 test('by is the OS user name; no environment value is recorded', async () => {
-  const { setPoolEnabled } = await import('../src/lib/pool-toggle.js');
-  const state = { pools: {} };
-  setPoolEnabled(state, 'echo', false, { via: 'tui' });
-  const record = state.strategy.poolToggles.echo.latest;
-  assert.equal(record.by, OS_USER);
-  assert.deepEqual(Object.keys(record).sort(), ['at', 'by', 'caller', 'enabled', 'reason', 'via']);
-  assert.deepEqual(Object.keys(record.caller).sort(), ['claudeSession', 'herdrPane']);
+  const { setPoolEnabled, latestPoolToggle } = await import('../src/lib/pool-toggle.js');
+  const saved = Object.fromEntries(Object.keys(CALLER_ENV).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, CALLER_ENV);
+  try {
+    const state = { pools: {} };
+    setPoolEnabled(state, 'echo', false, { via: 'tui' });
+    const record = state.strategy.poolToggles.echo.latest;
+    assert.equal(record.by, OS_USER);
+    assert.deepEqual(Object.keys(record).sort(), RECORD_KEYS);
+    assertNoEnvValues(JSON.stringify(state));
+    // A record written by an earlier build with extra fields is read back
+    // as the five fields only.
+    state.strategy.poolToggles.echo.latest = { ...record, caller: { herdrPane: CALLER_ENV.HERDR_PANE_ID } };
+    assert.deepEqual(Object.keys(latestPoolToggle(state, 'echo')).sort(), RECORD_KEYS);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('pools shows who disabled a pool, when and why; pools --json carries the latest record as toggle', () => {
@@ -262,4 +284,69 @@ test('set-provider help documents --reason and the record', async () => {
   assert.match(text, /--reason/);
   assert.match(text, /bullswarm pools/);
   assert.match(text, /who|by/);
+});
+
+// The two setup paths run in a child process on the echo home, with the
+// packaged providers off, so discovery sees only the echo fixture.
+function runSetup(home, script, input = '') {
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      ...CALLER_ENV,
+      BULLSWARM_HOME: home,
+      BULLSWARM_NO_PACKAGED_PROVIDERS: '1',
+      BULLSWARM_DISABLE_CLAUDE_PROFILES: '1',
+    },
+    encoding: 'utf8',
+    input,
+    timeout: 60_000,
+  });
+}
+
+test('automatic setup records via auto-setup and says why it turned the test fixture off', () => {
+  const home = echoHome();
+  try {
+    const setupUrl = new URL('../src/setup.js', import.meta.url).href;
+    const result = runSetup(home, `import { autoSetup } from ${JSON.stringify(setupUrl)};
+autoSetup(process.env.BULLSWARM_HOME, { reason: 'flag' });`);
+    assert.equal(result.status, 0, result.stderr);
+    const text = readFileSync(join(home, 'state.json'), 'utf8');
+    const latest = JSON.parse(text).strategy.poolToggles.echo.latest;
+    assert.deepEqual(Object.keys(latest).sort(), RECORD_KEYS);
+    assert.equal(latest.enabled, false);
+    assert.equal(latest.via, 'auto-setup');
+    assert.equal(latest.by, OS_USER);
+    // The echo fixture is found on every machine; it is off because automatic
+    // setup never turns a test fixture on, not because it was not detected.
+    assert.equal(latest.reason, 'setup --yes: a test fixture, never turned on by automatic setup');
+    assertNoEnvValues(text);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('the setup wizard records via setup for the pools it changes', () => {
+  const home = echoHome({ echo: { enabled: false } });
+  try {
+    const setupUrl = new URL('../src/setup.js', import.meta.url).href;
+    // enable echo: y; worktree isolation: agent; strategy autopilot: n;
+    // every later question (tier rungs, integration) reads no answer.
+    const result = runSetup(home, `import { runWizard } from ${JSON.stringify(setupUrl)};
+process.exitCode = await runWizard(process.env.BULLSWARM_HOME);`, 'y\nagent\nn\n');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /agent integration: skipped/);
+    const text = readFileSync(join(home, 'state.json'), 'utf8');
+    const state = JSON.parse(text);
+    assert.equal(state.pools.echo.enabled, true);
+    const latest = state.strategy.poolToggles.echo.latest;
+    assert.deepEqual(Object.keys(latest).sort(), RECORD_KEYS);
+    assert.equal(latest.enabled, true);
+    assert.equal(latest.via, 'setup');
+    assert.equal(latest.reason, null);
+    assert.equal(latest.by, OS_USER);
+    assertNoEnvValues(text);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
