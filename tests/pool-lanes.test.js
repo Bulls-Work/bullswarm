@@ -4,8 +4,10 @@
 // workflow pin checks and a pinned dispatch all read the same answer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { autoSetup, discoverConnectors, suggestRoutingTable } from '../src/setup.js';
 import { buildPools } from '../src/lib/config.js';
@@ -36,6 +38,22 @@ async function runStrategy(args, dir) {
     console.log = log;
     console.error = error;
   }
+}
+
+// A throwaway home and target for a dispatch test. Nothing is written there:
+// loadState and saveState are injected, and dispatch stops before any pool runs.
+function dispatchHome() {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-pool-lanes-dispatch-'));
+  const target = join(dir, 'target');
+  mkdirSync(target);
+  return {
+    dispatchPaths: {
+      targetDir: target,
+      paths: { taskFile: join(dir, 'task.md'), outFile: join(dir, 'out.md') },
+      bullswarmDir: join(dir, 'home'),
+    },
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
 }
 
 const poolsOf = (dir) => buildPools(dir, Date.now(), {}, { packaged: true }).pools;
@@ -127,25 +145,28 @@ const fakePool = (name, extra = {}) => ({
 });
 
 test('a dispatch pinned to a pool for a lane its override does not serve is refused with the override and its fix', async () => {
-  const NOW = Date.parse('2026-11-15T10:00:00Z');
-  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
-  const dependencies = {
-    watchOnce: async () => { throw new Error('nothing may be dispatched'); },
-    loadState: () => structuredClone(core),
-    saveState: () => {},
-    now: () => NOW,
-  };
-  const pinned = await dispatchV2Action({
-    action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', targetDir: '/tmp',
-    paths: { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' }, bullswarmDir: '/tmp/bs', dependencies,
-    pools: [fakePool('grok', { lanes: ['analyze'], lanesSource: 'override' }), fakePool('codex')],
-    strictPool: 'grok',
-  });
-  assert.equal(pinned.ok, false);
-  assert.equal(pinned.verdict.why,
-    'no eligible pool: the pinned pool grok does not serve build work: strategy set-lanes limits it to analyze '
-    + '(bullswarm strategy set-lanes grok default --yes clears it)');
-  assert.doesNotMatch(pinned.verdict.why, /\n/);
+  const f = dispatchHome();
+  try {
+    const NOW = Date.parse('2026-11-15T10:00:00Z');
+    const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+    const dependencies = {
+      watchOnce: async () => { throw new Error('nothing may be dispatched'); },
+      loadState: () => structuredClone(core),
+      saveState: () => {},
+      now: () => NOW,
+    };
+    const pinned = await dispatchV2Action({
+      action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', ...f.dispatchPaths,
+      dependencies,
+      pools: [fakePool('grok', { lanes: ['analyze'], lanesSource: 'override' }), fakePool('codex')],
+      strictPool: 'grok',
+    });
+    assert.equal(pinned.ok, false);
+    assert.equal(pinned.verdict.why,
+      'no eligible pool: the pinned pool grok does not serve build work: strategy set-lanes limits it to analyze '
+      + '(bullswarm strategy set-lanes grok default --yes clears it)');
+    assert.doesNotMatch(pinned.verdict.why, /\n/);
+  } finally { f.cleanup(); }
 });
 
 test('workflow pin checks refuse a step on a lane the pinned pool\'s override does not serve', () => {
@@ -159,26 +180,29 @@ test('workflow pin checks refuse a step on a lane the pinned pool\'s override do
 });
 
 test('a dispatch whose route names only a provider whose pool does not serve the lane says so (run --use-provider)', async () => {
-  const NOW = Date.parse('2026-11-15T10:00:00Z');
-  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
-  const dependencies = {
-    watchOnce: async () => { throw new Error('nothing may be dispatched'); },
-    loadState: () => structuredClone(core),
-    saveState: () => {},
-    now: () => NOW,
-  };
-  const routed = await dispatchV2Action({
-    action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', targetDir: '/tmp',
-    paths: { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' }, bullswarmDir: '/tmp/bs', dependencies,
-    pools: [fakePool('grok', { lanes: ['analyze'], lanesSource: 'override' }), fakePool('codex')],
-    routeFilter: {
-      usePools: null, avoidPools: [], useProviders: ['grok'], avoidProviders: [],
-      independentProviders: [], independentOf: {}, summary: 'providers.use grok',
-    },
-  });
-  assert.equal(routed.ok, false);
-  assert.match(routed.verdict.why, /\(providers\.use grok\): grok does not serve build work: strategy set-lanes limits it to analyze \(bullswarm strategy set-lanes grok default --yes clears it\)$/);
-  assert.doesNotMatch(routed.verdict.why, /\n/);
+  const f = dispatchHome();
+  try {
+    const NOW = Date.parse('2026-11-15T10:00:00Z');
+    const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+    const dependencies = {
+      watchOnce: async () => { throw new Error('nothing may be dispatched'); },
+      loadState: () => structuredClone(core),
+      saveState: () => {},
+      now: () => NOW,
+    };
+    const routed = await dispatchV2Action({
+      action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', ...f.dispatchPaths,
+      dependencies,
+      pools: [fakePool('grok', { lanes: ['analyze'], lanesSource: 'override' }), fakePool('codex')],
+      routeFilter: {
+        usePools: null, avoidPools: [], useProviders: ['grok'], avoidProviders: [],
+        independentProviders: [], independentOf: {}, summary: 'providers.use grok',
+      },
+    });
+    assert.equal(routed.ok, false);
+    assert.match(routed.verdict.why, /\(providers\.use grok\): grok does not serve build work: strategy set-lanes limits it to analyze \(bullswarm strategy set-lanes grok default --yes clears it\)$/);
+    assert.doesNotMatch(routed.verdict.why, /\n/);
+  } finally { f.cleanup(); }
 });
 
 test('setup discovery and its suggested routing table read the override', () => {
@@ -212,4 +236,21 @@ test('workflow plan validate names the override when a step\'s route leaves only
   assert.equal(issues.length, 1, issues.join('\n'));
   assert.match(issues[0], /^step write-it: no enabled pool can run it under its route \(build\/medium work; route: use grok\)/);
   assert.match(issues[0], /grok does not serve build work: strategy set-lanes limits it to analyze \(bullswarm strategy set-lanes grok default --yes clears it\)$/);
+});
+
+test('bullswarm pools prints the overridden lanes marked (set-lanes)', async () => {
+  const f = home();
+  try {
+    assert.equal((await runStrategy(['set-lanes', 'grok', 'analyze', '--yes'], f.dir)).code, 0);
+    const BIN = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'bin', 'bullswarm.js');
+    const run = spawnSync(process.execPath, [BIN, 'pools'], {
+      env: { ...process.env, BULLSWARM_HOME: f.dir, BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
+      encoding: 'utf8',
+      input: '',
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const line = (name) => run.stdout.split('\n').find((row) => row.split(/\s+/)[0] === name);
+    assert.match(line('grok') ?? '', / lanes=analyze \(set-lanes\) /, run.stdout);
+    assert.match(line('codex') ?? '', / lanes=analyze\/build\/chore /, run.stdout);
+  } finally { f.cleanup(); }
 });
