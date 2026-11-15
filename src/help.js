@@ -579,7 +579,7 @@ const strategyText = rich({
     { name: 'routes', desc: 'print only the currently effective high/medium/low choices' },
     { name: 'rungs', desc: 'list every pool/tier rung with its model, reasoning, evidence, and local record' },
     { name: 'set-provider', desc: 'enable or disable one provider pool non-interactively' },
-    { name: 'hold', desc: 'take one pool out of routing for a reason until a date (the hold list)' },
+    { name: 'hold', desc: 'take one pool out of routing for a reason until a date (the hold list); --allow-pinned keeps pinned runs on it' },
     { name: 'unhold', desc: 'end a pool\'s hold now' },
     { name: 'set-reserve', desc: 'opt-in: keep a share of one pool\'s window unspent by routing' },
     { name: 'recheck-not-produced', desc: 'find old not-produced failures whose worker wrote files outside the cwd, and stop counting them' },
@@ -639,18 +639,31 @@ const strategySetProviderText = rich({
   examples: [{ cmd: 'bullswarm strategy set-provider relay:b off --yes' }], next: 'Use strategy routes --json to confirm.',
 });
 const strategyHoldText = rich({
-  usage: 'bullswarm strategy hold <pool> --until <date|24h|3d> --reason <text> --yes',
+  usage: 'bullswarm strategy hold <pool> --until <date|24h|3d> --reason <text> [--allow-pinned] --yes',
   purpose: 'Put one pool on the hold list: routing gives it no work until the date, then it is back by itself. '
     + '`bullswarm pools` shows `held until <date> (<reason>)`, and a step no pool can take names the hold and when it ends. '
-    + 'Unlike set-provider off, a hold carries its reason and ends without a command.',
+    + 'Unlike set-provider off, a hold carries its reason and ends without a command. '
+    + 'With --allow-pinned the pool stays out of every pick routing makes on its own, but a run that pins it on purpose may still use it; '
+    + '`bullswarm pools` then adds `· pinned runs allowed`. These count as pinned: the run pin (workflow goal --worker-pool, '
+    + 'a step restart onto the pool) and a step route that names the pool in pools.use or its provider in providers.use '
+    + '(run --use-provider command-code). An avoid list (--avoid-pool, --avoid-provider, pools.avoid, providers.avoid) is not a pin, '
+    + 'even when it leaves the held pool the only one, and neither is a gate retry on the pool a step already ran on. '
+    + 'A plain hold keeps pinned runs out too. Holding the pool again replaces the hold, so leaving out --allow-pinned turns it off.',
   args: [{ name: '<pool>', desc: 'pool id or label' }],
   options: [
     { flag: '--until', desc: 'when the hold ends: an ISO date/time, or a duration from now (90m, 24h, 3d)' },
     { flag: '--reason', desc: 'why the pool is held, shown wherever the hold is' },
+    { flag: '--allow-pinned', desc: 'let a run that pins this pool (workflow goal --worker-pool, or a route naming the pool or its provider) use it during the hold' },
     { flag: '--yes', desc: 'required approval' },
   ],
-  safety: ['changes routing immediately for new dispatches; work already running is not stopped'],
-  examples: [{ cmd: 'bullswarm strategy hold command-code --until 2026-10-16T12:00:00Z --reason "Kipwise #767 review" --yes' }],
+  safety: [
+    'changes routing immediately for new dispatches; work already running is not stopped',
+    'with --allow-pinned, any caller who pins the pool spends its quota during the hold; plan validate and workflow goal refuse a pinned program only under a plain hold',
+  ],
+  examples: [
+    { cmd: 'bullswarm strategy hold command-code --until 2026-10-16T12:00:00Z --reason "Kipwise #767 review" --yes' },
+    { cmd: 'bullswarm strategy hold command-code --until 3d --reason "pinned work only" --allow-pinned --yes' },
+  ],
   next: 'bullswarm pools to see the hold; strategy unhold <pool> --yes ends it early.',
 });
 const strategyUnholdText = rich({

@@ -821,7 +821,8 @@ export async function loadStrategyInventory(bullswarmDir, {
 
 // The hold list (pool-limits.js): a pool out of routing for a reason until a
 // date, after which it is back by itself. Written under the state lock, as
-// set-provider is.
+// set-provider is. A new hold replaces the old record whole, so a re-hold
+// without --allow-pinned stores allowPinned false.
 function setPoolHold(bullswarmDir, pool, hold) {
   const connectors = loadConnectors(bullswarmDir, PACKAGED);
   if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
@@ -1176,7 +1177,9 @@ export async function cmdStrategy(args, {
         const reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
         if (until == null || until <= Date.now()) throw new Error('--until must be a future date/time or a duration such as 24h or 3d');
         if (!reason) throw new Error(`usage: ${usageLine(['strategy', 'hold'])}`);
-        result = setPoolHold(bullswarmDir, pool, { reason, until: new Date(until).toISOString() });
+        result = setPoolHold(bullswarmDir, pool, {
+          reason, until: new Date(until).toISOString(), allowPinned: opts['allow-pinned'] === true,
+        });
       } else if (sub === 'unhold') {
         result = setPoolHold(bullswarmDir, pool, null);
       } else {

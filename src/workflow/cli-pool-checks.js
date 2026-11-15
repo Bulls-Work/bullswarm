@@ -5,11 +5,12 @@
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { prepareV2DispatchPools } from './v2-dispatch.js';
-import { routeIssuesForPools } from './step-route.js';
+import { resolveRouteFilter, routeIssuesForPools } from './step-route.js';
 import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadPoolLabels } from '../lib/pool-labels.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 import { poolCanRunModel } from '../lib/model-pin.js';
+import { holdPins, operatorLimit, poolIsPinned } from '../lib/pool-limits.js';
 
 // A pinned pool with no model on a step's tier fails that step within a second
 // as "no eligible pool". Say so before anything launches. A spent meter window
@@ -28,6 +29,43 @@ export function pinnedPoolIssues(doc, program, pools) {
       issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
     }
   });
+  const pinnedPool = pools.find((pool) => pool?.name === strictPool);
+  const held = pinnedPool ? blockingHold(pinnedPool, holdPins({ strictPool })) : null;
+  if (held) issues.push(`the pinned pool ${heldText(strictPool, held)}`);
+  return issues;
+}
+
+// A hold that keeps even a pinned pick out (pool-limits.js): a plain hold, as
+// opposed to one set with --allow-pinned. Null when the pins may use the pool.
+function blockingHold(pool, pins, now = Date.now()) {
+  const limit = operatorLimit(pool, now, { pinned: poolIsPinned(pool, pins) });
+  return limit?.kind === 'hold' ? limit : null;
+}
+
+function heldText(name, hold) {
+  return `${name} is held until ${hold.until} (${hold.reason}), and a plain hold keeps pinned runs out too; `
+    + `wait for it to end, run bullswarm strategy unhold ${name} --yes, or hold it again with --allow-pinned`;
+}
+
+// A step whose route names the pools or providers it may use (a pin), where
+// every capable pool so named is under a plain hold: it could not start.
+// An allow-pinned hold lets the route through; an avoid-only route is not a
+// pin and is left to routing.
+function heldRouteIssues(actions, pools, preparePools) {
+  const issues = [];
+  for (const action of actions ?? []) {
+    const route = action?.route;
+    if (!route || typeof route !== 'object' || !(route.pools?.use?.length || route.providers?.use?.length)) continue;
+    const routeFilter = resolveRouteFilter({ attempts: [] }, action, pools);
+    const capable = preparePools(pools, action, action.effort ?? 'medium', { routeFilter, ignoreBurstGate: true })
+      .filter((pool) => (pool.lanes ?? [action.lane]).includes(action.lane ?? 'chore'));
+    if (!capable.length) continue;
+    const pins = holdPins({ routeFilter });
+    const held = capable.map((pool) => [pool.name, blockingHold(pool, pins)]);
+    if (held.every(([, hold]) => hold)) {
+      issues.push(`step ${action.id}: every pool its route names is held: ${held.map(([name, hold]) => heldText(name, hold)).join('; ')}`);
+    }
+  }
   return issues;
 }
 
@@ -70,13 +108,15 @@ export function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BUL
   if (!programRoutes(actions) || !Array.isArray(pools)) return [];
   const routing = doc?.config?.workerRouting ?? {};
   const preferredModel = routing.model ?? routing.preferredModel ?? null;
-  return routeIssuesForPools({ actions }, pools, {
+  const preparePools = (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options });
+  const issues = routeIssuesForPools({ actions }, pools, {
     runPin: routing.strictPool ?? routing.pool ?? null,
-    preparePools: (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options }),
+    preparePools,
     labels,
     state,
     recordedWork,
   });
+  return issues.length ? issues : heldRouteIssues(actions, pools, preparePools);
 }
 
 // The configured pools without a live meter refresh: enough for the route

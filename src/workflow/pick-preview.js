@@ -18,6 +18,7 @@ import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { tierOffV2DispatchReasons, prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
 import { resolveRouteFilter, routeUnavailableWhy } from './step-route.js';
 import { poolCanRunModel } from '../lib/model-pin.js';
+import { holdPins } from '../lib/pool-limits.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, operatorLimitPart, signInPart, spentWindowPart } from './no-pool-why.js';
 
 /**
@@ -35,7 +36,7 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
     .filter((pool) => (pool.lanes ?? [lane]).includes(lane));
   const held = [];
   for (const pool of capable) {
-    const parts = [signInPart(pool, now), spentWindowPart(pool, now), operatorLimitPart(pool, now), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
+    const parts = [signInPart(pool, now), spentWindowPart(pool, now), operatorLimitPart(pool, now, holdPins({ routeFilter })), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
     if (parts.length) held.push(heldEntry(pool.name, parts));
   }
   const failureKind = noPoolFailureKind(capable.length, held);
@@ -89,6 +90,8 @@ export async function previewStepPick({ action, pools, bullswarmDir, coreState, 
     candidateMinutes: expected.expectedMinutes,
     inflightPenaltyPct,
     routeNote: routeFilter?.summary || null,
+    // The route's use lists are pins an allow-pinned hold lets through (R14).
+    routeFilter,
   });
   if (!route.pick) {
     const { why, failureKind } = noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, routerWhy: route.why });

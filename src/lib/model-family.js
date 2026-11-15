@@ -250,3 +250,17 @@ export function modelRanking(connector, model) {
     profile,
   };
 }
+
+/**
+ * R13: the model family a pool (or bare pool name) writes with — its provider
+ * id, which is the pool name up to the first colon (`claude-code:acme` is
+ * `claude-code`), or null when nothing names it. A provider that fronts
+ * several vendors' models is one family here: routing is not told which model
+ * wrote the judged work.
+ */
+export function modelFamilyOf(pool) {
+  const raw = (typeof pool === 'string' ? [pool] : [
+    pool?.connector?.profile?.providerId, pool?.provider, pool?.name, pool?.connector?.name,
+  ]).find((value) => typeof value === 'string' && value.trim());
+  return raw ? raw.trim().split(':', 1)[0].toLowerCase() : null;
+}
