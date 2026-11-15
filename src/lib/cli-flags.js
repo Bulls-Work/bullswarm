@@ -109,7 +109,7 @@ const TABLE = {
   'strategy tui': [],
   'strategy inventory': ['json', 'refresh'],
   'strategy routes': ['json', 'refresh'],
-  'strategy set-provider': ['yes'],
+  'strategy set-provider': ['reason', 'yes'],
   'strategy hold': ['until', 'reason', 'yes'],
   'strategy unhold': ['yes'],
   'strategy set-reserve': ['window', 'yes'],

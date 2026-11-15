@@ -1,6 +1,7 @@
 import { parseHoldUntil, RESERVE_WINDOWS } from './lib/pool-limits.js';
 import { markOutsideFalseFailures } from './workflow/outside-writes.js';
 import { loadState, updateState } from './lib/state.js';
+import { latestPoolToggle, setPoolEnabled } from './lib/pool-toggle.js';
 import { loadConnectors, loadPoolProviders, buildPools, buildPoolsLive } from './lib/config.js';
 import { providerFor } from './lib/providers.js';
 import { getAllMeterReadings } from './meters/registry.js';
@@ -681,6 +682,8 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
     .map((pool) => ({
       name: pool.name,
       enabled: pool.enabled !== false,
+      // Who last turned this pool on or off, when and why (pool-toggle.js).
+      toggle: pool.toggle ?? latestPoolToggle(state, pool.name),
       usedPct: pool.usedPct ?? null,
       surplus: pool.pace ?? null,
       // The window `usedPct` and `surplus` are measured in, and that routing
@@ -848,18 +851,19 @@ function setPoolReserve(bullswarmDir, pool, reserve) {
     : { action: 'reserve-cleared', pool };
 }
 
-function setProviderEnabled(bullswarmDir, pool, enabled) {
+function setProviderEnabled(bullswarmDir, pool, enabled, reason = null) {
   const connectors = loadConnectors(bullswarmDir, PACKAGED);
   if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
   // Under the lock (S5): this is the writer an operator reaches for while a
   // run is in flight, and it is the exact out-of-band write the D5 race test
   // uses. Loading outside the lock would let a concurrent post-worker update
   // land between this load and its save, silently dropping one of the two.
+  // The who/when/why record (pool-toggle.js) lands in the same write.
+  let toggle = null;
   updateState(bullswarmDir, (state) => {
-    state.pools[pool] ??= {};
-    state.pools[pool].enabled = enabled;
+    toggle = setPoolEnabled(state, pool, enabled, { via: 'set-provider', reason });
   });
-  return { action: 'provider-updated', pool, enabled };
+  return { action: 'provider-updated', pool, enabled, toggle };
 }
 
 function materializeTier(strategy, inventory, tier) {
@@ -1163,7 +1167,12 @@ export async function cmdStrategy(args, {
       const pool = opts.rest[0];
       const mode = opts.rest[1];
       if (!pool || !['on', 'off'].includes(mode)) throw new Error(`usage: ${usageLine(['strategy', 'set-provider'])}`);
-      console.log(JSON.stringify(setProviderEnabled(bullswarmDir, pool, mode === 'on'), null, 2));
+      let reason = null;
+      if (opts.reason !== undefined) {
+        reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
+        if (!reason) throw new Error(`usage: ${usageLine(['strategy', 'set-provider'])}`);
+      }
+      console.log(JSON.stringify(setProviderEnabled(bullswarmDir, pool, mode === 'on', reason), null, 2));
       return 0;
     }
     if (sub === 'hold' || sub === 'unhold' || sub === 'set-reserve') {
@@ -1279,8 +1288,9 @@ export async function cmdStrategy(args, {
         for (const [pool, enabled] of Object.entries(config.providers ?? {})) {
           if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
           if (typeof enabled !== 'boolean') throw new Error(`provider ${pool} must be true or false`);
-          state.pools[pool] ??= {};
-          state.pools[pool].enabled = enabled;
+          setPoolEnabled(state, pool, enabled, {
+            via: 'configure', onlyIfChanged: true, defaultEnabled: connectors[pool].flags?.testFixture !== true,
+          });
         }
         const configured = new Set(state.strategy.configuredTiers ?? []);
         for (const [pool, models] of Object.entries(config.models ?? {})) {

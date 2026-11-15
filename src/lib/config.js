@@ -25,6 +25,7 @@
 
 import { activeAuthHolds } from './auth-hold.js';
 import { loadState } from './state.js';
+import { latestPoolToggle } from './pool-toggle.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js).
 import { finiteOrNull } from './num.js';
 import {
@@ -132,6 +133,9 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       connector: conn,
       testFixture: conn.flags?.testFixture === true,
       enabled: poolEnabled(conn, ps),
+      // Who last turned this pool on or off, when and why (pool-toggle.js);
+      // null when no toggle was ever recorded.
+      toggle: latestPoolToggle(state, name),
       // Operator limits (pool-limits.js): the hold list and the opt-in
       // reserve. Routing filters on them; views say why.
       hold: ps.hold && typeof ps.hold === 'object' ? { ...ps.hold } : null,
