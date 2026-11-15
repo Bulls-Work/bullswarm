@@ -6,14 +6,13 @@
 // state.json under `strategy.poolToggles[<pool>]`:
 //
 //   { latest: <record>, history: [<record>, ...] }   (history: last 20, newest last)
-//   record = { enabled, at (ISO), by, reason|null, via, caller }
+//   record = { enabled, at (ISO), by, reason|null, via }
 //
-// `by` is the OS user name. `caller` is the existing caller identity
-// (caller.js): a herdr pane id and a Claude Code session id, each validated
-// by shape. No other environment value is read or recorded.
+// `by` is the OS user name. Bullswarm has no caller name of its own; the
+// caller identity in caller.js is a pane id and a session id read from the
+// environment, so it is not used here. No environment value is recorded.
 
 import { userInfo } from 'node:os';
-import { callerIdentity } from './caller.js';
 
 export const POOL_TOGGLE_HISTORY = 20;
 
@@ -25,11 +24,6 @@ export function toggleActor() {
   } catch {
     return null;
   }
-}
-
-function toggleCaller() {
-  const { herdrPane, claudeSession } = callerIdentity();
-  return { herdrPane, claudeSession };
 }
 
 /**
@@ -57,7 +51,6 @@ export function setPoolEnabled(state, pool, enabled, {
     by,
     reason: typeof reason === 'string' && reason.trim() ? reason.trim() : null,
     via,
-    caller: toggleCaller(),
   };
   state.strategy ??= {};
   state.strategy.poolToggles ??= {};
@@ -70,10 +63,16 @@ export function setPoolEnabled(state, pool, enabled, {
   return record;
 }
 
-/** The latest toggle record for a pool, or null when none was ever written. */
+/**
+ * The latest toggle record for a pool, or null when none was ever written.
+ * Only the five record fields are read back, so a field an older build wrote
+ * never reaches `pools --json` or `strategy inventory --json`.
+ */
 export function latestPoolToggle(state, pool) {
   const latest = state?.strategy?.poolToggles?.[pool]?.latest;
-  return latest && typeof latest === 'object' && !Array.isArray(latest) ? { ...latest } : null;
+  if (!latest || typeof latest !== 'object' || Array.isArray(latest)) return null;
+  const { enabled, at, by, reason, via } = latest;
+  return { enabled, at, by, reason, via };
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

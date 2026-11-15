@@ -429,9 +429,12 @@ export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
     // why: a re-run that no longer finds a CLI disables its pool here.
     for (const d of discovered.filter((x) => !x.broken && !x.shadowed)) {
       const on = enabled.has(d.name);
+      let why = 'not detected on this machine';
+      if (on) why = 'detected on this machine';
+      else if (d.testFixture && d.discovered) why = 'a test fixture, never turned on by automatic setup';
       setPoolEnabled(state, d.name, on, {
         via: 'auto-setup',
-        reason: `${AUTO_SETUP_SOURCES[reason] ?? reason}: ${on ? 'detected on this machine' : 'not detected on this machine'}`,
+        reason: `${AUTO_SETUP_SOURCES[reason] ?? reason}: ${why}`,
         onlyIfChanged: true,
         defaultEnabled: d.testFixture !== true,
       });
