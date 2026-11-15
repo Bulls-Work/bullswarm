@@ -4,6 +4,7 @@
 // it. Lane and capability (effort, reasoning) stay the step's own fields.
 
 import { modelFamilyOf } from '../lib/route.js';
+import { offLaneText, servesLane } from '../lib/pool-lanes.js';
 
 const ROUTE_KEYS = Object.freeze(['pools', 'providers', 'independentOf']);
 const LIST_KEYS = Object.freeze(['use', 'avoid']);
@@ -310,6 +311,19 @@ export function isRouteUnavailable(failure) {
 }
 
 /**
+ * When every enabled pool the route keeps is off `lane`, one line per pool
+ * saying why (pool-lanes.js offLaneText); else []. Independence is left out,
+ * as for the other route reasons.
+ */
+export function routeOffLaneTexts(pools, filter, lane) {
+  if (!filter) return [];
+  const loose = { ...filter, independentProviders: [] };
+  const kept = (pools ?? []).filter((pool) => pool?.enabled !== false && poolPassesRoute(pool, loose));
+  if (!kept.length || kept.some((pool) => servesLane(pool, lane))) return [];
+  return kept.map((pool) => offLaneText(pool, lane));
+}
+
+/**
  * The run-time "no eligible pool" reason under a route (§2.4). With
  * `sharedProvider` true the capable pools existed but every one shares a
  * provider with a step the route is independent of; `others` lists the
@@ -319,8 +333,13 @@ export function isRouteUnavailable(failure) {
  * why a pool inside the route lacks the tier now (free models off, a plan
  * without the tier's model), as noPoolWhy does.
  */
-export function routeUnavailableWhy(filter, { lane, effort, sharedProvider = false, others = [], offTier = [] } = {}) {
+export function routeUnavailableWhy(filter, {
+  lane, effort, sharedProvider = false, others = [], offTier = [], offLane = [],
+} = {}) {
   const head = `${ROUTE_UNAVAILABLE_HEAD}(${filter?.summary ?? ''})`;
+  // Every pool the route keeps is off the step's lane (strategy set-lanes or
+  // its connector): `offLane` holds one line per pool saying why.
+  if (offLane.length) return `${head}: ${offLane.join('; ')}`;
   if (!sharedProvider) {
     return `${head}: no enabled pool left has a model on the ${effort} tier for ${lane} work${offTier.length ? `; ${offTier.join('; ')}` : ''}`;
   }

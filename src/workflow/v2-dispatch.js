@@ -26,7 +26,7 @@ import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/fore
 import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { REFUSAL_TEXT, declaredDeliverable, declaredEvidence, deliverableTypeOf, failureClassOf, roleOf } from './step-vocabulary.js';
-import { poolPassesRoute, routeUnavailableWhy } from './step-route.js';
+import { poolPassesRoute, routeOffLaneTexts, routeUnavailableWhy } from './step-route.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, operatorLimitPart, signInPart, spentWindowPart } from './no-pool-why.js';
 import { isV3Step } from './program-v3.js';
 import {
@@ -1371,7 +1371,11 @@ export async function dispatchV2Action({
   const ruledOut = last ? null : noPoolCandidates(allPools, action, effort, {
     lane, strictPool, preferredModel, routeFilter, failedProbes, onLane, held, now: endAt, ignoreBurstGate: true,
   });
-  if (!capable.length && routeFilter) {
+  const routeOffLane = !capable.length && routeFilter && !pinnedPool ? routeOffLaneTexts(allPools, routeFilter, lane) : [];
+  if (routeOffLane.length) {
+    // The route keeps only pools off the step's lane: name each and who set its lanes.
+    why = routeUnavailableWhy(routeFilter, { lane, effort, offLane: routeOffLane });
+  } else if (!capable.length && routeFilter) {
     // §2.4: the route, not the tier or the pin, emptied the capable set.
     const unrouted = preparePools(allPools, action, effort, {
       preferredModel, strictPool, now: now(), ignoreBurstGate: true,
