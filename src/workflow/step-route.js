@@ -502,7 +502,9 @@ export function routeIssuesForPools(program, pools = [], {
       }).filter((pool) => poolPassesRoute(pool, routeFilter))
       : (pools ?? []).filter((pool) => pool?.enabled !== false && poolPassesRoute(pool, routeFilter)));
     if (!capableUnder(filter).length) {
-      issues.push(`step ${step}: no enabled pool can run it under its route (${action.lane}/${action.effort} work; route: ${filter.summary})`);
+      // Every pool the route keeps is off the step's lane: name who set that (strategy set-lanes or the connector).
+      const offLane = routeOffLaneTexts(pools, filter, action.lane);
+      issues.push(`step ${step}: no enabled pool can run it under its route (${action.lane}/${action.effort} work; route: ${filter.summary})${offLane.length ? `: ${offLane.join('; ')}` : ''}`);
       continue;
     }
     const resolved = recordedWork && state ? resolveRouteFilter(state, action, pools) : null;

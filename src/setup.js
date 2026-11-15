@@ -28,7 +28,7 @@ import { buildPools, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
 import { installIntegration, retireLegacyOffload } from './integrate.js';
 import { packagedConnectorSources, syncConnectorCopies } from './lib/connector-copies.js';
-import { lanesOf } from './lib/pool-lanes.js';
+import { lanesOf, resolvePoolLanes } from './lib/pool-lanes.js';
 
 // --- prompting ------------------------------------------------------------
 // Sequential prompts that work identically on a TTY and with piped answers.
@@ -127,6 +127,10 @@ export function discoverConnectors(bullswarmDir = defaultBullswarmDir(), opts = 
   // installed, so the packaged tiers load even under node:test; a caller may
   // still override by passing its own `packaged` or `dirs`.
   const { connectors, providers } = loadPoolProviders(bullswarmDir, { packaged: true, ...opts });
+  // A pool's lanes are the operator's `strategy set-lanes` setting when there
+  // is one (pool-lanes.js), so the suggested routing table agrees with routing.
+  let strategy = null;
+  try { strategy = loadState(bullswarmDir, { skipMigration: true }).strategy ?? null; } catch { /* connector lanes stand */ }
   return providers.map((entry) => {
     const base = {
       file: basename(entry.dir),
@@ -154,10 +158,15 @@ export function discoverConnectors(bullswarmDir = defaultBullswarmDir(), opts = 
       discovered: health.installed === true || health.loggedIn === true,
       meter: pool.meter?.type ?? 'none',
       costRank: pool.costRank,
-      lanes: pool.lanes,
+      ...laneFields(pool, strategy, entry.pools[0] ?? entry.name),
       testFixture: pool.flags?.testFixture === true,
     };
   });
+}
+
+function laneFields(pool, strategy, poolName) {
+  const { lanes, source } = resolvePoolLanes(pool, strategy, poolName);
+  return { lanes, lanesSource: source };
 }
 
 // --- routing suggestion --------------------------------------------------------
