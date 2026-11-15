@@ -83,3 +83,9 @@ failed step.
   changed"), so the 2026-11-15 window first showed 4 stalled runs (23
   attempts) that were really not-produced failures. The 2026-10-31 baseline
   had 0 stalled runs either way.
+- 2026-11-15: the runner waits (up to 2 minutes) for a launched run's
+  `state.json` before its first `workflow watch`. Bullswarm 0.38.21's
+  `workflow goal` returns before the detached run writes it, and `watch` then
+  calls the run "legacy" and exits, so the runner scored the untouched
+  fixture while the run went on. This changes no task or score; it fixes the
+  runner's wait. The Bullswarm bug itself has its own fix.

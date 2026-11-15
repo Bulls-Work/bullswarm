@@ -145,6 +145,11 @@ function runTask(id, opts, workRoot, log) {
     const shortId = doc?.shortId ?? runId;
     if (!shortId) notes.push(`launch failed: ${(launch.stderr || launch.stdout || '').slice(-300)}`);
     const deadline = startedAt + (task.timeoutSec ?? 4 * 3600) * 1000;
+    // `workflow goal` returns before the detached run writes state.json, and
+    // until then `watch` calls the run legacy and exits (seen 2026-11-15).
+    // Wait up to 2 minutes for the state file before the first watch.
+    const statePath = runId ? join(bullswarmHome(), 'workflows', runId, 'state.json') : null;
+    for (let i = 0; statePath && !existsSync(statePath) && i < 120; i += 1) spawnSync('sleep', ['1']);
     while (shortId && Date.now() < deadline) {
       const left = Math.max(60, Math.round((deadline - Date.now()) / 1000));
       const watch = spawnSync(opts.bullswarm, ['workflow', 'watch', shortId, '--until', 'outcome', '--timeout', String(Math.min(left, 3000))], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
