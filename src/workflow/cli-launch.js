@@ -189,7 +189,18 @@ export async function launchDetachedResume(doc, runId, opts) {
   return launch;
 }
 
-export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null, advisories = null } = {}) {
+// Whether the detached child can still write its state.json: it did not fail
+// to spawn, has not exited, and its pid is alive.
+export function detachedChildAlive(spawned, { processAlive = isProcessAlive } = {}) {
+  return !spawned.error && !spawned.exited && processAlive(spawned.child?.pid);
+}
+
+// spawnChild, waitForState and processAlive are injectable for tests, so a
+// test exercises the launch without spawning a kernel.
+export async function launchDetachedGoal(doc, opts, {
+  initialPlannerResponse = null, advisories = null,
+  spawnChild = spawnDetachedGoalChild, waitForState = waitForRunState, processAlive = isProcessAlive,
+} = {}) {
   const runId = newRunId();
   const goalDir = join(BULLSWARM_DIR(), 'goals', runId);
   mkdirSync(goalDir, { recursive: true });
@@ -204,7 +215,7 @@ export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = n
     caller: callerIdentity(),
   }, null, 2)}\n`);
 
-  const spawned = spawnDetachedGoalChild(goalDir, [
+  const spawned = spawnChild(goalDir, [
     'workflow', 'goal',
     '--request', requestPath,
     '--run-id', runId,
@@ -221,8 +232,8 @@ export async function launchDetachedGoal(doc, opts, { initialPlannerResponse = n
     stderrPath,
   }, null, 2)}\n`);
 
-  const state = await waitForRunState(runId, {
-    childAlive: () => !spawned.error && !spawned.exited && isProcessAlive(child.pid),
+  const state = await waitForState(runId, {
+    childAlive: () => detachedChildAlive(spawned, { processAlive }),
   });
   assertDetachedChildLaunched(spawned, runId);
   const callerPlanner = v2PlannerMode(doc) === 'caller';

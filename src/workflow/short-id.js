@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isLegacyRunState } from './legacy-run-state.js';
+import { processIdentity } from './v2-process.js';
 
 export { isLegacyRunState };
 
@@ -50,22 +51,33 @@ function readJsonQuiet(path) {
  * signs that it is a new run, not a legacy one: the kernel's lease
  * (kernel.lock, taken right after the folder is made), the launch marker
  * (features.json with programFormat 3) or caller.json, which only 0.38 and
- * later write, or a live launcher process for a fresh launch
- * (goals/<runId>/launcher.json).
+ * later write, a live launcher process for a fresh launch
+ * (goals/<runId>/launcher.json), or, before the folder exists at all, a
+ * fresh launcher record.
+ * The lease's pid counts as alive only while the process with that pid has
+ * the identity the lease recorded (as leaseHeld and acquireKernelLease
+ * check it), so a lock left by a killed kernel whose pid was reused never
+ * keeps a run starting forever.
  * Returns null when state.json exists or there is no such sign (a legacy
  * folder), else {alive, pid}: alive is false once every starting process is
  * gone, which means the run stopped before it started.
  */
-export function runStartingFacts(runDir, { processAlive = isProcessAlive, now = Date.now() } = {}) {
+export function runStartingFacts(runDir, {
+  processAlive = isProcessAlive, identityOf = processIdentity, now = Date.now(),
+} = {}) {
   if (existsSync(join(runDir, 'state.json'))) return null;
   const lockPath = join(runDir, 'kernel.lock');
   const lock = readJsonQuiet(lockPath);
   const features = readJsonQuiet(join(runDir, 'features.json'));
   const launcher = readJsonQuiet(join(kernelGoalDir(runDir), 'launcher.json'));
-  const launcherFresh = now - (Date.parse(launcher?.launchedAt ?? '') || 0) < LAUNCHER_FRESH_MS;
-  const pids = [lock?.pid, launcherFresh ? launcher?.pid : null].filter((pid) => Number.isInteger(pid) && pid > 0);
-  const livePid = pids.find((pid) => processAlive(pid)) ?? null;
-  const marked = existsSync(lockPath) || features?.programFormat === 3 || existsSync(join(runDir, 'caller.json'));
+  const launcherFresh = Boolean(launcher) && now - (Date.parse(launcher.launchedAt ?? '') || 0) < LAUNCHER_FRESH_MS;
+  const validPid = (pid) => Number.isInteger(pid) && pid > 0;
+  const lockAlive = validPid(lock?.pid) && Boolean(lock.identity) && identityOf(lock.pid) === lock.identity;
+  const launcherAlive = launcherFresh && validPid(launcher.pid) && processAlive(launcher.pid);
+  const livePid = lockAlive ? lock.pid : launcherAlive ? launcher.pid : null;
+  const marked = existsSync(lockPath) || features?.programFormat === 3 || existsSync(join(runDir, 'caller.json'))
+    // A launcher that died before its kernel made the folder.
+    || (launcherFresh && !existsSync(runDir));
   if (!marked && livePid == null) return null;
   return { alive: livePid != null, pid: livePid };
 }

@@ -11,7 +11,7 @@ import { cmdReprice } from './reprice-cli.js';
 import { resolvePoolId } from '../lib/pool-labels.js';
 import { workflowHelpPath, parseFlags, flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, legacyRunRefusal, legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
-import { isLegacyRunDir, resolveRunId, runStartingFacts, startingRunLine } from './short-id.js';
+import { isLegacyRunDir, resolveRunId, runStartingFacts, startingRunLine, readKernelStderrTail } from './short-id.js';
 import { modelPoolIssues, programNamesModel, programRoutes, routePoolIssues, configuredPools } from './cli-pool-checks.js';
 import { launchDetachedResume } from './cli-launch.js';
 import { wfPlan } from './cli-plan.js';
@@ -90,11 +90,21 @@ export async function cmdWorkflow(args, {
           // A legacy run shows its summary; cancelling one is refused.
           const token = opts.rest[0] ?? opts.show;
           const resolved = token ? resolveRunId(bullswarmDir, token) : null;
-          // A run still starting has nothing to show yet; say so, never legacy.
-          const starting = resolved && !opts.cancel ? runStartingFacts(resolved.runDir) : null;
+          // A run still starting has nothing to show yet; say so, never
+          // legacy. Cancelling one is refused with the same line (exit 2).
+          const starting = resolved ? runStartingFacts(resolved.runDir) : null;
+          if (starting && opts.cancel) return legacyRunRefusal(token, { json: Boolean(opts.json) }, 'cancel');
           if (starting) {
             const message = startingRunLine(resolved, starting);
-            console.log(opts.json ? JSON.stringify({ starting: true, runId: resolved.runId, status: starting.alive ? 'starting' : 'interrupted', message }, null, 2) : message);
+            const kernelStderrTail = starting.alive ? [] : readKernelStderrTail(resolved.runDir);
+            if (opts.json) {
+              console.log(JSON.stringify({
+                starting: true, runId: resolved.runId, status: starting.alive ? 'starting' : 'interrupted', message,
+                ...(kernelStderrTail.length ? { kernelStderrTail } : {}),
+              }, null, 2));
+            } else {
+              console.log([message, ...(kernelStderrTail.length ? ['kernel log:', ...kernelStderrTail.map((line) => `  ${line}`)] : [])].join('\n'));
+            }
             return starting.alive ? 0 : 1;
           }
           if (resolved && isLegacyRunDir(resolved.runDir)) {

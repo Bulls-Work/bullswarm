@@ -26,14 +26,34 @@ export const BULLSWARM_DIR = bullswarmDir; // back-compat for any external impor
 // Legacy (pre-0.27.0 authored-graph) runs are read-only history. The verbs
 // that act on one without a view of it (cancel, action show, tui --cancel)
 // answer with the same sentence and exit 2 before doing anything else.
+// A run still starting (no state.json yet) is refused the same way, with the
+// starting line instead of the legacy one.
 // Returns null when `token` is not a legacy run, so the caller carries on.
-export function legacyRunRefusal(token, { json = false } = {}) {
+export function legacyRunRefusal(token, { json = false } = {}, verb = null) {
   const resolved = resolveRunId(BULLSWARM_DIR(), token);
   if (!resolved) return null;
+  const starting = startingRunRefusal(resolved, { json }, verb);
+  if (starting != null) return starting;
   if (!isLegacyRunDir(resolved.runDir)) return null;
   const message = legacyRunLine({ shortId: resolved.shortId, runId: resolved.runId, runDir: resolved.runDir });
   if (json) console.log(JSON.stringify({ legacy: true, runId: resolved.runId, shortId: resolved.shortId ?? null, dir: resolved.runDir, message }, null, 2));
   else console.error(message);
+  return 2;
+}
+
+// A run still starting has no state to drive or cancel yet: the verb prints
+// the starting line (or the stopped-before-it-started line) and exits 2.
+// Returns null when the run has a state.json or is legacy.
+export function startingRunRefusal(resolved, { json = false } = {}, verb = null) {
+  const starting = runStartingFacts(resolved.runDir);
+  if (!starting) return null;
+  const message = startingRunLine(resolved, starting);
+  if (json) {
+    console.log(JSON.stringify({
+      starting: true, ...(verb ? { verb } : {}), runId: resolved.runId, shortId: resolved.shortId ?? null,
+      dir: resolved.runDir, status: starting.alive ? 'starting' : 'interrupted', message,
+    }, null, 2));
+  } else console.error(message);
   return 2;
 }
 
@@ -50,13 +70,8 @@ export function drivableRunRefusal(token, { json = false } = {}, verb) {
   const resolved = resolveRunId(BULLSWARM_DIR(), token);
   if (!resolved) return null;
   // A run still starting has no state to drive yet: say so, never view-only.
-  const starting = runStartingFacts(resolved.runDir);
-  if (starting) {
-    const message = startingRunLine(resolved, starting);
-    if (json) console.log(JSON.stringify({ starting: true, verb, runId: resolved.runId, shortId: resolved.shortId ?? null, dir: resolved.runDir, message }, null, 2));
-    else console.error(message);
-    return 2;
-  }
+  const starting = startingRunRefusal(resolved, { json }, verb);
+  if (starting != null) return starting;
   if (!isLegacyRunDir(resolved.runDir) && isProgramV3Run(readRunFeatures(resolved.runDir))) return null;
   const message = viewOnlyRunLine(resolved.shortId ?? resolved.runId);
   if (json) console.log(JSON.stringify({ viewOnly: true, verb, runId: resolved.runId, shortId: resolved.shortId ?? null, dir: resolved.runDir, message }, null, 2));
