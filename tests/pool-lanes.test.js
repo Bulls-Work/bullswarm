@@ -157,3 +157,26 @@ test('workflow pin checks refuse a step on a lane the pinned pool\'s override do
   assert.match(issues[0], /^program\.actions\[0\] \(write\) is build\/low work, which the pinned pool grok does not serve: strategy set-lanes limits it to analyze/);
   assert.match(issues[0], /bullswarm strategy set-lanes grok default --yes clears it/);
 });
+
+test('a dispatch whose route names only a provider whose pool does not serve the lane says so (run --use-provider)', async () => {
+  const NOW = Date.parse('2026-11-15T10:00:00Z');
+  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+  const dependencies = {
+    watchOnce: async () => { throw new Error('nothing may be dispatched'); },
+    loadState: () => structuredClone(core),
+    saveState: () => {},
+    now: () => NOW,
+  };
+  const routed = await dispatchV2Action({
+    action: { id: 'do-work', lane: 'build', effort: 'low' }, taskText: 'do it', targetDir: '/tmp',
+    paths: { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' }, bullswarmDir: '/tmp/bs', dependencies,
+    pools: [fakePool('grok', { lanes: ['analyze'], lanesSource: 'override' }), fakePool('codex')],
+    routeFilter: {
+      usePools: null, avoidPools: [], useProviders: ['grok'], avoidProviders: [],
+      independentProviders: [], independentOf: {}, summary: 'providers.use grok',
+    },
+  });
+  assert.equal(routed.ok, false);
+  assert.match(routed.verdict.why, /\(providers\.use grok\): grok does not serve build work: strategy set-lanes limits it to analyze \(bullswarm strategy set-lanes grok default --yes clears it\)$/);
+  assert.doesNotMatch(routed.verdict.why, /\n/);
+});
