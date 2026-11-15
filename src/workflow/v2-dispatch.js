@@ -106,6 +106,10 @@ function classifyFailure(verdict, pool = null) {
   // modelPlanSignatures): a fact about that pool and model, not a dead pool.
   if (verdict?.failureKind === 'model-not-in-plan') return 'model-not-in-plan';
   if (verdict?.failureKind === 'stalled' || verdict?.meta?.stalled) return 'stalled';
+  // A worker killed by its own --timeout was interrupted on every pool, the
+  // help's promise: some CLIs report the kill as a signal, others exit with a
+  // code (143, 1), which read process before (the week to 14 Nov).
+  if (verdict?.meta?.timedOut && !verdict.meta.spawnError) return 'interrupted';
   if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
   if (verdict?.failureKind === 'schema') return 'schema';
   // A free endpoint that returned literally no answer is indistinguishable
@@ -120,7 +124,7 @@ function classifyFailure(verdict, pool = null) {
   // missing answer a process failure (watch.js), as it does for every v3 step.
   if (verdict?.meta?.signal) return 'interrupted';
   if (verdict?.failureKind === 'process' || (verdict?.meta?.exitCode != null && verdict.meta.exitCode !== 0)) return 'process';
-  if (verdict?.meta?.timedOut || verdict?.meta?.spawnError) return 'provider';
+  if (verdict?.meta?.spawnError) return 'provider';
   return 'semantic';
 }
 
