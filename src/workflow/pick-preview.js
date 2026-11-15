@@ -18,6 +18,7 @@ import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { tierOffV2DispatchReasons, prepareV2DispatchPools, selectedV2DispatchModel } from './v2-dispatch.js';
 import { resolveRouteFilter, routeUnavailableWhy } from './step-route.js';
 import { poolCanRunModel } from '../lib/model-pin.js';
+import { lanesOf } from '../lib/pool-lanes.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, operatorLimitPart, signInPart, spentWindowPart } from './no-pool-why.js';
 
 /**
@@ -32,7 +33,7 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
     return { why: `no pool can run ${preferredModel}: ${reasons.join('; ') || 'no pool is enabled'}`, failureKind: 'unavailable' };
   }
   const capable = prepareV2DispatchPools(pools, action, effort, { now, routeFilter, preferredModel, ignoreBurstGate: true })
-    .filter((pool) => (pool.lanes ?? [lane]).includes(lane));
+    .filter((pool) => lanesOf(pool, [lane]).includes(lane));
   const held = [];
   for (const pool of capable) {
     const parts = [signInPart(pool, now), spentWindowPart(pool, now), operatorLimitPart(pool, now), draining.has(pool.name) ? drainingPart(draining.get(pool.name)) : null].filter(Boolean);
@@ -42,7 +43,7 @@ function noPickWhy({ pools, action, lane, effort, now, routeFilter, draining, ro
   if (held.length) return { why: noPoolWhy({ capableCount: capable.length, held, failureKind, lane, effort }), failureKind };
   if (capable.length) return { why: routerWhy, failureKind };
   const offTier = tierOffV2DispatchReasons(pools, action, effort, { preferredModel, routeFilter, now },
-    (pool) => (pool.lanes ?? [lane]).includes(lane));
+    (pool) => lanesOf(pool, [lane]).includes(lane));
   if (routeFilter && prepareV2DispatchPools(pools, action, effort, { now, preferredModel, ignoreBurstGate: true }).length) {
     return { why: routeUnavailableWhy(routeFilter, { lane, effort, offTier }), failureKind };
   }

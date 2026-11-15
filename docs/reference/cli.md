@@ -705,6 +705,23 @@ bullswarm strategy set-subscription opencode --resets-at 2026-09-17T01:46:01Z
 
 Writes `state.strategy.subscriptions[pool]` and invalidates the cached report. A changed subscription also retires the pool's `not in plan` records made under the old one.
 
+### set-lanes
+
+Choose which lanes one pool serves. A pool serves the lanes its connector ships until you set this; the setting replaces them in routing, `bullswarm pools` (shown as `lanes=analyze (set-lanes)`), `workflow capabilities`, `strategy inventory` (`lanesSource: "override"`), and the workflow pin and route checks.
+
+```bash
+# grok takes analyze work only; then back to its connector's lanes.
+bullswarm strategy set-lanes grok analyze --yes
+bullswarm strategy set-lanes grok default --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--yes` | required; the change applies to new dispatches at once | none; exits 2 without it |
+| `--json` | accepted; the output is always JSON | |
+
+Argument: one or more of `analyze`, `build`, `chore`, comma-separated, or `default` to drop the setting. An unknown pool or lane exits 2 and writes nothing. Writes `state.strategy.laneOverrides[pool]` and invalidates the cached report. A run pinned to the pool (`--worker-pool`, or a route that leaves only it, such as `run --use-provider`) for a lane it no longer serves is refused with one line such as `the pinned pool grok does not serve build work: strategy set-lanes limits it to analyze (bullswarm strategy set-lanes grok default --yes clears it)`.
+
 ### set-free
 
 Choose whether strategy may suggest, apply or dispatch a free model (a connector model declared free, or an id such as `openrouter/x:free`). The default is `allow`.

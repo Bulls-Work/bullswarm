@@ -2,9 +2,10 @@
 // the step's tier only because free models are off or the plan excludes
 // the tier's model.
 import { poolCanRunModel } from '../lib/model-pin.js';
-import { LANES, modelFamilyOf } from '../lib/route.js';
+import { modelFamilyOf } from '../lib/route.js';
 import { windowSpent } from '../meters/framework.js';
 import { poolPassesRoute } from './step-route.js';
+import { offLaneText, servesLane } from '../lib/pool-lanes.js';
 import { meterSignInDead, meterSignInText, planExcludedIds, planExcludes, preparePools } from './dispatch-pools.js';
 
 const STRATEGY_TIER_ORDER = ['low', 'medium', 'high'];
@@ -74,11 +75,11 @@ export function noPoolCandidates(allPools, action, effort, {
     const provider = modelFamilyOf(pool);
     const tiers = STRATEGY_TIER_ORDER.filter((tier) => preparePools([pool], action, tier, { preferredModel, now, ignoreBurstGate: true }).length);
     const inRoute = !withoutIndependence || poolPassesRoute(pool, withoutIndependence);
-    const lanes = onLane(pool) && (pool.lanes ?? LANES).includes(lane);
+    const lanes = onLane(pool) && servesLane(pool, lane);
     const sharedWith = Object.entries(routeFilter?.independentOf ?? {}).filter(([, providers]) => providers.includes(provider)).map(([step]) => step);
     let excluded;
     if (strictPool && pool.name !== strictPool) excluded = `not the pinned pool ${strictPool}`;
-    else if (!lanes) excluded = `not on the ${lane} lane`;
+    else if (!lanes) excluded = servesLane(pool, lane) ? `not on the ${lane} lane` : offLaneText(pool, lane);
     else if (failedProbes.has(pool.name)) excluded = 'failed its probe';
     else if (!inRoute) excluded = `outside the route (${routeFilter.summary})`;
     else if (sharedWith.length) excluded = `shares provider ${provider} with ${sharedWith.join(', ')}`;

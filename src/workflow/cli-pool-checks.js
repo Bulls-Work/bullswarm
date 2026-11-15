@@ -10,6 +10,7 @@ import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadPoolLabels } from '../lib/pool-labels.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 import { poolCanRunModel } from '../lib/model-pin.js';
+import { offLaneReason, servesLane } from '../lib/pool-lanes.js';
 
 // A pinned pool with no model on a step's tier fails that step within a second
 // as "no eligible pool". Say so before anything launches. A spent meter window
@@ -19,8 +20,15 @@ export function pinnedPoolIssues(doc, program, pools) {
   const strictPool = routing.strictPool ?? routing.pool ?? null;
   if (!strictPool || !Array.isArray(pools) || !pools.length) return [];
   const issues = [];
+  const pinned = pools.find((pool) => pool.name === strictPool && pool.enabled !== false) ?? null;
   program.actions.forEach((action, index) => {
     const effort = action.effort ?? 'medium';
+    // The pinned pool does not serve this step's lane (strategy set-lanes or
+    // its connector): the step would fail at its pick, so say why now.
+    if (pinned && action.lane && !servesLane(pinned, action.lane)) {
+      issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} does not serve: ${offLaneReason(pinned)}; pin another pool or change the step's lane`);
+      return;
+    }
     const capable = prepareV2DispatchPools(pools, action, effort, {
       preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool,
     });
@@ -72,7 +80,9 @@ export function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BUL
   const preferredModel = routing.model ?? routing.preferredModel ?? null;
   return routeIssuesForPools({ actions }, pools, {
     runPin: routing.strictPool ?? routing.pool ?? null,
-    preparePools: (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options }),
+    // Only pools that serve the step's lane can run it (strategy set-lanes or the connector).
+    preparePools: (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options })
+      .filter((pool) => !action?.lane || servesLane(pool, action.lane)),
     labels,
     state,
     recordedWork,

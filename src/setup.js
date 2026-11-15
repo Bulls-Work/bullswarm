@@ -28,6 +28,7 @@ import { buildPools, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
 import { installIntegration, retireLegacyOffload } from './integrate.js';
 import { packagedConnectorSources, syncConnectorCopies } from './lib/connector-copies.js';
+import { lanesOf } from './lib/pool-lanes.js';
 
 // --- prompting ------------------------------------------------------------
 // Sequential prompts that work identically on a TTY and with piped answers.
@@ -164,7 +165,7 @@ export function discoverConnectors(bullswarmDir = defaultBullswarmDir(), opts = 
 export function suggestRoutingTable(enabledPools) {
   const byLane = { analyze: [], build: [], chore: [] };
   for (const p of enabledPools) {
-    for (const lane of p.lanes ?? ['analyze', 'build', 'chore']) {
+    for (const lane of lanesOf(p)) {
       byLane[lane]?.push(p.name);
     }
   }

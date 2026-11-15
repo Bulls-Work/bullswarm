@@ -30,6 +30,10 @@ import { meterSignInDead, meterSignInText } from './workflow/dispatch-pools.js';
 import { previewStepPick } from './workflow/pick-preview.js';
 import { runOneStep } from './workflow/run-one-step.js';
 import { runVerdictJson, runVerdictLines } from './workflow/run-verdict.js';
+import { poolLanesText } from './lib/pool-lanes.js';
+
+// The lanes column of `bullswarm pools`, marked when strategy set-lanes chose it.
+export { poolLanesText };
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -288,7 +292,7 @@ async function cmdPools(opts) {
     const display = p.poolLabel ?? poolLabel(p.name, getBullswarmDir());
     const status = poolStatusText(p);
     console.log(
-      `${display.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour}${free} ${status}${expiringNote}`,
+      `${display.padEnd(14)} cost=${p.costRank} lanes=${poolLanesText(p)} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour}${free} ${status}${expiringNote}`,
     );
   }
   return 0;

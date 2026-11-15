@@ -38,6 +38,7 @@ import {
   resolveDispatchModel, selectedModelsForTier, STRATEGY_TIERS,
 } from './strategy.js';
 import { poolLabel } from './pool-labels.js';
+import { resolvePoolLanes } from './pool-lanes.js';
 
 /**
  * Every pool by name, from every loaded provider (src/lib/providers.js).
@@ -126,6 +127,8 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
   for (const [name, conn] of Object.entries(connectors)) {
     const ps = state.pools[name] ?? {};
     const selected = freeSelection(conn, state, name, effortTier);
+    // The lanes it serves: `strategy set-lanes` when set, else the connector's.
+    const lanes = resolvePoolLanes(conn, state.strategy, name);
     const pool = {
       name,
       poolLabel: poolLabel(name, bullswarmDir),
@@ -139,7 +142,8 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       // When the reading routing uses was taken (stale-meter decay, route.js).
       meterCapturedAt: null,
       costRank: conn.costRank ?? 5,
-      lanes: conn.lanes,
+      lanes: lanes.lanes,
+      lanesSource: lanes.source,
       capabilities: conn.capabilities ?? [],
       free: selected.free,
       freeModel: selected.model ?? null,

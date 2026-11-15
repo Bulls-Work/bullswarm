@@ -36,6 +36,7 @@ import {
 } from './metrics.js';
 import { isOneStepRecord } from './run-counts.js';
 import { isV3Record } from './v3-phases.js';
+import { lanesOf } from '../lib/pool-lanes.js';
 
 /** The period toggle, in the order the toggle shows them. */
 export const PERIODS = Object.freeze(['7d', '30d', 'all']);
@@ -807,7 +808,8 @@ export function poolsModel(rollups, pools, { period = '7d', now = Date.now() } =
       live: pool ? liveMeter(pool) : null,
       poolLabel: pool?.poolLabel ?? null,
       enabled: pool ? pool.enabled !== false : null,
-      lanes: pool?.lanes ?? null,
+      lanes: pool ? lanesOf(pool, null) : null,
+      lanesSource: pool?.lanesSource ?? null,
     };
     // `_entries` is non-enumerable on finished rows, so the live-meter merge
     // re-attaches it for the table total.
