@@ -3073,6 +3073,41 @@ test('failure rule: a cancel between a failure and the next start leaves no retr
   assert.equal(countRetries(state, 'do-work'), 0);
 });
 
+// A run killed by its own --timeout is interrupted on every pool. The week to
+// 14 Nov recorded the same "timeout after 540s" as process on claude-code
+// (the child exits with a code) and interrupted on grok (a signal).
+const timeoutKill = (meta) => ({ ok: false, why: 'timeout after 540s', meta: { timedOut: true, wallSec: 540, ...meta } });
+
+test('failure rule: a --timeout kill is interrupted whether the worker exits with a code or a signal', () => {
+  assert.equal(classifyV2DispatchFailure(timeoutKill({ exitCode: 143, signal: null })), 'interrupted');
+  assert.equal(classifyV2DispatchFailure(timeoutKill({ exitCode: 1, signal: null })), 'interrupted');
+  assert.equal(classifyV2DispatchFailure(timeoutKill({ exitCode: null, signal: 'SIGTERM' })), 'interrupted');
+  assert.equal(classifyV2DispatchFailure(timeoutKill({ exitCode: null, signal: null })), 'interrupted');
+  // Every other kind keeps its classification.
+  assert.equal(classifyV2DispatchFailure({ ok: false, why: 'worker exited 1', meta: { exitCode: 1, timedOut: false } }), 'process');
+  assert.equal(classifyV2DispatchFailure({ ok: false, why: 'spawn failed: ENOENT', meta: { spawnError: 'ENOENT', exitCode: null, timedOut: false } }), 'provider');
+  assert.equal(classifyV2DispatchFailure({ ok: false, why: 'workflow cancellation requested', cancelled: true, meta: { timedOut: true, exitCode: 143 } }), 'cancelled');
+});
+
+test('failure rule: a --timeout kill with a non-zero exit records interrupted in the attempt, the decision log and the result, and the retry still runs', async () => {
+  const retried = await ruleDispatch([timeoutKill({ exitCode: 143, signal: null }), good]);
+  assert.equal(retried.result.ok, true);
+  assert.equal(retried.result.attempts[0].failureKind, 'interrupted');
+  assert.equal(retried.result.attempts[0].status, 'interrupted');
+  assert.equal(retried.result.attempts[0].willRetry, true, 'the one retry still runs');
+  assert.equal(retried.result.attempts.length, 2);
+  assert.equal(retried.core.decisionLog[0].failureKind, 'interrupted');
+  assert.equal(retried.core.decisionLog[0].why, 'timeout after 540s');
+  // With no retry left (--no-retry), the step fails as interrupted.
+  const once = await ruleDispatch([timeoutKill({ exitCode: 1, signal: null }), good], { maxMechanicalRetries: 0 });
+  assert.equal(once.result.ok, false);
+  assert.equal(once.result.failureKind, 'interrupted');
+  assert.equal(once.result.attempts.length, 1);
+  assert.equal(once.result.attempts[0].failureKind, 'interrupted');
+  assert.equal(once.result.attempts[0].willRetry, false);
+  assert.equal(once.core.decisionLog[0].failureKind, 'interrupted');
+});
+
 test('failure rule: an act step is not retried once its worker started (D32), unless it never spawned', async () => {
   const act = { id: 'announce', role: 'act', lane: 'analyze', effort: 'low', deliverable: { type: 'outward' } };
   const failed = await ruleDispatch([processFail(), good], { action: act });
