@@ -7,14 +7,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { autoSetup } from '../src/setup.js';
+import { autoSetup, discoverConnectors, suggestRoutingTable } from '../src/setup.js';
 import { buildPools } from '../src/lib/config.js';
-import { loadState } from '../src/lib/state.js';
+import { loadState, updateState } from '../src/lib/state.js';
 import { pickPool } from '../src/lib/route.js';
 import { cmdStrategy, strategyInventory } from '../src/strategy-cli.js';
 import * as cli from '../src/cli.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
-import { pinnedPoolIssues } from '../src/workflow/cli-pool-checks.js';
+import { pinnedPoolIssues, routePoolIssues } from '../src/workflow/cli-pool-checks.js';
 
 function home() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-pool-lanes-'));
@@ -179,4 +179,37 @@ test('a dispatch whose route names only a provider whose pool does not serve the
   assert.equal(routed.ok, false);
   assert.match(routed.verdict.why, /\(providers\.use grok\): grok does not serve build work: strategy set-lanes limits it to analyze \(bullswarm strategy set-lanes grok default --yes clears it\)$/);
   assert.doesNotMatch(routed.verdict.why, /\n/);
+});
+
+test('setup discovery and its suggested routing table read the override', () => {
+  const f = home();
+  try {
+    updateState(f.dir, (state) => {
+      state.strategy ??= {};
+      state.strategy.laneOverrides = { grok: ['analyze'], 'claude-code': ['chore'] };
+    });
+    const found = discoverConnectors(f.dir);
+    const grok = found.find((entry) => entry.pools.includes('grok'));
+    assert.deepEqual(grok.lanes, ['analyze']);
+    assert.equal(grok.lanesSource, 'override');
+    const claude = found.find((entry) => entry.pools.includes('claude-code'));
+    assert.deepEqual(claude.lanes, ['chore']);
+    const codex = found.find((entry) => entry.pools.includes('codex'));
+    assert.deepEqual(codex.lanes, ['analyze', 'build', 'chore']);
+    assert.equal(codex.lanesSource, 'connector');
+
+    const table = suggestRoutingTable([grok, claude, codex]);
+    assert.deepEqual(table.analyze.order, ['grok', 'codex']);
+    assert.deepEqual(table.build.order, ['codex']);
+    assert.deepEqual(table.chore.order, ['claude-code', 'codex']);
+  } finally { f.cleanup(); }
+});
+
+test('workflow plan validate names the override when a step\'s route leaves only an off-lane pool', () => {
+  const actions = [{ id: 'write-it', lane: 'build', effort: 'medium', route: { pools: { use: ['grok'] } } }];
+  const pools = [fakePool('grok', { lanes: ['analyze'], lanesSource: 'override' }), fakePool('codex')];
+  const issues = routePoolIssues(actions, pools, { config: {} }, {});
+  assert.equal(issues.length, 1, issues.join('\n'));
+  assert.match(issues[0], /^step write-it: no enabled pool can run it under its route \(build\/medium work; route: use grok\)/);
+  assert.match(issues[0], /grok does not serve build work: strategy set-lanes limits it to analyze \(bullswarm strategy set-lanes grok default --yes clears it\)$/);
 });
