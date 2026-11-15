@@ -83,7 +83,7 @@ const attemptOutput = (attempt) => {
   return t ? (t.output ?? 0) + (t.reasoning ?? 0) : null;
 };
 const attemptUsd = (attempt) => attempt?.usage?.api?.usd ?? null;
-const stalledAttempt = (attempt) => attempt?.failureKind === 'stalled' || /\bstall|no file change|silence/i.test(String(attempt?.why ?? ''));
+export const stalledAttempt = (attempt) => attempt?.failureKind === 'stalled' || /\bstall|no file change|silence/i.test(String(attempt?.why ?? ''));
 
 function loadRuns(home, fromMs, toMs) {
   const root = join(home, 'workflows');
