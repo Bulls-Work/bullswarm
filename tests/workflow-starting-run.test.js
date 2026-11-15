@@ -16,15 +16,17 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as shortIdModule from '../src/workflow/short-id.js';
 import { runWorkflowWatch } from '../src/workflow/watch-cli.js';
-import { dashboardRows } from '../src/workflow/dashboard.js';
+import * as dashboardModule from '../src/workflow/dashboard.js';
 import { renderDetails } from '../src/workflow/dashboard-details.js';
 import * as launchModule from '../src/workflow/cli-launch.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
+import { processIdentity } from '../src/workflow/v2-process.js';
 
 // Namespace imports, so a missing export fails its own test only.
 const { isLegacyRunDir, listRuns } = shortIdModule;
 const runStartingFacts = (...args) => shortIdModule.runStartingFacts(...args);
 const waitForRunState = (...args) => launchModule.waitForRunState(...args);
+const { dashboardRows } = dashboardModule;
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -221,4 +223,155 @@ test('the launch keeps waiting for state.json past 10 s while the child lives, a
     assert.equal(bounded, null);
     assert.ok(clock >= 60_000 && clock < 61_000, `stopped at ${clock} ms`);
   } finally { h.cleanup(); }
+});
+
+// ── Review findings on the first fix ─────────────────────────────────────────
+
+test('the dashboard Run and Step pages, the panel model and the overview take a starting row without throwing', () => {
+  const h = home();
+  try {
+    startingRun(h.dir);
+    const row = dashboardRows(h.dir, { all: true }).find((run) => run.runId === RUN_ID);
+    for (const page of ['run', 'step']) {
+      const frame = dashboardModule.renderDashboardPage(dashboardModule.dashboardModel(row), { page, width: 100, height: 30 });
+      const text = frame.lines.join('\n');
+      assert.doesNotMatch(text, /legacy/, page);
+      assert.match(text, /is starting/, page);
+    }
+    assert.doesNotThrow(() => dashboardModule.workflowPanelModel(row));
+    assert.match(dashboardModule.renderWorkflowTui(row, { width: 100, height: 30 }), /is starting/);
+    const snapshot = dashboardModule.overviewSnapshot(h.dir, RUN_ID);
+    assert.equal(snapshot.legacy, false);
+    assert.equal(snapshot.starting, true);
+    assert.match(snapshot.lines.join('\n'), /is starting/);
+  } finally { h.cleanup(); }
+});
+
+test('a kernel.lock whose recorded identity is not the live process with that pid is no sign of a live starter', () => {
+  const h = home();
+  try {
+    // A kernel killed before state.json left its lock; its pid now belongs
+    // to another process (this one), whose identity differs.
+    const runDir = startingRun(h.dir, { pid: DEAD_PID });
+    writeFileSync(join(runDir, 'kernel.lock'), JSON.stringify({ pid: process.pid, identity: 'Mon Jan  1 00:00:00 2001', token: 't' }));
+    assert.deepEqual(runStartingFacts(runDir), { alive: false, pid: null });
+    // The kernel's own lease, with its real identity, is a live starter.
+    writeFileSync(join(runDir, 'kernel.lock'), JSON.stringify({ pid: process.pid, identity: processIdentity(process.pid), token: 't' }));
+    assert.deepEqual(runStartingFacts(runDir), { alive: true, pid: process.pid });
+  } finally { h.cleanup(); }
+});
+
+test('watch on a starting run honours --timeout, and its starting wait has an upper bound', { timeout: 15_000 }, async () => {
+  const h = home();
+  try {
+    startingRun(h.dir);
+    let output = '';
+    const began = Date.now();
+    const code = await runWorkflowWatch(h.dir, RUN_ID, {
+      intervalMs: 50, until: 'outcome', timeoutMs: 400, output: { write: (text) => { output += text; } },
+    });
+    assert.equal(code, 0, output);
+    assert.ok(Date.now() - began < 5_000, `waited ${Date.now() - began} ms`);
+    assert.doesNotMatch(output, /legacy/);
+    assert.match(output, /watch timed out after 0\.4s · the run is still starting/);
+    assert.match(output, new RegExp(`next: bullswarm workflow watch ${RUN_ID} --until outcome --timeout 0\\.4`));
+
+    // No --timeout: the wait for a start is still bounded.
+    output = '';
+    const capped = await runWorkflowWatch(h.dir, RUN_ID, {
+      intervalMs: 50, startingWaitMs: 300, output: { write: (text) => { output += text; } },
+    });
+    assert.equal(capped, 0, output);
+    assert.match(output, /the run is still starting/);
+    assert.match(output, new RegExp(`next: bullswarm workflow watch ${RUN_ID}`));
+  } finally { h.cleanup(); }
+});
+
+test('watch reports a launcher that died before the run folder existed, with its log, not "no run found"', { timeout: 15_000 }, async () => {
+  const h = home();
+  try {
+    const goalDir = join(h.dir, 'goals', RUN_ID);
+    mkdirSync(goalDir, { recursive: true });
+    writeFileSync(join(goalDir, 'launcher.json'), JSON.stringify({
+      schemaVersion: 'bullswarm.goal.launcher.v2', runId: RUN_ID, pid: DEAD_PID, launchedAt: new Date().toISOString(),
+    }));
+    writeFileSync(join(goalDir, 'stderr.log'), 'Error: request unreadable\n');
+    let output = '';
+    const code = await runWorkflowWatch(h.dir, RUN_ID, {
+      intervalMs: 50, until: 'outcome', output: { write: (text) => { output += text; } },
+    });
+    assert.equal(code, 1, output);
+    assert.match(output, new RegExp(`run ${RUN_ID} stopped before it started`));
+    assert.match(output, /kernel log:\n {2}Error: request unreadable/);
+  } finally { h.cleanup(); }
+});
+
+test('cancel and tui --cancel on a starting run say it is starting; tui on a dead starter shows its kernel log', () => {
+  const h = home();
+  try {
+    startingRun(h.dir);
+    for (const args of [['workflow', 'cancel', RUN_ID], ['workflow', 'tui', '--cancel', RUN_ID]]) {
+      const result = cli(h.dir, args);
+      const printed = `${result.stdout}${result.stderr}`;
+      assert.equal(result.status, 2, `${args.join(' ')}\n${printed}`);
+      assert.match(printed, /is starting/, `${args.join(' ')}\n${printed}`);
+      assert.doesNotMatch(printed, /has no state\.json|legacy/, `${args.join(' ')}\n${printed}`);
+    }
+  } finally { h.cleanup(); }
+  const dead = home();
+  try {
+    startingRun(dead.dir, { pid: DEAD_PID, lock: false, stderr: 'Error: planner exploded\n' });
+    const result = cli(dead.dir, ['workflow', 'tui', RUN_ID]);
+    assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /stopped before it started/);
+    assert.match(result.stdout, /kernel log:\n {2}Error: planner exploded/);
+  } finally { dead.cleanup(); }
+});
+
+test('launchDetachedGoal waits only while its real child lives: an exited child ends the wait', async () => {
+  const h = home();
+  const previousHome = process.env.BULLSWARM_HOME;
+  const previousScript = process.argv[1];
+  process.env.BULLSWARM_HOME = h.dir;
+  // Should the fakes be ignored, the real spawn runs a script that exits at
+  // once, never this test file or a kernel.
+  const noop = join(h.dir, 'noop.mjs');
+  writeFileSync(noop, 'process.exit(0);\n');
+  process.argv[1] = noop;
+  try {
+    const doc = createV2GoalDocument({
+      goal: 'Land the change', cwd: h.dir,
+      requirements: [{ id: 'requirement-1', text: 'Change lands' }],
+      settings: { scout: false },
+    });
+    // A fake detached child: the same launch record spawnDetachedGoalChild
+    // returns, with a pid that is alive (this process) until it exits.
+    const spawned = { child: { pid: process.pid }, stdoutPath: join(h.dir, 'o.log'), stderrPath: join(h.dir, 'e.log'), error: null, exited: false };
+    const seen = [];
+    const launch = await launchModule.launchDetachedGoal(doc, { silentLaunch: true }, {
+      spawnChild: () => spawned,
+      waitForState: async (runId, { childAlive }) => {
+        seen.push(childAlive());
+        spawned.exited = true; // the child's 'exit' event
+        seen.push(childAlive());
+        return null;
+      },
+    });
+    assert.deepEqual(seen, [true, false]);
+    assert.equal(launch.status, 'starting');
+
+    // A child pid that is gone also ends it, even before its exit event.
+    const gone = { ...spawned, child: { pid: DEAD_PID }, exited: false };
+    let alive = null;
+    await launchModule.launchDetachedGoal(doc, { silentLaunch: true }, {
+      spawnChild: () => gone,
+      waitForState: async (runId, { childAlive }) => { alive = childAlive(); return null; },
+    });
+    assert.equal(alive, false);
+  } finally {
+    process.argv[1] = previousScript;
+    if (previousHome === undefined) delete process.env.BULLSWARM_HOME;
+    else process.env.BULLSWARM_HOME = previousHome;
+    h.cleanup();
+  }
 });
