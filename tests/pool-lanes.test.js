@@ -4,7 +4,7 @@
 // workflow pin checks and a pinned dispatch all read the same answer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -239,18 +239,32 @@ test('workflow plan validate names the override when a step\'s route leaves only
 });
 
 test('bullswarm pools prints the overridden lanes marked (set-lanes)', async () => {
+  // Packaged providers stay off and the two pools are unmetered copies of the
+  // echo connector in the temp home, so the spawned `pools` reads no live
+  // meter and finds none of this machine's logins.
   const f = home();
   try {
-    assert.equal((await runStrategy(['set-lanes', 'grok', 'analyze', '--yes'], f.dir)).code, 0);
-    const BIN = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'bin', 'bullswarm.js');
-    const run = spawnSync(process.execPath, [BIN, 'pools'], {
-      env: { ...process.env, BULLSWARM_HOME: f.dir, BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
-      encoding: 'utf8',
-      input: '',
-    });
+    const ROOT = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
+    // Spawned under node:test, the CLI skips local provider directories but
+    // reads legacy connector files, so the two pools are written as those.
+    const connector = JSON.parse(readFileSync(join(ROOT, 'src', 'providers', 'echo', 'connector.json'), 'utf8'));
+    delete connector.testFixture;
+    mkdirSync(join(f.dir, 'connectors'), { recursive: true });
+    for (const name of ['lanesa', 'lanesb']) {
+      writeFileSync(join(f.dir, 'connectors', `${name}.json`), JSON.stringify({ ...connector, name }, null, 2));
+    }
+    const env = { ...process.env, BULLSWARM_HOME: f.dir, BULLSWARM_NO_PACKAGED_PROVIDERS: '1', BULLSWARM_DISABLE_CLAUDE_PROFILES: '1', BULLSWARM_METER_SNAPSHOT_DIR: '' };
+    const BIN = join(ROOT, 'bin', 'bullswarm.js');
+    const cli = (argv) => spawnSync(process.execPath, [BIN, ...argv], { env, encoding: 'utf8', input: '' });
+    const setup = cli(['setup', '--yes']);
+    assert.equal(setup.status, 0, setup.stderr + setup.stdout);
+    const set = cli(['strategy', 'set-lanes', 'lanesa', 'analyze', '--yes']);
+    assert.equal(set.status, 0, set.stderr + set.stdout);
+    const run = cli(['pools']);
     assert.equal(run.status, 0, run.stderr);
     const line = (name) => run.stdout.split('\n').find((row) => row.split(/\s+/)[0] === name);
-    assert.match(line('grok') ?? '', / lanes=analyze \(set-lanes\) /, run.stdout);
-    assert.match(line('codex') ?? '', / lanes=analyze\/build\/chore /, run.stdout);
+    assert.match(line('lanesa') ?? '', / lanes=analyze \(set-lanes\) /, run.stdout);
+    assert.match(line('lanesb') ?? '', / lanes=analyze\/build\/chore /, run.stdout);
+    for (const real of ['grok', 'claude-code', 'codex', 'command-code']) assert.equal(line(real), undefined, `${real} is a real pool; no live meter may be read\n${run.stdout}`);
   } finally { f.cleanup(); }
 });
