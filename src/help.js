@@ -653,7 +653,7 @@ const strategyHoldText = rich({
   options: [
     { flag: '--until', desc: 'when the hold ends: an ISO date/time, or a duration from now (90m, 24h, 3d)' },
     { flag: '--reason', desc: 'why the pool is held, shown wherever the hold is' },
-    { flag: '--allow-pinned', desc: 'let a run that pins this pool (workflow goal --worker-pool, or a route naming the pool or its provider) use it during the hold' },
+    { flag: '--allow-pinned', desc: 'let a run that pins this pool (workflow goal --worker-pool, or a route naming the pool or its provider) use it during the hold; takes no value' },
     { flag: '--yes', desc: 'required approval' },
   ],
   safety: [

@@ -9,7 +9,9 @@
   the pool in `pools.use` or its provider in `providers.use` (`bullswarm run
   --use-provider command-code`). An avoid list (`--avoid-pool`,
   `--avoid-provider`) is not a pin, even when it leaves the held pool the
-  only one. The hold record stores `allowPinned` (also in `pools --json`),
+  only one. The flag takes no value (`--allow-pinned=true` is refused). An
+  allow-pinned hold stores `allowPinned: true` (also in `pools --json`); a
+  plain hold prints and stores exactly what it did before.
   `bullswarm pools` shows `held until <date> (<reason>) · pinned runs
   allowed`, and the reason on an unpinned pick that kept the pool out says
   the same. One rule (pool-limits.js `holdPins`) serves the router (R14),

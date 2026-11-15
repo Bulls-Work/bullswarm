@@ -27,7 +27,9 @@ export function activeHold(pool, now = Date.now()) {
     reason: typeof hold.reason === 'string' && hold.reason.trim() ? hold.reason.trim() : 'on hold',
     until: new Date(until).toISOString(),
     setAt: typeof hold.setAt === 'string' ? hold.setAt : null,
-    allowPinned: hold.allowPinned === true,
+    // Only an allow-pinned hold carries the key, so a plain hold reads
+    // exactly as it did before the flag existed.
+    ...(hold.allowPinned === true ? { allowPinned: true } : {}),
   };
 }
 
