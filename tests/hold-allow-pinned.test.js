@@ -19,7 +19,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { pickPool } from '../src/lib/route.js';
-import { activeHold } from '../src/lib/pool-limits.js';
+import { activeHold, operatorLimit } from '../src/lib/pool-limits.js';
 import { resolveRouteFilter } from '../src/workflow/step-route.js';
 import { previewStepPick } from '../src/workflow/pick-preview.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
@@ -46,9 +46,12 @@ const pools = (holdRecord) => [
 ];
 const routeOf = (route) => resolveRouteFilter({ attempts: [] }, { id: 'task', route }, pools(null));
 
-test('activeHold reports allowPinned, false for a plain hold', () => {
+test('activeHold reports allowPinned; a plain hold reads exactly as before, with no allowPinned key', () => {
   assert.equal(activeHold({ name: HELD, hold: hold({ allowPinned: true }) }, NOW).allowPinned, true);
-  assert.equal(activeHold({ name: HELD, hold: hold() }, NOW).allowPinned, false);
+  const before = { reason: 'fleet review', until: UNTIL, setAt: '2026-11-16T09:00:00.000Z' };
+  assert.deepEqual(activeHold({ name: HELD, hold: hold() }, NOW), before);
+  assert.deepEqual(activeHold({ name: HELD, hold: hold({ allowPinned: false }) }, NOW), before);
+  assert.deepEqual(operatorLimit({ name: HELD, hold: hold() }, NOW), { kind: 'hold', ...before });
 });
 
 test('an allow-pinned hold keeps the pool out of an unpinned pick, and the reason says pinned runs are allowed', () => {
@@ -231,12 +234,16 @@ test('CLI: hold --allow-pinned stores the flag, pools shows it, a plain re-hold 
     assert.equal(passes.status, 0, passes.stderr + passes.stdout);
 
     // A re-hold without the flag replaces the record: pins are blocked again.
+    // A plain hold prints, stores and lists exactly what it did before the
+    // flag existed: no allowPinned key anywhere.
     const plain = cli('strategy', 'hold', 'heldpool', '--until', '2h', '--reason', 'plain hold', '--yes');
     assert.equal(plain.status, 0, plain.stderr + plain.stdout);
-    assert.equal(stored().allowPinned, false);
+    assert.deepEqual(Object.keys(JSON.parse(plain.stdout)), ['action', 'pool', 'reason', 'until']);
+    assert.deepEqual(Object.keys(stored()).sort(), ['reason', 'setAt', 'until']);
     assert.equal(stored().reason, 'plain hold');
     assert.doesNotMatch(cli('pools').stdout, /pinned runs allowed/);
-    assert.equal(JSON.parse(cli('pools', '--json', '--pool', 'heldpool').stdout).pools[0].hold.allowPinned, false);
+    const plainJson = JSON.parse(cli('pools', '--json', '--pool', 'heldpool').stdout).pools[0].hold;
+    assert.equal('allowPinned' in plainJson, false, JSON.stringify(plainJson));
     const fails = validate();
     assert.notEqual(fails.status, 0, fails.stdout);
     assert.match(fails.stdout + fails.stderr, /heldpool is held until/);
@@ -244,5 +251,30 @@ test('CLI: hold --allow-pinned stores the flag, pools shows it, a plain re-hold 
     assert.equal(cli('strategy', 'unhold', 'heldpool', '--yes').status, 0);
     assert.equal(stored(), null);
     assert.equal(validate().status, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CLI: --allow-pinned takes no value; --allow-pinned=true is refused, not stored as a plain hold', () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const root = mkdtempSync(join(tmpdir(), 'bs-hold-pinned-value-'));
+  const home = join(root, 'home');
+  try {
+    const echo = JSON.parse(readFileSync(join(ROOT, 'src', 'providers', 'echo', 'connector.json'), 'utf8'));
+    delete echo.flags.testFixture;
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    writeFileSync(join(home, 'connectors', 'heldpool.json'), JSON.stringify({ ...echo, name: 'heldpool' }, null, 2));
+    const env = {
+      ...process.env, BULLSWARM_HOME: home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1',
+      BULLSWARM_DISABLE_CLAUDE_PROFILES: '1', BULLSWARM_METER_SNAPSHOT_DIR: '',
+    };
+    const cli = (...argv) => spawnSync(process.execPath, [join(ROOT, 'bin', 'bullswarm.js'), ...argv], { env, encoding: 'utf8', input: '' });
+    assert.equal(cli('setup', '--yes').status, 0);
+    const stored = () => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')).pools?.heldpool?.hold ?? null;
+    for (const typed of ['--allow-pinned=true', '--allow-pinned=yes', '--allow-pinned=false']) {
+      const refused = cli('strategy', 'hold', 'heldpool', '--until', '3h', '--reason', 'typed value', typed, '--yes');
+      assert.notEqual(refused.status, 0, `${typed} was accepted: ${refused.stdout}`);
+      assert.match(refused.stderr + refused.stdout, /--allow-pinned takes no value/);
+      assert.equal(stored(), null, `${typed} stored a hold`);
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
