@@ -162,6 +162,15 @@ export function runStepRequest(opts, { cwd = process.cwd(), answerSchema } = {})
   return { request };
 }
 
+/**
+ * The one stderr line a build run without --check gets before dispatch: it
+ * can only finish unproven. Null for analyze and chore, and with --check.
+ */
+export function runCheckHint(request) {
+  if (request.lane !== 'build' || request.checks?.length) return null;
+  return "hint: no --check, so this build can only finish unproven; add --check '<command>' (for example your test command) to prove it";
+}
+
 /** The one-step v3 program a run request stands for. */
 export function runStepProgram(request) {
   const step = {

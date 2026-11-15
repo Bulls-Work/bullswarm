@@ -34,7 +34,7 @@ Decide first, from the request itself (there is no classifier command):
 ## 2. One step: `bullswarm run`
 
 ```bash
-bullswarm run --lane=analyze --add-dir=<abs-dir> --prompt='<task>' --json
+bullswarm run --lane=build --add-dir=<abs-dir> --check='npm test' --prompt='<task>' --json
 ```
 
 Lanes: `analyze` reads, `build` changes files, `chore` makes mechanical
@@ -43,8 +43,8 @@ changes. Use `--task-file` for long text. Options you will use:
 - `--answer-schema <file>`: a JSON schema. The worker writes its answer as JSON
   to a file Bullswarm names, and the verdict carries the checked `answer` (a
   mismatch is failure kind `schema`).
-- `--check '<cmd>'`: a command Bullswarm runs after the worker (up to 5); exit 0 proves the step. Give a build run one.
-- `--no-retry`: one attempt. Without it the step gets its one automatic retry.
+- `--check '<cmd>'`: a command Bullswarm runs after the worker (up to 5); exit 0 proves the step. A build run without --check finishes unproven.
+- `--no-retry`: one attempt, not the default one retry.
 - `--avoid-pool`, `--use-provider`, `--avoid-provider`, `--model`: routing.
   `strategy set-free never --yes` stops free models being picked.
 - `--timeout <seconds>`: kill the worker after that long (`timeout after

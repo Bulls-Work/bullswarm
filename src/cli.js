@@ -24,7 +24,7 @@ import { attachForecast } from './lib/forecast.js';
 import {
   clearPoolLabel, poolLabel, poolLabelEntries, resolvePoolId, setPoolLabel, withPoolLabels,
 } from './lib/pool-labels.js';
-import { NO_CALLER_NOTICE, runStepProgram, runStepRequest } from './lib/run-step.js';
+import { NO_CALLER_NOTICE, runCheckHint, runStepProgram, runStepRequest } from './lib/run-step.js';
 import { normaliseProgramV3 } from './workflow/program-v3.js';
 import { meterSignInDead, meterSignInText } from './workflow/dispatch-pools.js';
 import { previewStepPick } from './workflow/pick-preview.js';
@@ -342,7 +342,9 @@ function cmdAssignments(opts) {
 // A one-step v3 workflow (0.37.0): src/lib/run-step.js reads the flags,
 // src/workflow/run-one-step.js runs the kernel, run-verdict.js prints.
 
-async function cmdRun(opts) {
+// `dependencies` lets tests stand in for strategy refresh, pool building and
+// runOneStep (and hand runOneStep its own dependencies); the CLI passes none.
+export async function cmdRun(opts, dependencies = {}) {
   const parsed = runStepRequest(opts);
   if (parsed.error) {
     console.error(parsed.error);
@@ -363,11 +365,13 @@ async function cmdRun(opts) {
     emitRun({ ok: false, failureKind: 'depth', why: err.message }, opts);
     return 1;
   }
+  const buildPools = dependencies.buildPools
+    ?? (() => buildPoolsLive(home, Date.now(), { getReadings: getAllMeterReadings }));
   let verdict;
   if (request.dryRun) {
     // A preview is a pure read (D3): no strategy refresh, no ledger entry, no
-    // decision log, no run folder.
-    const { pools } = await buildPoolsLive(home, Date.now(), { getReadings: getAllMeterReadings });
+    // decision log, no run folder. It dispatches nothing, so no --check hint.
+    const { pools } = await buildPools();
     const [action] = normaliseProgramV3(runStepProgram(request)).steps;
     verdict = await previewStepPick({
       action, pools, bullswarmDir: home, coreState: state, targetDir: request.targetDir, runReasoning: request.reasoning,
@@ -375,10 +379,17 @@ async function cmdRun(opts) {
     // The checks the run would prove itself by, after the worker.
     if (request.checks) verdict = { ...verdict, checks: request.checks };
   } else {
+    // A build without --check can only finish unproven: say so once, on
+    // stderr so --json stdout stays one object, before anything is dispatched.
+    const hint = runCheckHint(request);
+    if (hint) console.error(hint);
     // Only an explicitly approved strategy policy may change assignments.
-    await maybeRefreshStrategy(home);
-    const { pools } = await buildPoolsLive(home, Date.now(), { getReadings: getAllMeterReadings });
-    verdict = await runOneStep({ bullswarmDir: home, request, pools });
+    await (dependencies.refreshStrategy ?? maybeRefreshStrategy)(home);
+    const { pools } = await buildPools();
+    verdict = await (dependencies.runOneStep ?? runOneStep)({
+      bullswarmDir: home, request, pools,
+      ...(dependencies.stepDependencies ? { dependencies: dependencies.stepDependencies } : {}),
+    });
   }
   emitRun(verdict, opts);
   return verdict.ok ? 0 : 1;
