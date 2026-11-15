@@ -77,3 +77,9 @@ failed step.
   time from the next eval on, with the same 3 s budget: under load the wall
   clock measured the machine. It passes with 8 busy processes running;
   `--check-kits` still gives fixture 0/141, reference 141/141.
+- 2026-11-15: a stalled attempt is failure kind `stalled`, or (older attempts
+  with no kind) one whose reason uses a stall limit's wording. Before this, the
+  pattern `no file change` also matched not-produced attempts ("no file
+  changed"), so the 2026-11-15 window first showed 4 stalled runs (23
+  attempts) that were really not-produced failures. The 2026-10-31 baseline
+  had 0 stalled runs either way.

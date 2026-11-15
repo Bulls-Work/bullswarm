@@ -83,7 +83,11 @@ const attemptOutput = (attempt) => {
   return t ? (t.output ?? 0) + (t.reasoning ?? 0) : null;
 };
 const attemptUsd = (attempt) => attempt?.usage?.api?.usd ?? null;
-export const stalledAttempt = (attempt) => attempt?.failureKind === 'stalled' || /\bstall|no file change|silence/i.test(String(attempt?.why ?? ''));
+// A stall is failure kind stalled. Older attempts without a kind are read from
+// the stall limits' own wording ("no file change for <N>s", "stall <N>s",
+// silence). A not-produced attempt ("no file changed") is not a stall.
+export const stalledAttempt = (attempt) => attempt?.failureKind === 'stalled'
+  || (attempt?.failureKind == null && /\bstall|no file change for|silence/i.test(String(attempt?.why ?? '')));
 
 function loadRuns(home, fromMs, toMs) {
   const root = join(home, 'workflows');
