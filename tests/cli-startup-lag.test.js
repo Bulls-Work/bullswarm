@@ -170,3 +170,147 @@ test('J.3: migrateTestFixturePools skips parsing state.json once the lightweight
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('J.4: decisionLog overflows into append-only archive and all readers see archive + live', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-lag-j4-'));
+  try {
+    const stateMod = await import('../src/lib/state.js');
+    const { loadState, updateState, DECISION_LOG_LIVE_LIMIT, decisionLogArchivePath, readDecisionLog } = stateMod;
+    const { expectedMinutesFor, workerMinutesForPool } = await import('../src/lib/spend.js');
+    const { attachForecast } = await import('../src/lib/forecast.js');
+    const { rungRecord } = await import('../src/lib/strategy.js');
+    const { listTasks } = await import('../src/lib/tasks.js');
+    const { readLegacyTaskRecords } = await import('../src/workflow/metrics-legacy.js');
+    const { repriceRuns } = await import('../src/workflow/reprice.js');
+
+    assert.equal(typeof DECISION_LOG_LIVE_LIMIT, 'number');
+    assert.equal(typeof decisionLogArchivePath, 'function');
+    assert.equal(typeof readDecisionLog, 'function');
+
+    mkdirSync(join(home, 'runs'), { recursive: true });
+    const archivedOut = join(home, 'runs', 'out-archived-1.md');
+    writeFileSync(archivedOut, '## Completed\n\nVerified concrete result from archived single task.\n');
+
+    const baseMs = Date.parse('2026-11-10T00:00:00.000Z');
+    const totalInitial = DECISION_LOG_LIVE_LIMIT + 50;
+    const rows = Array.from({ length: totalInitial }, (_, i) => {
+      const startMs = baseMs + i * 60_000;
+      const endMs = startMs + 120_000;
+      return {
+        id: `task-row-${i}`,
+        kind: i === 0 ? 'run' : 'workflow',
+        source: i === 0 ? 'run' : 'workflow',
+        ts: new Date(endMs).toISOString(),
+        startedAt: new Date(startMs).toISOString(),
+        endedAt: new Date(endMs).toISOString(),
+        lane: 'build',
+        effort: 'high',
+        picked: i < 10 ? 'agy' : 'codex',
+        pool: i < 10 ? 'agy' : 'codex',
+        model: i < 10 ? 'gemini-4-carbon' : 'gpt-5',
+        ok: true,
+        wallSec: 120,
+        why: 'paced'.padEnd(200, '.'),
+        ...(i === 0 ? {
+          outFile: archivedOut,
+          cwd: ROOT,
+          project: 'bullswarm',
+          usage: { tokens: { standardRead: 100, output: 50, totalKnown: 150 }, tokenSource: 'estimated' },
+        } : {}),
+      };
+    });
+
+    updateState(home, (s) => {
+      s.pools = { agy: { enabled: true }, codex: { enabled: true } };
+      s.config.testFixturesMigrated = true;
+      s.decisionLog = rows;
+    });
+
+    const liveAfterFirst = loadState(home);
+    assert.equal(liveAfterFirst.decisionLog.length, DECISION_LOG_LIVE_LIMIT, 'live state.json decisionLog is capped');
+    const archivePath = decisionLogArchivePath(home);
+    assert.equal(existsSync(archivePath), true, 'archive file created');
+    const archiveLines1 = readFileSync(archivePath, 'utf8').trim().split('\n');
+    assert.equal(archiveLines1.length, 50, 'older 50 rows moved to archive');
+
+    // Push 5 more rows: archive appends 5 more without duplicating prior 50.
+    updateState(home, (s) => {
+      for (let j = 0; j < 5; j++) {
+        const idx = totalInitial + j;
+        const startMs = baseMs + idx * 60_000;
+        const endMs = startMs + 120_000;
+        s.decisionLog.push({
+          id: `task-row-${idx}`,
+          kind: 'workflow',
+          ts: new Date(endMs).toISOString(),
+          startedAt: new Date(startMs).toISOString(),
+          endedAt: new Date(endMs).toISOString(),
+          lane: 'build',
+          effort: 'high',
+          picked: 'codex',
+          ok: true,
+          wallSec: 120,
+        });
+      }
+    });
+    assert.equal(loadState(home).decisionLog.length, DECISION_LOG_LIVE_LIMIT);
+    const archiveLines2 = readFileSync(archivePath, 'utf8').trim().split('\n');
+    assert.equal(archiveLines2.length, 55, 'append-only archive grew by 5 rows');
+
+    const combined = readDecisionLog(home);
+    assert.equal(combined.length, totalInitial + 5);
+    assert.equal(combined[0].id, 'task-row-0');
+    assert.equal(combined.at(-1).id, `task-row-${totalInitial + 4}`);
+
+    // Readers see the archived rows (e.g. 'agy' only appears in the archived first 10 rows!):
+    const stateForReaders = loadState(home);
+    const agyMinutes = workerMinutesForPool('agy', baseMs, baseMs + 20 * 60_000, {
+      decisionLog: stateForReaders.decisionLog,
+    });
+    assert.equal(agyMinutes, 20, 'spend workerMinutesForPool includes archived rows');
+    const expected = expectedMinutesFor({ lane: 'build', effort: 'high' }, {
+      decisionLog: stateForReaders.decisionLog,
+    });
+    assert.equal(expected.samples, totalInitial + 5, 'expectedMinutesFor sees archived + live samples');
+    const agyRung = rungRecord(stateForReaders.decisionLog, 'agy', 'high');
+    assert.equal(agyRung.dispatches, 10, 'strategy rungRecord scorecard sees archived rows');
+
+    const pools = [{ name: 'agy', enabled: true, pacingWindow: 'weekly' }];
+    attachForecast(pools, home, { now: baseMs + 30 * 60_000, decisionLog: stateForReaders.decisionLog });
+    assert.ok(pools[0].spend, 'attachForecast works with archived decisionLog');
+
+    // Tasks & legacy metrics readers find the archived 'run' entry (row 0):
+    const tasks = listTasks(home);
+    assert.equal(tasks.finished.length, 1);
+    assert.equal(tasks.finished[0].id, 'task-row-0');
+
+    const legacyRecords = readLegacyTaskRecords(home);
+    assert.equal(legacyRecords.length, 1);
+    assert.equal(legacyRecords[0].runId, 'task:task-row-0');
+
+    // Reprice scans and updates the archived single-task row:
+    const repriced = repriceRuns({
+      bullswarmDir: home,
+      sinceMs: null,
+      apply: true,
+      connectors: { agy: { name: 'agy' } },
+      readTranscriptUsage: () => ({
+        confidence: 'exact',
+        usage: { tokens: { standardRead: 400, output: 100, totalKnown: 500 }, tokenSource: 'transcript', costUsd: 0.01 },
+      }),
+    });
+    assert.equal(repriced.scannedTasks, 1, 'reprice scanned archived single task');
+    assert.equal(repriced.changedTasks, 1, 'reprice updated archived single task');
+    assert.equal(readDecisionLog(home)[0].usage.tokens.totalKnown, 500, 'archived row updated on disk');
+
+    // CLI health and workflow task show see archived entries too:
+    const health = runCli(home, ['health', '--json']);
+    assert.equal(health.status, 0, health.stderr);
+    assert.equal(JSON.parse(health.stdout).decisionLogSize, totalInitial + 5);
+
+    const shown = runCli(home, ['workflow', 'task', 'show', 'task-row-0', '--json']);
+    assert.equal(shown.status, 0, shown.stderr);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
