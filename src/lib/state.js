@@ -18,7 +18,7 @@
 //       (audit finding D5, 2026-09-09).
 
 import {
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
+  closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -433,6 +433,55 @@ export function saveState(bullswarmDir, state) {
   );
 }
 
+/**
+ * A state.json that exists but is not a JSON object (truncated, one bad byte,
+ * an array, null) reads as defaults, so saving over it would erase every pool
+ * record, log row and setting. Called under the lock before a write: move the
+ * file aside as state.json.unreadable-<time> and say so. If the file cannot
+ * be opened, or the move fails, throw, so nothing is written over it. Readers never call this.
+ */
+function keepUnreadableState(bullswarmDir) {
+  const path = join(bullswarmDir, 'state.json');
+  if (!existsSync(path)) return;
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    // Not a damaged file but one that cannot be opened (permissions, a
+    // directory): moving it aside would hide it, so refuse the write.
+    throw new Error(`state.json at ${path} could not be opened: ${err.code ?? err.message}`);
+  }
+  let reason = null;
+  try {
+    const raw = JSON.parse(text);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      reason = `expected a JSON object, found ${raw === null ? 'null' : Array.isArray(raw) ? 'an array' : typeof raw}`;
+    }
+  } catch (err) {
+    reason = err.message;
+  }
+  if (reason === null) return;
+  const stamp = new Date().toISOString().replaceAll(':', '-');
+  // link + unlink rather than rename: link fails on a name already taken, so
+  // an earlier unreadable copy with the same timestamp is never replaced.
+  let name = null;
+  try {
+    for (let n = 1; name === null; n += 1) {
+      const candidate = `state.json.unreadable-${stamp}${n > 1 ? `-${n}` : ''}`;
+      try {
+        linkSync(path, join(bullswarmDir, candidate));
+        name = candidate;
+      } catch (err) {
+        if (err.code !== 'EEXIST' || n >= 100) throw err;
+      }
+    }
+    unlinkSync(path);
+  } catch (err) {
+    throw new Error(`state.json at ${path} could not be read (${reason}) and could not be moved aside: ${err.message}`);
+  }
+  process.stderr.write(`bullswarm: state.json could not be read (${reason}); kept it as ${name} and started a fresh state\n`);
+}
+
 // --- locked read-modify-write (S5) ----------------------------------------
 
 /** How long a lock file may exist before a waiter declares its holder dead. */
@@ -511,6 +560,7 @@ export function releaseStateLock(path) {
 export function updateState(bullswarmDir, mutator, opts = {}) {
   const lock = acquireStateLock(bullswarmDir, opts);
   try {
+    keepUnreadableState(bullswarmDir);
     // The caller already owns the S5 lock. State migration must therefore run
     // inline instead of trying to acquire the same lock a second time.
     if (homeMigrationNeeded(bullswarmDir)) migrateHomeLocked(bullswarmDir);
