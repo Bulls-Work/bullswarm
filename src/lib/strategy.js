@@ -1130,6 +1130,7 @@ export function seedNewPoolRungs(state, report, candidatePools, {
     const pool = typeof candidate === 'string' ? candidate : candidate.name;
     const suggestions = report?.providerSuggestions?.[pool];
     if (!suggestions) continue;
+    const discovery = report?.discoveries?.[pool];
     const rungs = {};
     const levels = {};
     for (const tier of configured) {
@@ -1143,7 +1144,16 @@ export function seedNewPoolRungs(state, report, candidatePools, {
         levels[tier] = { level: recommended.reasoning, model, why: recommended.why ?? null };
       }
     }
-    if (!Object.keys(rungs).length) continue;
+    if (!Object.keys(rungs).length) {
+      // Skip only when the pool could not be evaluated (spent window or failed
+      // discovery with no fallback models); a pool that genuinely has no pick on
+      // `configuredTiers` (e.g. agy:claude when only `high` is configured) still
+      // records `rungs: {}` so maybeRefreshStrategy does not re-discover it forever.
+      if ((typeof candidate === 'object' && windowSpent(candidate))
+        || (discovery && discovery.error && !(discovery.models ?? []).length)) {
+        continue;
+      }
+    }
     if (Object.keys(levels).length && !state.strategy.reasoning?.pools?.[pool]) {
       const marks = getRecommendedReasoning(state.strategy);
       for (const [tier, info] of Object.entries(levels)) {
@@ -1185,7 +1195,8 @@ export function applyNewPoolSeeds(state, {
   for (const pool of pools ?? []) {
     const name = typeof pool === 'string' ? pool : pool?.name;
     if (!name || !discoveries?.[name]) continue;
-    if (seeded[name] || state.strategy?.rungSeeds?.[name]) {
+    const enabledPool = typeof pool !== 'object' || (pool?.enabled !== false && pool?.testFixture !== true);
+    if (seeded[name] || state.strategy?.rungSeeds?.[name] || enabledPool) {
       state.strategy ??= {};
       state.strategy.lastReport ??= {};
       if (!state.strategy.lastReport.discoveries || typeof state.strategy.lastReport.discoveries !== 'object') {
