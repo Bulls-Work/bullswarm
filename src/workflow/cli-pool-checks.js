@@ -32,7 +32,7 @@ export function pinnedPoolIssues(doc, program, pools, { now = Date.now() } = {})
       return;
     }
     const capable = prepareV2DispatchPools(pools, action, effort, {
-      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool,
+      preferredModel: action?.model ?? routing.model ?? routing.preferredModel ?? null, strictPool,
     });
     if (!capable.length) {
       issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
@@ -116,9 +116,12 @@ export function programRoutes(actions) {
 export function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR()), state = null, { recordedWork = false, now = Date.now() } = {}) {
   if (!programRoutes(actions) || !Array.isArray(pools)) return [];
   const routing = doc?.config?.workerRouting ?? {};
-  const preferredModel = routing.model ?? routing.preferredModel ?? null;
+  const runModel = routing.model ?? routing.preferredModel ?? null;
   // Only pools that serve the step's lane can run it (strategy set-lanes or the connector).
-  const preparePools = (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options })
+  const preparePools = (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', {
+    preferredModel: action?.model ?? runModel,
+    ...options,
+  })
     .filter((pool) => !action?.lane || servesLane(pool, action.lane));
   const issues = routeIssuesForPools({ actions }, pools, {
     runPin: routing.strictPool ?? routing.pool ?? null,

@@ -20,6 +20,7 @@ import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-valida
 import { formatMoney } from './usage-basis.js';
 import { withPoolEnv } from './worker-argv.js';
 import { lanesOf } from './pool-lanes.js';
+import { POOL_TOGGLE_HISTORY, toggleActor } from './pool-toggle.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -1013,35 +1014,7 @@ function normalizedDiscoveredModel(entry) {
   return id ? { ...entry, id } : null;
 }
 
-export async function discoverConnectorModels(connector, {
-  executor = defaultExecutor, provider = null, providerExecutor = null,
-} = {}) {
-  const discovery = connector.modelDiscovery ?? null;
-  let discovered = [];
-  let error = null;
-  let command = discovery?.cmd ?? null;
-  if (typeof provider?.module?.discoverModels === 'function') {
-    try {
-      const result = await provider.module.discoverModels(connector, {
-        ...(provider.ctx ?? {}),
-        ...(providerExecutor ? { executor: providerExecutor } : {}),
-      });
-      discovered = (result?.models ?? []).map(normalizedDiscoveredModel).filter(Boolean);
-      command = result?.command ?? command;
-    } catch (err) {
-      error = err.message;
-    }
-  } else if (discovery?.cmd?.length) {
-    try {
-      const output = await executor(discovery.cmd[0], discovery.cmd.slice(1), {
-        timeoutMs: Number(discovery.timeoutMs ?? 20_000),
-        env: withPoolEnv(process.env, connector),
-      });
-      discovered = parseDiscoveredModels(output, discovery).map((id) => ({ id }));
-    } catch (err) {
-      error = err.message;
-    }
-  }
+function rankDiscoveredModels(connector, discovered, command, error) {
   const configured = configuredModel(connector);
   const fallback = discovered.length ? [] : unique([
     ...(connector.knownModels ?? []), configured,
@@ -1083,6 +1056,117 @@ export async function discoverConnectorModels(connector, {
     error,
     models,
   };
+}
+
+/** Synchronous fallback discovery from a connector's own knownModels + model. */
+export function knownModelsDiscovery(connector) {
+  return rankDiscoveredModels(connector, [], connector?.modelDiscovery?.cmd ?? null, null);
+}
+
+/**
+ * True when `pool` is an enabled non-fixture pool that a home with existing
+ * tier selections (`configuredTiers`) has never seen or configured yet.
+ */
+export function isUnseededNewPool(strategy = {}, pool) {
+  const name = typeof pool === 'string' ? pool : pool?.name;
+  if (!name || !(strategy?.configuredTiers ?? []).length) return false;
+  if (typeof pool === 'object' && (pool?.enabled === false || pool?.testFixture === true)) return false;
+  if (Object.keys(normalizeModelTiers(strategy?.modelTiers)[name] ?? {}).length) return false;
+  if ((strategy?.disabledModels?.[name] ?? []).length) return false;
+  if (strategy?.lastReport?.discoveries && Object.prototype.hasOwnProperty.call(strategy.lastReport.discoveries, name)) return false;
+  if (strategy?.rungSeeds?.[name]) return false;
+  return true;
+}
+
+/**
+ * Fill `state.strategy.modelTiers[pool]` from `report.providerSuggestions[pool]`
+ * for pools new to a home that already holds configured tier picks, without
+ * touching any other pool's approved picks, and record who/when/why under
+ * `state.strategy.rungSeeds[pool]`.
+ */
+export function seedNewPoolRungs(state, report, candidatePools, {
+  via, reason = null, now = Date.now(), by = toggleActor(),
+} = {}) {
+  state.strategy ??= {};
+  const configured = STRATEGY_TIERS.filter((tier) => (state.strategy?.configuredTiers ?? []).includes(tier));
+  if (!configured.length) return {};
+  const seeded = {};
+  for (const candidate of candidatePools ?? []) {
+    if (!isUnseededNewPool(state.strategy, candidate)) continue;
+    const pool = typeof candidate === 'string' ? candidate : candidate.name;
+    const suggestions = report?.providerSuggestions?.[pool];
+    if (!suggestions) continue;
+    const rungs = {};
+    const levels = {};
+    for (const tier of configured) {
+      const recommended = suggestions[tier]?.recommended ?? null;
+      const model = recommended?.model ?? null;
+      if (!model) continue;
+      const existing = state.strategy.modelTiers?.[pool]?.[model] ?? [];
+      setModelTierSelection(state.strategy, pool, model, [...existing, tier]);
+      rungs[tier] = model;
+      if (isReasoningLevel(recommended.reasoning) && recommended.reasoning !== 'default') {
+        levels[tier] = { level: recommended.reasoning, model, why: recommended.why ?? null };
+      }
+    }
+    if (!Object.keys(rungs).length) continue;
+    if (Object.keys(levels).length && !state.strategy.reasoning?.pools?.[pool]) {
+      const marks = getRecommendedReasoning(state.strategy);
+      for (const [tier, info] of Object.entries(levels)) {
+        setStrategyReasoning(state.strategy, { pool, tier, level: info.level });
+        (marks[pool] ??= {})[tier] = info;
+      }
+      storeRecommendedReasoning(state.strategy, marks);
+    }
+    const record = {
+      rungs,
+      at: new Date(now).toISOString(),
+      by,
+      reason: typeof reason === 'string' && reason.trim() ? reason.trim() : null,
+      via,
+    };
+    state.strategy.rungSeeds ??= {};
+    const previous = state.strategy.rungSeeds[pool];
+    const history = Array.isArray(previous?.history) ? previous.history : [];
+    state.strategy.rungSeeds[pool] = {
+      latest: record,
+      history: [...history, record].slice(-POOL_TOGGLE_HISTORY),
+    };
+    seeded[pool] = record;
+  }
+  return seeded;
+}
+
+export async function discoverConnectorModels(connector, {
+  executor = defaultExecutor, provider = null, providerExecutor = null,
+} = {}) {
+  const discovery = connector.modelDiscovery ?? null;
+  let discovered = [];
+  let error = null;
+  let command = discovery?.cmd ?? null;
+  if (typeof provider?.module?.discoverModels === 'function') {
+    try {
+      const result = await provider.module.discoverModels(connector, {
+        ...(provider.ctx ?? {}),
+        ...(providerExecutor ? { executor: providerExecutor } : {}),
+      });
+      discovered = (result?.models ?? []).map(normalizedDiscoveredModel).filter(Boolean);
+      command = result?.command ?? command;
+    } catch (err) {
+      error = err.message;
+    }
+  } else if (discovery?.cmd?.length) {
+    try {
+      const output = await executor(discovery.cmd[0], discovery.cmd.slice(1), {
+        timeoutMs: Number(discovery.timeoutMs ?? 20_000),
+        env: withPoolEnv(process.env, connector),
+      });
+      discovered = parseDiscoveredModels(output, discovery).map((id) => ({ id }));
+    } catch (err) {
+      error = err.message;
+    }
+  }
+  return rankDiscoveredModels(connector, discovered, command, error);
 }
 
 function subscriptionView(pool, state) {

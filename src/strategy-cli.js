@@ -17,6 +17,7 @@ import {
   sortLegacyPins, dropStrategyReport, releaseAppliedPins, pinRung,
   FREE_MODEL_SETTINGS, freeModelsBanned, freeModelsView, setFreeModels, resetFreeModels,
   planExclusionsForPool, clearPlanExcludedModels,
+  isUnseededNewPool, seedNewPoolRungs,
 } from './lib/strategy.js';
 import {
   connectorReasoningLevels, isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel,
@@ -441,15 +442,15 @@ function providerLabel(name, providers, bullswarmDir) {
 }
 
 export async function refreshStrategy(bullswarmDir, {
-  executor, getReadings = getAllMeterReadings, onProgress = () => {},
+  executor, providerExecutors, loaderOpts = PACKAGED, getReadings = getAllMeterReadings, onProgress = () => {},
   useOpenRouter = false, openRouterCatalog = null, openRouterLoader = loadOpenRouterCatalog,
 } = {}) {
   const state = loadState(bullswarmDir);
-  const { connectors, providers } = loadPoolProviders(bullswarmDir, PACKAGED);
+  const { connectors, providers } = loadPoolProviders(bullswarmDir, loaderOpts);
   const providerCount = Object.keys(connectors).length;
   onProgress(`[0/${providerCount}] Preparing provider usage checks`);
   const { pools } = await buildPoolsLive(bullswarmDir, Date.now(), {
-    ...PACKAGED,
+    ...loaderOpts,
     getReadings,
     onProviderProgress: ({ stage, pool, index, completed, total }) => {
       onProgress(stage === 'start'
@@ -461,6 +462,7 @@ export async function refreshStrategy(bullswarmDir, {
   const discoveries = await discoverAllModels(connectors, {
     providers,
     ...(executor ? { executor } : {}),
+    ...(providerExecutors ? { providerExecutors } : {}),
   });
   let externalCatalog = openRouterCatalog;
   if (useOpenRouter && !externalCatalog) {
@@ -474,12 +476,17 @@ export async function refreshStrategy(bullswarmDir, {
   const report = resolveReportPrices(built, state);
   // Under the lock (S5): discovery and live meter calls above take seconds, so
   // the copy loaded at the top of this function is stale by now. Only the two
-  // report fields are written, onto a FRESH load — a `strategy set-provider`
+  // report fields (plus initial rungs for any pool brand-new to an already
+  // configured home) are written, onto a FRESH load — a `strategy set-provider`
   // that landed meanwhile survives. The report being replaced is the only
   // record of which pins an earlier apply wrote, so those are sorted first.
   updateState(bullswarmDir, (fresh) => {
     fresh.strategy ??= {};
     sortLegacyPins(fresh.strategy);
+    seedNewPoolRungs(fresh, report, pools, {
+      via: 'strategy-refresh',
+      reason: 'new pool seeded with provider suggestions on first refresh',
+    });
     for (const tier of STRATEGY_TIERS) {
       if (report.suggestions?.[tier]) report.suggestions[tier].assignment = fresh.strategy.assignments?.[tier] ?? null;
     }
@@ -585,8 +592,8 @@ export async function loadRungEvidence(bullswarmDir) {
 }
 
 /** Every rung, or one pool's rungs. Read-only: no discovery, no meter calls. */
-export async function rungRows(bullswarmDir, { pool = null } = {}) {
-  const { state, connectors, pools } = buildPools(bullswarmDir, Date.now(), {}, PACKAGED);
+export async function rungRows(bullswarmDir, { pool = null, loaderOpts = PACKAGED } = {}) {
+  const { state, connectors, pools } = buildPools(bullswarmDir, Date.now(), {}, loaderOpts);
   if (pool != null && !connectors[pool]) throw new Error(`unknown pool "${pool}"`);
   return rungsFor({
     pools,
@@ -1015,27 +1022,63 @@ export function applySummaryLines(result, { refreshHours = result?.policy?.refre
 export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
   const state = loadState(bullswarmDir);
   const policy = state.strategy?.policy ?? {};
-  if (policy.autoApplyRecommendations !== true) return null;
+  const loaderOpts = opts.loaderOpts ?? PACKAGED;
+  const hours = refreshHoursValue(policy.refreshHours);
+  const captured = Date.parse(state.strategy?.lastRefreshedAt ?? '');
+  const stale = policy.autoApplyRecommendations === true
+    && (!Number.isFinite(captured) || (Date.now() - captured) >= hours * 3600_000);
+  if (stale) {
+    try {
+      const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true, ...opts, loaderOpts });
+      return {
+        report,
+        ...applyStrategyRecommendations(bullswarmDir, report, { refreshHours: hours }),
+      };
+    } catch (err) {
+      // Discovery is advisory and must never turn an otherwise routable run into
+      // an outage. Keep the last approved assignments and expose the failure.
+      const failed = updateState(bullswarmDir, (fresh) => {
+        fresh.strategy ??= {};
+        fresh.strategy.policy ??= policy;
+        fresh.strategy.policy.lastRefreshErrorAt = new Date().toISOString();
+        fresh.strategy.policy.lastRefreshError = err.message;
+      });
+      return { error: err.message, retainedAssignments: failed.strategy.assignments ?? {} };
+    }
+  }
+  // Even with auto-apply off or a fresh report, a pool brand-new to an already
+  // configured home gets its own suggested picks once without touching any
+  // other pool's approved picks.
+  if (!(state.strategy?.configuredTiers ?? []).length) return null;
   try {
-    const hours = refreshHoursValue(policy.refreshHours);
-    const captured = Date.parse(state.strategy?.lastRefreshedAt ?? '');
-    const stale = !Number.isFinite(captured) || (Date.now() - captured) >= hours * 3600_000;
-    if (!stale) return null;
-    const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true, ...opts });
-    return {
-      report,
-      ...applyStrategyRecommendations(bullswarmDir, report, { refreshHours: hours }),
-    };
-  } catch (err) {
-    // Discovery is advisory and must never turn an otherwise routable run into
-    // an outage. Keep the last approved assignments and expose the failure.
-    const failed = updateState(bullswarmDir, (state) => {
-      state.strategy ??= {};
-      state.strategy.policy ??= policy;
-      state.strategy.policy.lastRefreshErrorAt = new Date().toISOString();
-      state.strategy.policy.lastRefreshError = err.message;
+    const { pools } = buildPools(bullswarmDir, Date.now(), {}, loaderOpts);
+    const newPools = pools.filter((pool) => isUnseededNewPool(state.strategy, pool));
+    if (!newPools.length) return null;
+    const { connectors, providers } = loadPoolProviders(bullswarmDir, loaderOpts);
+    const onlyConnectors = Object.fromEntries(
+      newPools.map((pool) => [pool.name, connectors[pool.name]]).filter(([, conn]) => conn),
+    );
+    const discoveries = await discoverAllModels(onlyConnectors, {
+      providers,
+      ...(opts.executor ? { executor: opts.executor } : {}),
+      ...(opts.providerExecutors ? { providerExecutors: opts.providerExecutors } : {}),
     });
-    return { error: err.message, retainedAssignments: failed.strategy.assignments ?? {} };
+    const report = buildStrategy({ connectors: onlyConnectors, pools: newPools, state, discoveries });
+    let seeded = {};
+    updateState(bullswarmDir, (fresh) => {
+      seeded = seedNewPoolRungs(fresh, report, newPools, {
+        via: 'auto-refresh-new-pool',
+        reason: 'new pool seeded with provider suggestions on first discovery',
+      });
+      if (Object.keys(seeded).length && fresh.strategy?.lastReport?.discoveries && typeof fresh.strategy.lastReport.discoveries === 'object') {
+        for (const name of Object.keys(seeded)) {
+          if (discoveries[name]) fresh.strategy.lastReport.discoveries[name] = discoveries[name];
+        }
+      }
+    });
+    return Object.keys(seeded).length ? { seeded, report } : null;
+  } catch {
+    return null;
   }
 }
 

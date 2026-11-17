@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 import { buildPools } from '../src/lib/config.js';
 import { loadState } from '../src/lib/state.js';
+import { MeterCache } from '../src/meters/framework.js';
+import { snapshot } from '../src/provider-kit.js';
 import * as setup from '../src/setup.js';
 import { maybeRefreshStrategy, refreshStrategy, rungRows } from '../src/strategy-cli.js';
 import { pinnedPoolIssues, routePoolIssues } from '../src/workflow/cli-pool-checks.js';
@@ -27,6 +29,7 @@ const NOW = Date.parse('2026-11-18T00:00:00.000Z');
 function loaderFor(home) {
   return {
     homeDir: home,
+    packaged: true,
     accounts: [],
     enabled: [],
     dirs: {
@@ -175,6 +178,19 @@ test('G: maybeRefreshStrategy seeds new agy pools on an upgraded home without to
   const afterPools = buildPools(home, NOW, {}, loaderOpts).pools;
   assert.deepEqual(routePoolIssues(routedAction, afterPools, { config: {} }, {}), []);
 
+  // Prime fresh meter cache files and strip PATH to node's directory so the
+  // CLI child process never spawns real agy or claude or touches the network.
+  const cache = new MeterCache(join(home, 'meters'));
+  for (const pool of ['agy', 'agy:claude']) {
+    cache.put(pool, snapshot({
+      pool,
+      five_hour: { utilization: 5, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+      seven_day: { utilization: 10, resets_at: new Date(Date.now() + 86_400_000).toISOString() },
+      monthly: null,
+      plan_type: null,
+    }));
+  }
+
   const workspace = mkdtempSync(join(tmpdir(), 'bs-agy-ws-'));
   t.after(() => rmSync(workspace, { recursive: true, force: true }));
   const planFile = join(workspace, 'plan.json');
@@ -194,7 +210,12 @@ test('G: maybeRefreshStrategy seeds new agy pools on an upgraded home without to
     [BIN, 'workflow', 'plan', 'validate', 'Write out.txt', '--program', planFile, '--cwd', workspace, '--json'],
     {
       encoding: 'utf8',
-      env: { ...process.env, BULLSWARM_HOME: home, BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
+      env: {
+        HOME: home,
+        PATH: dirname(process.execPath),
+        BULLSWARM_HOME: home,
+        BULLSWARM_DISABLE_CLAUDE_PROFILES: '1',
+      },
     },
   );
   assert.equal(validated.status, 0, validated.stderr + validated.stdout);

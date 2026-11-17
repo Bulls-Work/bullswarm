@@ -23,9 +23,9 @@ import { loadState, updateState } from './lib/state.js';
 import { setPoolEnabled } from './lib/pool-toggle.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
-  getRecommendedReasoning,
+  getRecommendedReasoning, buildStrategy, knownModelsDiscovery, isUnseededNewPool, seedNewPoolRungs,
 } from './lib/strategy.js';
-import { buildPools, loadPoolProviders } from './lib/config.js';
+import { buildPools, loadConnectors, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
 import { installIntegration, retireLegacyOffload } from './integrate.js';
 import { packagedConnectorSources, syncConnectorCopies } from './lib/connector-copies.js';
@@ -427,7 +427,7 @@ export function providerPoolNames(entry) {
 }
 
 // `discover` stands in for discoverConnectors (tests: no PATH or home scan).
-export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverConnectors } = {}) {
+export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverConnectors, loaderOpts = { packaged: true } } = {}) {
   const discovered = discover(bullswarmDir);
   const repaired = repairConnectors(bullswarmDir);
 
@@ -448,6 +448,7 @@ export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverCo
     state.pools ??= {};
     state.config ??= {};
     state.config.testFixturesMigrated = true;
+    const source = AUTO_SETUP_SOURCES[reason] ?? reason;
     // A pool this run turns on or off is recorded (pool-toggle.js), with
     // why: a re-run that no longer finds a CLI disables its pool here.
     // Every pool of a provider follows it: a sibling pool (agy:claude) is
@@ -460,10 +461,40 @@ export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverCo
       for (const pool of providerPoolNames(d)) {
         setPoolEnabled(state, pool, on, {
           via: 'auto-setup',
-          reason: `${AUTO_SETUP_SOURCES[reason] ?? reason}: ${why}`,
+          reason: `${source}: ${why}`,
           onlyIfChanged: true,
           defaultEnabled: d.testFixture !== true,
         });
+      }
+    }
+    if ((state.strategy?.configuredTiers ?? []).length) {
+      const connectors = loadConnectors(bullswarmDir, loaderOpts);
+      const candidates = [...enabled]
+        .filter((name) => connectors[name] && isUnseededNewPool(state.strategy, {
+          name, enabled: true, testFixture: connectors[name].flags?.testFixture === true,
+        }));
+      if (candidates.length) {
+        const onlyConnectors = Object.fromEntries(candidates.map((name) => [name, connectors[name]]));
+        const discoveries = Object.fromEntries(candidates.map((name) => [name, knownModelsDiscovery(connectors[name])]));
+        const poolList = candidates.map((name) => ({
+          name,
+          connector: connectors[name],
+          enabled: true,
+          pace: 0,
+          costRank: connectors[name].costRank ?? 5,
+          lanes: connectors[name].lanes ?? [],
+          capabilities: connectors[name].capabilities ?? [],
+        }));
+        const report = buildStrategy({ connectors: onlyConnectors, pools: poolList, state, discoveries });
+        const seeded = seedNewPoolRungs(state, report, poolList, {
+          via: 'auto-setup',
+          reason: `${source}: new pool seeded with provider suggestions`,
+        });
+        if (Object.keys(seeded).length && state.strategy?.lastReport?.discoveries && typeof state.strategy.lastReport.discoveries === 'object') {
+          for (const name of Object.keys(seeded)) {
+            if (discoveries[name]) state.strategy.lastReport.discoveries[name] = discoveries[name];
+          }
+        }
       }
     }
   });

@@ -14,6 +14,8 @@
 
 - Claude Code mod UI and `agy:claude` rates: the mod keeps `agy:claude` whole instead of shortening it to `agy:c` (while `claude-code:<account>` still shortens to `claude-code:<letter>`), renders pre-response tool steps on the Step page without treating the `result` envelope as a tool row, and prices `claude-opus-4-6-thinking` and `claude-sonnet-4-6` on `agy:claude` from Anthropic's published rate card (`gpt-oss-120b-medium` stays unpriced).
 
+- Upgrade path for new pools and step-level `model` validation: a pool that appears for the first time on a home whose strategy already holds tier selections gets its provider's suggested picks automatically on first discovery or refresh without touching other pools' approved picks, recorded under `strategy.rungSeeds` with who, when and why; `workflow plan validate` and route/pin checks also honour a step's own `model` when the pool's tier selection is empty.
+
 ## 0.38.22 — pool lanes setting, hold --allow-pinned, starting runs are not legacy, timeouts read interrupted, pool toggle record, build --check hint
 
 - `bullswarm run --lane build` without `--check` prints one hint on stderr before it dispatches (`hint: no --check, so this build can only finish unproven; ...`), and the skill's first single-step example is a build with `--check`. Why: in the week to 14 Nov none of 19 single-step builds used `--check`, and 23 of 49 OK builds were proven by nothing. Not printed for analyze, chore, `--dry-run` or usage exits; `--json` stdout is unchanged (#85).
