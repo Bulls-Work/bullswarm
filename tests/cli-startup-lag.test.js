@@ -132,3 +132,41 @@ test('J.2: homeMigrationNeeded persists an on-disk marker so subsequent processe
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('J.3: migrateTestFixturePools skips parsing state.json once the lightweight marker is recorded', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-lag-j3-'));
+  const setupMod = new URL('../src/setup.js', import.meta.url).href;
+  try {
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    writeFileSync(join(home, 'connectors', 'echo.json'), JSON.stringify({
+      name: 'echo', flags: { testFixture: true }, lanes: ['analyze', 'build', 'chore'],
+    }));
+    writeFileSync(join(home, 'state.json'), JSON.stringify({
+      version: 1, pools: { echo: { enabled: false } }, decisionLog: [],
+      config: { depthLimit: 2, testFixturesMigrated: true },
+    }));
+
+    // First process: sees testFixturesMigrated in state.json and records the marker.
+    const first = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { migrateTestFixturePools } from ${JSON.stringify(setupMod)};
+      migrateTestFixturePools(${JSON.stringify(home)});
+    `], { encoding: 'utf8' });
+    assert.equal(first.status, 0, first.stderr);
+    const marker = JSON.parse(readFileSync(join(home, '.migrations.json'), 'utf8'));
+    assert.equal(marker.testFixturesMigrated, true);
+
+    // Replace state.json with an unmigrated copy: a subsequent process consulting
+    // the lightweight marker must not parse or rewrite state.json.
+    const rawUnmigrated = `${JSON.stringify({ version: 1, pools: { echo: {} }, config: {} })}\n`;
+    writeFileSync(join(home, 'state.json'), rawUnmigrated);
+    const second = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { migrateTestFixturePools } from ${JSON.stringify(setupMod)};
+      process.stdout.write(JSON.stringify(migrateTestFixturePools(${JSON.stringify(home)})));
+    `], { encoding: 'utf8' });
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(second.stdout, '[]');
+    assert.equal(readFileSync(join(home, 'state.json'), 'utf8'), rawUnmigrated);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
