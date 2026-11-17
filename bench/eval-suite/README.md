@@ -30,6 +30,19 @@ node bench/eval-suite/run-bench.mjs --out <dir> \
 
 Compare a previous release by passing its binary with `--bullswarm <path>`.
 
+## Rank models
+
+Rank two or more `run-bench.mjs` output directories on the common tasks every
+label ran (higher pass percentage first, then fewer interventions, lower wall
+minutes, lower API-equivalent USD):
+
+```bash
+node bench/eval-suite/rank.mjs \
+  --label opus=<dir-a> \
+  --label sonnet=<dir-b> \
+  [--out ranking.md] [--json]
+```
+
 ## Tasks
 
 | task | mode | exercises | hidden tests |
