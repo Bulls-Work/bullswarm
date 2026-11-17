@@ -39,7 +39,7 @@ flowchart LR
 - **Runs one task or a whole workflow.** `bullswarm run` is a one-step workflow: one task to one agent, one automatic retry, and an optional answer checked against a JSON schema. For bigger goals your main agent writes a program from four blocks: steps (each with an optional checked answer), phases that group them, gates where the run waits for you, and loops that repeat steps until a condition holds, such as "until the tests pass". Independent steps run in parallel across agents, and a step can be routed away from the agents that did the work it checks.
 - **Checks the work, not the exit code.** A delegate saying "done" isn't enough. Bullswarm reads what it actually produced, runs the checks a step declares (a command, a schema), checks each answer itself, and labels every finished step by what backs it: `proven by command` (a check Bullswarm ran passed), `answer checked` (the answer is well formed, which is a claim, not proof), or `unproven`. A run reports these facts, not a verdict; `verified` requirements belong to old v2 programs only.
 - **Shows everything live.** A terminal dashboard covers quota, history, running workflows and each agent's individual turns.
-- **Works with the agent you already use.** The `/bullswarm` skill teaches Claude Code, Codex and Grok when to delegate. There's also an early-access Claude Code Mod that shows runs and usage inside Claude Code.
+- **Works with the agent you already use.** The `/bullswarm` skill teaches Claude Code, Codex, Grok and AGY when to delegate. There's also an early-access Claude Code Mod that shows runs and usage inside Claude Code.
 - **Lets you steer mid-run.** Add steps, gates or loops while a workflow runs (`workflow add`, also straight from a step's answer), continue a waiting gate or give a loop more rounds, rerun a step, or pause and resume it.
 - **Extends with providers.** Claude Code, Codex, Grok and AGY (Google Antigravity) are built in. Other CLIs can be added as providers without touching the core.
 
@@ -102,6 +102,7 @@ To set things up by hand, or to choose models and reasoning yourself, see [Getti
 | Claude Code | Built in | weekly + 5-hour | `claude -p` |
 | Codex | Built in | weekly | `codex exec` |
 | Grok | Built in | weekly | `grok -p` |
+| AGY (Google Antigravity) | Built in | weekly + 5-hour (Gemini and Claude/GPT groups) | `agy -p` |
 | OpenCode | Contributed | none | `opencode run --auto` |
 | Command Code | Contributed | weekly + monthly + 5-hour | `command-code -p` |
 

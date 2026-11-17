@@ -66,7 +66,7 @@ const top = rich({
   argsTitle: 'Commands',
   args: [
     { name: 'setup', desc: 'discover and configure installed coding agents' },
-    { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, and Grok' },
+    { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, Grok, and AGY' },
     { name: 'run', desc: 'run one bounded task as a one-step workflow' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
     { name: 'pools', desc: 'show routing pools, meters, load, and spent windows; label manages display names' },
@@ -106,7 +106,7 @@ const top = rich({
 
 const setupText = rich({
   usage: 'bullswarm setup [--wizard] [--yes] [--strategy] [--integrate] [--agents <list>] [--json]',
-  purpose: 'Discover installed agent CLIs (codex, claude, grok, ...) and initialize local '
+  purpose: 'Discover installed agent CLIs (codex, claude, grok, agy, ...) and initialize local '
     + 'routing state. Bare setup on a TTY opens the provider/model control center; agents '
     + 'and CI retain deterministic non-interactive setup. On a machine that is already '
     + 'configured, bare `bullswarm` opens the dashboard instead — `bullswarm --setup` forces '
@@ -117,12 +117,12 @@ const setupText = rich({
     { flag: '--yes', desc: 'skip interactive setup and initialize with discovered defaults', default: 'interactive control center on a TTY' },
     { flag: '--strategy', desc: 'discover models, set each pool\'s recommended model per effort tier (its rungs; no tier is pinned), and enable strategy autopilot; requires --yes', default: 'off' },
     { flag: '--integrate', desc: 'also install agent integration (skill symlink + awareness block); requires --yes', default: 'off' },
-    { flag: '--agents <list>', desc: 'comma-separated agent list for --integrate (codex, claude, grok)', default: 'all three' },
+    { flag: '--agents <list>', desc: 'comma-separated agent list for --integrate (codex, claude, grok, agy)', default: 'codex, claude, grok, plus agy when installed' },
     { flag: '--json', desc: 'print a machine-readable result instead of human summary lines', default: 'human summary' },
   ],
   safety: [
     'writes ~/.bullswarm/state.json and routing.json (or $BULLSWARM_HOME equivalents)',
-    'with --integrate --yes, also writes symlinks and awareness-block markers under each selected agent\'s global config directory (~/.codex, ~/.claude, ~/.grok)',
+    'with --integrate --yes, also writes symlinks and awareness-block markers under each selected agent\'s global config directory (~/.codex, ~/.claude, ~/.grok, ~/.gemini/config)',
     'a non-TTY caller (the common case for an agent) auto-applies discovered defaults without prompting, even without --yes',
     '--wizard shows each suggested rung with its benchmark evidence and asks one reasoning level per configured effort tier; Enter keeps that connector\'s own default and writes nothing, and agents set the same values with bullswarm strategy set-reasoning or set-rung',
   ],
@@ -250,12 +250,13 @@ const integrateText = rich({
     { name: 'retire-legacy', desc: 'recoverably archive the retired pre-Bullswarm offload skill' },
   ],
   options: [
-    { flag: '--agents codex,claude,grok', desc: 'restrict the action to specific agents', default: 'all three' },
+    { flag: '--agents codex,claude,grok,agy', desc: 'restrict the action to specific agents', default: 'codex, claude, grok, plus agy when installed' },
     { flag: '--json', desc: 'machine-readable output' },
   ],
   safety: [
-    'install/remove write outside this repo, under each agent\'s home-dir config (~/.codex, ~/.claude, ~/.grok); status only reads integration files, though the common CLI bootstrap may initialize ~/.bullswarm state on a fresh machine',
+    'install/remove write outside this repo, under each agent\'s home-dir config (~/.codex, ~/.claude, ~/.grok, ~/.gemini/config); status only reads integration files, though the common CLI bootstrap may initialize ~/.bullswarm state on a fresh machine',
     'for Claude, install links ~/.claude/skills/bullswarm-mod to the packaged Claude Mod and sets env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS to "1" in ~/.claude/settings.json (function hooks are early access in Claude Code); remove unlinks the mod and clears that key',
+    'for AGY, install creates ~/.gemini/config/skills/bullswarm/ with top-level entry symlinks into skill/ (AGY ignores a symlinked skill directory) and manages ~/.gemini/config/AGENTS.md',
     'install refuses to replace a non-Bullswarm file found at the same path',
     'retire-legacy renames (moves), never deletes, the legacy skill directory',
   ],
@@ -266,13 +267,13 @@ const integrateText = rich({
 });
 
 const integrateStatusText = rich({
-  usage: 'bullswarm integrate status [--agents codex,claude,grok] [--json]',
+  usage: 'bullswarm integrate status [--agents codex,claude,grok,agy] [--json]',
   purpose: 'Report, per agent, whether the packaged skill symlink and the awareness block are '
     + 'installed (for Claude, also the Claude Mod link and the function-hooks flag), and whether '
     + 'a legacy pre-Bullswarm offload skill needs retiring.',
   args: [],
   options: [
-    { flag: '--agents codex,claude,grok', desc: 'restrict the report to specific agents', default: 'all three' },
+    { flag: '--agents codex,claude,grok,agy', desc: 'restrict the report to specific agents', default: 'codex, claude, grok, plus agy when installed' },
     { flag: '--json', desc: 'machine-readable output', default: 'human summary lines' },
   ],
   safety: ['does not change agent integration files; the common CLI bootstrap may initialize ~/.bullswarm state on a fresh machine'],
@@ -281,19 +282,19 @@ const integrateStatusText = rich({
 });
 
 const integrateInstallText = rich({
-  usage: 'bullswarm integrate install [--agents codex,claude,grok] --yes [--json]',
+  usage: 'bullswarm integrate install [--agents codex,claude,grok,agy] --yes [--json]',
   purpose: "Symlink the packaged Bullswarm skill and append the awareness block marker into "
     + "each selected agent's global instructions file. For Claude, also link the Claude Mod "
     + "(mods/bullswarm) under ~/.claude/skills and set CLAUDE_CODE_ENABLE_FUNCTION_HOOKS in "
     + "~/.claude/settings.json so Claude Code loads it in every session.",
   args: [],
   options: [
-    { flag: '--agents codex,claude,grok', desc: 'restrict install to specific agents', default: 'all three' },
+    { flag: '--agents codex,claude,grok,agy', desc: 'restrict install to specific agents', default: 'codex, claude, grok, plus agy when installed' },
     { flag: '--yes', desc: 'required — approves writing global agent configuration', default: 'none; the command refuses without it' },
     { flag: '--json', desc: 'machine-readable output' },
   ],
   safety: [
-    "writes/symlinks under each agent's global config directory (~/.codex, ~/.claude, ~/.grok)",
+    "writes/symlinks under each agent's global config directory (~/.codex, ~/.claude, ~/.grok, ~/.gemini/config)",
     'refuses to replace a non-Bullswarm skill path instead of overwriting it',
     'edits only the env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS key of ~/.claude/settings.json and leaves a file that is not a JSON object alone, reporting it',
     'idempotent: re-running after a successful install makes no further changes',
@@ -303,17 +304,17 @@ const integrateInstallText = rich({
 });
 
 const integrateRemoveText = rich({
-  usage: 'bullswarm integrate remove [--agents codex,claude,grok] --yes [--json]',
+  usage: 'bullswarm integrate remove [--agents codex,claude,grok,agy] --yes [--json]',
   purpose: 'Remove only the Bullswarm-managed skill symlink and awareness marker block, '
     + "leaving any other content in the agent's configuration untouched.",
   args: [],
   options: [
-    { flag: '--agents codex,claude,grok', desc: 'restrict removal to specific agents', default: 'all three' },
+    { flag: '--agents codex,claude,grok,agy', desc: 'restrict removal to specific agents', default: 'codex, claude, grok, plus agy when installed' },
     { flag: '--yes', desc: 'required — approves editing global agent configuration', default: 'none; the command refuses without it' },
     { flag: '--json', desc: 'machine-readable output' },
   ],
   safety: [
-    "writes under each agent's global config directory (~/.codex, ~/.claude, ~/.grok)",
+    "writes under each agent's global config directory (~/.codex, ~/.claude, ~/.grok, ~/.gemini/config)",
     'only deletes the Bullswarm symlink and strips the marker block; a conflicting non-symlink path is left untouched, not deleted',
   ],
   examples: [{ cmd: 'bullswarm integrate remove --yes' }],

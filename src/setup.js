@@ -786,7 +786,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
   // 6. Cross-agent integration — one canonical skill plus concise global
   // awareness rules. Nothing is written without this explicit answer.
   const integrateAnswer = (
-    await rl.question('install Bullswarm skill for Codex, Claude, and Grok? [y/N] ')
+    await rl.question('install Bullswarm skill for Codex, Claude, Grok, and AGY? [y/N] ')
   ).trim().toLowerCase();
   if (integrateAnswer === 'y' || integrateAnswer === 'yes') {
     const integrated = installIntegration({ approved: true });

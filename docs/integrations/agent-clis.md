@@ -22,8 +22,9 @@ bullswarm integrate install --yes --agents codex,grok
 | `codex` | `~/.codex/skills/bullswarm` | `~/.codex/AGENTS.md` |
 | `grok` | `~/.grok/skills/bullswarm` | `~/.grok/AGENTS.md` |
 | `claude` | `~/.claude/skills/bullswarm` | `~/.claude/CLAUDE.md` |
+| `agy` | `~/.gemini/config/skills/bullswarm/*` | `~/.gemini/config/AGENTS.md` |
 
-The link targets the `skill/` directory of the CLI that ran the install — the global package when you run the installed `bullswarm`, this checkout when you run `node bin/bullswarm.js`. `integrate status --json` prints it as `skillSource`.
+The link targets the `skill/` directory of the CLI that ran the install — the global package when you run the installed `bullswarm`, this checkout when you run `node bin/bullswarm.js`. For `agy` (Google Antigravity CLI), which ignores a symlinked skill directory, `install` creates `~/.gemini/config/skills/bullswarm/` as a real directory and symlinks each top-level entry (`SKILL.md`, `references/`, `agents/`) into `skill/` so upgrades still take effect immediately. `integrate status --json` prints it as `skillSource`.
 
 Claude Code is in the table because one command covers all three; its own page is [Claude Code](/integrations/claude-code). The skill is what the agent reads before delegating, and it appears as `$bullswarm` where a CLI uses that syntax (`/bullswarm` in Claude Code).
 
@@ -49,7 +50,7 @@ The markers make the region managed: a re-install replaces whatever sits between
 | Flag | Meaning | Default |
 |---|---|---|
 | `--yes` | approve the write; without it the command prints `pass --yes to approve` and exits 1 | required for `install`, `remove`, `retire-legacy` |
-| `--agents codex,claude,grok` | restrict the action to these agents; an unknown name is an error | all three |
+| `--agents codex,claude,grok,agy` | restrict the action to these agents; an unknown name is an error | `codex`, `claude`, `grok`, plus `agy` when installed |
 | `--json` | machine-readable output | off |
 
 `install` is idempotent: running it again reports no change. It refuses to replace a path that is not Bullswarm's own symlink.

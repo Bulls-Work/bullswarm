@@ -76,7 +76,7 @@ bullswarm setup --yes --integrate --agents claude,codex
 | `--yes` | skip interactive setup and initialize with discovered defaults | interactive control center on a TTY |
 | `--strategy` | discover models, set each pool's recommended model per effort tier (its rungs; no tier is pinned), and enable strategy autopilot; requires `--yes` | off |
 | `--integrate` | also install agent integration (skill symlink + awareness block); requires `--yes` | off |
-| `--agents <list>` | comma-separated agent list for `--integrate` (`codex`, `claude`, `grok`) | all three |
+| `--agents <list>` | comma-separated agent list for `--integrate` (`codex`, `claude`, `grok`, `agy`) | `codex`, `claude`, `grok`, plus `agy` when installed |
 | `--json` | machine-readable result | human summary |
 
 Writes `state.json` and `routing.json`. With `--integrate --yes`, also writes under `~/.codex`, `~/.claude`, `~/.grok`. A non-TTY caller auto-applies discovered defaults without prompting, even without `--yes`.
@@ -156,7 +156,7 @@ bullswarm integrate status
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--agents codex,claude,grok` | restrict the action to specific agents | all three |
+| `--agents codex,claude,grok,agy` | restrict the action to specific agents | `codex`, `claude`, `grok`, plus `agy` when installed |
 | `--json` | machine-readable output | human summary |
 
 Install refuses to replace a non-Bullswarm file at the same path. `retire-legacy` renames, never deletes, the legacy skill directory.

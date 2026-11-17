@@ -14,7 +14,9 @@
 
 - Claude Code mod UI and `agy:claude` rates: the mod keeps `agy:claude` whole instead of shortening it to `agy:c` (while `claude-code:<account>` still shortens to `claude-code:<letter>`), renders pre-response tool steps on the Step page without treating the `result` envelope as a tool row, and prices `claude-opus-4-6-thinking` and `claude-sonnet-4-6` on `agy:claude` from Anthropic's published rate card (`gpt-oss-120b-medium` stays unpriced).
 
-- Upgrade path for new pools and step-level `model` validation: a pool that appears for the first time on a home whose strategy already holds tier selections gets its provider's suggested picks automatically on first discovery or refresh without touching other pools' approved picks, recorded under `strategy.rungSeeds` with who, when and why; `workflow plan validate` and route/pin checks also honour a step's own `model` when the pool's tier selection is empty.
+- Upgrade path for new pools and step-level `model` validation: a pool that appears for the first time on a home whose strategy already holds tier selections gets its provider's suggested picks automatically on first discovery or refresh without touching other pools' approved picks, recorded under `strategy.rungSeeds` with who, when and why; `workflow plan validate`, `workflow step rerun --avoid` and route/pin checks also honour a step's own `model` when the pool's tier selection is empty.
+
+- `bullswarm integrate` now supports `agy` (`--agents agy`, and included in the default set when `agy` is installed): `install` creates `~/.gemini/config/skills/bullswarm/` with top-level entry symlinks into the packaged `skill/` (since AGY ignores a symlinked skill directory) and manages the recursion-safe awareness block in `~/.gemini/config/AGENTS.md`; `remove` deletes only Bullswarm-managed entry symlinks (and the directory when empty) and refuses to touch non-Bullswarm folders.
 
 ## 0.38.22 — pool lanes setting, hold --allow-pinned, starting runs are not legacy, timeouts read interrupted, pool toggle record, build --check hint
 
