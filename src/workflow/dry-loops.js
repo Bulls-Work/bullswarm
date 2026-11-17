@@ -533,6 +533,49 @@ export function reviewerBlindTo(state, action) {
   return (action.dependsOn ?? []).filter((id) => fixers.has(id));
 }
 
+const CHANGED_FILES_SHOWN = 30;
+
+// When round `round` started: the processedAt of the kernel's rerun revision
+// `loop-<id>-round-<n>` (a retried id carries a `-k` suffix; the latest wins).
+// Round 1 has no rerun: it started before everything ('').
+function roundStart(state, loop, round) {
+  if (round <= 1) return '';
+  const id = `loop-${loop.id}-round-${round}`;
+  const times = (state.revisions ?? [])
+    .filter((entry) => entry.status === 'applied' && (entry.id === id || new RegExp(`^${id}-\\d+$`).test(entry.id)))
+    .map((entry) => String(entry.processedAt ?? ''));
+  return times.length ? times.sort().at(-1) : null;
+}
+
+/**
+ * The line naming the files the fix before this review changed, from the
+ * changedFiles of the fixers' attempts (attempt-record.js). Attempts carry no
+ * round, so a round is the time between its rerun revision and the next one.
+ * A fixer after the review (`ran` minus fixFirst) did its work in round N-1:
+ * [start(N-1), start(N)). A fixer before it (fixFirst, [fix, review]) ran in
+ * this round, ahead of this review, for the findings of round N-1: from
+ * start(N) on. The latest attempt per fixer counts, and a failed one
+ * contributes nothing. Null when no fixer succeeded.
+ */
+function changedFilesLine(state, loop, group, ran, record, round) {
+  const { before } = fixStepsOf(state, loop, group);
+  const startNow = roundStart(state, loop, round);
+  const startPrev = roundStart(state, loop, round - 1);
+  const latest = ran.map((id) => {
+    const early = before.includes(id);
+    const from = early ? startNow : startPrev;
+    const until = early ? null : startNow;
+    if (from === null) return null;
+    return state.attempts.findLast((attempt) => attempt.actionId === id
+      && String(attempt.startedAt ?? '') >= from && (until === null || String(attempt.startedAt ?? '') < until)) ?? null;
+  }).filter((attempt) => attempt && attempt.status === 'succeeded');
+  if (!latest.length) return null;
+  const files = [...new Set(latest.flatMap((attempt) => attempt.changedFiles ?? []))].sort();
+  if (!files.length) return `Round ${round - 1}'s fix recorded no changed file.`;
+  const more = files.length - CHANGED_FILES_SHOWN;
+  return `Round ${round - 1}'s fix changed these files: ${files.slice(0, CHANGED_FILES_SHOWN).join(', ')}${more > 0 ? ` (and ${more} more)` : ''}.`;
+}
+
 /**
  * The block a reviewer of a dry loop is given every round: its area (with
  * areas), how to write findings, and from round 2 what the loop already
@@ -566,6 +609,12 @@ export function reviewRoundBlock(state, action) {
       lines.push(previous.fix === 'skipped'
         ? `Round ${round - 1} found nothing new to fix, so ${joinAnd(ran)} did not run.`
         : `Round ${round - 1}'s findings went to ${joinAnd(ran)}; check whether each fix holds.`);
+      // blindTo is about a step's account of the work; the files a fix changed
+      // are a fact about the tree, so a reviewer blind to the fixer gets them too.
+      if (previous.fix !== 'skipped') {
+        const changed = changedFilesLine(state, loop, group, ran, record, round);
+        if (changed) lines.push(changed);
+      }
     }
     // With a fixer, a known finding that is still present is reported
     // again (stillOpen); without one, nothing fixes it between rounds.

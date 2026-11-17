@@ -29,6 +29,15 @@ Why: a run and an in-flight assignment did not say who started them, so a reader
 
 - caller identity: a new run (`bullswarm run`, and `bullswarm workflow goal` where goal.json is first written) records who launched it in `caller.json` beside goal.json: `{"schemaVersion": "bullswarm.workflow.caller.v1", "caller": {"herdrPane", "claudeSession", "cwd"}, "recordedAt"}`. Every record in `~/.bullswarm/assignments/` carries the same `caller` object: the run's recorded caller for a workflow step, this process otherwise. Only two environment variables are read, `HERDR_PANE_ID` and `CLAUDE_CODE_SESSION_ID`; a pane not shaped like `w6:p1` or a session that is not a UUID is recorded as null, and no other env value is read or recorded. A detached `workflow goal` passes the launching directory through its request file, so `cwd` is where the caller ran the command, not the goal's `--cwd`. `bullswarm assignments` prints `caller=<pane>` when a pane is known and `--json` carries the whole object; `workflow runs show` prints `# caller  pane … · session … · cwd …` and `--json` has `caller` (null for a run started before this change).
 
+- A dry loop's reviewers are told, from round 2 on, which files the fix before
+  their review changed: `Round N-1's fix changed these files: a, b, c.` (the
+  union of the fixers' latest attempts' `changedFiles`, at most 30 sorted
+  paths, then `(and N more)`), or `Round N-1's fix recorded no changed file.`
+  when a fixer succeeded and recorded none. No line when the fix was skipped
+  or failed. A reviewer blind to the fixer gets it too: it is a fact about the
+  tree, not the fixer's account. Reviewers no longer rediscover the changed
+  files themselves.
+
 ## 0.38.18 — one shared status-line cache for pools, workflow runs and assignments
 
 Why: every Claude session's mod ran `bullswarm pools --json` on its own timer. On 2026-10-20 there were 11 at once, each a 260-345 MB node process (about 3 GB together), on a Mac close to running out of swap.
