@@ -88,3 +88,47 @@ test('J.1: --version, --help and usage errors never load or migrate an existing 
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('J.2: homeMigrationNeeded persists an on-disk marker so subsequent processes skip rescanning', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-lag-j2-'));
+  const stateMod = new URL('../src/lib/state.js', import.meta.url).href;
+  try {
+    mkdirSync(join(home, 'meters'), { recursive: true });
+    writeFileSync(join(home, 'state.json'), `${JSON.stringify({
+      version: 1, pools: { codex: { enabled: true } }, decisionLog: [], config: { depthLimit: 2 },
+    }, null, 2)}\n`);
+    writeFileSync(join(home, 'providers.json'), `${JSON.stringify({ enabled: ['codex'] }, null, 2)}\n`);
+
+    // Process 1: checks the clean home once and records the persistent marker.
+    const first = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { loadState } from ${JSON.stringify(stateMod)};
+      loadState(${JSON.stringify(home)});
+    `], { encoding: 'utf8' });
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(existsSync(join(home, '.migrations.json')), true, 'persistent migration marker written');
+
+    // Plant a migratable entry in providers.json after the marker exists: a new
+    // process consulting the marker must skip homeMigrationNeededUncached.
+    writeFileSync(join(home, 'providers.json'), JSON.stringify({ enabled: ['opencode2'] }));
+    const second = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { migratePoolNameHome } from ${JSON.stringify(stateMod)};
+      process.stdout.write(String(migratePoolNameHome(${JSON.stringify(home)})));
+    `], { encoding: 'utf8' });
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(second.stdout, 'false', 'second process skipped full home scan via persistent marker');
+    assert.deepEqual(JSON.parse(readFileSync(join(home, 'providers.json'), 'utf8')).enabled, ['opencode2']);
+
+    // Removing the marker restores the full scan and migrates the home.
+    rmSync(join(home, '.migrations.json'));
+    const third = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { migratePoolNameHome } from ${JSON.stringify(stateMod)};
+      process.stdout.write(String(migratePoolNameHome(${JSON.stringify(home)})));
+    `], { encoding: 'utf8' });
+    assert.equal(third.status, 0, third.stderr);
+    assert.equal(third.stdout, 'true');
+    assert.deepEqual(JSON.parse(readFileSync(join(home, 'providers.json'), 'utf8')).enabled, ['opencode']);
+    assert.equal(existsSync(join(home, '.migrations.json')), true, 'marker recorded after migration completes');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
