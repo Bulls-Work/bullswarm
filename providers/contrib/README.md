@@ -2,7 +2,7 @@
 
 Providers in this directory ship with bullswarm but are **disabled by default**.
 Bullswarm loads one only when your machine opts in. The providers under
-`src/providers/` (claude-code, codex, grok, echo) always load. These don't.
+`src/providers/` (agy, claude-code, codex, grok, echo) always load. These don't.
 
 | provider | what it runs | meter |
 |---|---|---|
