@@ -72,14 +72,11 @@ export async function cmdWorkflow(args, {
     case 'plan':
       return wfPlan(tail, { ensureHome });
     case 'cancel':
-      if (!opts.help && !flagErrors(opts, ['workflow', 'cancel']) && opts.rest[0]) ensureHome?.();
-      return wfCancel(opts);
+      return wfCancel(opts, { ensureHome });
     case 'pause':
-      if (!opts.help && !flagErrors(opts, ['workflow', 'pause']) && opts.rest[0]) ensureHome?.();
-      return wfPause(opts);
+      return wfPause(opts, { ensureHome });
     case 'resume':
-      if (!opts.help && !flagErrors(opts, ['workflow', 'resume']) && opts.rest[0]) ensureHome?.();
-      return wfResume(opts);
+      return wfResume(opts, { ensureHome });
     case 'runs':
       return cmdRuns(tail, runsAlias ? { alias: runsAlias, ensureHome } : { ensureHome });
     case 'reindex':
@@ -87,10 +84,12 @@ export async function cmdWorkflow(args, {
     case 'reprice':
       return cmdReprice(tail, { bullswarmDir, ensureHome });
     case 'capabilities':
-      if (!opts.help && !flagErrors(opts, ['workflow', 'capabilities'])) ensureHome?.();
-      return wfCapabilities(opts);
+      return wfCapabilities(opts, { ensureHome });
     case 'tui':
       try {
+        if (opts.help) { console.log(helpText(['workflow', 'tui'])); return 0; }
+        const flagExit = flagErrors(opts, ['workflow', 'tui']);
+        if (flagExit !== null) return flagExit;
         if (opts.overview && !(opts.rest[0] ?? opts.show)) {
           console.error(`usage: ${usageLine(['workflow', 'tui'])}\n--overview needs a run: pass <runId> or --show <runId>`);
           return 2;
@@ -146,35 +145,26 @@ export async function cmdWorkflow(args, {
       }
       catch (err) { console.error(`✗ ${err.message}`); return 1; }
     case 'events':
-      if (!opts.help && !opts.errors?.length && opts.rest[0]) ensureHome?.();
-      return wfEvents(opts);
+      return wfEvents(opts, { ensureHome });
     case 'watch':
-      if (!opts.help && !opts.errors?.length && opts.rest[0]) ensureHome?.();
-      return wfWatch(opts);
+      return wfWatch(opts, { ensureHome });
     case 'steer':
-      if (!opts.help && !opts.errors?.length && opts.rest[0] && opts.message) ensureHome?.();
-      return wfSteer(opts);
+      return wfSteer(opts, { ensureHome });
     case 'action':
-      if (!opts.help && !opts.errors?.length && opts.rest[0] === 'show' && opts.rest[1] && opts.rest[2]) ensureHome?.();
-      return wfAction(opts);
+      return wfAction(opts, { ensureHome });
     case 'task':
-      if (!opts.help && !opts.errors?.length && opts.rest[0] === 'show' && opts.rest[1]) ensureHome?.();
-      return wfTask(opts, bullswarmDir);
+      return wfTask(opts, bullswarmDir, { ensureHome });
     case 'step':
-      if (!opts.help && !opts.errors?.length && ['restart', 'rerun', 'accept'].includes(opts.rest[0]) && opts.rest[1] && opts.rest[2]) ensureHome?.();
-      return wfStep(opts);
+      return wfStep(opts, { ensureHome });
     case 'continue':
-      if (!opts.help && !opts.errors?.length && opts.rest[0]) ensureHome?.();
-      return wfContinue(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume });
+      return wfContinue(opts, { bullswarmDir, ensureHome, helpText, flagErrors, launchDetachedResume });
     case 'add':
-      if (!opts.help && !opts.errors?.length && opts.rest[0] && (opts.steps || opts['from-answer'])) ensureHome?.();
-      return wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => [
+      return wfAdd(opts, { bullswarmDir, ensureHome, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => [
         ...(programRoutes(actions) ? routePoolIssues(actions, configuredPools(), doc, undefined, state, { recordedWork: true }) : []),
         ...(programNamesModel(actions) ? modelPoolIssues(actions, configuredPools(), doc) : []),
       ] });
     case 'wait':
-      if (!opts.help && !opts.errors?.length && opts.rest[0]) ensureHome?.();
-      return wfWait(opts, { bullswarmDir, helpText, flagErrors });
+      return wfWait(opts, { bullswarmDir, ensureHome, helpText, flagErrors });
     default: {
       // Smart error: if the user typed a `runs` subcommand directly
       // under `workflow` (e.g. `workflow show jd3uki`), point them at

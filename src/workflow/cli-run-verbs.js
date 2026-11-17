@@ -17,12 +17,13 @@ import { BULLSWARM_DIR, drivableRunRefusal, legacyRunRefusal, loadV2RunState } f
 import { livePoolNames } from './cli-pool-checks.js';
 import { executeGoalDocument, launchDetachedResume, printGoalLaunchInstructions } from './cli-launch.js';
 
-export async function wfPause(opts) {
+export async function wfPause(opts, { ensureHome } = {}) {
   if (opts.help) { console.log(helpText(['workflow', 'pause'])); return 0; }
   const flagExit = flagErrors(opts, ['workflow', 'pause']);
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'pause'])}`); return 2; }
+  ensureHome?.();
   const viewOnly = drivableRunRefusal(token, opts, 'pause');
   if (viewOnly !== null) return viewOnly;
   let run;
@@ -51,12 +52,13 @@ export async function wfPause(opts) {
 
 // --- workflow cancel / resume: first-class management verbs --------------------
 
-export async function wfCancel(opts) {
+export async function wfCancel(opts, { ensureHome } = {}) {
   if (opts.help) { console.log(helpText(['workflow', 'cancel'])); return 0; }
   const flagExit = flagErrors(opts, ['workflow', 'cancel']);
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'cancel'])}`); return 2; }
+  ensureHome?.();
   const legacy = legacyRunRefusal(token, opts, 'cancel');
   if (legacy !== null) return legacy;
   let resolvedRun;
@@ -176,7 +178,7 @@ function reopenFinishedRun(resolvedRun, opts) {
   return outcome;
 }
 
-export async function wfResume(opts) {
+export async function wfResume(opts, { ensureHome } = {}) {
   if (opts.help) { console.log(helpText(['workflow', 'resume'])); return 0; }
   const flagExit = flagErrors(opts, ['workflow', 'resume']);
   if (flagExit !== null) return flagExit;
@@ -187,6 +189,7 @@ export async function wfResume(opts) {
     console.error(`✗ a resumed run keeps its durable planner mode and routing; to add steps use: bullswarm workflow add ${token} --steps <file.json>`);
     return 2;
   }
+  ensureHome?.();
   const viewOnly = drivableRunRefusal(token, opts, 'resume');
   if (viewOnly !== null) return viewOnly;
   const resolvedRun = resolveRunId(BULLSWARM_DIR(), token);
@@ -238,13 +241,17 @@ export async function wfResume(opts) {
   return 0;
 }
 
-export function wfSteer(opts) {
+export function wfSteer(opts, { ensureHome } = {}) {
+  if (opts.help) { console.log(helpText(['workflow', 'steer'])); return 0; }
+  const flagExit = flagErrors(opts, ['workflow', 'steer']);
+  if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   const message = opts.message ?? opts.rest.slice(1).join(' ');
   if (!token || !message) {
     console.error(`usage: ${usageLine(['workflow', 'steer'])}`);
     return 2;
   }
+  ensureHome?.();
   const viewOnly = drivableRunRefusal(token, opts, 'steer');
   if (viewOnly !== null) return viewOnly;
   try {
