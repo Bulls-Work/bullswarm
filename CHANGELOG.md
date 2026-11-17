@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.22 — pool lanes setting, hold --allow-pinned, starting runs are not legacy, timeouts read interrupted, pool toggle record, build --check hint
+
 - `bullswarm run --lane build` without `--check` prints one hint on stderr before it dispatches (`hint: no --check, so this build can only finish unproven; ...`), and the skill's first single-step example is a build with `--check`. Why: in the week to 14 Nov none of 19 single-step builds used `--check`, and 23 of 49 OK builds were proven by nothing. Not printed for analyze, chore, `--dry-run` or usage exits; `--json` stdout is unchanged (#85).
 
 - Every pool enable or disable records who, when, why and through which command: `strategy set-provider <pool> on|off --yes [--reason <text>]`, the strategy TUI toggle, `strategy configure` and setup store `{enabled, at, by, reason, via}` under `strategy` in state.json (latest per pool plus a capped history). `by` is the OS user name; no environment value is recorded. `bullswarm pools` shows `disabled since <time> by <by>: <reason>`; `pools --json` and `strategy inventory --json` carry a `toggle` field (#86).
