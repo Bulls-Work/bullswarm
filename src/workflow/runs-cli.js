@@ -100,25 +100,10 @@ export function cmdRuns(args, { alias = ['workflow', 'runs'], ensureHome } = {})
   if (flagExit !== null) return flagExit;
   const typedExit = typedFlagErrors(opts, path);
   if (typedExit !== null) return typedExit;
-  if (!sub || sub === 'list') {
-    try { resolveInitiatedRange(opts); } catch (e) { return err(e.message, 2); }
-    ensureHome?.();
-    return runsList(opts);
-  }
-  if (sub === 'show') {
-    if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2);
-    ensureHome?.();
-    return runsShow(idToken, opts);
-  }
-  if (sub === 'result') {
-    if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2);
-    ensureHome?.();
-    return runsResult(idToken, opts);
-  }
-  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2);
-  if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`, 2);
-  ensureHome?.();
-  return runsDelete(idToken, opts, rest);
+  if (!sub || sub === 'list') return runsList(opts, { ensureHome });
+  if (sub === 'show') return runsShow(idToken, opts, { ensureHome });
+  if (sub === 'result') return runsResult(idToken, opts, { ensureHome });
+  return runsDelete(idToken, opts, rest, { ensureHome });
 }
 
 // Typed inputs are validated at the boundary, before any run directory is
@@ -220,7 +205,7 @@ function runsDoc(filtered, opts, initiatedRange) {
   };
 }
 
-function runsList(opts) {
+function runsList(opts, { ensureHome } = {}) {
   if (opts.maxAge !== undefined) {
     // bin/bullswarm.js answers `workflow runs --json --max-age <s>` from the
     // shared cache before the CLI loads; anything else with it is refused.
@@ -232,6 +217,7 @@ function runsList(opts) {
   } catch (error) {
     return err(error.message, 2);
   }
+  ensureHome?.();
   const all = listRuns(BULLSWARM_DIR());
   let filtered = all;
   if (opts.name) filtered = filtered.filter((r) => (r.legacy ? legacyRunName(r) : r.state?.intent?.goal) === opts.name);
@@ -346,8 +332,9 @@ function printV2Advisories(state) {
   }
 }
 
-function runsShow(idToken, opts) {
+function runsShow(idToken, opts, { ensureHome } = {}) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2);
+  ensureHome?.();
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -432,8 +419,9 @@ function attemptBytesText(bytes) {
   return `  in ${formatBytes(bytes.taskFile)}/${formatBytes(bytes.dependencyInputs)} out ${formatBytes(bytes.output)}`;
 }
 
-function runsResult(idToken, opts) {
+function runsResult(idToken, opts, { ensureHome } = {}) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2);
+  ensureHome?.();
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -517,9 +505,10 @@ function runsResult(idToken, opts) {
   return stable.status === 'completed' ? 0 : 1;
 }
 
-function runsDelete(idToken, opts, rest) {
+function runsDelete(idToken, opts, rest, { ensureHome } = {}) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2);
   if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`, 2);
+  ensureHome?.();
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
