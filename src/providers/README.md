@@ -1,7 +1,7 @@
 # First-class providers
 
-Every directory here is a provider that always loads: `claude-code`, `codex`,
-`grok`, and `echo`. `_schema.json` is the annotated pool template — it is not a
+Every directory here is a provider that always loads: `agy`, `claude-code`,
+`codex`, `grok`, and `echo`. `_schema.json` is the annotated pool template — it is not a
 JSON Schema and nothing validates against it at runtime; it is the authoring
 reference, and `bullswarm provider validate <dir|name>` is the checker.
 Contributed providers live in [`providers/contrib/`](../../providers/contrib/README.md);

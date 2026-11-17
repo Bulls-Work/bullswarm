@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- New first-class provider `agy`, the Google Antigravity CLI. One AGY login gives two pools, one per AGY quota group: `agy` runs the Gemini models and `agy:claude` runs the Claude and GPT-OSS models AGY also serves. They share the credential group `agy`, so a sign-in failure on one skips the other for that step. Both are paced like any other pool: the meter runs `agy -p /usage --output-format json`, which starts no model turn and spends no quota, and reads the pool's own group's weekly and 5-hour limits. A 5-hour reading at 99% or more keeps the pool out of picks until it resets, as for every pool. `bullswarm run --use-provider agy` pins a step to it.
+
+- Models come from `agy models`. AGY writes the effort level into the id (`gemini-4-carbon-high`), so Bullswarm lists one model per base id with the levels it accepts, and `--effort` is clamped to them: `xhigh` on Gemini 4 Carbon runs at `high`, while Gemini 4 Hydrogen keeps `xhigh`. The Claude and GPT-OSS models get no `--effort` flag. The orchestrator ids are AGY's own multi-agent mode and are not offered.
+
+- Strategy suggests the Gemini line on `agy`: high Gemini 4 Carbon at `high`, medium Gemini 4 Hydrogen at `high`, low Gemini 3.8 Flash at `medium`. Gemini 4 Argon can be chosen with `strategy set-rung` but is not suggested (same price as Carbon, older and weaker). On `agy:claude`: high Claude Opus 4.6, medium Claude Sonnet 4.6; GPT-OSS 120B is not suggested. Gemini prices are Google's AI Studio rates read on 2026-11-17; the announced Carbon/Argon change on 2026-12-01 and the Flash change on 2027-01-01 are noted in the connector and not applied yet.
+
+- The worker reads agy's `stream-json` output: the answer is the `result` line's `response`, tool steps are counted (read, edit, command, search), and tokens are read from the `result` line, or summed from each step's usage when the stream ends early. A visibly cut-off answer gets one follow-up turn in the same AGY conversation (`--conversation <id>`).
+
 ## 0.38.22 — pool lanes setting, hold --allow-pinned, starting runs are not legacy, timeouts read interrupted, pool toggle record, build --check hint
 
 - `bullswarm run --lane build` without `--check` prints one hint on stderr before it dispatches (`hint: no --check, so this build can only finish unproven; ...`), and the skill's first single-step example is a build with `--check`. Why: in the week to 14 Nov none of 19 single-step builds used `--check`, and 23 of 49 OK builds were proven by nothing. Not printed for analyze, chore, `--dry-run` or usage exits; `--json` stdout is unchanged (#85).

@@ -15,7 +15,7 @@ A provider is a directory holding a `connector.json`, a `provider.mjs`, or both.
 
 | Tier | Directory | Loaded when | Members |
 |---|---|---|---|
-| first-class | `src/providers/<name>/` | always | `claude-code`, `codex`, `grok`, `echo` |
+| first-class | `src/providers/<name>/` | always | `agy`, `claude-code`, `codex`, `grok`, `echo` |
 | contrib | `providers/contrib/<name>/` | listed in `~/.bullswarm/providers.json` | `command-code`, `opencode` |
 | local | `~/.bullswarm/providers/<name>/` | always | your own, never in the repository |
 
@@ -49,7 +49,7 @@ Skipped pools and errors are shown by `bullswarm setup` and `bullswarm provider 
 
 Until 0.29.0, `bullswarm setup` copied every packaged connector into `<home>/connectors/<name>.json`. The loader read only those copies, and `setup` overwrote each copy that differed from the package. Since 0.29.0 nothing makes copies, but older homes still hold them, and every verb still fills newly shipped fields into them. Which file is read:
 
-- **The package wins for its own pools.** A copy named after a pool that a loaded packaged provider defines (`claude-code.json`, `codex.json`, `grok.json`, `echo.json`, or a contrib connector you enabled) is skipped as a duplicate. Its prices and rows are never used. A `claude-code.json` from 0.28.8 still holds the old Opus 5 catch-all row, but `claude-opus-5-5` is priced from the packaged $4/$20 row.
+- **The package wins for its own pools.** A copy named after a pool that a loaded packaged provider defines (`agy.json`, `claude-code.json`, `codex.json`, `grok.json`, `echo.json`, or a contrib connector you enabled) is skipped as a duplicate. Its prices and rows are never used. A `claude-code.json` from 0.28.8 still holds the old Opus 5 catch-all row, but `claude-opus-5-5` is priced from the packaged $4/$20 row.
 - **Otherwise the copy is the pool.** A copy is read when no loaded provider defines its pool, for example `command-code.json` while the contrib `command-code` provider is not enabled. It then serves routing with whatever fields it had.
 
 Each verb first sorts the copies that have a packaged counterpart (a copy with none is your own local provider and is never touched):
@@ -170,7 +170,9 @@ These are all the pool fields a provider may set, and the part of the core that 
 - Claude Code is started in print/stream-JSON mode with `--safe-mode` and `--no-session-persistence`. Bullswarm sends only the `initialize` control request and reads `control_response.response.models`. Safe mode disables user/project customizations, installed plugins, and hooks while retaining account auth. Claude currently returns aliases for some rows. Literal `claude-*` IDs are kept. Alias rows are converted from the family/version the CLI names in the row's display name (current CLIs: `opus` shows as `Opus 5.5`) or, failing that, its description (for example, `Opus 5.5` becomes `claude-opus-5-5`), and carry `idSource: display-name-inferred` or `description-inferred`; an explicit `[1m]` selector is preserved. If a future description cannot be parsed, Bullswarm does not invent an ID.
 - Codex is started as `codex app-server --stdio`. Bullswarm sends JSON-RPC `initialize`, the `initialized` notification, then pages through `model/list` until `nextCursor` is empty. Hidden rows are excluded. The visible rows retain `isDefault` and `supportedReasoningEfforts`; the latter refines reasoning clamping for that model. Levels outside Bullswarm's common scale, such as `ultra`, remain recorded but are not passed as a Bullswarm reasoning level.
 
-Both protocols have a 15-second bound and Bullswarm terminates the child after an answer, error, or timeout. A successful handshake is reported as `source: cli`. Bad JSON, an old CLI without the method, process failure, or timeout produces `source: connector-fallback`, includes the error text, and uses the connector's small compatibility list.
+- AGY is asked with `agy models`, which prints one `<id>\t<label>` line per model and sends no prompt. AGY puts the effort level in the id (`gemini-4-carbon-high`), so Bullswarm folds those rows into one base id with `reasoningLevels` (`gemini-4-carbon`: low, medium, high; `gemini-4-hydrogen` adds xhigh), and the reasoning clamp uses them. Each pool keeps its own quota group's models: `agy` the Gemini models, `agy:claude` the Claude and GPT-OSS ones, whose ids are kept as listed. The orchestrator ids are AGY's own multi-agent mode and are left out of both. This call has a 20-second bound.
+
+The Claude and Codex protocols have a 15-second bound and Bullswarm terminates the child after an answer, error, or timeout. A successful handshake is reported as `source: cli`. Bad JSON, an old CLI without the method, process failure, or timeout produces `source: connector-fallback`, includes the error text, and uses the connector's small compatibility list.
 
 ## Model families, versions, and `unranked`
 
@@ -194,8 +196,11 @@ The built-in families:
 | `codex` | `*-astra`: high, 7 · `*-sol`: high, 6 · bare `gpt-N.M`: high, 5 · `*-terra`: medium, 4 · `*-luna`: low, 3 · `mini`: low, 2 (`gpt-5.3-codex` keeps its own row) |
 | `claude-code` | `fable`: high, 6, never auto-recommended · `opus`: high, 5 · `sonnet`: medium, 4 · `haiku`: low, 3 |
 | `grok` | plain `grok-N.M` (no suffix): high, 5 · `grok-N.M-build-fast`: high, 5, never auto-recommended |
+| `agy` | `gemini-N-carbon`: high, 6 · `gemini-N-argon`: high, 5, never auto-recommended · `gemini-N-hydrogen`: medium, 4 · `gemini-N-flash`: low, 3 · on `agy:claude`, `claude-opus-*`: high, 5 · `claude-sonnet-*`: medium, 4 · `gpt-oss-*`: low, 2, never auto-recommended |
 
 Grok has one model line, so one family covers every plain version and the newest wins: `grok-4.7` today, and a `grok-4.8` the day `grok models` lists it. Medium and low run it too, each at its own tier's reasoning (see [below](#newest-generation-fallback-generationfallback)). `grok-4.7-build-fast` is Grok Build's id for Grok 4.7 Fast, which [xAI describes](https://docs.x.ai/developers/grok-4-7) as "the same model served on faster infrastructure, billed at twice the standard token rates". It keeps its base model's rank, is never suggested, and stays selectable with `strategy set-rung`. It has no price row: xAI's [Pricing page](https://docs.x.ai/developers/pricing#grok-47-fast-pricing-cursor-and-grok-build-only) lists its long-context rates as $6.00 / $1.50 / $18.00 per 1M tokens (checked 2026-09-23), which is not twice grok-4.7's $4.00 / $1.00 / $12.00. The contrib providers keep their own rows.
+
+AGY's Gemini line is the owner's choice for the `agy` pool (17-18 Nov 2026): high runs Gemini 4 Carbon at `high`, medium Gemini 4 Hydrogen at `high`, low Gemini 3.8 Flash at `medium` (the connector's `reasoning.defaults`). Hydrogen serves medium rather than Argon because it is cheaper ($1.50 / $7.50 per 1M tokens against $2.00 / $10.00) and faster, with an Artificial Analysis index of about 51-54 against Argon's about 50; those index figures are third-party numbers relayed by AGY and not verified here. Argon costs what Carbon costs, so it is never suggested but stays selectable with `strategy set-rung`. The `agy:claude` pool runs the Claude models AGY serves; none of them takes `--effort`, so that pool declares no reasoning.
 
 ### How a tier's candidates are ordered
 
@@ -329,6 +334,7 @@ captures, not a promise that every event from a provider has every field:
 | --- | --- | --- |
 | `codex` (`codex.jsonl`) | `eventId`, `toolCallId`, `toolName`, `arguments`, and `result` on command events; `usage` on `turn.completed` with `input`, `cacheRead`, `cacheWrite`, `output`, and `reasoning` | `turnId`, `providerAt`, `durationMs`, `costUsd`, `parentId`, and `subagentId` |
 | `claude-code` (`claude-code.jsonl`) | `eventId`, `toolCallId`, `toolName`, `arguments`, `result`, and `providerAt`; `durationMs` on the result; event `usage` with input/cache/output/reasoning fields and `costUsd` on the result | No `turnId` or `subagentId`; the mapped `parentId` is null in this capture; no provider timestamp is present on the result event |
+| `agy` (`agy.jsonl`) | `toolCallId`, `toolName`, `arguments`, and `result` on tool steps (the ACTIVE and DONE step share its `step_index`); event `usage` with input/cacheRead/output/reasoning on each finished `agent_response` step and on the `result` line | No `eventId`, `turnId`, `providerAt`, `durationMs` (agy reports seconds), `costUsd`, `parentId`, or `subagentId` |
 | `grok` (`grok.jsonl`) | `toolCallId`, `toolName`, `arguments`, and `result` on tool events; `eventId` on the end event; event `usage` with input/cache/output/reasoning fields and `costUsd` on the end event | No `turnId`, `providerAt`, `durationMs`, `parentId`, or `subagentId`; the tool events have no `eventId` in this capture |
 
 For example, a Codex command can be paired because its `item.started` and

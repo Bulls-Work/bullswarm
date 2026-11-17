@@ -1,0 +1,388 @@
+{
+  "name": "agy",
+  "bin": "agy",
+  "$comment": "Google Antigravity CLI (agy). Every fact below was measured with agy 1.5.10 on 2026-11-17 unless marked. provider.mjs returns two pools from this template, one per AGY quota group: `agy` (Gemini models) and `agy:claude` (the Claude and GPT-OSS models AGY also serves). Bullswarm never reads the files under configDirs: they hold the login.",
+  "configDirs": [
+    "~/.gemini/antigravity-cli"
+  ],
+  "spawn": {
+    "cmd": [
+      "agy",
+      "-p",
+      "Read the file {taskFile} and follow its instructions exactly.",
+      "--model",
+      "gemini-4-carbon",
+      "--add-dir",
+      "{cwd}",
+      "--dangerously-skip-permissions"
+    ],
+    "cwdMode": "add-dir",
+    "$comment-argv": "`-p` is print mode. `--add-dir {cwd}` lets agy write in the target folder (verified: it wrote a file in an added folder from another cwd), and `--dangerously-skip-permissions` lets it write files and run commands without asking. The pool's default model is pinned with `--model` because agy's own default comes from the user's settings, so an unpinned worker could run a model the attempt record does not name; the model flag is replace-or-append, so a chosen model replaces it."
+  },
+  "$comment-quotaSignatures": "RESOURCE_EXHAUSTED is the quota error code in the agy binary (also HTTP 429). No sign-in failure text was observed, so no authSignatures are declared.",
+  "quotaSignatures": [
+    "RESOURCE_EXHAUSTED"
+  ],
+  "outputExtraction": {
+    "strategy": "event-stream"
+  },
+  "eventStream": {
+    "format": "jsonl",
+    "args": [
+      "--output-format",
+      "stream-json"
+    ],
+    "typePath": "event",
+    "modelPaths": [
+      "init.model"
+    ],
+    "silenceThresholdSec": 600,
+    "$comment-toolKinds": "read_file, write_file and run_command are the tool names in the real capture (tests/fixtures/stream/agy.jsonl). The same run's init line lists the CLI's tool set under other names (view_file, write_to_file, replace_file_content, multi_replace_file_content, sed_file, notebook_edit, grep_search, find_by_name, list_dir, search_web), so both spellings are mapped. Browser, subagent and MCP tools count as other.",
+    "toolKinds": {
+      "read_file": "read",
+      "view_file": "read",
+      "write_file": "edit",
+      "write_to_file": "edit",
+      "replace_file_content": "edit",
+      "multi_replace_file_content": "edit",
+      "sed_file": "edit",
+      "notebook_edit": "edit",
+      "run_command": "command",
+      "grep_search": "search",
+      "find_by_name": "search",
+      "list_dir": "search",
+      "search_web": "search"
+    },
+    "rules": [
+      {
+        "rootMatch": {
+          "path": "step_update.step_type",
+          "equals": "tool"
+        },
+        "$comment": "A tool step is sent twice, ACTIVE then DONE, with the same step_index: that index pairs the start with its completion.",
+        "idPaths": [
+          "step_update.step_index"
+        ],
+        "toolCallIdPaths": [
+          "step_update.step_index"
+        ],
+        "kindPaths": [
+          "step_update.tool_name",
+          "step_update.tool_info.name"
+        ],
+        "toolNamePaths": [
+          "step_update.tool_name",
+          "step_update.tool_info.name"
+        ],
+        "argumentsPaths": [
+          "step_update.tool_info.parameters"
+        ],
+        "resultPaths": [
+          "step_update.tool_info.output"
+        ],
+        "summaryPaths": [
+          "step_update.tool_info.parameters.CommandLine",
+          "step_update.tool_info.parameters.Path"
+        ],
+        "statusPath": "step_update.state",
+        "statusMap": {
+          "ACTIVE": "running",
+          "DONE": "completed"
+        }
+      },
+      {
+        "rootMatch": {
+          "path": "step_update.step_type",
+          "equals": "agent_response"
+        },
+        "match": {
+          "path": "step_update.text_delta"
+        },
+        "kind": "response",
+        "summaryPaths": [
+          "step_update.text_delta"
+        ],
+        "status": "streaming",
+        "aggregate": "consecutive",
+        "summaryMode": "concat"
+      },
+      {
+        "rootMatch": {
+          "path": "step_update.step_type",
+          "equals": "agent_response"
+        },
+        "match": {
+          "path": "step_update.usage"
+        },
+        "kind": "usage",
+        "status": "completed",
+        "usagePaths": {
+          "input": "step_update.usage.input_tokens",
+          "cacheRead": "step_update.usage.cache_read_tokens",
+          "output": "step_update.usage.output_tokens",
+          "reasoning": "step_update.usage.thinking_tokens"
+        }
+      },
+      {
+        "rootMatch": {
+          "path": "event",
+          "equals": "result"
+        },
+        "kind": "result",
+        "summaryPaths": [
+          "result.response",
+          "result.error"
+        ],
+        "statusPath": "result.status",
+        "statusMap": {
+          "SUCCESS": "completed",
+          "ERROR": "failed"
+        },
+        "usagePaths": {
+          "input": "result.usage.input_tokens",
+          "cacheRead": "result.usage.cache_read_tokens",
+          "output": "result.usage.output_tokens",
+          "reasoning": "result.usage.thinking_tokens"
+        }
+      }
+    ],
+    "output": [
+      {
+        "match": {
+          "path": "event",
+          "equals": "result"
+        },
+        "path": "result.response",
+        "mode": "last"
+      }
+    ],
+    "$comment-usage": "Measured on the capture: result.usage total_tokens = input_tokens + output_tokens (16034 = 15327 + 707), so input_tokens EXCLUDES cache reads (cache_read_tokens 16783 is extra). thinking_tokens (214) is treated as INSIDE output_tokens, as claude-code's thinking count is; that is not verified, since total_tokens would read the same either way. The per-step agent_response usage rows add up to the result's totals exactly, so they are summed as a fallback for a stream cut before its result line; the result line, the last rule, wins whenever it is present. The conversation id and model come from the init line.",
+    "usage": [
+      {
+        "match": {
+          "path": "step_update.step_type",
+          "equals": "agent_response"
+        },
+        "mode": "sum",
+        "fields": {
+          "standardRead": "step_update.usage.input_tokens",
+          "cacheRead": "step_update.usage.cache_read_tokens",
+          "output": "step_update.usage.output_tokens",
+          "reasoning": "step_update.usage.thinking_tokens"
+        }
+      },
+      {
+        "match": {
+          "path": "event",
+          "equals": "init"
+        },
+        "mode": "last",
+        "fields": {
+          "sessionId": "conversation_id",
+          "model": "init.model"
+        }
+      },
+      {
+        "match": {
+          "path": "event",
+          "equals": "result"
+        },
+        "mode": "last",
+        "fields": {
+          "sessionId": "result.conversation_id",
+          "standardRead": "result.usage.input_tokens",
+          "cacheRead": "result.usage.cache_read_tokens",
+          "output": "result.usage.output_tokens",
+          "reasoning": "result.usage.thinking_tokens"
+        },
+        "inclusive": {
+          "output": [
+            "reasoning"
+          ]
+        }
+      }
+    ]
+  },
+  "conversation": {
+    "followUp": {
+      "cmd": [
+        "agy",
+        "-p",
+        "{prompt}",
+        "--conversation",
+        "{sessionId}",
+        "--add-dir",
+        "{cwd}",
+        "--dangerously-skip-permissions"
+      ],
+      "eventStreamArgs": [
+        "--output-format",
+        "stream-json"
+      ],
+      "$comment": "Verified: `agy -p <prompt> --conversation <conversation_id> --output-format json` continued the same conversation (it recalled a code word, same id). The id is AGY's own, read from the init line, so no newArgs or resumeArgs are declared: Bullswarm cannot choose it in advance."
+    }
+  },
+  "meter": {
+    "type": "reader",
+    "window": "weekly+5h"
+  },
+  "$comment-meter": "provider.mjs runs `agy -p /usage --output-format json` (about 3 s, num_turns 0, spends no quota) and reads the pool's own group: `Gemini Models` for agy, `Claude and GPT models` for agy:claude. Each group has a weekly and a 5-hour bucket with remaining_fraction and reset_time. AGY says quota is used in proportion to token cost and the weekly limit follows the account tier; the tier's name is not shown, so plan stays null.",
+  "costRank": 2,
+  "lanes": [
+    "analyze",
+    "build",
+    "chore"
+  ],
+  "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+  ],
+  "modelDiscovery": {
+    "$comment": "provider.mjs runs `agy models` (no prompt; `Fetching available models...` goes to stderr) and reads `<id>\\t<label>` lines. Ids carry the effort as a suffix (gemini-4-carbon-high); discovery folds them into one base id with reasoningLevels. includePattern and ignorePattern pick this pool's models; agy:claude replaces them in provider.mjs. The orchestrator ids are AGY's own multi-agent mode, not a worker model, and are left out of both pools.",
+    "cmd": [
+      "agy",
+      "models"
+    ],
+    "includePattern": "^gemini-",
+    "ignorePattern": "orchestrator",
+    "timeoutMs": 20000
+  },
+  "$comment-knownModels": "Last-resort list for when `agy models` fails: what agy 1.5.10 listed on 2026-11-17, folded to base ids. provider.mjs keeps each pool's own models from it. A fallback list carries no per-model effort levels, so a level is clamped only to reasoning.levels then.",
+  "knownModels": [
+    "gemini-4-carbon",
+    "gemini-4-argon",
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium"
+  ],
+  "model": "gemini-4-carbon",
+  "modelSelection": {
+    "flag": "--model",
+    "mode": "replace-or-append"
+  },
+  "$comment-reasoning": "Measured: `--model gemini-4-carbon --effort high` runs. An unsupported level exits 1 (`gemini-4-carbon has no \"xhigh\" effort (available: low, medium, high)`), so per-model levels come from discovery's reasoningLevels (hydrogen alone lists xhigh). Claude models refuse the flag (`--effort is not supported for model \"claude-opus-4-6-thinking\"`) and the GPT-OSS id already carries its effort (`gpt-oss-120b-medium`), hence skipModels; the agy:claude pool declares no reasoning at all. Tier defaults are the owner's Gemini mapping: high runs Carbon at high, medium Hydrogen at high, low 3.8 Flash at medium.",
+  "reasoning": {
+    "flag": "--effort",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
+    "defaults": {
+      "high": "high",
+      "medium": "high",
+      "low": "medium"
+    },
+    "skipModels": [
+      "^claude-",
+      "^gpt-oss-"
+    ]
+  },
+  "$comment-modelFamilies": "Owner decision (17-18 Nov 2026): the Gemini line is agy's default. High is Gemini 4 Carbon. Medium is Gemini 4 Hydrogen: cheaper than Argon ($1.50/$7.50 against $2.00/$10.00) and faster, with an Artificial Analysis index of about 51-54 against Argon's about 50 (third-party figures relayed by AGY, not verified here). Argon stays selectable by hand but is never suggested: it costs what Carbon costs and is the older, weaker model. Low is Gemini 3.8 Flash. On agy:claude, Opus serves high, Sonnet medium, and GPT-OSS 120B is never suggested. The benchmark may change these; they stay data here.",
+  "modelFamilies": [
+    {
+      "family": "gemini-carbon",
+      "match": "^gemini-[0-9][0-9.]*-carbon$",
+      "tier": "high",
+      "qualityRank": 6
+    },
+    {
+      "family": "gemini-argon",
+      "match": "^gemini-[0-9][0-9.]*-argon$",
+      "tier": "high",
+      "qualityRank": 5,
+      "autoRecommend": false
+    },
+    {
+      "family": "gemini-hydrogen",
+      "match": "^gemini-[0-9][0-9.]*-hydrogen$",
+      "tier": "medium",
+      "qualityRank": 4
+    },
+    {
+      "family": "gemini-flash",
+      "match": "^gemini-[0-9][0-9.]*-flash$",
+      "tier": "low",
+      "qualityRank": 3
+    },
+    {
+      "family": "claude-opus",
+      "match": "^claude-opus-[0-9]",
+      "tier": "high",
+      "qualityRank": 5
+    },
+    {
+      "family": "claude-sonnet",
+      "match": "^claude-sonnet-[0-9]",
+      "tier": "medium",
+      "qualityRank": 4
+    },
+    {
+      "family": "gpt-oss",
+      "match": "^gpt-oss-",
+      "tier": "low",
+      "qualityRank": 2,
+      "autoRecommend": false
+    }
+  ],
+  "$comment-modelProfiles": "Per 1M tokens from https://aistudio.google.com/docs/pricing, read 2026-11-17; output includes thinking, and these models have no long-context tier. The current price is what each row holds. Scheduled changes, not yet in the rows: gemini-4-carbon and gemini-4-argon go to $4.00 input, $0.20 cached, $20.00 output from 2026-12-01; gemini-3.8-flash to $1.50, $0.15, $7.50 from 2027-01-01. pricingHistory only records rates that ended before `pricing`, so a future rate cannot be dated in advance: update the row on the day. Google lists no cache-write price, so none is declared. The Claude and GPT-OSS models served through AGY have no row: what AGY charges for them against its quota is not published.",
+  "modelProfiles": [
+    {
+      "match": "^gemini-4-carbon$",
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.1,
+        "outputUsdPerMillion": 10
+      },
+      "pricingSource": "https://aistudio.google.com/docs/pricing",
+      "pricingUpdatedAt": "2026-11-17"
+    },
+    {
+      "match": "^gemini-4-argon$",
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.1,
+        "outputUsdPerMillion": 10
+      },
+      "pricingSource": "https://aistudio.google.com/docs/pricing",
+      "pricingUpdatedAt": "2026-11-17"
+    },
+    {
+      "match": "^gemini-4-hydrogen$",
+      "pricing": {
+        "inputUsdPerMillion": 1.5,
+        "cacheReadUsdPerMillion": 0.075,
+        "outputUsdPerMillion": 7.5
+      },
+      "pricingSource": "https://aistudio.google.com/docs/pricing",
+      "pricingUpdatedAt": "2026-11-17"
+    },
+    {
+      "match": "^gemini-3\\.8-flash$",
+      "pricing": {
+        "inputUsdPerMillion": 0.75,
+        "cacheReadUsdPerMillion": 0.075,
+        "outputUsdPerMillion": 3.75
+      },
+      "pricingSource": "https://aistudio.google.com/docs/pricing",
+      "pricingUpdatedAt": "2026-11-17"
+    }
+  ],
+  "subscription": {
+    "plan": null,
+    "monthlyPriceUsd": null,
+    "includedValueUsd": null,
+    "quotaWindow": "weekly"
+  },
+  "credentialGroup": "agy",
+  "$comment-credentialGroup": "Both pools run the same agy login: a sign-in failure on one says the other is signed out too.",
+  "flags": {
+    "stealth": false
+  },
+  "$comment-timeout": "No implicit wall-clock timeout; callers may opt in with --timeout or workflow step.timeoutSec"
+}

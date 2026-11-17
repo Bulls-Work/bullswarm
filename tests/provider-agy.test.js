@@ -52,6 +52,8 @@ function tempHome(t, prefix = 'bs-agy-') {
 function loaderFor(home) {
   return {
     homeDir: home,
+    // No Claude login is scanned: claude-code loads as its one default pool.
+    accounts: [],
     enabled: [],
     dirs: {
       firstClass: FIRST_CLASS,

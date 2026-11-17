@@ -41,7 +41,7 @@ flowchart LR
 - **Shows everything live.** A terminal dashboard covers quota, history, running workflows and each agent's individual turns.
 - **Works with the agent you already use.** The `/bullswarm` skill teaches Claude Code, Codex and Grok when to delegate. There's also an early-access Claude Code Mod that shows runs and usage inside Claude Code.
 - **Lets you steer mid-run.** Add steps, gates or loops while a workflow runs (`workflow add`, also straight from a step's answer), continue a waiting gate or give a loop more rounds, rerun a step, or pause and resume it.
-- **Extends with providers.** Claude Code, Codex and Grok are built in. Other CLIs can be added as providers without touching the core.
+- **Extends with providers.** Claude Code, Codex, Grok and AGY (Google Antigravity) are built in. Other CLIs can be added as providers without touching the core.
 
 ## See it
 
