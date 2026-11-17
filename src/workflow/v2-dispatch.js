@@ -36,6 +36,7 @@ import {
 import {
   attemptSilenceTimeoutSec, noProgressLimitApplies, workerNoProgressTimeoutSec, workerSilenceTimeoutSec,
 } from './dispatch-silence.js';
+import { claudeCache5mFor, CLAUDE_CACHE_5M_VARIABLE } from './claude-cache-5m.js';
 import { createFileChangeClock } from '../lib/stale.js';
 import { authHoldActive, preparePools, retryPoolTiers, selectedModel } from './dispatch-pools.js';
 import { authHoldText, clearAuthHolds, recordAuthFailure } from '../lib/auth-hold.js';
@@ -718,6 +719,7 @@ export async function dispatchV2Action({
           : pool.name === pendingRetry.pool ? 'same-pool' : 'other-pool',
       }
       : null;
+    const cache5m = claudeCache5mFor({ env: parentEnv, pool, action });
     const record = {
       ordinal, pool: pool.name, model: model ?? connector.model ?? null,
       routeWhy,
@@ -731,6 +733,7 @@ export async function dispatchV2Action({
       outFile: files.outFile, outputFile: files.outFile, reasoning,
       ...(incomingHandoff ? { handoff: { from: incomingHandoff.from, bytes: incomingHandoff.bytes } } : {}),
       ...(retryOf ? { retryOf } : {}),
+      ...(cache5m ? { claudeCache5m: cache5m } : {}),
       ...(box?.record ? { timeBox: clone(box.record) } : {}),
       routing: {
         reason: routeWhy, candidates: route.candidates, effort,
@@ -775,7 +778,7 @@ export async function dispatchV2Action({
     let noFileChanged = false;
     try {
       verdict = await watch(runtimeConnector, attemptTask, targetDir, files, {
-        env: childDepthEnv(parentEnv),
+        env: cache5m ? { ...childDepthEnv(parentEnv), [CLAUDE_CACHE_5M_VARIABLE]: '1' } : childDepthEnv(parentEnv),
         model,
         reasoning,
         conversation: session?.invocation ?? null,
