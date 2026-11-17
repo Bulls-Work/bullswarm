@@ -56,7 +56,7 @@ function removedPlanVerb(sub, opts) {
   return 2;
 }
 
-export async function wfPlan(rest) {
+export async function wfPlan(rest, { ensureHome } = {}) {
   const [head, ...tail] = rest;
   const sub = flagName(head) ? undefined : head;
   const opts = parseFlags(sub === undefined ? rest : tail);
@@ -79,7 +79,7 @@ export async function wfPlan(rest) {
   }
   switch (sub) {
     case 'contract': return planContract(opts);
-    case 'validate': return planValidate(opts);
+    case 'validate': return planValidate(opts, { ensureHome });
     default:
       console.error(helpText(['workflow', 'plan']));
       return 2;
@@ -121,7 +121,7 @@ function planContract(opts) {
 
 // Dry-run a caller program against the contract: the same validator and the
 // same preview state a launch uses, without creating a run.
-async function planValidate(opts) {
+async function planValidate(opts, { ensureHome } = {}) {
   if (opts.help) { console.log(helpText(['workflow', 'plan', 'validate'])); return 0; }
   if (!opts.program) { console.error(`usage: ${usageLine(['workflow', 'plan', 'validate'])}`); return 2; }
   // Read once: a program from /dev/stdin or a pipe cannot be read twice.
@@ -143,6 +143,7 @@ async function planValidate(opts) {
   const routing = doc.config?.workerRouting ?? {};
   const pinned = Boolean(routing.strictPool ?? routing.pool);
   if (pinned || programRoutes(accepted.program.actions) || programNamesModel(accepted.program.actions, doc)) {
+    ensureHome?.();
     const { pools } = await livePoolNames();
     if (pinned) workspaceIssues.push(...pinnedPoolIssues(doc, accepted.program, pools));
     workspaceIssues.push(...routePoolIssues(accepted.program.actions, pools, doc));

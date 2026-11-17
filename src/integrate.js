@@ -227,24 +227,28 @@ export function integrateUsage() {
   return helpText(['integrate']);
 }
 
-export function cmdIntegrate(opts) {
+export function cmdIntegrate(opts, { ensureHome } = {}) {
   const subcommand = opts.rest[0] ?? 'status';
   if (opts.help || subcommand === 'help') {
     console.log(integrateUsage());
     return 0;
   }
+  if (!['status', 'install', 'remove', 'retire-legacy'].includes(subcommand)) {
+    console.error(integrateUsage());
+    return 2;
+  }
   try {
     if (opts.agents != null && opts.agents !== true) parseIntegrationAgents(opts.agents);
+    if (subcommand === 'retire-legacy' && opts.yes !== true) {
+      retireLegacyOffload({ approved: false });
+    }
+    ensureHome?.();
     const agents = opts.agents ?? null;
     let result;
     if (subcommand === 'status') result = { action: 'status', ...integrationStatus({ agents }) };
     else if (subcommand === 'install') result = installIntegration({ agents, approved: opts.yes === true });
     else if (subcommand === 'remove') result = removeIntegration({ agents, approved: opts.yes === true });
-    else if (subcommand === 'retire-legacy') result = retireLegacyOffload({ approved: opts.yes === true });
-    else {
-      console.error(integrateUsage());
-      return 2;
-    }
+    else result = retireLegacyOffload({ approved: opts.yes === true });
     if (opts.json) console.log(JSON.stringify(result, null, 2));
     else printIntegrationResult(result);
     const ok = result.status?.ok ?? result.ok;

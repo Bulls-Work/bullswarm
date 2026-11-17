@@ -85,7 +85,7 @@ function showStarting(resolved, facts, opts, { result = false } = {}) {
 
 // `alias` is the help root the caller actually typed: the top-level `runs`
 // shorthand renders its own synopsis rather than the canonical one.
-export function cmdRuns(args, { alias = ['workflow', 'runs'] } = {}) {
+export function cmdRuns(args, { alias = ['workflow', 'runs'], ensureHome } = {}) {
   const opts = parseRunsFlags(args);
   const [sub, idToken, ...rest] = opts._positional;
   const SUBS = ['list', 'show', 'result', 'delete'];
@@ -100,9 +100,24 @@ export function cmdRuns(args, { alias = ['workflow', 'runs'] } = {}) {
   if (flagExit !== null) return flagExit;
   const typedExit = typedFlagErrors(opts, path);
   if (typedExit !== null) return typedExit;
-  if (!sub || sub === 'list') return runsList(opts);
-  if (sub === 'show') return runsShow(idToken, opts);
-  if (sub === 'result') return runsResult(idToken, opts);
+  if (!sub || sub === 'list') {
+    try { resolveInitiatedRange(opts); } catch (e) { return err(e.message, 2); }
+    ensureHome?.();
+    return runsList(opts);
+  }
+  if (sub === 'show') {
+    if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2);
+    ensureHome?.();
+    return runsShow(idToken, opts);
+  }
+  if (sub === 'result') {
+    if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2);
+    ensureHome?.();
+    return runsResult(idToken, opts);
+  }
+  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2);
+  if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`, 2);
+  ensureHome?.();
   return runsDelete(idToken, opts, rest);
 }
 
@@ -546,7 +561,7 @@ function runsDelete(idToken, opts, rest) {
 // minutes. History is a timeline of every workflow, so all of them join the
 // index. A legacy directory nothing can be read from still records nothing and
 // raises nothing.
-export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent = false } = {}) {
+export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent = false, ensureHome } = {}) {
   const opts = { json: false, force: false };
   for (const arg of args) {
     if (arg === '--json') opts.json = true;
@@ -556,6 +571,7 @@ export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent =
       return 2;
     }
   }
+  ensureHome?.();
   const counts = { scanned: 0, written: 0, skipped: 0, legacy: 0, unfinished: 0, present: 0, failed: 0 };
   const failures = [];
   // One git resolution per working directory, not per run: 293 run

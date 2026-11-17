@@ -844,7 +844,7 @@ function renderProbe(r) {
  * it at fixture directories); `log`/`error` default to the console.
  */
 export async function cmdProvider(args, {
-  bullswarmDir, loaderOpts = {}, log = console.log, error = console.error,
+  bullswarmDir, ensureHome, loaderOpts = {}, log = console.log, error = console.error,
 } = {}) {
   const [head, ...tail] = args;
   const sub = head === undefined || flagName(head) ? 'list' : head;
@@ -864,6 +864,7 @@ export async function cmdProvider(args, {
     const [operand] = opts.rest;
 
     if (sub === 'list') {
+      ensureHome?.();
       const report = listReport(bullswarmDir, loaderOpts);
       log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(renderList(report), bullswarmDir));
       return 0;
@@ -882,6 +883,7 @@ export async function cmdProvider(args, {
     }
     if (sub === 'validate') {
       if (!operand) throw usage(sub, 'missing <dir|name>');
+      ensureHome?.();
       const dir = resolveProviderTarget(bullswarmDir, operand, loaderOpts);
       const report = validateProvider(bullswarmDir, dir, loaderOpts);
       log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(renderValidate(report), bullswarmDir));
@@ -891,6 +893,7 @@ export async function cmdProvider(args, {
       if (!operand) throw usage(sub, 'missing <name>');
       if (opts.from === true) throw usage(sub, 'missing --from <template>');
       if (opts.dir === true) throw usage(sub, 'missing --dir <path>');
+      ensureHome?.();
       const result = scaffoldProvider(bullswarmDir, operand, {
         from: typeof opts.from === 'string' ? opts.from : null,
         dir: typeof opts.dir === 'string' ? opts.dir : null,
@@ -908,6 +911,7 @@ export async function cmdProvider(args, {
       timeoutSec = Number(opts.timeout);
       if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) throw usage(sub, '--timeout must be a positive number of seconds');
     }
+    ensureHome?.();
     const pool = resolvePoolId(operand, bullswarmDir);
     const result = await probePool(bullswarmDir, pool, { loaderOpts, timeoutSec });
     log(opts.json ? JSON.stringify(result, null, 2) : withPoolLabels(renderProbe(result), bullswarmDir));

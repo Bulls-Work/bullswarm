@@ -5,13 +5,16 @@ import { cachedCall, cachedCallMain } from '../src/lib/pools-cache.js';
 
 const argv = process.argv.slice(2);
 
+// `--version` / `version` needs neither the CLI module graph nor BULLSWARM_HOME.
 // `pools`, `workflow runs` and `assignments` with `--json --max-age <s>` are
 // what every Claude session's mod asks on a timer: answer them from the shared
 // cache before loading the rest of the CLI, which alone is ~280 MB RSS. Only
 // the caller that rebuilds loads it.
-const run = cachedCall(argv) !== null
-  ? cachedCallMain(argv)
-  : import('../src/cli.js').then((m) => m.main(argv));
+const run = argv.length === 1 && (argv[0] === '--version' || argv[0] === 'version')
+  ? import('../src/lib/version.js').then((m) => { console.log(m.getVersion()); return 0; })
+  : cachedCall(argv) !== null
+    ? cachedCallMain(argv)
+    : import('../src/cli.js').then((m) => m.main(argv));
 
 run.then(
   (code) => { process.exitCode = code; },

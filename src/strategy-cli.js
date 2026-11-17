@@ -1091,7 +1091,7 @@ export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
 }
 
 export async function cmdStrategy(args, {
-  bullswarmDir, input = process.stdin, output = process.stdout,
+  bullswarmDir, ensureHome, input = process.stdin, output = process.stdout,
 } = {}) {
   // A leading flag means no subcommand was given: `strategy --json` reads the
   // default report, it does not name a subcommand called "--json".
@@ -1112,10 +1112,13 @@ export async function cmdStrategy(args, {
       console.log(strategyUsage());
       return 0;
     }
-    const flagExit = unknownFlagExit(opts._flags, strategyHelpPath(sub, opts));
+    const helpPath = strategyHelpPath(sub, opts);
+    if (!helpPath) throw new Error(strategyUsage());
+    const flagExit = unknownFlagExit(opts._flags, helpPath);
     if (flagExit !== null) return flagExit;
     if (sub === 'tui') {
       if (!input.isTTY || !output.isTTY) throw new Error('strategy tui requires an interactive terminal');
+      ensureHome?.();
       return await startStrategyDashboard({
         bullswarmDir, input, output,
         loadInventory: ({ force, onProgress, analyze }) => loadStrategyInventory(bullswarmDir, {
@@ -1130,6 +1133,7 @@ export async function cmdStrategy(args, {
     if (sub === 'rungs') {
       const pool = opts.pool === undefined ? null : String(opts.pool).trim();
       if (pool === '') throw new Error('missing --pool name for strategy rungs');
+      ensureHome?.();
       const rows = await rungRows(bullswarmDir, { pool });
       console.log(opts.json
         ? JSON.stringify({
@@ -1143,8 +1147,6 @@ export async function cmdStrategy(args, {
     if (sub === 'set-rung') {
       const [pool, tier] = opts.rest;
       if (!pool || !tier) throw new Error(rungUsage('missing <pool> and <tier>'));
-      const connectors = loadConnectors(bullswarmDir, PACKAGED);
-      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
       if (!STRATEGY_TIERS.includes(tier)) {
         throw new Error(`unknown tier "${tier}" (${STRATEGY_TIERS.join(', ')})`);
       }
@@ -1157,6 +1159,9 @@ export async function cmdStrategy(args, {
           throw new Error(`--reasoning must be ${[...REASONING_LEVELS, 'default'].join(', ')}`);
         }
       }
+      const connectors = loadConnectors(bullswarmDir, PACKAGED);
+      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+      ensureHome?.();
       // Validated before the lock is taken, on its own read of the cached
       // discovery report: a rejected model must not make a waiter queue.
       const known = cachedPoolModels(loadState(bullswarmDir), connectors[pool]);
@@ -1209,6 +1214,7 @@ export async function cmdStrategy(args, {
       return 0;
     }
     if (sub === 'inventory' || sub === 'routes') {
+      ensureHome?.();
       const inventory = await loadStrategyInventory(bullswarmDir, {
         force: opts.refresh === true, useOpenRouter: opts.refresh === true,
       });
@@ -1228,6 +1234,7 @@ export async function cmdStrategy(args, {
         reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
         if (!reason) throw new Error(`usage: ${usageLine(['strategy', 'set-provider'])}`);
       }
+      ensureHome?.();
       console.log(JSON.stringify(setProviderEnabled(bullswarmDir, pool, mode === 'on', reason), null, 2));
       return 0;
     }
@@ -1247,10 +1254,12 @@ export async function cmdStrategy(args, {
         if (allowPinned !== undefined && allowPinned !== true) {
           throw new Error(`--allow-pinned takes no value (got "${allowPinned}"); pass --allow-pinned alone, or leave it out for a plain hold`);
         }
+        ensureHome?.();
         result = setPoolHold(bullswarmDir, pool, {
           reason, until: new Date(until).toISOString(), ...(allowPinned === true ? { allowPinned: true } : {}),
         });
       } else if (sub === 'unhold') {
+        ensureHome?.();
         result = setPoolHold(bullswarmDir, pool, null);
       } else {
         const raw = String(opts.rest[1] ?? '').trim().toLowerCase();
@@ -1258,6 +1267,7 @@ export async function cmdStrategy(args, {
         const window = opts.window === undefined ? 'all' : String(opts.window).trim().toLowerCase();
         if (!raw || !Number.isFinite(pct) || pct < 0 || pct >= 100) throw new Error(`usage: ${usageLine(['strategy', 'set-reserve'])}`);
         if (!RESERVE_WINDOWS.includes(window)) throw new Error(`--window must be ${RESERVE_WINDOWS.join(', ')}`);
+        ensureHome?.();
         result = setPoolReserve(bullswarmDir, pool, pct === 0 ? null : { pct, window });
       }
       console.log(JSON.stringify(result, null, 2));
@@ -1269,9 +1279,10 @@ export async function cmdStrategy(args, {
       if (!pool || raw === undefined || opts.rest.length > 2) throw new Error(usage);
       // Input first, so a bad lane fails before anything is read or locked.
       const lanes = parseLanesArg(raw, usage);
+      if (opts.yes !== true) throw new Error('set-lanes changes routing; pass --yes to approve');
       const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
-      if (opts.yes !== true) throw new Error('set-lanes changes routing; pass --yes to approve');
+      ensureHome?.();
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
         setLaneOverride(fresh.strategy, pool, lanes);
@@ -1290,6 +1301,7 @@ export async function cmdStrategy(args, {
       return 0;
     }
     if (sub === 'recheck-not-produced') {
+      ensureHome?.();
       const preview = loadState(bullswarmDir).decisionLog ?? [];
       const found = structuredClone(preview);
       markOutsideFalseFailures(found);
@@ -1306,6 +1318,7 @@ export async function cmdStrategy(args, {
       if (!pool || !model || !raw) throw new Error(`usage: ${usageLine(['strategy', 'set-model'])}`);
       const tiers = raw === 'off' ? [] : raw.split(',').map((tier) => tier.trim());
       if (tiers.some((tier) => !STRATEGY_TIERS.includes(tier))) throw new Error('--tiers must be high,medium,low or off');
+      ensureHome?.();
       const inventory = await loadStrategyInventory(bullswarmDir);
       const provider = inventory.providers.find((entry) => entry.name === pool);
       if (!provider?.models.some((entry) => entry.id === model)) throw new Error(`unknown model "${model}" for pool "${pool}"`);
@@ -1316,6 +1329,7 @@ export async function cmdStrategy(args, {
       if (opts.yes !== true) throw new Error('reset-tier changes routing; pass --yes to approve');
       const tier = opts.rest[0];
       if (!STRATEGY_TIERS.includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'reset-tier'])}`);
+      ensureHome?.();
       updateState(bullswarmDir, (state) => {
         state.strategy ??= {};
         state.strategy.configuredTiers = (state.strategy.configuredTiers ?? []).filter((entry) => entry !== tier);
@@ -1332,14 +1346,15 @@ export async function cmdStrategy(args, {
     if (sub === 'set-reasoning' || sub === 'reset-reasoning') {
       if (opts.yes !== true) throw new Error(`strategy ${sub} changes routing; pass --yes to approve`);
       const pool = reasoningFlag(opts.pool, sub);
-      if (pool !== null && !loadConnectors(bullswarmDir, PACKAGED)[pool]) throw new Error(`unknown pool "${pool}"`);
       // Model ids keep their case; only pool, tier and level are lowercased.
       if (opts.model === true) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
       const model = typeof opts.model === 'string' && opts.model.trim() ? opts.model.trim() : null;
       if (model && !pool) throw new Error(`strategy ${sub} --model needs --pool`);
+      if (pool !== null && !loadConnectors(bullswarmDir, PACKAGED)[pool]) throw new Error(`unknown pool "${pool}"`);
       if (sub === 'set-reasoning') {
         const tier = assertReasoningTier(reasoningFlag(opts.tier, sub));
         const level = assertReasoningLevel(reasoningFlag(opts.level, sub));
+        ensureHome?.();
         let reasoning = null;
         updateState(bullswarmDir, (state) => {
           state.strategy ??= {};
@@ -1351,6 +1366,7 @@ export async function cmdStrategy(args, {
         return 0;
       }
       const tier = opts.tier === undefined ? null : assertReasoningTier(reasoningFlag(opts.tier, sub));
+      ensureHome?.();
       let reasoning = null;
       updateState(bullswarmDir, (state) => {
         state.strategy ??= {};
@@ -1364,6 +1380,7 @@ export async function cmdStrategy(args, {
     if (sub === 'configure') {
       if (opts.yes !== true) throw new Error('strategy configure changes routing; pass --yes to approve');
       if (!opts.file) throw new Error(`usage: ${usageLine(['strategy', 'configure'])}`);
+      ensureHome?.();
       const { readFileSync } = await import('node:fs');
       const config = JSON.parse(readFileSync(opts.file, 'utf8'));
       const connectors = loadConnectors(bullswarmDir, PACKAGED);
@@ -1415,17 +1432,18 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'refresh' || sub === 'recommend') {
       if (opts.apply && opts.yes !== true) throw new Error('--apply changes routing; pass --yes to approve');
+      const refreshHours = opts.apply ? refreshHoursValue(opts['refresh-hours']) : null;
+      ensureHome?.();
       const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       const applied = opts.apply
-        ? applyStrategyRecommendations(bullswarmDir, report, {
-          refreshHours: refreshHoursValue(opts['refresh-hours']),
-        }) : null;
+        ? applyStrategyRecommendations(bullswarmDir, report, { refreshHours }) : null;
       console.log(opts.json
         ? JSON.stringify(applied ? { report, ...applied } : report, null, 2)
         : humanReport(report, bullswarmDir));
       return 0;
     }
     if (sub === 'show') {
+      ensureHome?.();
       const state = loadState(bullswarmDir);
       const cached = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       const report = state.strategy?.lastReport ? resolveReportPrices(cached, state) : cached;
@@ -1435,13 +1453,14 @@ export async function cmdStrategy(args, {
     if (sub === 'set-subscription') {
       const pool = opts.rest[0];
       if (!pool) throw new Error(`usage: ${usageLine(['strategy', 'set-subscription'])}`);
-      const connectors = loadConnectors(bullswarmDir, PACKAGED);
-      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
       // Flag validation first, so a bad number fails before any lock is taken.
       const monthlyPriceUsd = numberOrNull(opts['monthly-usd'], 'monthly-usd');
       const includedValueUsd = numberOrNull(opts['included-usd'], 'included-usd');
       const quotaWindow = quotaWindowValue(opts['quota-window']);
       const resetsAt = resetsAtValue(opts['resets-at']);
+      const connectors = loadConnectors(bullswarmDir, PACKAGED);
+      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+      ensureHome?.();
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
         fresh.strategy.subscriptions ??= {};
@@ -1468,6 +1487,7 @@ export async function cmdStrategy(args, {
       if (value === 'reset' && !pool) throw new Error('strategy set-free reset needs --pool');
       if (value !== 'reset' && opts.yes !== true) throw new Error('strategy set-free changes routing; pass --yes to approve');
       if (pool && !loadConnectors(bullswarmDir, PACKAGED)[pool]) throw new Error(`unknown pool "${pool}"`);
+      ensureHome?.();
       let reapply = false;
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
@@ -1496,6 +1516,7 @@ export async function cmdStrategy(args, {
       if (!opts.pool || !opts.model) throw new Error('assignment needs --pool and --model');
       const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[opts.pool]) throw new Error(`unknown pool "${opts.pool}"`);
+      ensureHome?.();
       // `source: 'user'` marks the pin as the user's, so no apply or
       // auto-refresh ever removes it (releaseAppliedPins).
       const state = updateState(bullswarmDir, (fresh) => {
@@ -1511,6 +1532,7 @@ export async function cmdStrategy(args, {
     if (sub === 'exclude-model' || sub === 'include-model') {
       const model = opts.rest[0];
       if (!model) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+      ensureHome?.();
       const normalized = String(model).trim().toLowerCase();
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
@@ -1536,11 +1558,11 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'apply') {
       if (opts.yes !== true) throw new Error('strategy apply changes routing; pass --yes to approve');
+      const refreshHours = refreshHoursValue(opts['refresh-hours']);
+      ensureHome?.();
       const state = loadState(bullswarmDir);
       const report = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
-      const result = applyStrategyRecommendations(bullswarmDir, report, {
-        refreshHours: refreshHoursValue(opts['refresh-hours']),
-      });
+      const result = applyStrategyRecommendations(bullswarmDir, report, { refreshHours });
       console.log(JSON.stringify({ action: 'strategy-applied', ...result }, null, 2));
       return 0;
     }
@@ -1548,6 +1570,7 @@ export async function cmdStrategy(args, {
       const mode = opts.rest[0] ?? 'status';
       if (mode === 'off') {
         if (opts.yes !== true) throw new Error('strategy auto off changes routing policy; pass --yes to approve');
+        ensureHome?.();
         const written = updateState(bullswarmDir, (state) => {
           state.strategy ??= {};
           state.strategy.policy ??= {};
@@ -1558,6 +1581,7 @@ export async function cmdStrategy(args, {
         return 0;
       }
       if (mode !== 'status') throw new Error(`usage: ${usageLine(['strategy', 'auto'])}`);
+      ensureHome?.();
       // `status` writes nothing, so it stays a plain read and never queues
       // behind the lock: the empty policy it reports is a default, not a save.
       console.log(JSON.stringify({
@@ -1569,6 +1593,7 @@ export async function cmdStrategy(args, {
     if (sub === 'clear-assignment') {
       const tier = opts.rest[0];
       if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'clear-assignment'])}`);
+      ensureHome?.();
       updateState(bullswarmDir, (state) => {
         clearTierAssignment(state.strategy, tier);
         dropStrategyReport(state.strategy);

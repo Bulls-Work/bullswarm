@@ -85,6 +85,7 @@ function table(rows) {
 /** CLI leaf for `bullswarm workflow reprice`. */
 export function cmdReprice(args = [], {
   bullswarmDir = defaultBullswarmDir(),
+  ensureHome,
   transcriptHome = homedir(),
   readTranscriptUsage = defaultReadTranscriptUsage,
   connectors = null,
@@ -102,6 +103,7 @@ export function cmdReprice(args = [], {
     error(`✗ ${err.message}`);
     return 2;
   }
+  ensureHome?.();
   if (opts.pool) opts.pool = resolvePoolId(opts.pool, bullswarmDir);
   const home = opts['transcript-home'] ?? transcriptHome;
   if (opts.incremental) {
