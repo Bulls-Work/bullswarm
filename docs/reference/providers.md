@@ -196,11 +196,11 @@ The built-in families:
 | `codex` | `*-astra`: high, 7 · `*-sol`: high, 6 · bare `gpt-N.M`: high, 5 · `*-terra`: medium, 4 · `*-luna`: low, 3 · `mini`: low, 2 (`gpt-5.3-codex` keeps its own row) |
 | `claude-code` | `fable`: high, 6, never auto-recommended · `opus`: high, 5 · `sonnet`: medium, 4 · `haiku`: low, 3 |
 | `grok` | plain `grok-N.M` (no suffix): high, 5 · `grok-N.M-build-fast`: high, 5, never auto-recommended |
-| `agy` | `gemini-N-carbon`: high, 6 · `gemini-N-argon`: high, 5, never auto-recommended · `gemini-N-hydrogen`: medium, 4 · `gemini-N-flash`: low, 3 · on `agy:claude`, `claude-opus-*`: high, 5 · `claude-sonnet-*`: medium, 4 · `gpt-oss-*`: low, 2 |
+| `agy` | `gemini-N-carbon`: high, 6 · `gemini-N-argon`: high, 5, never auto-recommended · `gemini-N-hydrogen`: medium, 4 · `gemini-N-flash`: low, 3 · on `agy:claude`, `claude-opus-*`: medium, 5 · `claude-sonnet-*`: low, 4 · `gpt-oss-*`: low, 2, never auto-recommended |
 
 Grok has one model line, so one family covers every plain version and the newest wins: `grok-4.7` today, and a `grok-4.8` the day `grok models` lists it. Medium and low run it too, each at its own tier's reasoning (see [below](#newest-generation-fallback-generationfallback)). `grok-4.7-build-fast` is Grok Build's id for Grok 4.7 Fast, which [xAI describes](https://docs.x.ai/developers/grok-4-7) as "the same model served on faster infrastructure, billed at twice the standard token rates". It keeps its base model's rank, is never suggested, and stays selectable with `strategy set-rung`. It has no price row: xAI's [Pricing page](https://docs.x.ai/developers/pricing#grok-47-fast-pricing-cursor-and-grok-build-only) lists its long-context rates as $6.00 / $1.50 / $18.00 per 1M tokens (checked 2026-09-23), which is not twice grok-4.7's $4.00 / $1.00 / $12.00. The contrib providers keep their own rows.
 
-AGY's Gemini line is the owner's choice for the `agy` pool (17-18 Nov 2026): high runs Gemini 4 Carbon at `high`, medium Gemini 4 Hydrogen at `high`, low Gemini 3.8 Flash at `medium` (the connector's `reasoning.defaults`). Hydrogen serves medium rather than Argon because it is cheaper ($1.50 / $7.50 per 1M tokens against $2.00 / $10.00) and faster, with an Artificial Analysis index of about 51-54 against Argon's about 50; those index figures are third-party numbers relayed by AGY and not verified here. Argon costs what Carbon costs, so it is never suggested but stays selectable with `strategy set-rung`. The `agy:claude` pool runs the Claude and GPT-OSS models AGY serves: high Claude Opus 4.6, medium Claude Sonnet 4.6, low GPT-OSS 120B. GPT-OSS takes low rather than Sonnet because a model serves one tier, and a tier with no suggestion leaves the pool an empty rung after `strategy apply`, so `agy:claude` would never take low-effort work; GPT-OSS's quality through AGY is not benchmarked yet and the benchmark may drop it (`autoRecommend: false`). None of these models takes `--effort`, so that pool declares no reasoning.
+AGY's Gemini line is the owner's choice for the `agy` pool (17-18 Nov 2026): high runs Gemini 4 Carbon at `high`, medium Gemini 4 Hydrogen at `high`, low Gemini 3.8 Flash at `medium` (the connector's `reasoning.defaults`). Hydrogen serves medium rather than Argon because it is cheaper ($1.50 / $7.50 per 1M tokens against $2.00 / $10.00) and faster, with an Artificial Analysis index of about 51-54 against Argon's about 50; those index figures are third-party numbers relayed by AGY and not verified here. Argon costs what Carbon costs, so it is never suggested but stays selectable with `strategy set-rung`. The `agy:claude` pool runs the Claude and GPT-OSS models AGY serves, with no `high` pick (high work goes to other pools after the 2026-11-18 benchmark, where Opus 4.6 missed full marks on task 3 and spent 100% of the group's 5-hour window and 50% of its week): medium runs Claude Opus 4.6, low runs Claude Sonnet 4.6, and GPT-OSS 120B stays selectable with `strategy set-rung` (`autoRecommend: false`, unbenchmarked through AGY). None of these models takes `--effort`, so that pool declares no reasoning.
 
 ### How a tier's candidates are ordered
 
@@ -475,7 +475,8 @@ pin and no user action. The pattern, for any future provider like it:
   there.
 - **Their own tiers.** Each pool's strategy rungs come from its own models:
   `agy` runs Gemini (high Carbon, medium Hydrogen, low 3.8 Flash), `agy:claude`
-  the other group (high Opus 4.6, medium Sonnet 4.6, low GPT-OSS 120B).
+  the other group (no high pick — high work goes to other pools; medium Opus
+  4.6, low Sonnet 4.6; GPT-OSS 120B selectable by hand).
   `bullswarm pools` and `strategy` list the two pools as separate rows, each
   with its own meter.
 
