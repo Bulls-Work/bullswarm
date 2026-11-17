@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -536,4 +536,14 @@ test('strategy suggests the Gemini line per tier on agy, and Opus/Sonnet on agy:
   assert.deepEqual(priced['gemini-4-hydrogen'], { inputUsdPerMillion: 1.5, cacheReadUsdPerMillion: 0.075, outputUsdPerMillion: 7.5 });
   assert.deepEqual(priced['gemini-3.8-flash'], { inputUsdPerMillion: 0.75, cacheReadUsdPerMillion: 0.075, outputUsdPerMillion: 3.75 });
   assert.ok(discoveries['agy:claude'].models.every((m) => m.pricing === null));
+});
+
+test('docs: the contrib README lists every first-class provider under src/providers, agy included', () => {
+  const readme = readFileSync(join(REPO, 'providers/contrib/README.md'), 'utf8');
+  const line = readme.split('\n').join(' ').match(/providers under\s+`src\/providers\/`\s+\(([^)]*)\)/);
+  assert.ok(line, 'the README names the first-class providers in parentheses after `src/providers/`');
+  const listed = line[1].split(',').map((name) => name.trim()).sort();
+  const firstClass = readdirSync(join(REPO, 'src/providers'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  assert.deepEqual(listed, firstClass);
 });
