@@ -87,7 +87,7 @@ test('run-step: usage errors name the flag and never build a program', () => {
     [{ lane: 'build', effort: 'huge', rest: ['x'] }, /--effort must be high, medium, or low/],
     [{ lane: 'build', rest: [] }, /empty task/],
     [{ lane: 'build', prompt: 'x', rest: ['y'] }, /choose one/],
-    [{ lane: 'build', heartbeat: '0', rest: ['x'] }, /heartbeat.*greater than or equal to 1/],
+    [{ lane: 'build', heartbeat: '0', rest: ['x'] }, /heartbeat must be a number of seconds from 1 to 604800/],
     [{ lane: 'build', 'avoid-pool': true, rest: ['x'] }, /--avoid-pool requires/],
     [{ lane: 'build', 'answer-schema': true, rest: ['x'] }, /--answer-schema requires a file/],
   ];
