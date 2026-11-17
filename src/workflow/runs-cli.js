@@ -21,7 +21,7 @@ import { withV2Cancellation } from './v2-cancellation.js';
 import { existsSync, rmSync, readFileSync } from 'node:fs';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
+import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, v2RunnerLiveness, readKernelStderrTail, runStartingFacts, startingRunLine } from './short-id.js';
 import { BULLSWARM_DIR, legacyRunSummary, legacySummaryLines } from './cli-run-lookup.js';
 import { appendRollupIndex, readRollup, rollupIndexPath, writeLegacyRollup, writeRunRollup } from './rollup.js';
 import { readGoalCaller, readGoalProject } from './goal.js';
@@ -61,6 +61,26 @@ function showLegacy(resolved, opts) {
   if (opts.json || opts.summary) jsonOut(summary, opts);
   else console.log(legacySummaryLines(summary).join('\n'));
   return 0;
+}
+
+// A run whose kernel has not written state.json yet: one line saying it is
+// starting, or that it stopped before it started (with its kernel log). Never
+// the legacy summary. `show` exits 0 while it starts; `result` has no result yet.
+function showStarting(resolved, facts, opts, { result = false } = {}) {
+  const message = startingRunLine(resolved, facts);
+  const kernelStderrTail = facts.alive ? [] : readKernelStderrTail(resolved.runDir);
+  if (opts.json || opts.summary) {
+    jsonOut({
+      runId: resolved.runId, shortId: resolved.shortId ?? null, runDir: resolved.runDir, starting: true,
+      status: facts.alive ? 'starting' : 'interrupted', ongoing: facts.alive, pid: facts.pid, message,
+      ...(kernelStderrTail.length ? { kernelStderrTail } : {}),
+    }, opts);
+  } else {
+    const lines = [message];
+    if (kernelStderrTail.length) lines.push('kernel log:', ...kernelStderrTail.map((line) => `  ${line}`));
+    (result ? console.error : console.log)(lines.join('\n'));
+  }
+  return !result && facts.alive ? 0 : 1;
 }
 
 // `alias` is the help root the caller actually typed: the top-level `runs`
@@ -255,6 +275,12 @@ function runsList(opts) {
       );
       continue;
     }
+    if (r.starting) {
+      // No state.json yet: nothing to count, only that it is starting.
+      const status = r.starting.alive ? 'starting' : 'interrupted';
+      console.log(`${r.ongoing ? '●' : '○'}  ${'------'.padEnd(8)} ${r.runId.padEnd(28)} ${'(no state.json yet)'.padEnd(28)} ${status.padEnd(10)}`);
+      continue;
+    }
     // lifecycle.status is what the kernel last wrote; if the kernel is gone
     // that word is stale, so say the run stopped rather than repeat it.
     const durable = r.state.lifecycle?.status;
@@ -313,6 +339,8 @@ function runsShow(idToken, opts) {
   const { runId, runDir } = resolved;
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
+  const starting = runStartingFacts(runDir);
+  if (starting) return showStarting(resolved, starting, opts);
   if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
   const state = withV2Cancellation(readJsonSafe(statePath), runDir);
   const report = readJsonSafe(reportPath);
@@ -395,6 +423,8 @@ function runsResult(idToken, opts) {
   if (!resolved) return err(`no run found for "${idToken}"`);
 
   const { runId, runDir } = resolved;
+  const starting = runStartingFacts(runDir);
+  if (starting) return showStarting(resolved, starting, opts, { result: true });
   if (isLegacyRunDir(runDir)) return showLegacy(resolved, opts);
   const state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json')), runDir);
   const ongoing = isOngoing(runDir, state);
@@ -541,6 +571,13 @@ export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent =
 
   for (const run of listRuns(bullswarmDir)) {
     counts.scanned += 1;
+    // A run still starting (or that stopped before state.json) is not history
+    // to index, and never a legacy record.
+    if (run.starting) {
+      counts.unfinished += 1;
+      counts.skipped += 1;
+      continue;
+    }
     const legacy = Boolean(run.legacy) || !run.state || run.state.schemaVersion !== 'bullswarm.workflow.state.v2';
     if (legacy) counts.legacy += 1;
     if (!legacy) {
@@ -613,6 +650,11 @@ function summarize(r) {
     workflow: r.state?.name ?? null, goal: r.state?.goal ?? null,
     status: r.state?.status ?? null, startedAt: r.state?.startedAt ?? null,
     finishedAt: r.state?.finishedAt ?? null, ongoing: false,
+  };
+  if (r.starting) return {
+    runId: r.runId, shortId: null, legacy: false, starting: true, workflow: 'autonomous-v2', goal: null,
+    status: r.starting.alive ? 'starting' : 'interrupted', startedAt: null, finishedAt: null,
+    ongoing: r.ongoing, actionsSucceeded: 0, actionsTotal: 0,
   };
   return {
     runId: r.runId, shortId: r.shortId, legacy: false, workflow: 'autonomous-v2', goal: r.state.intent?.goal ?? null,

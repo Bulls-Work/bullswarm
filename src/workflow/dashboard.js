@@ -7,7 +7,7 @@ import { spawnRetentionSweep } from '../lib/retention.js';
 import { statSync } from 'node:fs';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, isLegacyRunDir, legacyRunLine } from './short-id.js';
+import { listRuns, resolveRunId, isLegacyRunDir, legacyRunLine, runStartingFacts, startingRunLine } from './short-id.js';
 import { readEvents } from './events.js';
 import { glyphs } from '../lib/glyphs.js';
 import { integrationStatus, installIntegration } from '../integrate.js';
@@ -84,6 +84,14 @@ export function overviewSnapshot(bullswarmDir, token, { width = 100, height = 30
   const row = detailRow(bullswarmDir, token);
   if (row.legacy) {
     return { legacy: true, shortId: row.shortId, runId: row.runId, lines: [legacyRunLine({ shortId: row.shortId, runId: row.runId, runDir: row.runDir })] };
+  }
+  // No state.json yet: one line, and the kernel log when it stopped first.
+  if (row.starting) {
+    const tail = row.kernelStderrTail ?? [];
+    return {
+      legacy: false, starting: true, shortId: row.shortId ?? null, runId: row.runId,
+      lines: [startingRunLine(row, row.starting), ...(tail.length ? ['kernel log:', ...tail.map((line) => `  ${line}`)] : [])],
+    };
   }
   const model = workflowPanelModel(row);
   const lines = renderWorkflowOverviewPanel(model, Math.max(40, Number(width) || 100), Math.max(12, Number(height) || 30), 0, 0)
@@ -200,6 +208,10 @@ export async function runDashboard(bullswarmDir, {
       output.write(`${legacyRunLine({ shortId: row.shortId, runId: row.runId, runDir: row.runDir })}\n`);
       return 2;
     }
+    if (row.starting) {
+      output.write(`${overviewSnapshot(bullswarmDir, token).lines.join('\n')}\n`);
+      return row.starting.alive ? 0 : 1;
+    }
     const details = renderDetails(row, { interactive: false });
     // A non-TTY run-ID inspection must expose the same segmented timeline as
     // the interactive viewer; otherwise real command output cannot evidence
@@ -215,7 +227,7 @@ export async function runDashboard(bullswarmDir, {
   let selected = 0;
   const directRow = token ? detailRow(bullswarmDir, token) : null;
   // A legacy run has no drilldown: its page is the one line the CLI prints.
-  const directV2 = Boolean(directRow) && !directRow.legacy;
+  const directV2 = Boolean(directRow) && !directRow.legacy && !directRow.starting;
   let message = null;
   let pricingNoteShown = false;
   let lastGoodRow = null;
@@ -521,7 +533,7 @@ export async function runDashboard(bullswarmDir, {
   // frame — keep painting the last good snapshot of the same run.
   const currentRow = () => {
     const fresh = detailRow(bullswarmDir, selectedRunId);
-    const row = (fresh.state || fresh.legacy || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
+    const row = (fresh.state || fresh.legacy || fresh.starting || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
     if (row === fresh) lastGoodRow = fresh;
     return row;
   };
@@ -584,7 +596,7 @@ export async function runDashboard(bullswarmDir, {
     const task = ui.page === 'task'
       ? [...(tasks.inflight ?? []), ...(tasks.finished ?? [])].find((entry) => taskKey(entry) === selectedTaskId) ?? null
       : null;
-    if (row && !row.legacy) {
+    if (row && !row.legacy && !row.starting) {
       // The follow flags track whatever the page last resolved as current.
       const panel = workflowPanelModel(row, {
         phaseIndex: ui.followActivePhase ? null : ui.phaseIndex,
@@ -751,7 +763,7 @@ export async function runDashboard(bullswarmDir, {
     if (visibleIndex >= 0) selected = visibleIndex;
     if (ui.page === 'run' || ui.page === 'step') {
       const nextRow = detailRow(bullswarmDir, next.runId);
-      if (nextRow.legacy) {
+      if (nextRow.legacy || nextRow.starting) {
         ui.focus = 0;
         ui.detailScroll = 0;
         message = null;
@@ -808,7 +820,7 @@ export async function runDashboard(bullswarmDir, {
   const openStep = (actionId, runId = null, attemptOrdinal = null) => {
     if (runId && runId !== selectedRunId) selectedRunId = runId;
     const row = detailRow(bullswarmDir, selectedRunId);
-    if (!row.legacy) {
+    if (!row.legacy && !row.starting) {
       const panel = workflowPanelModel(row);
       const phaseIndex = panel.phases.findIndex((phase) => phase.actions.some((action) => action.id === actionId));
       if (phaseIndex >= 0) {
@@ -1405,6 +1417,8 @@ export async function runDashboard(bullswarmDir, {
       return paint();
     }
     const row = detailRow(bullswarmDir, selectedRunId);
+    // A legacy or starting run's page is one line: nothing to scroll.
+    if (row.legacy || row.starting) return paint();
     const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
     const narrowTimeline = output.columns < 100 && ui.mobileTimeline && ui.focus === 0;
     if (ui.orchestratorDetail || ui.workflowVerbose || narrowTimeline) {
@@ -1996,6 +2010,14 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
   if (token) {
     const resolved = resolveRunId(bullswarmDir, token);
     if (!resolved) throw new Error(`no run found for "${token}"`);
+    const starting = runStartingFacts(resolved.runDir);
+    if (starting) {
+      return {
+        action: 'show', starting: true, runId: resolved.runId, shortId: resolved.shortId ?? null,
+        dir: resolved.runDir, status: starting.alive ? 'starting' : 'interrupted', pid: starting.pid,
+        message: startingRunLine(resolved, starting),
+      };
+    }
     if (isLegacyRunDir(resolved.runDir)) {
       return {
         action: 'show', legacy: true, runId: resolved.runId, shortId: resolved.shortId ?? null,

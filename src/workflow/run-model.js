@@ -16,8 +16,12 @@ import {
   stateAttempts,
 } from './metrics.js';
 
+// A run with no state yet (still starting, or stopped before it wrote
+// state.json) has nothing to project: an empty model, one pending phase.
+const NO_STATE = Object.freeze({ planner: {}, actions: [], attempts: [] });
+
 function workflowPanelModel(row, { phaseIndex = null, agentIndex = null, nowMs = Date.now() } = {}) {
-  const state = row.state;
+  const state = row?.state ?? NO_STATE;
   const actionDefinitions = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
   const actionStates = new Map((state.actions ?? []).map((action) => [action.id, action]));
   const dependencyGroups = isProgramWorkflow(state);

@@ -1,6 +1,6 @@
 // The static details pane for one run: the legacy line, or a v2 run's stages,
 // planner, requirements and recent events (renderDetails).
-import { isLegacyRunState, legacyRunLine } from './short-id.js';
+import { isLegacyRunState, legacyRunLine, startingRunLine } from './short-id.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { ESC } from './dashboard-ansi.js';
@@ -9,6 +9,15 @@ import { stepStatusLabel, statusIcon } from './dashboard-status.js';
 
 export function renderDetails(row, { interactive = true } = {}) {
   const state = row?.state ?? {};
+  // A run whose kernel has not written state.json yet says so in one line.
+  if (row?.starting) {
+    return [
+      `${ESC}2J${ESC}H`,
+      startingRunLine({ shortId: row.shortId, runId: row.runId }, row.starting),
+      ...(row.kernelStderrTail?.length ? ['', ' kernel log:', ...row.kernelStderrTail.map((line) => `   ${line}`)] : []),
+      ...(interactive ? ['', ` ${keyHint('out')} · r refresh · ${keyHint('detach')}`] : []),
+    ].join('\n');
+  }
   // A legacy run has no readable graph left, so the pane says exactly what the
   // CLI says and stops there.
   if (row?.legacy || isLegacyRunState(state)) {

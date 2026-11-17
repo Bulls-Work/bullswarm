@@ -11,7 +11,7 @@
 // budget-model and stats-model, and every one of them is painted with `≈` and
 // its basis, or as a blank with the reason it cannot be measured.
 // ---------------------------------------------------------------------------
-import { legacyRunLine } from './short-id.js';
+import { legacyRunLine, startingRunLine } from './short-id.js';
 import { cut } from './dash-kit.js';
 import { PERIODS, TREND_METRICS } from './stats-model.js';
 import { budgetNotes } from './budget-view.js';
@@ -102,11 +102,23 @@ export function renderDashboardPage(model, options = {}) {
   const legacyLine = model.row?.legacy
     ? legacyRunLine({ shortId: model.row.shortId, runId: model.row.runId, runDir: model.row.runDir })
     : null;
+  // A run with no state.json yet has no graph either: its page says it is
+  // starting (or stopped before it started, with the kernel log).
+  const starting = model.row?.starting ?? null;
   if (legacyLine && (page === 'run' || page === 'step')) {
     body.row(legacyLine);
     body.push('');
     body.push(dimText(' read-only · the executor for authored-graph runs was removed; nothing here can be driven', width));
     header = ` ${model.row.shortId ?? model.row.runId ?? '------'} legacy`;
+  } else if (starting && (page === 'run' || page === 'step')) {
+    body.row(startingRunLine({ shortId: model.row.shortId, runId: model.row.runId }, starting));
+    const tail = model.row.kernelStderrTail ?? [];
+    if (tail.length) {
+      body.push('');
+      body.push(dimText(' kernel log:', width));
+      for (const line of tail) body.push(dimText(truncate(`   ${line}`, width), width));
+    }
+    header = ` ${model.row.shortId ?? model.row.runId ?? '------'} ${starting.alive ? 'starting' : 'interrupted'}`;
   } else if (page === 'home') header = homePage(model, { ...opts, bodyHeight }, body);
   else if (page === 'runs') header = runsPage(model, opts, body);
   else if (page === 'budget') header = budgetPage(model, opts, body);

@@ -20,18 +20,76 @@ import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isLegacyRunState } from './legacy-run-state.js';
+import { processIdentity } from './v2-process.js';
 
 export { isLegacyRunState };
 
 // Whether the run directory at `runDir` holds a legacy run. A state.json that
 // exists but will not parse is a torn read, not a legacy run: the writer is
 // mid-rename, so the caller keeps its normal path instead of being told the
-// run is history.
+// run is history. A folder without state.json is legacy only when nothing in
+// it says a new run is starting there (runStartingFacts).
 export function isLegacyRunDir(runDir) {
   const statePath = join(runDir, 'state.json');
-  if (!existsSync(statePath)) return true;
+  if (!existsSync(statePath)) return runStartingFacts(runDir) === null;
   try { return isLegacyRunState(JSON.parse(readFileSync(statePath, 'utf8'))); }
   catch { return false; }
+}
+
+// A launcher record counts as a sign of a starting run only this long after
+// its launch, so an old record whose pid was reused by another process never
+// turns a legacy folder into a starting run.
+const LAUNCHER_FRESH_MS = 15 * 60_000;
+
+function readJsonQuiet(path) {
+  try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+}
+
+/**
+ * A run that is still starting: its kernel made the run folder but has not
+ * written state.json yet (a program's first turn can take a minute). The
+ * signs that it is a new run, not a legacy one: the kernel's lease
+ * (kernel.lock, taken right after the folder is made), the launch marker
+ * (features.json with programFormat 3) or caller.json, which only 0.38 and
+ * later write, a live launcher process for a fresh launch
+ * (goals/<runId>/launcher.json), or, before the folder exists at all, a
+ * fresh launcher record.
+ * The lease's pid counts as alive only while the process with that pid has
+ * the identity the lease recorded (as leaseHeld and acquireKernelLease
+ * check it), so a lock left by a killed kernel whose pid was reused never
+ * keeps a run starting forever.
+ * Returns null when state.json exists or there is no such sign (a legacy
+ * folder), else {alive, pid}: alive is false once every starting process is
+ * gone, which means the run stopped before it started.
+ */
+export function runStartingFacts(runDir, {
+  processAlive = isProcessAlive, identityOf = processIdentity, now = Date.now(),
+} = {}) {
+  if (existsSync(join(runDir, 'state.json'))) return null;
+  const lockPath = join(runDir, 'kernel.lock');
+  const lock = readJsonQuiet(lockPath);
+  const features = readJsonQuiet(join(runDir, 'features.json'));
+  const launcher = readJsonQuiet(join(kernelGoalDir(runDir), 'launcher.json'));
+  const launcherFresh = Boolean(launcher) && now - (Date.parse(launcher.launchedAt ?? '') || 0) < LAUNCHER_FRESH_MS;
+  const validPid = (pid) => Number.isInteger(pid) && pid > 0;
+  const lockAlive = validPid(lock?.pid) && Boolean(lock.identity) && identityOf(lock.pid) === lock.identity;
+  const launcherAlive = launcherFresh && validPid(launcher.pid) && processAlive(launcher.pid);
+  const livePid = lockAlive ? lock.pid : launcherAlive ? launcher.pid : null;
+  const marked = existsSync(lockPath) || features?.programFormat === 3 || existsSync(join(runDir, 'caller.json'))
+    // A launcher that died before its kernel made the folder.
+    || (launcherFresh && !existsSync(runDir));
+  if (!marked && livePid == null) return null;
+  return { alive: livePid != null, pid: livePid };
+}
+
+// The one line every reader prints for a run that is still starting, or that
+// stopped before it wrote state.json.
+export function startingRunLine({ shortId = null, runId = null } = {}, facts = null) {
+  const id = shortId ?? runId;
+  if (facts?.alive === false) {
+    return `run ${id} stopped before it started: its kernel is gone and wrote no state.json`;
+  }
+  return `run ${id} is starting: its kernel${facts?.pid ? ` (pid ${facts.pid})` : ''} has not written state.json yet; follow it with bullswarm workflow watch ${id}`;
 }
 
 // The single sentence every command prints when asked to drive a legacy run.
@@ -39,8 +97,13 @@ export function legacyRunLine({ shortId = null, runId = null, runDir = null } = 
   return `legacy authored-graph run ${shortId ?? runId}: its executor was removed in 0.27.0; files remain under ${runDir}`;
 }
 
+// goals/<runId>/: what the launcher wrote (launcher.json, stdout.log, stderr.log).
+function kernelGoalDir(runDir) {
+  return join(dirname(dirname(runDir)), 'goals', basename(runDir));
+}
+
 export function kernelStderrPath(runDir) {
-  return join(dirname(dirname(runDir)), 'goals', basename(runDir), 'stderr.log');
+  return join(kernelGoalDir(runDir), 'stderr.log');
 }
 
 export function readKernelStderrTail(runDir, lineCount = 20) {
@@ -170,6 +233,12 @@ export function listRuns(bullswarmDir) {
     if (existsSync(sf)) {
       try { raw = JSON.parse(readFileSync(sf, 'utf8')); } catch { torn = true; }
     }
+    // A run still starting has no state yet; it is listed as one, not as legacy.
+    const starting = raw === null && !torn ? runStartingFacts(dir) : null;
+    if (starting) {
+      out.push(startingRunEntry(name, dir, starting));
+      continue;
+    }
     if (!torn && isLegacyRunState(raw)) {
       out.push(legacyRunEntry(name, dir, raw));
       continue;
@@ -193,6 +262,15 @@ export function listRuns(bullswarmDir) {
     });
   }
   return out;
+}
+
+// A run whose kernel has not written state.json yet: no state, `starting`
+// carries runStartingFacts, and it is ongoing while a starting process lives.
+function startingRunEntry(runId, dir, starting) {
+  return {
+    runId, shortId: null, runDir: dir, dir, legacy: false, starting,
+    state: null, report: null, ongoing: starting.alive,
+  };
 }
 
 // Only these five fields are read from a legacy state.json, and each one is

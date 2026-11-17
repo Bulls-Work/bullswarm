@@ -57,7 +57,7 @@ export async function wfCancel(opts) {
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'cancel'])}`); return 2; }
-  const legacy = legacyRunRefusal(token, opts);
+  const legacy = legacyRunRefusal(token, opts, 'cancel');
   if (legacy !== null) return legacy;
   let resolvedRun;
   try { resolvedRun = loadV2RunState(token); }
