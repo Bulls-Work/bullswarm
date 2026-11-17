@@ -169,3 +169,41 @@ test('mod: freshPools takes a cache file only while it is young enough', () => {
   assert.equal(freshPools(text, 995_000, 60_000)?.length, 1);
   assert.equal(freshPools(text, 900_000, 60_000), null);
 });
+
+const DAY = 86_400_000;
+
+test('a savedAt 10 days ahead of now is no cache: it is rebuilt', async () => {
+  const h = home();
+  const now = 1_000_000_000;
+  writePoolsCache(h, [{ name: 'future' }], now + 10 * DAY);
+  const c = counter([{ name: 'new' }], 0);
+  const served = await servePools({ home: h, maxAgeMs: 60_000, now: () => now, build: c.build });
+  assert.equal(c.builds, 1);
+  assert.equal(served.source, 'built');
+  assert.deepEqual(served.pools, [{ name: 'new' }]);
+});
+
+test('a savedAt 30 s ahead of now is clock skew: still served from the cache', async () => {
+  const h = home();
+  const now = 1_000_000_000;
+  writePoolsCache(h, POOLS, now + 30_000);
+  const c = counter();
+  const served = await servePools({ home: h, maxAgeMs: 60_000, now: () => now, build: c.build });
+  assert.equal(c.builds, 0);
+  assert.equal(served.source, 'cache');
+});
+
+test('a doc of the wrong shape is no cache: it is rebuilt', async () => {
+  for (const [name, bad] of [['pools', { pools: 'notarray' }], ['runs', { runs: {} }], ['assignments', { assignments: 5 }]]) {
+    const h = home();
+    mkdirSync(cachePaths(h, name).dir, { recursive: true });
+    writeFileSync(cachePaths(h, name).file, JSON.stringify({ schema: `bullswarm.${name}-cache.v1`, savedAt: Date.now(), ...bad }));
+    assert.equal(readCache(h, name), null, `${name} wrong shape`);
+    const built = await serveCached({ home: h, name, maxAgeMs: 60_000, build: async () => ({ [name]: [] }) });
+    assert.equal(built.source, 'built', name);
+  }
+  const h = home();
+  mkdirSync(cachePaths(h, 'pools').dir, { recursive: true });
+  writeFileSync(cachePaths(h, 'pools').file, '[1,2]');
+  assert.equal(readCache(h, 'pools'), null, 'a non-object doc');
+});
