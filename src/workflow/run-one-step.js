@@ -56,7 +56,7 @@ export async function runOneStep({ bullswarmDir, request, pools, parentEnv = pro
       initialPlannerResponse: {
         schemaVersion: PLANNER_RESPONSE, kind: 'program', summary: 'bullswarm run: one step.', program: runStepProgram(request),
       },
-      dependencies: { dispatchV2Action: dispatch },
+      dependencies: { dispatchV2Action: dispatch, ...(dependencies.poolRefresher ? { poolRefresher: dependencies.poolRefresher } : {}) },
     });
   } finally {
     heartbeat.stop();

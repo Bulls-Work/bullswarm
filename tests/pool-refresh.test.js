@@ -37,13 +37,13 @@ test('bullswarmDir is required — no silent no-op refresher', () => {
   assert.throws(() => createPoolRefresher({}), /bullswarmDir is required/);
 });
 
-test('returns the rebuilt pools, not the launch-time list', async () => {
+test('returns the rebuilt readings of the run pools, not the launch-time ones', async () => {
   const time = clock();
   const rebuilt = [pool('codex', { fiveHourUsedPct: 3 }), pool('claude-code:acme', { fiveHourUsedPct: 82, nearFiveHourLimit: true })];
   const buildPoolsLive = recorder([rebuilt]);
   const getReadings = async () => ({});
   const refreshPools = createPoolRefresher({
-    bullswarmDir: DIR, initialPools: [pool('stale-launch-pool')],
+    bullswarmDir: DIR, initialPools: [pool('codex'), pool('claude-code:acme')],
     now: time.now, buildPoolsLive, getReadings,
   });
 
