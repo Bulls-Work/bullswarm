@@ -283,7 +283,7 @@
       "^gpt-oss-"
     ]
   },
-  "$comment-modelFamilies": "Owner decision (17-18 Nov 2026): the Gemini line is agy's default. High is Gemini 4 Carbon. Medium is Gemini 4 Hydrogen: cheaper than Argon ($1.50/$7.50 against $2.00/$10.00) and faster, with an Artificial Analysis index of about 51-54 against Argon's about 50 (third-party figures relayed by AGY, not verified here). Argon stays selectable by hand but is never suggested: it costs what Carbon costs and is the older, weaker model. Low is Gemini 3.8 Flash. On agy:claude, Opus serves high, Sonnet medium, and GPT-OSS 120B is never suggested. The benchmark may change these; they stay data here.",
+  "$comment-modelFamilies": "Owner decision (17-18 Nov 2026): the Gemini line is agy's default. High is Gemini 4 Carbon. Medium is Gemini 4 Hydrogen: cheaper than Argon ($1.50/$7.50 against $2.00/$10.00) and faster, with an Artificial Analysis index of about 51-54 against Argon's about 50 (third-party figures relayed by AGY, not verified here). Argon stays selectable by hand but is never suggested: it costs what Carbon costs and is the older, weaker model. Low is Gemini 3.8 Flash. On agy:claude (stage 2, 18 Nov), Opus serves high, Sonnet medium and GPT-OSS 120B low. GPT-OSS rather than Sonnet on low: a model serves one tier here, so Sonnet on low would need a core change, and a low tier with no suggestion leaves agy:claude with an empty low rung after `strategy apply` (configuredTiers covers every tier), so it would never take low-effort work and its quota would not drain. GPT-OSS is the only low-tier model in AGY's Claude and GPT group; its quality through AGY has not been benchmarked and what AGY charges it against the quota is not published. The benchmark may change these (set autoRecommend false to drop it); they stay data here.",
   "modelFamilies": [
     {
       "family": "gemini-carbon",
@@ -326,8 +326,7 @@
       "family": "gpt-oss",
       "match": "^gpt-oss-",
       "tier": "low",
-      "qualityRank": 2,
-      "autoRecommend": false
+      "qualityRank": 2
     }
   ],
   "$comment-modelProfiles": "Per 1M tokens from https://aistudio.google.com/docs/pricing, read 2026-11-17; output includes thinking, and these models have no long-context tier. The current price is what each row holds. Scheduled changes, not yet in the rows: gemini-4-carbon and gemini-4-argon go to $4.00 input, $0.20 cached, $20.00 output from 2026-12-01; gemini-3.8-flash to $1.50, $0.15, $7.50 from 2027-01-01. pricingHistory only records rates that ended before `pricing`, so a future rate cannot be dated in advance: update the row on the day. Google lists no cache-write price, so none is declared. The Claude and GPT-OSS models served through AGY have no row: what AGY charges for them against its quota is not published.",

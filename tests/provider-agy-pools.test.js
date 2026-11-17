@@ -190,7 +190,6 @@ test('A: auto setup turns both agy pools on when agy is found, and both off when
   assert.equal(state.pools.agy.enabled, true);
   assert.equal(state.pools['agy:claude'].enabled, true);
   assert.equal(state.pools.codex.enabled, false);
-  assert.match(state.strategy.poolToggles['agy:claude'].latest.reason ?? '', /detected on this machine/);
 
   // Both pools route with no pin and no further step.
   const { pools } = buildPools(home, NOW, {}, loaderFor(home));
@@ -202,6 +201,7 @@ test('A: auto setup turns both agy pools on when agy is found, and both off when
   state = loadState(home);
   assert.equal(state.pools.agy.enabled, false);
   assert.equal(state.pools['agy:claude'].enabled, false, 'agy:claude is not left routing to a CLI that is not there');
+  assert.match(state.strategy.poolToggles['agy:claude'].latest.reason ?? '', /not detected on this machine/);
 });
 
 test('A: an unpinned analyze or build step goes to whichever agy pool is most behind its pace', async (t) => {
@@ -344,7 +344,7 @@ test('C: a RESOURCE_EXHAUSTED refusal on agy holds agy, never agy:claude', async
 test('C: the read after a quota refusal is a fresh /usage, not the shared one, and holds only agy', async (t) => {
   const home = tempHome(t);
   // First the shared read; then, after the refusal, Gemini's 5h bucket reads empty.
-  const { runner, calls } = countingRunner([usageBody(GEMINI_BEHIND), usageBody({ ...GEMINI_BEHIND, gemini: { weekly: 0.999, '5h': 0 } })]);
+  const { runner, calls } = countingRunner([usageBody(BOTH_BEHIND), usageBody({ ...BOTH_BEHIND, gemini: { weekly: 0.999, '5h': 0 } })]);
   const { providers, connectors } = providersWithRunner(home, runner);
   await getAllMeterReadings(['agy', 'agy:claude'], { bullswarmDir: home, providers, nowMs: NOW, force: true });
   assert.equal(calls.length, 1);

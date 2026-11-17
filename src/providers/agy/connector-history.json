@@ -162,12 +162,14 @@
     },
     "modelFamilies": {
       "values": [
-        "5e15cf3830af0e09"
+        "5e15cf3830af0e09",
+        "eb4950a162729fd0"
       ],
       "items": [
         "1eafa3bbaa7e22bb",
         "4c8cfc0601c32c72",
         "5e4b77caf54cbe3f",
+        "d595e13fbf84f877",
         "d5f2bd2eb033323e",
         "d8eb4c2e776adef6",
         "e8e9ba97b1781a3f",

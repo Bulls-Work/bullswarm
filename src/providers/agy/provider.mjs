@@ -14,6 +14,7 @@
 // neither the meter nor discovery spawns agy unless a test injects a runner.
 
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { MeterError, snapshot } from '../../provider-kit.js';
 import { REASONING_LEVELS } from '../../lib/reasoning.js';
 import { withPoolEnv } from '../../lib/worker-argv.js';
@@ -23,6 +24,8 @@ export const displayName = 'AGY';
 
 const USAGE_ARGS = ['-p', '/usage', '--output-format', 'json'];
 const USAGE_TIMEOUT_MS = 20_000;
+// One `/usage` answer serves both pools: it reports every quota group.
+export const USAGE_SHARE_MS = 30_000;
 const DISCOVERY_TIMEOUT_MS = 20_000;
 
 // Each pool's AGY quota group, as `/usage` names it.
@@ -228,9 +231,44 @@ export function parseAgyUsage(text, poolName = 'agy') {
   });
 }
 
+// The shared `/usage` answers: runner -> (login key -> { at, result }).
+// Keyed by the runner so an injected one never sees another's answer, and by
+// the login (command and environment, hashed: no value is kept in clear) so
+// two homes never share one.
+const usageShares = new WeakMap();
+
+function loginKey(command, env) {
+  const entries = Object.entries(env ?? {}).filter(([, value]) => value != null).sort(([a], [b]) => a.localeCompare(b));
+  return createHash('sha256').update(JSON.stringify([command, entries])).digest('hex');
+}
+
+/**
+ * Run `agy -p /usage` once for every pool on one login: a read within
+ * USAGE_SHARE_MS of an earlier one (or while it is still running) takes its
+ * answer, so refreshing agy and agy:claude spawns agy once. `maxAgeMs`
+ * narrows the window; 0 always spawns (the read after a quota refusal must
+ * not be a reading from before it). A failed read is not kept.
+ */
+function sharedUsage(run, request, { maxAgeMs = USAGE_SHARE_MS, now = Date.now } = {}) {
+  let shares = usageShares.get(run);
+  if (!shares) usageShares.set(run, (shares = new Map()));
+  const key = loginKey(request.command, request.env);
+  const at = now();
+  const window = Math.min(USAGE_SHARE_MS, Number.isFinite(Number(maxAgeMs)) ? Math.max(0, Number(maxAgeMs)) : USAGE_SHARE_MS);
+  const forget = (entry) => () => { if (shares.get(key) === entry) shares.delete(key); };
+  const held = shares.get(key);
+  if (held && window > 0 && at - held.at <= window) return { result: held.result, forget: forget(held) };
+  const entry = { at, result: Promise.resolve().then(() => run(request)) };
+  shares.set(key, entry);
+  entry.result.catch(forget(entry));
+  return { result: entry.result, forget: forget(entry) };
+}
+
 /**
  * `ctx.runner` (or `ctx.opts.usageRunner`) replaces the spawn:
  * `({ command, args, env, timeoutMs }) => { stdout, stderr, exitCode }`.
+ * `ctx.maxAgeMs` is the oldest shared answer the caller takes (the meter
+ * registry passes 0 for a read that must be taken now); `ctx.now` the clock.
  */
 export async function readUsage(pool, ctx = {}) {
   const poolName = (typeof pool === 'string' ? pool : pool?.name) ?? 'agy';
@@ -240,13 +278,18 @@ export async function readUsage(pool, ctx = {}) {
   }
   const command = (typeof pool === 'object' && pool?.bin) || 'agy';
   let result;
+  let shared = null;
   try {
-    result = await (runner ?? runAgy)({
+    shared = sharedUsage(runner ?? runAgy, {
       command,
       args: USAGE_ARGS,
       env: withPoolEnv(ctx.env ?? process.env, typeof pool === 'object' ? pool : null),
       timeoutMs: USAGE_TIMEOUT_MS,
+    }, {
+      maxAgeMs: ctx.maxAgeMs ?? USAGE_SHARE_MS,
+      now: typeof ctx.now === 'function' ? ctx.now : Date.now,
     });
+    result = await shared.result;
   } catch (error) {
     if (error?.code === 'ENOENT') throw new AgyMeterError('agy is not on PATH', 'no_bin');
     if (error?.killed || error?.signal === 'SIGTERM' || error?.code === 'ETIMEDOUT') {
@@ -255,5 +298,11 @@ export async function readUsage(pool, ctx = {}) {
     throw new AgyMeterError(`agy /usage could not run: ${error?.message ?? error}`, 'cli_error');
   }
   // agy exits 1 with its own {"status":"ERROR"} object; parse reports it.
-  return parseAgyUsage(result?.stdout, poolName);
+  // An answer that does not parse is not shared: the next read spawns again.
+  try {
+    return parseAgyUsage(result?.stdout, poolName);
+  } catch (error) {
+    if (error?.code !== 'no_group') shared.forget();
+    throw error;
+  }
 }
