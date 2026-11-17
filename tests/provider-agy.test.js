@@ -22,7 +22,8 @@ import { buildPools } from '../src/lib/config.js';
 import { pickPool } from '../src/lib/route.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 import { argvWithModel, followUpArgv } from '../src/lib/worker-argv.js';
-import { buildStrategy, discoverConnectorModels } from '../src/lib/strategy.js';
+import { buildStrategy, discoverConnectorModels, resolveDispatchModel } from '../src/lib/strategy.js';
+import { connectors } from '../src/providers/agy/provider.mjs';
 import { paceSnapshot } from '../src/meters/framework.js';
 import { validateProvider } from '../src/provider-cli.js';
 import { previewStepPick } from '../src/workflow/pick-preview.js';
@@ -546,4 +547,18 @@ test('docs: the contrib README lists every first-class provider under src/provid
   const firstClass = readdirSync(join(REPO, 'src/providers'), { withFileTypes: true })
     .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   assert.deepEqual(listed, firstClass);
+});
+
+test('argv: a connector-default dispatch still names the pool model, so agy:claude never falls to agy\'s own (possibly Gemini) default', () => {
+  const template = JSON.parse(readFileSync(join(REPO, 'src/providers/agy/connector.json'), 'utf8'));
+  const [gemini, claude] = connectors({ template });
+  const paths = { taskFile: '/runs/r1/task-a.md', cwd: '/work/repo' };
+  for (const [pool, model] of [[gemini, 'gemini-4-carbon'], [claude, 'claude-sonnet-4-6']]) {
+    // No tier assignment and no exclusions: core leaves the model to the connector (model null).
+    const resolved = resolveDispatchModel(pool, 'high', {});
+    assert.deepEqual([resolved.model, resolved.source], [null, 'connector-default']);
+    const argv = argvWithModel(pool, paths, resolved.model);
+    assert.ok(pairAt(argv, '--model', model), `${pool.name}: ${argv.join(' ')}`);
+    assert.equal(argv.filter((a) => a === '--model').length, 1);
+  }
 });
