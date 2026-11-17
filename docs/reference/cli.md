@@ -172,7 +172,7 @@ bullswarm integrate status --json
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--agents codex,claude,grok` | restrict the report | all three |
+| `--agents codex,claude,grok,agy` | restrict the report | `codex`, `claude`, `grok`, plus `agy` when installed |
 | `--json` | machine-readable output | human summary lines |
 
 Does not change agent integration files.
@@ -188,7 +188,7 @@ bullswarm integrate install --agents codex,claude --yes
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--agents codex,claude,grok` | restrict install | all three |
+| `--agents codex,claude,grok,agy` | restrict install | `codex`, `claude`, `grok`, plus `agy` when installed |
 | `--yes` | required — approves writing global agent configuration | none; the command refuses without it |
 | `--json` | machine-readable output | human summary |
 
@@ -205,7 +205,7 @@ bullswarm integrate remove --yes
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--agents codex,claude,grok` | restrict removal | all three |
+| `--agents codex,claude,grok,agy` | restrict removal | `codex`, `claude`, `grok`, plus `agy` when installed |
 | `--yes` | required — approves editing global agent configuration | none; the command refuses without it |
 | `--json` | machine-readable output | human summary |
 
