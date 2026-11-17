@@ -37,6 +37,9 @@ const NO_STATE_CASES = [
   { argv: ['workflow', 'bogus'], code: 2 },
   { argv: ['workflow', 'goal'], code: 2 },
   { argv: ['workflow', 'runs', 'bogus'], code: 2 },
+  { argv: ['workflow', 'runs', '--max-age', '5'], code: 2 },
+  { argv: ['workflow', 'runs', '--json', '--all', '--max-age', '60'], code: 2 },
+  { argv: ['runs', '--max-age', '5'], code: 2 },
   { argv: ['workflow', 'plan', 'bogus'], code: 2 },
   { argv: ['workflow', 'reprice', '--bogus'], code: 2 },
   { argv: ['workflow', 'watch', 'foo', '--until', 'bogus'], code: 2 },
@@ -97,6 +100,32 @@ test('J.1: --version, --help and usage errors never load or migrate an existing 
     }
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('J.1: cmdRuns rejects --max-age and other usage errors before calling ensureHome', async () => {
+  const { cmdRuns } = await import('../src/workflow/runs-cli.js');
+  let ensured = 0;
+  const ensureHome = () => { ensured += 1; };
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    for (const args of [
+      ['--max-age', '5'],
+      ['--json', '--all', '--max-age', '60'],
+      ['--json', '--max-age', 'nope'],
+      ['list', '--json', '--max-age', '60'],
+      ['--since', 'bogus'],
+      ['show'],
+      ['result'],
+      ['delete'],
+      ['delete', 'abc123'],
+    ]) {
+      assert.equal(cmdRuns(args, { ensureHome }), 2, `cmdRuns(${JSON.stringify(args)}) must exit 2`);
+      assert.equal(ensured, 0, `cmdRuns(${JSON.stringify(args)}) must not call ensureHome`);
+    }
+  } finally {
+    console.error = origError;
   }
 });
 
