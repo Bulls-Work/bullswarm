@@ -12,6 +12,7 @@ import { workerSilenceTimeoutSec } from './v2-dispatch.js';
 import { loadState } from '../lib/state.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 import { livePoolNames } from './cli-pool-checks.js';
+import { lanesOf } from '../lib/pool-lanes.js';
 
 export async function wfCapabilities(opts) {
   const { pools } = await livePoolNames();
@@ -110,7 +111,8 @@ export async function wfCapabilities(opts) {
     pools: pools.map((p) => ({
       name: p.name,
       enabled: p.enabled !== false,
-      lanes: p.lanes ?? p.connector?.lanes ?? [],
+      lanes: lanesOf(p, []),
+      lanesSource: p.lanesSource ?? 'connector',
       capabilities: p.capabilities ?? p.connector?.capabilities ?? [],
       command: p.connector?.profile?.command ?? p.connector?.spawn?.cmd?.[0] ?? null,
       configDir: p.connector?.profile?.configDir ?? p.connector?.env?.CLAUDE_CONFIG_DIR ?? null,

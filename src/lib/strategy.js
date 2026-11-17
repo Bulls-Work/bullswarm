@@ -19,6 +19,7 @@ import { pacingWindowFor, windowSpent } from '../meters/framework.js';
 import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-validator.js';
 import { formatMoney } from './usage-basis.js';
 import { withPoolEnv } from './worker-argv.js';
+import { lanesOf } from './pool-lanes.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -1366,7 +1367,7 @@ export const TIER_CONTEXTS = {
 };
 
 function supportsContext(pool, context) {
-  const lanes = pool.lanes ?? pool.connector?.lanes ?? [];
+  const lanes = lanesOf(pool, []);
   const capabilities = pool.capabilities ?? pool.connector?.capabilities ?? [];
   return lanes.includes(context.lane)
     && context.capabilities.every((capability) => capabilities.includes(capability));

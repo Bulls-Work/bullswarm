@@ -34,6 +34,7 @@ import { priceFor } from './lib/prices.js';
 import { formatMoney } from './lib/usage-basis.js';
 import { poolLabel, resolvePoolId, withPoolLabel, withPoolLabels } from './lib/pool-labels.js';
 import { connectorCopyWarnings, inspectConnectorCopies } from './lib/connector-copies.js';
+import { lanesOf, parseLanesArg, resolvePoolLanes, setLaneOverride } from './lib/pool-lanes.js';
 
 // Strategy operates on what ships with the package plus what the operator
 // installed, so the packaged tiers load here even under node:test, where the
@@ -68,7 +69,7 @@ function strategyHelpPath(sub, opts) {
     'set-reasoning', 'rungs', 'set-rung', 'reset-reasoning', 'configure',
     'refresh', 'recommend', 'apply', 'show', 'assign', 'clear-assignment',
     'exclude-model', 'include-model', 'set-subscription', 'set-free',
-    'hold', 'unhold', 'set-reserve', 'recheck-not-produced',
+    'hold', 'unhold', 'set-reserve', 'set-lanes', 'recheck-not-produced',
   ];
   return LEAVES.includes(sub) ? ['strategy', sub] : null;
 }
@@ -694,7 +695,9 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
       inflight: pool.inflight?.count ?? 0,
       projectedFiveHourPct: pool.projectedFiveHourPct ?? null,
       meterSource: pool.meterSource,
-      lanes: pool.lanes ?? [],
+      lanes: lanesOf(pool, []),
+      // 'override' when strategy set-lanes chose them, else 'connector'.
+      lanesSource: pool.lanesSource ?? 'connector',
       capabilities: pool.capabilities ?? [],
       // The levels the setup screen offers when you change a tier's reasoning.
       reasoningLevels: connectorReasoningLevels(pool.connector ?? pool),
@@ -1048,7 +1051,7 @@ export async function cmdStrategy(args, {
   for (const flag of ['worker-pool']) {
     if (typeof opts[flag] === 'string' && opts[flag] !== 'auto') opts[flag] = resolvePoolId(opts[flag], bullswarmDir);
   }
-  if (['set-rung', 'set-provider', 'set-model', 'set-subscription', 'hold', 'unhold', 'set-reserve'].includes(sub) && typeof opts.rest[0] === 'string') {
+  if (['set-rung', 'set-provider', 'set-model', 'set-subscription', 'hold', 'unhold', 'set-reserve', 'set-lanes'].includes(sub) && typeof opts.rest[0] === 'string') {
     opts.rest[0] = resolvePoolId(opts.rest[0], bullswarmDir);
   }
   try {
@@ -1196,6 +1199,32 @@ export async function cmdStrategy(args, {
         if (!RESERVE_WINDOWS.includes(window)) throw new Error(`--window must be ${RESERVE_WINDOWS.join(', ')}`);
         result = setPoolReserve(bullswarmDir, pool, pct === 0 ? null : { pct, window });
       }
+      console.log(JSON.stringify(result, null, 2));
+      return 0;
+    }
+    if (sub === 'set-lanes') {
+      const [pool, raw] = opts.rest;
+      const usage = `usage: ${usageLine(['strategy', 'set-lanes'])}`;
+      if (!pool || raw === undefined || opts.rest.length > 2) throw new Error(usage);
+      // Input first, so a bad lane fails before anything is read or locked.
+      const lanes = parseLanesArg(raw, usage);
+      const connectors = loadConnectors(bullswarmDir, PACKAGED);
+      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+      if (opts.yes !== true) throw new Error('set-lanes changes routing; pass --yes to approve');
+      const state = updateState(bullswarmDir, (fresh) => {
+        fresh.strategy ??= {};
+        setLaneOverride(fresh.strategy, pool, lanes);
+        dropStrategyReport(fresh.strategy);
+      });
+      const view = resolvePoolLanes(connectors[pool], state.strategy, pool);
+      const result = {
+        action: 'lanes-updated',
+        pool,
+        lanes: view.lanes ?? [],
+        source: view.source,
+        connectorLanes: connectors[pool].lanes ?? [],
+      };
+      // Always JSON, like the other set-* commands; --json is accepted for agents.
       console.log(JSON.stringify(result, null, 2));
       return 0;
     }
@@ -1489,7 +1518,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning|set-free|hold|unhold|set-reserve) changes|--until must be|--window must be|free models must be|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning|set-free|hold|unhold|set-reserve|set-lanes) changes|--until must be|--window must be|free models must be|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown lane|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }

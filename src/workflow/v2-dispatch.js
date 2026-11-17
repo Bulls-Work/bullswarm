@@ -9,7 +9,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './retry-handoff.js';
 import { outsideBlockers } from './time-box.js';
 import {
-  LANES, PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool,
+  PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool,
 } from '../lib/route.js';
 import {
   assertDepthAllowed, childDepthEnv, loadState, updateState, upstreamGroupOf,
@@ -26,7 +26,7 @@ import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/fore
 import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { REFUSAL_TEXT, declaredDeliverable, declaredEvidence, deliverableTypeOf, failureClassOf, roleOf } from './step-vocabulary.js';
-import { poolPassesRoute, routeUnavailableWhy } from './step-route.js';
+import { poolPassesRoute, routeOffLaneTexts, routeUnavailableWhy } from './step-route.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, operatorLimitPart, signInPart, spentWindowPart } from './no-pool-why.js';
 import { isV3Step } from './program-v3.js';
 import {
@@ -47,6 +47,7 @@ import { deliverableVerdict, gateBaselinePaths, NO_FILE_CHANGED_WHY } from './di
 import { outsideWrites } from './outside-writes.js';
 import { durableHandoff, lastResponseEvents, streamShowsWork } from './dispatch-handoff.js';
 import { noPoolCandidates, tierOffReasons } from './dispatch-no-pool.js';
+import { offLaneText, servesLane } from '../lib/pool-lanes.js';
 
 export { workerSilenceTimeoutSec } from './dispatch-silence.js';
 export { attemptArtifactsOnDisk } from './dispatch-attempt-files.js';
@@ -1291,7 +1292,7 @@ export async function dispatchV2Action({
   // A pool with a window at its limit is still capable: it comes back at
   // that window's reset, so the reason is the limit, never a missing tier
   // (§2.1). A pool off the step's lane is not capable there.
-  const onLane = (pool) => (pool.lanes ?? LANES).includes(lane);
+  const onLane = (pool) => servesLane(pool, lane);
   const capable = preparePools(allPools, action, effort, {
     preferredModel, strictPool, now: now(), routeFilter, ignoreBurstGate: true,
   }).filter((pool) => !failedProbes.has(pool.name) && onLane(pool));
@@ -1363,12 +1364,22 @@ export async function dispatchV2Action({
     preferredModel, strictPool, routeFilter, now: endAt,
   }, (pool) => !failedProbes.has(pool.name) && onLane(pool));
   let why = noPoolWhy({ capableCount: capable.length, held, failureKind, strictPool, lane, effort, offTier });
+  // A pinned pool that does not serve the step's lane (its connector's lanes,
+  // or `strategy set-lanes`) says so, and how to clear an override.
+  const pinnedPool = strictPool ? allPools.find((pool) => pool.name === strictPool && pool.enabled !== false) : null;
+  if (!capable.length && pinnedPool && !servesLane(pinnedPool, lane)) {
+    why = `no eligible pool: the pinned pool ${offLaneText(pinnedPool, lane)}`;
+  }
   // A step no pool took records what ruled each enabled pool out, so its
   // result says why without re-deriving the pick (QA37).
   const ruledOut = last ? null : noPoolCandidates(allPools, action, effort, {
     lane, strictPool, preferredModel, routeFilter, failedProbes, onLane, held, now: endAt, ignoreBurstGate: true,
   });
-  if (!capable.length && routeFilter) {
+  const routeOffLane = !capable.length && routeFilter && !pinnedPool ? routeOffLaneTexts(allPools, routeFilter, lane) : [];
+  if (routeOffLane.length) {
+    // The route keeps only pools off the step's lane: name each and who set its lanes.
+    why = routeUnavailableWhy(routeFilter, { lane, effort, offLane: routeOffLane });
+  } else if (!capable.length && routeFilter) {
     // §2.4: the route, not the tier or the pin, emptied the capable set.
     const unrouted = preparePools(allPools, action, effort, {
       preferredModel, strictPool, now: now(), ignoreBurstGate: true,

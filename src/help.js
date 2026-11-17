@@ -582,6 +582,7 @@ const strategyText = rich({
     { name: 'hold', desc: 'take one pool out of routing for a reason until a date (the hold list)' },
     { name: 'unhold', desc: 'end a pool\'s hold now' },
     { name: 'set-reserve', desc: 'opt-in: keep a share of one pool\'s window unspent by routing' },
+    { name: 'set-lanes', desc: 'choose which lanes one pool serves, in place of its connector\'s lanes' },
     { name: 'recheck-not-produced', desc: 'find old not-produced failures whose worker wrote files outside the cwd, and stop counting them' },
     { name: 'set-model', desc: 'assign one model to multiple effort tiers or turn it off' },
     { name: 'set-rung', desc: 'set one pool/tier model and reasoning level in one atomic write' },
@@ -604,7 +605,7 @@ const strategyText = rich({
     { flag: '--json', desc: 'machine-readable output where the subcommand supports it' },
   ],
   safety: [
-    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-free/set-reasoning/reset-reasoning/set-rung all mutate ~/.bullswarm/state.json',
+    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-free/set-lanes/set-reasoning/reset-reasoning/set-rung all mutate ~/.bullswarm/state.json',
     'refresh (and a cold show) perform live discovery calls against every installed agent CLI and the public OpenRouter model API',
   ],
   examples: [
@@ -678,6 +679,24 @@ const strategySetReserveText = rich({
   safety: ['changes routing immediately for new dispatches'],
   examples: [{ cmd: 'bullswarm strategy set-reserve claude-code:kipwise 40 --window 5h --yes', note: 'keep 40% of each 5h window for the seat\'s owner' }],
   next: 'bullswarm pools shows `reserve 40% (5h)` and, once reached, `at reserve`.',
+});
+const strategySetLanesText = rich({
+  usage: 'bullswarm strategy set-lanes <pool> <lane,...|default> --yes',
+  purpose: 'Choose which lanes one pool serves. By default a pool serves the lanes its connector ships; this setting '
+    + 'replaces them everywhere: routing, `bullswarm pools` (marked `(set-lanes)`), workflow capabilities, strategy inventory '
+    + 'and the workflow pin and route checks. A step on a lane the pool no longer serves never goes to it, and a run pinned '
+    + 'to it for that lane is refused with the reason and the command that clears it.',
+  args: [
+    { name: '<pool>', desc: 'pool id or label' },
+    { name: '<lane,...|default>', desc: 'one or more of analyze, build, chore, comma-separated; default drops the setting so the connector\'s lanes apply' },
+  ],
+  options: [{ flag: '--yes', desc: 'required approval' }, { flag: '--json', desc: 'accepted; the output is always JSON' }],
+  safety: ['writes state.json (state.strategy.laneOverrides) and invalidates the cached strategy report; changes routing immediately for new dispatches; work already running is not stopped'],
+  examples: [
+    { cmd: 'bullswarm strategy set-lanes grok analyze --yes', note: 'grok takes analyze work only' },
+    { cmd: 'bullswarm strategy set-lanes grok default --yes', note: 'back to the lanes its connector lists' },
+  ],
+  next: 'bullswarm pools shows `lanes=analyze (set-lanes)`; strategy inventory lists `lanesSource`.',
 });
 const strategyRecheckNotProducedText = rich({
   usage: 'bullswarm strategy recheck-not-produced [--yes]',
@@ -2045,6 +2064,7 @@ const HELP = {
     hold: { _text: strategyHoldText },
     unhold: { _text: strategyUnholdText },
     'set-reserve': { _text: strategySetReserveText },
+    'set-lanes': { _text: strategySetLanesText },
     'recheck-not-produced': { _text: strategyRecheckNotProducedText },
     'set-model': { _text: strategySetModelText },
     'reset-tier': { _text: strategyResetTierText },

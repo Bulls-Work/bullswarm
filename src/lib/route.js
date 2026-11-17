@@ -142,8 +142,9 @@ import { operatorLimit, operatorLimitText } from './pool-limits.js';
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
 import { isFreeModel } from './usage.js';
+import { LANES, servesLane } from './pool-lanes.js';
 
-export const LANES = ['analyze', 'build', 'chore'];
+export { LANES };
 
 /**
  * Surplus points charged per in-flight agent when no spend rate is known for
@@ -811,7 +812,7 @@ export function pickPool(lane, pools, opts = {}) {
   const laneCapable = pools.filter(
     (p) =>
       p.enabled !== false &&
-      (p.lanes ?? LANES).includes(lane) &&
+      servesLane(p, lane) &&
       requiredCapabilities.every((capability) =>
         (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)) &&
       !isExhausted(p, now),
