@@ -531,3 +531,71 @@ test('G: step rerun --avoid honours step.model on an empty-tier pool', async (t)
   });
   assert.equal(none.code, 2);
 });
+
+test('G: maybeRefreshStrategy does not re-run CLI discovery when a new pool has no recommendation for any configuredTier', async (t) => {
+  const highOnlyHome = (label) => {
+    const home = upgradedHome(t);
+    const raw = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
+    raw.strategy.configuredTiers = ['high'];
+    raw.strategy.modelTiers = { existing: { 'existing-v1': ['high'] } };
+    writeFileSync(join(home, 'state.json'), JSON.stringify(raw, null, 2));
+    return { home, loaderOpts: loaderFor(home), label };
+  };
+
+  // 1. Direct maybeRefreshStrategy path: agy:claude has no high pick under Addendum I.
+  const direct = highOnlyHome('direct');
+  let directCalls = 0;
+  const first = await maybeRefreshStrategy(direct.home, {
+    loaderOpts: direct.loaderOpts,
+    executor: () => '',
+    providerExecutors: { agy: async () => { directCalls += 1; return MODELS_TXT; } },
+  });
+  assert.ok(first, 'first maybeRefreshStrategy seeds agy and records agy:claude discovery');
+  assert.equal(directCalls, 1);
+  const afterDirect = loadState(direct.home);
+  assert.deepEqual(afterDirect.strategy.modelTiers.existing, { 'existing-v1': ['high'] });
+  assert.deepEqual(afterDirect.strategy.modelTiers.agy, { 'gemini-4-carbon': ['high'] });
+  assert.equal(afterDirect.strategy.modelTiers['agy:claude'], undefined);
+  assert.deepEqual(afterDirect.strategy.rungSeeds?.['agy:claude']?.latest?.rungs, {});
+  assert.equal(afterDirect.strategy.lastReport?.discoveries?.['agy:claude']?.source, 'cli');
+
+  const second = await maybeRefreshStrategy(direct.home, {
+    loaderOpts: direct.loaderOpts,
+    executor: () => '',
+    providerExecutors: { agy: async () => { directCalls += 1; return MODELS_TXT; } },
+  });
+  assert.equal(second, null);
+  assert.equal(directCalls, 1, 'subsequent maybeRefreshStrategy calls must not re-run agy discovery');
+
+  // 2. autoSetup -> maybeRefreshStrategy path with configuredTiers: ['high'].
+  const viaSetup = highOnlyHome('setup');
+  const entry = (name, pools, discovered) => ({
+    file: name, name, displayName: name, tier: 'first-class', enabled: true, pools, skipped: [], error: null,
+    broken: false, shadowed: false, bin: name, health: 'default', installed: discovered, loggedIn: discovered,
+    hint: null, discovered, meter: 'reader', costRank: 2, lanes: ['analyze', 'build', 'chore'], lanesSource: 'connector',
+    testFixture: false,
+  });
+  setup.autoSetup(viaSetup.home, {
+    reason: 'auto',
+    loaderOpts: viaSetup.loaderOpts,
+    discover: () => [
+      entry('existing', ['existing'], true),
+      entry('agy', ['agy', 'agy:claude'], true),
+    ],
+  });
+  assert.deepEqual(loadState(viaSetup.home).strategy.rungSeeds?.['agy:claude']?.latest?.rungs, {});
+  let setupCalls = 0;
+  await maybeRefreshStrategy(viaSetup.home, {
+    loaderOpts: viaSetup.loaderOpts,
+    executor: () => '',
+    providerExecutors: { agy: async () => { setupCalls += 1; return MODELS_TXT; } },
+  });
+  assert.equal(setupCalls, 1);
+  assert.equal(loadState(viaSetup.home).strategy.lastReport?.discoveries?.['agy:claude']?.source, 'cli');
+  assert.equal(await maybeRefreshStrategy(viaSetup.home, {
+    loaderOpts: viaSetup.loaderOpts,
+    executor: () => '',
+    providerExecutors: { agy: async () => { setupCalls += 1; return MODELS_TXT; } },
+  }), null);
+  assert.equal(setupCalls, 1);
+});
