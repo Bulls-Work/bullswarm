@@ -362,3 +362,21 @@ test('J.4: scorecard reads archived decisionLog rows alongside state.json withou
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('J.1-J.4: docs/reference/configuration.md documents live decisionLog cap, archive, migration marker, and no-state CLI paths', async () => {
+  const { DECISION_LOG_LIVE_LIMIT } = await import('../src/lib/state.js');
+  const doc = readFileSync(join(ROOT, 'docs/reference/configuration.md'), 'utf8');
+
+  assert.doesNotMatch(doc, /Every non-help command self-initializes/i);
+  assert.match(doc, /`--help`.*`--version`.*usage errors/i);
+
+  const homeSection = doc.slice(doc.indexOf('## Home directory'), doc.indexOf('## state.json'));
+  assert.match(homeSection, /\|\s*`decision-log-archive\.jsonl`\s*\|/);
+  assert.match(homeSection, /\|\s*`\.migrations\.json`\s*\|/);
+
+  const stateSection = doc.slice(doc.indexOf('## state.json'), doc.indexOf('## Retention'));
+  const decisionLogRow = stateSection.split('\n').find((line) => line.startsWith('| `decisionLog` |')) ?? '';
+  assert.doesNotMatch(decisionLogRow, /last 500 dispatch records/i);
+  assert.ok(decisionLogRow.includes(String(DECISION_LOG_LIVE_LIMIT)), 'decisionLog row names DECISION_LOG_LIVE_LIMIT');
+  assert.ok(decisionLogRow.includes('decision-log-archive.jsonl'), 'decisionLog row names decision-log-archive.jsonl');
+});
