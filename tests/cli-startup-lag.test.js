@@ -391,3 +391,102 @@ test('J.1-J.4: docs/reference/configuration.md documents live decisionLog cap, a
   assert.ok(decisionLogRow.includes(String(DECISION_LOG_LIVE_LIMIT)), 'decisionLog row names DECISION_LOG_LIVE_LIMIT');
   assert.ok(decisionLogRow.includes('decision-log-archive.jsonl'), 'decisionLog row names decision-log-archive.jsonl');
 });
+
+test('J.4: repriceRuns updates decision-log-archive.jsonl under state.lock without dropping concurrent overflows', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-lag-j4-reprice-race-'));
+  try {
+    const {
+      loadState, updateState, readArchivedDecisionLog, readDecisionLog, DECISION_LOG_LIVE_LIMIT,
+    } = await import('../src/lib/state.js');
+    const { repriceRuns } = await import('../src/workflow/reprice.js');
+
+    mkdirSync(join(home, 'runs'), { recursive: true });
+    const out0 = join(home, 'runs', 'out-r0.md');
+    const out2 = join(home, 'runs', 'out-r2.md');
+    writeFileSync(out0, '## Completed\n\nResult r0.\n');
+    writeFileSync(out2, '## Completed\n\nResult r2.\n');
+
+    const baseMs = Date.parse('2026-11-10T00:00:00.000Z');
+    const total = DECISION_LOG_LIVE_LIMIT + 2;
+    const rows = Array.from({ length: total }, (_, i) => {
+      const startMs = baseMs + i * 60_000;
+      const endMs = startMs + 60_000;
+      const isTask = i === 0 || i === 2;
+      return {
+        id: `r-${i}`,
+        kind: isTask ? 'run' : 'workflow',
+        source: isTask ? 'run' : 'workflow',
+        ts: new Date(endMs).toISOString(),
+        startedAt: new Date(startMs).toISOString(),
+        endedAt: new Date(endMs).toISOString(),
+        lane: 'build',
+        effort: 'high',
+        picked: 'agy',
+        pool: 'agy',
+        model: 'gemini-4-carbon',
+        ok: true,
+        wallSec: 60,
+        ...(isTask ? {
+          outFile: i === 0 ? out0 : out2,
+          cwd: ROOT,
+          project: 'bullswarm',
+          usage: { tokens: { standardRead: 10, output: 5, totalKnown: 15 }, tokenSource: 'estimated' },
+        } : {}),
+      };
+    });
+
+    updateState(home, (s) => {
+      s.pools = { agy: { enabled: true } };
+      s.config.testFixturesMigrated = true;
+      s.decisionLog = rows;
+    });
+    assert.deepEqual(readArchivedDecisionLog(home).map((r) => r.id), ['r-0', 'r-1']);
+    assert.equal(loadState(home).decisionLog[0].id, 'r-2');
+
+    let pushedConcurrent = false;
+    const report = repriceRuns({
+      bullswarmDir: home,
+      sinceMs: null,
+      apply: true,
+      connectors: { agy: { name: 'agy' } },
+      readTranscriptUsage: () => {
+        if (!pushedConcurrent) {
+          pushedConcurrent = true;
+          updateState(home, (s) => {
+            const ts = new Date(baseMs + (total + 1) * 60_000).toISOString();
+            s.decisionLog.push({
+              id: 'r-concurrent',
+              kind: 'workflow',
+              ts,
+              startedAt: ts,
+              endedAt: ts,
+              lane: 'build',
+              effort: 'high',
+              picked: 'agy',
+              ok: true,
+              wallSec: 60,
+            });
+          });
+        }
+        return {
+          tokens: { standardRead: 300, cacheRead: 0, cacheWrite: 0, output: 100, reasoning: 0, totalKnown: 400 },
+          model: 'gemini-4-carbon',
+          requests: [],
+          confidence: 'exact',
+        };
+      },
+    });
+
+    assert.equal(report.scannedTasks, 2);
+    assert.equal(report.changedTasks, 1);
+    const archivedAfter = readArchivedDecisionLog(home);
+    assert.deepEqual(archivedAfter.map((r) => r.id), ['r-0', 'r-1', 'r-2'], 'concurrently overflowed r-2 must not be dropped from archive');
+    assert.equal(archivedAfter.find((r) => r.id === 'r-0')?.usage?.tokens?.totalKnown, 400);
+    assert.equal(archivedAfter.find((r) => r.id === 'r-2')?.usage?.tokens?.totalKnown, 400, 'r-2 repriced even after overflowing mid-pass');
+    const allAfter = readDecisionLog(home);
+    assert.equal(allAfter.length, total + 1);
+    assert.equal(allAfter.at(-1).id, 'r-concurrent');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
