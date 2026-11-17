@@ -149,16 +149,15 @@ test('G: maybeRefreshStrategy seeds new agy pools on an upgraded home without to
   });
   assert.equal(state.strategy.policy.autoApplyRecommendations, false);
 
-  // Both agy pools got their suggested picks per tier.
+  // Both agy pools got their suggested picks per tier (Addendum I: no high pick on agy:claude).
   assert.deepEqual(state.strategy.modelTiers.agy, {
     'gemini-4-carbon': ['high'],
     'gemini-4-hydrogen': ['medium'],
     'gemini-3.8-flash': ['low'],
   });
   assert.deepEqual(state.strategy.modelTiers['agy:claude'], {
-    'claude-opus-4-6-thinking': ['high'],
-    'claude-sonnet-4-6': ['medium'],
-    'gpt-oss-120b-medium': ['low'],
+    'claude-opus-4-6-thinking': ['medium'],
+    'claude-sonnet-4-6': ['low'],
   });
 
   // Who/when/why record is persisted per seeded pool (like poolToggles).
@@ -171,14 +170,26 @@ test('G: maybeRefreshStrategy seeds new agy pools on an upgraded home without to
     assert.ok('by' in entry.latest);
     assert.equal(typeof entry.latest.via, 'string');
     assert.match(entry.latest.reason ?? '', /new pool/i);
-    assert.ok(entry.latest.rungs?.high);
   }
+  assert.deepEqual(state.strategy.rungSeeds.agy.latest.rungs, {
+    high: 'gemini-4-carbon',
+    medium: 'gemini-4-hydrogen',
+    low: 'gemini-3.8-flash',
+  });
+  assert.deepEqual(state.strategy.rungSeeds['agy:claude'].latest.rungs, {
+    medium: 'claude-opus-4-6-thinking',
+    low: 'claude-sonnet-4-6',
+  });
 
-  // `strategy rungs` shows filled models on agy and agy:claude, never tier-selection-empty.
+  // `strategy rungs` shows filled models on agy (all 3 tiers) and agy:claude (medium + low; high stays empty per Addendum I).
   const rungs = await rungRows(home, { loaderOpts });
-  const agyRungs = rungs.filter((r) => r.pool === 'agy' || r.pool === 'agy:claude');
-  assert.equal(agyRungs.length, 6);
+  const agyRungs = rungs.filter((r) => r.pool === 'agy');
+  const claudeRungs = rungs.filter((r) => r.pool === 'agy:claude');
+  assert.equal(agyRungs.length, 3);
   assert.ok(agyRungs.every((r) => r.model !== null && r.modelSource !== 'tier-selection-empty'), JSON.stringify(agyRungs));
+  assert.equal(claudeRungs.length, 3);
+  assert.equal(claudeRungs.find((r) => r.tier === 'high')?.modelSource, 'tier-selection-empty');
+  assert.ok(claudeRungs.filter((r) => r.tier !== 'high').every((r) => r.model !== null && r.modelSource !== 'tier-selection-empty'), JSON.stringify(claudeRungs));
 
   // Route check and CLI `workflow plan validate` now accept a `providers: agy` build/high step.
   const afterPools = buildPools(home, NOW, {}, loaderOpts).pools;
@@ -266,9 +277,8 @@ test('G: autoSetup and refreshStrategy also seed new agy pools without touching 
     'gemini-3.8-flash': ['low'],
   });
   assert.deepEqual(afterSetup.strategy.modelTiers['agy:claude'], {
-    'claude-opus-4-6-thinking': ['high'],
-    'claude-sonnet-4-6': ['medium'],
-    'gpt-oss-120b-medium': ['low'],
+    'claude-opus-4-6-thinking': ['medium'],
+    'claude-sonnet-4-6': ['low'],
   });
   assert.equal(afterSetup.strategy.rungSeeds?.agy?.latest?.via, 'auto-setup');
   assert.equal(afterSetup.strategy.rungSeeds?.['agy:claude']?.latest?.via, 'auto-setup');

@@ -591,10 +591,17 @@ test('strategy suggests the Gemini line per tier on agy, and Opus/Sonnet on agy:
   }
 
   const other = report.providerSuggestions['agy:claude'];
-  assert.equal(other.high.recommended.model, 'claude-opus-4-6-thinking');
-  assert.equal(other.medium.recommended.model, 'claude-sonnet-4-6');
-  // Stage 2 (owner, 18 Nov): low on agy:claude is GPT-OSS 120B, so the pool takes low work too.
-  assert.equal(other.low.recommended.model, 'gpt-oss-120b-medium');
+  // Addendum I (owner benchmark decision, 18 Nov, out/evals/2026-11-18-agy/opus46):
+  // no high pick on agy:claude, medium = Opus 4.6, low = Sonnet 4.6, GPT-OSS autoRecommend false.
+  assert.equal(other.high.recommended, null);
+  assert.deepEqual(other.high.candidates, []);
+  assert.equal(other.medium.recommended.model, 'claude-opus-4-6-thinking');
+  assert.equal(other.low.recommended.model, 'claude-sonnet-4-6');
+  const gptOss = discoveries['agy:claude'].models.find((m) => m.id === 'gpt-oss-120b-medium');
+  assert.deepEqual([gptOss.tier, gptOss.autoRecommend], ['low', false]);
+  assert.ok(!other.low.candidates.some((c) => c.model === 'gpt-oss-120b-medium'));
+  const rawConnector = JSON.parse(readFileSync(join(REPO, 'src/providers/agy/connector.json'), 'utf8'));
+  assert.match(rawConnector['$comment-modelFamilies'] ?? '', /out\/evals\/2026-11-18-agy\/opus46/);
   assert.deepEqual(report.unranked, []);
   // Gemini and Anthropic prices are dated rows; GPT-OSS via AGY stays unpriced.
   const priced = Object.fromEntries(discoveries.agy.models.map((m) => [m.id, m.pricing]));

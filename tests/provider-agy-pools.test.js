@@ -234,15 +234,16 @@ test('A: a full 5-hour window on one agy pool leaves the other one picked', asyn
   assert.ok(!route.candidates.some((c) => c.pool === 'agy'), route.why);
 });
 
-test('A: strategy suggests Gemini on agy and Opus / Sonnet / GPT-OSS on agy:claude, and apply writes those rungs', async (t) => {
+test('A: strategy suggests Gemini on agy and Opus on medium / Sonnet on low on agy:claude, sending high work to other pools', async (t) => {
   const { home, report, discoveries } = await strategyReport(t);
   const pick = (pool, tier) => report.providerSuggestions[pool][tier].recommended?.model ?? null;
   assert.deepEqual(['high', 'medium', 'low'].map((tier) => pick('agy', tier)),
     ['gemini-4-carbon', 'gemini-4-hydrogen', 'gemini-3.8-flash']);
   assert.deepEqual(['high', 'medium', 'low'].map((tier) => pick('agy:claude', tier)),
-    ['claude-opus-4-6-thinking', 'claude-sonnet-4-6', 'gpt-oss-120b-medium']);
+    [null, 'claude-opus-4-6-thinking', 'claude-sonnet-4-6']);
   const gptOss = discoveries['agy:claude'].models.find((m) => m.id === 'gpt-oss-120b-medium');
-  assert.deepEqual([gptOss.tier, gptOss.autoRecommend], ['low', true]);
+  assert.deepEqual([gptOss.tier, gptOss.autoRecommend], ['low', false]);
+  assert.ok(!report.providerSuggestions['agy:claude'].low.candidates.some((c) => c.model === 'gpt-oss-120b-medium'));
   // Argon stays listed but never suggested.
   assert.ok(!['high', 'medium', 'low'].some((tier) => report.providerSuggestions.agy[tier].candidates.some((c) => c.model === 'gemini-4-argon')));
 
@@ -250,12 +251,21 @@ test('A: strategy suggests Gemini on agy and Opus / Sonnet / GPT-OSS on agy:clau
   const tiers = loadState(home).strategy.modelTiers;
   assert.deepEqual(tiers.agy, { 'gemini-4-carbon': ['high'], 'gemini-4-hydrogen': ['medium'], 'gemini-3.8-flash': ['low'] });
   assert.deepEqual(tiers['agy:claude'], {
-    'claude-opus-4-6-thinking': ['high'], 'claude-sonnet-4-6': ['medium'], 'gpt-oss-120b-medium': ['low'],
+    'claude-opus-4-6-thinking': ['medium'], 'claude-sonnet-4-6': ['low'],
   });
 
-  // With those rungs applied, agy:claude takes low-effort work too, on GPT-OSS with no --effort.
+  // With those rungs applied and agy:claude most behind: high work goes to another pool (agy),
+  // while medium and low work run on agy:claude with Opus 4.6 and Sonnet 4.6 and no --effort.
   const pools = await poolsFrom(home, await agyReadings(home, usageBody(CLAUDE_BEHIND)));
-  for (const [effort, model] of [['high', 'claude-opus-4-6-thinking'], ['medium', 'claude-sonnet-4-6'], ['low', 'gpt-oss-120b-medium']]) {
+  const highPreview = await previewStepPick({
+    action: { id: 'task', lane: 'build', effort: 'high' }, pools, bullswarmDir: home,
+    coreState: { decisionLog: [] }, targetDir: home, now: NOW,
+  });
+  assert.notEqual(highPreview.pick?.pool, 'agy:claude', highPreview.why);
+  assert.equal(highPreview.pick?.pool, 'agy', highPreview.why);
+  assert.ok(pairAt(highPreview.pick.command, '--model', 'gemini-4-carbon'), highPreview.pick.command.join(' '));
+
+  for (const [effort, model] of [['medium', 'claude-opus-4-6-thinking'], ['low', 'claude-sonnet-4-6']]) {
     const preview = await previewStepPick({
       action: { id: 'task', lane: 'chore', effort }, pools, bullswarmDir: home,
       coreState: { decisionLog: [] }, targetDir: home, now: NOW,
@@ -489,19 +499,22 @@ test('E: the pool list shows agy and agy:claude as two rows, each with its own m
 test('E: strategy lists a suggestion column per agy pool', async (t) => {
   const { report } = await strategyReport(t);
   assert.deepEqual(Object.keys(report.providerSuggestions).sort(), ['agy', 'agy:claude']);
-  // The cross-pool view ranks both agy pools on every tier.
-  for (const tier of ['high', 'medium', 'low']) {
+  // Cross-pool view ranks agy on every tier, and agy:claude on medium and low (no high pick per Addendum I).
+  assert.deepEqual((report.suggestions.high.candidates ?? []).map((c) => c.pool), ['agy']);
+  for (const tier of ['medium', 'low']) {
     const pools = new Set((report.suggestions[tier].candidates ?? []).map((c) => c.pool));
     assert.ok(pools.has('agy') && pools.has('agy:claude'), `${tier}: ${[...pools].join(', ')}`);
   }
-  for (const pool of ['agy', 'agy:claude']) {
-    for (const tier of ['high', 'medium', 'low']) {
-      assert.ok(report.providerSuggestions[pool][tier].recommended, `${pool} ${tier}`);
-    }
+  for (const tier of ['high', 'medium', 'low']) {
+    assert.ok(report.providerSuggestions.agy[tier].recommended, `agy ${tier}`);
+  }
+  assert.equal(report.providerSuggestions['agy:claude'].high.recommended, null);
+  for (const tier of ['medium', 'low']) {
+    assert.ok(report.providerSuggestions['agy:claude'][tier].recommended, `agy:claude ${tier}`);
   }
 });
 
-test('E: providers.md describes one login with several quota pools', () => {
+test('E: providers.md describes one login with several quota pools and Addendum I tiers, and CHANGELOG matches', () => {
   const doc = readFileSync(join(REPO, 'docs/reference/providers.md'), 'utf8');
   const start = doc.indexOf('## One login, several quota pools');
   assert.ok(start >= 0, 'providers.md has the section');
@@ -510,4 +523,15 @@ test('E: providers.md describes one login with several quota pools', () => {
   for (const needle of ['connectors(ctx)', 'credentialGroup', 'agy:claude', 'quota', 'sign-in', '/usage']) {
     assert.ok(section.includes(needle), `the section mentions ${needle}`);
   }
+  assert.doesNotMatch(doc, /high Claude Opus 4\.6,\s*medium Claude Sonnet 4\.6,\s*low GPT-OSS 120B/);
+  assert.doesNotMatch(doc, /high Opus 4\.6,\s*medium Sonnet 4\.6,\s*low GPT-OSS 120B/);
+  assert.match(doc, /`claude-opus-\*`:\s*medium,\s*5/);
+  assert.match(doc, /`claude-sonnet-\*`:\s*low,\s*4/);
+  assert.match(doc, /`gpt-oss-\*`:\s*low,\s*2,\s*never auto-recommended/);
+
+  const changelog = readFileSync(join(REPO, 'CHANGELOG.md'), 'utf8');
+  const unreleased = changelog.slice(0, changelog.indexOf('\n## 0.38.22'));
+  assert.doesNotMatch(unreleased, /high Claude Opus 4\.6,\s*medium Claude Sonnet 4\.6,\s*low GPT-OSS 120B/);
+  assert.doesNotMatch(unreleased, /low-effort work now runs GPT-OSS 120B/);
+  assert.match(unreleased, /medium.*Claude Opus 4\.6.*low.*Claude Sonnet 4\.6/s);
 });
