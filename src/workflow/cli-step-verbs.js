@@ -15,6 +15,7 @@ import { poolPassesRoute, resolveRouteFilter, routeSummary } from './step-route.
 import { createRevisionRequest, exportV2Plan, planV2Revision } from './v2-revision.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { helpText, usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { changeStepHint, rerunStepHint } from './step-change-hint.js';
 import { loadPoolLabels, withPoolLabels } from '../lib/pool-labels.js';
 import { flagErrors } from './workflow-flags.js';
@@ -454,11 +455,11 @@ export async function wfStep(opts) {
   const flagExit = flagErrors(opts, path);
   if (flagExit !== null) return flagExit;
   const [, token, stepId] = opts.rest;
-  if (!STEP_VERBS.includes(verb) || !token || !stepId) { console.error(`usage: ${usageLine(STEP_VERBS.includes(verb) ? path : ['workflow', 'step', 'restart'])}`); return 2; }
+  if (!STEP_VERBS.includes(verb) || !token || !stepId) { const synopsis = usageLine(STEP_VERBS.includes(verb) ? path : ['workflow', 'step', 'restart']); console.error(`usage: ${synopsis}`); reportUsageError({ message: 'missing or invalid arguments', usage: synopsis }); return 2; }
   const viewOnly = drivableRunRefusal(token, opts, `step ${verb}`);
   if (viewOnly !== null) return viewOnly;
   const waitSec = opts.wait == null ? (verb === 'restart' ? 60 : 120) : Number(opts.wait);
-  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); reportUsageError({ message: '--wait must be a non-negative number of seconds', usage: usageLine(path) }); return 2; }
   if (verb === 'rerun') {
     const result = await rerunV2Step({
       bullswarmDir: BULLSWARM_DIR(), token, stepId, avoid: listFlag(opts.avoid),

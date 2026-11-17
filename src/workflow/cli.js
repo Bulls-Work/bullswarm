@@ -6,6 +6,7 @@ import { cmdRuns, cmdReindex } from './runs-cli.js';
 import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
 import { wfAdd, wfContinue, wfWait } from './cli-steps.js';
 import { helpText, usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { cmdReprice } from './reprice-cli.js';
 import { resolvePoolId } from '../lib/pool-labels.js';
@@ -99,7 +100,7 @@ export async function cmdWorkflow(args, {
         }
         if (opts.overview) {
           const token = opts.rest[0] ?? opts.show;
-          if (!token) { console.error(`usage: ${usageLine(['workflow', 'tui'])}\n--overview needs a run: pass <runId> or --show <runId>`); return 2; }
+          if (!token) { console.error(`usage: ${usageLine(['workflow', 'tui'])}\n--overview needs a run: pass <runId> or --show <runId>`); reportUsageError({ message: '--overview needs a run: pass <runId> or --show <runId>', usage: usageLine(['workflow', 'tui']) }); return 2; }
           const snapshot = overviewSnapshot(bullswarmDir, token, { width: opts.width, height: opts.height });
           if (opts.json) console.log(JSON.stringify(snapshot, null, 2));
           else console.log(snapshot.lines.join('\n'));
@@ -149,9 +150,11 @@ export async function cmdWorkflow(args, {
           `✗ "workflow ${sub}" is not a subcommand. ` +
           `Did you mean "workflow runs ${sub} <id>"?`,
         );
+        reportUsageError({ message: `"workflow ${sub}" is not a subcommand`, usage: usageLine(['workflow', 'runs', sub]) });
         return 2;
       }
       console.error(helpText(['workflow']));
+      reportUsageError({ message: sub ? `unknown command "workflow ${sub}"` : 'a workflow command is required', usage: usageLine(['workflow']) });
       return 2;
     }
   }

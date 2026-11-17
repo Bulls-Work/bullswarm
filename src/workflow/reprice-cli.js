@@ -3,7 +3,8 @@
 // pass (reconcile.js), and prints the rows.
 
 import { homedir } from 'node:os';
-import { helpText } from '../help.js';
+import { helpText, usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { resolvePoolId, withPoolLabels } from '../lib/pool-labels.js';
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { formatMoney } from '../lib/usage-basis.js';
@@ -100,6 +101,7 @@ export function cmdReprice(args = [], {
   try { opts = parseArgs(args); }
   catch (err) {
     error(`✗ ${err.message}`);
+    reportUsageError({ message: err.message, usage: usageLine(['workflow', 'reprice']) });
     return 2;
   }
   if (opts.pool) opts.pool = resolvePoolId(opts.pool, bullswarmDir);

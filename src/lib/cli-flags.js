@@ -14,6 +14,7 @@
 // must be accepted, and every accepted flag must either appear in that
 // command's help text or be listed in UNDOCUMENTED_FLAGS with a reason.
 import { usageLine } from '../help.js';
+import { reportUsageError } from './json-usage-error.js';
 
 // Accepted everywhere: `--help` is resolved before dispatch, but several
 // parsers still read opts.help on their own path.
@@ -247,9 +248,13 @@ export function flagNames(argv) {
 export function unknownFlagExit(names, path, { error = console.error } = {}) {
   const known = knownFlags(path);
   if (!known || !names?.length) return null;
-  const unknown = names.filter((name) => !known.includes(name));
+  const all = names.filter((name) => !known.includes(name));
+  // --json on a command without it is a mistake, but when another flag is
+  // unknown too, that one is the real error a JSON caller needs to see.
+  const unknown = all.length > 1 ? all.filter((name) => name !== 'json') : all;
   if (!unknown.length) return null;
   for (const name of unknown) error(`✗ unknown flag --${name}`);
   error(`usage: ${usageLine(path)}`);
+  reportUsageError({ message: unknown.map((name) => `unknown flag --${name}`).join('\n'), usage: usageLine(path) });
   return 2;
 }

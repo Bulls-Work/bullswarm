@@ -26,6 +26,7 @@ import { attachForecast, inflightPenaltyFrom } from './lib/forecast.js';
 import { expectedMinutesFor } from './lib/spend.js';
 import { helpText, usageLine } from './help.js';
 import { flagName, unknownFlagExit } from './lib/cli-flags.js';
+import { UsageFault, reportUsageError } from './lib/json-usage-error.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
 import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
@@ -411,7 +412,7 @@ function applyReasoningSection(strategy, reasoning) {
 
 function reasoningFlag(value, sub) {
   if (value === undefined) return null;
-  if (typeof value !== 'string') throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+  if (typeof value !== 'string') throw new UsageFault('missing or invalid arguments', usageLine(['strategy', sub]));
   return value.trim().toLowerCase();
 }
 
@@ -1162,20 +1163,20 @@ export async function cmdStrategy(args, {
       if (opts.yes !== true) throw new Error('set-provider changes routing; pass --yes to approve');
       const pool = opts.rest[0];
       const mode = opts.rest[1];
-      if (!pool || !['on', 'off'].includes(mode)) throw new Error(`usage: ${usageLine(['strategy', 'set-provider'])}`);
+      if (!pool || !['on', 'off'].includes(mode)) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'set-provider']));
       console.log(JSON.stringify(setProviderEnabled(bullswarmDir, pool, mode === 'on'), null, 2));
       return 0;
     }
     if (sub === 'hold' || sub === 'unhold' || sub === 'set-reserve') {
       if (opts.yes !== true) throw new Error(`${sub} changes routing; pass --yes to approve`);
       const pool = opts.rest[0];
-      if (!pool) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+      if (!pool) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', sub]));
       let result;
       if (sub === 'hold') {
         const until = parseHoldUntil(opts.until);
         const reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
         if (until == null || until <= Date.now()) throw new Error('--until must be a future date/time or a duration such as 24h or 3d');
-        if (!reason) throw new Error(`usage: ${usageLine(['strategy', 'hold'])}`);
+        if (!reason) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'hold']));
         result = setPoolHold(bullswarmDir, pool, { reason, until: new Date(until).toISOString() });
       } else if (sub === 'unhold') {
         result = setPoolHold(bullswarmDir, pool, null);
@@ -1183,7 +1184,7 @@ export async function cmdStrategy(args, {
         const raw = String(opts.rest[1] ?? '').trim().toLowerCase();
         const pct = raw === 'off' ? 0 : Number(raw);
         const window = opts.window === undefined ? 'all' : String(opts.window).trim().toLowerCase();
-        if (!raw || !Number.isFinite(pct) || pct < 0 || pct >= 100) throw new Error(`usage: ${usageLine(['strategy', 'set-reserve'])}`);
+        if (!raw || !Number.isFinite(pct) || pct < 0 || pct >= 100) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'set-reserve']));
         if (!RESERVE_WINDOWS.includes(window)) throw new Error(`--window must be ${RESERVE_WINDOWS.join(', ')}`);
         result = setPoolReserve(bullswarmDir, pool, pct === 0 ? null : { pct, window });
       }
@@ -1204,7 +1205,7 @@ export async function cmdStrategy(args, {
       if (opts.yes !== true) throw new Error('set-model changes routing; pass --yes to approve');
       const [pool, model] = opts.rest;
       const raw = String(opts.tiers ?? '').trim().toLowerCase();
-      if (!pool || !model || !raw) throw new Error(`usage: ${usageLine(['strategy', 'set-model'])}`);
+      if (!pool || !model || !raw) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'set-model']));
       const tiers = raw === 'off' ? [] : raw.split(',').map((tier) => tier.trim());
       if (tiers.some((tier) => !STRATEGY_TIERS.includes(tier))) throw new Error('--tiers must be high,medium,low or off');
       const inventory = await loadStrategyInventory(bullswarmDir);
@@ -1216,7 +1217,7 @@ export async function cmdStrategy(args, {
     if (sub === 'reset-tier') {
       if (opts.yes !== true) throw new Error('reset-tier changes routing; pass --yes to approve');
       const tier = opts.rest[0];
-      if (!STRATEGY_TIERS.includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'reset-tier'])}`);
+      if (!STRATEGY_TIERS.includes(tier)) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'reset-tier']));
       updateState(bullswarmDir, (state) => {
         state.strategy ??= {};
         state.strategy.configuredTiers = (state.strategy.configuredTiers ?? []).filter((entry) => entry !== tier);
@@ -1235,7 +1236,7 @@ export async function cmdStrategy(args, {
       const pool = reasoningFlag(opts.pool, sub);
       if (pool !== null && !loadConnectors(bullswarmDir, PACKAGED)[pool]) throw new Error(`unknown pool "${pool}"`);
       // Model ids keep their case; only pool, tier and level are lowercased.
-      if (opts.model === true) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+      if (opts.model === true) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', sub]));
       const model = typeof opts.model === 'string' && opts.model.trim() ? opts.model.trim() : null;
       if (model && !pool) throw new Error(`strategy ${sub} --model needs --pool`);
       if (sub === 'set-reasoning') {
@@ -1264,7 +1265,7 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'configure') {
       if (opts.yes !== true) throw new Error('strategy configure changes routing; pass --yes to approve');
-      if (!opts.file) throw new Error(`usage: ${usageLine(['strategy', 'configure'])}`);
+      if (!opts.file) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'configure']));
       const { readFileSync } = await import('node:fs');
       const config = JSON.parse(readFileSync(opts.file, 'utf8'));
       const connectors = loadConnectors(bullswarmDir, PACKAGED);
@@ -1334,7 +1335,7 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'set-subscription') {
       const pool = opts.rest[0];
-      if (!pool) throw new Error(`usage: ${usageLine(['strategy', 'set-subscription'])}`);
+      if (!pool) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'set-subscription']));
       const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
       // Flag validation first, so a bad number fails before any lock is taken.
@@ -1362,7 +1363,7 @@ export async function cmdStrategy(args, {
     if (sub === 'set-free') {
       const value = opts.rest[0];
       if (![...FREE_MODEL_SETTINGS, 'reset'].includes(value) || opts.pool === true) {
-        throw new Error(`usage: ${usageLine(['strategy', 'set-free'])}`);
+        throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'set-free']));
       }
       const pool = typeof opts.pool === 'string' && opts.pool.trim() ? opts.pool.trim() : null;
       if (value === 'reset' && !pool) throw new Error('strategy set-free reset needs --pool');
@@ -1392,7 +1393,7 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'assign') {
       const tier = opts.rest[0];
-      if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'assign'])}`);
+      if (!['high', 'medium', 'low'].includes(tier)) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'assign']));
       if (!opts.pool || !opts.model) throw new Error('assignment needs --pool and --model');
       const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[opts.pool]) throw new Error(`unknown pool "${opts.pool}"`);
@@ -1410,7 +1411,7 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'exclude-model' || sub === 'include-model') {
       const model = opts.rest[0];
-      if (!model) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+      if (!model) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', sub]));
       const normalized = String(model).trim().toLowerCase();
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
@@ -1457,7 +1458,7 @@ export async function cmdStrategy(args, {
         console.log(JSON.stringify({ action: 'strategy-auto', policy: written.strategy.policy }, null, 2));
         return 0;
       }
-      if (mode !== 'status') throw new Error(`usage: ${usageLine(['strategy', 'auto'])}`);
+      if (mode !== 'status') throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'auto']));
       // `status` writes nothing, so it stays a plain read and never queues
       // behind the lock: the empty policy it reports is a default, not a save.
       console.log(JSON.stringify({
@@ -1468,7 +1469,7 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'clear-assignment') {
       const tier = opts.rest[0];
-      if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'clear-assignment'])}`);
+      if (!['high', 'medium', 'low'].includes(tier)) throw new UsageFault('missing or invalid arguments', usageLine(['strategy', 'clear-assignment']));
       updateState(bullswarmDir, (state) => {
         clearTierAssignment(state.strategy, tier);
         dropStrategyReport(state.strategy);
@@ -1476,9 +1477,10 @@ export async function cmdStrategy(args, {
       console.log(JSON.stringify({ action: 'tier-assignment-cleared', tier }, null, 2));
       return 0;
     }
-    throw new Error(strategyUsage());
+    throw new UsageFault(`unknown command "strategy ${sub}"`, usageLine(['strategy']), strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
+    if (err instanceof UsageFault) reportUsageError({ message: err.reason, usage: err.usage });
     const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning|set-free|hold|unhold|set-reserve) changes|--until must be|--window must be|free models must be|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|.* needs --pool|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }

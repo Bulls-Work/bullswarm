@@ -3,6 +3,7 @@
 // whose usage line a verb prints.
 
 import { usageLine } from '../help.js';
+import { reportUsageError } from '../lib/json-usage-error.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
 // The help path whose usage line explains this workflow verb. Returns null
@@ -114,6 +115,6 @@ export function flagErrors(opts, path) {
   if (unknown !== null) return unknown;
   if (!opts.errors?.length) return null;
   for (const error of opts.errors) console.error(`✗ ${error}`);
-  console.error(`usage: ${usageLine(path)}`);
+  console.error(`usage: ${usageLine(path)}`); reportUsageError({ message: opts.errors.join('\n'), usage: usageLine(path) });
   return 2;
 }

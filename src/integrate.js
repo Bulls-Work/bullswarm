@@ -10,7 +10,8 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { helpText } from './help.js';
+import { helpText, usageLine } from './help.js';
+import { reportUsageError } from './lib/json-usage-error.js';
 
 const SKILL_SOURCE = fileURLToPath(new URL('../skill', import.meta.url));
 // The Claude Mod: function hooks that put Bullswarm into Claude Code's own
@@ -206,6 +207,7 @@ export function cmdIntegrate(opts) {
     else if (subcommand === 'retire-legacy') result = retireLegacyOffload({ approved: opts.yes === true });
     else {
       console.error(integrateUsage());
+      reportUsageError({ message: `unknown integrate subcommand "${subcommand}"`, usage: usageLine(['integrate']) });
       return 2;
     }
     if (opts.json) console.log(JSON.stringify(result, null, 2));

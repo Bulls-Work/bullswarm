@@ -2,6 +2,7 @@
 // bullswarm — route work across coding-agent CLI subscriptions.
 
 import { cachedCall, cachedCallMain } from '../src/lib/pools-cache.js';
+import { withJsonUsageErrors } from '../src/lib/json-usage-error.js';
 
 const argv = process.argv.slice(2);
 
@@ -11,7 +12,7 @@ const argv = process.argv.slice(2);
 // the caller that rebuilds loads it.
 const run = cachedCall(argv) !== null
   ? cachedCallMain(argv)
-  : import('../src/cli.js').then((m) => m.main(argv));
+  : withJsonUsageErrors(argv, () => import('../src/cli.js').then((m) => m.main(argv)));
 
 run.then(
   (code) => { process.exitCode = code; },

@@ -36,6 +36,7 @@ import { loadState } from './lib/state.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
 import { helpText, usageLine } from './help.js';
 import { flagName, unknownFlagExit } from './lib/cli-flags.js';
+import { UsageFault, reportUsageError } from './lib/json-usage-error.js';
 import { resolvePoolId, withPoolLabels } from './lib/pool-labels.js';
 
 const require = createRequire(import.meta.url);
@@ -65,7 +66,8 @@ function fail(message, exitCode = 2) {
 }
 
 function usage(sub, what) {
-  return fail(`${what}: ${usageLine(['provider', sub])}`);
+  const synopsis = usageLine(['provider', sub]);
+  return Object.assign(new UsageFault(what, synopsis, `${what}: ${synopsis}`), { exitCode: 2 });
 }
 
 function isDir(path) {
@@ -857,6 +859,7 @@ export async function cmdProvider(args, {
     if (!SUBCOMMANDS.includes(sub)) {
       error(`✗ unknown command "provider ${sub}"`);
       error(helpText(['provider']));
+      reportUsageError({ message: `unknown command "provider ${sub}"`, usage: usageLine(['provider']) });
       return 2;
     }
     const flagExit = unknownFlagExit(opts._flags, ['provider', sub], { error });
@@ -914,6 +917,7 @@ export async function cmdProvider(args, {
     return result.ok ? 0 : 1;
   } catch (err) {
     error(`✗ ${err.message}`);
+    if (err instanceof UsageFault) reportUsageError({ message: err.reason, usage: err.usage });
     return err.exitCode ?? 1;
   }
 }

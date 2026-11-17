@@ -14,6 +14,7 @@ import {
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { flagName, knownFlags, unknownFlagExit } from './lib/cli-flags.js';
+import { reportUsageError } from './lib/json-usage-error.js';
 import {
   formatBytes, pruneHome, readMaintenanceResults, readRetentionPolicy,
   recordPrune, runRetentionSweep, planRetention, WINDOW_REASON,
@@ -345,6 +346,7 @@ function checkFlags(opts, path) {
   if (!unknown.length) return null;
   for (const name of unknown) console.error(`✗ unknown flag --${name}`);
   console.error(`usage: ${usageLine(path)}`);
+  reportUsageError({ message: unknown.map((name) => `unknown flag --${name}`).join('\n'), usage: usageLine(path) });
   return 2;
 }
 
@@ -405,6 +407,7 @@ function cmdPrune(tail, bullswarmDir) {
   if (problems.length) {
     for (const problem of problems) console.error(`✗ ${problem}`);
     console.error(`usage: ${usageLine(['home', 'prune'])}`);
+    reportUsageError({ message: problems.join('\n'), usage: usageLine(['home', 'prune']) });
     return 2;
   }
   try {
@@ -454,6 +457,7 @@ function cmdStatus(tail, bullswarmDir) {
   if (flagExit !== null) return flagExit;
   if (opts._positional.length) {
     console.error(`✗ unexpected argument "${opts._positional[0]}"\nusage: ${usageLine(['home', 'status'])}`);
+    reportUsageError({ message: `unexpected argument "${opts._positional[0]}"`, usage: usageLine(['home', 'status']) });
     return 2;
   }
   const now = Date.now();
@@ -491,12 +495,14 @@ export function cmdHome(args, { bullswarmDir = defaultHome() } = {}) {
   if (flagName(sub)) return unknownFlagExit([flagName(sub)], ['home']);
   if (!sub) {
     console.error(helpText(['home']));
+    reportUsageError({ message: 'a home command is required', usage: usageLine(['home']) });
     return 2;
   }
   if (sub === 'prune') return cmdPrune(tail, bullswarmDir);
   if (sub === 'status') return cmdStatus(tail, bullswarmDir);
   if (sub !== 'snapshot') {
     console.error(`✗ "home ${sub}" is not a subcommand.\n${helpText(['home'])}`);
+    reportUsageError({ message: `"home ${sub}" is not a subcommand`, usage: usageLine(['home']) });
     return 2;
   }
   const opts = parseSnapshotFlags(tail);
@@ -506,15 +512,18 @@ export function cmdHome(args, { bullswarmDir = defaultHome() } = {}) {
   if (typed.length) {
     for (const problem of typed) console.error(`✗ ${problem}`);
     console.error(`usage: ${usageLine(['home', 'snapshot'])}`);
+    reportUsageError({ message: typed.join('\n'), usage: usageLine(['home', 'snapshot']) });
     return 2;
   }
   const [destination, ...extra] = opts._positional;
   if (!destination || extra.length) {
     console.error(`usage: ${usageLine(['home', 'snapshot'])}`);
+    reportUsageError({ message: 'exactly one destination directory is required', usage: usageLine(['home', 'snapshot']) });
     return 2;
   }
   if (opts.runs != null && opts.recent != null) {
     console.error('✗ --runs and --recent cannot be combined');
+    reportUsageError({ message: '--runs and --recent cannot be combined', usage: usageLine(['home', 'snapshot']) });
     return 2;
   }
   const recent = opts.recent == null ? 3 : Number(opts.recent);
