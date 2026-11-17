@@ -316,3 +316,49 @@ test('J.4: decisionLog overflows into append-only archive and all readers see ar
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('J.4: scorecard reads archived decisionLog rows alongside state.json without mutating home', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-lag-j4-scorecard-'));
+  try {
+    const { updateState, readDecisionLog, DECISION_LOG_LIVE_LIMIT } = await import('../src/lib/state.js');
+    const { scorecard } = await import('../bench/eval-suite/scorecard.mjs');
+
+    const baseMs = Date.parse('2026-11-10T00:00:00.000Z');
+    const total = DECISION_LOG_LIVE_LIMIT + 10;
+    const rows = Array.from({ length: total }, (_, i) => ({
+      id: `sc-row-${i}`,
+      kind: 'workflow',
+      ts: new Date(baseMs + i * 60_000).toISOString(),
+      lane: 'build',
+      effort: 'high',
+      picked: i < 10 ? 'agy' : 'codex',
+      ok: true,
+      wallSec: 60,
+      routing: {
+        fiveHourUsedPct: 20,
+        candidates: [
+          { pool: 'agy', effectiveSurplus: i < 10 ? 15 : -5 },
+          { pool: 'codex', effectiveSurplus: i < 10 ? 5 : 10 },
+        ],
+      },
+    }));
+
+    updateState(home, (s) => {
+      s.pools = { agy: { enabled: true }, codex: { enabled: true } };
+      s.decisionLog = rows;
+    });
+    assert.equal(readDecisionLog(home).length, total);
+    rmSync(join(home, '.migrations.json'), { force: true });
+    const filesBefore = readdirSync(home).sort();
+
+    const card = scorecard({ home, days: 14, until: '2026-11-18T00:00:00.000Z' });
+    assert.equal(card.routing.dispatches, total);
+    assert.equal(card.routing.byPool.agy, 10);
+    assert.equal(card.routing.byPool.codex, DECISION_LOG_LIVE_LIMIT);
+    assert.equal(card.routing.judged, total);
+    assert.equal(card.routing.matchedPacer, total);
+    assert.deepEqual(readdirSync(home).sort(), filesBefore, 'scorecard must remain read-only');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
