@@ -316,3 +316,39 @@ test('AGY integration refuses to touch a non-Bullswarm skill directory or symlin
     assert.match(agentClisDoc, /^agy\s+skill ✓; awareness ✓$/m);
   } finally { cleanup(); }
 });
+
+test('integrate install/remove/retire-legacy without --yes fail before initializing or migrating BULLSWARM_HOME', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    for (const sub of ['install', 'remove', 'retire-legacy']) {
+      const missingBullswarmHome = join(home, `missing-${sub}`);
+      const res = spawnSync(process.execPath, [BIN, 'integrate', sub], {
+        env: { ...process.env, HOME: home, BULLSWARM_HOME: missingBullswarmHome, BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      assert.equal(res.status, 1, `integrate ${sub} without --yes should exit 1`);
+      assert.match(res.stderr, /pass --yes to approve/);
+      assert.equal(existsSync(missingBullswarmHome), false, `integrate ${sub} without --yes must not create BULLSWARM_HOME`);
+    }
+
+    const unmigratedHome = join(home, 'unmigrated-bs');
+    mkdirSync(unmigratedHome, { recursive: true });
+    const rawState = `${JSON.stringify({
+      version: 1, pools: { opencode2: { enabled: true } }, decisionLog: [], config: {},
+    }, null, 2)}\n`;
+    writeFileSync(join(unmigratedHome, 'state.json'), rawState);
+    const filesBefore = readdirSync(unmigratedHome).sort();
+
+    for (const sub of ['install', 'remove', 'retire-legacy']) {
+      const res = spawnSync(process.execPath, [BIN, 'integrate', sub], {
+        env: { ...process.env, HOME: home, BULLSWARM_HOME: unmigratedHome, BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      assert.equal(res.status, 1);
+      assert.equal(readFileSync(join(unmigratedHome, 'state.json'), 'utf8'), rawState, `integrate ${sub} must not migrate state.json`);
+      assert.deepEqual(readdirSync(unmigratedHome).sort(), filesBefore, `integrate ${sub} must not write files in BULLSWARM_HOME`);
+    }
+  } finally { cleanup(); }
+});
