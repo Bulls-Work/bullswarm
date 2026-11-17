@@ -159,19 +159,29 @@ function runAgy({ command, args, env, timeoutMs }) {
   });
 }
 
-export async function discoverModels(pool, { executor = null } = {}) {
+async function runAgyModels(request) {
+  const { stdout, exitCode, stderr } = await runAgy(request);
+  if (exitCode !== 0) throw new Error(`agy models exited ${exitCode}${stderr.trim() ? `: ${stderr.trim()}` : ''}`);
+  return stdout;
+}
+
+const discoveryShares = new WeakMap();
+
+export async function discoverModels(pool, { executor = null, maxAgeMs = USAGE_SHARE_MS, now = Date.now } = {}) {
   const command = pool?.bin ?? 'agy';
   const args = ['models'];
   const timeoutMs = Math.min(Number(pool?.modelDiscovery?.timeoutMs) || DISCOVERY_TIMEOUT_MS, DISCOVERY_TIMEOUT_MS);
   if (!executor && underTest()) {
     throw new Error('agy model discovery is not run under node --test without an injected executor');
   }
-  const run = executor ?? (async (request) => {
-    const { stdout, exitCode, stderr } = await runAgy(request);
-    if (exitCode !== 0) throw new Error(`agy models exited ${exitCode}${stderr.trim() ? `: ${stderr.trim()}` : ''}`);
-    return stdout;
+  const shared = sharedUsage(executor ?? runAgyModels, {
+    command, args, env: withPoolEnv(process.env, pool), timeoutMs,
+  }, {
+    store: discoveryShares,
+    maxAgeMs,
+    now: typeof now === 'function' ? now : Date.now,
   });
-  const output = await run({ command, args, env: withPoolEnv(process.env, pool), timeoutMs });
+  const output = await shared.result;
   const models = parseAgyModels(typeof output === 'string' ? output : output?.stdout, pool);
   if (!models.length) throw new Error('agy models listed no model for this pool');
   return { command: [command, ...args], models };
@@ -249,9 +259,9 @@ function loginKey(command, env) {
  * narrows the window; 0 always spawns (the read after a quota refusal must
  * not be a reading from before it). A failed read is not kept.
  */
-function sharedUsage(run, request, { maxAgeMs = USAGE_SHARE_MS, now = Date.now } = {}) {
-  let shares = usageShares.get(run);
-  if (!shares) usageShares.set(run, (shares = new Map()));
+function sharedUsage(run, request, { store = usageShares, maxAgeMs = USAGE_SHARE_MS, now = Date.now } = {}) {
+  let shares = store.get(run);
+  if (!shares) store.set(run, (shares = new Map()));
   const key = loginKey(request.command, request.env);
   const at = now();
   const window = Math.min(USAGE_SHARE_MS, Number.isFinite(Number(maxAgeMs)) ? Math.max(0, Number(maxAgeMs)) : USAGE_SHARE_MS);

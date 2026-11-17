@@ -1660,12 +1660,26 @@ export async function discoverAllModels(connectors, opts = {}) {
     }
     return outputs.get(key);
   };
+  const providerOutputs = new Map();
+  const memoizedProviderExecutor = (providerName, fn) => {
+    if (typeof fn !== 'function') return undefined;
+    return (request) => {
+      const envEntries = Object.entries(request?.env ?? {})
+        .filter(([, value]) => value != null)
+        .sort(([a], [b]) => a.localeCompare(b));
+      const key = JSON.stringify([providerName, request?.command, request?.args, request?.input ?? null, request?.timeoutMs, envEntries]);
+      if (!providerOutputs.has(key)) {
+        providerOutputs.set(key, (async () => fn(request))());
+      }
+      return providerOutputs.get(key);
+    };
+  };
   const entries = await Promise.all(Object.values(connectors).map(async (connector) => {
     const provider = opts.providers?.find((candidate) => candidate.pools?.includes(connector.name)) ?? null;
     const discovery = await discoverConnectorModels(connector, {
       executor: memoizedExecutor,
       provider,
-      providerExecutor: opts.providerExecutors?.[provider?.name],
+      providerExecutor: memoizedProviderExecutor(provider?.name, opts.providerExecutors?.[provider?.name]),
     });
     return [connector.name, discovery];
   }));
