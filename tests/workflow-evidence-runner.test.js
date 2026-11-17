@@ -257,9 +257,10 @@ test('a spawn failure is "could not start"', async (t) => {
   const { outFile } = runFiles(t);
   const result = await runEvidenceItem(cmd('true'), { cwd: tempDir(t), outFile, spawn: () => { throw new Error('EAGAIN'); } });
   assert.deepEqual(pick(result, ['status', 'exit', 'why']), { status: 'failed', exit: null, why: 'could not start: EAGAIN' });
-  const missing = await runEvidenceItem(cmd('true'), { cwd: join(tempDir(t), 'gone'), outFile });
+  const gone = join(tempDir(t), 'gone');
+  const missing = await runEvidenceItem(cmd('true'), { cwd: gone, outFile });
   assert.equal(missing.status, 'failed');
-  assert.match(missing.why, /^could not start: /);
+  assert.equal(missing.why, `working directory not found: ${gone}`);
 });
 
 // ---------------------------------------------------------------------------

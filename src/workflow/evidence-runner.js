@@ -4,8 +4,11 @@
 // checks itself: a shell command that must exit 0, or a JSON file that must
 // match a schema (bin/check-schema.js in a child process). Checks run one at
 // a time, asynchronously (the kernel heartbeat must keep beating), each in its
-// own process group that is always killed when the shell exits, so a check
-// that starts a background server leaves nothing running.
+// own process group that is always killed when the shell exits, so a
+// background process the check leaves in that group is stopped. A process that
+// starts its own session (setsid, a daemon) is not in the group and keeps
+// running. A command passes on the shell's last exit code, so in
+// `npm test | tee log` only `tee` counts unless the command sets pipefail.
 //
 // Imports only Node built-ins, BoundedCapture and clipUtf8.
 
@@ -13,7 +16,7 @@ import { spawn as nodeSpawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync, chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync,
-  symlinkSync, writeFileSync,
+  statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,8 +113,11 @@ export function evidenceItemFormat(item) {
   return /\.(jsonl|ndjson)$/i.test(String(item?.file ?? '')) ? 'jsonl' : 'json';
 }
 
+// The program validator enforces 1-EVIDENCE_MAX_TIMEOUT_SEC, but a stored
+// program may skip revalidation, so the runner applies the same bound itself.
 export function evidenceItemTimeoutSec(item) {
-  return Number.isInteger(item?.timeoutSec) ? item.timeoutSec : EVIDENCE_DEFAULT_TIMEOUT_SEC;
+  const value = item?.timeoutSec;
+  return Number.isInteger(value) && value >= 1 && value <= EVIDENCE_MAX_TIMEOUT_SEC ? value : EVIDENCE_DEFAULT_TIMEOUT_SEC;
 }
 
 /** The cut `cmd`, or `schema <schema> on <file>` (`on your final response` for `$output`). */
@@ -280,6 +286,12 @@ export function runEvidenceItem(item, {
       'could not start',
     );
 
+    let cwdIsDirectory = false;
+    try { cwdIsDirectory = statSync(realCwd).isDirectory(); } catch { /* missing */ }
+    if (!cwdIsDirectory) {
+      finish({ status: 'failed', exit: null, why: `working directory not found: ${cwd}` }, 'could not start');
+      return;
+    }
     try {
       child = spawn(command, args, { cwd: realCwd, env: childEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
