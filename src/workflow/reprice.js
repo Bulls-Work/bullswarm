@@ -17,6 +17,7 @@ import { attachTranscriptUsage, estimateInvocationUsage, modelProfile, needsPerR
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { updateState } from '../lib/state.js';
 import { aggregateAttemptUsage, readRollup, rollupRecord, writeRunRollup } from './rollup.js';
 import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
@@ -195,6 +196,11 @@ function taskTimes(entry) {
   const startedAt = entry?.startedAt
     ?? (endedMs != null && wallSec != null ? new Date(endedMs - wallSec * 1000).toISOString() : null);
   return { startedAt, endedAt };
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(value, (_key, v) => (v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v));
 }
 
 export function taskEntries(state) {
@@ -773,10 +779,11 @@ export function repriceRuns({
   const taskState = readJsonSafe(taskStatePath, null);
   const taskRows = [];
   if (taskState && typeof taskState === 'object') {
-    const original = JSON.stringify(taskState);
     for (const entry of taskEntries(taskState)) {
       if (!eligible(entry, { sinceMs, pool })) continue;
       report.scannedTasks += 1;
+      // Fingerprint of the row exactly as scanned; the apply re-finds it by this.
+      const fingerprint = canonicalJson(entry.task);
       const oldUsage = entry.attempt.usage && typeof entry.attempt.usage === 'object'
         ? entry.attempt.usage : null;
       let candidate;
@@ -813,23 +820,46 @@ export function repriceRuns({
         oldUsage,
       });
       if (candidate.projectChanged) report.changedProjects += 1;
-      taskRows.push({ entry, candidate, usage: candidate.usage, row });
+      taskRows.push({ entry, candidate, usage: candidate.usage, row, fingerprint });
       report.rows.push(row);
       onRow?.(row);
     }
     if (apply && taskRows.length) {
-      for (const { entry, candidate, usage } of taskRows) {
-        entry.task.usage = clone(usage);
-        if (candidate.cwd && !entry.task.cwd) entry.task.cwd = candidate.cwd;
-        if (candidate.projectChanged) entry.task.project = candidate.project;
+      // Only the apply runs under the state lock (updateState), on a FRESH
+      // read: rows appended by a concurrent dispatch are kept, and a row that
+      // vanished or changed identity since the scan is reported, not written.
+      let touched = false;
+      const missing = [];
+      try {
+        updateState(bullswarmDir, (fresh) => {
+          // Pair the k-th scanned copy with the k-th deep-equal fresh row, so
+          // keys (id/outFile/position) never decide: equality does.
+          const queues = new Map();
+          for (const e of taskEntries(fresh)) {
+            const key = canonicalJson(e.task);
+            if (!queues.has(key)) queues.set(key, []);
+            queues.get(key).push(e);
+          }
+          for (const { entry, candidate, usage, fingerprint } of taskRows) {
+            const current = queues.get(fingerprint)?.shift();
+            if (!current) {
+              missing.push(entry.attemptId);
+              continue;
+            }
+            const before = JSON.stringify(current.task);
+            current.task.usage = clone(usage);
+            if (candidate.cwd && !current.task.cwd) current.task.cwd = candidate.cwd;
+            if (candidate.projectChanged) current.task.project = candidate.project;
+            if (JSON.stringify(current.task) !== before) touched = true;
+          }
+          return touched ? undefined : false;
+        });
+        if (touched) report.changedTasks += 1;
+      } catch (error) {
+        report.failures.push({ runId: 'state.json', error: error.message });
       }
-      if (JSON.stringify(taskState) !== original) {
-        try {
-          writeJsonAtomic(taskStatePath, taskState);
-          report.changedTasks += 1;
-        } catch (error) {
-          report.failures.push({ runId: 'state.json', error: error.message });
-        }
+      for (const id of missing) {
+        report.failures.push({ runId: id, error: `task row ${id} is gone or changed since the scan; not written` });
       }
     }
   }
