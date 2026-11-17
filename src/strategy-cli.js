@@ -1053,7 +1053,13 @@ export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
   try {
     const { connectors, providers } = loadPoolProviders(bullswarmDir, loaderOpts);
     const newPools = Object.entries(connectors)
-      .map(([name, conn]) => seedCandidatePool(name, conn, { enabled: poolEnabled(conn, state.pools?.[name]) }))
+      .map(([name, conn]) => {
+        const provider = providers?.find((candidate) => candidate.pools?.includes(name)) ?? null;
+        return seedCandidatePool(name, conn, {
+          enabled: poolEnabled(conn, state.pools?.[name]),
+          hasProviderDiscovery: typeof provider?.module?.discoverModels === 'function',
+        });
+      })
       .filter((pool) => needsNewPoolDiscovery(state.strategy, pool));
     if (!newPools.length) return null;
     const onlyConnectors = Object.fromEntries(newPools.map((pool) => [pool.name, pool.connector]));

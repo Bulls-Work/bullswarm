@@ -208,7 +208,7 @@ function windowFrom(bucket) {
  * its group's 5h bucket as five_hour and weekly bucket as seven_day,
  * utilization = used share of the bucket, rounded to 0.1.
  */
-export function parseAgyUsage(text, poolName = 'agy') {
+export function parseAgyUsage(text, poolName = 'agy', { capturedAt = null } = {}) {
   let body;
   try {
     body = JSON.parse(String(text ?? '').trim());
@@ -233,6 +233,7 @@ export function parseAgyUsage(text, poolName = 'agy') {
   const weekly = windowFrom(buckets.find((bucket) => bucket?.window === 'weekly'));
   if (!fiveHour && !weekly) throw new AgyMeterError(`agy /usage "${wanted}" has no 5h or weekly bucket`, 'parse');
   return snapshot({
+    ...(capturedAt ? { captured_at: capturedAt } : {}),
     pool: poolName,
     five_hour: fiveHour ?? undefined,
     seven_day: weekly ?? undefined,
@@ -287,6 +288,7 @@ export async function readUsage(pool, ctx = {}) {
     throw new AgyMeterError('the agy meter is not read under node --test without an injected runner', 'test_guard');
   }
   const command = (typeof pool === 'object' && pool?.bin) || 'agy';
+  const clock = typeof ctx.now === 'function' ? ctx.now : Date.now;
   let result;
   let shared = null;
   try {
@@ -297,7 +299,7 @@ export async function readUsage(pool, ctx = {}) {
       timeoutMs: USAGE_TIMEOUT_MS,
     }, {
       maxAgeMs: ctx.maxAgeMs ?? USAGE_SHARE_MS,
-      now: typeof ctx.now === 'function' ? ctx.now : Date.now,
+      now: clock,
     });
     result = await shared.result;
   } catch (error) {
@@ -322,7 +324,7 @@ export async function readUsage(pool, ctx = {}) {
   }
   // An answer that does not parse is not shared: the next read spawns again.
   try {
-    return parseAgyUsage(result?.stdout, poolName);
+    return parseAgyUsage(result?.stdout, poolName, { capturedAt: new Date(clock()).toISOString() });
   } catch (error) {
     if (error?.code !== 'no_group') shared.forget();
     throw error;

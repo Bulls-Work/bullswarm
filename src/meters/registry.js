@@ -179,6 +179,7 @@ export function readerFor(pool, readerOpts = {}) {
     ...owner.ctx,
     subscription,
     ...(Number.isFinite(read?.maxAgeMs) ? { maxAgeMs: read.maxAgeMs } : {}),
+    ...(Number.isFinite(read?.nowMs) && !owner.ctx?.now ? { now: () => read.nowMs, nowMs: read.nowMs } : {}),
   });
 }
 
@@ -433,7 +434,7 @@ export async function getMeterReading(pool, opts = {}) {
       try {
         // The same freshness this read promises its caller: a forced read
         // shares nothing older than shareMs (0 after a quota refusal).
-        rawSnapshot = await reader({ maxAgeMs: force ? (opts.shareMs ?? FORCED_SHARE_MS) : FRESH_MS });
+        rawSnapshot = await reader({ maxAgeMs: force ? (opts.shareMs ?? FORCED_SHARE_MS) : FRESH_MS, nowMs });
         logMeterRead(cache.dir, pool, { force, ok: true });
       } catch (readErr) {
         logMeterRead(cache.dir, pool, { force, ok: false, error: meterErrorText(readErr) });

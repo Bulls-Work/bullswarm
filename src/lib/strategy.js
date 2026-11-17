@@ -1088,18 +1088,22 @@ export function needsNewPoolDiscovery(strategy = {}, pool) {
   if (!name || !(strategy?.configuredTiers ?? []).length) return false;
   if (typeof pool === 'object' && (pool?.enabled === false || pool?.testFixture === true)) return false;
   if (isUnseededNewPool(strategy, pool)) return true;
+  const canDiscoverViaCli = typeof pool === 'object'
+    ? Boolean(pool?.hasCliDiscovery ?? pool?.connector?.modelDiscovery?.cmd?.length)
+    : true;
+  if (!canDiscoverViaCli) return false;
   const prev = strategy?.lastReport?.discoveries?.[name];
   return Boolean(strategy?.rungSeeds?.[name])
-    && prev?.source === 'connector-fallback'
-    && !prev?.error;
+    && (!prev || (prev.source === 'connector-fallback' && !prev.error));
 }
 
 /** Lightweight pool view for seeding suggestions from a connector. */
-export function seedCandidatePool(name, connector, { enabled = true } = {}) {
+export function seedCandidatePool(name, connector, { enabled = true, hasProviderDiscovery = false } = {}) {
   return {
     name,
     connector,
     enabled,
+    hasCliDiscovery: Boolean(connector?.modelDiscovery?.cmd?.length || hasProviderDiscovery),
     testFixture: connector?.flags?.testFixture === true,
     pace: 0,
     costRank: connector?.costRank ?? 5,
@@ -1178,14 +1182,17 @@ export function applyNewPoolSeeds(state, {
   const report = buildStrategy({ connectors, pools, state, discoveries });
   const seeded = seedNewPoolRungs(state, report, pools, { via, reason, now, by });
   const updatedDiscoveries = [];
-  if (state.strategy?.lastReport?.discoveries && typeof state.strategy.lastReport.discoveries === 'object') {
-    for (const pool of pools ?? []) {
-      const name = typeof pool === 'string' ? pool : pool?.name;
-      if (!name || !discoveries?.[name]) continue;
-      if (seeded[name] || state.strategy.rungSeeds?.[name]) {
-        state.strategy.lastReport.discoveries[name] = discoveries[name];
-        updatedDiscoveries.push(name);
+  for (const pool of pools ?? []) {
+    const name = typeof pool === 'string' ? pool : pool?.name;
+    if (!name || !discoveries?.[name]) continue;
+    if (seeded[name] || state.strategy?.rungSeeds?.[name]) {
+      state.strategy ??= {};
+      state.strategy.lastReport ??= {};
+      if (!state.strategy.lastReport.discoveries || typeof state.strategy.lastReport.discoveries !== 'object') {
+        state.strategy.lastReport.discoveries = {};
       }
+      state.strategy.lastReport.discoveries[name] = discoveries[name];
+      updatedDiscoveries.push(name);
     }
   }
   return { seeded, updatedDiscoveries, report };
