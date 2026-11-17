@@ -2,7 +2,7 @@ import { parseHoldUntil, RESERVE_WINDOWS } from './lib/pool-limits.js';
 import { markOutsideFalseFailures } from './workflow/outside-writes.js';
 import { loadState, updateState } from './lib/state.js';
 import { latestPoolToggle, setPoolEnabled } from './lib/pool-toggle.js';
-import { loadConnectors, loadPoolProviders, buildPools, buildPoolsLive } from './lib/config.js';
+import { loadConnectors, loadPoolProviders, buildPools, buildPoolsLive, poolEnabled } from './lib/config.js';
 import { providerFor } from './lib/providers.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { PACING_WINDOWS } from './meters/framework.js';
@@ -17,7 +17,7 @@ import {
   sortLegacyPins, dropStrategyReport, releaseAppliedPins, pinRung,
   FREE_MODEL_SETTINGS, freeModelsBanned, freeModelsView, setFreeModels, resetFreeModels,
   planExclusionsForPool, clearPlanExcludedModels,
-  isUnseededNewPool, seedNewPoolRungs,
+  needsNewPoolDiscovery, seedCandidatePool, seedNewPoolRungs, applyNewPoolSeeds,
 } from './lib/strategy.js';
 import {
   connectorReasoningLevels, isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel,
@@ -1051,34 +1051,36 @@ export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
   // other pool's approved picks.
   if (!(state.strategy?.configuredTiers ?? []).length) return null;
   try {
-    const { pools } = buildPools(bullswarmDir, Date.now(), {}, loaderOpts);
-    const newPools = pools.filter((pool) => isUnseededNewPool(state.strategy, pool));
-    if (!newPools.length) return null;
     const { connectors, providers } = loadPoolProviders(bullswarmDir, loaderOpts);
-    const onlyConnectors = Object.fromEntries(
-      newPools.map((pool) => [pool.name, connectors[pool.name]]).filter(([, conn]) => conn),
-    );
+    const newPools = Object.entries(connectors)
+      .map(([name, conn]) => seedCandidatePool(name, conn, { enabled: poolEnabled(conn, state.pools?.[name]) }))
+      .filter((pool) => needsNewPoolDiscovery(state.strategy, pool));
+    if (!newPools.length) return null;
+    const onlyConnectors = Object.fromEntries(newPools.map((pool) => [pool.name, pool.connector]));
     const discoveries = await discoverAllModels(onlyConnectors, {
       providers,
       ...(opts.executor ? { executor: opts.executor } : {}),
       ...(opts.providerExecutors ? { providerExecutors: opts.providerExecutors } : {}),
     });
-    const report = buildStrategy({ connectors: onlyConnectors, pools: newPools, state, discoveries });
-    let seeded = {};
+    let outcome = null;
     updateState(bullswarmDir, (fresh) => {
-      seeded = seedNewPoolRungs(fresh, report, newPools, {
+      outcome = applyNewPoolSeeds(fresh, {
+        connectors: onlyConnectors,
+        pools: newPools,
+        discoveries,
         via: 'auto-refresh-new-pool',
         reason: 'new pool seeded with provider suggestions on first discovery',
       });
-      if (Object.keys(seeded).length && fresh.strategy?.lastReport?.discoveries && typeof fresh.strategy.lastReport.discoveries === 'object') {
-        for (const name of Object.keys(seeded)) {
-          if (discoveries[name]) fresh.strategy.lastReport.discoveries[name] = discoveries[name];
-        }
-      }
     });
-    return Object.keys(seeded).length ? { seeded, report } : null;
-  } catch {
-    return null;
+    return outcome && (Object.keys(outcome.seeded).length || outcome.updatedDiscoveries.length) ? outcome : null;
+  } catch (err) {
+    const failed = updateState(bullswarmDir, (fresh) => {
+      fresh.strategy ??= {};
+      fresh.strategy.policy ??= policy;
+      fresh.strategy.policy.lastRefreshErrorAt = new Date().toISOString();
+      fresh.strategy.policy.lastRefreshError = err.message;
+    });
+    return { error: err.message, retainedAssignments: failed.strategy.assignments ?? {} };
   }
 }
 

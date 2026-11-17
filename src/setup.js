@@ -23,7 +23,7 @@ import { loadState, updateState } from './lib/state.js';
 import { setPoolEnabled } from './lib/pool-toggle.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
-  getRecommendedReasoning, buildStrategy, knownModelsDiscovery, isUnseededNewPool, seedNewPoolRungs,
+  getRecommendedReasoning, knownModelsDiscovery, needsNewPoolDiscovery, seedCandidatePool, applyNewPoolSeeds,
 } from './lib/strategy.js';
 import { buildPools, loadConnectors, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
@@ -439,6 +439,10 @@ export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverCo
   const table = suggestRoutingTable(chosen);
 
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
+  let preloadedConnectors = null;
+  if ((loadState(bullswarmDir).strategy?.configuredTiers ?? []).length) {
+    try { preloadedConnectors = loadConnectors(bullswarmDir, loaderOpts); } catch { preloadedConnectors = null; }
+  }
   // Under the lock (S5). This is NOT first-use only: `bullswarm setup --yes`
   // and any non-TTY `bullswarm setup` re-run it over an existing state.json,
   // where a concurrent run's decision-log append is exactly what a stale copy
@@ -467,34 +471,20 @@ export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverCo
         });
       }
     }
-    if ((state.strategy?.configuredTiers ?? []).length) {
-      const connectors = loadConnectors(bullswarmDir, loaderOpts);
+    if (preloadedConnectors && (state.strategy?.configuredTiers ?? []).length) {
       const candidates = [...enabled]
-        .filter((name) => connectors[name] && isUnseededNewPool(state.strategy, {
-          name, enabled: true, testFixture: connectors[name].flags?.testFixture === true,
-        }));
+        .filter((name) => preloadedConnectors[name] && needsNewPoolDiscovery(state.strategy, seedCandidatePool(name, preloadedConnectors[name])));
       if (candidates.length) {
-        const onlyConnectors = Object.fromEntries(candidates.map((name) => [name, connectors[name]]));
-        const discoveries = Object.fromEntries(candidates.map((name) => [name, knownModelsDiscovery(connectors[name])]));
-        const poolList = candidates.map((name) => ({
-          name,
-          connector: connectors[name],
-          enabled: true,
-          pace: 0,
-          costRank: connectors[name].costRank ?? 5,
-          lanes: connectors[name].lanes ?? [],
-          capabilities: connectors[name].capabilities ?? [],
-        }));
-        const report = buildStrategy({ connectors: onlyConnectors, pools: poolList, state, discoveries });
-        const seeded = seedNewPoolRungs(state, report, poolList, {
+        const onlyConnectors = Object.fromEntries(candidates.map((name) => [name, preloadedConnectors[name]]));
+        const discoveries = Object.fromEntries(candidates.map((name) => [name, knownModelsDiscovery(preloadedConnectors[name])]));
+        const poolList = candidates.map((name) => seedCandidatePool(name, preloadedConnectors[name]));
+        applyNewPoolSeeds(state, {
+          connectors: onlyConnectors,
+          pools: poolList,
+          discoveries,
           via: 'auto-setup',
           reason: `${source}: new pool seeded with provider suggestions`,
         });
-        if (Object.keys(seeded).length && state.strategy?.lastReport?.discoveries && typeof state.strategy.lastReport.discoveries === 'object') {
-          for (const name of Object.keys(seeded)) {
-            if (discoveries[name]) state.strategy.lastReport.discoveries[name] = discoveries[name];
-          }
-        }
       }
     }
   });

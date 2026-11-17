@@ -65,7 +65,7 @@ export function loadPoolProviders(bullswarmDir, opts = {}) {
  * buildPoolsLive apply: a test-fixture pool is opt-IN (it must be switched on
  * explicitly), every other pool is opt-out.
  */
-function poolEnabled(conn, poolState) {
+export function poolEnabled(conn, poolState) {
   return conn?.flags?.testFixture === true
     ? poolState?.enabled === true
     : poolState?.enabled !== false;

@@ -227,7 +227,7 @@ export async function rerunV2Step({
       const routing = doc?.config?.workerRouting ?? {};
       const filter = resolveRouteFilter(state, definition, pools ?? []);
       const capable = prepareV2DispatchPools(pools ?? [], definition, definition.effort ?? 'medium', {
-        preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
+        preferredModel: definition?.model ?? routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
         routeFilter: filter, ignoreBurstGate: true,
       }).filter((pool) => poolPassesRoute(pool, filter));
       if (!capable.length) {

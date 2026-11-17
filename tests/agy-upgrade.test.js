@@ -312,7 +312,8 @@ test('G: autoSetup and refreshStrategy also seed new agy pools without touching 
   // Unexpected errors during new-pool discovery are recorded and returned, never swallowed.
   const brokenHome = upgradedHome(t);
   const errResult = await maybeRefreshStrategy(brokenHome, {
-    loaderOpts: { ...loaderFor(brokenHome), dirs: { firstClass: 123 } },
+    loaderOpts: loaderFor(brokenHome),
+    providerExecutors: { get agy() { throw new Error('discovery transport boom'); } },
   });
   assert.ok(errResult && typeof errResult.error === 'string', JSON.stringify(errResult));
   assert.equal(typeof loadState(brokenHome).strategy?.policy?.lastRefreshError, 'string');

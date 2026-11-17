@@ -1067,7 +1067,7 @@ export function knownModelsDiscovery(connector) {
  * True when `pool` is an enabled non-fixture pool that a home with existing
  * tier selections (`configuredTiers`) has never seen or configured yet.
  */
-export function isUnseededNewPool(strategy = {}, pool) {
+function isUnseededNewPool(strategy = {}, pool) {
   const name = typeof pool === 'string' ? pool : pool?.name;
   if (!name || !(strategy?.configuredTiers ?? []).length) return false;
   if (typeof pool === 'object' && (pool?.enabled === false || pool?.testFixture === true)) return false;
@@ -1076,6 +1076,36 @@ export function isUnseededNewPool(strategy = {}, pool) {
   if (strategy?.lastReport?.discoveries && Object.prototype.hasOwnProperty.call(strategy.lastReport.discoveries, name)) return false;
   if (strategy?.rungSeeds?.[name]) return false;
   return true;
+}
+
+/**
+ * True when `pool` needs first-time seeding OR was synchronously seeded by
+ * `autoSetup` using `connector-fallback` and still awaits its first real CLI
+ * discovery (which supplies per-model `reasoningLevels`).
+ */
+export function needsNewPoolDiscovery(strategy = {}, pool) {
+  const name = typeof pool === 'string' ? pool : pool?.name;
+  if (!name || !(strategy?.configuredTiers ?? []).length) return false;
+  if (typeof pool === 'object' && (pool?.enabled === false || pool?.testFixture === true)) return false;
+  if (isUnseededNewPool(strategy, pool)) return true;
+  const prev = strategy?.lastReport?.discoveries?.[name];
+  return Boolean(strategy?.rungSeeds?.[name])
+    && prev?.source === 'connector-fallback'
+    && !prev?.error;
+}
+
+/** Lightweight pool view for seeding suggestions from a connector. */
+export function seedCandidatePool(name, connector, { enabled = true } = {}) {
+  return {
+    name,
+    connector,
+    enabled,
+    testFixture: connector?.flags?.testFixture === true,
+    pace: 0,
+    costRank: connector?.costRank ?? 5,
+    lanes: connector?.lanes ?? [],
+    capabilities: connector?.capabilities ?? [],
+  };
 }
 
 /**
@@ -1135,6 +1165,30 @@ export function seedNewPoolRungs(state, report, candidatePools, {
     seeded[pool] = record;
   }
   return seeded;
+}
+
+/**
+ * Build a scoped strategy report for `pools`, seed any unseeded new pools, and
+ * refresh `lastReport.discoveries` for seeded pools (including upgrading an
+ * earlier `connector-fallback` entry to real CLI discovery).
+ */
+export function applyNewPoolSeeds(state, {
+  connectors, pools, discoveries, via, reason = null, now = Date.now(), by = toggleActor(),
+} = {}) {
+  const report = buildStrategy({ connectors, pools, state, discoveries });
+  const seeded = seedNewPoolRungs(state, report, pools, { via, reason, now, by });
+  const updatedDiscoveries = [];
+  if (state.strategy?.lastReport?.discoveries && typeof state.strategy.lastReport.discoveries === 'object') {
+    for (const pool of pools ?? []) {
+      const name = typeof pool === 'string' ? pool : pool?.name;
+      if (!name || !discoveries?.[name]) continue;
+      if (seeded[name] || state.strategy.rungSeeds?.[name]) {
+        state.strategy.lastReport.discoveries[name] = discoveries[name];
+        updatedDiscoveries.push(name);
+      }
+    }
+  }
+  return { seeded, updatedDiscoveries, report };
 }
 
 export async function discoverConnectorModels(connector, {
