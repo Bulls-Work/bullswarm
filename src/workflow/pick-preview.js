@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { argvWithModel } from '../lib/worker-argv.js';
 import { expiringSoonView, pickPool } from '../lib/route.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
+import { resolveDecisionLog } from '../lib/state.js';
 import { expectedMinutesFromSpendModel } from '../lib/assignments.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
@@ -64,7 +65,7 @@ export async function previewStepPick({ action, pools, bullswarmDir, coreState, 
   const lane = action.lane ?? 'chore';
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[lane] ?? 'medium';
   const routeFilter = action.route ? resolveRouteFilter({ attempts: [] }, action, pools) : null;
-  const decisionLog = coreState?.decisionLog ?? [];
+  const decisionLog = resolveDecisionLog(coreState?.decisionLog, bullswarmDir);
   const inflightPenaltyPct = inflightPenaltyFrom(coreState);
   const expected = await expectedMinutesFromSpendModel(
     { lane, effort },

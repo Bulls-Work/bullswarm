@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import { attachInflight, withLedger } from './assignments.js';
 import { attachSpend } from './spend.js';
 import { DEFAULT_INFLIGHT_PENALTY_PCT } from './route.js';
+import { resolveDecisionLog } from './state.js';
 
 /**
  * The meters directory for a home — `<BULLSWARM_HOME>/meters`.
@@ -58,7 +59,7 @@ export function attachForecast(pools, bullswarmDir, opts = {}) {
   const list = Array.isArray(pools) ? pools : [];
   if (!list.length || typeof bullswarmDir !== 'string' || !bullswarmDir) return list;
   const now = opts.now ?? Date.now();
-  const decisionLog = Array.isArray(opts.decisionLog) ? opts.decisionLog : [];
+  const decisionLog = resolveDecisionLog(opts.decisionLog, bullswarmDir);
   // F2: each half is independently best-effort. A broken ledger still leaves
   // real spend rates attached, and a broken history log still leaves real
   // in-flight counts.

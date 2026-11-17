@@ -12,7 +12,7 @@ import {
   PACING_FORECAST_BLOCK_PCT, expiringSoonView, pickPool,
 } from '../lib/route.js';
 import {
-  assertDepthAllowed, childDepthEnv, loadState, updateState, upstreamGroupOf,
+  assertDepthAllowed, childDepthEnv, loadState, resolveDecisionLog, updateState, upstreamGroupOf,
 } from '../lib/state.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { watchOnce } from '../lib/watch.js';
@@ -386,7 +386,7 @@ export async function dispatchV2Action({
   const safeCoreState = () => {
     try { return loadCoreState(bullswarmDir); } catch { return null; }
   };
-  const coreDecisionLog = () => safeCoreState()?.decisionLog ?? [];
+  const coreDecisionLog = () => resolveDecisionLog(safeCoreState()?.decisionLog, bullswarmDir);
   // Operator-configurable, read once: the flat surplus cost of an in-flight
   // agent on a pool whose pacing-window spend rate nobody has measured yet.
   const inflightPenaltyPct = inflightPenaltyFrom(safeCoreState());
@@ -683,7 +683,7 @@ export async function dispatchV2Action({
     const attemptSilenceSec = attemptSilenceTimeoutSec(
       pool,
       effort,
-      coreState?.decisionLog ?? coreDecisionLog(),
+      resolveDecisionLog(coreState?.decisionLog, bullswarmDir),
       configuredSilenceTimeoutSec,
       silenceOverride,
     );

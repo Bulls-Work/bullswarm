@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { expiringSoonView, fiveHourElapsedPct, formatResetsIn } from './lib/route.js';
-import { loadState, assertDepthAllowed } from './lib/state.js';
+import { loadState, readDecisionLog, assertDepthAllowed } from './lib/state.js';
 import { buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { refusalResetKnown } from './meters/framework.js';
@@ -197,7 +197,7 @@ async function livePools(now, { force = false, only = null } = {}) {
   // Current cross-process load, from the shared ledger rather than this
   // process's own memory: work another Bullswarm started still shows here —
   // plus the spend rates that turn that load into a projected utilization.
-  attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
+  attachForecast(pools, getBullswarmDir(), { now, decisionLog: readDecisionLog(getBullswarmDir(), state) });
   return pools;
 }
 
@@ -417,8 +417,10 @@ function emitRun(verdict, opts) {
 
 function cmdHealth(opts) {
   // An observation command: it reads state.json and never writes it.
-  const state = loadState(getBullswarmDir());
-  const runsDir = join(getBullswarmDir(), 'runs');
+  const home = getBullswarmDir();
+  const state = loadState(home);
+  const decisionLog = readDecisionLog(home, state);
+  const runsDir = join(home, 'runs');
   const findings = [];
 
   // Correlate each logged decision with its saved output: the doctrine
@@ -427,7 +429,7 @@ function cmdHealth(opts) {
   // pass are exactly the planted case; verdict-OK files are expected passes.
   if (existsSync(runsDir)) {
     const byOut = new Map(
-      (state.decisionLog ?? [])
+      decisionLog
         .filter((d) => d.outFile)
         .map((d) => [d.outFile, d]),
     );
@@ -455,7 +457,7 @@ function cmdHealth(opts) {
     // is reported (below) but never counted against health.
     healthy: findings.every((f) => !f.gateAteWork),
     gateFailures: findings.filter((f) => f.gateAteWork),
-    decisionLogSize: state.decisionLog?.length ?? 0,
+    decisionLogSize: decisionLog.length,
   };
   if (opts.json) {
     console.log(JSON.stringify(report, null, 2));

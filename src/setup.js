@@ -19,7 +19,10 @@ import {
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { stdin as input } from 'node:process';
-import { loadState, readHomeMigrations, recordHomeMigrations, updateState } from './lib/state.js';
+import {
+  DECISION_LOG_LIVE_LIMIT, compactDecisionLog, loadState, readDecisionLog,
+  readHomeMigrations, recordHomeMigrations, updateState,
+} from './lib/state.js';
 import { setPoolEnabled } from './lib/pool-toggle.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
@@ -526,6 +529,14 @@ export function ensureSetup(bullswarmDir) {
     try { syncConnectorCopies(bullswarmDir); } catch { /* never blocks a verb */ }
     upgradeConnectorMetadata(bullswarmDir);
     migrateTestFixturePools(bullswarmDir);
+    if (readHomeMigrations(bullswarmDir).decisionLogCompacted !== true) {
+      try {
+        if ((loadState(bullswarmDir).decisionLog ?? []).length > DECISION_LOG_LIVE_LIMIT) {
+          compactDecisionLog(bullswarmDir);
+        }
+        recordHomeMigrations(bullswarmDir, { decisionLogCompacted: true });
+      } catch { /* never blocks a verb */ }
+    }
     return null;
   }
   return autoSetup(bullswarmDir, { reason: 'first-use' });
@@ -580,7 +591,7 @@ export async function configureTierRungs(bullswarmDir, prompter, {
     pools,
     connectors,
     strategy: state.strategy ?? {},
-    decisionLog: state.decisionLog ?? [],
+    decisionLog: readDecisionLog(bullswarmDir, state),
     evidence: evidence === undefined ? await rungEvidenceSource(bullswarmDir) : evidence,
   });
   // A pool with no eligible model on a tier has no rung to suggest; the full

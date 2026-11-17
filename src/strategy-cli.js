@@ -1,6 +1,6 @@
 import { parseHoldUntil, RESERVE_WINDOWS } from './lib/pool-limits.js';
 import { markOutsideFalseFailures } from './workflow/outside-writes.js';
-import { loadState, updateState } from './lib/state.js';
+import { loadState, readArchivedDecisionLog, readDecisionLog, updateState, writeArchivedDecisionLog } from './lib/state.js';
 import { latestPoolToggle, setPoolEnabled } from './lib/pool-toggle.js';
 import { loadConnectors, loadPoolProviders, buildPools, buildPoolsLive, poolEnabled } from './lib/config.js';
 import { providerFor } from './lib/providers.js';
@@ -599,7 +599,7 @@ export async function rungRows(bullswarmDir, { pool = null, loaderOpts = PACKAGE
     pools,
     connectors,
     strategy: state.strategy ?? {},
-    decisionLog: state.decisionLog ?? [],
+    decisionLog: readDecisionLog(bullswarmDir, state),
     evidence: await loadRungEvidence(bullswarmDir),
     pool,
   });
@@ -826,7 +826,7 @@ export async function loadStrategyInventory(bullswarmDir, {
   }
   // The control center previews real routing, so it reads the same live
   // in-flight ledger and spend rates every dispatch path does.
-  attachForecast(pools, bullswarmDir, { decisionLog: state.decisionLog ?? [] });
+  attachForecast(pools, bullswarmDir, { decisionLog: readDecisionLog(bullswarmDir, state) });
   return strategyInventory({
     pools, state, report, evidence: await loadRungEvidence(bullswarmDir),
   });
@@ -1302,12 +1302,22 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'recheck-not-produced') {
       ensureHome?.();
-      const preview = loadState(bullswarmDir).decisionLog ?? [];
+      const preview = readDecisionLog(bullswarmDir);
       const found = structuredClone(preview);
       markOutsideFalseFailures(found);
       const rows = found.filter((row, i) => row?.falseFailure && !preview[i]?.falseFailure)
         .map((row) => ({ ts: row.ts, pool: row.picked, run: row.outFile?.split('/').at(-2) ?? null, falseFailure: row.falseFailure }));
-      if (opts.yes === true && rows.length) updateState(bullswarmDir, (state) => { markOutsideFalseFailures(state.decisionLog ?? []); });
+      if (opts.yes === true && rows.length) {
+        updateState(bullswarmDir, (state) => {
+          const archived = readArchivedDecisionLog(bullswarmDir);
+          if (archived.length) {
+            const archivedBefore = JSON.stringify(archived);
+            markOutsideFalseFailures(archived);
+            if (JSON.stringify(archived) !== archivedBefore) writeArchivedDecisionLog(bullswarmDir, archived);
+          }
+          markOutsideFalseFailures(state.decisionLog ?? []);
+        });
+      }
       console.log(JSON.stringify({ action: opts.yes === true ? 'marked' : 'preview', count: rows.length, rows }, null, 2));
       return 0;
     }

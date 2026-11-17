@@ -18,6 +18,8 @@
 
 - `bullswarm integrate` now supports `agy` (`--agents agy`, and included in the default set when `agy` is installed): `install` creates `~/.gemini/config/skills/bullswarm/` with top-level entry symlinks into the packaged `skill/` (since AGY ignores a symlinked skill directory) and manages the recursion-safe awareness block in `~/.gemini/config/AGENTS.md`; `remove` deletes only Bullswarm-managed entry symlinks (and the directory when empty) and refuses to touch non-Bullswarm folders.
 
+- Faster CLI startup and bounded `state.json`: `--version`, `--help` and usage errors no longer initialize, load or migrate home state; the OpenCode pool-rename check and test-fixture pool migration record a small `.migrations.json` marker once so later CLI invocations skip rescanning or parsing `state.json`; and `state.decisionLog` keeps the most recent 200 entries in `state.json` (one JSON row per line) while moving older entries to the append-only `decision-log-archive.jsonl` read alongside live entries by spend, strategy rungs, tasks, health, legacy metrics and repricing.
+
 ## 0.38.22 — pool lanes setting, hold --allow-pinned, starting runs are not legacy, timeouts read interrupted, pool toggle record, build --check hint
 
 - `bullswarm run --lane build` without `--check` prints one hint on stderr before it dispatches (`hint: no --check, so this build can only finish unproven; ...`), and the skill's first single-step example is a build with `--check`. Why: in the week to 14 Nov none of 19 single-step builds used `--check`, and 23 of 49 OK builds were proven by nothing. Not printed for analyze, chore, `--dry-run` or usage exits; `--json` stdout is unchanged (#85).

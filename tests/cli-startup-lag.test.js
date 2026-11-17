@@ -280,7 +280,7 @@ test('J.4: decisionLog overflows into append-only archive and all readers see ar
     assert.ok(pools[0].spend, 'attachForecast works with archived decisionLog');
 
     // Tasks & legacy metrics readers find the archived 'run' entry (row 0):
-    const tasks = listTasks(home);
+    const tasks = listTasks({ home });
     assert.equal(tasks.finished.length, 1);
     assert.equal(tasks.finished[0].id, 'task-row-0');
 
@@ -295,8 +295,10 @@ test('J.4: decisionLog overflows into append-only archive and all readers see ar
       apply: true,
       connectors: { agy: { name: 'agy' } },
       readTranscriptUsage: () => ({
+        tokens: { standardRead: 400, cacheRead: 0, cacheWrite: 0, output: 100, reasoning: 0, totalKnown: 500 },
+        model: 'gemini-4-carbon',
+        requests: [],
         confidence: 'exact',
-        usage: { tokens: { standardRead: 400, output: 100, totalKnown: 500 }, tokenSource: 'transcript', costUsd: 0.01 },
       }),
     });
     assert.equal(repriced.scannedTasks, 1, 'reprice scanned archived single task');

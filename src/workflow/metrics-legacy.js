@@ -21,6 +21,7 @@
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJsonSafe } from '../lib/fsjson.js';
+import { decisionLogArchivePath, readDecisionLog } from '../lib/state.js';
 import { finishedRow, isRunEntry, taskKey } from '../lib/tasks.js';
 import {
   aggregateAttemptUsage, attemptApiUsd, attemptMetric, attemptsUnion, attemptWorkerMinutes, finiteNonNegative, round,
@@ -113,14 +114,22 @@ let cached = { key: null, records: [] };
 export function readLegacyTaskRecords(home) {
   if (typeof home !== 'string' || !home) return [];
   const path = join(home, 'state.json');
-  let key;
+  const archivePath = decisionLogArchivePath(home);
+  let statePart = 'absent';
   try {
     const stat = statSync(path);
-    key = `${path}:${stat.size}:${stat.mtimeMs}`;
-  } catch { return []; }
+    statePart = `${stat.size}:${stat.mtimeMs}`;
+  } catch { /* absent */ }
+  let archivePart = 'absent';
+  try {
+    const stat = statSync(archivePath);
+    archivePart = `${stat.size}:${stat.mtimeMs}`;
+  } catch { /* absent */ }
+  if (statePart === 'absent' && archivePart === 'absent') return [];
+  const key = `${home}:${statePart}:${archivePart}`;
   if (cached.key === key) return cached.records.slice();
-  const state = readJsonSafe(path, null);
-  const entries = Array.isArray(state?.decisionLog) ? state.decisionLog : [];
+  const state = statePart === 'absent' ? null : readJsonSafe(path, null);
+  const entries = readDecisionLog(home, state ?? { decisionLog: [] });
   const records = entries.filter(isRunEntry).map((entry) => legacyTaskRecord(entry, { home }));
   cached = { key, records };
   return records.slice();

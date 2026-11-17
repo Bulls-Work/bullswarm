@@ -13,6 +13,7 @@ import {
   isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel, suggestedReasoningLevel,
 } from './reasoning.js';
 import { attemptWindow } from './spend.js';
+import { resolveDecisionLog } from './state.js';
 import { pacingWindowFor, windowSpent } from '../meters/framework.js';
 // The canonical lane/effort tables. Imported, never restated: see
 // TIER_CONTEXTS below for the tier -> lane derivation they feed.
@@ -783,7 +784,7 @@ function medianOf(values) {
  * duration still counts as a dispatch but contributes no minutes.
  */
 export function rungRecord(decisionLog, pool, tier) {
-  const rows = (Array.isArray(decisionLog) ? decisionLog : [])
+  const rows = resolveDecisionLog(decisionLog)
     .filter((entry) => decisionPool(entry) === pool && decisionEffort(entry) === tier);
   if (!rows.length) return null;
   // A stall is a transport failure, not a real duration sample. The dispatcher

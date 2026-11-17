@@ -13,6 +13,8 @@ import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
 import { stepJsonModel } from './step-json.js';
 import { listAssignments } from '../lib/assignments.js';
+import { readJsonSafe } from '../lib/fsjson.js';
+import { readDecisionLog } from '../lib/state.js';
 import { flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, legacyRunRefusal } from './cli-run-lookup.js';
 
@@ -212,8 +214,9 @@ function taskRecordFor(home, token) {
   const live = listAssignments(home, { prune: false }).filter((entry) => entry?.source === 'run');
   let finished = [];
   try {
-    const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
-    finished = (state?.decisionLog ?? []).filter((entry) => entry?.kind === 'run' || entry?.source === 'run');
+    const state = readJsonSafe(join(home, 'state.json'), null);
+    finished = readDecisionLog(home, state ?? { decisionLog: [] })
+      .filter((entry) => entry?.kind === 'run' || entry?.source === 'run');
   } catch { /* a home with only a live ledger is still inspectable */ }
   const records = [...live, ...finished];
   const exact = records.find((entry) => entry?.id === token);

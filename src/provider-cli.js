@@ -864,7 +864,6 @@ export async function cmdProvider(args, {
     const [operand] = opts.rest;
 
     if (sub === 'list') {
-      ensureHome?.();
       const report = listReport(bullswarmDir, loaderOpts);
       log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(renderList(report), bullswarmDir));
       return 0;
@@ -883,7 +882,6 @@ export async function cmdProvider(args, {
     }
     if (sub === 'validate') {
       if (!operand) throw usage(sub, 'missing <dir|name>');
-      ensureHome?.();
       const dir = resolveProviderTarget(bullswarmDir, operand, loaderOpts);
       const report = validateProvider(bullswarmDir, dir, loaderOpts);
       log(opts.json ? JSON.stringify(report, null, 2) : withPoolLabels(renderValidate(report), bullswarmDir));
@@ -893,7 +891,6 @@ export async function cmdProvider(args, {
       if (!operand) throw usage(sub, 'missing <name>');
       if (opts.from === true) throw usage(sub, 'missing --from <template>');
       if (opts.dir === true) throw usage(sub, 'missing --dir <path>');
-      ensureHome?.();
       const result = scaffoldProvider(bullswarmDir, operand, {
         from: typeof opts.from === 'string' ? opts.from : null,
         dir: typeof opts.dir === 'string' ? opts.dir : null,
