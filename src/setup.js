@@ -19,7 +19,7 @@ import {
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { stdin as input } from 'node:process';
-import { loadState, updateState } from './lib/state.js';
+import { loadState, readHomeMigrations, recordHomeMigrations, updateState } from './lib/state.js';
 import { setPoolEnabled } from './lib/pool-toggle.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
@@ -372,9 +372,13 @@ export function upgradeConnectorMetadata(bullswarmDir, {
 // (audit finding D1, 2026-09-09). The `testFixturesMigrated` flag is set
 // either way, so the migration still runs exactly once.
 export function migrateTestFixturePools(bullswarmDir) {
+  if (readHomeMigrations(bullswarmDir).testFixturesMigrated === true) return [];
   // Cheap unlocked pre-check: this runs on the first-use path of every verb,
   // and once the flag is set there is nothing to write and no lock to take.
-  if (loadState(bullswarmDir).config?.testFixturesMigrated === true) return [];
+  if (loadState(bullswarmDir).config?.testFixturesMigrated === true) {
+    recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
+    return [];
+  }
 
   const connectorsDir = join(bullswarmDir, 'connectors');
   let disabled = [];
@@ -401,6 +405,7 @@ export function migrateTestFixturePools(bullswarmDir) {
     state.config.testFixturesMigrated = true;
     return true;
   });
+  recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
   return disabled;
 }
 
@@ -492,6 +497,7 @@ export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverCo
     join(bullswarmDir, 'routing.json'),
     `${JSON.stringify(table, null, 2)}\n`,
   );
+  recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
 
   return {
     initialized: true,
@@ -750,6 +756,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
     join(bullswarmDir, 'routing.json'),
     `${JSON.stringify(table, null, 2)}\n`,
   );
+  recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
   console.log(`\nWrote ${bullswarmDir}/state.json and routing.json`);
   if (repaired.length) console.log(`Retired older connector copies (the packaged connectors load instead): ${repaired.join(', ')}`);
 
