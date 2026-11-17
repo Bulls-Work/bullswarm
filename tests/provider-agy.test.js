@@ -257,8 +257,18 @@ test('a bad meter read is a MeterError with a code, never a snapshot', async () 
   await fails(usageRunner(noClaude), 'no_group', 'agy:claude');
   // A meter read that started a model turn spent quota: refused.
   await fails(usageRunner({ ...USAGE, num_turns: 1 }), 'model_turn');
-  // agy's own error object (exit 1).
+  // agy's own error object (exit 1), and a non-zero exit with plain stderr / empty stdout.
   await fails(async () => ({ stdout: BAD_MODEL, stderr: '', exitCode: 1 }), 'cli_error');
+  await assert.rejects(
+    readUsage('agy', { runner: async () => ({ stdout: '', stderr: 'auth error: token expired', exitCode: 1 }) }),
+    (error) => {
+      assert.ok(error instanceof AgyMeterError);
+      assert.equal(error.code, 'cli_error');
+      assert.match(error.message, /exited 1.*auth error: token expired/);
+      return true;
+    },
+  );
+  await fails(async () => ({ stdout: 'plain error line', stderr: '', exitCode: 2 }), 'cli_error');
   await fails(async () => { throw Object.assign(new Error('spawn agy ENOENT'), { code: 'ENOENT' }); }, 'no_bin');
   await fails(async () => { throw Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' }); }, 'timeout');
 });
