@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `bullswarm run --lane build` without `--check` prints one hint on stderr before it dispatches (`hint: no --check, so this build can only finish unproven; ...`), and the skill's first single-step example is a build with `--check`. Why: in the week to 14 Nov none of 19 single-step builds used `--check`, and 23 of 49 OK builds were proven by nothing. Not printed for analyze, chore, `--dry-run` or usage exits; `--json` stdout is unchanged (#85).
+
+- Every pool enable or disable records who, when, why and through which command: `strategy set-provider <pool> on|off --yes [--reason <text>]`, the strategy TUI toggle, `strategy configure` and setup store `{enabled, at, by, reason, via}` under `strategy` in state.json (latest per pool plus a capped history). `by` is the OS user name; no environment value is recorded. `bullswarm pools` shows `disabled since <time> by <by>: <reason>`; `pools --json` and `strategy inventory --json` carry a `toggle` field (#86).
+
+- A step stopped by its own `--timeout` is failure kind `interrupted` on every pool, as the help says. `classifyFailure` checked the exit code before `timedOut`, so a Claude worker that exited with a code after SIGTERM read `process` (the same 540 s timeout read `process` on one pool and `interrupted` on another). A non-zero exit without a timeout is still `process` (#87).
+
+- `bullswarm strategy set-lanes <pool> <lane,...|default> --yes` chooses which lanes a pool serves instead of only its `connector.json` lanes, stored at `strategy.laneOverrides[pool]`; `default` clears it. Routing, `bullswarm pools` (`lanes=analyze (set-lanes)`), `workflow capabilities`, `strategy inventory`, stats, setup, plan validate and pick preview all read one resolver. A pinned dispatch for a lane the pool no longer serves is refused before any worker starts, naming the setting and how to clear it (#88).
+
+- bench: the frozen biweekly eval suite (`bench/eval-suite/`: four tasks with hidden tests, `run-bench.mjs`, and the real-use `scorecard.mjs`). The scorecard no longer counts not-produced attempts as stalls, and the runner waits for a launched run's state.json before it watches. Development only; not in the CLI (#71).
+
 - `bullswarm strategy hold <pool> ... --allow-pinned --yes` keeps a pool out
   of every pick routing makes on its own while still letting a run that pins
   it use it. These count as pinned: the run pin (`workflow goal
