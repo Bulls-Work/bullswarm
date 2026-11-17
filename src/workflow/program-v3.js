@@ -29,7 +29,7 @@ import {
   ACTION_PROGRAM_SCHEMA_VERSION, DEFAULT_EFFORT_BY_LANE, TIME_BOX_MAX_MINUTES, validateActionProgram,
 } from './action-validator.js';
 import { deliverableTypeOf } from './step-vocabulary.js';
-import { SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues } from './schema-check.js';
+import { SCHEMA_MAX_SCHEMA_BYTES, schemaSubsetIssues, unsatisfiableSchemaIssues } from './schema-check.js';
 import { isReasoningLevel } from '../lib/reasoning.js';
 import {
   AREAS_PER_ROUND_MAX, DEFAULT_FLOOR, LOOP_MAX_ROUNDS, NON_FUNCTIONAL_AREA, SEVERITIES, YIELD_DEFAULT, YIELD_MAX_FINDINGS, coverRounds, findingsSchemaIssue, isNonFunctionalArea, titleKey,
@@ -166,7 +166,9 @@ function readAnswer(raw, at, issues) {
     issues.push(`${at}.answer is too large (limit 1 MiB)`);
     return undefined;
   }
-  for (const problem of schemaSubsetIssues(raw)) issues.push(`${at}.answer: ${problem.message}`);
+  const unsupported = schemaSubsetIssues(raw);
+  for (const problem of unsupported) issues.push(`${at}.answer: ${problem.message}`);
+  if (!unsupported.length) for (const problem of unsatisfiableSchemaIssues(raw, `${at}.answer`)) issues.push(problem.message);
   return clone(raw);
 }
 
