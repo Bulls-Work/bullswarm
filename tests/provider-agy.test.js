@@ -22,7 +22,7 @@ import { buildPools } from '../src/lib/config.js';
 import { pickPool } from '../src/lib/route.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 import { argvWithModel, followUpArgv } from '../src/lib/worker-argv.js';
-import { buildStrategy, discoverConnectorModels, resolveDispatchModel } from '../src/lib/strategy.js';
+import { buildStrategy, discoverAllModels, discoverConnectorModels, resolveDispatchModel } from '../src/lib/strategy.js';
 import { connectors } from '../src/providers/agy/provider.mjs';
 import { paceSnapshot } from '../src/meters/framework.js';
 import { validateProvider } from '../src/provider-cli.js';
@@ -311,8 +311,21 @@ test('discovery folds effort suffixes into base ids per pool and leaves the orch
   assert.deepEqual(agy.knownModels, gemini.models.map((m) => m.id));
   assert.deepEqual(claude.knownModels, other.models.map((m) => m.id));
 
-  // Through core discovery: source cli, every listed model ranked.
+  // One `agy models` call serves both pools on the same login, both directly and through discoverAllModels.
+  assert.equal(calls.length, 1, 'agy models should run once for both agy and agy:claude');
+
+  // Through core discovery: source cli, every listed model ranked, one spawn across both pools.
   const { providers } = agyPools(t);
+  let allCalls = 0;
+  const allReports = await discoverAllModels(
+    { agy, 'agy:claude': claude },
+    { providers, providerExecutors: { agy: async () => { allCalls += 1; return MODELS_TXT; } } },
+  );
+  assert.equal(allCalls, 1, 'discoverAllModels must invoke agy discovery once across agy and agy:claude');
+  assert.equal(allReports.agy.source, 'cli');
+  assert.equal(allReports['agy:claude'].source, 'cli');
+  assert.ok(allReports.agy.models.every((m) => m.ranking === 'ranked'), JSON.stringify(allReports.agy.models));
+  assert.ok(!allReports.agy.models.some((m) => /orchestrator/.test(m.id)));
   const provider = providers.find((p) => p.name === 'agy');
   const report = await discoverConnectorModels(agy, { provider, providerExecutor: executor });
   assert.equal(report.source, 'cli');
