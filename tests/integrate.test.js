@@ -297,5 +297,22 @@ test('AGY integration refuses to touch a non-Bullswarm skill directory or symlin
     const readme = readFileSync(join(REPO, 'README.md'), 'utf8');
     const tableSlice = readme.slice(readme.indexOf('## Supported agents and meters'));
     assert.match(tableSlice, /\|\s*AGY\b.*\|\s*Built in\s*\|/);
+
+    // Reference and integration docs include ~/.gemini/config and agy across setup, HOME, and agent-clis.
+    const cliDoc = readFileSync(join(REPO, 'docs/reference/cli.md'), 'utf8');
+    const setupDoc = cliDoc.slice(cliDoc.indexOf('## setup'), cliDoc.indexOf('## home'));
+    assert.match(setupDoc, /~\/\.codex.*~\/\.claude.*~\/\.grok.*~\/\.gemini\/config/);
+
+    const configDoc = readFileSync(join(REPO, 'docs/reference/configuration.md'), 'utf8');
+    const homeRow = configDoc.split('\n').find((line) => line.startsWith('| `HOME` |')) ?? '';
+    assert.match(homeRow, /~\/\.gemini\/config/);
+
+    const agentClisDoc = readFileSync(join(REPO, 'docs/integrations/agent-clis.md'), 'utf8');
+    assert.match(agentClisDoc, /^---\ntitle: .*AGY.*\ndescription: .*AGY/m);
+    assert.match(agentClisDoc, /^# .*AGY/m);
+    assert.match(agentClisDoc, /register the packaged Bullswarm skill with Codex, Grok, and AGY/);
+    assert.doesNotMatch(agentClisDoc, /one command covers all three/i);
+    assert.match(agentClisDoc, /one command covers all four/i);
+    assert.match(agentClisDoc, /^agy\s+skill ✓; awareness ✓$/m);
   } finally { cleanup(); }
 });
