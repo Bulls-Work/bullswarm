@@ -7,7 +7,7 @@ description: The Bullswarm home directory, state.json, strategy models and rungs
 
 After this page you can point Bullswarm at a home directory, read what `state.json` stores, change model and reasoning rungs without guessing field names, and list every environment variable the running CLI actually reads.
 
-Every non-help command self-initializes this home on first use. `--help` never reads or writes it.
+Commands that read or change this home self-initialize it on first use. `--help`, `--version`, and usage errors never read, write, or migrate it.
 
 ## Home directory
 
@@ -15,8 +15,10 @@ The home is `$BULLSWARM_HOME` when that variable is a non-empty string, otherwis
 
 | Path | What lives there |
 |---|---|
-| `state.json` | pools, the decision log, `config`, and `strategy` |
-| `state.lock` | exclusive lock for every read-modify-write of `state.json` |
+| `state.json` | pools, the live decision log (latest 200 rows), `config`, and `strategy` |
+| `decision-log-archive.jsonl` | append-only NDJSON archive of older dispatch records overflowed from `state.json`; readers (`stats`, `reprice`, `scorecard`, spend/forecast, task views) read archive + live together |
+| `state.lock` | exclusive lock for every read-modify-write of `state.json` and `decision-log-archive.jsonl` |
+| `.migrations.json` | lightweight markers (`poolRenameMigrated`, `testFixturesMigrated`) recorded once a home is verified clean or migrated so subsequent commands skip full-state scans |
 | `routing.json` | a suggested per-lane order written by `setup`; dispatch does not read it |
 | `providers.json` | `{ "enabled": ["command-code"] }` — which contrib providers to load |
 | `providers/<name>/` | local providers (always loaded) |
@@ -63,7 +65,7 @@ The file is version `1`. Every write is atomic (temp + rename). Every mutation g
 | `pools.<name>.enabled` | whether the pool is in the routing set. Test-fixture pools are opt-in (`enabled === true`); every other pool is opt-out (`enabled !== false`) |
 | `pools.<name>.quarantine`, `pools.<name>.bench` | left by 0.35.6 and earlier, which paused a pool after a usage limit or a sign-in failure; ignored now, because nothing pauses a pool any more. Routing reads the live meters instead: a window at its limit (5-hour at 99% or more, weekly or monthly at 100%) keeps a pool out until that window resets |
 | `retention` | `{ enabled, workspacesDays }`; see [Retention](#retention) |
-| `decisionLog` | last 500 dispatch records (`ts`, `lane`, `picked`, `ok`, `why`, `wallSec`, `model`, `reasoning`, `usage`, `outFile`, `forecast`). An older home may still hold `incumbents` and `keepOnClaude` fields; nothing reads them since 0.37.0 |
+| `decisionLog` | latest 200 dispatch records (`DECISION_LOG_LIVE_LIMIT`: `ts`, `lane`, `picked`, `ok`, `why`, `wallSec`, `model`, `reasoning`, `usage`, `outFile`, `forecast`); older rows overflow into `decision-log-archive.jsonl` under `state.lock`. An older home may still hold `incumbents` and `keepOnClaude` fields; nothing reads them since 0.37.0 |
 | `config.depthLimit` | recursion cap. Core sets `BULLSWARM_DEPTH` on children; callers cannot widen this via flags. Default `2` |
 | `config.callerName` | left by 0.36.x and earlier; nothing reads it since 0.37.0, because every pick is made for a worker |
 | `config.worktreeIsolation` | `agent-decides` (default), `off`, or `required`. Set by the setup wizard. `workflow goal --isolation` opts a run into per-worker worktrees regardless |
