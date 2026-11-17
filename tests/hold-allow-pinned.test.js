@@ -164,15 +164,17 @@ test('dispatch: a step route naming the provider runs on the held pool; an avoid
 test('plan validate checks: a program pinned to the pool passes under an allow-pinned hold, fails under a plain one', () => {
   const program = { actions: [{ id: 'task', lane: 'build', effort: 'low' }] };
   const doc = { config: { workerRouting: { strictPool: HELD } } };
-  assert.deepEqual(pinnedPoolIssues(doc, program, pools(hold({ allowPinned: true }))), []);
-  const plain = pinnedPoolIssues(doc, program, pools(hold()));
+  // The checks read the clock the caller hands them, so this test holds on
+  // any day, not only before UNTIL.
+  assert.deepEqual(pinnedPoolIssues(doc, program, pools(hold({ allowPinned: true })), { now: NOW }), []);
+  const plain = pinnedPoolIssues(doc, program, pools(hold()), { now: NOW });
   assert.equal(plain.length, 1, plain.join('\n'));
   assert.match(plain[0], /pinned pool command-code is held until 2026-11-17T10:00:00\.000Z \(fleet review\)/);
   assert.match(plain[0], /--allow-pinned/);
 
   const routed = [{ id: 'task', lane: 'build', effort: 'low', route: { providers: { use: [HELD] } } }];
-  assert.deepEqual(routePoolIssues(routed, pools(hold({ allowPinned: true })), { config: {} }, {}), []);
-  const routedPlain = routePoolIssues(routed, pools(hold()), { config: {} }, {});
+  assert.deepEqual(routePoolIssues(routed, pools(hold({ allowPinned: true })), { config: {} }, {}, null, { now: NOW }), []);
+  const routedPlain = routePoolIssues(routed, pools(hold()), { config: {} }, {}, null, { now: NOW });
   assert.equal(routedPlain.length, 1, routedPlain.join('\n'));
   assert.match(routedPlain[0], /^step task: .*command-code is held until 2026-11-17T10:00:00\.000Z \(fleet review\)/);
 });
