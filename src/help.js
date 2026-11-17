@@ -633,10 +633,18 @@ const strategyRoutesText = rich({
   safety: ['read-only apart from refreshing cached discovery'], examples: [{ cmd: 'bullswarm strategy routes --json' }], next: 'Run bullswarm strategy to adjust the choices.',
 });
 const strategySetProviderText = rich({
-  usage: 'bullswarm strategy set-provider <pool> <on|off> --yes', purpose: 'Enable or disable one detected provider/account as a whole.',
+  usage: 'bullswarm strategy set-provider <pool> <on|off> [--reason <text>] --yes',
+  purpose: 'Enable or disable one detected provider/account as a whole. '
+    + 'Every change is recorded with who made it (the OS user name), when, why and from where (set-provider, the strategy screen, configure or setup). '
+    + '`bullswarm pools` shows a disabled pool as `disabled since <date> by <user>: <reason>`, '
+    + 'and `pools --json` and `strategy inventory --json` carry the latest record as `toggle`.',
   args: [{ name: '<pool>', desc: 'exact pool name from strategy inventory' }, { name: '<on|off>', desc: 'new state' }],
-  options: [{ flag: '--yes', desc: 'required approval' }], safety: ['changes routing immediately for new dispatches'],
-  examples: [{ cmd: 'bullswarm strategy set-provider relay:b off --yes' }], next: 'Use strategy routes --json to confirm.',
+  options: [
+    { flag: '--reason', desc: 'why you are turning the pool on or off, kept with the record', default: 'no reason recorded' },
+    { flag: '--yes', desc: 'required approval' },
+  ],
+  safety: ['changes routing immediately for new dispatches', 'the record keeps the last 20 changes per pool in state.json (strategy.poolToggles)'],
+  examples: [{ cmd: 'bullswarm strategy set-provider relay:b off --reason "weekly cap reached" --yes' }], next: 'Use strategy routes --json to confirm.',
 });
 const strategyHoldText = rich({
   usage: 'bullswarm strategy hold <pool> --until <date|24h|3d> --reason <text> --yes',

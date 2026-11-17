@@ -1,4 +1,5 @@
 import { updateState } from './lib/state.js';
+import { setPoolEnabled } from './lib/pool-toggle.js';
 import {
   STRATEGY_TIERS, setModelDisabled, setModelTierSelection, clearTierAssignment, setStrategyReasoning,
 } from './lib/strategy.js';
@@ -417,10 +418,9 @@ export function renderRecommendationReview(inventory, {
 // The TUI writers (S5). An operator sits in the dashboard for minutes between
 // keystrokes, so a keystroke must never save a state copy loaded when the
 // screen was drawn — each one mutates a fresh load under the lock.
-function persistProvider(bullswarmDir, pool, enabled) {
+export function persistProvider(bullswarmDir, pool, enabled) {
   updateState(bullswarmDir, (state) => {
-    state.pools[pool] ??= {};
-    state.pools[pool].enabled = enabled;
+    setPoolEnabled(state, pool, enabled, { via: 'tui' });
   });
 }
 

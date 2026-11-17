@@ -20,6 +20,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { stdin as input } from 'node:process';
 import { loadState, updateState } from './lib/state.js';
+import { setPoolEnabled } from './lib/pool-toggle.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
   getRecommendedReasoning,
@@ -399,6 +400,11 @@ export function migrateTestFixturePools(bullswarmDir) {
 // non-TTY invocations (agents). Humans who want choices run plain
 // `bullswarm setup` on a terminal.
 
+// What started an automatic setup, in the words a toggle record shows.
+const AUTO_SETUP_SOURCES = {
+  flag: 'setup --yes', 'non-tty': 'setup without a terminal', doctor: 'doctor', 'first-use': 'first use', auto: 'automatic setup',
+};
+
 export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
   const discovered = discoverConnectors(bullswarmDir);
   const repaired = repairConnectors(bullswarmDir);
@@ -419,9 +425,19 @@ export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
     state.pools ??= {};
     state.config ??= {};
     state.config.testFixturesMigrated = true;
+    // A pool this run turns on or off is recorded (pool-toggle.js), with
+    // why: a re-run that no longer finds a CLI disables its pool here.
     for (const d of discovered.filter((x) => !x.broken && !x.shadowed)) {
-      state.pools[d.name] ??= {};
-      state.pools[d.name].enabled = enabled.has(d.name);
+      const on = enabled.has(d.name);
+      let why = 'not detected on this machine';
+      if (on) why = 'detected on this machine';
+      else if (d.testFixture && d.discovered) why = 'a test fixture, never turned on by automatic setup';
+      setPoolEnabled(state, d.name, on, {
+        via: 'auto-setup',
+        reason: `${AUTO_SETUP_SOURCES[reason] ?? reason}: ${why}`,
+        onlyIfChanged: true,
+        defaultEnabled: d.testFixture !== true,
+      });
     }
   });
   writeFileSync(
@@ -675,8 +691,9 @@ export async function runWizard(bullswarmDir, opts = {}) {
     fresh.config ??= {};
     fresh.config.testFixturesMigrated = true;
     for (const d of discovered.filter((x) => !x.broken && !x.shadowed)) {
-      fresh.pools[d.name] ??= {};
-      fresh.pools[d.name].enabled = enabled.includes(d.name);
+      setPoolEnabled(fresh, d.name, enabled.includes(d.name), {
+        via: 'setup', onlyIfChanged: true, defaultEnabled: d.testFixture !== true,
+      });
     }
   });
   writeFileSync(

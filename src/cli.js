@@ -1,6 +1,7 @@
 // bullswarm CLI — verbs: setup (wizard), run, health, pools.
 
 import { activeHold, reserveOf, reserveReached } from './lib/pool-limits.js';
+import { disabledSinceText } from './lib/pool-toggle.js';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -113,12 +114,13 @@ export function meterSourceLabel(pool, nowMs = Date.now()) {
 }
 
 /**
- * A pool's status word: `disabled`, else `ready` with the 5-hour flags. No
+ * A pool's status word: `disabled` (with since, by and why when recorded), else `ready` with the 5-hour flags. No
  * pool is ever paused or benched (state.js S1); a window at its limit shows in
  * its meter columns.
  */
 export function poolStatusText(p, nowMs = Date.now()) {
-  if (!p.enabled) return 'disabled';
+  // Who disabled it, when and why, when a toggle was recorded (pool-toggle.js).
+  if (!p.enabled) return `disabled${disabledSinceText(p.toggle)}`;
   // A dead sign-in seen by the latest meter read: not pickable, whatever the
   // cached numbers say (dispatch-pools.js meterSignInDead).
   if (meterSignInDead(p, nowMs)) return `not ready · ${meterSignInText(p, nowMs)}`;
