@@ -309,6 +309,34 @@ test('G: autoSetup and refreshStrategy also seed new agy pools without touching 
   assert.equal(postSetupAgain, null);
   assert.equal(postSetupDiscoveryCalls, 1);
 
+  // Even when an upgraded home had no strategy.lastReport yet, autoSetup + maybeRefreshStrategy
+  // still upgrades agy to CLI discovery once without re-running discovery for static connectors.
+  const noReportHome = upgradedHome(t);
+  const rawNoReport = JSON.parse(readFileSync(join(noReportHome, 'state.json'), 'utf8'));
+  delete rawNoReport.strategy.lastReport;
+  writeFileSync(join(noReportHome, 'state.json'), JSON.stringify(rawNoReport, null, 2));
+  setup.autoSetup(noReportHome, {
+    reason: 'auto',
+    loaderOpts: loaderFor(noReportHome),
+    discover: () => [
+      entry('existing', ['existing'], true),
+      entry('agy', ['agy', 'agy:claude'], true),
+    ],
+  });
+  let noReportCalls = 0;
+  await maybeRefreshStrategy(noReportHome, {
+    loaderOpts: loaderFor(noReportHome),
+    executor: () => '',
+    providerExecutors: { agy: async () => { noReportCalls += 1; return MODELS_TXT; } },
+  });
+  assert.equal(noReportCalls, 1);
+  assert.equal(loadState(noReportHome).strategy.lastReport?.discoveries?.agy?.source, 'cli');
+  assert.equal(await maybeRefreshStrategy(noReportHome, {
+    loaderOpts: loaderFor(noReportHome),
+    providerExecutors: { agy: async () => { noReportCalls += 1; return MODELS_TXT; } },
+  }), null);
+  assert.equal(noReportCalls, 1);
+
   // Unexpected errors during new-pool discovery are recorded and returned, never swallowed.
   const brokenHome = upgradedHome(t);
   const errResult = await maybeRefreshStrategy(brokenHome, {

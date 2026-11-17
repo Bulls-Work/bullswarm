@@ -25,6 +25,7 @@ import { argvWithModel, followUpArgv } from '../src/lib/worker-argv.js';
 import { buildStrategy, discoverAllModels, discoverConnectorModels, resolveDispatchModel } from '../src/lib/strategy.js';
 import { connectors } from '../src/providers/agy/provider.mjs';
 import { paceSnapshot } from '../src/meters/framework.js';
+import { getAllMeterReadings } from '../src/meters/registry.js';
 import { validateProvider } from '../src/provider-cli.js';
 import { previewStepPick } from '../src/workflow/pick-preview.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
@@ -278,6 +279,46 @@ test('under node --test the meter and discovery refuse to spawn agy unless a run
   const { agy } = agyPools(t);
   await assert.rejects(readUsage('agy', {}), (error) => error.code === 'test_guard');
   await assert.rejects(discoverModels(agy, {}), /node --test/);
+});
+
+test('readUsage stamps captured_at from ctx.now and getAllMeterReadings forwards nowMs to the provider reader', async (t) => {
+  const { readUsage } = await agyModule();
+  const stamped = await readUsage('agy', { runner: usageRunner(USAGE), now: () => NOW });
+  assert.equal(stamped.captured_at, new Date(NOW).toISOString());
+
+  const { home, providers } = agyPools(t);
+  mkdirSync(join(home, 'meters'), { recursive: true });
+  let runnerCalls = 0;
+  const withRunner = providers.map((entry) => {
+    if (entry.name !== 'agy') return entry;
+    const copy = Object.defineProperties({}, Object.getOwnPropertyDescriptors(entry));
+    Object.defineProperty(copy, 'ctx', {
+      value: {
+        ...entry.ctx,
+        runner: async () => {
+          runnerCalls += 1;
+          return { stdout: JSON.stringify(USAGE), stderr: '', exitCode: 0 };
+        },
+      },
+      enumerable: false,
+      writable: true,
+    });
+    return copy;
+  });
+
+  const first = await getAllMeterReadings(['agy', 'agy:claude'], {
+    bullswarmDir: home, providers: withRunner, nowMs: NOW, force: true,
+  });
+  assert.equal(runnerCalls, 1);
+  assert.equal(first.agy.snapshot.captured_at, new Date(NOW).toISOString());
+
+  // 60 s later on the caller's clock (> FORCED_SHARE_MS), a forced refresh must
+  // poll again rather than reuse the earlier reading when wall-clock > NOW + 60_000.
+  const second = await getAllMeterReadings(['agy', 'agy:claude'], {
+    bullswarmDir: home, providers: withRunner, nowMs: NOW + 60_000, force: true,
+  });
+  assert.equal(runnerCalls, 2);
+  assert.equal(second.agy.snapshot.captured_at, new Date(NOW + 60_000).toISOString());
 });
 
 // --- model discovery ----------------------------------------------------------------
