@@ -780,10 +780,8 @@ export function repriceRuns({
   ];
   const taskRows = [];
   if (combinedTasks.length) {
-    const originalArchive = JSON.stringify(archivedLog);
     const entries = taskEntries(combinedTasks.map((item) => item.entry));
     for (const entry of entries) {
-      const fromArchive = combinedTasks[entry.index]?.archived === true;
       if (!eligible(entry, { sinceMs, pool })) continue;
       report.scannedTasks += 1;
       const oldUsage = entry.attempt.usage && typeof entry.attempt.usage === 'object'
@@ -822,43 +820,38 @@ export function repriceRuns({
         oldUsage,
       });
       if (candidate.projectChanged) report.changedProjects += 1;
-      taskRows.push({ entry, candidate, usage: candidate.usage, row, fromArchive });
+      taskRows.push({ entry, candidate, usage: candidate.usage, row });
       report.rows.push(row);
       onRow?.(row);
     }
     if (apply && taskRows.length) {
       let wroteArchive = false;
       let wroteLive = false;
-      for (const { entry, candidate, usage } of taskRows) {
-        entry.task.usage = clone(usage);
-        if (candidate.cwd && !entry.task.cwd) entry.task.cwd = candidate.cwd;
-        if (candidate.projectChanged) entry.task.project = candidate.project;
-      }
       try {
-        if (JSON.stringify(archivedLog) !== originalArchive) {
-          writeArchivedDecisionLog(bullswarmDir, archivedLog);
-          wroteArchive = true;
-        }
-        const liveUpdates = taskRows.filter((item) => !item.fromArchive);
-        if (liveUpdates.length && taskState && typeof taskState === 'object') {
-          updateState(bullswarmDir, (fresh) => {
-            const log = Array.isArray(fresh.decisionLog) ? fresh.decisionLog : [];
-            const before = JSON.stringify(log);
-            for (const { entry, candidate, usage } of liveUpdates) {
-              const match = log.find((item) => item && (
-                (entry.task.id != null && item.id === entry.task.id)
-                || (entry.task.id == null && item.outFile === entry.task.outFile && item.ts === entry.task.ts)
-              ));
-              if (!match) continue;
-              match.usage = clone(usage);
-              if (candidate.cwd && !match.cwd) match.cwd = candidate.cwd;
-              if (candidate.projectChanged) match.project = candidate.project;
-            }
-            if (JSON.stringify(log) === before) return false;
-            wroteLive = true;
-            return true;
-          });
-        }
+        updateState(bullswarmDir, (fresh) => {
+          const freshArchived = readArchivedDecisionLog(bullswarmDir);
+          const beforeArchive = JSON.stringify(freshArchived);
+          const log = Array.isArray(fresh.decisionLog) ? fresh.decisionLog : [];
+          const beforeLive = JSON.stringify(log);
+          const matchRow = (list, task) => list.find((item) => item && (
+            (task.id != null && item.id === task.id)
+            || (task.id == null && item.outFile === task.outFile && item.ts === task.ts)
+          ));
+          for (const { entry, candidate, usage } of taskRows) {
+            const target = matchRow(log, entry.task) ?? matchRow(freshArchived, entry.task);
+            if (!target) continue;
+            target.usage = clone(usage);
+            if (candidate.cwd && !target.cwd) target.cwd = candidate.cwd;
+            if (candidate.projectChanged) target.project = candidate.project;
+          }
+          if (JSON.stringify(freshArchived) !== beforeArchive) {
+            writeArchivedDecisionLog(bullswarmDir, freshArchived);
+            wroteArchive = true;
+          }
+          if (JSON.stringify(log) === beforeLive) return false;
+          wroteLive = true;
+          return true;
+        });
         if (wroteArchive || wroteLive) report.changedTasks += 1;
       } catch (error) {
         report.failures.push({ runId: 'state.json', error: error.message });
