@@ -1,5 +1,26 @@
 # bullswarm changelog
 
+## Unreleased
+
+- `bullswarm strategy hold <pool> ... --allow-pinned --yes` keeps a pool out
+  of every pick routing makes on its own while still letting a run that pins
+  it use it. These count as pinned: the run pin (`workflow goal
+  --worker-pool`, a step restart onto the pool) and a step route that names
+  the pool in `pools.use` or its provider in `providers.use` (`bullswarm run
+  --use-provider command-code`). An avoid list (`--avoid-pool`,
+  `--avoid-provider`) is not a pin, even when it leaves the held pool the
+  only one. The flag takes no value (`--allow-pinned=true` is refused). An
+  allow-pinned hold stores `allowPinned: true` (also in `pools --json`); a
+  plain hold prints and stores exactly what it did before.
+  `bullswarm pools` shows `held until <date> (<reason>) · pinned runs
+  allowed`, and the reason on an unpinned pick that kept the pool out says
+  the same. One rule (pool-limits.js `holdPins`) serves the router (R14),
+  the dispatch's no-pool reason, `run --dry-run` and plan validate. A plain
+  hold still keeps pinned runs out, and `workflow plan validate` and
+  `workflow goal` now refuse a program pinned (by `--worker-pool` or a route
+  that names only held pools) to a pool under a plain hold, since it could
+  not start. Holding again without the flag replaces the record.
+
 ## 0.38.21 — named quota resets hold, sign-in holds, a 99% 5-hour wall, loops that end themselves, saved stale warnings
 
 - A quota reset the provider named now outlives a meter read. Until now the

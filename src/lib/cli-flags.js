@@ -110,7 +110,7 @@ const TABLE = {
   'strategy inventory': ['json', 'refresh'],
   'strategy routes': ['json', 'refresh'],
   'strategy set-provider': ['reason', 'yes'],
-  'strategy hold': ['until', 'reason', 'yes'],
+  'strategy hold': ['until', 'reason', 'allow-pinned', 'yes'],
   'strategy unhold': ['yes'],
   'strategy set-reserve': ['window', 'yes'],
   'strategy set-lanes': ['json', 'yes'],

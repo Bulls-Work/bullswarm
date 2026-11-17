@@ -27,6 +27,7 @@ import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 import { REFUSAL_TEXT, declaredDeliverable, declaredEvidence, deliverableTypeOf, failureClassOf, roleOf } from './step-vocabulary.js';
 import { poolPassesRoute, routeOffLaneTexts, routeUnavailableWhy } from './step-route.js';
+import { holdPins } from '../lib/pool-limits.js';
 import { drainingPart, heldEntry, noPoolFailureKind, noPoolWhy, operatorLimitPart, signInPart, spentWindowPart } from './no-pool-why.js';
 import { isV3Step } from './program-v3.js';
 import {
@@ -339,6 +340,8 @@ export async function dispatchV2Action({
   // caller named (the run's pin, or a route that allows only it) is exempt.
   // Map: pool name -> {until, forecast, elapsed}.
   const namedPool = strictPool ?? (routeFilter?.usePools?.length === 1 ? routeFilter.usePools[0] : null);
+  // The pins an allow-pinned hold lets through (pool-limits.js holdPins).
+  const holdPinsHere = holdPins({ strictPool, routeFilter });
   const drainingAt = (poolList, at) => {
     const found = new Map();
     if (!poolList.length) return found;
@@ -564,6 +567,10 @@ export async function dispatchV2Action({
       evidence,
       pinSource: gatePick ? GATE_RETRY_PIN_SOURCE : pinSource,
       routeNote: routeFilter?.summary || null,
+      // An allow-pinned hold lets the caller's own pins through (R14): the
+      // run or step pin and the route's use lists, never a gate retry's
+      // same-pool pick, which routing chose.
+      pins: holdPinsHere,
     };
     // A retry that moves pools (after a sign-in failure or any other) tries
     // the pools running the failed attempt's model first, then its model
@@ -1322,7 +1329,7 @@ export async function dispatchV2Action({
     if (signIn) parts.push(signIn);
     const spent = spentWindowPart(pool, endAt);
     if (spent) parts.push(spent);
-    const limited = operatorLimitPart(viewedCapable.get(pool.name) ?? pool, endAt);
+    const limited = operatorLimitPart(viewedCapable.get(pool.name) ?? pool, endAt, holdPinsHere);
     if (limited) parts.push(limited);
     if (draining.has(pool.name)) parts.push(drainingPart(draining.get(pool.name)));
     if (!parts.length) {

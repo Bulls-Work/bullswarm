@@ -8,7 +8,7 @@
 
 import { BURST_BLOCK_PCT, windowSpent } from '../meters/framework.js';
 import { authHoldActive, meterSignInDead, meterSignInText } from './dispatch-pools.js';
-import { operatorLimit } from '../lib/pool-limits.js';
+import { PINNED_ALLOWED, operatorLimit, poolIsPinned } from '../lib/pool-limits.js';
 
 function toMs(value) {
   if (value == null || value === '') return null;
@@ -30,12 +30,13 @@ export function spentWindowPart(pool, at) {
 /**
  * A pool on the hold list, or at its opt-in reserve (pool-limits.js), as a
  * held reason, or null. Neither is a usage limit; a hold is back at its end,
- * a reserve when the reserved window resets.
+ * a reserve when the reserved window resets. `pins` (pool-limits.js holdPins)
+ * are the caller's pins, which an allow-pinned hold lets through.
  */
-export function operatorLimitPart(pool, at) {
-  const limit = operatorLimit(pool, at);
+export function operatorLimitPart(pool, at, pins = null) {
+  const limit = operatorLimit(pool, at, { pinned: poolIsPinned(pool, pins) });
   if (!limit) return null;
-  if (limit.kind === 'hold') return [`held (${limit.reason})`, toMs(limit.until), false];
+  if (limit.kind === 'hold') return [`held (${limit.reason}${limit.allowPinned ? `; ${PINNED_ALLOWED}` : ''})`, toMs(limit.until), false];
   const back = limit.window === '5h' ? toMs(pool.fiveHourResetsAt) : toMs(pool.paceResetsAt);
   return [`at its ${limit.pct}% reserve (${limit.window} ${limit.levelPct}% >= ${limit.ceiling}%)`, back, false];
 }

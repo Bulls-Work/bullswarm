@@ -1,6 +1,6 @@
 // bullswarm CLI — verbs: setup (wizard), run, health, pools.
 
-import { activeHold, reserveOf, reserveReached } from './lib/pool-limits.js';
+import { activeHold, holdText, reserveOf, reserveReached } from './lib/pool-limits.js';
 import { disabledSinceText } from './lib/pool-toggle.js';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -44,7 +44,7 @@ export function getBullswarmDir() {
 const BOOLEAN_FLAGS = new Set([
   'overview',
   'json', 'force', 'no-caller', 'no-retry', 'yes', 'setup', 'strategy', 'integrate', 'dry-run',
-  'wizard', 'check',
+  'wizard', 'check', 'allow-pinned',
 ]);
 
 // `lists` names flags that take a value and may repeat (`run --check`): each
@@ -130,7 +130,7 @@ export function poolStatusText(p, nowMs = Date.now()) {
   if (meterSignInDead(p, nowMs)) return `not ready · ${meterSignInText(p, nowMs)}`;
   // The hold list and an opt-in reserve (pool-limits.js, route.js R14).
   const hold = activeHold(p, nowMs);
-  if (hold) return `held until ${hold.until} (${hold.reason})`;
+  if (hold) return holdText(hold);
   const reserve = reserveOf(p);
   const reached = reserveReached(p);
   if (reached) return `at reserve · ${reached.window} ${reached.levelPct}% >= ${reached.ceiling}% (reserve ${reached.pct}%)`;

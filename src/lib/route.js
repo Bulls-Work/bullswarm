@@ -121,6 +121,10 @@
 //       out while the reserved window's reading or in-flight projection is at
 //       or above 100 - reserve. No reserve is set by default: every pool is
 //       burned to 100% by pace. The reason names every pool a limit kept out.
+//       A hold set with --allow-pinned keeps the pool out of routing's own
+//       choice only: a pool the caller pinned (pool-limits.js holdPins: the
+//       strictPool, a route's pools.use or providers.use naming it) may take
+//       the pick. An avoid list is never a pin.
 //  R15. Fit before reset, never a forced finish. Urgency (R11) values quota
 //       that expires unspent, and a task only spends what fits before the
 //       reset, so an urgent pool's urgency is multiplied by the share of the
@@ -137,7 +141,8 @@
 //       5h).
 
 import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS, windowSpent } from '../meters/framework.js';
-import { operatorLimit, operatorLimitText } from './pool-limits.js';
+import { holdPins, operatorLimit, operatorLimitText, poolIsPinned } from './pool-limits.js';
+import { modelFamilyOf } from './model-family.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
@@ -291,19 +296,8 @@ export function isFree(pool) {
   return isFreeModel(connector, model);
 }
 
-/**
- * R13: the model family a pool (or bare pool name) writes with — its provider
- * id, which is the pool name up to the first colon (`claude-code:acme` is
- * `claude-code`), or null when nothing names it. A provider that fronts
- * several vendors' models is one family here: routing is not told which model
- * wrote the judged work.
- */
-export function modelFamilyOf(pool) {
-  const raw = (typeof pool === 'string' ? [pool] : [
-    pool?.connector?.profile?.providerId, pool?.provider, pool?.name, pool?.connector?.name,
-  ]).find((value) => typeof value === 'string' && value.trim());
-  return raw ? raw.trim().split(':', 1)[0].toLowerCase() : null;
-}
+// R13: modelFamilyOf (model-family.js), re-exported for the router's callers.
+export { modelFamilyOf };
 
 /** Round to one decimal for human-readable routing reasons. */
 function tenth(value) {
@@ -763,6 +757,10 @@ export function isExhausted(pool, now = Date.now()) {
  *                        restart` or `the same pool (gate retry)` too),
  *                        routeNote=null (the step's route summary, appended to
  *                        every reason as ` · route: <summary>`; no ranking change),
+ *                        routeFilter=null (the step's resolved route; its use
+ *                        lists are pins for an allow-pinned hold, R14),
+ *                        pins (pool-limits.js holdPins; default: the strictPool
+ *                        and the routeFilter's use lists),
  *                        evidence: { writerPools: string[] },
  *                        candidateMinutes=null (expected minutes
  *                        of the assignment being routed),
@@ -783,6 +781,8 @@ export function pickPool(lane, pools, opts = {}) {
     evidence = null,
     pinSource = '--worker-pool',
     routeNote = null,
+    routeFilter = null,
+    pins = holdPins({ strictPool, routeFilter }),
   } = opts;
   // D30: the step's route is named on every reason, and never ranks.
   const noted = (why) => (routeNote ? `${why} · route: ${routeNote}` : why);
@@ -820,7 +820,7 @@ export function pickPool(lane, pools, opts = {}) {
   // R14: the hold list and opt-in reserves, read on the stale-adjusted view
   // (R16) so a stale pool near its reserve is held back rather than overfilled.
   const operatorLimited = laneCapable
-    .map(({ view }) => ({ pool: view, limit: operatorLimit(view, now) }))
+    .map(({ view }) => ({ pool: view, limit: operatorLimit(view, now, { pinned: poolIsPinned(view, pins) }) }))
     .filter((entry) => entry.limit);
   const limitedNames = new Set(operatorLimited.map((entry) => entry.pool.name));
   const sourceOf = new Map(laneCapable.map(({ source, view }) => [view, source]));
