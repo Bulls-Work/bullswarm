@@ -432,7 +432,7 @@ test('help offers no --scout, --orchestrator or plan revise, and the removed pla
 
 test('watch --until lists needs you as trouble (a usage limit is one), and blocked dependents inside the block', () => {
   const watch = helpText(['workflow', 'watch']);
-  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), at a gate waiting or a loop out of rounds in a v3 run, or, in a run saved by an earlier version, at a planner or preflight scout stopped on a usage limit;/);
+  assert.match(watch, /first needs you, failed, rejected, paused, stalled, stale or steering line \(a usage limit or no free pool is a needs-you block\), at a gate waiting, a loop out of rounds or a refused continue in a v3 run, or, in a run saved by an earlier version, at a planner or preflight scout stopped on a usage limit;/);
   assert.match(watch, /blocked dependents are listed inside the needs-you block/);
   // 0.38.0: a scout or planner line comes only from a run an earlier version
   // saved, and the help says so; the usage-limit line names no pause.
@@ -471,8 +471,8 @@ test('watch --help covers v3 runs: gate and loop lines, their wake-ups, the wait
   assert.ok(flat.includes('`⧖ loop <id> out of rounds (<n> of <n>) · <condition> did not hold · continue: bullswarm workflow continue <shortId> <id> --rounds <n>`'));
   assert.ok(flat.includes('a v3 run parked `waiting` at a gate or loop'));
   assert.ok(flat.includes('`outcome: waiting`'));
-  // --until trouble wakes on a waiting gate and a loop out of rounds.
-  assert.match(flat, /--until outcome\|trouble [^|]*a gate waiting or a loop out of rounds/);
+  // --until trouble wakes on a waiting gate, a loop out of rounds and a refused continue.
+  assert.match(flat, /--until outcome\|trouble [^|]*a gate waiting, a loop out of rounds or a refused continue/);
   // A v3 run's needs-you block offers add steps, not plan revise.
   assert.ok(flat.includes('your options: step rerun, change the step by adding steps with workflow add, take over, step accept; a saved v2 run\'s block keeps the plan revise hint it was written with, and that verb now exits 2)'));
   assert.ok(!flat.includes('v2: plan revise'));
