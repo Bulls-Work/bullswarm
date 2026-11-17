@@ -79,7 +79,7 @@ bullswarm setup --yes --integrate --agents claude,codex
 | `--agents <list>` | comma-separated agent list for `--integrate` (`codex`, `claude`, `grok`, `agy`) | `codex`, `claude`, `grok`, plus `agy` when installed |
 | `--json` | machine-readable result | human summary |
 
-Writes `state.json` and `routing.json`. With `--integrate --yes`, also writes under `~/.codex`, `~/.claude`, `~/.grok`. A non-TTY caller auto-applies discovered defaults without prompting, even without `--yes`.
+Writes `state.json` and `routing.json`. With `--integrate --yes`, also writes under `~/.codex`, `~/.claude`, `~/.grok`, `~/.gemini/config`. A non-TTY caller auto-applies discovered defaults without prompting, even without `--yes`.
 
 ## home
 

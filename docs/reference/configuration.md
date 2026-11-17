@@ -192,7 +192,7 @@ These are the variables `src/` reads. Pool `env` values are merged into the chil
 | `BULLSWARM_UNICODE` | glyphs | force Unicode table characters when ASCII was not set |
 | `BULLSWARM_NO_PACKAGED_PROVIDERS` | provider loader | `1` skips first-class and contrib providers |
 | `BULLSWARM_DISABLE_CLAUDE_PROFILES` | claude-code provider | `1` returns only the base Claude pool, no extra `CLAUDE_CONFIG_DIR` accounts. That pool still runs its workers with `CLAUDE_CONFIG_DIR` removed, so they use the `~/.claude` login its meter reads, not the home the caller runs under |
-| `HOME` | setup, integrate | expand `~` in `configDirs`; locate `~/.codex`, `~/.claude`, `~/.grok` |
+| `HOME` | setup, integrate | expand `~` in `configDirs`; locate `~/.codex`, `~/.claude`, `~/.grok`, `~/.gemini/config` |
 | `CLAUDE_CONFIG_DIR` | claude-code provider | extra Claude home used to expand account pools |
 | `PWD` | runner | set to the target directory when a pool declares `spawn.cwdMode: "pwd"` |
 | `NODE_TEST_CONTEXT` | provider loader, claude-code | set by `node --test`; skips local providers and extra Claude accounts unless a test injects them |

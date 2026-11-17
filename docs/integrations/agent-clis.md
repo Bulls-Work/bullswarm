@@ -1,11 +1,11 @@
 ---
-title: Codex and Grok
-description: What bullswarm integrate writes into Codex and Grok — the skill link, the awareness rule in their instruction files, and how to check or undo it.
+title: Codex, Grok, and AGY
+description: What bullswarm integrate writes into Codex, Grok, and AGY — the skill link, the awareness rule in their instruction files, and how to check or undo it.
 ---
 
-# Codex and Grok
+# Codex, Grok, and AGY
 
-After this page you can register the packaged Bullswarm skill with Codex and Grok, read the awareness rule that lands in their instruction files, and check, reverse, or archive it.
+After this page you can register the packaged Bullswarm skill with Codex, Grok, and AGY, read the awareness rule that lands in their instruction files, and check, reverse, or archive it.
 
 ## What install writes
 
@@ -26,7 +26,7 @@ bullswarm integrate install --yes --agents codex,grok
 
 The link targets the `skill/` directory of the CLI that ran the install — the global package when you run the installed `bullswarm`, this checkout when you run `node bin/bullswarm.js`. For `agy` (Google Antigravity CLI), which ignores a symlinked skill directory, `install` creates `~/.gemini/config/skills/bullswarm/` as a real directory and symlinks each top-level entry (`SKILL.md`, `references/`, `agents/`) into `skill/` so upgrades still take effect immediately. `integrate status --json` prints it as `skillSource`.
 
-Claude Code is in the table because one command covers all three; its own page is [Claude Code](/integrations/claude-code). The skill is what the agent reads before delegating, and it appears as `$bullswarm` where a CLI uses that syntax (`/bullswarm` in Claude Code).
+Claude Code is in the table because one command covers all four; its own page is [Claude Code](/integrations/claude-code). The skill is what the agent reads before delegating, and it appears as `$bullswarm` where a CLI uses that syntax (`/bullswarm` in Claude Code and AGY).
 
 ## The awareness block
 
@@ -66,6 +66,7 @@ bullswarm integrate status
 codex    skill ✓; awareness ✓
 claude   skill ✓; awareness ✓
 grok     skill ✓; awareness ✓
+agy      skill ✓; awareness ✓
 ```
 
 Exit 0 means every selected agent has both. `skill missing` means nothing is linked yet; `skill conflict` means the path holds a real file or directory instead of Bullswarm's symlink — install refuses to replace it, and `remove` leaves it alone. The check resolves symlink chains to their real target, so a global install reached through `npm link` still reports installed.

@@ -24,7 +24,7 @@ bullswarm integrate status --agents claude
 bullswarm integrate remove --yes --agents claude
 ```
 
-The skill's instructions send the agent straight to `bullswarm run` for one bounded outcome, or to `bullswarm workflow goal` when the work has parallel territories, an integration step, or acceptance judged on its own — there is no classifier or preview command to learn first. The exact text written into each agent's config is on [Codex and Grok](/integrations/agent-clis).
+The skill's instructions send the agent straight to `bullswarm run` for one bounded outcome, or to `bullswarm workflow goal` when the work has parallel territories, an integration step, or acceptance judged on its own — there is no classifier or preview command to learn first. The exact text written into each agent's config is on [Codex, Grok, and AGY](/integrations/agent-clis).
 
 ## The MCP server
 
@@ -117,6 +117,6 @@ remain unchanged in Bullswarm records.
 
 ## Next steps
 
-- [Codex and Grok](/integrations/agent-clis) — the same integration for the other agent CLIs.
+- [Codex, Grok, and AGY](/integrations/agent-clis) — the same integration for the other agent CLIs.
 - [Observing runs](/guide/observing) — the terminal views whose overview the pane draws.
 - [Run one task](/guide/run) — what the skill and the MCP server reach for first.
