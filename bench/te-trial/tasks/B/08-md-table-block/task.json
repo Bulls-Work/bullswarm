@@ -1,0 +1,10 @@
+{
+ "repo": "B",
+ "parent": "886b44b",
+ "fixCommit": "1c2167f",
+ "checkFiles": [
+  "tests/command-post/md.test.ts"
+ ],
+ "checkCmd": "npx vitest run tests/command-post/md.test.ts",
+ "timeoutSec": 600
+}

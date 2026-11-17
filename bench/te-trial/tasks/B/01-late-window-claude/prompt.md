@@ -1,0 +1,3 @@
+When the app starts, `resolveCaps` looks for `window.claude` and, if it is not there yet, reports "no data" straight away. On claude.ai the host installs `window.claude` slightly after the script starts on a first run, so a fresh install lands on a "no data" state that a reload would fix.
+
+What I expect: `resolveCaps` accepts an optional wait budget (`waitMs`) and keeps looking for `window.claude` until it appears or the budget runs out, then returns the capabilities (`db` and the others). If `window.claude` never appears, it returns the same empty result as today, with `db` and `user` null, once the wait is over. Without the option the behaviour must be unchanged.

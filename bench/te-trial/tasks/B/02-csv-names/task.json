@@ -1,0 +1,10 @@
+{
+ "repo": "B",
+ "parent": "f09d26e",
+ "fixCommit": "02d3c45",
+ "checkFiles": [
+  "tests/ui/db/export-csv.test.tsx"
+ ],
+ "checkCmd": "npx vitest run tests/ui/db/export-csv.test.tsx",
+ "timeoutSec": 600
+}

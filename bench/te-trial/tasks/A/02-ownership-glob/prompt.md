@@ -1,0 +1,3 @@
+Any workflow launched against a repository that has files with `[`, `]`, `*` or `?` in their names dies within seconds. A Next.js repo is the typical case, with routes such as `app/[space]/page.tsx`. The kernel throws while capturing the workspace manifest, before it dispatches any work. It is detached and leaves no log, so `state.json` says "running" forever.
+
+What I expect: file names that exist on disk are accepted as they are, brackets and stars included. The manifest capture should keep rejecting paths that are really unsafe (not relative, containing a NUL or a backslash, escaping the workspace with `..`). The stricter rule for glob patterns that an author writes in an ownership declaration must stay as it is.

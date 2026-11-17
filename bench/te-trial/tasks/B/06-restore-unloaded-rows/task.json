@@ -1,0 +1,10 @@
+{
+ "repo": "B",
+ "parent": "2ff5f71",
+ "fixCommit": "278f680",
+ "checkFiles": [
+  "tests/sync/db-history.test.ts"
+ ],
+ "checkCmd": "npx vitest run tests/sync/db-history.test.ts",
+ "timeoutSec": 600
+}
