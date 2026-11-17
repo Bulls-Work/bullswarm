@@ -16,7 +16,8 @@ import { projectName } from '../lib/project.js';
 import { attachTranscriptUsage, estimateInvocationUsage, modelProfile, needsPerRequestTiers, profileAt } from '../lib/usage.js';
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
-import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { atomicWriteFileSync, readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { serializeState } from '../lib/state.js';
 import { aggregateAttemptUsage, readRollup, rollupRecord, writeRunRollup } from './rollup.js';
 import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
@@ -825,7 +826,8 @@ export function repriceRuns({
       }
       if (JSON.stringify(taskState) !== original) {
         try {
-          writeJsonAtomic(taskStatePath, taskState);
+          // The home state.json has one writer format (compact decision rows).
+          atomicWriteFileSync(taskStatePath, serializeState(taskState));
           report.changedTasks += 1;
         } catch (error) {
           report.failures.push({ runId: 'state.json', error: error.message });
