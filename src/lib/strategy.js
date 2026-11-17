@@ -12,7 +12,7 @@ import { priceBandPick } from './price-band.js';
 import {
   isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel, suggestedReasoningLevel,
 } from './reasoning.js';
-import { attemptWindow } from './spend.js';
+import { attemptWindow, isDurationSample } from './spend.js';
 import { pacingWindowFor, windowSpent } from '../meters/framework.js';
 // The canonical lane/effort tables. Imported, never restated: see
 // TIER_CONTEXTS below for the tier -> lane derivation they feed.
@@ -775,7 +775,8 @@ function medianOf(values) {
 
 /**
  * What this machine actually recorded for one pool on one effort tier:
- * dispatch count, median wall minutes, and ok share. `null` when nothing
+ * dispatch count, median wall minutes, and ok share. Stopped and stalled
+ * dispatches count as dispatches but add no minutes. `null` when nothing
  * matched — an unmeasured rung is unknown, never zero (spend doctrine S3).
  * Wall time comes from spend.js's attemptWindow(), so an entry with no usable
  * duration still counts as a dispatch but contributes no minutes.
@@ -784,15 +785,14 @@ export function rungRecord(decisionLog, pool, tier) {
   const rows = (Array.isArray(decisionLog) ? decisionLog : [])
     .filter((entry) => decisionPool(entry) === pool && decisionEffort(entry) === tier);
   if (!rows.length) return null;
-  // A stall is a transport failure, not a real duration sample. The dispatcher
-  // already drops these before it reads p50 for the free-pool silence clock;
-  // excluding them here is what `bullswarm strategy` and `workflow usage`
-  // display. `stalled: true` covers attempt-shaped rows that never got
-  // failureKind. okShare is a separate filter — a stall is still a verdict.
-  const stalled = (row) => row.stalled === true || row.failureKind === 'stalled';
+  // Minutes come only from dispatches that ran their course: a stall is a
+  // transport failure and a stopped dispatch was cut short (isDurationSample).
+  // The dispatcher already drops stalls before it reads p50 for the free-pool
+  // silence clock; this is what `bullswarm strategy` and `workflow usage`
+  // display. okShare is a separate filter, below.
   const minutes = [];
   for (const row of rows) {
-    if (stalled(row)) continue;
+    if (!isDurationSample(row)) continue;
     const window = attemptWindow(row);
     if (window) minutes.push(window.minutes);
   }
@@ -800,7 +800,8 @@ export function rungRecord(decisionLog, pool, tier) {
   // not a verdict on the pool. Older rows carry no failureKind, only the
   // dispatcher's fixed cancellation message.
   // A failure later shown false (`falseFailure`, e.g. a `not-produced` whose
-  // worker wrote its files outside the cwd) is not one either.
+  // worker wrote its files outside the cwd) is not one either, but it ran its
+  // full length, so it keeps its minutes.
   const stopped = (row) => row.failureKind === 'cancelled' || row.why === 'workflow cancellation requested'
     || (typeof row.falseFailure === 'string' && row.falseFailure.length > 0);
   const verdicts = rows.filter((row) => typeof row.ok === 'boolean' && !stopped(row));
