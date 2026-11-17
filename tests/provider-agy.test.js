@@ -532,12 +532,19 @@ test('strategy suggests the Gemini line per tier on agy, and Opus/Sonnet on agy:
   // Stage 2 (owner, 18 Nov): low on agy:claude is GPT-OSS 120B, so the pool takes low work too.
   assert.equal(other.low.recommended.model, 'gpt-oss-120b-medium');
   assert.deepEqual(report.unranked, []);
-  // Gemini prices are dated rows; the Claude models via AGY stay unpriced.
+  // Gemini and Anthropic prices are dated rows; GPT-OSS via AGY stays unpriced.
   const priced = Object.fromEntries(discoveries.agy.models.map((m) => [m.id, m.pricing]));
   assert.deepEqual(priced['gemini-4-carbon'], { inputUsdPerMillion: 2, cacheReadUsdPerMillion: 0.1, outputUsdPerMillion: 10 });
   assert.deepEqual(priced['gemini-4-hydrogen'], { inputUsdPerMillion: 1.5, cacheReadUsdPerMillion: 0.075, outputUsdPerMillion: 7.5 });
   assert.deepEqual(priced['gemini-3.8-flash'], { inputUsdPerMillion: 0.75, cacheReadUsdPerMillion: 0.075, outputUsdPerMillion: 3.75 });
-  assert.ok(discoveries['agy:claude'].models.every((m) => m.pricing === null));
+  const claudePriced = Object.fromEntries(discoveries['agy:claude'].models.map((m) => [m.id, m.pricing]));
+  assert.deepEqual(claudePriced['claude-opus-4-6-thinking'], {
+    inputUsdPerMillion: 5, cacheReadUsdPerMillion: 0.5, cacheWrite5mUsdPerMillion: 6.25, cacheWrite1hUsdPerMillion: 10, outputUsdPerMillion: 25,
+  });
+  assert.deepEqual(claudePriced['claude-sonnet-4-6'], {
+    inputUsdPerMillion: 3, cacheReadUsdPerMillion: 0.3, cacheWrite5mUsdPerMillion: 3.75, cacheWrite1hUsdPerMillion: 6, outputUsdPerMillion: 15,
+  });
+  assert.equal(claudePriced['gpt-oss-120b-medium'], null);
 });
 
 test('docs: the contrib README lists every first-class provider under src/providers, agy included', () => {
