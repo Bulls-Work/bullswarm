@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "review",
+      "lane": "analyze",
+      "areas": [
+        "date arithmetic and day counts",
+        "merging, subtracting and splitting ranges",
+        "parsing and formatting"
+      ],
+      "areasPerRound": 2,
+      "prompt": "In {cwd}, review the code in src/ and its tests against README.md, which is the contract. Run the code on concrete inputs to confirm each finding. Any behaviour that differs from README.md is a finding, even if it looks intended. Each finding: inScope true when it is a difference from README.md, a one-line title naming what is wrong and where, a severity, and a detail with a concrete input and the wrong versus expected result. Change no file.",
+      "answer": {
+        "type": "object",
+        "required": [
+          "findings"
+        ],
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "title",
+                "inScope",
+                "severity",
+                "detail"
+              ],
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "everyday",
+                    "edge",
+                    "obscure"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "stillOpen": {
+                  "type": "boolean"
+                },
+                "inScope": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fix",
+      "lane": "build",
+      "dependsOn": [
+        "review"
+      ],
+      "files": [
+        "src/ranges.js",
+        "tests/ranges.test.js"
+      ],
+      "prompt": "In {cwd}, fix every finding you are given in src/ranges.js so it matches README.md, each with a regression test in tests/ranges.test.js. Keep npm test passing.",
+      "evidence": [
+        {
+          "type": "command",
+          "cmd": "cd {cwd} && npm test",
+          "timeoutSec": 300
+        }
+      ]
+    }
+  ],
+  "loops": [
+    {
+      "id": "polish",
+      "steps": [
+        "review",
+        "fix"
+      ],
+      "until": {
+        "step": "review",
+        "dry": 1
+      },
+      "maxRounds": 4
+    }
+  ]
+}

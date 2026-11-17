@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v3",
+  "steps": [
+    {
+      "id": "parse",
+      "lane": "build",
+      "prompt": "Work in the repository directory {cwd} and follow README.md. Implement Part A only: replace the stub in src/parse.js (parse, isValidDate, ParseError) exactly as README.md specifies, and write thorough tests in tests/parse.test.js using node:test. Money is integer cents, never floats. Touch only src/parse.js and tests/parse.test.js. Run node --test tests/parse.test.js and report the result.",
+      "dependsOn": [],
+      "files": [
+        "src/parse.js",
+        "tests/parse.test.js"
+      ]
+    },
+    {
+      "id": "report",
+      "lane": "build",
+      "prompt": "Work in the repository directory {cwd} and follow README.md. Implement Part B only: replace the stubs in src/report.js (formatCents, filterByDate, balances, register) exactly as README.md specifies, and write thorough tests in tests/report.test.js using node:test. The functions take plain transaction objects and must not import src/parse.js. Money is integer cents, never floats. Touch only src/report.js and tests/report.test.js. Run node --test tests/report.test.js and report the result.",
+      "dependsOn": [],
+      "files": [
+        "src/report.js",
+        "tests/report.test.js"
+      ]
+    },
+    {
+      "id": "cli",
+      "lane": "build",
+      "prompt": "Work in the repository directory {cwd} and follow README.md. The parse and report steps have already implemented src/parse.js and src/report.js; read them and use them. Implement Part C: bin/ledger.js with the balance and register commands, the exact output tables, the error messages and the exit codes README.md specifies. Write tests in tests/cli.test.js that spawn node bin/ledger.js on temporary ledger files and compare stdout, stderr and exit codes exactly. Touch only bin/ledger.js and tests/cli.test.js unless a bug in parse or report blocks you (then fix it minimally and say so). Finish by running npm test in {cwd} and report the full result.",
+      "dependsOn": [
+        "parse",
+        "report"
+      ],
+      "files": [
+        "bin/ledger.js",
+        "tests/cli.test.js"
+      ],
+      "evidence": [
+        {
+          "type": "command",
+          "cmd": "cd {cwd} && npm test",
+          "timeoutSec": 300
+        }
+      ]
+    }
+  ]
+}
