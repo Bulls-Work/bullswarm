@@ -290,9 +290,37 @@ function containsMigratablePoolReference(value, parentKey = '') {
   ));
 }
 
+const MIGRATIONS_MARKER_FILE = '.migrations.json';
+
+export function readHomeMigrations(bullswarmDir) {
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir) return {};
+  const raw = parseJson(join(bullswarmDir, MIGRATIONS_MARKER_FILE));
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
+export function recordHomeMigrations(bullswarmDir, patch) {
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir || !existsSync(bullswarmDir)) return;
+  try {
+    const current = readHomeMigrations(bullswarmDir);
+    const next = { ...current, ...patch };
+    atomicWriteFileSync(join(bullswarmDir, MIGRATIONS_MARKER_FILE), `${JSON.stringify(next)}\n`);
+  } catch { /* best-effort cache marker */ }
+}
+
+function homeHasAnySurface(bullswarmDir) {
+  return ['state.json', 'routing.json', 'providers.json', 'meters'].some((name) => existsSync(join(bullswarmDir, name)));
+}
+
+function homeJsonSurfacesReadable(bullswarmDir) {
+  return ['state.json', 'routing.json', 'providers.json'].every((name) => {
+    const p = join(bullswarmDir, name);
+    return !existsSync(p) || parseJson(p) !== null;
+  });
+}
+
 // The check parses state.json (hundreds of decision-log entries) and walks
-// every value; every state load asks it. The answer only changes when one
-// of the three files does, so it is remembered per file fingerprint.
+// every value; every state load asks it. Once a home has been verified clean
+// or migrated, `.migrations.json` skips the scan across future CLI processes.
 const migrationCheckCache = new Map();
 function homeMigrationFingerprint(bullswarmDir) {
   return ['state.json', 'routing.json', 'providers.json'].map((name) => {
@@ -307,7 +335,18 @@ function homeMigrationNeeded(bullswarmDir) {
   const fingerprint = homeMigrationFingerprint(bullswarmDir);
   const cached = migrationCheckCache.get(bullswarmDir);
   if (cached && cached.fingerprint === fingerprint) return cached.needed;
+  if (readHomeMigrations(bullswarmDir).poolRenameMigrated === true) {
+    migrationCheckCache.set(bullswarmDir, { fingerprint, needed: false });
+    return false;
+  }
+  if (!homeHasAnySurface(bullswarmDir)) {
+    migrationCheckCache.set(bullswarmDir, { fingerprint, needed: false });
+    return false;
+  }
   const needed = homeMigrationNeededUncached(bullswarmDir);
+  if (!needed && homeJsonSurfacesReadable(bullswarmDir)) {
+    recordHomeMigrations(bullswarmDir, { poolRenameMigrated: true });
+  }
   migrationCheckCache.set(bullswarmDir, { fingerprint, needed });
   return needed;
 }
@@ -340,6 +379,10 @@ function migrateHomeLocked(bullswarmDir) {
   const changed = stateResult.changed || routingChanged || providersChanged || metersChanged;
   for (const file of warnings) {
     console.warn(`pool rename migration kept both names in ${file}`);
+  }
+  if (warnings.size === 0 && !homeMigrationNeededUncached(bullswarmDir) && homeJsonSurfacesReadable(bullswarmDir)) {
+    recordHomeMigrations(bullswarmDir, { poolRenameMigrated: true });
+    migrationCheckCache.set(bullswarmDir, { fingerprint: homeMigrationFingerprint(bullswarmDir), needed: false });
   }
   return { ...stateResult, changed };
 }
@@ -425,12 +468,17 @@ export function loadState(bullswarmDir, { skipMigration = false } = {}) {
 
 export function saveState(bullswarmDir, state) {
   mkdirSync(bullswarmDir, { recursive: true });
+  const serialized = `${JSON.stringify(state, null, 2)}\n`;
   // Temp file + rename (S5): a reader mid-write sees the previous complete
   // file, never a truncated one.
   atomicWriteFileSync(
     join(bullswarmDir, 'state.json'),
-    `${JSON.stringify(state, null, 2)}\n`,
+    serialized,
   );
+  if (!serialized.includes(RENAMED_POOL_FROM)
+    && !['routing.json', 'providers.json', 'meters'].some((name) => existsSync(join(bullswarmDir, name)))) {
+    migrationCheckCache.set(bullswarmDir, { fingerprint: homeMigrationFingerprint(bullswarmDir), needed: false });
+  }
 }
 
 // --- locked read-modify-write (S5) ----------------------------------------
