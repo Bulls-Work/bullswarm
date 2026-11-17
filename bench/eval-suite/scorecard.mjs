@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // The biweekly efficiency scorecard: what Bullswarm's own run records say
-// about the last N days. Read-only: it opens state.json, every run's
-// state.json, result.json, answer-*.json and events.jsonl under the home, and
-// optionally the fleet's order records, and writes nothing there.
+// about the last N days. Read-only: it opens state.json,
+// decision-log-archive.jsonl, every run's state.json, result.json,
+// answer-*.json and events.jsonl under the home, and optionally the fleet's
+// order records, and writes nothing there.
 //
 //   node bench/eval-suite/scorecard.mjs [--home ~/.bullswarm] [--days 14]
 //     [--until <ISO>] [--orders <fleet orders dir>] [--previous <scorecard.json>]
@@ -211,9 +212,11 @@ function loopSummary(facts) {
 }
 
 function decisionRows(home, fromMs, toMs) {
+  const archived = readLines(join(home, 'decision-log-archive.jsonl'));
   const state = readJson(join(home, 'state.json'));
-  const log = Array.isArray(state?.decisionLog) ? state.decisionLog : [];
-  return log.filter((row) => { const t = ms(row.ts); return t != null && t >= fromMs && t < toMs; });
+  const live = Array.isArray(state?.decisionLog) ? state.decisionLog : [];
+  const log = archived.length ? [...archived, ...live] : live;
+  return log.filter((row) => { const t = ms(row?.ts); return t != null && t >= fromMs && t < toMs; });
 }
 
 // The pick matched the pacer when it went to the candidate with the highest
