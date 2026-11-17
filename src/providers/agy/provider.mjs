@@ -297,7 +297,19 @@ export async function readUsage(pool, ctx = {}) {
     }
     throw new AgyMeterError(`agy /usage could not run: ${error?.message ?? error}`, 'cli_error');
   }
-  // agy exits 1 with its own {"status":"ERROR"} object; parse reports it.
+  if (result?.exitCode != null && result.exitCode !== 0) {
+    shared.forget();
+    try {
+      const body = JSON.parse(String(result?.stdout ?? '').trim());
+      if (body && typeof body === 'object' && body.status === 'ERROR') {
+        throw new AgyMeterError(`agy /usage failed: ${String(body.error ?? 'unknown error').split('\n')[0]}`, 'cli_error');
+      }
+    } catch (error) {
+      if (error instanceof AgyMeterError) throw error;
+    }
+    const detail = String(result?.stderr || result?.stdout || '').trim().split(/\r?\n/)[0];
+    throw new AgyMeterError(`agy /usage exited ${result.exitCode}${detail ? `: ${detail}` : ''}`, 'cli_error');
+  }
   // An answer that does not parse is not shared: the next read spawns again.
   try {
     return parseAgyUsage(result?.stdout, poolName);
