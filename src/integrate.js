@@ -239,6 +239,12 @@ export function cmdIntegrate(opts, { ensureHome } = {}) {
   }
   try {
     if (opts.agents != null && opts.agents !== true) parseIntegrationAgents(opts.agents);
+    if (subcommand === 'install' && opts.yes !== true) {
+      installIntegration({ approved: false });
+    }
+    if (subcommand === 'remove' && opts.yes !== true) {
+      removeIntegration({ approved: false });
+    }
     if (subcommand === 'retire-legacy' && opts.yes !== true) {
       retireLegacyOffload({ approved: false });
     }
