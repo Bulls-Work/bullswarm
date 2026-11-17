@@ -12,6 +12,8 @@
 
 - The worker reads agy's `stream-json` output: the answer is the `result` line's `response`, tool steps are counted (read, edit, command, search), and tokens are read from the `result` line, or summed from each step's usage when the stream ends early. A visibly cut-off answer gets one follow-up turn in the same AGY conversation (`--conversation <id>`).
 
+- Claude Code mod UI and `agy:claude` rates: the mod keeps `agy:claude` whole instead of shortening it to `agy:c` (while `claude-code:<account>` still shortens to `claude-code:<letter>`), renders pre-response tool steps on the Step page without treating the `result` envelope as a tool row, and prices `claude-opus-4-6-thinking` and `claude-sonnet-4-6` on `agy:claude` from Anthropic's published rate card (`gpt-oss-120b-medium` stays unpriced).
+
 ## 0.38.22 — pool lanes setting, hold --allow-pinned, starting runs are not legacy, timeouts read interrupted, pool toggle record, build --check hint
 
 - `bullswarm run --lane build` without `--check` prints one hint on stderr before it dispatches (`hint: no --check, so this build can only finish unproven; ...`), and the skill's first single-step example is a build with `--check`. Why: in the week to 14 Nov none of 19 single-step builds used `--check`, and 23 of 49 OK builds were proven by nothing. Not printed for analyze, chore, `--dry-run` or usage exits; `--json` stdout is unchanged (#85).

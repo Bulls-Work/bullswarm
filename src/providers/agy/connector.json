@@ -329,7 +329,7 @@
       "qualityRank": 2
     }
   ],
-  "$comment-modelProfiles": "Per 1M tokens from https://aistudio.google.com/docs/pricing, read 2026-11-17; output includes thinking, and these models have no long-context tier. The current price is what each row holds. Scheduled changes, not yet in the rows: gemini-4-carbon and gemini-4-argon go to $4.00 input, $0.20 cached, $20.00 output from 2026-12-01; gemini-3.8-flash to $1.50, $0.15, $7.50 from 2027-01-01. pricingHistory only records rates that ended before `pricing`, so a future rate cannot be dated in advance: update the row on the day. Google lists no cache-write price, so none is declared. The Claude and GPT-OSS models served through AGY have no row: what AGY charges for them against its quota is not published.",
+  "$comment-modelProfiles": "Per 1M tokens. Gemini rows come from https://aistudio.google.com/docs/pricing, read 2026-11-17; output includes thinking, and these models have no long-context tier. The current price is what each row holds. Scheduled changes, not yet in the rows: gemini-4-carbon and gemini-4-argon go to $4.00 input, $0.20 cached, $20.00 output from 2026-12-01; gemini-3.8-flash to $1.50, $0.15, $7.50 from 2027-01-01. pricingHistory only records rates that ended before `pricing`, so a future rate cannot be dated in advance: update the row on the day. Google lists no cache-write price, so none is declared. On agy:claude, Opus 4.6 (`claude-opus-4-6-thinking`, matching claude-code's Opus 4.5-4.8 row read 2026-09-23) and Sonnet 4.6 (`claude-sonnet-4-6`, read 2026-11-18) carry Anthropic's published API rates from https://platform.claude.com/docs/en/about-claude/pricing for API-equivalent cost accounting; GPT-OSS 120B has no cited source through AGY and stays unpriced.",
   "modelProfiles": [
     {
       "match": "^gemini-4-carbon$",
@@ -370,6 +370,30 @@
       },
       "pricingSource": "https://aistudio.google.com/docs/pricing",
       "pricingUpdatedAt": "2026-11-17"
+    },
+    {
+      "match": "^claude-opus-4-6-thinking$",
+      "pricing": {
+        "inputUsdPerMillion": 5,
+        "cacheReadUsdPerMillion": 0.5,
+        "cacheWrite5mUsdPerMillion": 6.25,
+        "cacheWrite1hUsdPerMillion": 10,
+        "outputUsdPerMillion": 25
+      },
+      "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "pricingUpdatedAt": "2026-09-23"
+    },
+    {
+      "match": "^claude-sonnet-4-6$",
+      "pricing": {
+        "inputUsdPerMillion": 3,
+        "cacheReadUsdPerMillion": 0.3,
+        "cacheWrite5mUsdPerMillion": 3.75,
+        "cacheWrite1hUsdPerMillion": 6,
+        "outputUsdPerMillion": 15
+      },
+      "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "pricingUpdatedAt": "2026-11-18"
     }
   ],
   "subscription": {

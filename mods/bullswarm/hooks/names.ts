@@ -1,8 +1,11 @@
 /**
- * Display names for pools: a `prefix:slug` account pool shows as
- * `prefix:<first letter of slug>` unless two accounts would collide, and
- * the plugin's `poolAliases` option (`from=to,from=to`) overrides any name.
+ * Display names for pools: a `prefix:slug` account pool too wide for the
+ * 16-cell name column with a 3-cell gutter (`claude-code:<account>`) shows as
+ * `prefix:<first letter of slug>` unless two accounts would collide; shorter
+ * group pools like `agy:claude` stay whole, and `poolAliases` overrides any.
  */
+const MAX_FULL_NAME = 13
+
 export function aliasesOf(option: unknown): Map<string, string> {
   const map = new Map<string, string>()
   if (typeof option !== 'string') return map
@@ -38,7 +41,7 @@ export function displayNames(
     const at = name.indexOf(':')
     const slug = at >= 0 ? name.slice(at + 1) : ''
     let short = name
-    if (slug.length > 1) {
+    if (slug.length > 1 && name.length > MAX_FULL_NAME) {
       const prefix = name.slice(0, at)
       const letter = `${prefix}:${slug[0]}`
       const clash = pools.some(

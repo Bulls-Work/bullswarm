@@ -69,7 +69,7 @@ function usageBody({ gemini = {}, claude = {} } = {}) {
 
 const reading = (snapshot) => ({ snapshot, source: 'live', ...paceSnapshot(snapshot, NOW) });
 
-async function poolsJsonFixture(t, buckets = { gemini: { weekly: 0.7, '5h': 0.85 }, claude: { weekly: 0.95, '5h': 0.6 } }) {
+async function poolsJsonFixture(t, buckets = { gemini: { weekly: 0.7, '5h': 0.85 }, claude: { weekly: 0.999, '5h': 0.6 } }) {
   const home = tempHome(t);
   const body = usageBody(buckets);
   const runner = async () => ({ stdout: JSON.stringify(body), stderr: '', exitCode: 0 });
@@ -89,6 +89,13 @@ async function poolsJsonFixture(t, buckets = { gemini: { weekly: 0.7, '5h': 0.85
       pool: 'codex',
       five_hour: { utilization: 12, resets_at: '2026-11-17T23:30:00.000Z' },
       seven_day: { utilization: 65, resets_at: '2026-11-24T12:00:00.000Z' },
+      monthly: null,
+    }),
+    grok: reading({
+      captured_at: new Date(NOW).toISOString(),
+      pool: 'grok',
+      five_hour: { utilization: 10, resets_at: '2026-11-17T23:00:00.000Z' },
+      seven_day: { utilization: 60, resets_at: '2026-11-24T12:00:00.000Z' },
       monthly: null,
     }),
   };
@@ -243,7 +250,7 @@ test('F: agy:claude prices Opus 4.6 and Sonnet 4.6 with cited Anthropic rates an
   const { connectors } = loadProviders(home, loaderFor(home));
   const claudePool = connectors['agy:claude'];
 
-  // Opus 4.6 ($5 in / $0.50 cache read / $25 out): 15327*5 + 16783*0.5 + 707*25 = 102,701.5 / 1e6 -> $0.1027.
+  // Opus 4.6 ($5 in / $0.50 cache read / $25 out): 15327*5 + 16783*0.5 + 707*25 = 102,701.5 / 1e6 -> $0.1027015.
   const opus = buildStepFromStream(t, {
     poolName: 'agy:claude',
     connector: claudePool,
@@ -251,12 +258,12 @@ test('F: agy:claude prices Opus 4.6 and Sonnet 4.6 with cited Anthropic rates an
   });
   assert.equal(opus.usage.api.basis, 'rate-card:complete');
   assert.equal(opus.usage.api.rateCard.source, 'https://platform.claude.com/docs/en/about-claude/pricing');
-  assert.equal(opus.usage.api.usd, 0.1027);
+  assert.equal(opus.usage.api.usd, 0.1027015);
   const opusCost = shapeStep({ step: opus.compact }, { width: 110 }).blocks.find((b) => b.key === 'cost');
-  assert.match(opusCost.rows.find((r) => r.key === 'cost-API price').text, /API price\s+\$0\.1027.*Anthropic rate card/);
+  assert.match(opusCost.rows.find((r) => r.key === 'cost-API price').text, /API price\s+\$0\.10\b.*Anthropic rate card/);
   assert.ok(opusCost.rows.some((r) => r.key === 'cost-agy:claude plan'));
 
-  // Sonnet 4.6 ($3 in / $0.30 cache read / $15 out): 15327*3 + 16783*0.3 + 707*15 = 61,620.9 / 1e6 -> $0.0616.
+  // Sonnet 4.6 ($3 in / $0.30 cache read / $15 out): 15327*3 + 16783*0.3 + 707*15 = 61,620.9 / 1e6 -> $0.0616209.
   const sonnet = buildStepFromStream(t, {
     poolName: 'agy:claude',
     connector: claudePool,
@@ -264,7 +271,7 @@ test('F: agy:claude prices Opus 4.6 and Sonnet 4.6 with cited Anthropic rates an
   });
   assert.equal(sonnet.usage.api.basis, 'rate-card:complete');
   assert.equal(sonnet.usage.api.rateCard.source, 'https://platform.claude.com/docs/en/about-claude/pricing');
-  assert.equal(sonnet.usage.api.usd, 0.0616);
+  assert.equal(sonnet.usage.api.usd, 0.0616209);
   const sonnetCost = shapeStep({ step: sonnet.compact }, { width: 110 }).blocks.find((b) => b.key === 'cost');
   assert.match(sonnetCost.rows.find((r) => r.key === 'cost-API price').text, /API price\s+\$0\.0616.*Anthropic rate card/);
 
