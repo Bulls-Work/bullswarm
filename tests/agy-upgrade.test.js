@@ -12,13 +12,19 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildPools } from '../src/lib/config.js';
+import { buildPools, loadConnectors } from '../src/lib/config.js';
+import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 import { loadState } from '../src/lib/state.js';
 import { MeterCache } from '../src/meters/framework.js';
 import { snapshot } from '../src/provider-kit.js';
 import * as setup from '../src/setup.js';
 import { maybeRefreshStrategy, refreshStrategy, rungRows } from '../src/strategy-cli.js';
 import { pinnedPoolIssues, routePoolIssues } from '../src/workflow/cli-pool-checks.js';
+import { rerunV2Step } from '../src/workflow/cli-step-verbs.js';
+import { implicitV3Requirements } from '../src/workflow/program-v3.js';
+import { prepareV2DispatchPools } from '../src/workflow/v2-dispatch.js';
+import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -267,12 +273,60 @@ test('G: autoSetup and refreshStrategy also seed new agy pools without touching 
   assert.equal(afterSetup.strategy.rungSeeds?.agy?.latest?.via, 'auto-setup');
   assert.equal(afterSetup.strategy.rungSeeds?.['agy:claude']?.latest?.via, 'auto-setup');
 
-  // 2. Direct refreshStrategy (without --apply) path
+  // After autoSetup seeded from fallback, maybeRefreshStrategy must still run
+  // one real CLI discovery for agy so reasoningLevels populate and xhigh on
+  // gemini-4-carbon clamps to high, then do nothing on subsequent calls.
+  let postSetupDiscoveryCalls = 0;
+  const postSetup = await maybeRefreshStrategy(setupHome, {
+    loaderOpts: loaderFor(setupHome),
+    executor: () => '',
+    providerExecutors: {
+      agy: async () => { postSetupDiscoveryCalls += 1; return MODELS_TXT; },
+      'claude-code': async () => '',
+      codex: async () => [],
+    },
+    getReadings: async () => ({}),
+  });
+  assert.ok(postSetup, 'maybeRefreshStrategy upgrades fallback discovery to CLI discovery');
+  assert.equal(postSetupDiscoveryCalls, 1);
+  const afterPostSetup = loadState(setupHome);
+  assert.equal(afterPostSetup.strategy.lastReport?.discoveries?.agy?.source, 'cli');
+  const setupConnectors = loadConnectors(setupHome, loaderFor(setupHome));
+  assert.deepEqual(
+    resolveReasoningLevel({
+      connector: setupConnectors.agy,
+      tier: 'high',
+      model: 'gemini-4-carbon',
+      strategy: afterPostSetup.strategy,
+      actionOverride: 'xhigh',
+    }),
+    { requested: 'xhigh', applied: 'high', source: 'action', clamped: true },
+  );
+  const postSetupAgain = await maybeRefreshStrategy(setupHome, {
+    loaderOpts: loaderFor(setupHome),
+    providerExecutors: { agy: async () => { postSetupDiscoveryCalls += 1; return MODELS_TXT; } },
+  });
+  assert.equal(postSetupAgain, null);
+  assert.equal(postSetupDiscoveryCalls, 1);
+
+  // Unexpected errors during new-pool discovery are recorded and returned, never swallowed.
+  const brokenHome = upgradedHome(t);
+  const errResult = await maybeRefreshStrategy(brokenHome, {
+    loaderOpts: { ...loaderFor(brokenHome), dirs: { firstClass: 123 } },
+  });
+  assert.ok(errResult && typeof errResult.error === 'string', JSON.stringify(errResult));
+  assert.equal(typeof loadState(brokenHome).strategy?.policy?.lastRefreshError, 'string');
+
+  // 2. Direct refreshStrategy (without --apply) path — inject all providerExecutors so no real CLI spawns.
   const refreshHome = upgradedHome(t);
   await refreshStrategy(refreshHome, {
     loaderOpts: loaderFor(refreshHome),
     executor: () => '',
-    providerExecutors: { agy: async () => MODELS_TXT },
+    providerExecutors: {
+      agy: async () => MODELS_TXT,
+      'claude-code': async () => '',
+      codex: async () => [],
+    },
     getReadings: async () => ({}),
   });
   const afterRefresh = loadState(refreshHome);
@@ -340,4 +394,101 @@ test('G: a step naming its own model satisfies route and pinned-pool checks even
     ).length,
     1,
   );
+
+  // Dispatch preparation on an empty-tier agy pool keeps agy when preferredModel is step.model.
+  const stepWithModel = {
+    id: 'impl',
+    lane: 'build',
+    effort: 'high',
+    model: 'gemini-4-carbon',
+    files: ['out.txt'],
+    ownedFiles: ['out.txt'],
+    prompt: 'Write out.txt.',
+    route: { providers: { use: ['agy'] } },
+  };
+  assert.deepEqual(
+    prepareV2DispatchPools(pools, stepWithModel, 'high', { preferredModel: stepWithModel.model, ignoreBurstGate: true }).map((p) => p.name),
+    ['agy'],
+  );
+});
+
+test('G: step rerun --avoid honours step.model on an empty-tier pool', async (t) => {
+  const home = upgradedHome(t);
+  const pools = buildPools(home, NOW, {}, loaderFor(home)).pools;
+  const ws = mkdtempSync(join(tmpdir(), 'bs-agy-rerun-ws-'));
+  t.after(() => rmSync(ws, { recursive: true, force: true }));
+
+  const runId = 'wf-stepmodel-123456';
+  const goalDoc = createV2GoalDocument({
+    goal: 'Write out.txt',
+    cwd: ws,
+    requirements: implicitV3Requirements('Write out.txt'),
+    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
+  });
+  await runV2AutonomousWorkflow({
+    bullswarmDir: home,
+    goalDocument: goalDoc,
+    pools,
+    runId,
+    initialPlannerResponse: {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2',
+      kind: 'program',
+      summary: 'Plan.',
+      program: {
+        schemaVersion: 'bullswarm.workflow.program.v3',
+        steps: [{
+          id: 'impl',
+          lane: 'build',
+          effort: 'high',
+          model: 'gemini-4-carbon',
+          files: ['out.txt'],
+          route: { providers: { use: ['agy'] } },
+          prompt: 'Write out.txt.',
+        }],
+      },
+    },
+    dependencies: {
+      refreshPools: async () => pools,
+      dispatchV2Action: async (options) => {
+        const files = options.paths(1);
+        writeFileSync(files.taskFile, options.taskText);
+        writeFileSync(files.outFile, 'failed');
+        const why = 'command evidence failed: npm test -> exit 1';
+        const record = {
+          ordinal: 1, pool: 'agy', model: 'gemini-4-carbon', status: 'failed',
+          startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+          failureKind: 'failed-evidence', why, changedFileCount: 1,
+          taskFile: files.taskFile, outFile: files.outFile,
+        };
+        options.onAttempt?.('started', record);
+        options.onAttempt?.('finished', record, { ok: false, why });
+        return { ok: false, status: 'failed', failureKind: 'failed-evidence', attempts: [record], verdict: { ok: false, why } };
+      },
+    },
+  });
+
+  // Avoiding agy:claude leaves agy, which can run step.model (gemini-4-carbon) even with an empty high tier.
+  const ok = await rerunV2Step({
+    bullswarmDir: home,
+    token: runId,
+    stepId: 'impl',
+    avoid: ['agy:claude'],
+    pools,
+    labels: {},
+    relaunch: null,
+  });
+  assert.equal(ok.code, 0, JSON.stringify(ok));
+  assert.equal(ok.status, 'applied');
+
+  // Avoiding agy as well leaves no pool able to run gemini-4-carbon -> rejected with exit 2.
+  const none = await rerunV2Step({
+    bullswarmDir: home,
+    token: runId,
+    stepId: 'impl',
+    avoid: ['agy'],
+    pools,
+    labels: {},
+    relaunch: null,
+  });
+  assert.equal(none.code, 2);
 });
