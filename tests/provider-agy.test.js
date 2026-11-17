@@ -529,7 +529,8 @@ test('strategy suggests the Gemini line per tier on agy, and Opus/Sonnet on agy:
   const other = report.providerSuggestions['agy:claude'];
   assert.equal(other.high.recommended.model, 'claude-opus-4-6-thinking');
   assert.equal(other.medium.recommended.model, 'claude-sonnet-4-6');
-  assert.equal(other.low.recommended, null, 'gpt-oss is selectable but never suggested');
+  // Stage 2 (owner, 18 Nov): low on agy:claude is GPT-OSS 120B, so the pool takes low work too.
+  assert.equal(other.low.recommended.model, 'gpt-oss-120b-medium');
   assert.deepEqual(report.unranked, []);
   // Gemini prices are dated rows; the Claude models via AGY stay unpriced.
   const priced = Object.fromEntries(discoveries.agy.models.map((m) => [m.id, m.pricing]));
