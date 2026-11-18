@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.39.0 — AGY: Google Antigravity as a first-class provider
+
 - `bench/eval-suite/rank.mjs` ranks two or more `run-bench.mjs` output directories on the tasks every label ran: pass rate first, then fewer interventions, lower wall minutes, lower API-equivalent USD (#91).
 - New first-class provider `agy`, the Google Antigravity CLI. One AGY login gives two pools, one per AGY quota group: `agy` runs the Gemini models and `agy:claude` runs the Claude and GPT-OSS models AGY also serves. They share the credential group `agy`, so a sign-in failure on one skips the other for that step. Both are paced like any other pool: the meter runs `agy -p /usage --output-format json`, which starts no model turn and spends no quota, and reads the pool's own group's weekly and 5-hour limits. A 5-hour reading at 99% or more keeps the pool out of picks until it resets, as for every pool. `bullswarm run --use-provider agy` pins a step to it.
 
