@@ -151,9 +151,7 @@ test('G: maybeRefreshStrategy seeds new agy pools on an upgraded home without to
 
   // Both agy pools got their suggested picks per tier (Addendum I: no high pick on agy:claude).
   assert.deepEqual(state.strategy.modelTiers.agy, {
-    'gemini-4-carbon': ['high'],
-    'gemini-4-hydrogen': ['medium'],
-    'gemini-3.8-flash': ['low'],
+    'gemini-4-hydrogen': ['high', 'medium', 'low'],
   });
   assert.deepEqual(state.strategy.modelTiers['agy:claude'], {
     'claude-opus-4-6-thinking': ['medium'],
@@ -172,9 +170,9 @@ test('G: maybeRefreshStrategy seeds new agy pools on an upgraded home without to
     assert.match(entry.latest.reason ?? '', /new pool/i);
   }
   assert.deepEqual(state.strategy.rungSeeds.agy.latest.rungs, {
-    high: 'gemini-4-carbon',
+    high: 'gemini-4-hydrogen',
     medium: 'gemini-4-hydrogen',
-    low: 'gemini-3.8-flash',
+    low: 'gemini-4-hydrogen',
   });
   assert.deepEqual(state.strategy.rungSeeds['agy:claude'].latest.rungs, {
     medium: 'claude-opus-4-6-thinking',
@@ -272,9 +270,7 @@ test('G: autoSetup and refreshStrategy also seed new agy pools without touching 
     'existing-lite': ['low'],
   });
   assert.deepEqual(afterSetup.strategy.modelTiers.agy, {
-    'gemini-4-carbon': ['high'],
-    'gemini-4-hydrogen': ['medium'],
-    'gemini-3.8-flash': ['low'],
+    'gemini-4-hydrogen': ['high', 'medium', 'low'],
   });
   assert.deepEqual(afterSetup.strategy.modelTiers['agy:claude'], {
     'claude-opus-4-6-thinking': ['medium'],
@@ -375,9 +371,7 @@ test('G: autoSetup and refreshStrategy also seed new agy pools without touching 
     'existing-lite': ['low'],
   });
   assert.deepEqual(afterRefresh.strategy.modelTiers.agy, {
-    'gemini-4-carbon': ['high'],
-    'gemini-4-hydrogen': ['medium'],
-    'gemini-3.8-flash': ['low'],
+    'gemini-4-hydrogen': ['high', 'medium', 'low'],
   });
   assert.equal(afterRefresh.strategy.rungSeeds?.agy?.latest?.via, 'strategy-refresh');
 });
@@ -554,7 +548,7 @@ test('G: maybeRefreshStrategy does not re-run CLI discovery when a new pool has 
   assert.equal(directCalls, 1);
   const afterDirect = loadState(direct.home);
   assert.deepEqual(afterDirect.strategy.modelTiers.existing, { 'existing-v1': ['high'] });
-  assert.deepEqual(afterDirect.strategy.modelTiers.agy, { 'gemini-4-carbon': ['high'] });
+  assert.deepEqual(afterDirect.strategy.modelTiers.agy, { 'gemini-4-hydrogen': ['high'] });
   assert.equal(afterDirect.strategy.modelTiers['agy:claude'], undefined);
   assert.deepEqual(afterDirect.strategy.rungSeeds?.['agy:claude']?.latest?.rungs, {});
   assert.equal(afterDirect.strategy.lastReport?.discoveries?.['agy:claude']?.source, 'cli');

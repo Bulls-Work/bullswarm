@@ -99,7 +99,20 @@ export function connectors(ctx = {}) {
   claude.spawn = pinModel(template.spawn, template.modelSelection?.flag ?? '--model', CLAUDE_POOL.model);
   delete claude.reasoning;
   claude.flags = { ...(template.flags ?? {}), isCaller: false };
+  // Each pool ranks only its own families: a family whose models live on the
+  // other pool must not count as serving a tier here, or it would block this
+  // pool's generationFallback (one line on every tier, like grok).
+  for (const pool of [gemini, claude]) {
+    pool.modelFamilies = (template.modelFamilies ?? []).filter((rule) => familyOnPool(rule, pool.knownModels));
+  }
+  delete claude.generationFallback;
   return [gemini, claude];
+}
+
+function familyOnPool(rule, ids) {
+  let match = null;
+  try { match = new RegExp(rule?.match ?? '(?!)', 'i'); } catch { return false; }
+  return (ids ?? []).some((id) => match.test(id));
 }
 
 // --- model discovery -----------------------------------------------------------

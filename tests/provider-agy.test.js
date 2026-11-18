@@ -116,7 +116,7 @@ test('agy validates as a first-class provider with two pools sharing one credent
     assert.equal(pool.bin, 'agy');
     assert.deepEqual(pool.configDirs, ['~/.gemini/antigravity-cli']);
   }
-  assert.equal(agy.model, 'gemini-4-carbon');
+  assert.equal(agy.model, 'gemini-4-hydrogen');
   // Each pool lists only its own quota group's models; orchestrators in neither.
   assert.deepEqual(agy.knownModels, ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.8-flash']);
   assert.deepEqual(claude.knownModels, ['claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium']);
@@ -577,15 +577,15 @@ test('strategy suggests the Gemini line per tier on agy, and Opus/Sonnet on agy:
     connectors: { agy, 'agy:claude': claude }, pools: [poolFor(agy), poolFor(claude)], state: {}, discoveries,
   });
   const gemini = report.providerSuggestions.agy;
-  assert.equal(gemini.high.recommended.model, 'gemini-4-carbon');
+  assert.equal(gemini.high.recommended.model, 'gemini-4-hydrogen');
   assert.equal(gemini.medium.recommended.model, 'gemini-4-hydrogen');
-  assert.equal(gemini.low.recommended.model, 'gemini-3.8-flash');
+  assert.equal(gemini.low.recommended.model, 'gemini-4-hydrogen');
   // Argon is listed and selectable, never suggested.
   const argon = discoveries.agy.models.find((m) => m.id === 'gemini-4-argon');
   assert.deepEqual([argon.tier, argon.autoRecommend], ['high', false]);
   assert.ok(!gemini.high.candidates.some((c) => c.model === 'gemini-4-argon'));
-  // Each tier's rung runs at the connector's level for it: carbon high, hydrogen high, flash medium.
-  for (const [tier, model, level] of [['high', 'gemini-4-carbon', 'high'], ['medium', 'gemini-4-hydrogen', 'high'], ['low', 'gemini-3.8-flash', 'medium']]) {
+  // Each tier's rung runs at the connector's level for it: hydrogen high, hydrogen high, hydrogen medium.
+  for (const [tier, model, level] of [['high', 'gemini-4-hydrogen', 'high'], ['medium', 'gemini-4-hydrogen', 'high'], ['low', 'gemini-4-hydrogen', 'medium']]) {
     const record = resolveReasoningLevel({ connector: agy, tier, model, strategy: { lastReport: { discoveries } } });
     assert.equal(record.applied, level, `${tier}/${model}`);
   }

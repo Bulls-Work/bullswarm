@@ -259,7 +259,7 @@
     "claude-opus-4-6-thinking",
     "gpt-oss-120b-medium"
   ],
-  "model": "gemini-4-carbon",
+  "model": "gemini-4-hydrogen",
   "modelSelection": {
     "flag": "--model",
     "mode": "replace-or-append"
@@ -270,8 +270,7 @@
     "levels": [
       "low",
       "medium",
-      "high",
-      "xhigh"
+      "high"
     ],
     "defaults": {
       "high": "high",
@@ -287,28 +286,30 @@
   "modelFamilies": [
     {
       "family": "gemini-carbon",
-      "match": "^gemini-[0-9][0-9.]*-carbon$",
+      "match": "^gemini-(?<version>[0-9][0-9.]*)-carbon$",
       "tier": "high",
-      "qualityRank": 6
+      "qualityRank": 6,
+      "autoRecommend": false
     },
     {
       "family": "gemini-argon",
-      "match": "^gemini-[0-9][0-9.]*-argon$",
+      "match": "^gemini-(?<version>[0-9][0-9.]*)-argon$",
       "tier": "high",
       "qualityRank": 5,
       "autoRecommend": false
     },
     {
       "family": "gemini-hydrogen",
-      "match": "^gemini-[0-9][0-9.]*-hydrogen$",
-      "tier": "medium",
-      "qualityRank": 4
+      "match": "^gemini-(?<version>[0-9][0-9.]*)-hydrogen$",
+      "tier": "high",
+      "qualityRank": 7
     },
     {
       "family": "gemini-flash",
-      "match": "^gemini-[0-9][0-9.]*-flash$",
-      "tier": "low",
-      "qualityRank": 3
+      "match": "^gemini-(?<version>[0-9][0-9.]*)-flash$",
+      "tier": "high",
+      "qualityRank": 3,
+      "autoRecommend": false
     },
     {
       "family": "claude-opus",
@@ -408,5 +409,17 @@
   "flags": {
     "stealth": false
   },
-  "$comment-timeout": "No implicit wall-clock timeout; callers may opt in with --timeout or workflow step.timeoutSec"
+  "$comment-timeout": "No implicit wall-clock timeout; callers may opt in with --timeout or workflow step.timeoutSec",
+  "generationFallback": {
+    "tiers": {
+      "medium": {
+        "reasoning": "high",
+        "why": "one Gemini line (Hydrogen), at high effort"
+      },
+      "low": {
+        "reasoning": "medium",
+        "why": "one Gemini line (Hydrogen), at medium effort"
+      }
+    }
+  }
 }

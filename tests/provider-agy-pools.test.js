@@ -238,7 +238,7 @@ test('A: strategy suggests Gemini on agy and Opus on medium / Sonnet on low on a
   const { home, report, discoveries } = await strategyReport(t);
   const pick = (pool, tier) => report.providerSuggestions[pool][tier].recommended?.model ?? null;
   assert.deepEqual(['high', 'medium', 'low'].map((tier) => pick('agy', tier)),
-    ['gemini-4-carbon', 'gemini-4-hydrogen', 'gemini-3.8-flash']);
+    ['gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-hydrogen']);
   assert.deepEqual(['high', 'medium', 'low'].map((tier) => pick('agy:claude', tier)),
     [null, 'claude-opus-4-6-thinking', 'claude-sonnet-4-6']);
   const gptOss = discoveries['agy:claude'].models.find((m) => m.id === 'gpt-oss-120b-medium');
@@ -249,7 +249,9 @@ test('A: strategy suggests Gemini on agy and Opus on medium / Sonnet on low on a
 
   applyStrategyRecommendations(home, report, { enableAutoRefresh: false });
   const tiers = loadState(home).strategy.modelTiers;
-  assert.deepEqual(tiers.agy, { 'gemini-4-carbon': ['high'], 'gemini-4-hydrogen': ['medium'], 'gemini-3.8-flash': ['low'] });
+  assert.deepEqual(tiers.agy, {
+    'gemini-4-hydrogen': ['high', 'medium', 'low'],
+  });
   assert.deepEqual(tiers['agy:claude'], {
     'claude-opus-4-6-thinking': ['medium'], 'claude-sonnet-4-6': ['low'],
   });
@@ -263,7 +265,8 @@ test('A: strategy suggests Gemini on agy and Opus on medium / Sonnet on low on a
   });
   assert.notEqual(highPreview.pick?.pool, 'agy:claude', highPreview.why);
   assert.equal(highPreview.pick?.pool, 'agy', highPreview.why);
-  assert.ok(pairAt(highPreview.pick.command, '--model', 'gemini-4-carbon'), highPreview.pick.command.join(' '));
+  assert.ok(pairAt(highPreview.pick.command, '--model', 'gemini-4-hydrogen'), highPreview.pick.command.join(' '));
+  assert.ok(pairAt(highPreview.pick.command, '--effort', 'high'), highPreview.pick.command.join(' '));
 
   for (const [effort, model] of [['medium', 'claude-opus-4-6-thinking'], ['low', 'claude-sonnet-4-6']]) {
     const preview = await previewStepPick({
