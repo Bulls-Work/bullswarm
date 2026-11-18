@@ -157,7 +157,7 @@ function continuedLine(bullswarmDir, result) {
 }
 
 /** `bullswarm workflow continue <runId> <gate-or-loop> [--rounds N] [--wait s] [--json]`. */
-export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume }) {
+export async function wfContinue(opts, { bullswarmDir, ensureHome, helpText, flagErrors, launchDetachedResume }) {
   const path = ['workflow', 'continue'];
   if (opts.help) { console.log(helpText(path)); return 0; }
   const flagExit = flagErrors(opts, path);
@@ -168,6 +168,7 @@ export async function wfContinue(opts, { bullswarmDir, helpText, flagErrors, lau
   try { rounds = parseContinueRounds(opts.rounds); } catch (err) { console.error(`✗ ${err.message}`); return 2; }
   const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  ensureHome?.();
   const viewOnly = drivableRunRefusal(token, opts, 'continue');
   if (viewOnly !== null) return viewOnly;
   const resolved = resolveRunId(bullswarmDir, token);
@@ -323,7 +324,7 @@ function addedLines(result, state) {
 }
 
 /** `bullswarm workflow add <runId> --steps <file.json> | --from-answer <step> [--summary s] [--wait s] [--json]`. */
-export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues }) {
+export async function wfAdd(opts, { bullswarmDir, ensureHome, helpText, flagErrors, launchDetachedResume, routeIssues }) {
   const path = ['workflow', 'add'];
   if (opts.help) { console.log(helpText(path)); return 0; }
   const flagExit = flagErrors(opts, path);
@@ -341,6 +342,7 @@ export async function wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDe
   if (fromFile) {
     try { fragment = readFragmentFile(fromFile); } catch (err) { console.error(`✗ ${err.message}`); return 2; }
   }
+  ensureHome?.();
   const relaunch = async (runId) => {
     const doc = JSON.parse(readFileSync(join(bullswarmDir, 'workflows', runId, 'goal.json'), 'utf8'));
     return launchDetachedResume(doc, runId, opts);
@@ -628,7 +630,7 @@ export function waitFactLines(fact) {
 }
 
 /** `bullswarm workflow wait <runId> <id...> [--timeout <seconds>] [--json]`. */
-export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
+export async function wfWait(opts, { bullswarmDir, ensureHome, helpText, flagErrors }) {
   const path = ['workflow', 'wait'];
   if (opts.help) { console.log(helpText(path)); return 0; }
   const flagExit = flagErrors(opts, path);
@@ -637,6 +639,7 @@ export async function wfWait(opts, { bullswarmDir, helpText, flagErrors }) {
   if (!token || !ids.length) { console.error(`usage: ${usageLine(path)}`); return 2; }
   const timeoutSec = opts.timeout === undefined ? null : Number(opts.timeout);
   if (timeoutSec !== null && (!Number.isFinite(timeoutSec) || timeoutSec < 0)) { console.error('✗ --timeout must be a non-negative number of seconds'); return 2; }
+  ensureHome?.();
   const result = await waitV3Nodes({ bullswarmDir, token, ids: [...new Set(ids)], timeoutMs: timeoutSec === null ? null : timeoutSec * 1000 });
   const { code, ...payload } = result;
   if (opts.json) { console.log(JSON.stringify({ action: 'workflow-wait', ...payload }, null, 2)); return code; }

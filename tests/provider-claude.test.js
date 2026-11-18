@@ -553,7 +553,7 @@ test('connectors(ctx) does not scan real homes under node:test without injection
   assert.equal(workerEnv(pools[0], {}, '/work', { CLAUDE_CONFIG_DIR: '/Users/acme/.claude-other' }).CLAUDE_CONFIG_DIR, undefined);
 });
 
-test('the four first-class providers load from src/providers through the loader', () => {
+test('the five first-class providers load from src/providers through the loader', () => {
   const home = makeHome();
   const empty = mkdtempSync(join(tmpdir(), 'bs-providers-empty-'));
   try {
@@ -565,17 +565,18 @@ test('the four first-class providers load from src/providers through the loader'
       accounts: discoverClaudeAccounts({ homeDir: home, envConfigDir: '', platform: 'linux' }),
     });
     const byName = Object.fromEntries(providers.map((p) => [p.name, p]));
-    for (const name of ['claude-code', 'codex', 'grok', 'echo']) {
+    for (const name of ['agy', 'claude-code', 'codex', 'grok', 'echo']) {
       assert.equal(byName[name]?.tier, 'first-class', name);
       assert.equal(byName[name].error, null, `${name}: ${byName[name].error}`);
     }
     assert.deepEqual(byName['claude-code'].pools, ['claude-code', 'claude-code:work']);
     assert.deepEqual(
-      Object.fromEntries(['claude-code', 'codex', 'grok', 'echo'].map((n) => [n, [byName[n].displayName, byName[n].hasReadUsage]])),
-      { 'claude-code': ['Claude', true], codex: ['Codex', true], grok: ['Grok', true], echo: ['echo', false] },
+      Object.fromEntries(['agy', 'claude-code', 'codex', 'grok', 'echo'].map((n) => [n, [byName[n].displayName, byName[n].hasReadUsage]])),
+      { agy: ['AGY', true], 'claude-code': ['Claude', true], codex: ['Codex', true], grok: ['Grok', true], echo: ['echo', false] },
     );
     assert.equal(pools['claude-code:work'].env.CLAUDE_CONFIG_DIR, resolve(join(home, '.claude-work')));
     for (const name of ['codex', 'grok', 'echo']) assert.deepEqual(byName[name].pools, [name]);
+    assert.deepEqual(byName.agy.pools, ['agy', 'agy:claude']);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(empty, { recursive: true, force: true });

@@ -685,7 +685,7 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
   `command-code   cost=1 lanes=analyze/build/chore monthly used 79.4% elapsed
   75.3% [cache] surplus=-4.1 ...`. That window is the connector's declared
   `quotaWindow` (monthly for command-code and the relay pools, weekly for
-  claude-code, codex and grok), overridable with `bullswarm strategy
+  claude-code, codex, grok and the two agy pools), overridable with `bullswarm strategy
   set-subscription <pool> --quota-window <weekly|monthly>`; `pools --json`
   carries it as `pacingWindow`, and `used%`/`elapsed%`/`surplus` are that
   window's. The 5h reading still only gates.

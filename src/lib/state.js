@@ -18,10 +18,11 @@
 //       (audit finding D5, 2026-09-09).
 
 import {
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
+  appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, unlinkSync, writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { atomicWriteFileSync } from './fsjson.js';
 
 export const RENAMED_POOL_FROM = 'opencode2';
@@ -290,9 +291,111 @@ function containsMigratablePoolReference(value, parentKey = '') {
   ));
 }
 
+const MIGRATIONS_MARKER_FILE = '.migrations.json';
+const DECISION_LOG_ARCHIVE_FILE = 'decision-log-archive.jsonl';
+export const DECISION_LOG_LIVE_LIMIT = 200;
+const LIVE_DECISION_LOG_HOME = Symbol('bullswarm.liveDecisionLogHome');
+
+export function decisionLogArchivePath(bullswarmDir) {
+  return join(bullswarmDir, DECISION_LOG_ARCHIVE_FILE);
+}
+
+const archivedLogCache = new Map();
+
+export function readArchivedDecisionLog(bullswarmDir) {
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir) return [];
+  const p = decisionLogArchivePath(bullswarmDir);
+  let stat;
+  try { stat = statSync(p); } catch { return []; }
+  const key = `${stat.size}:${stat.mtimeMs}`;
+  const cached = archivedLogCache.get(p);
+  if (cached && cached.key === key) return cached.rows.slice();
+  let text = '';
+  try { text = readFileSync(p, 'utf8'); } catch { return []; }
+  const rows = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); } catch { /* skip malformed line */ }
+  }
+  archivedLogCache.set(p, { key, rows });
+  return rows.slice();
+}
+
+export function writeArchivedDecisionLog(bullswarmDir, rows) {
+  const p = decisionLogArchivePath(bullswarmDir);
+  mkdirSync(bullswarmDir, { recursive: true });
+  const body = Array.isArray(rows) && rows.length
+    ? `${rows.map((row) => JSON.stringify(row) ?? 'null').join('\n')}\n`
+    : '';
+  atomicWriteFileSync(p, body);
+  archivedLogCache.delete(p);
+}
+
+export function readDecisionLog(bullswarmDir, liveState = null) {
+  const archived = readArchivedDecisionLog(bullswarmDir);
+  const state = liveState ?? loadState(bullswarmDir);
+  const live = Array.isArray(state?.decisionLog) ? state.decisionLog : [];
+  return archived.length ? [...archived, ...live] : live.slice();
+}
+
+export function resolveDecisionLog(decisionLog, bullswarmDir = null) {
+  const list = Array.isArray(decisionLog) ? decisionLog : [];
+  const taggedHome = Array.isArray(decisionLog) ? decisionLog[LIVE_DECISION_LOG_HOME] : null;
+  const home = taggedHome ?? (decisionLog === undefined ? bullswarmDir : null);
+  if (!home) return list;
+  const archived = readArchivedDecisionLog(home);
+  return archived.length ? [...archived, ...list] : list;
+}
+
+function tagLiveDecisionLog(state, bullswarmDir) {
+  if (state && Array.isArray(state.decisionLog) && typeof bullswarmDir === 'string' && bullswarmDir) {
+    Object.defineProperty(state.decisionLog, LIVE_DECISION_LOG_HOME, {
+      value: bullswarmDir,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return state;
+}
+
+const READONLY_FIXTURES_ROOT = resolve(fileURLToPath(new URL('../../tests/fixtures', import.meta.url)));
+
+function isReadOnlyHome(bullswarmDir) {
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir) return true;
+  if (existsSync(join(bullswarmDir, '.snapshot.json'))) return true;
+  const resolved = resolve(bullswarmDir);
+  return resolved === READONLY_FIXTURES_ROOT || resolved.startsWith(`${READONLY_FIXTURES_ROOT}${sep}`);
+}
+
+export function readHomeMigrations(bullswarmDir) {
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir) return {};
+  const raw = parseJson(join(bullswarmDir, MIGRATIONS_MARKER_FILE));
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
+export function recordHomeMigrations(bullswarmDir, patch) {
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir || !existsSync(bullswarmDir) || isReadOnlyHome(bullswarmDir)) return;
+  try {
+    const current = readHomeMigrations(bullswarmDir);
+    const next = { ...current, ...patch };
+    atomicWriteFileSync(join(bullswarmDir, MIGRATIONS_MARKER_FILE), `${JSON.stringify(next)}\n`);
+  } catch { /* best-effort cache marker */ }
+}
+
+function homeHasAnySurface(bullswarmDir) {
+  return ['state.json', 'routing.json', 'providers.json', 'meters'].some((name) => existsSync(join(bullswarmDir, name)));
+}
+
+function homeJsonSurfacesReadable(bullswarmDir) {
+  return ['state.json', 'routing.json', 'providers.json'].every((name) => {
+    const p = join(bullswarmDir, name);
+    return !existsSync(p) || parseJson(p) !== null;
+  });
+}
+
 // The check parses state.json (hundreds of decision-log entries) and walks
-// every value; every state load asks it. The answer only changes when one
-// of the three files does, so it is remembered per file fingerprint.
+// every value; every state load asks it. Once a home has been verified clean
+// or migrated, `.migrations.json` skips the scan across future CLI processes.
 const migrationCheckCache = new Map();
 function homeMigrationFingerprint(bullswarmDir) {
   return ['state.json', 'routing.json', 'providers.json'].map((name) => {
@@ -307,7 +410,18 @@ function homeMigrationNeeded(bullswarmDir) {
   const fingerprint = homeMigrationFingerprint(bullswarmDir);
   const cached = migrationCheckCache.get(bullswarmDir);
   if (cached && cached.fingerprint === fingerprint) return cached.needed;
+  if (readHomeMigrations(bullswarmDir).poolRenameMigrated === true) {
+    migrationCheckCache.set(bullswarmDir, { fingerprint, needed: false });
+    return false;
+  }
+  if (!homeHasAnySurface(bullswarmDir)) {
+    migrationCheckCache.set(bullswarmDir, { fingerprint, needed: false });
+    return false;
+  }
   const needed = homeMigrationNeededUncached(bullswarmDir);
+  if (!needed && homeJsonSurfacesReadable(bullswarmDir)) {
+    recordHomeMigrations(bullswarmDir, { poolRenameMigrated: true });
+  }
   migrationCheckCache.set(bullswarmDir, { fingerprint, needed });
   return needed;
 }
@@ -315,6 +429,7 @@ function homeMigrationNeeded(bullswarmDir) {
 function homeMigrationNeededUncached(bullswarmDir) {
   const state = parseJson(join(bullswarmDir, 'state.json'));
   if (state && containsMigratablePoolReference(state)) return true;
+  if (readArchivedDecisionLog(bullswarmDir).some((row) => containsMigratablePoolReference(row))) return true;
   const routing = parseJson(join(bullswarmDir, 'routing.json'));
   if (routing && Object.values(routing).some((lane) =>
     Array.isArray(lane?.order) && lane.order.some((pool) => migratedPoolName(pool) !== pool))) return true;
@@ -331,15 +446,32 @@ function homeMigrationNeededUncached(bullswarmDir) {
   return false;
 }
 
+function migrateArchiveFile(bullswarmDir) {
+  const path = decisionLogArchivePath(bullswarmDir);
+  if (!existsSync(path)) return false;
+  let content;
+  try { content = readFileSync(path, 'utf8'); } catch { return false; }
+  const migrated = migrateMeterContents(content, '.jsonl');
+  if (migrated.content === content) return false;
+  atomicWriteFileSync(path, migrated.content);
+  archivedLogCache.delete(path);
+  return true;
+}
+
 function migrateHomeLocked(bullswarmDir) {
   const warnings = new Set();
   const stateResult = migrateStateFile(bullswarmDir, warnings);
+  const archiveChanged = migrateArchiveFile(bullswarmDir);
   const routingChanged = migrateRoutingFile(bullswarmDir, warnings);
   const providersChanged = migrateProvidersFile(bullswarmDir);
   const metersChanged = migrateMeterFiles(bullswarmDir, warnings);
-  const changed = stateResult.changed || routingChanged || providersChanged || metersChanged;
+  const changed = stateResult.changed || archiveChanged || routingChanged || providersChanged || metersChanged;
   for (const file of warnings) {
     console.warn(`pool rename migration kept both names in ${file}`);
+  }
+  if (warnings.size === 0 && !homeMigrationNeededUncached(bullswarmDir) && homeJsonSurfacesReadable(bullswarmDir)) {
+    recordHomeMigrations(bullswarmDir, { poolRenameMigrated: true });
+    migrationCheckCache.set(bullswarmDir, { fingerprint: homeMigrationFingerprint(bullswarmDir), needed: false });
   }
   return { ...stateResult, changed };
 }
@@ -410,27 +542,43 @@ export function resolveRetention(state) {
 export function loadState(bullswarmDir, { skipMigration = false } = {}) {
   const p = join(bullswarmDir, 'state.json');
   if (!skipMigration && homeMigrationNeeded(bullswarmDir)) migratePoolNameHome(bullswarmDir);
-  if (!existsSync(p)) return structuredClone(DEFAULT_STATE);
+  if (!existsSync(p)) return tagLiveDecisionLog(structuredClone(DEFAULT_STATE), bullswarmDir);
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8'));
-    return {
+    return tagLiveDecisionLog({
       ...structuredClone(DEFAULT_STATE),
       ...raw,
       config: { ...DEFAULT_STATE.config, ...(raw.config ?? {}) },
-    };
+    }, bullswarmDir);
   } catch {
-    return structuredClone(DEFAULT_STATE);
+    return tagLiveDecisionLog(structuredClone(DEFAULT_STATE), bullswarmDir);
   }
+}
+
+export function serializeState(state) {
+  const log = state?.decisionLog;
+  if (!Array.isArray(log) || log.length === 0) return `${JSON.stringify(state, null, 2)}\n`;
+  const lines = JSON.stringify({ ...state, decisionLog: [] }, null, 2).split('\n');
+  const at = lines.findIndex((l) => l === '  "decisionLog": []' || l === '  "decisionLog": [],');
+  if (at < 0) return `${JSON.stringify(state, null, 2)}\n`;
+  const comma = lines[at].endsWith(',') ? ',' : '';
+  lines[at] = `  "decisionLog": [\n${log.map((r) => `    ${JSON.stringify(r) ?? 'null'}`).join(',\n')}\n  ]${comma}`;
+  return `${lines.join('\n')}\n`;
 }
 
 export function saveState(bullswarmDir, state) {
   mkdirSync(bullswarmDir, { recursive: true });
+  const serialized = serializeState(state);
   // Temp file + rename (S5): a reader mid-write sees the previous complete
   // file, never a truncated one.
   atomicWriteFileSync(
     join(bullswarmDir, 'state.json'),
-    `${JSON.stringify(state, null, 2)}\n`,
+    serialized,
   );
+  if (!serialized.includes(RENAMED_POOL_FROM)
+    && !['routing.json', 'providers.json', 'meters'].some((name) => existsSync(join(bullswarmDir, name)))) {
+    migrationCheckCache.set(bullswarmDir, { fingerprint: homeMigrationFingerprint(bullswarmDir), needed: false });
+  }
 }
 
 // --- locked read-modify-write (S5) ----------------------------------------
@@ -508,6 +656,27 @@ export function releaseStateLock(path) {
  * place; returning `false` aborts the write, so an observation command can
  * persist only the changes it actually made. Returns the state the mutator saw.
  */
+function archiveDecisionLogOverflowLocked(bullswarmDir, state, limit = DECISION_LOG_LIVE_LIMIT) {
+  if (!Array.isArray(state?.decisionLog) || state.decisionLog.length <= limit) return 0;
+  const overflow = state.decisionLog.splice(0, state.decisionLog.length - limit);
+  mkdirSync(bullswarmDir, { recursive: true });
+  const archivePath = decisionLogArchivePath(bullswarmDir);
+  appendFileSync(archivePath, `${overflow.map((row) => JSON.stringify(row) ?? 'null').join('\n')}\n`);
+  archivedLogCache.delete(archivePath);
+  return overflow.length;
+}
+
+export function compactDecisionLog(bullswarmDir, { limit = DECISION_LOG_LIVE_LIMIT } = {}) {
+  if (isReadOnlyHome(bullswarmDir)) return 0;
+  let moved = 0;
+  updateState(bullswarmDir, (state) => {
+    if (!Array.isArray(state?.decisionLog) || state.decisionLog.length <= limit) return false;
+    moved = archiveDecisionLogOverflowLocked(bullswarmDir, state, limit);
+    return moved > 0;
+  });
+  return moved;
+}
+
 export function updateState(bullswarmDir, mutator, opts = {}) {
   const lock = acquireStateLock(bullswarmDir, opts);
   try {
@@ -515,7 +684,11 @@ export function updateState(bullswarmDir, mutator, opts = {}) {
     // inline instead of trying to acquire the same lock a second time.
     if (homeMigrationNeeded(bullswarmDir)) migrateHomeLocked(bullswarmDir);
     const state = loadState(bullswarmDir, { skipMigration: true });
-    if (mutator(state) !== false) saveState(bullswarmDir, state);
+    if (mutator(state) !== false) {
+      archiveDecisionLogOverflowLocked(bullswarmDir, state);
+      saveState(bullswarmDir, state);
+    }
+    tagLiveDecisionLog(state, bullswarmDir);
     return state;
   } finally {
     releaseStateLock(lock);

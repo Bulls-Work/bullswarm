@@ -65,7 +65,7 @@ bullswarm integrate install --yes
 bullswarm integrate status
 ```
 
-`--agents codex,claude,grok` limits the action to a subset; the default is all three. The awareness rule is also what stops an agent Bullswarm launched from re-delegating into a recursive swarm. `bullswarm integrate remove --yes` reverses the install.
+`--agents codex,claude,grok,agy` limits the action to a subset; the default covers `codex`, `claude`, `grok`, plus `agy` when installed. The awareness rule is also what stops an agent Bullswarm launched from re-delegating into a recursive swarm. `bullswarm integrate remove --yes` reverses the install.
 
 ## Your first run
 

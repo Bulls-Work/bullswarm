@@ -13,6 +13,7 @@ import {
   isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel, suggestedReasoningLevel,
 } from './reasoning.js';
 import { attemptWindow } from './spend.js';
+import { resolveDecisionLog } from './state.js';
 import { pacingWindowFor, windowSpent } from '../meters/framework.js';
 // The canonical lane/effort tables. Imported, never restated: see
 // TIER_CONTEXTS below for the tier -> lane derivation they feed.
@@ -20,6 +21,7 @@ import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-valida
 import { formatMoney } from './usage-basis.js';
 import { withPoolEnv } from './worker-argv.js';
 import { lanesOf } from './pool-lanes.js';
+import { POOL_TOGGLE_HISTORY, toggleActor } from './pool-toggle.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -782,7 +784,7 @@ function medianOf(values) {
  * duration still counts as a dispatch but contributes no minutes.
  */
 export function rungRecord(decisionLog, pool, tier) {
-  const rows = (Array.isArray(decisionLog) ? decisionLog : [])
+  const rows = resolveDecisionLog(decisionLog)
     .filter((entry) => decisionPool(entry) === pool && decisionEffort(entry) === tier);
   if (!rows.length) return null;
   // A stall is a transport failure, not a real duration sample. The dispatcher
@@ -1013,35 +1015,7 @@ function normalizedDiscoveredModel(entry) {
   return id ? { ...entry, id } : null;
 }
 
-export async function discoverConnectorModels(connector, {
-  executor = defaultExecutor, provider = null, providerExecutor = null,
-} = {}) {
-  const discovery = connector.modelDiscovery ?? null;
-  let discovered = [];
-  let error = null;
-  let command = discovery?.cmd ?? null;
-  if (typeof provider?.module?.discoverModels === 'function') {
-    try {
-      const result = await provider.module.discoverModels(connector, {
-        ...(provider.ctx ?? {}),
-        ...(providerExecutor ? { executor: providerExecutor } : {}),
-      });
-      discovered = (result?.models ?? []).map(normalizedDiscoveredModel).filter(Boolean);
-      command = result?.command ?? command;
-    } catch (err) {
-      error = err.message;
-    }
-  } else if (discovery?.cmd?.length) {
-    try {
-      const output = await executor(discovery.cmd[0], discovery.cmd.slice(1), {
-        timeoutMs: Number(discovery.timeoutMs ?? 20_000),
-        env: withPoolEnv(process.env, connector),
-      });
-      discovered = parseDiscoveredModels(output, discovery).map((id) => ({ id }));
-    } catch (err) {
-      error = err.message;
-    }
-  }
+function rankDiscoveredModels(connector, discovered, command, error) {
   const configured = configuredModel(connector);
   const fallback = discovered.length ? [] : unique([
     ...(connector.knownModels ?? []), configured,
@@ -1083,6 +1057,189 @@ export async function discoverConnectorModels(connector, {
     error,
     models,
   };
+}
+
+/** Synchronous fallback discovery from a connector's own knownModels + model. */
+export function knownModelsDiscovery(connector) {
+  return rankDiscoveredModels(connector, [], connector?.modelDiscovery?.cmd ?? null, null);
+}
+
+/**
+ * True when `pool` is an enabled non-fixture pool that a home with existing
+ * tier selections (`configuredTiers`) has never seen or configured yet.
+ */
+function isUnseededNewPool(strategy = {}, pool) {
+  const name = typeof pool === 'string' ? pool : pool?.name;
+  if (!name || !(strategy?.configuredTiers ?? []).length) return false;
+  if (typeof pool === 'object' && (pool?.enabled === false || pool?.testFixture === true)) return false;
+  if (Object.keys(normalizeModelTiers(strategy?.modelTiers)[name] ?? {}).length) return false;
+  if ((strategy?.disabledModels?.[name] ?? []).length) return false;
+  if (strategy?.lastReport?.discoveries && Object.prototype.hasOwnProperty.call(strategy.lastReport.discoveries, name)) return false;
+  if (strategy?.rungSeeds?.[name]) return false;
+  return true;
+}
+
+/**
+ * True when `pool` needs first-time seeding OR was synchronously seeded by
+ * `autoSetup` using `connector-fallback` and still awaits its first real CLI
+ * discovery (which supplies per-model `reasoningLevels`).
+ */
+export function needsNewPoolDiscovery(strategy = {}, pool) {
+  const name = typeof pool === 'string' ? pool : pool?.name;
+  if (!name || !(strategy?.configuredTiers ?? []).length) return false;
+  if (typeof pool === 'object' && (pool?.enabled === false || pool?.testFixture === true)) return false;
+  if (isUnseededNewPool(strategy, pool)) return true;
+  const canDiscoverViaCli = typeof pool === 'object'
+    ? Boolean(pool?.hasCliDiscovery ?? pool?.connector?.modelDiscovery?.cmd?.length)
+    : true;
+  if (!canDiscoverViaCli) return false;
+  const prev = strategy?.lastReport?.discoveries?.[name];
+  return Boolean(strategy?.rungSeeds?.[name])
+    && (!prev || (prev.source === 'connector-fallback' && !prev.error));
+}
+
+/** Lightweight pool view for seeding suggestions from a connector. */
+export function seedCandidatePool(name, connector, { enabled = true, hasProviderDiscovery = false } = {}) {
+  return {
+    name,
+    connector,
+    enabled,
+    hasCliDiscovery: Boolean(connector?.modelDiscovery?.cmd?.length || hasProviderDiscovery),
+    testFixture: connector?.flags?.testFixture === true,
+    pace: 0,
+    costRank: connector?.costRank ?? 5,
+    lanes: connector?.lanes ?? [],
+    capabilities: connector?.capabilities ?? [],
+  };
+}
+
+/**
+ * Fill `state.strategy.modelTiers[pool]` from `report.providerSuggestions[pool]`
+ * for pools new to a home that already holds configured tier picks, without
+ * touching any other pool's approved picks, and record who/when/why under
+ * `state.strategy.rungSeeds[pool]`.
+ */
+export function seedNewPoolRungs(state, report, candidatePools, {
+  via, reason = null, now = Date.now(), by = toggleActor(),
+} = {}) {
+  state.strategy ??= {};
+  const configured = STRATEGY_TIERS.filter((tier) => (state.strategy?.configuredTiers ?? []).includes(tier));
+  if (!configured.length) return {};
+  const seeded = {};
+  for (const candidate of candidatePools ?? []) {
+    if (!isUnseededNewPool(state.strategy, candidate)) continue;
+    const pool = typeof candidate === 'string' ? candidate : candidate.name;
+    const suggestions = report?.providerSuggestions?.[pool];
+    if (!suggestions) continue;
+    const discovery = report?.discoveries?.[pool];
+    const rungs = {};
+    const levels = {};
+    for (const tier of configured) {
+      const recommended = suggestions[tier]?.recommended ?? null;
+      const model = recommended?.model ?? null;
+      if (!model) continue;
+      const existing = state.strategy.modelTiers?.[pool]?.[model] ?? [];
+      setModelTierSelection(state.strategy, pool, model, [...existing, tier]);
+      rungs[tier] = model;
+      if (isReasoningLevel(recommended.reasoning) && recommended.reasoning !== 'default') {
+        levels[tier] = { level: recommended.reasoning, model, why: recommended.why ?? null };
+      }
+    }
+    if (!Object.keys(rungs).length) {
+      // Skip only when the pool could not be evaluated (spent window or failed
+      // discovery with no fallback models); a pool that genuinely has no pick on
+      // `configuredTiers` (e.g. agy:claude when only `high` is configured) still
+      // records `rungs: {}` so maybeRefreshStrategy does not re-discover it forever.
+      if ((typeof candidate === 'object' && windowSpent(candidate))
+        || (discovery && discovery.error && !(discovery.models ?? []).length)) {
+        continue;
+      }
+    }
+    if (Object.keys(levels).length && !state.strategy.reasoning?.pools?.[pool]) {
+      const marks = getRecommendedReasoning(state.strategy);
+      for (const [tier, info] of Object.entries(levels)) {
+        setStrategyReasoning(state.strategy, { pool, tier, level: info.level });
+        (marks[pool] ??= {})[tier] = info;
+      }
+      storeRecommendedReasoning(state.strategy, marks);
+    }
+    const record = {
+      rungs,
+      at: new Date(now).toISOString(),
+      by,
+      reason: typeof reason === 'string' && reason.trim() ? reason.trim() : null,
+      via,
+    };
+    state.strategy.rungSeeds ??= {};
+    const previous = state.strategy.rungSeeds[pool];
+    const history = Array.isArray(previous?.history) ? previous.history : [];
+    state.strategy.rungSeeds[pool] = {
+      latest: record,
+      history: [...history, record].slice(-POOL_TOGGLE_HISTORY),
+    };
+    seeded[pool] = record;
+  }
+  return seeded;
+}
+
+/**
+ * Build a scoped strategy report for `pools`, seed any unseeded new pools, and
+ * refresh `lastReport.discoveries` for seeded pools (including upgrading an
+ * earlier `connector-fallback` entry to real CLI discovery).
+ */
+export function applyNewPoolSeeds(state, {
+  connectors, pools, discoveries, via, reason = null, now = Date.now(), by = toggleActor(),
+} = {}) {
+  const report = buildStrategy({ connectors, pools, state, discoveries });
+  const seeded = seedNewPoolRungs(state, report, pools, { via, reason, now, by });
+  const updatedDiscoveries = [];
+  for (const pool of pools ?? []) {
+    const name = typeof pool === 'string' ? pool : pool?.name;
+    if (!name || !discoveries?.[name]) continue;
+    const enabledPool = typeof pool !== 'object' || (pool?.enabled !== false && pool?.testFixture !== true);
+    if (seeded[name] || state.strategy?.rungSeeds?.[name] || enabledPool) {
+      state.strategy ??= {};
+      state.strategy.lastReport ??= {};
+      if (!state.strategy.lastReport.discoveries || typeof state.strategy.lastReport.discoveries !== 'object') {
+        state.strategy.lastReport.discoveries = {};
+      }
+      state.strategy.lastReport.discoveries[name] = discoveries[name];
+      updatedDiscoveries.push(name);
+    }
+  }
+  return { seeded, updatedDiscoveries, report };
+}
+
+export async function discoverConnectorModels(connector, {
+  executor = defaultExecutor, provider = null, providerExecutor = null,
+} = {}) {
+  const discovery = connector.modelDiscovery ?? null;
+  let discovered = [];
+  let error = null;
+  let command = discovery?.cmd ?? null;
+  if (typeof provider?.module?.discoverModels === 'function') {
+    try {
+      const result = await provider.module.discoverModels(connector, {
+        ...(provider.ctx ?? {}),
+        ...(providerExecutor ? { executor: providerExecutor } : {}),
+      });
+      discovered = (result?.models ?? []).map(normalizedDiscoveredModel).filter(Boolean);
+      command = result?.command ?? command;
+    } catch (err) {
+      error = err.message;
+    }
+  } else if (discovery?.cmd?.length) {
+    try {
+      const output = await executor(discovery.cmd[0], discovery.cmd.slice(1), {
+        timeoutMs: Number(discovery.timeoutMs ?? 20_000),
+        env: withPoolEnv(process.env, connector),
+      });
+      discovered = parseDiscoveredModels(output, discovery).map((id) => ({ id }));
+    } catch (err) {
+      error = err.message;
+    }
+  }
+  return rankDiscoveredModels(connector, discovered, command, error);
 }
 
 function subscriptionView(pool, state) {
@@ -1576,12 +1733,26 @@ export async function discoverAllModels(connectors, opts = {}) {
     }
     return outputs.get(key);
   };
+  const providerOutputs = new Map();
+  const memoizedProviderExecutor = (providerName, fn) => {
+    if (typeof fn !== 'function') return undefined;
+    return (request) => {
+      const envEntries = Object.entries(request?.env ?? {})
+        .filter(([, value]) => value != null)
+        .sort(([a], [b]) => a.localeCompare(b));
+      const key = JSON.stringify([providerName, request?.command, request?.args, request?.input ?? null, request?.timeoutMs, envEntries]);
+      if (!providerOutputs.has(key)) {
+        providerOutputs.set(key, (async () => fn(request))());
+      }
+      return providerOutputs.get(key);
+    };
+  };
   const entries = await Promise.all(Object.values(connectors).map(async (connector) => {
     const provider = opts.providers?.find((candidate) => candidate.pools?.includes(connector.name)) ?? null;
     const discovery = await discoverConnectorModels(connector, {
       executor: memoizedExecutor,
       provider,
-      providerExecutor: opts.providerExecutors?.[provider?.name],
+      providerExecutor: memoizedProviderExecutor(provider?.name, opts.providerExecutors?.[provider?.name]),
     });
     return [connector.name, discovery];
   }));

@@ -5,10 +5,10 @@
 // compact trigger policy so CLI documentation cannot drift in three places.
 
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
-  symlinkSync, unlinkSync, writeFileSync,
+  accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
+  readlinkSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { helpText } from './help.js';
 
@@ -29,6 +29,14 @@ const AGENT_LAYOUT = {
   codex: { skill: ['.codex', 'skills', 'bullswarm'], instructions: ['.codex', 'AGENTS.md'] },
   claude: { skill: ['.claude', 'skills', 'bullswarm'], instructions: ['.claude', 'CLAUDE.md'] },
   grok: { skill: ['.grok', 'skills', 'bullswarm'], instructions: ['.grok', 'AGENTS.md'] },
+  // Measured on agy 1.5.10: user-level skills load from ~/.gemini/config/skills/<name>/SKILL.md,
+  // a symlinked skill folder is ignored while a real folder whose top-level entries symlink into
+  // skill/ loads, and global rules load from ~/.gemini/config/AGENTS.md (agy changelog 1.2.15).
+  agy: {
+    skill: ['.gemini', 'config', 'skills', 'bullswarm'],
+    instructions: ['.gemini', 'config', 'AGENTS.md'],
+    skillShape: 'entries',
+  },
 };
 
 export const INTEGRATION_AGENTS = Object.freeze(Object.keys(AGENT_LAYOUT));
@@ -69,11 +77,40 @@ export function awarenessBlockPresent(filePath) {
   return MARKER_RE.test(readOptional(filePath));
 }
 
-export function parseIntegrationAgents(value) {
-  const requested = value == null || value === true
-    ? INTEGRATION_AGENTS
+function binOnPath(bin, pathEnv = process.env.PATH) {
+  if (!bin || typeof pathEnv !== 'string' || !pathEnv) return false;
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, bin);
+    try {
+      if (!lstatSync(candidate).isDirectory()) {
+        accessSync(candidate, constants.X_OK);
+        return true;
+      }
+    } catch { /* keep scanning */ }
+  }
+  return false;
+}
+
+function defaultIntegrationAgents({ homeDir = '', env = process.env } = {}) {
+  const agents = ['codex', 'claude', 'grok'];
+  const agyInstalled = binOnPath('agy', env?.PATH)
+    || (Boolean(homeDir) && (
+      existsSync(join(homeDir, '.gemini', 'antigravity-cli'))
+      || existsSync(join(homeDir, '.gemini', 'config', 'skills', 'bullswarm'))
+      || awarenessBlockPresent(join(homeDir, '.gemini', 'config', 'AGENTS.md'))
+    ));
+  if (agyInstalled) agents.push('agy');
+  return agents;
+}
+
+export function parseIntegrationAgents(value, { defaultAgents = INTEGRATION_AGENTS } = {}) {
+  if (value == null || value === true) return [...defaultAgents];
+  const items = Array.isArray(value)
+    ? value.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
     : String(value).split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
-  const unique = [...new Set(requested)];
+  const expanded = items.flatMap((item) => (item === 'all' ? defaultAgents : [item]));
+  const unique = [...new Set(expanded)];
   const invalid = unique.filter((agent) => !INTEGRATION_AGENTS.includes(agent));
   if (invalid.length) {
     throw new Error(`unknown integration agent(s): ${invalid.join(', ')}; use ${INTEGRATION_AGENTS.join(', ')}`);
@@ -83,16 +120,16 @@ export function parseIntegrationAgents(value) {
 }
 
 export function integrationStatus({
-  homeDir = process.env.HOME ?? '', agents = INTEGRATION_AGENTS, skillSource = SKILL_SOURCE,
-  modSource = MOD_SOURCE,
+  homeDir = process.env.HOME ?? '', agents = null, skillSource = SKILL_SOURCE,
+  modSource = MOD_SOURCE, env = process.env,
 } = {}) {
-  const selected = parseIntegrationAgents(agents);
+  const selected = parseIntegrationAgents(agents, { defaultAgents: defaultIntegrationAgents({ homeDir, env }) });
   const entries = selected.map((agent) => {
     const paths = pathsFor(homeDir, agent);
     const entry = {
       agent,
       skillPath: paths.skillPath,
-      skill: skillLinkStatus(paths.skillPath, skillSource),
+      skill: skillStatusFor(agent, paths.skillPath, skillSource),
       instructionsPath: paths.instructionsPath,
       awareness: awarenessBlockPresent(paths.instructionsPath),
     };
@@ -121,17 +158,17 @@ export function integrationStatus({
 }
 
 export function installIntegration({
-  homeDir = process.env.HOME ?? '', agents = INTEGRATION_AGENTS,
-  skillSource = SKILL_SOURCE, modSource = MOD_SOURCE, approved = false,
+  homeDir = process.env.HOME ?? '', agents = null,
+  skillSource = SKILL_SOURCE, modSource = MOD_SOURCE, approved = false, env = process.env,
 } = {}) {
   if (!approved) throw new Error('integration changes global agent configuration; pass --yes to approve');
-  const selected = parseIntegrationAgents(agents);
+  const selected = parseIntegrationAgents(agents, { defaultAgents: defaultIntegrationAgents({ homeDir, env }) });
   if (!existsSync(join(skillSource, 'SKILL.md'))) {
     throw new Error(`packaged Bullswarm skill is missing: ${join(skillSource, 'SKILL.md')}`);
   }
   for (const agent of selected) {
     const { skillPath } = pathsFor(homeDir, agent);
-    if (skillLinkStatus(skillPath, skillSource).status === 'conflict') {
+    if (skillStatusFor(agent, skillPath, skillSource).status === 'conflict') {
       throw new Error(`refusing to replace non-Bullswarm skill path: ${skillPath}`);
     }
     if (agent === 'claude' && skillLinkStatus(join(homeDir, ...MOD_LINK), modSource).status === 'conflict') {
@@ -141,7 +178,7 @@ export function installIntegration({
   const changes = [];
   for (const agent of selected) {
     const paths = pathsFor(homeDir, agent);
-    const skill = installSkillLink(paths.skillPath, skillSource);
+    const skill = installSkillFor(agent, paths.skillPath, skillSource);
     const awareness = applyAwarenessBlock(paths.instructionsPath, { approved: true });
     const change = { agent, skill, awareness };
     if (agent === 'claude' && existsSync(join(modSource, '.claude-plugin', 'plugin.json'))) {
@@ -150,19 +187,19 @@ export function installIntegration({
     }
     changes.push(change);
   }
-  return { action: 'install', changes, status: integrationStatus({ homeDir, agents: selected, skillSource, modSource }) };
+  return { action: 'install', changes, status: integrationStatus({ homeDir, agents: selected, skillSource, modSource, env }) };
 }
 
 export function removeIntegration({
-  homeDir = process.env.HOME ?? '', agents = INTEGRATION_AGENTS,
-  skillSource = SKILL_SOURCE, modSource = MOD_SOURCE, approved = false,
+  homeDir = process.env.HOME ?? '', agents = null,
+  skillSource = SKILL_SOURCE, modSource = MOD_SOURCE, approved = false, env = process.env,
 } = {}) {
   if (!approved) throw new Error('integration removal changes global agent configuration; pass --yes to approve');
-  const selected = parseIntegrationAgents(agents);
+  const selected = parseIntegrationAgents(agents, { defaultAgents: defaultIntegrationAgents({ homeDir, env }) });
   const changes = [];
   for (const agent of selected) {
     const paths = pathsFor(homeDir, agent);
-    const skill = removeSkillLink(paths.skillPath, skillSource);
+    const skill = removeSkillFor(agent, paths.skillPath, skillSource);
     const awareness = removeAwarenessBlock(paths.instructionsPath, { approved: true });
     const change = { agent, skill, awareness };
     if (agent === 'claude') {
@@ -171,7 +208,7 @@ export function removeIntegration({
     }
     changes.push(change);
   }
-  return { action: 'remove', changes, status: integrationStatus({ homeDir, agents: selected, skillSource, modSource }) };
+  return { action: 'remove', changes, status: integrationStatus({ homeDir, agents: selected, skillSource, modSource, env }) };
 }
 
 export function retireLegacyOffload({ homeDir = process.env.HOME ?? '', approved = false, now = new Date() } = {}) {
@@ -190,24 +227,34 @@ export function integrateUsage() {
   return helpText(['integrate']);
 }
 
-export function cmdIntegrate(opts) {
+export function cmdIntegrate(opts, { ensureHome } = {}) {
   const subcommand = opts.rest[0] ?? 'status';
   if (opts.help || subcommand === 'help') {
     console.log(integrateUsage());
     return 0;
   }
-  let agents;
+  if (!['status', 'install', 'remove', 'retire-legacy'].includes(subcommand)) {
+    console.error(integrateUsage());
+    return 2;
+  }
   try {
-    agents = parseIntegrationAgents(opts.agents);
+    if (opts.agents != null && opts.agents !== true) parseIntegrationAgents(opts.agents);
+    if (subcommand === 'install' && opts.yes !== true) {
+      installIntegration({ approved: false });
+    }
+    if (subcommand === 'remove' && opts.yes !== true) {
+      removeIntegration({ approved: false });
+    }
+    if (subcommand === 'retire-legacy' && opts.yes !== true) {
+      retireLegacyOffload({ approved: false });
+    }
+    ensureHome?.();
+    const agents = opts.agents ?? null;
     let result;
     if (subcommand === 'status') result = { action: 'status', ...integrationStatus({ agents }) };
     else if (subcommand === 'install') result = installIntegration({ agents, approved: opts.yes === true });
     else if (subcommand === 'remove') result = removeIntegration({ agents, approved: opts.yes === true });
-    else if (subcommand === 'retire-legacy') result = retireLegacyOffload({ approved: opts.yes === true });
-    else {
-      console.error(integrateUsage());
-      return 2;
-    }
+    else result = retireLegacyOffload({ approved: opts.yes === true });
     if (opts.json) console.log(JSON.stringify(result, null, 2));
     else printIntegrationResult(result);
     const ok = result.status?.ok ?? result.ok;
@@ -223,6 +270,122 @@ function pathsFor(homeDir, agent) {
   return {
     skillPath: join(homeDir, ...layout.skill),
     instructionsPath: join(homeDir, ...layout.instructions),
+  };
+}
+
+function endsAt(path) {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+function skillStatusFor(agent, skillPath, skillSource) {
+  return AGENT_LAYOUT[agent]?.skillShape === 'entries'
+    ? skillEntriesStatus(skillPath, skillSource)
+    : skillLinkStatus(skillPath, skillSource);
+}
+
+function installSkillFor(agent, skillPath, skillSource) {
+  return AGENT_LAYOUT[agent]?.skillShape === 'entries'
+    ? installSkillEntries(skillPath, skillSource)
+    : installSkillLink(skillPath, skillSource);
+}
+
+function removeSkillFor(agent, skillPath, skillSource) {
+  return AGENT_LAYOUT[agent]?.skillShape === 'entries'
+    ? removeSkillEntries(skillPath, skillSource)
+    : removeSkillLink(skillPath, skillSource);
+}
+
+function skillEntries(skillSource) {
+  try { return readdirSync(skillSource).filter((name) => !name.startsWith('.')).sort(); } catch { return []; }
+}
+
+function isManagedEntryLink(entryPath, expectedTarget) {
+  try {
+    const stat = lstatSync(entryPath);
+    if (!stat.isSymbolicLink()) return false;
+    const target = resolve(dirname(entryPath), readlinkSync(entryPath));
+    return endsAt(target) === endsAt(expectedTarget);
+  } catch {
+    return false;
+  }
+}
+
+function managedEntryNames(skillPath, skillSource) {
+  const sourceRoot = endsAt(skillSource);
+  let names;
+  try { names = readdirSync(skillPath); } catch { return []; }
+  return names.filter((name) => {
+    const entryPath = join(skillPath, name);
+    try {
+      if (!lstatSync(entryPath).isSymbolicLink()) return false;
+      const target = resolve(skillPath, readlinkSync(entryPath));
+      return endsAt(target) === endsAt(join(skillSource, name)) || endsAt(dirname(target)) === sourceRoot;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function skillEntriesStatus(skillPath, skillSource) {
+  let stat;
+  try { stat = lstatSync(skillPath); } catch { return { status: 'missing', path: skillPath, target: null }; }
+  if (!stat.isDirectory()) return { status: 'conflict', path: skillPath, target: null };
+  const expected = skillEntries(skillSource);
+  const managed = managedEntryNames(skillPath, skillSource);
+  if (!managed.length) return { status: 'conflict', path: skillPath, target: null };
+  for (const name of expected) {
+    const entryPath = join(skillPath, name);
+    try {
+      lstatSync(entryPath);
+      if (!isManagedEntryLink(entryPath, join(skillSource, name))) {
+        return { status: 'conflict', path: skillPath, target: null };
+      }
+    } catch { /* missing expected entry is incomplete, not conflict */ }
+  }
+  const complete = expected.length > 0
+    && expected.every((name) => isManagedEntryLink(join(skillPath, name), join(skillSource, name)));
+  return {
+    status: complete ? 'installed' : 'incomplete',
+    path: skillPath,
+    target: skillSource,
+  };
+}
+
+function installSkillEntries(skillPath, skillSource) {
+  const current = skillEntriesStatus(skillPath, skillSource);
+  if (current.status === 'installed') return { changed: false, ...current };
+  if (current.status === 'conflict') {
+    throw new Error(`refusing to replace non-Bullswarm skill path: ${skillPath}`);
+  }
+  mkdirSync(skillPath, { recursive: true });
+  for (const name of skillEntries(skillSource)) {
+    const entryPath = join(skillPath, name);
+    const entryTarget = join(skillSource, name);
+    if (!isManagedEntryLink(entryPath, entryTarget)) {
+      const targetStat = lstatSync(entryTarget);
+      symlinkSync(entryTarget, entryPath, targetStat.isDirectory() ? 'dir' : 'file');
+    }
+  }
+  return { changed: true, status: 'installed', path: skillPath, target: skillSource };
+}
+
+function removeSkillEntries(skillPath, skillSource) {
+  const current = skillEntriesStatus(skillPath, skillSource);
+  if (current.status === 'missing') return { changed: false, ...current };
+  let managed = [];
+  try {
+    if (lstatSync(skillPath).isDirectory()) managed = managedEntryNames(skillPath, skillSource);
+  } catch { managed = []; }
+  if (!managed.length) {
+    return { changed: false, status: 'conflict', path: skillPath, target: null, reason: 'left conflict untouched' };
+  }
+  for (const name of managed) unlinkSync(join(skillPath, name));
+  if (readdirSync(skillPath).length === 0) rmdirSync(skillPath);
+  return {
+    changed: true,
+    status: existsSync(skillPath) ? 'conflict' : 'missing',
+    path: skillPath,
+    target: skillSource,
   };
 }
 
@@ -256,7 +419,6 @@ function skillLinkStatus(skillPath, skillSource) {
   // A link may reach the packaged skill through another link (an `npm link`ed
   // global install, for example). What matters is where the chain ends, so
   // compare real paths; a dangling chain keeps its first hop for the report.
-  const endsAt = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
   return {
     status: endsAt(target) === endsAt(skillSource) ? 'installed' : 'conflict',
     path: skillPath,

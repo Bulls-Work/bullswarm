@@ -193,7 +193,7 @@ function rawToolRows(turn: Raw): ToolRow[] {
     if (paired.has(index)) continue
     const event = events[index]!
     const kind = String(event.kind ?? '').toLowerCase()
-    if (kind === 'response' || kind === 'usage' || kind === 'envelope' || kind === 'agent_result') continue
+    if (kind === 'response' || kind === 'usage' || kind === 'result' || kind === 'envelope' || kind === 'agent_result') continue
     const next = events[index + 1]
     const samePair = next
       && String(next.kind ?? '') === String(event.kind ?? '')
@@ -213,13 +213,17 @@ function rawToolRows(turn: Raw): ToolRow[] {
   return rows
 }
 
-function toolsFor(page: Raw, shownTurn: Raw): readonly ToolRow[] {
-  const projected = list(shownTurn.toolRows).map(record).filter((entry): entry is Raw => entry !== null)
-  if (projected.length) return projected.map(entry => ({
+function projectedToolRow(entry: Raw): ToolRow {
+  return {
     clock: nullable(entry.clock), text: oneLine(entry.text, 'tool'), command: entry.command === true,
     duration: nullable(entry.durationText), error: entry.error === true,
     inFlight: entry.inFlight === true,
-  }))
+  }
+}
+
+function toolsFor(page: Raw, shownTurn: Raw): readonly ToolRow[] {
+  const projected = list(shownTurn.toolRows).map(record).filter((entry): entry is Raw => entry !== null)
+  if (projected.length) return projected.map(projectedToolRow)
   const rawActivity = activityOf(page)
   const rawTurn = list(rawActivity.turns).map(record).find(turn => numberOf(turn?.index) === numberOf(shownTurn.index))
   if (!rawTurn) return []
@@ -259,15 +263,25 @@ function elapsedText(startedAt: unknown, nowMs: unknown): string | null {
 function activityRows(page: Raw, options: StepPaneOptions): StepPaneRow[] {
   const activity = record(presentationOf(page).activity) ?? {}
   const turns = list(activity.turns).map(record).filter((turn): turn is Raw => turn !== null)
+  const prelude = record(activity.prelude)
+  const preludeTools = prelude ? list(prelude.toolRows).map(record).filter((entry): entry is Raw => entry !== null).map(projectedToolRow) : []
   const mode = options.mode ?? 'overview'
   const rows: StepPaneRow[] = []
-  if (!activity.available || !turns.length) return [row('activity-empty', 'text', oneLine(activity.reason, 'event stream unavailable'), 'dim')]
+  if (!activity.available || (!turns.length && !prelude)) return [row('activity-empty', 'text', oneLine(activity.reason, 'event stream unavailable'), 'dim')]
   const visibleCount = (options.width ?? 120) < 100 ? 5 : 10
   const first = mode === 'overview' ? Math.max(0, turns.length - visibleCount) : 0
   const followedTurn = turns.at(-1)
   const selectedIndex = options.expandedTurn ?? numberOf(followedTurn?.index)
   const runningCommand = record(activity.runningCommand)
   const runningElapsed = runningCommand ? elapsedText(runningCommand.startedAt, options.nowMs) : null
+  if (prelude && (mode === 'detail' || (first === 0 && preludeTools.length > 0))) {
+    rows.push(row('prelude', 'summary', `     ${oneLine(prelude.clock, '--:--')}  before the first response · ${oneLine(prelude.countsText, 'no tools')}`, 'dim'))
+    if (mode === 'detail' || !turns.length || selectedIndex === numberOf(turns[0]?.index)) {
+      preludeTools
+        .filter(tool => mode === 'detail' || !tool.inFlight)
+        .forEach((tool, toolIndex) => rows.push(row(`prelude-tool-${toolIndex}`, 'atomic', `${tool.clock ?? '--:--:--'}  ${tool.command ? '$ ' : ''}${tool.text}${tool.duration ? `  ${tool.duration}` : ''}`, tool.error ? 'bad' : 'dim')))
+    }
+  }
   if (mode === 'overview' && first > 0) {
     const hidden = turns.slice(0, first)
     const range = hidden.length === 1 ? 'turn 1' : `turns 1–${hidden.length}`

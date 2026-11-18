@@ -49,7 +49,7 @@ export default defineConfig({
       ],
       '/integrations/': [
         { text: 'Claude Code', link: '/integrations/claude-code' },
-        { text: 'Codex and Grok', link: '/integrations/agent-clis' },
+        { text: 'Codex, Grok, and AGY', link: '/integrations/agent-clis' },
         { text: 'Issue watcher', link: '/integrations/issue-watcher' },
       ],
       '/notes/': [{ text: 'Historical notes', link: '/notes/' }],

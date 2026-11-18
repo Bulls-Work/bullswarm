@@ -102,3 +102,7 @@ failed step.
   calls the run "legacy" and exits, so the runner scored the untouched
   fixture while the run went on. This changes no task or score; it fixes the
   runner's wait. The Bullswarm bug itself has its own fix.
+- 2026-11-18: `scorecard.mjs` reads `decision-log-archive.jsonl` alongside
+  `state.json` (0.39.0 bounds live `state.decisionLog` to 200 rows and appends
+  older rows to that archive; first applies to the next eval after 2026-11-15,
+  and earlier homes without the archive file are unchanged).

@@ -14,7 +14,7 @@ import { previewStepPick } from './pick-preview.js';
 import { poolLabel, withPoolLabels } from '../lib/pool-labels.js';
 import { guessedRefusalWindow } from '../meters/framework.js';
 import { attachForecast } from '../lib/forecast.js';
-import { loadState } from '../lib/state.js';
+import { readDecisionLog } from '../lib/state.js';
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 
 /**
@@ -253,7 +253,7 @@ function attachPacing(pools, bullswarmDir, { nowMs, capturedAt }) {
   try {
     attachForecast(list, bullswarmDir, {
       now: nowMs,
-      decisionLog: loadState(bullswarmDir)?.decisionLog ?? [],
+      decisionLog: readDecisionLog(bullswarmDir),
     });
   } catch {
     // A forecast is an optimization, never a precondition: the pools are
@@ -287,7 +287,7 @@ export async function loadUsage(bullswarmDir, nowMs = Date.now()) {
     pools,
     connectors,
     strategy: state?.strategy ?? {},
-    decisionLog: state?.decisionLog ?? [],
+    decisionLog: readDecisionLog(bullswarmDir, state),
   }).map((row) => ({
     pool: row.pool,
     tier: row.tier,

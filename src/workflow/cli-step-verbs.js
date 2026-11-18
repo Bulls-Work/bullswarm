@@ -227,7 +227,7 @@ export async function rerunV2Step({
       const routing = doc?.config?.workerRouting ?? {};
       const filter = resolveRouteFilter(state, definition, pools ?? []);
       const capable = prepareV2DispatchPools(pools ?? [], definition, definition.effort ?? 'medium', {
-        preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
+        preferredModel: definition?.model ?? routing.model ?? routing.preferredModel ?? null, strictPool: routing.strictPool ?? routing.pool ?? null,
         routeFilter: filter, ignoreBurstGate: true,
       }).filter((pool) => poolPassesRoute(pool, filter));
       if (!capable.length) {
@@ -447,7 +447,7 @@ async function relaunchRun(runId) {
 
 const STEP_VERBS = ['restart', 'rerun', 'accept'];
 
-export async function wfStep(opts) {
+export async function wfStep(opts, { ensureHome } = {}) {
   const verb = opts.rest[0];
   const path = STEP_VERBS.includes(verb) ? ['workflow', 'step', verb] : ['workflow', 'step'];
   if (opts.help) { console.log(helpText(path)); return 0; }
@@ -460,6 +460,7 @@ export async function wfStep(opts) {
   const waitSec = opts.wait == null ? (verb === 'restart' ? 60 : 120) : Number(opts.wait);
   if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
   if (verb === 'rerun') {
+    ensureHome?.();
     const result = await rerunV2Step({
       bullswarmDir: BULLSWARM_DIR(), token, stepId, avoid: listFlag(opts.avoid),
       pools: configuredPools() ?? [], labels: loadPoolLabels(BULLSWARM_DIR()), waitMs: waitSec * 1000, relaunch: relaunchRun,
@@ -469,6 +470,8 @@ export async function wfStep(opts) {
     return result.code;
   }
   if (verb === 'accept') {
+    const reasonText = typeof opts.reason === 'string' ? opts.reason.trim() : '';
+    if (reasonText && reasonText.length <= 500 && !/[\r\n]/.test(reasonText)) ensureHome?.();
     const result = await acceptV2Step({
       bullswarmDir: BULLSWARM_DIR(), token, stepId, reason: opts.reason, requirements: listFlag(opts.requirement),
       waitMs: waitSec * 1000, relaunch: relaunchRun,
@@ -477,6 +480,7 @@ export async function wfStep(opts) {
     else printStepAccept(result, token);
     return result.code;
   }
+  ensureHome?.();
   let poolNames = null;
   let pools = null;
   if (opts.pool) {

@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { expiringSoonView, fiveHourElapsedPct, formatResetsIn } from './lib/route.js';
-import { loadState, assertDepthAllowed } from './lib/state.js';
+import { loadState, readDecisionLog, assertDepthAllowed } from './lib/state.js';
 import { buildPoolsLive, loadConnectors } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { refusalResetKnown } from './meters/framework.js';
@@ -147,13 +147,14 @@ function knownPoolIds(home) {
   ])];
 }
 
-function cmdPoolsLabel(opts) {
+function cmdPoolsLabel(opts, { ensureHome } = {}) {
   const home = getBullswarmDir();
   if (opts.list === true) {
     if (opts.rest.length !== 1) {
       console.error(`usage: ${usageLine(['pools', 'label'])}`);
       return 2;
     }
+    ensureHome?.();
     const entries = poolLabelEntries(home);
     if (opts.json) console.log(JSON.stringify({ labels: entries }, null, 2));
     else if (!entries.length) console.log('no pool labels configured');
@@ -161,11 +162,12 @@ function cmdPoolsLabel(opts) {
     return 0;
   }
   const typed = opts.rest[1];
-  const pool = resolvePoolId(typed, home);
   try {
     let result;
     if (opts.clear === true) {
       if (!typed || opts.rest.length !== 2) throw new Error(`usage: ${usageLine(['pools', 'label'])}`);
+      ensureHome?.();
+      const pool = resolvePoolId(typed, home);
       result = clearPoolLabel(home, pool, knownPoolIds(home));
       if (opts.json) console.log(JSON.stringify(result, null, 2));
       else console.log(result.cleared ? `cleared label for ${pool}` : `${pool} had no label`);
@@ -173,6 +175,8 @@ function cmdPoolsLabel(opts) {
     }
     const label = opts.rest[2];
     if (!typed || !label || opts.rest.length !== 3) throw new Error(`usage: ${usageLine(['pools', 'label'])}`);
+    ensureHome?.();
+    const pool = resolvePoolId(typed, home);
     result = setPoolLabel(home, pool, label, knownPoolIds(home));
     if (opts.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`${result.pool} displays as ${result.poolLabel}`);
@@ -193,7 +197,7 @@ async function livePools(now, { force = false, only = null } = {}) {
   // Current cross-process load, from the shared ledger rather than this
   // process's own memory: work another Bullswarm started still shows here —
   // plus the spend rates that turn that load into a projected utilization.
-  attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
+  attachForecast(pools, getBullswarmDir(), { now, decisionLog: readDecisionLog(getBullswarmDir(), state) });
   return pools;
 }
 
@@ -207,8 +211,8 @@ export async function liveDocForCache(name) {
   throw new Error(`no cache named ${name}`);
 }
 
-async function cmdPools(opts) {
-  if (opts.rest[0] === 'label') return cmdPoolsLabel(opts);
+async function cmdPools(opts, { ensureHome } = {}) {
+  if (opts.rest[0] === 'label') return cmdPoolsLabel(opts, { ensureHome });
   if (opts['max-age'] !== undefined) {
     // bin/bullswarm.js answers the valid form from the cache before the CLI
     // loads; reaching here means the form is not one the cache can answer.
@@ -235,6 +239,7 @@ async function cmdPools(opts) {
       return 2;
     }
   }
+  ensureHome?.();
   const now = Date.now();
   const pools = await livePools(now, { force: opts.force === true, only });
   if (opts.json) {
@@ -310,12 +315,13 @@ function assignmentsJson(now) {
     .map((r) => ({ ...r, poolLabel: poolLabel(r.pool, getBullswarmDir()), ...describeAssignment(r, now) }));
 }
 
-function cmdAssignments(opts) {
+function cmdAssignments(opts, { ensureHome } = {}) {
   if (opts['max-age'] !== undefined) {
     // bin/bullswarm.js answers the valid form from the cache before the CLI loads.
     console.error('✗ --max-age needs whole seconds (1-3600) with --json: it answers from the shared assignments cache');
     return 2;
   }
+  ensureHome?.();
   const now = Date.now();
   if (opts.json) {
     const records = assignmentsJson(now);
@@ -361,6 +367,7 @@ export async function cmdRun(opts, dependencies = {}) {
     console.error(`--add-dir is not an existing directory: ${request.targetDir}`);
     return 2;
   }
+  dependencies.ensureHome?.();
   if (request.noCaller) console.error(NO_CALLER_NOTICE);
   const home = getBullswarmDir();
   // Recursion guard FIRST — core-owned, env handshake.
@@ -410,8 +417,10 @@ function emitRun(verdict, opts) {
 
 function cmdHealth(opts) {
   // An observation command: it reads state.json and never writes it.
-  const state = loadState(getBullswarmDir());
-  const runsDir = join(getBullswarmDir(), 'runs');
+  const home = getBullswarmDir();
+  const state = loadState(home);
+  const decisionLog = readDecisionLog(home, state);
+  const runsDir = join(home, 'runs');
   const findings = [];
 
   // Correlate each logged decision with its saved output: the doctrine
@@ -420,7 +429,7 @@ function cmdHealth(opts) {
   // pass are exactly the planted case; verdict-OK files are expected passes.
   if (existsSync(runsDir)) {
     const byOut = new Map(
-      (state.decisionLog ?? [])
+      decisionLog
         .filter((d) => d.outFile)
         .map((d) => [d.outFile, d]),
     );
@@ -448,7 +457,7 @@ function cmdHealth(opts) {
     // is reported (below) but never counted against health.
     healthy: findings.every((f) => !f.gateAteWork),
     gateFailures: findings.filter((f) => f.gateAteWork),
-    decisionLogSize: state.decisionLog?.length ?? 0,
+    decisionLogSize: decisionLog.length,
   };
   if (opts.json) {
     console.log(JSON.stringify(report, null, 2));
@@ -691,23 +700,47 @@ export async function main(argv) {
   const flagExit = unknownFlagExit(opts._flags, topLevelHelpPath(verb, opts));
   if (flagExit !== null) return flagExit;
 
+  if (verb === 'version' || verb === '--version') {
+    console.log(getVersion());
+    return 0;
+  }
+  if (verb === 'update') {
+    // Registry, npm and git are the sources of truth; the exit code says
+    // whether the package is at the latest published version afterwards.
+    return runUpdate({
+      check: opts.check === true, json: opts.json === true, currentVersion: getVersion(),
+    });
+  }
+  if (verb === 'home') {
+    const { cmdHome } = await import('./home-cli.js');
+    return cmdHome(tail, { bullswarmDir: getBullswarmDir() });
+  }
+  const KNOWN_VERBS = new Set([
+    undefined, 'setup', 'run', 'health', 'pools', 'assignments',
+    'doctor', 'workflow', 'runs', 'strategy', 'integrate', 'provider',
+  ]);
+  if (!KNOWN_VERBS.has(verb)) {
+    console.error(`unknown verb "${verb}". Run "bullswarm --help" for the list of commands.`);
+    return 2;
+  }
+
   const { ensureSetup, isConfigured } = await import('./setup.js');
-
-  // Read BEFORE ensureSetup() below: that call self-initializes a fresh home,
-  // and a home that only exists because of this very invocation has not been
-  // configured by anyone yet — that difference is exactly what decides between
-  // setup and the dashboard for a bare `bullswarm`.
-  const wasConfigured = isConfigured(getBullswarmDir());
-
-  // Agent-friendly guarantee: EVERY verb works on a fresh machine. If config
-  // is missing, self-initialize with discovered defaults (never prompts).
-  // Home snapshots are explicitly read-only against their source home. Do
-  // not run the normal first-use metadata migration before the snapshot
-  // command gets a chance to read it.
-  if (verb !== 'home') ensureSetup(getBullswarmDir());
+  let homeEnsured = false;
+  const ensureHome = () => {
+    if (!homeEnsured) {
+      homeEnsured = true;
+      ensureSetup(getBullswarmDir());
+    }
+  };
 
   switch (verb) {
     case undefined: {
+      // Read BEFORE ensureHome() below: that call self-initializes a fresh home,
+      // and a home that only exists because of this very invocation has not been
+      // configured by anyone yet — that difference is exactly what decides between
+      // setup and the dashboard for a bare `bullswarm`.
+      const wasConfigured = isConfigured(getBullswarmDir());
+      ensureHome();
       // Bare bullswarm: the dashboard on a configured terminal, the setup
       // control center when nothing is configured, and the historical
       // auto-setup for --yes or any non-TTY caller (agents, scripts).
@@ -727,43 +760,32 @@ export async function main(argv) {
       return cmdSetup(opts);
     }
     case 'setup':
+      ensureHome();
       return cmdSetup(opts);
     case 'run':
-      return cmdRun(opts);
+      return cmdRun(opts, { ensureHome });
     case 'health':
+      ensureHome();
       return cmdHealth(opts);
     case 'pools':
-      return cmdPools(opts);
+      return cmdPools(opts, { ensureHome });
     case 'assignments':
-      return cmdAssignments(opts);
+      return cmdAssignments(opts, { ensureHome });
     case 'doctor':
+      ensureHome();
       return cmdDoctor(opts);
     case 'workflow':
-      return cmdWorkflow(tail);
+      return cmdWorkflow(tail, { ensureHome });
     case 'runs':
-      return cmdWorkflow(['runs', ...tail], { runsAlias: ['runs'] });
+      return cmdWorkflow(['runs', ...tail], { runsAlias: ['runs'], ensureHome });
     case 'strategy':
       return cmdStrategy(bareStrategyDashboard ? ['tui'] : tail, {
-        bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
+        bullswarmDir: getBullswarmDir(), ensureHome, input: process.stdin, output: process.stdout,
       });
     case 'integrate':
-      return cmdIntegrate(opts);
+      return cmdIntegrate(opts, { ensureHome });
     case 'provider':
-      return cmdProvider(tail, { bullswarmDir: getBullswarmDir() });
-    case 'home': {
-      const { cmdHome } = await import('./home-cli.js');
-      return cmdHome(tail, { bullswarmDir: getBullswarmDir() });
-    }
-    case 'version':
-    case '--version':
-      console.log(getVersion());
-      return 0;
-    case 'update':
-      // Registry, npm and git are the sources of truth; the exit code says
-      // whether the package is at the latest published version afterwards.
-      return runUpdate({
-        check: opts.check === true, json: opts.json === true, currentVersion: getVersion(),
-      });
+      return cmdProvider(tail, { bullswarmDir: getBullswarmDir(), ensureHome });
     default:
       console.error(`unknown verb "${verb}". Run "bullswarm --help" for the list of commands.`);
       return 2;

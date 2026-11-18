@@ -15,7 +15,7 @@ A provider is a directory holding a `connector.json`, a `provider.mjs`, or both.
 
 | Tier | Directory | Loaded when | Members |
 |---|---|---|---|
-| first-class | `src/providers/<name>/` | always | `claude-code`, `codex`, `grok`, `echo` |
+| first-class | `src/providers/<name>/` | always | `agy`, `claude-code`, `codex`, `grok`, `echo` |
 | contrib | `providers/contrib/<name>/` | listed in `~/.bullswarm/providers.json` | `command-code`, `opencode` |
 | local | `~/.bullswarm/providers/<name>/` | always | your own, never in the repository |
 
@@ -49,7 +49,7 @@ Skipped pools and errors are shown by `bullswarm setup` and `bullswarm provider 
 
 Until 0.29.0, `bullswarm setup` copied every packaged connector into `<home>/connectors/<name>.json`. The loader read only those copies, and `setup` overwrote each copy that differed from the package. Since 0.29.0 nothing makes copies, but older homes still hold them, and every verb still fills newly shipped fields into them. Which file is read:
 
-- **The package wins for its own pools.** A copy named after a pool that a loaded packaged provider defines (`claude-code.json`, `codex.json`, `grok.json`, `echo.json`, or a contrib connector you enabled) is skipped as a duplicate. Its prices and rows are never used. A `claude-code.json` from 0.28.8 still holds the old Opus 5 catch-all row, but `claude-opus-5-5` is priced from the packaged $4/$20 row.
+- **The package wins for its own pools.** A copy named after a pool that a loaded packaged provider defines (`agy.json`, `claude-code.json`, `codex.json`, `grok.json`, `echo.json`, or a contrib connector you enabled) is skipped as a duplicate. Its prices and rows are never used. A `claude-code.json` from 0.28.8 still holds the old Opus 5 catch-all row, but `claude-opus-5-5` is priced from the packaged $4/$20 row.
 - **Otherwise the copy is the pool.** A copy is read when no loaded provider defines its pool, for example `command-code.json` while the contrib `command-code` provider is not enabled. It then serves routing with whatever fields it had.
 
 Each verb first sorts the copies that have a packaged counterpart (a copy with none is your own local provider and is never touched):
@@ -170,7 +170,9 @@ These are all the pool fields a provider may set, and the part of the core that 
 - Claude Code is started in print/stream-JSON mode with `--safe-mode` and `--no-session-persistence`. Bullswarm sends only the `initialize` control request and reads `control_response.response.models`. Safe mode disables user/project customizations, installed plugins, and hooks while retaining account auth. Claude currently returns aliases for some rows. Literal `claude-*` IDs are kept. Alias rows are converted from the family/version the CLI names in the row's display name (current CLIs: `opus` shows as `Opus 5.5`) or, failing that, its description (for example, `Opus 5.5` becomes `claude-opus-5-5`), and carry `idSource: display-name-inferred` or `description-inferred`; an explicit `[1m]` selector is preserved. If a future description cannot be parsed, Bullswarm does not invent an ID.
 - Codex is started as `codex app-server --stdio`. Bullswarm sends JSON-RPC `initialize`, the `initialized` notification, then pages through `model/list` until `nextCursor` is empty. Hidden rows are excluded. The visible rows retain `isDefault` and `supportedReasoningEfforts`; the latter refines reasoning clamping for that model. Levels outside Bullswarm's common scale, such as `ultra`, remain recorded but are not passed as a Bullswarm reasoning level.
 
-Both protocols have a 15-second bound and Bullswarm terminates the child after an answer, error, or timeout. A successful handshake is reported as `source: cli`. Bad JSON, an old CLI without the method, process failure, or timeout produces `source: connector-fallback`, includes the error text, and uses the connector's small compatibility list.
+- AGY is asked with `agy models`, which prints one `<id>\t<label>` line per model and sends no prompt. AGY puts the effort level in the id (`gemini-4-carbon-high`), so Bullswarm folds those rows into one base id with `reasoningLevels` (`gemini-4-carbon`: low, medium, high), and the reasoning clamp uses them. `agy models` also lists `gemini-4-hydrogen-xhigh`, but AGY's server refuses xhigh (`THINKING_LEVEL_XHIGH` unsupported, 2026-11-18), so the connector leaves xhigh out of its levels and a request for it runs at `high`. Each pool keeps its own quota group's models: `agy` the Gemini models, `agy:claude` the Claude and GPT-OSS ones, whose ids are kept as listed. The orchestrator ids are AGY's own multi-agent mode and are left out of both. This call has a 20-second bound.
+
+The Claude and Codex protocols have a 15-second bound and Bullswarm terminates the child after an answer, error, or timeout. A successful handshake is reported as `source: cli`. Bad JSON, an old CLI without the method, process failure, or timeout produces `source: connector-fallback`, includes the error text, and uses the connector's small compatibility list.
 
 ## Model families, versions, and `unranked`
 
@@ -194,8 +196,11 @@ The built-in families:
 | `codex` | `*-astra`: high, 7 · `*-sol`: high, 6 · bare `gpt-N.M`: high, 5 · `*-terra`: medium, 4 · `*-luna`: low, 3 · `mini`: low, 2 (`gpt-5.3-codex` keeps its own row) |
 | `claude-code` | `fable`: high, 6, never auto-recommended · `opus`: high, 5 · `sonnet`: medium, 4 · `haiku`: low, 3 |
 | `grok` | plain `grok-N.M` (no suffix): high, 5 · `grok-N.M-build-fast`: high, 5, never auto-recommended |
+| `agy` | `gemini-N-hydrogen`: high, 7 (and medium and low through `generationFallback`) · `gemini-N-carbon`: high, 6, never auto-recommended · `gemini-N-argon`: high, 5, never auto-recommended · `gemini-N-flash`: high, 3, never auto-recommended · on `agy:claude`, `claude-opus-*`: medium, 5 · `claude-sonnet-*`: low, 4 · `gpt-oss-*`: low, 2, never auto-recommended |
 
 Grok has one model line, so one family covers every plain version and the newest wins: `grok-4.7` today, and a `grok-4.8` the day `grok models` lists it. Medium and low run it too, each at its own tier's reasoning (see [below](#newest-generation-fallback-generationfallback)). `grok-4.7-build-fast` is Grok Build's id for Grok 4.7 Fast, which [xAI describes](https://docs.x.ai/developers/grok-4-7) as "the same model served on faster infrastructure, billed at twice the standard token rates". It keeps its base model's rank, is never suggested, and stays selectable with `strategy set-rung`. It has no price row: xAI's [Pricing page](https://docs.x.ai/developers/pricing#grok-47-fast-pricing-cursor-and-grok-build-only) lists its long-context rates as $6.00 / $1.50 / $18.00 per 1M tokens (checked 2026-09-23), which is not twice grok-4.7's $4.00 / $1.00 / $12.00. The contrib providers keep their own rows.
+
+AGY's Gemini line is the owner's choice for the `agy` pool (18 Nov 2026, after the eval-suite benchmark in which all four Gemini models scored 265/265 and Gemini 4 Hydrogen was fastest with no interventions): Gemini 4 Hydrogen serves every tier, high and medium at `high` effort and low at `medium`. The connector ranks Hydrogen's family on `high` and opts `medium` and `low` into `generationFallback` (the pattern grok uses for one model line on every tier), with each tier's reasoning level. Gemini 4 Carbon, Argon and 3.8 Flash are `autoRecommend: false`: never suggested, still run when pinned. Artificial Analysis rates Hydrogen 51 at high and 41 at medium, and Carbon 60 at high (read 2026-11-18); Carbon is stronger on paper but about 2.7 times slower (62 against 169 output tokens per second), and in our runs it was 3 to 6 times slower. The `agy:claude` pool runs the Claude and GPT-OSS models AGY serves, with no `high` pick (high work goes to other pools after the 2026-11-18 benchmark, where Opus 4.6 missed full marks on task 3 and spent 100% of the group's 5-hour window and 50% of its week): medium runs Claude Opus 4.6, low runs Claude Sonnet 4.6, and GPT-OSS 120B stays selectable with `strategy set-rung` (`autoRecommend: false`, unbenchmarked through AGY). None of these models takes `--effort`, so that pool declares no reasoning.
 
 ### How a tier's candidates are ordered
 
@@ -329,6 +334,7 @@ captures, not a promise that every event from a provider has every field:
 | --- | --- | --- |
 | `codex` (`codex.jsonl`) | `eventId`, `toolCallId`, `toolName`, `arguments`, and `result` on command events; `usage` on `turn.completed` with `input`, `cacheRead`, `cacheWrite`, `output`, and `reasoning` | `turnId`, `providerAt`, `durationMs`, `costUsd`, `parentId`, and `subagentId` |
 | `claude-code` (`claude-code.jsonl`) | `eventId`, `toolCallId`, `toolName`, `arguments`, `result`, and `providerAt`; `durationMs` on the result; event `usage` with input/cache/output/reasoning fields and `costUsd` on the result | No `turnId` or `subagentId`; the mapped `parentId` is null in this capture; no provider timestamp is present on the result event |
+| `agy` (`agy.jsonl`) | `toolCallId`, `toolName`, `arguments`, and `result` on tool steps (the ACTIVE and DONE step share its `step_index`); event `usage` with input/cacheRead/output/reasoning on each finished `agent_response` step and on the `result` line | No `eventId`, `turnId`, `providerAt`, `durationMs` (agy reports seconds), `costUsd`, `parentId`, or `subagentId` |
 | `grok` (`grok.jsonl`) | `toolCallId`, `toolName`, `arguments`, and `result` on tool events; `eventId` on the end event; event `usage` with input/cache/output/reasoning fields and `costUsd` on the end event | No `turnId`, `providerAt`, `durationMs`, `parentId`, or `subagentId`; the tool events have no `eventId` in this capture |
 
 For example, a Codex command can be paired because its `item.started` and
@@ -435,6 +441,44 @@ flushed `.tail` sibling is left as an orphan that nothing folds back in, and
 the still-unflushed events are lost.
 
 `meter.readerCmd` and the `{outFile}` placeholder appeared in the old schema but nothing ever read them. They are gone.
+
+## One login, several quota pools
+
+Some CLIs give one login several quotas that run out on their own. AGY is the
+first: one `agy` sign-in has a Gemini quota group and a Claude and GPT quota
+group, each with its own 5-hour and weekly limit. Bullswarm models each quota
+as an ordinary standalone pool, so routing paces and drains each one with no
+pin and no user action. The pattern, for any future provider like it:
+
+- **One pool per quota.** `connectors(ctx)` returns one pool per quota group
+  from the same template (`agy` and `agy:claude`). Each pool keeps only the
+  models that quota pays for (`knownModels`, `modelDiscovery.includePattern`)
+  and pins its own default model, so a model pin finds the pool that serves it
+  (`--use-provider agy --model claude-opus-4-6-thinking` runs on `agy:claude`,
+  `--model gemini-4-carbon` on `agy`) and a model is never sent to the other
+  pool. `--use-provider agy` alone keeps both, since both are provider `agy`.
+- **One meter call, read per pool.** `readUsage(pool)` reads the pool's own
+  group. When one call reports every group (agy's `/usage`), share its answer
+  between the pools for a short time (agy: 30 s, keyed by the login) so a
+  refresh of both spawns the CLI once. Honour `ctx.maxAgeMs`: the registry
+  passes 0 for a read that must be taken now, such as the read after a quota
+  refusal.
+- **Quota is per pool, sign-in is per login.** A quota refusal
+  (`RESOURCE_EXHAUSTED` on agy) marks only the pool that was refused: the
+  refusal marker lives in that pool's meter cache, so the sibling pool keeps
+  its own reading and stays pickable. A sign-in failure is about the login,
+  so the pools share a `credentialGroup` (`agy`): the dispatch-time sign-in
+  hold, and the same dispatch's next pick, keep every pool of the group out.
+- **Turned on together.** `bullswarm setup` and automatic setup switch every
+  pool a provider contributes when they find its CLI, and switch them all off
+  when they do not, so no sibling pool is left routing to a CLI that is not
+  there.
+- **Their own tiers.** Each pool's strategy rungs come from its own models and model families (the provider gives each pool only the family rules that match its own models, so one pool's families never block the other's `generationFallback`):
+  `agy` runs Gemini 4 Hydrogen on every tier, `agy:claude`
+  the other group (no high pick — high work goes to other pools; medium Opus
+  4.6, low Sonnet 4.6; GPT-OSS 120B selectable by hand).
+  `bullswarm pools` and `strategy` list the two pools as separate rows, each
+  with its own meter.
 
 ## Two rules
 

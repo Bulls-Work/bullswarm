@@ -75,6 +75,8 @@ test('first-class provider validation reports usage and cache-write warnings wit
       grok: { usageWarning: false, pricingWarning: true },
       'claude-code': { usageWarning: false, pricingWarning: false },
       echo: { usageWarning: false, pricingWarning: true },
+      // Google's rate card lists cached input but no cache-write price for these models.
+      agy: { usageWarning: false, pricingWarning: true },
     };
     for (const [name, want] of Object.entries(expected)) {
       const report = validateProvider(home, join(FIRST_CLASS, name), isolatedLoader(home));

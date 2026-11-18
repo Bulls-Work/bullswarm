@@ -844,7 +844,7 @@ function renderProbe(r) {
  * it at fixture directories); `log`/`error` default to the console.
  */
 export async function cmdProvider(args, {
-  bullswarmDir, loaderOpts = {}, log = console.log, error = console.error,
+  bullswarmDir, ensureHome, loaderOpts = {}, log = console.log, error = console.error,
 } = {}) {
   const [head, ...tail] = args;
   const sub = head === undefined || flagName(head) ? 'list' : head;
@@ -908,6 +908,7 @@ export async function cmdProvider(args, {
       timeoutSec = Number(opts.timeout);
       if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) throw usage(sub, '--timeout must be a positive number of seconds');
     }
+    ensureHome?.();
     const pool = resolvePoolId(operand, bullswarmDir);
     const result = await probePool(bullswarmDir, pool, { loaderOpts, timeoutSec });
     log(opts.json ? JSON.stringify(result, null, 2) : withPoolLabels(renderProbe(result), bullswarmDir));

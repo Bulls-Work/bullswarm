@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
 import { recordMaintenanceResult } from '../lib/retention.js';
-import { updateState } from '../lib/state.js';
+import { decisionLogArchivePath, readArchivedDecisionLog, updateState, writeArchivedDecisionLog } from '../lib/state.js';
 import { overlapsIndex } from '../lib/transcripts/indexing.js';
 import {
   buildTranscriptIndexes,
@@ -664,15 +664,22 @@ export function reconcilePricing({
       items.push(...runItems);
     }
 
-    // Single tasks live in the home's decision log.
+    // Single tasks live in the home's decision log (archive + live).
     const homeStatePath = join(bullswarmDir, 'state.json');
-    const homeFingerprint = fileFingerprint(homeStatePath);
+    const archivePath = decisionLogArchivePath(bullswarmDir);
+    const stateFp = fileFingerprint(homeStatePath);
+    const archiveFp = fileFingerprint(archivePath);
+    const homeFingerprint = archiveFp ? `${stateFp ?? 'absent'}|${archiveFp}` : stateFp;
     const taskItems = [];
     const taskCursor = ledger.cursor.tasks;
     const tasksUnchanged = taskCursor?.fingerprint === homeFingerprint && !taskCursor.open && !reopenedRuns.has('task');
     if (homeFingerprint && !tasksUnchanged) {
-      const homeState = readState(homeStatePath);
-      for (const entry of taskEntries(homeState ?? {})) {
+      const homeState = stateFp ? readState(homeStatePath) : null;
+      const combined = [
+        ...readArchivedDecisionLog(bullswarmDir),
+        ...(Array.isArray(homeState?.decisionLog) ? homeState.decisionLog : []),
+      ];
+      for (const entry of taskEntries(combined)) {
         const rateCard = measuredAttempt(entry.attempt);
         if (!rateCard && !priceableAttempt(entry.attempt)) continue;
         taskItems.push({
@@ -740,20 +747,31 @@ export function reconcilePricing({
     if (pricedTasks.length) {
       try {
         updateState(bullswarmDir, (state) => {
+          const archived = readArchivedDecisionLog(bullswarmDir);
           const log = Array.isArray(state.decisionLog) ? state.decisionLog : [];
-          let wrote = 0;
+          let wroteLive = 0;
+          let wroteArchive = 0;
+          const matchRow = (list, item) => list.find((entry) => entry && (
+            (item.task.id != null && entry.id === item.task.id)
+            || (item.task.id == null && entry.outFile === item.task.outFile && entry.ts === item.task.ts)
+          ));
           for (const item of pricedTasks) {
-            const live = log.find((entry) => entry && (
-              (item.task.id != null && entry.id === item.task.id)
-              || (item.task.id == null && entry.outFile === item.task.outFile && entry.ts === item.task.ts)
-            ));
-            if (!live) continue;
-            if (item.rateCard ? !measuredAttempt(live) : !PRICEABLE_SOURCES.has(sourceOf(live.usage))) continue;
-            applyToAttempt(live, item);
-            wrote += 1;
+            const live = matchRow(log, item);
+            if (live) {
+              if (item.rateCard ? !measuredAttempt(live) : !PRICEABLE_SOURCES.has(sourceOf(live.usage))) continue;
+              applyToAttempt(live, item);
+              wroteLive += 1;
+              continue;
+            }
+            const old = matchRow(archived, item);
+            if (!old) continue;
+            if (item.rateCard ? !measuredAttempt(old) : !PRICEABLE_SOURCES.has(sourceOf(old.usage))) continue;
+            applyToAttempt(old, item);
+            wroteArchive += 1;
           }
-          stats.changedTasks += wrote;
-          return wrote > 0;
+          if (wroteArchive > 0) writeArchivedDecisionLog(bullswarmDir, archived);
+          stats.changedTasks += wroteLive + wroteArchive;
+          return wroteLive > 0;
         });
       } catch (error) {
         stats.failures.push({ key: 'state.json', error: error.message });
@@ -761,7 +779,12 @@ export function reconcilePricing({
       }
     }
     if (homeFingerprint && !tasksUnchanged) {
-      ledger.cursor.tasks = { fingerprint: fileFingerprint(homeStatePath), open: openItems(taskItems, ledger) };
+      const nextStateFp = fileFingerprint(homeStatePath);
+      const nextArchiveFp = fileFingerprint(archivePath);
+      ledger.cursor.tasks = {
+        fingerprint: nextArchiveFp ? `${nextStateFp ?? 'absent'}|${nextArchiveFp}` : nextStateFp,
+        open: openItems(taskItems, ledger),
+      };
     }
     const pass = finishPass(bullswarmDir, ledger, { stats, beganAt, trigger, scope: 'history' });
     return { status: 'complete', ...pass };

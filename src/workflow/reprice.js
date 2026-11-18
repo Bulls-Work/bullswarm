@@ -17,6 +17,7 @@ import { attachTranscriptUsage, estimateInvocationUsage, modelProfile, needsPerR
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { readArchivedDecisionLog, resolveDecisionLog, updateState, writeArchivedDecisionLog } from '../lib/state.js';
 import { aggregateAttemptUsage, readRollup, rollupRecord, writeRunRollup } from './rollup.js';
 import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
@@ -197,8 +198,9 @@ function taskTimes(entry) {
   return { startedAt, endedAt };
 }
 
-export function taskEntries(state) {
-  return (Array.isArray(state?.decisionLog) ? state.decisionLog : [])
+export function taskEntries(state, { bullswarmDir = null } = {}) {
+  const list = Array.isArray(state) ? state : resolveDecisionLog(state?.decisionLog, bullswarmDir);
+  return list
     .map((entry, index) => ({
       task: entry,
       index,
@@ -771,10 +773,15 @@ export function repriceRuns({
 
   const taskStatePath = join(bullswarmDir, 'state.json');
   const taskState = readJsonSafe(taskStatePath, null);
+  const archivedLog = readArchivedDecisionLog(bullswarmDir);
+  const combinedTasks = [
+    ...archivedLog.map((entry) => ({ entry, archived: true })),
+    ...((Array.isArray(taskState?.decisionLog) ? taskState.decisionLog : []).map((entry) => ({ entry, archived: false }))),
+  ];
   const taskRows = [];
-  if (taskState && typeof taskState === 'object') {
-    const original = JSON.stringify(taskState);
-    for (const entry of taskEntries(taskState)) {
+  if (combinedTasks.length) {
+    const entries = taskEntries(combinedTasks.map((item) => item.entry));
+    for (const entry of entries) {
       if (!eligible(entry, { sinceMs, pool })) continue;
       report.scannedTasks += 1;
       const oldUsage = entry.attempt.usage && typeof entry.attempt.usage === 'object'
@@ -818,18 +825,36 @@ export function repriceRuns({
       onRow?.(row);
     }
     if (apply && taskRows.length) {
-      for (const { entry, candidate, usage } of taskRows) {
-        entry.task.usage = clone(usage);
-        if (candidate.cwd && !entry.task.cwd) entry.task.cwd = candidate.cwd;
-        if (candidate.projectChanged) entry.task.project = candidate.project;
-      }
-      if (JSON.stringify(taskState) !== original) {
-        try {
-          writeJsonAtomic(taskStatePath, taskState);
-          report.changedTasks += 1;
-        } catch (error) {
-          report.failures.push({ runId: 'state.json', error: error.message });
-        }
+      let wroteArchive = false;
+      let wroteLive = false;
+      try {
+        updateState(bullswarmDir, (fresh) => {
+          const freshArchived = readArchivedDecisionLog(bullswarmDir);
+          const beforeArchive = JSON.stringify(freshArchived);
+          const log = Array.isArray(fresh.decisionLog) ? fresh.decisionLog : [];
+          const beforeLive = JSON.stringify(log);
+          const matchRow = (list, task) => list.find((item) => item && (
+            (task.id != null && item.id === task.id)
+            || (task.id == null && item.outFile === task.outFile && item.ts === task.ts)
+          ));
+          for (const { entry, candidate, usage } of taskRows) {
+            const target = matchRow(log, entry.task) ?? matchRow(freshArchived, entry.task);
+            if (!target) continue;
+            target.usage = clone(usage);
+            if (candidate.cwd && !target.cwd) target.cwd = candidate.cwd;
+            if (candidate.projectChanged) target.project = candidate.project;
+          }
+          if (JSON.stringify(freshArchived) !== beforeArchive) {
+            writeArchivedDecisionLog(bullswarmDir, freshArchived);
+            wroteArchive = true;
+          }
+          if (JSON.stringify(log) === beforeLive) return false;
+          wroteLive = true;
+          return true;
+        });
+        if (wroteArchive || wroteLive) report.changedTasks += 1;
+      } catch (error) {
+        report.failures.push({ runId: 'state.json', error: error.message });
       }
     }
   }

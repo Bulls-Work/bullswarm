@@ -85,7 +85,7 @@ function showStarting(resolved, facts, opts, { result = false } = {}) {
 
 // `alias` is the help root the caller actually typed: the top-level `runs`
 // shorthand renders its own synopsis rather than the canonical one.
-export function cmdRuns(args, { alias = ['workflow', 'runs'] } = {}) {
+export function cmdRuns(args, { alias = ['workflow', 'runs'], ensureHome } = {}) {
   const opts = parseRunsFlags(args);
   const [sub, idToken, ...rest] = opts._positional;
   const SUBS = ['list', 'show', 'result', 'delete'];
@@ -100,10 +100,10 @@ export function cmdRuns(args, { alias = ['workflow', 'runs'] } = {}) {
   if (flagExit !== null) return flagExit;
   const typedExit = typedFlagErrors(opts, path);
   if (typedExit !== null) return typedExit;
-  if (!sub || sub === 'list') return runsList(opts);
-  if (sub === 'show') return runsShow(idToken, opts);
-  if (sub === 'result') return runsResult(idToken, opts);
-  return runsDelete(idToken, opts, rest);
+  if (!sub || sub === 'list') return runsList(opts, { ensureHome });
+  if (sub === 'show') return runsShow(idToken, opts, { ensureHome });
+  if (sub === 'result') return runsResult(idToken, opts, { ensureHome });
+  return runsDelete(idToken, opts, rest, { ensureHome });
 }
 
 // Typed inputs are validated at the boundary, before any run directory is
@@ -205,7 +205,7 @@ function runsDoc(filtered, opts, initiatedRange) {
   };
 }
 
-function runsList(opts) {
+function runsList(opts, { ensureHome } = {}) {
   if (opts.maxAge !== undefined) {
     // bin/bullswarm.js answers `workflow runs --json --max-age <s>` from the
     // shared cache before the CLI loads; anything else with it is refused.
@@ -217,6 +217,7 @@ function runsList(opts) {
   } catch (error) {
     return err(error.message, 2);
   }
+  ensureHome?.();
   const all = listRuns(BULLSWARM_DIR());
   let filtered = all;
   if (opts.name) filtered = filtered.filter((r) => (r.legacy ? legacyRunName(r) : r.state?.intent?.goal) === opts.name);
@@ -331,8 +332,9 @@ function printV2Advisories(state) {
   }
 }
 
-function runsShow(idToken, opts) {
+function runsShow(idToken, opts, { ensureHome } = {}) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2);
+  ensureHome?.();
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -417,8 +419,9 @@ function attemptBytesText(bytes) {
   return `  in ${formatBytes(bytes.taskFile)}/${formatBytes(bytes.dependencyInputs)} out ${formatBytes(bytes.output)}`;
 }
 
-function runsResult(idToken, opts) {
+function runsResult(idToken, opts, { ensureHome } = {}) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2);
+  ensureHome?.();
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -502,9 +505,10 @@ function runsResult(idToken, opts) {
   return stable.status === 'completed' ? 0 : 1;
 }
 
-function runsDelete(idToken, opts, rest) {
+function runsDelete(idToken, opts, rest, { ensureHome } = {}) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2);
   if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`, 2);
+  ensureHome?.();
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -546,7 +550,7 @@ function runsDelete(idToken, opts, rest) {
 // minutes. History is a timeline of every workflow, so all of them join the
 // index. A legacy directory nothing can be read from still records nothing and
 // raises nothing.
-export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent = false } = {}) {
+export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent = false, ensureHome } = {}) {
   const opts = { json: false, force: false };
   for (const arg of args) {
     if (arg === '--json') opts.json = true;
@@ -556,6 +560,7 @@ export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent =
       return 2;
     }
   }
+  ensureHome?.();
   const counts = { scanned: 0, written: 0, skipped: 0, legacy: 0, unfinished: 0, present: 0, failed: 0 };
   const failures = [];
   // One git resolution per working directory, not per run: 293 run

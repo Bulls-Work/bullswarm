@@ -173,7 +173,14 @@ export function readerFor(pool, readerOpts = {}) {
   const subscription = readerOpts.subscription !== undefined
     ? readerOpts.subscription
     : declaredSubscription(readerOpts.subscriptions, pool);
-  return () => readUsage(pool, { ...owner.ctx, subscription });
+  // `maxAgeMs`: the oldest answer a provider may share between its pools
+  // (agy reads both quota groups with one call); 0 means read now.
+  return (read = {}) => readUsage(pool, {
+    ...owner.ctx,
+    subscription,
+    ...(Number.isFinite(read?.maxAgeMs) ? { maxAgeMs: read.maxAgeMs } : {}),
+    ...(Number.isFinite(read?.nowMs) && !owner.ctx?.now ? { now: () => read.nowMs, nowMs: read.nowMs } : {}),
+  });
 }
 
 /** A compact, safe-to-display reason for a failed meter read. */
@@ -425,7 +432,9 @@ export async function getMeterReading(pool, opts = {}) {
     try {
       let rawSnapshot;
       try {
-        rawSnapshot = await reader();
+        // The same freshness this read promises its caller: a forced read
+        // shares nothing older than shareMs (0 after a quota refusal).
+        rawSnapshot = await reader({ maxAgeMs: force ? (opts.shareMs ?? FORCED_SHARE_MS) : FRESH_MS, nowMs });
         logMeterRead(cache.dir, pool, { force, ok: true });
       } catch (readErr) {
         logMeterRead(cache.dir, pool, { force, ok: false, error: meterErrorText(readErr) });

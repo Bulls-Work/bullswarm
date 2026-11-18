@@ -116,7 +116,7 @@ test('Claude result usage is decoded once with provider cost and session id', ()
 });
 
 test('event stream CLI flags are connector-owned and appended to direct argv', () => {
-  for (const name of ['codex', 'claude-code', 'grok', 'command-code', 'opencode']) {
+  for (const name of ['codex', 'claude-code', 'grok', 'agy', 'command-code', 'opencode']) {
     const definition = connector(name);
     const argv = argvWithModel(definition, { taskFile: '/tmp/task.md', cwd: '/tmp' });
     for (const arg of definition.eventStream.args) assert.ok(argv.includes(arg), `${name}: ${arg}`);

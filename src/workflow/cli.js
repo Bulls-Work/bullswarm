@@ -31,7 +31,7 @@ function isHomeSnapshot(dir) {
 }
 
 export async function cmdWorkflow(args, {
-  bullswarmDir = BULLSWARM_DIR(), input = process.stdin, output = process.stdout,
+  bullswarmDir = BULLSWARM_DIR(), ensureHome, input = process.stdin, output = process.stdout,
   runsAlias = null,
 } = {}) {
   // A leading flag means no subcommand was given: `workflow --bogus` is a
@@ -47,6 +47,7 @@ export async function cmdWorkflow(args, {
   }
 
   if (!sub && input.isTTY && output.isTTY) {
+    ensureHome?.();
     try { return await runDashboard(bullswarmDir, { input, output }); }
     catch (err) { console.error(`✗ ${err.message}`); return 1; }
   }
@@ -67,25 +68,33 @@ export async function cmdWorkflow(args, {
 
   switch (sub) {
     case 'goal':
-      return wfGoal(opts);
+      return wfGoal(opts, { ensureHome });
     case 'plan':
-      return wfPlan(tail);
+      return wfPlan(tail, { ensureHome });
     case 'cancel':
-      return wfCancel(opts);
+      return wfCancel(opts, { ensureHome });
     case 'pause':
-      return wfPause(opts);
+      return wfPause(opts, { ensureHome });
     case 'resume':
-      return wfResume(opts);
+      return wfResume(opts, { ensureHome });
     case 'runs':
-      return cmdRuns(tail, runsAlias ? { alias: runsAlias } : {});
+      return cmdRuns(tail, runsAlias ? { alias: runsAlias, ensureHome } : { ensureHome });
     case 'reindex':
-      return cmdReindex(tail);
+      return cmdReindex(tail, { bullswarmDir, ensureHome });
     case 'reprice':
-      return cmdReprice(tail, { bullswarmDir });
+      return cmdReprice(tail, { bullswarmDir, ensureHome });
     case 'capabilities':
-      return wfCapabilities(opts);
+      return wfCapabilities(opts, { ensureHome });
     case 'tui':
       try {
+        if (opts.help) { console.log(helpText(['workflow', 'tui'])); return 0; }
+        const flagExit = flagErrors(opts, ['workflow', 'tui']);
+        if (flagExit !== null) return flagExit;
+        if (opts.overview && !(opts.rest[0] ?? opts.show)) {
+          console.error(`usage: ${usageLine(['workflow', 'tui'])}\n--overview needs a run: pass <runId> or --show <runId>`);
+          return 2;
+        }
+        ensureHome?.();
         {
           // A legacy run shows its summary; cancelling one is refused.
           const token = opts.rest[0] ?? opts.show;
@@ -136,26 +145,26 @@ export async function cmdWorkflow(args, {
       }
       catch (err) { console.error(`✗ ${err.message}`); return 1; }
     case 'events':
-      return wfEvents(opts);
+      return wfEvents(opts, { ensureHome });
     case 'watch':
-      return wfWatch(opts);
+      return wfWatch(opts, { ensureHome });
     case 'steer':
-      return wfSteer(opts);
+      return wfSteer(opts, { ensureHome });
     case 'action':
-      return wfAction(opts);
+      return wfAction(opts, { ensureHome });
     case 'task':
-      return wfTask(opts, bullswarmDir);
+      return wfTask(opts, bullswarmDir, { ensureHome });
     case 'step':
-      return wfStep(opts);
+      return wfStep(opts, { ensureHome });
     case 'continue':
-      return wfContinue(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume });
+      return wfContinue(opts, { bullswarmDir, ensureHome, helpText, flagErrors, launchDetachedResume });
     case 'add':
-      return wfAdd(opts, { bullswarmDir, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => [
+      return wfAdd(opts, { bullswarmDir, ensureHome, helpText, flagErrors, launchDetachedResume, routeIssues: (actions, doc, state) => [
         ...(programRoutes(actions) ? routePoolIssues(actions, configuredPools(), doc, undefined, state, { recordedWork: true }) : []),
         ...(programNamesModel(actions) ? modelPoolIssues(actions, configuredPools(), doc) : []),
       ] });
     case 'wait':
-      return wfWait(opts, { bullswarmDir, helpText, flagErrors });
+      return wfWait(opts, { bullswarmDir, ensureHome, helpText, flagErrors });
     default: {
       // Smart error: if the user typed a `runs` subcommand directly
       // under `workflow` (e.g. `workflow show jd3uki`), point them at

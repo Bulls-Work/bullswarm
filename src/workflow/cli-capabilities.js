@@ -13,8 +13,14 @@ import { loadState } from '../lib/state.js';
 import { BULLSWARM_DIR } from './cli-run-lookup.js';
 import { livePoolNames } from './cli-pool-checks.js';
 import { lanesOf } from '../lib/pool-lanes.js';
+import { helpText } from '../help.js';
+import { flagErrors } from './workflow-flags.js';
 
-export async function wfCapabilities(opts) {
+export async function wfCapabilities(opts, { ensureHome } = {}) {
+  if (opts?.help) { console.log(helpText(['workflow', 'capabilities'])); return 0; }
+  const flagExit = opts ? flagErrors(opts, ['workflow', 'capabilities']) : null;
+  if (flagExit !== null) return flagExit;
+  ensureHome?.();
   const { pools } = await livePoolNames();
   const coreState = loadState(BULLSWARM_DIR());
   const result = {

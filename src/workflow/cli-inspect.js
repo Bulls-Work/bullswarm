@@ -8,36 +8,49 @@ import { resolveRunId } from './short-id.js';
 import { readEvents } from './events.js';
 import { routeSummary } from './step-route.js';
 import { runWorkflowWatch } from './watch-cli.js';
-import { usageLine } from '../help.js';
+import { helpText, usageLine } from '../help.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepInput, taskStepModel } from './task-step.js';
 import { stepJsonModel } from './step-json.js';
 import { listAssignments } from '../lib/assignments.js';
+import { readJsonSafe } from '../lib/fsjson.js';
+import { readDecisionLog } from '../lib/state.js';
 import { flagErrors } from './workflow-flags.js';
 import { BULLSWARM_DIR, legacyRunRefusal } from './cli-run-lookup.js';
 
-export function wfEvents(opts) {
+export function wfEvents(opts, { ensureHome } = {}) {
+  if (opts.help) {
+    console.log(helpText(['workflow', 'events']));
+    return 0;
+  }
+  const flagExit = flagErrors(opts, ['workflow', 'events']);
+  if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   if (!token) {
     console.error(`usage: ${usageLine(['workflow', 'events'])}`);
     return 2;
-  }
-  const resolved = resolveRunId(BULLSWARM_DIR(), token);
-  if (!resolved) {
-    console.error(`✗ no run found for "${token}"`);
-    return 1;
   }
   const after = Number(opts.after ?? 0);
   if (!Number.isInteger(after) || after < 0) {
     console.error('✗ --after must be a non-negative integer');
     return 2;
   }
+  ensureHome?.();
+  const resolved = resolveRunId(BULLSWARM_DIR(), token);
+  if (!resolved) {
+    console.error(`✗ no run found for "${token}"`);
+    return 1;
+  }
   const events = readEvents(resolved.runDir, { after });
   console.log(JSON.stringify({ action: 'events', runId: resolved.runId, shortId: resolved.shortId, after, count: events.length, events }, null, 2));
   return 0;
 }
 
-export async function wfWatch(opts) {
+export async function wfWatch(opts, { ensureHome } = {}) {
+  if (opts.help) {
+    console.log(helpText(['workflow', 'watch']));
+    return 0;
+  }
   // A value flag with no value (--heartbeat, --interval, --stall-after,
   // --after, --since) is a usage error, not a silent fall back to the default.
   const flagError = flagErrors(opts, ['workflow', 'watch']);
@@ -114,6 +127,7 @@ export async function wfWatch(opts) {
       return 2;
     }
   }
+  ensureHome?.();
   try {
     return await runWorkflowWatch(BULLSWARM_DIR(), token, {
       intervalMs: intervalSec * 1000,
@@ -186,12 +200,17 @@ function v2ActionJson(resolved, state, actionId) {
   };
 }
 
-export function wfAction(opts) {
+export function wfAction(opts, { ensureHome } = {}) {
   const [sub, token, actionId] = opts.rest;
+  const path = sub === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
+  if (opts.help) { console.log(helpText(path)); return 0; }
+  const flagExit = flagErrors(opts, path);
+  if (flagExit !== null) return flagExit;
   if (sub !== 'show' || !token || !actionId) {
     console.error(`usage: ${usageLine(['workflow', 'action', 'show'])}`);
     return 2;
   }
+  ensureHome?.();
   // The refusal is the same single line every other verb prints; --json asks
   // for the machine form instead.
   const legacy = legacyRunRefusal(token, opts);
@@ -212,8 +231,9 @@ function taskRecordFor(home, token) {
   const live = listAssignments(home, { prune: false }).filter((entry) => entry?.source === 'run');
   let finished = [];
   try {
-    const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
-    finished = (state?.decisionLog ?? []).filter((entry) => entry?.kind === 'run' || entry?.source === 'run');
+    const state = readJsonSafe(join(home, 'state.json'), null);
+    finished = readDecisionLog(home, state ?? { decisionLog: [] })
+      .filter((entry) => entry?.kind === 'run' || entry?.source === 'run');
   } catch { /* a home with only a live ledger is still inspectable */ }
   const records = [...live, ...finished];
   const exact = records.find((entry) => entry?.id === token);
@@ -224,12 +244,17 @@ function taskRecordFor(home, token) {
 }
 
 /** Read one standalone task through the dashboard's shared Step projection. */
-export function wfTask(opts, home) {
+export function wfTask(opts, home, { ensureHome } = {}) {
   const [sub, token] = opts.rest;
+  const path = sub === 'show' ? ['workflow', 'task', 'show'] : ['workflow', 'task'];
+  if (opts.help) { console.log(helpText(path)); return 0; }
+  const flagExit = flagErrors(opts, path);
+  if (flagExit !== null) return flagExit;
   if (sub !== 'show' || !token) {
     console.error(`usage: ${usageLine(['workflow', 'task', 'show'])}`);
     return 2;
   }
+  ensureHome?.();
   try {
     const taskRecord = taskRecordFor(home, token);
     if (!taskRecord) throw new Error(`no task found for "${token}"`);

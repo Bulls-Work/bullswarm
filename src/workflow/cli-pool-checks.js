@@ -16,7 +16,8 @@ import { holdPins, operatorLimit, poolIsPinned } from '../lib/pool-limits.js';
 // A pinned pool with no model on a step's tier fails that step within a second
 // as "no eligible pool". Say so before anything launches. A spent meter window
 // is not counted here: it resets, and the pick at dispatch reads it live.
-export function pinnedPoolIssues(doc, program, pools) {
+// `now` is the clock a hold is judged against (tests pass a fixed one).
+export function pinnedPoolIssues(doc, program, pools, { now = Date.now() } = {}) {
   const routing = doc.config?.workerRouting ?? {};
   const strictPool = routing.strictPool ?? routing.pool ?? null;
   if (!strictPool || !Array.isArray(pools) || !pools.length) return [];
@@ -31,14 +32,14 @@ export function pinnedPoolIssues(doc, program, pools) {
       return;
     }
     const capable = prepareV2DispatchPools(pools, action, effort, {
-      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool,
+      preferredModel: action?.model ?? routing.model ?? routing.preferredModel ?? null, strictPool,
     });
     if (!capable.length) {
       issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
     }
   });
   const pinnedPool = pools.find((pool) => pool?.name === strictPool);
-  const held = pinnedPool ? blockingHold(pinnedPool, holdPins({ strictPool })) : null;
+  const held = pinnedPool ? blockingHold(pinnedPool, holdPins({ strictPool }), now) : null;
   if (held) issues.push(`the pinned pool ${heldText(strictPool, held)}`);
   return issues;
 }
@@ -59,7 +60,7 @@ function heldText(name, hold) {
 // every capable pool so named is under a plain hold: it could not start.
 // An allow-pinned hold lets the route through; an avoid-only route is not a
 // pin and is left to routing.
-function heldRouteIssues(actions, pools, preparePools) {
+function heldRouteIssues(actions, pools, preparePools, now = Date.now()) {
   const issues = [];
   for (const action of actions ?? []) {
     const route = action?.route;
@@ -69,7 +70,7 @@ function heldRouteIssues(actions, pools, preparePools) {
       .filter((pool) => (pool.lanes ?? [action.lane]).includes(action.lane ?? 'chore'));
     if (!capable.length) continue;
     const pins = holdPins({ routeFilter });
-    const held = capable.map((pool) => [pool.name, blockingHold(pool, pins)]);
+    const held = capable.map((pool) => [pool.name, blockingHold(pool, pins, now)]);
     if (held.every(([, hold]) => hold)) {
       issues.push(`step ${action.id}: every pool its route names is held: ${held.map(([name, hold]) => heldText(name, hold)).join('; ')}`);
     }
@@ -112,12 +113,15 @@ export function programRoutes(actions) {
 
 // `state` (a running run) lets the pin check see which steps already did work;
 // `recordedWork` (workflow add) lets every independentOf check see it.
-export function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR()), state = null, { recordedWork = false } = {}) {
+export function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BULLSWARM_DIR()), state = null, { recordedWork = false, now = Date.now() } = {}) {
   if (!programRoutes(actions) || !Array.isArray(pools)) return [];
   const routing = doc?.config?.workerRouting ?? {};
-  const preferredModel = routing.model ?? routing.preferredModel ?? null;
+  const runModel = routing.model ?? routing.preferredModel ?? null;
   // Only pools that serve the step's lane can run it (strategy set-lanes or the connector).
-  const preparePools = (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', { preferredModel, ...options })
+  const preparePools = (list, action, effort, options) => prepareV2DispatchPools(list, action, effort ?? 'medium', {
+    preferredModel: action?.model ?? runModel,
+    ...options,
+  })
     .filter((pool) => !action?.lane || servesLane(pool, action.lane));
   const issues = routeIssuesForPools({ actions }, pools, {
     runPin: routing.strictPool ?? routing.pool ?? null,
@@ -126,7 +130,7 @@ export function routePoolIssues(actions, pools, doc, labels = loadPoolLabels(BUL
     state,
     recordedWork,
   });
-  return issues.length ? issues : heldRouteIssues(actions, pools, preparePools);
+  return issues.length ? issues : heldRouteIssues(actions, pools, preparePools, now);
 }
 
 // The configured pools without a live meter refresh: enough for the route

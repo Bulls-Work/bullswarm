@@ -51,7 +51,7 @@ features:
     link: /guide/cost
     linkText: Understand usage and cost
   - title: Packaged skill
-    details: Install Bullswarm's guidance into Claude Code, Codex, or Grok so your main agent can choose a bounded run or author a workflow for you.
+    details: Install Bullswarm's guidance into Claude Code, Codex, Grok, or AGY so your main agent can choose a bounded run or author a workflow for you.
     link: /integrations/agent-clis
     linkText: Connect an agent CLI
   - title: Claude Code Mod

@@ -19,13 +19,16 @@ import {
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { stdin as input } from 'node:process';
-import { loadState, updateState } from './lib/state.js';
+import {
+  DECISION_LOG_LIVE_LIMIT, compactDecisionLog, loadState, readDecisionLog,
+  readHomeMigrations, recordHomeMigrations, updateState,
+} from './lib/state.js';
 import { setPoolEnabled } from './lib/pool-toggle.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
-  getRecommendedReasoning,
+  getRecommendedReasoning, knownModelsDiscovery, needsNewPoolDiscovery, seedCandidatePool, applyNewPoolSeeds,
 } from './lib/strategy.js';
-import { buildPools, loadPoolProviders } from './lib/config.js';
+import { buildPools, loadConnectors, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
 import { installIntegration, retireLegacyOffload } from './integrate.js';
 import { packagedConnectorSources, syncConnectorCopies } from './lib/connector-copies.js';
@@ -372,9 +375,13 @@ export function upgradeConnectorMetadata(bullswarmDir, {
 // (audit finding D1, 2026-09-09). The `testFixturesMigrated` flag is set
 // either way, so the migration still runs exactly once.
 export function migrateTestFixturePools(bullswarmDir) {
+  if (readHomeMigrations(bullswarmDir).testFixturesMigrated === true) return [];
   // Cheap unlocked pre-check: this runs on the first-use path of every verb,
   // and once the flag is set there is nothing to write and no lock to take.
-  if (loadState(bullswarmDir).config?.testFixturesMigrated === true) return [];
+  if (loadState(bullswarmDir).config?.testFixturesMigrated === true) {
+    recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
+    return [];
+  }
 
   const connectorsDir = join(bullswarmDir, 'connectors');
   let disabled = [];
@@ -401,6 +408,7 @@ export function migrateTestFixturePools(bullswarmDir) {
     state.config.testFixturesMigrated = true;
     return true;
   });
+  recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
   return disabled;
 }
 
@@ -415,17 +423,34 @@ const AUTO_SETUP_SOURCES = {
   flag: 'setup --yes', 'non-tty': 'setup without a terminal', doctor: 'doctor', 'first-use': 'first use', auto: 'automatic setup',
 };
 
-export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
-  const discovered = discoverConnectors(bullswarmDir);
+/**
+ * Every pool a discovered provider contributes, so setup switches them
+ * together: AGY's one login gives two pools (`agy`, `agy:claude`), and a
+ * Claude Code login with profiles gives one per profile. A provider that
+ * lists no pool stands for the one named after it.
+ */
+export function providerPoolNames(entry) {
+  const pools = Array.isArray(entry?.pools) ? entry.pools.filter((name) => typeof name === 'string' && name) : [];
+  return pools.length ? [...new Set(pools)] : [entry?.name].filter(Boolean);
+}
+
+// `discover` stands in for discoverConnectors (tests: no PATH or home scan).
+export function autoSetup(bullswarmDir, { reason = 'auto', discover = discoverConnectors, loaderOpts = { packaged: true } } = {}) {
+  const discovered = discover(bullswarmDir);
   const repaired = repairConnectors(bullswarmDir);
 
   const usable = discovered.filter((d) => !d.broken && d.discovered && !d.testFixture);
-  const enabled = new Set(usable.map((d) => d.name));
+  const found = new Set(usable.map((d) => d.name));
+  const enabled = new Set(usable.flatMap((d) => providerPoolNames(d)));
 
-  const chosen = discovered.filter((d) => enabled.has(d.name));
+  const chosen = discovered.filter((d) => found.has(d.name));
   const table = suggestRoutingTable(chosen);
 
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
+  let preloadedConnectors = null;
+  if ((loadState(bullswarmDir).strategy?.configuredTiers ?? []).length) {
+    try { preloadedConnectors = loadConnectors(bullswarmDir, loaderOpts); } catch { preloadedConnectors = null; }
+  }
   // Under the lock (S5). This is NOT first-use only: `bullswarm setup --yes`
   // and any non-TTY `bullswarm setup` re-run it over an existing state.json,
   // where a concurrent run's decision-log append is exactly what a stale copy
@@ -435,25 +460,47 @@ export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
     state.pools ??= {};
     state.config ??= {};
     state.config.testFixturesMigrated = true;
+    const source = AUTO_SETUP_SOURCES[reason] ?? reason;
     // A pool this run turns on or off is recorded (pool-toggle.js), with
     // why: a re-run that no longer finds a CLI disables its pool here.
+    // Every pool of a provider follows it: a sibling pool (agy:claude) is
+    // never left on for a CLI that is not there, nor off for one that is.
     for (const d of discovered.filter((x) => !x.broken && !x.shadowed)) {
-      const on = enabled.has(d.name);
+      const on = found.has(d.name);
       let why = 'not detected on this machine';
       if (on) why = 'detected on this machine';
       else if (d.testFixture && d.discovered) why = 'a test fixture, never turned on by automatic setup';
-      setPoolEnabled(state, d.name, on, {
-        via: 'auto-setup',
-        reason: `${AUTO_SETUP_SOURCES[reason] ?? reason}: ${why}`,
-        onlyIfChanged: true,
-        defaultEnabled: d.testFixture !== true,
-      });
+      for (const pool of providerPoolNames(d)) {
+        setPoolEnabled(state, pool, on, {
+          via: 'auto-setup',
+          reason: `${source}: ${why}`,
+          onlyIfChanged: true,
+          defaultEnabled: d.testFixture !== true,
+        });
+      }
+    }
+    if (preloadedConnectors && (state.strategy?.configuredTiers ?? []).length) {
+      const candidates = [...enabled]
+        .filter((name) => preloadedConnectors[name] && needsNewPoolDiscovery(state.strategy, seedCandidatePool(name, preloadedConnectors[name])));
+      if (candidates.length) {
+        const onlyConnectors = Object.fromEntries(candidates.map((name) => [name, preloadedConnectors[name]]));
+        const discoveries = Object.fromEntries(candidates.map((name) => [name, knownModelsDiscovery(preloadedConnectors[name])]));
+        const poolList = candidates.map((name) => seedCandidatePool(name, preloadedConnectors[name]));
+        applyNewPoolSeeds(state, {
+          connectors: onlyConnectors,
+          pools: poolList,
+          discoveries,
+          via: 'auto-setup',
+          reason: `${source}: new pool seeded with provider suggestions`,
+        });
+      }
     }
   });
   writeFileSync(
     join(bullswarmDir, 'routing.json'),
     `${JSON.stringify(table, null, 2)}\n`,
   );
+  recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
 
   return {
     initialized: true,
@@ -482,6 +529,14 @@ export function ensureSetup(bullswarmDir) {
     try { syncConnectorCopies(bullswarmDir); } catch { /* never blocks a verb */ }
     upgradeConnectorMetadata(bullswarmDir);
     migrateTestFixturePools(bullswarmDir);
+    if (readHomeMigrations(bullswarmDir).decisionLogCompacted !== true) {
+      try {
+        if ((loadState(bullswarmDir).decisionLog ?? []).length > DECISION_LOG_LIVE_LIMIT) {
+          compactDecisionLog(bullswarmDir);
+        }
+        recordHomeMigrations(bullswarmDir, { decisionLogCompacted: true });
+      } catch { /* never blocks a verb */ }
+    }
     return null;
   }
   return autoSetup(bullswarmDir, { reason: 'first-use' });
@@ -536,7 +591,7 @@ export async function configureTierRungs(bullswarmDir, prompter, {
     pools,
     connectors,
     strategy: state.strategy ?? {},
-    decisionLog: state.decisionLog ?? [],
+    decisionLog: readDecisionLog(bullswarmDir, state),
     evidence: evidence === undefined ? await rungEvidenceSource(bullswarmDir) : evidence,
   });
   // A pool with no eligible model on a tier has no rung to suggest; the full
@@ -701,15 +756,18 @@ export async function runWizard(bullswarmDir, opts = {}) {
     fresh.config ??= {};
     fresh.config.testFixturesMigrated = true;
     for (const d of discovered.filter((x) => !x.broken && !x.shadowed)) {
-      setPoolEnabled(fresh, d.name, enabled.includes(d.name), {
-        via: 'setup', onlyIfChanged: true, defaultEnabled: d.testFixture !== true,
-      });
+      for (const pool of providerPoolNames(d)) {
+        setPoolEnabled(fresh, pool, enabled.includes(d.name), {
+          via: 'setup', onlyIfChanged: true, defaultEnabled: d.testFixture !== true,
+        });
+      }
     }
   });
   writeFileSync(
     join(bullswarmDir, 'routing.json'),
     `${JSON.stringify(table, null, 2)}\n`,
   );
+  recordHomeMigrations(bullswarmDir, { testFixturesMigrated: true });
   console.log(`\nWrote ${bullswarmDir}/state.json and routing.json`);
   if (repaired.length) console.log(`Retired older connector copies (the packaged connectors load instead): ${repaired.join(', ')}`);
 
@@ -746,7 +804,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
   // 6. Cross-agent integration — one canonical skill plus concise global
   // awareness rules. Nothing is written without this explicit answer.
   const integrateAnswer = (
-    await rl.question('install Bullswarm skill for Codex, Claude, and Grok? [y/N] ')
+    await rl.question('install Bullswarm skill for Codex, Claude, Grok, and AGY? [y/N] ')
   ).trim().toLowerCase();
   if (integrateAnswer === 'y' || integrateAnswer === 'yes') {
     const integrated = installIntegration({ approved: true });

@@ -16,6 +16,7 @@ import { basename, join } from 'node:path';
 import { readJsonSafe } from './fsjson.js';
 import { listAssignments } from './assignments.js';
 import { projectName } from './project.js';
+import { readDecisionLog } from './state.js';
 
 const TASK_KIND = 'run';
 
@@ -202,7 +203,7 @@ export function listTasks({ home, since = null, now = Date.now() } = {}) {
     .sort((a, b) => (timeMs(b.startedAt) ?? -Infinity) - (timeMs(a.startedAt) ?? -Infinity));
 
   const state = readJsonSafe(join(home, 'state.json'), null);
-  const entries = Array.isArray(state?.decisionLog) ? state.decisionLog : [];
+  const entries = readDecisionLog(home, state ?? { decisionLog: [] });
   const finished = entries
     .filter((entry) => isRunEntry(entry) && sinceAllows(entry, sinceMs))
     .map((entry) => finishedRow(entry, home))

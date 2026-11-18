@@ -74,7 +74,7 @@ function refuseDuplicateGoal(goal, opts, run, cwd) {
   return 2;
 }
 
-export async function wfGoal(opts) {
+export async function wfGoal(opts, { ensureHome } = {}) {
   if (opts.help) {
     console.log(goalUsage());
     return 0;
@@ -89,7 +89,6 @@ export async function wfGoal(opts) {
   }
   // --planner was removed in 0.27.0: the caller writes the program.
   if (opts.planner !== undefined) { console.error('✗ --planner was removed: pass --program <file.json>; you write the program'); return 2; }
-  const { names, pools } = await livePoolNames();
   let doc;
   let resumeRunId = null;
   let initialPlannerResponse = null;
@@ -172,6 +171,8 @@ export async function wfGoal(opts) {
 
   try { validateV2GoalDocument(doc); }
   catch (err) { console.error(`✗ autonomous V2 goal invalid (nothing ran): ${err.message}`); return 1; }
+  ensureHome?.();
+  const { names, pools } = await livePoolNames();
   const workerPool = doc.config.workerRouting?.pool ?? doc.config.workerRouting?.preferredPool ?? doc.config.workerRouting?.strictPool;
   if (workerPool && !names.includes(workerPool)) { console.error(`✗ requested worker pool "${workerPool}" is not available`); return 1; }
   let launchAdvisories = null;

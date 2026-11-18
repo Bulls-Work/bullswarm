@@ -23,6 +23,7 @@ import { readMeterHistory } from '../meters/registry.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
+import { resolveDecisionLog } from './state.js';
 
 /**
  * Floor on any expected duration. Under-estimating an assignment's length
@@ -210,7 +211,7 @@ export function remainingMinutesOf(record, nowMs = Date.now()) {
 export function expectedMinutesFor(assignment = {}, opts = {}) {
   const lane = assignment.lane ?? null;
   const effort = assignment.effort ?? assignment.effortTier ?? null;
-  const log = Array.isArray(opts.decisionLog) ? opts.decisionLog : [];
+  const log = resolveDecisionLog(opts.decisionLog, opts.bullswarmDir);
 
   const minutes = [];
   for (const entry of log) {
@@ -253,10 +254,11 @@ export function workerMinutesForPool(pool, fromMs, toMs, opts = {}) {
   const from = num(fromMs);
   const to = num(toMs);
   if (name == null || from == null || to == null || to <= from) return 0;
-  const { decisionLog = [], inflight = null, nowMs = Date.now() } = opts;
+  const { inflight = null, nowMs = Date.now() } = opts;
+  const decisionLog = resolveDecisionLog(opts.decisionLog, opts.bullswarmDir);
 
   let minutes = 0;
-  for (const entry of Array.isArray(decisionLog) ? decisionLog : []) {
+  for (const entry of decisionLog) {
     if (poolOf(entry) !== name) continue;
     const window = attemptWindow(entry);
     if (!window) continue;
@@ -450,7 +452,8 @@ function currentUsedPct(pool, key, rate) {
  */
 export function attachSpend(pools, opts = {}) {
   const list = Array.isArray(pools) ? pools : [];
-  const { decisionLog = [], inflight = null, nowMs = Date.now() } = opts;
+  const { inflight = null, nowMs = Date.now() } = opts;
+  const decisionLog = resolveDecisionLog(opts.decisionLog, opts.bullswarmDir);
   const historyOf = historyResolver(opts);
 
   for (const pool of list) {

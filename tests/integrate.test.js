@@ -1,15 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync,
   rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { helpText } from '../src/help.js';
 import {
-  awarenessBlockPresent, installIntegration, integrationStatus,
-  removeIntegration, retireLegacyOffload,
+  INTEGRATION_AGENTS, awarenessBlockPresent, installIntegration, integrationStatus,
+  parseIntegrationAgents, removeIntegration, retireLegacyOffload,
 } from '../src/integrate.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -190,5 +191,164 @@ test('a settings.json that is not a JSON object is left alone and reported', () 
     assert.match(result.changes[0].hooksFlag.reason, /not a JSON object/);
     assert.equal(readFileSync(settingsPath, 'utf8'), '{ not json');
     assert.equal(result.status.ok, false);
+  } finally { cleanup(); }
+});
+
+test('AGY integration creates a real skill directory with entry symlinks, manages ~/.gemini/config/AGENTS.md, and honours installed-by-default rules', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    assert.ok(INTEGRATION_AGENTS.includes('agy'));
+    assert.deepEqual(parseIntegrationAgents('agy'), ['agy']);
+
+    // Without agy on PATH or ~/.gemini/antigravity-cli in home, default "all" omits agy.
+    const withoutAgy = integrationStatus({ homeDir: home, env: { PATH: '' }, skillSource: SKILL_SOURCE });
+    assert.deepEqual(withoutAgy.agents.map((a) => a.agent), ['codex', 'claude', 'grok']);
+
+    // With agy on PATH (fake executable in temp dir, never spawned), default "all" includes agy.
+    const fakeBin = join(home, 'bin');
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(join(fakeBin, 'agy'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(fakeBin, 'agy'), 0o755);
+
+    const installed = installIntegration({
+      homeDir: home, env: { PATH: fakeBin }, skillSource: SKILL_SOURCE, approved: true,
+    });
+    assert.equal(installed.status.ok, true);
+    assert.deepEqual(installed.status.agents.map((a) => a.agent), ['codex', 'claude', 'grok', 'agy']);
+
+    const agy = installed.status.agents.find((a) => a.agent === 'agy');
+    assert.equal(agy.skillPath, join(home, '.gemini', 'config', 'skills', 'bullswarm'));
+    assert.equal(agy.instructionsPath, join(home, '.gemini', 'config', 'AGENTS.md'));
+    assert.equal(agy.skill.status, 'installed');
+    // Real folder, NOT a symlinked folder; top-level entries inside are symlinks to packaged skill entries.
+    assert.equal(lstatSync(agy.skillPath).isSymbolicLink(), false);
+    assert.equal(lstatSync(agy.skillPath).isDirectory(), true);
+    const expectedEntries = readdirSync(SKILL_SOURCE).filter((n) => !n.startsWith('.')).sort();
+    assert.deepEqual(readdirSync(agy.skillPath).sort(), expectedEntries);
+    for (const entryName of expectedEntries) {
+      const entryPath = join(agy.skillPath, entryName);
+      assert.equal(lstatSync(entryPath).isSymbolicLink(), true, `${entryName} should be a symlink`);
+      assert.equal(resolve(agy.skillPath, readlinkSync(entryPath)), join(SKILL_SOURCE, entryName));
+    }
+    assert.equal(awarenessBlockPresent(agy.instructionsPath), true);
+    assert.match(readFileSync(agy.instructionsPath, 'utf8'), /BULLSWARM_DEPTH/);
+
+    // Idempotent re-install.
+    const again = installIntegration({
+      homeDir: home, agents: ['agy'], skillSource: SKILL_SOURCE, approved: true,
+    });
+    assert.equal(again.changes[0].skill.changed, false);
+    assert.equal(again.changes[0].awareness.changed, false);
+
+    // Extra user file inside ~/.gemini/config/skills/bullswarm is preserved on remove;
+    // once removed and clean, removing again removes the empty folder itself.
+    writeFileSync(join(agy.skillPath, 'user-note.md'), 'keep me');
+    const partialRemove = removeIntegration({
+      homeDir: home, agents: ['agy'], skillSource: SKILL_SOURCE, approved: true,
+    });
+    assert.equal(partialRemove.changes[0].skill.changed, true);
+    assert.equal(existsSync(join(agy.skillPath, 'SKILL.md')), false);
+    assert.equal(readFileSync(join(agy.skillPath, 'user-note.md'), 'utf8'), 'keep me');
+    rmSync(agy.skillPath, { recursive: true, force: true });
+
+    installIntegration({ homeDir: home, agents: ['agy'], skillSource: SKILL_SOURCE, approved: true });
+    const fullRemove = removeIntegration({
+      homeDir: home, agents: ['agy'], skillSource: SKILL_SOURCE, approved: true,
+    });
+    assert.equal(fullRemove.changes[0].skill.changed, true);
+    assert.equal(existsSync(agy.skillPath), false);
+    assert.equal(awarenessBlockPresent(agy.instructionsPath), false);
+  } finally { cleanup(); }
+});
+
+test('AGY integration refuses to touch a non-Bullswarm skill directory or symlink and works via CLI + docs', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const conflict = join(home, '.gemini', 'config', 'skills', 'bullswarm');
+    mkdirSync(conflict, { recursive: true });
+    writeFileSync(join(conflict, 'SKILL.md'), 'custom-agy-skill');
+
+    assert.throws(() => installIntegration({
+      homeDir: home, agents: ['agy'], skillSource: SKILL_SOURCE, approved: true,
+    }), /refusing to replace non-Bullswarm skill path/);
+    const untouched = removeIntegration({
+      homeDir: home, agents: ['agy'], skillSource: SKILL_SOURCE, approved: true,
+    });
+    assert.equal(untouched.changes[0].skill.changed, false);
+    assert.equal(readFileSync(join(conflict, 'SKILL.md'), 'utf8'), 'custom-agy-skill');
+    rmSync(conflict, { recursive: true, force: true });
+
+    // CLI non-interactive --agents agy with isolated HOME.
+    const env = { HOME: home, PATH: resolve(process.execPath, '..'), BULLSWARM_HOME: join(home, '.bullswarm') };
+    const cliInstall = spawnSync(process.execPath, [BIN, 'integrate', 'install', '--agents', 'agy', '--yes', '--json'], {
+      env, encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(cliInstall.status, 0, cliInstall.stderr);
+    assert.equal(JSON.parse(cliInstall.stdout).status.ok, true);
+
+    const cliStatus = spawnSync(process.execPath, [BIN, 'integrate', 'status', '--agents', 'agy', '--json'], {
+      env, encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(cliStatus.status, 0, cliStatus.stderr);
+    assert.equal(JSON.parse(cliStatus.stdout).ok, true);
+
+    // Help and README table mention agy.
+    assert.match(helpText(['integrate']), /agy/);
+    const readme = readFileSync(join(REPO, 'README.md'), 'utf8');
+    const tableSlice = readme.slice(readme.indexOf('## Supported agents and meters'));
+    assert.match(tableSlice, /\|\s*AGY\b.*\|\s*Built in\s*\|/);
+
+    // Reference and integration docs include ~/.gemini/config and agy across setup, HOME, and agent-clis.
+    const cliDoc = readFileSync(join(REPO, 'docs/reference/cli.md'), 'utf8');
+    const setupDoc = cliDoc.slice(cliDoc.indexOf('## setup'), cliDoc.indexOf('## home'));
+    assert.match(setupDoc, /~\/\.codex.*~\/\.claude.*~\/\.grok.*~\/\.gemini\/config/);
+
+    const configDoc = readFileSync(join(REPO, 'docs/reference/configuration.md'), 'utf8');
+    const homeRow = configDoc.split('\n').find((line) => line.startsWith('| `HOME` |')) ?? '';
+    assert.match(homeRow, /~\/\.gemini\/config/);
+
+    const agentClisDoc = readFileSync(join(REPO, 'docs/integrations/agent-clis.md'), 'utf8');
+    assert.match(agentClisDoc, /^---\ntitle: .*AGY.*\ndescription: .*AGY/m);
+    assert.match(agentClisDoc, /^# .*AGY/m);
+    assert.match(agentClisDoc, /register the packaged Bullswarm skill with Codex, Grok, and AGY/);
+    assert.doesNotMatch(agentClisDoc, /one command covers all three/i);
+    assert.match(agentClisDoc, /one command covers all four/i);
+    assert.match(agentClisDoc, /^agy\s+skill ✓; awareness ✓$/m);
+  } finally { cleanup(); }
+});
+
+test('integrate install/remove/retire-legacy without --yes fail before initializing or migrating BULLSWARM_HOME', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    for (const sub of ['install', 'remove', 'retire-legacy']) {
+      const missingBullswarmHome = join(home, `missing-${sub}`);
+      const res = spawnSync(process.execPath, [BIN, 'integrate', sub], {
+        env: { ...process.env, HOME: home, BULLSWARM_HOME: missingBullswarmHome, BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      assert.equal(res.status, 1, `integrate ${sub} without --yes should exit 1`);
+      assert.match(res.stderr, /pass --yes to approve/);
+      assert.equal(existsSync(missingBullswarmHome), false, `integrate ${sub} without --yes must not create BULLSWARM_HOME`);
+    }
+
+    const unmigratedHome = join(home, 'unmigrated-bs');
+    mkdirSync(unmigratedHome, { recursive: true });
+    const rawState = `${JSON.stringify({
+      version: 1, pools: { opencode2: { enabled: true } }, decisionLog: [], config: {},
+    }, null, 2)}\n`;
+    writeFileSync(join(unmigratedHome, 'state.json'), rawState);
+    const filesBefore = readdirSync(unmigratedHome).sort();
+
+    for (const sub of ['install', 'remove', 'retire-legacy']) {
+      const res = spawnSync(process.execPath, [BIN, 'integrate', sub], {
+        env: { ...process.env, HOME: home, BULLSWARM_HOME: unmigratedHome, BULLSWARM_DISABLE_CLAUDE_PROFILES: '1' },
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      assert.equal(res.status, 1);
+      assert.equal(readFileSync(join(unmigratedHome, 'state.json'), 'utf8'), rawState, `integrate ${sub} must not migrate state.json`);
+      assert.deepEqual(readdirSync(unmigratedHome).sort(), filesBefore, `integrate ${sub} must not write files in BULLSWARM_HOME`);
+    }
   } finally { cleanup(); }
 });
