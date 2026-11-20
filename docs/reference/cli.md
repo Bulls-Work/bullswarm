@@ -397,6 +397,24 @@ bullswarm assignments
 
 Reads `~/.bullswarm/assignments/` only — no meters, no network, no pool build.
 
+## caps
+
+Concurrency caps: how many steps one caller (a lead) may have running at once, and how many attempts one pool may run at once. Over a caller's cap a step **queues**: it waits in arrival order and starts when one of that caller's steps ends. A pool at its cap sits out picks, and a step that no other pool can take waits for it. Nothing fails because of a cap. With no caps set, every step dispatches as before.
+
+```bash
+bullswarm caps                                          # what is capped, running and queued now
+bullswarm caps set wati-lead 2 --cwd /Users/me/Repo/wati  # a lead: at most 2 steps at once
+bullswarm caps set-pool claude-code:w 8                 # backstop: at most 8 attempts on the pool
+bullswarm caps set-default 3                            # each caller no group matches, alone
+bullswarm caps clear wati-lead                          # or: caps clear --pool claude-code:w
+```
+
+Which caller a step belongs to is decided at launch, in this order: `--caller <name>` on `run` / `workflow goal` (or `BULLSWARM_CALLER`), then a herdr pane listed with `--pane`, then the longest `--cwd` prefix that holds the launch directory. A worker's own nested run (`BULLSWARM_DEPTH` set) is never capped, so it cannot wait on the slot its parent holds. Every step of a workflow counts, and one step holds its slot through all of its attempts and retries. A lowered cap never stops a running step; it holds back the next ones. `run --no-wait` and `workflow goal --no-wait` refuse at launch (exit 1) instead of queueing when the caller has no free slot.
+
+While a step waits, `workflow watch` prints `⧖ <step> queued · caller <group> at its cap of <n>` (or `every pool it can use is at its cap`), then `left the queue after <time>`.
+
+Writes only `caps.json` under `$BULLSWARM_HOME`; each waiting or running capped step keeps one file under `caller-slots/`, removed when it ends (and pruned when its process dies). The pool cap is read at every pick, so two picks in the same instant can pass it by one.
+
 ## strategy
 
 Open the provider/model strategy control center on a terminal, or run a subcommand non-interactively. Toggle whole providers, assign each detected model to any combination of high/medium/low effort, and preview the live route.

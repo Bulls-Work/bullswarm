@@ -32,6 +32,8 @@ import { previewStepPick } from './workflow/pick-preview.js';
 import { runOneStep } from './workflow/run-one-step.js';
 import { runVerdictJson, runVerdictLines } from './workflow/run-verdict.js';
 import { poolLanesText } from './lib/pool-lanes.js';
+import { callerIdentity } from './lib/caller.js';
+import { applyCallerFlag, noWaitRefusal } from './lib/caps.js';
 
 // The lanes column of `bullswarm pools`, marked when strategy set-lanes chose it.
 export { poolLanesText };
@@ -44,7 +46,7 @@ export function getBullswarmDir() {
 const BOOLEAN_FLAGS = new Set([
   'overview',
   'json', 'force', 'no-caller', 'no-retry', 'yes', 'setup', 'strategy', 'integrate', 'dry-run',
-  'wizard', 'check', 'allow-pinned',
+  'wizard', 'check', 'allow-pinned', 'no-wait',
 ]);
 
 // `lists` names flags that take a value and may repeat (`run --check`): each
@@ -367,9 +369,19 @@ export async function cmdRun(opts, dependencies = {}) {
     console.error(`--add-dir is not an existing directory: ${request.targetDir}`);
     return 2;
   }
+  const callerError = applyCallerFlag(opts.caller);
+  if (callerError) { console.error(callerError); return 2; }
   dependencies.ensureHome?.();
   if (request.noCaller) console.error(NO_CALLER_NOTICE);
   const home = getBullswarmDir();
+  // The concurrency caps (src/lib/caps.js): --no-wait refuses instead of queueing.
+  if (opts['no-wait'] && !request.dryRun) {
+    const refusal = noWaitRefusal(home, callerIdentity());
+    if (refusal) {
+      emitRun({ ok: false, failureKind: 'capped', why: refusal.replace(/^✗ /, '') }, opts);
+      return 1;
+    }
+  }
   // Recursion guard FIRST — core-owned, env handshake.
   const state = loadState(home);
   try {
@@ -655,7 +667,7 @@ async function cmdDoctor(opts) {
 // their own parser (workflow/runs/strategy/provider/home) and for an unrecognized verb,
 // which the dispatcher already answers with exit 2.
 function topLevelHelpPath(verb, opts) {
-  const OWN_PARSER = new Set(['workflow', 'runs', 'strategy', 'provider', 'home']);
+  const OWN_PARSER = new Set(['workflow', 'runs', 'strategy', 'provider', 'home', 'caps']);
   if (verb === undefined) return [];
   if (verb === '--version') return ['version'];
   if (OWN_PARSER.has(verb)) return null;
@@ -710,6 +722,10 @@ export async function main(argv) {
     return runUpdate({
       check: opts.check === true, json: opts.json === true, currentVersion: getVersion(),
     });
+  }
+  if (verb === 'caps') {
+    const { cmdCaps } = await import('./caps-cli.js');
+    return cmdCaps(tail, { bullswarmDir: getBullswarmDir() });
   }
   if (verb === 'home') {
     const { cmdHome } = await import('./home-cli.js');

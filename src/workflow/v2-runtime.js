@@ -249,6 +249,9 @@ async function runV2Kernel({
     try { return reconcileCurrentRun(state, { runDir, bullswarmDir })?.changed ?? 0; }
     catch { return 0; }
   };
+  // The last cap wait each action reported (dispatch onQueued), so a poll
+  // that changes nothing writes no event.
+  const queuedSeen = new Map();
   const emit = (type, payload = {}) => {
     lease.assertOwner();
     const event = appendEvent(runDir, state, type, payload);
@@ -577,6 +580,14 @@ async function runV2Kernel({
       privateWorkspace: Boolean(isolated),
       // A plan revision or a pause --now can stop this one action while the
       // rest of the run carries on.
+      // The concurrency caps (src/lib/caps.js): a step waiting for its
+      // caller's slot or for a pool under its cap says so once per change.
+      onQueued: (event) => {
+        const key = JSON.stringify(event?.kind === 'pool' ? event.pools : [event?.kind, event?.ahead, event?.max]);
+        if (queuedSeen.get(action.id) === key) return;
+        queuedSeen.set(action.id, key);
+        emit(event?.kind === 'admitted' ? 'action.cap_admitted' : 'action.queued', { actionId: action.id, ...clone(event) });
+      },
       shouldCancel: () => stopRequested.has(action.id) || refreshCancellation(), onSpawn, onWorkerExit,
       outputValidator: answerHooks?.outputValidator ?? null,
       correctionTask: answerHooks?.correctionTask ?? null,

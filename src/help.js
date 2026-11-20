@@ -71,6 +71,7 @@ const top = rich({
     { name: 'health', desc: 're-judge saved delegate outputs' },
     { name: 'pools', desc: 'show routing pools, meters, load, and spent windows; label manages display names' },
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
+    { name: 'caps', desc: 'show or set how many steps each caller and each pool may run at once (over a cap, steps queue)' },
     { name: 'strategy', desc: 'discover models and manage each pool\'s model per tier' },
     { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
     { name: 'doctor', desc: 'report installation readiness' },
@@ -360,6 +361,8 @@ const runText = rich({
     { flag: '--check <cmd>', desc: 'a command Bullswarm runs in --add-dir after the worker finishes, read-only; exit 0 proves the step (the verdict reads `proof: proven by command`), a non-zero exit fails it as failure kind failed-evidence with the command\'s tail and gets the one same-pool retry; repeat it for up to 5 checks, run in the order given; a command that starts with -- is given as --check=--x', default: 'none — the step passes by its facts alone, and a build run says so first with one hint line on stderr: it can only finish unproven' },
     { flag: '--check-timeout <seconds>', desc: 'the time limit for each --check command, a whole number of seconds from 1 to 600 (needs --check)', default: '120 s (the evidence default)' },
     { flag: '--no-retry', desc: 'one attempt only; without it the step gets its one automatic retry (a usage limit is never retried)', default: 'off — one retry' },
+    { flag: '--caller <name>', desc: "this launch's caller name for the concurrency caps (`bullswarm caps`); without it the caller is found from BULLSWARM_CALLER, the herdr pane, or the launch directory", default: 'found from the pane or directory' },
+    { flag: '--no-wait', desc: 'refuse at once (exit 1) when this caller already has as many steps running or queued as its cap allows; without it the run is queued and starts when a slot frees', default: 'off — queue over the cap' },
     { flag: '--avoid-pool <pool,...>', desc: 'never route this task to these pools' },
     { flag: '--use-provider <provider,...>', desc: 'route only to pools of these providers' },
     { flag: '--avoid-provider <provider,...>', desc: 'never route to pools of these providers' },
@@ -523,6 +526,80 @@ const poolsLabelText = rich({
     { cmd: 'bullswarm pools label claude-code:acme --clear' },
   ],
   next: 'bullswarm pools to see the label in human output; use either the id or label as command input.',
+});
+
+const capsText = rich({
+  usage: 'bullswarm caps [show | set | set-pool | set-default | clear] [--json]',
+  purpose: 'Concurrency caps: how many steps one caller (a lead) may have running at once, and how many attempts one pool may run at once. '
+    + 'A step over its caller\'s cap waits in arrival order and starts when a slot frees; a pool at its cap sits out picks, and a step with no other pool waits. '
+    + 'A caller is matched by --caller / BULLSWARM_CALLER, then by herdr pane, then by the longest matching launch directory.',
+  options: [{ flag: '--json', desc: 'machine-readable view' }],
+  safety: [
+    'reads caps.json, caller-slots/ and assignments/ under $BULLSWARM_HOME; changes nothing',
+    'no caps file means no caps: every step dispatches as before',
+  ],
+  examples: [{ cmd: 'bullswarm caps' }, { cmd: 'bullswarm caps --json' }],
+  next: 'bullswarm caps set <group> <n> --cwd <dir> to cap a lead.',
+});
+
+const capsShowText = rich({
+  usage: 'bullswarm caps show [--json]',
+  purpose: 'Each caller group with its cap, what matches it, and how many of its steps run and wait now; each capped pool with its running attempts.',
+  options: [{ flag: '--json', desc: 'machine-readable view' }],
+  safety: ['read-only'],
+  examples: [{ cmd: 'bullswarm caps show --json' }],
+  next: 'bullswarm caps set to change one.',
+});
+
+const capsSetText = rich({
+  usage: 'bullswarm caps set <group> <n> [--cwd <dir>]... [--pane <wN:pM>]... [--json]',
+  purpose: 'Cap one caller group at <n> steps running at once (0 holds all its new steps in the queue). '
+    + 'Matchers given replace the group\'s matchers; none given keeps them.',
+  args: [
+    { name: '<group>', desc: 'group name: letters, digits, dot, dash, underscore (also what --caller names)' },
+    { name: '<n>', desc: 'steps running at once, 0 to 1000' },
+  ],
+  options: [
+    { flag: '--cwd <dir>', desc: 'a launch directory prefix that belongs to this group; repeatable' },
+    { flag: '--pane <wN:pM>', desc: 'a herdr pane that belongs to this group; repeatable' },
+    { flag: '--json', desc: 'machine-readable result' },
+  ],
+  safety: [
+    'writes only caps.json under $BULLSWARM_HOME',
+    'a step already running keeps running; a lower cap holds back the next ones',
+  ],
+  examples: [{ cmd: 'bullswarm caps set wati-lead 2 --cwd /Users/me/Repo/wati' }],
+  next: 'bullswarm caps to see it applied.',
+});
+
+const capsSetPoolText = rich({
+  usage: 'bullswarm caps set-pool <pool> <n> [--json]',
+  purpose: 'The backstop: at most <n> attempts run on <pool> at once, across every caller. A pool at its cap sits out picks; a step no other pool can take waits.',
+  args: [{ name: '<pool>', desc: 'pool id as bullswarm pools prints it' }, { name: '<n>', desc: 'attempts at once, 0 to 1000' }],
+  options: [{ flag: '--json', desc: 'machine-readable result' }],
+  safety: ['writes only caps.json under $BULLSWARM_HOME', 'read at every pick, so two picks in the same instant can pass it by one'],
+  examples: [{ cmd: 'bullswarm caps set-pool claude-code:w 8' }],
+  next: 'bullswarm caps to see it applied.',
+});
+
+const capsSetDefaultText = rich({
+  usage: 'bullswarm caps set-default <n|off> [--json]',
+  purpose: 'A cap for each caller that no group matches, applied to that caller alone (its herdr pane, else its launch directory).',
+  args: [{ name: '<n|off>', desc: 'steps at once per unmatched caller, or off' }],
+  options: [{ flag: '--json', desc: 'machine-readable result' }],
+  safety: ['writes only caps.json under $BULLSWARM_HOME'],
+  examples: [{ cmd: 'bullswarm caps set-default 2' }],
+  next: 'bullswarm caps to see it applied.',
+});
+
+const capsClearText = rich({
+  usage: 'bullswarm caps clear <group> | --pool <pool> [--json]',
+  purpose: 'Remove one caller group\'s cap, or one pool\'s cap.',
+  args: [{ name: '<group>', desc: 'the caller group to uncap' }],
+  options: [{ flag: '--pool <pool>', desc: 'remove this pool\'s cap instead' }, { flag: '--json', desc: 'machine-readable result' }],
+  safety: ['writes only caps.json under $BULLSWARM_HOME'],
+  examples: [{ cmd: 'bullswarm caps clear wati-lead' }, { cmd: 'bullswarm caps clear --pool claude-code:w' }],
+  next: 'bullswarm caps to see what is left.',
 });
 
 const assignmentsText = rich({
@@ -1143,6 +1220,8 @@ const workflowGoalText = rich({
     { flag: '--out-of-rounds <wait|end>', desc: 'what a review loop does when it runs out of rounds: wait parks the run for `workflow continue`; end settles the loop with its condition unmet (rounds-spent) and runs the steps behind it', default: 'wait' },
     { flag: '--resume <shortId|runId>', desc: 'resume a v3 run; a run an earlier Bullswarm started is view-only and exits 2 before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
+    { flag: '--caller <name>', desc: "this launch's caller name for the concurrency caps (`bullswarm caps`); without it the caller is found from BULLSWARM_CALLER, the herdr pane, or the launch directory", default: 'found from the pane or directory' },
+    { flag: '--no-wait', desc: 'refuse at once (exit 1) when this caller already has as many steps running or queued as its cap allows; without it its steps queue and starts when a slot frees; only the launch is checked, later steps still queue', default: 'off — queue over the cap' },
     { flag: '--again', desc: 'start another copy even when an ongoing run already has the same goal text in the same --cwd; the lookup happens before anything is validated or launched, and only a new launch is checked', default: 'off (a duplicate of an ongoing goal is refused)' },
   ],
   safety: [
@@ -2075,6 +2154,14 @@ const HELP = {
   health: { _text: healthText },
   pools: { _text: poolsText, label: { _text: poolsLabelText } },
   assignments: { _text: assignmentsText },
+  caps: {
+    _text: capsText,
+    show: { _text: capsShowText },
+    set: { _text: capsSetText },
+    'set-pool': { _text: capsSetPoolText },
+    'set-default': { _text: capsSetDefaultText },
+    clear: { _text: capsClearText },
+  },
   doctor: { _text: doctorText },
   home: {
     _text: homeText,

@@ -14,6 +14,8 @@ import { runWorkflowWatch } from './watch-cli.js';
 import { helpText } from '../help.js';
 import { flagErrors, removedFlagExit } from './workflow-flags.js';
 import { BULLSWARM_DIR, drivableRunRefusal } from './cli-run-lookup.js';
+import { callerIdentity } from '../lib/caller.js';
+import { applyCallerFlag, noWaitRefusal } from '../lib/caps.js';
 import { modelPoolIssues, pinnedPoolIssues, routePoolIssues, livePoolNames } from './cli-pool-checks.js';
 import { executeGoalDocument, launchDetachedGoal } from './cli-launch.js';
 import { buildNewGoalDocument } from './cli-goal-document.js';
@@ -83,6 +85,16 @@ export async function wfGoal(opts, { ensureHome } = {}) {
   if (removed !== null) return removed;
   const flagExit = flagErrors(opts, ['workflow', 'goal']);
   if (flagExit !== null) return flagExit;
+  // The concurrency caps (src/lib/caps.js), for a new launch only: a resume
+  // or the detached child keeps the caller its launch recorded.
+  if (!opts.resume && !opts.request) {
+    const callerError = applyCallerFlag(opts.caller);
+    if (callerError) { console.error(callerError); return 2; }
+    if (opts['no-wait']) {
+      const refusal = noWaitRefusal(BULLSWARM_DIR(), callerIdentity());
+      if (refusal) { console.error(refusal); return 1; }
+    }
+  }
   if (opts.watch && (opts.detach || opts.foreground || opts.json || opts.resume || opts.request)) {
     console.error('✗ --watch is only valid for a new human-readable independent launch; do not combine it with --detach, --foreground, --json, --resume, or --request');
     return 2;

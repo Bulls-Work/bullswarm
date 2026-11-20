@@ -900,6 +900,16 @@ export function notableWatchEvents({
       case 'step.restart_refused':
         notable.push({ type: 'step.restart_refused', actionId: payload.actionId ?? null, why: payload.why ?? null });
         break;
+      case 'action.queued':
+        notable.push({
+          type: 'action.queued', actionId: payload.actionId ?? null, kind: payload.kind ?? null,
+          group: payload.group ?? null, max: payload.max ?? null, ahead: payload.ahead ?? null,
+          pools: Array.isArray(payload.pools) ? payload.pools : null,
+        });
+        break;
+      case 'action.cap_admitted':
+        notable.push({ type: 'action.cap_admitted', actionId: payload.actionId ?? null, waitedMs: payload.waitedMs ?? null });
+        break;
       // The repair loop: one line per round start and outcome, one per repair.
       // A one-round run prints none, as before the loop existed.
       case 'workflow.verify-round':
@@ -1135,6 +1145,15 @@ export function renderWatchEvent(event, { now = Date.now(), terminal = false } =
         + `${event.pool ? ` on ${event.pool}` : ''}`;
     case 'step.restart_refused':
       return `× ${event.actionId} not restarted · ${event.why ?? 'no reason recorded'}`;
+    case 'action.queued':
+      if (event.kind === 'pool') {
+        const full = (event.pools ?? []).map((p) => `${p.pool} ${p.running}/${p.max}`).join(', ');
+        return `${glyphs().waiting} ${event.actionId} queued · every pool it can use is at its cap (${full}); starts when one frees`;
+      }
+      return `${glyphs().waiting} ${event.actionId} queued · caller ${event.group ?? '?'} at its cap of ${event.max ?? '?'}`
+        + `${event.ahead ? ` · ${event.ahead} waiting ahead of it` : ''}; starts when a slot frees`;
+    case 'action.cap_admitted':
+      return `${glyphs().started} ${event.actionId} left the queue after ${formatDuration(Math.round((event.waitedMs ?? 0) / 1000))}`;
     case 'cancellation.requested':
       return `${glyphs().waiting} cancellation requested`;
     case 'action.started':

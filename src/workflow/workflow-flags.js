@@ -26,7 +26,7 @@ export function parseFlags(argv) {
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'out-of-rounds', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
     'out', 'rerun', 'base-revision', 'wait', 'width', 'height', 'until', 'pool',
-    'avoid', 'requirement', 'rounds', 'steps', 'from-answer', 'timeout',
+    'avoid', 'requirement', 'rounds', 'steps', 'from-answer', 'timeout', 'caller',
   ]);
   // Repeatable value flags collect every value (step rerun --avoid, step
   // accept --requirement).

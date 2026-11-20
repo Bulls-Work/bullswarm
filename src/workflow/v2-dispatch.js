@@ -22,6 +22,7 @@ import {
   withLedger,
 } from '../lib/assignments.js';
 import { readGoalCaller } from './goal.js';
+import { acquireCallerSlot, DEFAULT_POLL_MS as CAPS_POLL_MS, poolsAtCap, readCaps } from '../lib/caps.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
 import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
@@ -206,7 +207,36 @@ function sessionFor(connector, pool, model, current, now, uuid) {
  * The dispatcher owns only mechanical concerns. Semantic rejection is
  * returned after one observation; it never creates a repair/retry loop.
  */
-export async function dispatchV2Action({
+/**
+ * Dispatch one step under the concurrency caps (src/lib/caps.js): the step
+ * first waits for its caller's slot (C3), holds it through every attempt and
+ * retry, and gives it up when the dispatch ends. With no caps file this is a
+ * no-op and the step dispatches exactly as before. `onQueued(event)` reports a
+ * wait (`{kind: 'caller', group, max, ahead, running}` or `{kind: 'pool',
+ * pools}`) and `{kind: 'admitted', waitedMs}` when a caller wait ends.
+ */
+export async function dispatchV2Action(options = {}) {
+  const { bullswarmDir, runDir = null, runId = null, shouldCancel = null, onQueued = null, dependencies = {} } = options;
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir || !options.action) return dispatchUncapped(options);
+  const acquire = dependencies.acquireCallerSlot ?? acquireCallerSlot;
+  let caller = null;
+  try { caller = runDir ? readGoalCaller(runDir) : null; } catch { caller = null; }
+  const slot = await acquire({
+    bullswarmDir, caller, runId, actionId: options.action.id, shouldCancel,
+    ...(dependencies.sleep ? { sleep: dependencies.sleep } : {}),
+    ...(dependencies.capsPollMs != null ? { pollMs: dependencies.capsPollMs } : {}),
+    onQueued: (event) => onQueued?.({ kind: 'caller', ...event }),
+    onAdmitted: (event) => onQueued?.({ kind: 'admitted', ...event }),
+  });
+  if (slot?.cancelled) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts: [], verdict: null };
+  try {
+    return await dispatchUncapped(options);
+  } finally {
+    slot?.release?.();
+  }
+}
+
+async function dispatchUncapped({
   action,
   taskText,
   targetDir,
@@ -278,6 +308,8 @@ export async function dispatchV2Action({
   // first pick of this dispatch takes another pool when one can take the
   // step now.
   leavePools = null,
+  // `(event) => void`: a pool-cap wait (see dispatchV2Action above).
+  onQueued = null,
 } = {}) {
   if (!action || typeof action.id !== 'string') throw new TypeError('action is required');
   if (typeof taskText !== 'string' || !taskText) throw new TypeError('taskText is required');
@@ -548,13 +580,33 @@ export async function dispatchV2Action({
     if (!routePools.length) break;
     const pickStrictPool = gatePick ?? strictPool;
     const pickAt = now();
-    const routingPools = routePools.filter((candidate) => !failedProbes.has(candidate.name));
+    let routingPools = routePools.filter((candidate) => !failedProbes.has(candidate.name));
     // The ledger is re-read HERE, before every pick and every retry, not on
     // the refresher's 15s throttle: up to four kernel actions start within
     // milliseconds of each other, and each has to see the assignments the
     // others just registered. Cheap by construction — a directory read, no
     // meter poll and no network.
     attachForecast(routingPools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
+    // The pool backstop (caps.js C6): a pool already running its cap of
+    // attempts sits out this pick. When every pool the step could use is at
+    // its cap, the step waits and picks again; it never fails for it.
+    const capsNow = readCaps(bullswarmDir);
+    if (Object.keys(capsNow.pools).length) {
+      const full = poolsAtCap(capsNow, new Map(routingPools.map((candidate) => [candidate.name, candidate.inflight?.count ?? 0])));
+      if (full.size) {
+        const open = routingPools.filter((candidate) => !full.has(candidate.name));
+        if (!open.length && routingPools.length) {
+          const pools = [...full].map(([name, view]) => ({ pool: name, running: view.count, max: view.max }));
+          try { onQueued?.({ kind: 'pool', pools }); } catch { /* display only */ }
+          if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
+          await (dependencies.sleep ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); })))(dependencies.capsPollMs ?? CAPS_POLL_MS);
+          continue;
+        }
+        const note = `at pool cap, sat out: ${[...full].map(([name, view]) => `${name} ${view.count}/${view.max}`).join(', ')}`;
+        if (!fallbackWhy?.includes(note)) fallbackWhy = fallbackWhy ? `${fallbackWhy} · ${note}` : note;
+        routingPools = open;
+      }
+    }
     const routeOptions = {
       preferredPool: effectivePreferredPool,
       // `routingPools` is already filtered to the pin; the router needs the
