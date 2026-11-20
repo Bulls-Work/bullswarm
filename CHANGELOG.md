@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 0.40.0 was tagged but never published: its release check caught a race in the caps. Two steps that arrived in the same millisecond were ordered by a random id, so a newcomer could sort ahead of a step already running and both ran at a cap of 1. A slot that may run is now marked admitted, a waiting step never overtakes one, and arrival times are sub-millisecond.
+
 - A herdr pane id whose pane part has capital letters (`w12:pA`, `w6:p5Z`) is now recorded as the caller's pane, accepted by `caps set --pane`, and matched by pane caps. Before, such a caller was recorded with no pane, so only a `--cwd` cap could match it.
 
 ## 0.40.0 — Concurrency caps

@@ -13,10 +13,12 @@
 //       pane, else its directory), otherwise uncapped.
 //   C3. A capped step holds one slot file under <BULLSWARM_HOME>/caller-slots/
 //       from the moment it asks until its dispatch ends (every attempt and
-//       retry inside one slot). Slots are ordered by arrival (time, then id);
-//       the first `max` live slots of a group run, the rest wait in that order.
+//       retry inside one slot). A slot that may run is marked `admitted` at
+//       once, and a waiting slot never overtakes an admitted one: a waiter
+//       starts when the admitted slots plus the waiters ahead of it (ordered
+//       by arrival time, sub-millisecond, then id) are fewer than `max`.
 //       Every process computes the same order from the same files, so no lock
-//       is needed and two kernels can never both take the last slot.
+//       is needed.
 //   C4. A crashed process must never hold a slot: a read prunes slots whose
 //       kernel pid is gone and slots older than 12 hours, as the in-flight
 //       ledger does (assignments.js A3).
@@ -154,8 +156,13 @@ export function callerCap(caps, caller) {
 
 // --- slots -------------------------------------------------------------------
 
-function slotKey(slot) {
-  return `${String(slot.at).padStart(16, '0')}:${slot.id}`;
+function bySlotArrival(a, b) {
+  return (a.at - b.at) || String(a.id).localeCompare(String(b.id));
+}
+
+/** Arrival time with sub-millisecond resolution, so two slots rarely tie. */
+function arrivalNow() {
+  return performance.timeOrigin + performance.now();
 }
 
 /** Live slots, every group, in arrival order; prunes dead and stale ones (C4). */
@@ -181,7 +188,7 @@ export function listSlots(bullswarmDir, { now = Date.now(), alive = isProcessAli
     }
     live.push(slot);
   }
-  return live.sort((a, b) => slotKey(a).localeCompare(slotKey(b)));
+  return live.sort(bySlotArrival);
 }
 
 /** Running and waiting counts per group: a slot runs when it is among the first `max`. */
@@ -194,7 +201,7 @@ export function slotSummary(bullswarmDir, caps, opts = {}) {
   const out = {};
   for (const [group, slots] of byGroup) {
     const max = caps?.callers?.[group]?.max ?? caps?.default ?? null;
-    const running = max == null ? slots.length : Math.min(max, slots.length);
+    const running = slots.filter((slot) => slot.admitted === true).length;
     out[group] = { max: max ?? null, running, waiting: slots.length - running, slots };
   }
   return out;
@@ -227,7 +234,7 @@ const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).
 export async function acquireCallerSlot({
   bullswarmDir, caller, runId = null, actionId = null,
   shouldCancel = null, onQueued = null, onAdmitted = null,
-  now = Date.now, sleep = defaultSleep, pollMs = DEFAULT_POLL_MS, alive = isProcessAlive,
+  now = Date.now, arrival = arrivalNow, sleep = defaultSleep, pollMs = DEFAULT_POLL_MS, alive = isProcessAlive,
   readCapsFn = readCaps,
 } = {}) {
   const noop = { release() {}, group: null, max: null, waitedMs: 0, queued: false };
@@ -235,7 +242,7 @@ export async function acquireCallerSlot({
   let cap = callerCap(caps, caller);
   if (!cap.group || cap.max == null) return noop;
   const slot = {
-    id: randomUUID(), group: cap.group, pid: process.pid, at: now(),
+    id: randomUUID(), group: cap.group, pid: process.pid, at: arrival(), admitted: false,
     runId, actionId, herdrPane: caller?.herdrPane ?? null,
   };
   try { writeSlot(bullswarmDir, slot); } catch { return noop; }
@@ -244,20 +251,26 @@ export async function acquireCallerSlot({
   let lastAhead = null;
   for (;;) {
     const mine = listSlots(bullswarmDir, { now: now(), alive }).filter((s) => s.group === slot.group);
-    const position = mine.findIndex((s) => s.id === slot.id);
     // A slot that vanished (pruned by mistake, a cleared home) is rewritten in place.
-    if (position < 0) { try { writeSlot(bullswarmDir, slot); } catch { return noop; } continue; }
-    if (cap.max == null || position < cap.max) break;
+    if (!mine.some((s) => s.id === slot.id)) { try { writeSlot(bullswarmDir, slot); } catch { return noop; } continue; }
+    const admitted = mine.filter((s) => s.admitted === true).length;
+    const waiters = mine.filter((s) => s.admitted !== true);
+    const position = waiters.findIndex((s) => s.id === slot.id);
+    if (cap.max == null || admitted + position < cap.max) {
+      slot.admitted = true;
+      try { writeSlot(bullswarmDir, slot); } catch { /* still runs; it just shows as waiting */ }
+      break;
+    }
     if (shouldCancel?.()) {
       removeSlot(bullswarmDir, slot.id);
       return { ...noop, cancelled: true, group: slot.group, max: cap.max, waitedMs: now() - startedWaiting, queued };
     }
     // Steps waiting in front of this one (0: it starts at the next free slot).
-    const ahead = position - cap.max;
+    const ahead = position;
     if (!queued || ahead !== lastAhead) {
       queued = true;
       lastAhead = ahead;
-      try { onQueued?.({ group: slot.group, max: cap.max, ahead, running: Math.min(cap.max, mine.length) }); } catch { /* display only */ }
+      try { onQueued?.({ group: slot.group, max: cap.max, ahead, running: admitted }); } catch { /* display only */ }
     }
     await sleep(pollMs);
     // The Pacer may change the cap while this step waits.
