@@ -163,6 +163,10 @@ Work already dispatched is charged against a pool before the next pick: each poo
 
 One preference applies only among pools that survived the steps above. An explicit effort-tier assignment (`bullswarm strategy assign <tier> --pool <p> --model <m>`) wins if that pool is selectable — it is a preference, never a bypass of eligibility or the gates. Only `assign` makes one: `strategy apply` and `setup --yes --strategy` set each pool's model per tier and pin nothing, so an unpinned tier is picked by surplus at every dispatch. There is no incumbency: since 0.37.0 a single run is a one-step workflow and every step is routed by the same rule.
 
+## Concurrency caps
+
+Before any of the above, a step waits for its caller's slot when its caller is at its cap (`bullswarm caps`), and a pool already running its cap of attempts sits out the pick. A capped wait is a queue, not a failure: the step starts when a slot frees. See [`bullswarm caps`](../reference/cli.md#caps).
+
 ## The caller
 
 The agent CLI that invoked Bullswarm is never a pool of its own run: every run and every workflow step goes to a delegate pool or fails. `--no-caller` is accepted for one release and ignored.
