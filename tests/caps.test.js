@@ -383,3 +383,23 @@ test('herdr pane ids may end in letters (w6:p5Z, w12:pA): recorded, settable and
     assert.deepEqual(readCaps(dir).callers.wr.panes, ['w6:p5Z']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a step that arrives in the same instant never overtakes one already admitted (CI race, 20 Nov)', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    const caller = { name: 'lead', cwd: '/w' };
+    // Every slot gets the same arrival time; ids then decide the waiting order.
+    const arrival = () => 42;
+    for (let i = 0; i < 20; i += 1) {
+      const held = await acquireCallerSlot({ bullswarmDir: dir, caller, arrival, sleep: tick, pollMs: 1 });
+      let cancel = false;
+      const second = acquireCallerSlot({ bullswarmDir: dir, caller, arrival, sleep: tick, pollMs: 1, shouldCancel: () => cancel });
+      await tick(); await tick();
+      cancel = true;
+      assert.equal((await second).cancelled, true, `round ${i}: the newcomer waited behind the admitted step`);
+      held.release();
+    }
+    assert.equal(listSlots(dir).length, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
