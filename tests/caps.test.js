@@ -368,3 +368,18 @@ test('run --no-wait refuses while the caller is at its cap; --caller names the c
     held.release();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('herdr pane ids may end in letters (w6:p5Z, w12:pA): recorded, settable and matched', async () => {
+  // The Pacer plan of 20 Nov names panes w6:p5Z, w12:pA and w6:p5X.
+  assert.equal(callerIdentity({ env: { HERDR_PANE_ID: 'w12:pA' }, cwd: '/w' }).herdrPane, 'w12:pA');
+  assert.equal(callerIdentity({ env: { HERDR_PANE_ID: 'w6:p5Z' }, cwd: '/w' }).herdrPane, 'w6:p5Z');
+  assert.equal(callerIdentity({ env: { HERDR_PANE_ID: 'w6:p5Z; rm' }, cwd: '/w' }).herdrPane, null, 'still validated');
+  const c = caps({ kipwise: { max: 2, panes: ['w12:pA'] } });
+  assert.deepEqual(c.callers.kipwise.panes, ['w12:pA'], 'kept by normalizeCaps');
+  assert.equal(callerCap(c, { herdrPane: 'w12:pA', cwd: '/w' }).group, 'kipwise');
+  const dir = home('bs-caps-pane-');
+  try {
+    assert.equal((await caps_(dir, ['set', 'wr', '3', '--pane', 'w6:p5Z'])).code, 0);
+    assert.deepEqual(readCaps(dir).callers.wr.panes, ['w6:p5Z']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
