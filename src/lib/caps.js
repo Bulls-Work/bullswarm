@@ -38,7 +38,7 @@ export const SLOT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 export const DEFAULT_POLL_MS = 5_000;
 /** A group or caller name: letters, digits, dot, dash, underscore; `default` is reserved. */
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const PANE_RE = /^w[A-Za-z0-9]+:p[0-9]+$/;
+const PANE_RE = /^w[A-Za-z0-9]+:p[0-9A-Z]+$/;
 const MAX_CAP = 1000;
 
 export function capsPath(bullswarmDir) {

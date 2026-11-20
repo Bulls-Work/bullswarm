@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A herdr pane id whose pane part has capital letters (`w12:pA`, `w6:p5Z`) is now recorded as the caller's pane, accepted by `caps set --pane`, and matched by pane caps. Before, such a caller was recorded with no pane, so only a `--cwd` cap could match it.
+
 ## 0.40.0 — Concurrency caps
 
 - Concurrency caps (`bullswarm caps`). A caller (a lead) can be capped at N steps at once; a step over its caller's cap queues in arrival order and starts when a slot frees, instead of all of them running at once. A caller is matched by `--caller <name>` / `BULLSWARM_CALLER`, then its herdr pane, then the longest launch-directory prefix; every workflow step counts, and a worker's nested run never does. A per-pool cap (`caps set-pool claude-code:w 8`) is the backstop: a pool at its cap sits out picks, and a step no other pool can take waits. `run --no-wait` / `workflow goal --no-wait` refuse at launch instead of queueing. `workflow watch` shows the wait. With no caps set nothing changes.

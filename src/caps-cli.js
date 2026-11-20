@@ -19,7 +19,7 @@ import {
 } from './lib/caps.js';
 
 const SUBS = new Set(['show', 'set', 'set-pool', 'set-default', 'clear']);
-const PANE_RE = /^w[A-Za-z0-9]+:p[0-9]+$/;
+const PANE_RE = /^w[A-Za-z0-9]+:p[0-9A-Z]+$/;
 
 function capValue(raw) {
   const n = Number(raw);

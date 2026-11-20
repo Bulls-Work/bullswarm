@@ -15,7 +15,7 @@
 // exact three-field shape.
 
 /** A herdr pane id: `w<window>:p<pane>`, for example `w6:p1`. */
-const PANE_RE = /^w[A-Za-z0-9]+:p[0-9]+$/;
+const PANE_RE = /^w[A-Za-z0-9]+:p[0-9A-Z]+$/;
 /** A Claude Code session id: a UUID. */
 const SESSION_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CWD = 4096;
