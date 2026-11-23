@@ -35,14 +35,21 @@ function echoHome(root) {
   return home;
 }
 
+// Variables an outer Bullswarm caller sets (a --check runs with both), which
+// would otherwise leak into what these tests expect. A test that wants one
+// sets it explicitly.
+const OUTER_CALLER_VARS = ['BULLSWARM_DEPTH', 'BULLSWARM_CALLER'];
+
 function cliEnv(home, extra = {}) {
-  const env = { ...process.env, BULLSWARM_HOME: home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1', BULLSWARM_DEPTH: '0' };
+  const env = { ...process.env, BULLSWARM_HOME: home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' };
   delete env.HERDR_PANE_ID;
   delete env.CLAUDE_CODE_SESSION_ID;
-  return { ...env, ...extra };
+  for (const key of OUTER_CALLER_VARS) delete env[key];
+  return { ...env, BULLSWARM_DEPTH: '0', ...extra };
 }
 
-function withProcessEnv(values, fn) {
+function withProcessEnv(given, fn) {
+  const values = { ...Object.fromEntries(OUTER_CALLER_VARS.map((key) => [key, null])), ...given };
   const saved = {};
   for (const key of Object.keys(values)) {
     saved[key] = process.env[key];
