@@ -986,7 +986,8 @@ export function parseDiscoveredModels(output, discovery = {}) {
     }
     if (parse === 'columns') line = line.replace(/^[*+-]\s+/, '').split(/\s{2,}|\t/)[0].trim();
     if (ignore?.test(line) || (include && !include.test(line))) continue;
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/~-]*$/.test(line)) continue;
+    // `@` is kept: every Cloudflare Workers AI id is `@cf/<vendor>/<model>`.
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9@._:/~-]*$/.test(line)) continue;
     models.push(line);
   }
   return unique(models).slice(0, Number(discovery.maxModels ?? 250));
@@ -1523,10 +1524,20 @@ export const TIER_CONTEXTS = {
   },
 };
 
-function supportsContext(pool, context) {
+/**
+ * Whether a pool fits a tier's context. A tier is a level of effort, and work
+ * on any lane can run at any tier, so a pool's OWN rungs (`ownRungs`) only
+ * need the pool to serve some lane: a lane limit (`strategy set-lanes grok
+ * analyze`) decides which work the pool takes, never which tiers it keeps
+ * (it used to empty grok's medium and low rungs, 2026-11-17). The tier-wide
+ * pick still stands for the tier's typical lane (medium = build) and keeps
+ * the strict check. Dispatch enforces the lane itself (pool-lanes.js).
+ */
+function supportsContext(pool, context, { ownRungs = false } = {}) {
   const lanes = lanesOf(pool, []);
   const capabilities = pool.capabilities ?? pool.connector?.capabilities ?? [];
-  return lanes.includes(context.lane)
+  const laneFits = ownRungs ? lanes.length > 0 : lanes.includes(context.lane);
+  return laneFits
     && context.capabilities.every((capability) => capabilities.includes(capability));
 }
 /**
@@ -1595,7 +1606,7 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
     const eligible = enabled.filter((model) => !(freeOff && model.free));
     for (const tier of tiers) {
       const context = TIER_CONTEXTS[tier];
-      if (pool.enabled === false || windowSpent(pool) || !supportsContext(pool, context)) continue;
+      if (pool.enabled === false || windowSpent(pool) || !supportsContext(pool, context, { ownRungs: true })) continue;
       const candidates = rankCandidates(eligible
         .filter((model) => model.tier === tier)
         .map((model) => ({ pool: pool.name, model, key: tierKey(model, pool, tier) })));

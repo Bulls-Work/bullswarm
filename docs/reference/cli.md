@@ -738,6 +738,8 @@ bullswarm strategy set-lanes grok default --yes
 | `--yes` | required; the change applies to new dispatches at once | none; exits 2 without it |
 | `--json` | accepted; the output is always JSON | |
 
+The setting changes which work the pool takes, not which effort tiers it has: its own medium and low rungs survive `strategy apply` (before 0.40.2 an analyze-only limit emptied them, because the medium tier stands for build work and low for chores). The tier-wide pick in `strategy show` still offers a pool only for its tier's typical lane.
+
 Argument: one or more of `analyze`, `build`, `chore`, comma-separated, or `default` to drop the setting. An unknown pool or lane exits 2 and writes nothing. Writes `state.strategy.laneOverrides[pool]` and invalidates the cached report. A run pinned to the pool (`--worker-pool`, or a route that leaves only it, such as `run --use-provider`) for a lane it no longer serves is refused with one line such as `the pinned pool grok does not serve build work: strategy set-lanes limits it to analyze (bullswarm strategy set-lanes grok default --yes clears it)`.
 
 ### set-free

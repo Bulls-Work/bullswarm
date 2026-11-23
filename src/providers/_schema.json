@@ -196,6 +196,8 @@
     "build",
     "chore"
   ],
+  "$comment-buildsNeedCheck": "Optional, default false. true: the pool takes a build-lane step only when the step carries a machine check (a `command` or `schema` evidence item, e.g. `run --check`); unchecked builds route to other pools. Analyze and chore steps are unaffected. Used for cheap pay-per-token pools (Cloudflare Workers AI, 2026-11-24).",
+  "buildsNeedCheck": false,
   "capabilities": [
     "strong-analysis",
     "code-reading",

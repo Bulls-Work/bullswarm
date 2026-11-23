@@ -54,6 +54,20 @@ function providerIdFromModel(model) {
   return slash > 0 ? model.slice(0, slash) : null;
 }
 
+/**
+ * Why a pool may not take this step because it takes build steps only with a
+ * machine check (connector `buildsNeedCheck: true`), or null. A check is a
+ * `command` or `schema` evidence item on the step (`run --check`, a program
+ * step's `evidence`). Other lanes, and pools without the setting, are never
+ * refused here. Added for the Cloudflare Workers AI pools (2026-11-24).
+ */
+export function buildCheckRefusal(pool, action) {
+  const connector = pool?.connector ?? pool;
+  if (connector?.buildsNeedCheck !== true || action?.lane !== 'build') return null;
+  const checked = (action.evidence ?? []).some((item) => item?.type === 'command' || item?.type === 'schema');
+  return checked ? null : `${pool.name} takes build steps only with a check (--check or command/schema evidence)`;
+}
+
 export function preparePools(pools, action, effort, {
   preferredModel = null, strictPool = null, now = Date.now(),
   // Which pools COULD run this action were none at its limit: a pool with a
@@ -75,6 +89,7 @@ export function preparePools(pools, action, effort, {
     const signInDead = pool.meterSignInFailed === true || (authHoldActive(pool, now) && pool.name !== strictPool);
     if (pool.enabled === false || (!ignoreBurstGate && (windowSpent(pool, now) || signInDead))) continue;
     if (routeFilter && !poolPassesRoute(pool, routeFilter)) continue;
+    if (buildCheckRefusal(pool, action)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its
     // meter. Retargeting it to another provider-qualified model would make the

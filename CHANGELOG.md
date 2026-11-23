@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `strategy set-lanes <pool> analyze` no longer empties the pool's medium and low rungs at the next `strategy apply`. A lane limit decides which work a pool takes, not which effort tiers it keeps. Before, grok (limited to analyze on 17 Nov) took no work at all after the nightly apply, not even analyze at medium.
+- New connector field `buildsNeedCheck`: `true` keeps a pool out of build steps that carry no machine check (`--check`, or `command`/`schema` evidence). Unchecked builds go to other pools; analyze and chore work is unaffected. For cheap pay-per-token pools such as Cloudflare Workers AI.
+- Model discovery keeps model ids that contain `@`. Every Cloudflare Workers AI id starts with `@cf/`, so such models were silently dropped from a pool's discovered list.
+
 ## 0.40.1 — Concurrency caps (fixed)
 
 - 0.40.0 was tagged but never published: its release check caught a race in the caps. Two steps that arrived in the same millisecond were ordered by a random id, so a newcomer could sort ahead of a step already running and both ran at a cap of 1. A slot that may run is now marked admitted, a waiting step never overtakes one, and arrival times are sub-millisecond.

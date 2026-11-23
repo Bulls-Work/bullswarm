@@ -160,6 +160,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `meter.type` (`none`, `declared`, `reader`), `meter.window` | the pool builder's meter ladder: a `readUsage` reading first, then a declared meter, then unmetered |
 | `subscription.plan`, `quotaWindow`, `includedValueUsd`, `resetsAt`, `monthlyPriceUsd` | the pacing window and its denominators; values set in strategy state override them |
 | `costRank` (default 5), `lanes` (default all), `capabilities`, `flags.testFixture`, `flags.isCaller`, `flags.stealth` | routing and strategy |
+| `buildsNeedCheck` (default `false`) | dispatch: `true` keeps the pool out of a build-lane step that carries no `command` or `schema` check (`run --check`, program `evidence`); the no-pool reason says `<pool> takes build steps only with a check`. Analyze and chore steps are unaffected |
 | `credentialGroup` (a string; the older `upstreamGroup` is still read) | dispatch avoidance: after a sign-in failure, the step's retry skips every pool in the group |
 | `profile.providerId` | dispatch accepts an `<id>/<model>` pin only on this pool. `profile.configDir` and `profile.command` are display only |
 
