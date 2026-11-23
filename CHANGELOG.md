@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.40.2 — Routing fixes for lane-limited and pay-per-token pools
+
 - `strategy set-lanes <pool> analyze` no longer empties the pool's medium and low rungs at the next `strategy apply`. A lane limit decides which work a pool takes, not which effort tiers it keeps. Before, grok (limited to analyze on 17 Nov) took no work at all after the nightly apply, not even analyze at medium.
 - New connector field `buildsNeedCheck`: `true` keeps a pool out of build steps that carry no machine check (`--check`, or `command`/`schema` evidence). Unchecked builds go to other pools; analyze and chore work is unaffected. For cheap pay-per-token pools such as Cloudflare Workers AI.
 - Model discovery keeps model ids that contain `@`. Every Cloudflare Workers AI id starts with `@cf/`, so such models were silently dropped from a pool's discovered list.
