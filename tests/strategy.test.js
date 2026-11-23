@@ -1495,3 +1495,28 @@ test('rungs show a tier whose only model is free as ineligible under free models
   assert.equal(off.eligible, false);
   assert.equal(off.modelSource, 'free-models-off');
 });
+
+test('a lane limit keeps the pool\'s own tier rungs: only which work it takes changes (grok/cf, 2026-11-23)', () => {
+  // `strategy set-lanes grok analyze` used to empty grok's medium and low rungs at
+  // the next apply (medium is derived as the build lane, low as chore), so the
+  // pool got no analyze work at medium either.
+  const connector = {
+    name: 'g', meter: { window: 'weekly' },
+    lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'workflow-planning', 'code-reading', 'file-editing'],
+  };
+  const pools = [{ name: 'g', connector, lanes: ['analyze'], lanesSource: 'override', enabled: true, pace: 20, costRank: 1, meterSource: 'cache' }];
+  const discoveries = { g: { models: [
+    { id: 'big', tier: 'high', qualityRank: 5 },
+    { id: 'mid', tier: 'medium', qualityRank: 4 },
+    { id: 'small', tier: 'low', qualityRank: 2 },
+  ] } };
+  const result = buildStrategy({ connectors: { g: connector }, pools, state: {}, discoveries });
+  const own = result.providerSuggestions.g;
+  assert.equal(own.high.recommended?.model, 'big');
+  assert.equal(own.medium?.recommended?.model, 'mid', 'the medium rung survives an analyze-only lane limit');
+  assert.equal(own.low?.recommended?.model, 'small', 'the low rung survives too');
+  // The tier-wide pick stands for that tier's typical lane (medium = build), which
+  // this pool does not serve, so it is still not offered there.
+  assert.equal(result.suggestions.medium.recommended, null);
+});
