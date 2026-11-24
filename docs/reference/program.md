@@ -199,7 +199,7 @@ Any other field is rejected. Resolution per field: the action's own `lane` or `e
 |---|---|---|
 | `process` | `auth`, `provider`, `process`, `interrupted`, `stalled`, `model-not-in-plan`: one retry on another eligible pool; the same pool if it is the only candidate (except `auth`, whose retry also skips every pool that shares its credential, and `model-not-in-plan`, whose retry never goes back to the pool whose plan refused the model) | You decide |
 | `gate` | `not-produced`, `failed-evidence`, `schema`, `semantic`: one retry on the same pool with the failure attached, except `not-produced` on a build or chore step (no file changed), which gets no automatic retry | You decide |
-| `wait` | `quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry | You decide; the block shows `back at <time>` when the pool's return time is known |
+| `wait` | `quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20-30 s, then 60-90 s with random jitter, or a named wait of at most 2 minutes), without spending the retry | You decide; the block shows `back at <time>` when the pool's return time is known |
 | `caller` | `ownership`, `ownership-conflict`, `runtime`, `unavailable`, or any unknown kind: no automatic retry | You decide |
 | `stop` | `cancelled`, `paused`, `restarted`, `superseded`: no failure retry | The caller controls what runs next |
 

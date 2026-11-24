@@ -722,7 +722,7 @@ function limitFacts({ stepId = '<step>', token = '<shortId>', failureKind = 'quo
 }
 
 // The same sentence in every page that explains the transient backoff.
-const THROTTLE_SENTENCE = 'backs off on the same pool at most twice (20 s, then 60 s, or the wait it names when that is at most 2 minutes), then comes back to you';
+const THROTTLE_SENTENCE = 'backs off on the same pool at most twice (20-30 s, then 60-90 s with random jitter, or the wait it names when that is at most 2 minutes), then comes back to you';
 
 test('the skill says a usage limit or no free pool comes back to you, with the back-at time and the options the block prints', () => {
   const skill = section('skill/references/recovery.md', '## A usage limit or no free pool');
@@ -912,7 +912,7 @@ test('workflow capabilities states the failure rule the docs give', { timeout: 6
     assert.match(rule.quota, /ends the step and goes to the caller at once, never waited out, moved or retried; retryAfter is the reset when it is known, else the earliest known return when no capable pool is free$/);
     assert.ok(!Object.values(rule).some((text) => /paus|bench/.test(String(text))), 'the failure rule names no pause or bench');
     assert.match(rule.quota, /with or without a reset, or a full meter/);
-    assert.match(rule.throttle, /backs off on the same pool at most twice without spending the retry \(20 s, then 60 s, or a named wait of at most 2 minutes\), then goes to the caller/);
+    assert.match(rule.throttle, /backs off on the same pool at most twice without spending the retry \(20-30 s, then 60-90 s with random jitter, or a named wait of at most 2 minutes\), then goes to the caller/);
     assert.match(rule.throttle, /a longer named wait goes to the caller at once, with retryAfter at its end; a backoff whose pool is no longer free goes to the caller at once, as quota when that pool is out on a usage limit, with retryAfter its known return$/);
     assert.match(rule.noFreePool, /the step goes to the caller, as quota when every reason is a usage limit, else unavailable; why names each pool and its reason; retryAfter is the earliest known return; /);
     // A promised retry keeps its own kind (the dispatcher's no-retry tail).
@@ -1177,7 +1177,7 @@ test('docs do not overstate the failure rule: not-produced gets its gate retry e
     assert.ok(text.includes('A build or chore step that changed no file comes back to you at once with no automatic retry. Every other `not-produced` (an empty report, a declared path missing or not written) gets one retry on the same pool in a fresh session with the failure attached, then comes back to you.'), path);
     assert.ok(!text.includes('Quota never fails only because it is exhausted'), path);
     // A usage limit, or no free pool, goes to the caller; only a rate limit backs off.
-    assert.ok(text.includes('`quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20 s, then 60 s, or a named wait of at most 2 minutes), without spending the retry'), path);
+    assert.ok(text.includes('`quota`: none. A usage limit (a spent 5-hour or weekly window, or no credit left) ends the step at once. `throttle`: at most two short backoffs on the same pool (20-30 s, then 60-90 s with random jitter, or a named wait of at most 2 minutes), without spending the retry'), path);
     assert.ok(text.includes('Nothing waits for a pool, and nothing about a failed pool is remembered. A limit notice is `quota` when it says a usage window, a quota or a balance is spent, with or without a reset named, or when the pool\'s meter shows the window full'), path);
     assert.ok(text.includes('the step comes back to you as `quota` when every reason is a usage limit, else as `unavailable`'), path);
     assert.ok(text.includes('If a route leaves no free pool, the step comes back to you at once'), path);

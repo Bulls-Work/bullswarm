@@ -344,7 +344,7 @@ Either way the pool's meter is read again at once, and a window it shows at its 
 
 Any other rate limit — `Error: Rate limit exceeded. Please wait a moment and try again.`,
 `429 Too Many Requests`, an overload — backs off on the same pool at most twice
-(20 s, then 60 s, or the wait it names when that is at most 2 minutes) and then
+(20-30 s, then 60-90 s with random jitter, or the wait it names when that is at most 2 minutes) and then
 comes back to you; one that names a longer wait comes back to you at once, with
 `back at` at the end of that wait. Nothing moves to another pool, and a single
 `bullswarm run` exits 1 on it. In a workflow started by an earlier version the

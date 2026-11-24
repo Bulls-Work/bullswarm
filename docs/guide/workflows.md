@@ -467,7 +467,7 @@ Your choices after a usage limit, or with no pool free:
 - cancel the run: `bullswarm workflow cancel <id>`.
 
 A short "too many requests" rate limit is not a usage limit. It backs off on
-the same pool at most twice (20 s, then 60 s, or the wait it names when that
+the same pool at most twice (20-30 s, then 60-90 s with random jitter, or the wait it names when that
 is at most 2 minutes), then comes back to you. Its header reads `rate limited · backed off twice` (`once` after one
 backoff; a backoff is never counted as the retry), and a try after a backoff
 reads `· after a rate-limit backoff`. One that names a longer wait comes back to you

@@ -1334,7 +1334,10 @@ async function dispatchUncapped({
     } else if (next.sameBackoff) {
       throttleRetries += 1;
       replayPool = pool;
-      await backoff(throttleBackoffMs(throttleRetries, { waitMs: verdict.throttleWaitMs }));
+      await backoff(throttleBackoffMs(throttleRetries, {
+        waitMs: verdict.throttleWaitMs,
+        jitter: (dependencies.random ?? Math.random)(),
+      }));
     } else if (kind === 'stalled') {
       fallbackWhy = verdict?.meta?.stalledBy === 'no-progress'
         ? `fallback from ${pool.name} after no file change for ${Math.round(noProgressSec)}s`

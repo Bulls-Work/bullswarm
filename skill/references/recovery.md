@@ -97,7 +97,7 @@ run out before its window resets is never given a step it would push over;
 when another capable pool is free, routing picks it as usual.
 
 A short "too many requests" rate limit is not a usage limit (failure kind
-`throttle`). It backs off on the same pool at most twice (20 s, then 60 s, or
+`throttle`). It backs off on the same pool at most twice (20-30 s, then 60-90 s with random jitter, or
 the wait it names when that is at most 2 minutes), then comes back to you (`✗
 <step> needs you · rate limited · backed off twice`). A try after a backoff
 reads `· after a rate-limit backoff`, and the block's header counts the

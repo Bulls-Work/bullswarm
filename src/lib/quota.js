@@ -61,6 +61,10 @@ const QUOTA_SIGNATURE_TABLE = Object.freeze([
   { phrase: 'rate_limit_exceeded', generic: true, limit: 'throttle' },
   { phrase: 'rate limited', generic: true, limit: 'throttle' },
   { phrase: 'too many requests', generic: true, limit: 'throttle' },
+  // Cloudflare Workers AI per-model request rate (error code 3021; Paid
+  // models allow 20 requests a minute per account). Its own wording, so not
+  // generic; it sits inside the 429 body, past the head of the line.
+  { phrase: 'inference request per min rate reached', limit: 'throttle' },
   { phrase: 'quota exceeded', generic: true },
   { phrase: 'exceeded your current quota' },
   { phrase: 'insufficient_quota' },
@@ -151,10 +155,12 @@ const DAY_MS = 24 * 60 * 60_000;
  * Shared with `matchLikelyAuthFailure` in watch.js so both gates agree on what
  * "error-shaped" means. HTTP 402 (Payment Required) is how a spent prepaid
  * balance arrives (grok, 2026-09-25): the limit phrase sits past the head
- * window of that line, so only its error shape admits it.
+ * window of that line, so only its error shape admits it. A line that opens
+ * with HTTP 429's reason phrase (`Too Many Requests: {...}`, how an
+ * OpenAI-compatible SDK reports Workers AI 3021, 2026-11-24) is one too.
  */
 export const ERROR_SHAPED_LINE =
-  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|402|403|429)|status\s*(?:401|402|403|429)|payment required|login required|please login|access denied|quota exceeded)\b/i;
+  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login|too many requests)(?:[.!:]|$)|\b(?:http\s*(?:401|402|403|429)|status\s*(?:401|402|403|429)|payment required|login required|please login|access denied|quota exceeded)\b/i;
 
 function declaredList(connector, key) {
   return Array.isArray(connector?.[key]) ? connector[key] : [];
@@ -224,16 +230,25 @@ export function classifyQuotaLimit(connector, { line = '', context = '' } = {}, 
   return { limit, waitMs, resetAt, explicit: windowWording && resetAt != null };
 }
 
+/** Jitter adds up to this share of a fixed backoff step (20 s -> 20-30 s). */
+export const THROTTLE_JITTER_SHARE = 0.5;
+
 /**
  * How long to wait before same-pool retry number `retry` (1-based) of a
  * throttled attempt: the wait the provider named when it named one (never
- * shorter than a second), else the fixed short schedule.
+ * shorter than a second), else the fixed short schedule plus `jitter` (a
+ * number in [0, 1), clamped) times THROTTLE_JITTER_SHARE of the step, so
+ * workers that hit one per-minute limit together do not all come back in the
+ * same second (Workers AI 3021, 2026-11-24).
  */
-export function throttleBackoffMs(retry = 1, { waitMs = null } = {}) {
+export function throttleBackoffMs(retry = 1, { waitMs = null, jitter = 0 } = {}) {
   const named = Number(waitMs);
   if (Number.isFinite(named) && named > 0) return Math.max(1000, Math.min(named, THROTTLE_MAX_WAIT_MS));
   const index = Math.max(0, Math.min(THROTTLE_BACKOFF_MS.length - 1, Math.floor(Number(retry) || 1) - 1));
-  return THROTTLE_BACKOFF_MS[index];
+  const step = THROTTLE_BACKOFF_MS[index];
+  const span = Math.round(step * THROTTLE_JITTER_SHARE);
+  const share = Number.isFinite(Number(jitter)) ? Math.min(Math.max(Number(jitter), 0), 1) : 0;
+  return step + Math.min(span - 1, Math.floor(share * span));
 }
 
 /**
@@ -598,6 +613,24 @@ function quoted(line, max = 160) {
   return `"${text.length > max ? `${text.slice(0, max - 1)}…` : text}"`;
 }
 
+/** A notice line longer than this is quoted from its phrase, this long. */
+const NOTICE_LINE_CHARS = 160;
+const NOTICE_QUOTE_CHARS = 60;
+
+/**
+ * The notice as a `why` quotes it: the whole line (as before) up to
+ * NOTICE_LINE_CHARS, else the part that starts at the matched phrase (a 429
+ * body arrives as one long JSON line, Workers AI 3021, 2026-11-24), so the
+ * `why` stays one readable line.
+ */
+function quotedNotice(line, signature) {
+  const text = String(line ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= NOTICE_LINE_CHARS) return quoted(text);
+  const at = signature ? text.toLowerCase().indexOf(String(signature).toLowerCase()) : -1;
+  if (at <= 0) return quoted(text, NOTICE_QUOTE_CHARS);
+  return quoted(`…${text.slice(at)}`, NOTICE_QUOTE_CHARS);
+}
+
 /**
  * What a limit notice says about the pool's usage window: the one place the
  * Q6 rule lives. Nothing here is stored or remembered (Q7).
@@ -633,7 +666,7 @@ export function decideUsageLimit({
     ? classifyQuotaLimit(connector, notice, { now: nowMs, timeZone })
     : { limit: 'throttle', waitMs: null, resetAt: null, explicit: false };
   const reading = meterReadingOf(meter !== undefined ? meter : readMeterSnapshot(bullswarmDir, pool), { now: nowMs });
-  const said = quoted(line) ?? 'a limit notice';
+  const said = quotedNotice(line, notice?.signature) ?? 'a limit notice';
   const summary = meterSummary(reading);
   const clockOpts = { now: nowMs, timeZone };
   const base = {

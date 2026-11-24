@@ -188,6 +188,7 @@ test('the default table splits into window and throttle wording with nothing los
   assert.ok(DEFAULT_THROTTLE_SIGNATURES.every((s) => !DEFAULT_WINDOW_SIGNATURES.includes(s)));
   assert.deepEqual(DEFAULT_THROTTLE_SIGNATURES, [
     'rate limit exceeded', 'rate_limit_exceeded', 'rate limited', 'too many requests',
+    'inference request per min rate reached',
   ]);
   for (const phrase of ['hit your session limit', 'usage limit reached', 'usage_credits_required', 'quota exceeded', 'insufficient_quota', 'out of credits']) {
     assert.ok(DEFAULT_WINDOW_SIGNATURES.includes(phrase), phrase);
@@ -446,8 +447,9 @@ test('the Workers AI 3021 wording is a throttle notice', () => {
   assert.ok(hit, 'found');
   assert.equal(hit.limit, 'throttle');
   assert.equal(hit.retrySamePool, true);
-  // Narration about it in a report is not a notice.
-  assert.equal(findQuotaFailure({}, 'The other service said inference request per min rate reached when we load-tested it last week, which we noted for later.', { now: NOW }), null);
+  // A line that mentions it past the head, and is not error-shaped, is not a
+  // notice (narration quoted on the error channel).
+  assert.equal(findQuotaFailure({}, 'When we load-tested the staging account last week, Cloudflare said inference request per min rate reached.', { now: NOW }), null);
 });
 
 // Q6: a limit's reset is known only two ways — the pool's own meter at >= 95%,
