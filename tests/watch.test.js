@@ -970,6 +970,44 @@ test('a provider error event carrying the real relay 401 body is an auth failure
   }
 });
 
+// Cloudflare Workers AI's per-model rate limit (code 3021), as OpenCode
+// 1.19.6 reported it on 2026-11-24 (order bs-cf-ratelimit-1124; ids, headers
+// and the account in the URL replaced). Fifteen parallel agents on a model
+// limited to 20 requests a minute: a throttle, backed off on the same pool,
+// not a provider failure that hops pools.
+const CF_3021_BODY = '{"errors":[{"message":"AiError: AiError: rate limiting: inference request per min rate reached (6d1ea148-0f94-4f01-adde-9e65e2f09183)","code":3021}],"success":false,"result":{},"messages":[]}';
+const CF_3021_EVENT = {
+  type: 'error',
+  timestamp: 1795510351180,
+  sessionID: 'ses_df342e859ffeS2XL3dbC7plLzW',
+  error: {
+    name: 'APIError',
+    data: {
+      message: `Too Many Requests: ${CF_3021_BODY}`,
+      statusCode: 429,
+      isRetryable: true,
+      responseHeaders: { 'content-type': 'application/json', server: 'cloudflare' },
+      responseBody: CF_3021_BODY,
+      metadata: { url: 'https://api.cloudflare.com/client/v4/accounts/ACCOUNT/ai/v1/chat/completions' },
+    },
+  },
+};
+
+test('a Cloudflare 3021 rate-limit event is a throttle, not a provider failure', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(streamingEvent(CF_3021_EVENT), 'Do the thing.', ctx.dir, ctx.paths, { usageLimitsToCaller: true });
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.failureKind, 'throttle', verdict.why);
+    assert.equal(verdict.throttleRetrySamePool, true);
+    assert.equal(verdict.usageLimit?.limit, 'throttle');
+    assert.match(verdict.why, /inference request per min rate reached/);
+    assert.ok(verdict.why.length <= 160, `why is ${verdict.why.length} chars`);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('the relay 503 no-auth-available body is the same auth failure, not a retryable provider blip', async () => {
   const ctx = makeCtx();
   try {

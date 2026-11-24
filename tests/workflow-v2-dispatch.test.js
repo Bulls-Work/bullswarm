@@ -44,6 +44,8 @@ function harness(verdicts, coreOverrides = {}) {
       saveState: (_dir, next) => Object.assign(core, structuredClone(next)),
       now: (() => { let value = Date.parse('2026-08-31T01:00:00Z'); return () => (value += 1000); })(),
       uuid: () => 'session-fixed',
+      // No jitter unless a test asks: the backoff schedule reads exact.
+      random: () => 0,
     },
     core,
   };
@@ -3333,6 +3335,31 @@ test('failure rule: a transient "too many requests" backs off twice on its only 
   assert.equal(Object.hasOwn(result, 'retryAfter'), false);
   assert.equal(result.verdict.why, 'rate limited (transient): "Error: 429 Too Many Requests" · meter not read, below 95%; no spent window with a reset named');
   assert.deepEqual(core.pools, {});
+});
+
+// Cloudflare Workers AI 3021 (bs-cf-ratelimit-1124): 20 requests a minute per
+// model, so many parallel workers hit it together. The backoff stays on the
+// same pool, is jittered so they do not all come back in the same second,
+// and does not spend the step's one retry.
+test('failure rule: a rate limit backs off on the same pool with jitter, and keeps the one retry for a real failure', async () => {
+  const cf3021 = () => limitNotice({ limit: 'throttle', line: 'Too Many Requests: rate limiting: inference request per min rate reached (code 3021)' });
+  const slept = [];
+  const jittered = await ruleDispatch([cf3021(), cf3021(), good], {
+    preferredPool: 'luna-1', dependencies: { sleep: async (ms) => { slept.push(ms); }, random: () => 0.5 },
+  });
+  assert.equal(jittered.result.ok, true);
+  assert.deepEqual(pickedPools(jittered.result), ['luna-1', 'luna-1', 'luna-1'], 'never another pool');
+  assert.deepEqual(slept, [25_000, 75_000], 'the 20 s and 60 s steps, each plus half its jitter span');
+
+  // After a rate-limit wait, a real provider failure still gets the step's one
+  // retry, on another pool.
+  const providerFail = { ok: false, failureKind: 'provider', why: 'provider stream reported error', meta: { exitCode: 1, providerFailureType: 'error' } };
+  const kept = await ruleDispatch([cf3021(), providerFail, good], {
+    preferredPool: 'luna-1', dependencies: { sleep: async () => {} },
+  });
+  assert.equal(kept.result.ok, true);
+  assert.deepEqual(pickedPools(kept.result), ['luna-1', 'luna-1', 'luna-2']);
+  assert.deepEqual(kept.result.attempts.map((attempt) => attempt.failureKind), ['throttle', 'provider', null]);
 });
 
 test('failure rule: a window-worded notice with no reset is quota: no backoff, no move, no time', async () => {

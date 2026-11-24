@@ -426,6 +426,30 @@ test('throttle backoff is short: the named wait, else the fixed schedule', () =>
   assert.equal(throttleBackoffMs(2, { waitMs: null }), 60_000);
 });
 
+test('throttle backoff jitter spreads parallel workers: up to half again the fixed step, never a named wait', () => {
+  assert.equal(throttleBackoffMs(1, { jitter: 0 }), 20_000);
+  assert.equal(throttleBackoffMs(1, { jitter: 0.5 }), 25_000);
+  assert.equal(throttleBackoffMs(2, { jitter: 0.5 }), 75_000);
+  assert.ok(throttleBackoffMs(1, { jitter: 0.999999 }) < 30_000);
+  assert.ok(throttleBackoffMs(2, { jitter: 0.999999 }) < 90_000);
+  // A wait the provider named is kept as named.
+  assert.equal(throttleBackoffMs(1, { waitMs: 30_000, jitter: 0.5 }), 30_000);
+  // Out-of-range jitter is clamped, not trusted.
+  assert.equal(throttleBackoffMs(1, { jitter: 7 }), 20_000 + 10_000 - 1);
+  assert.equal(throttleBackoffMs(1, { jitter: -1 }), 20_000);
+  assert.equal(throttleBackoffMs(1, { jitter: Number.NaN }), 20_000);
+});
+
+test('the Workers AI 3021 wording is a throttle notice', () => {
+  const line = 'Too Many Requests: {"errors":[{"message":"AiError: AiError: rate limiting: inference request per min rate reached (6d1ea148)","code":3021}]}';
+  const hit = findQuotaFailure({}, line, { now: NOW });
+  assert.ok(hit, 'found');
+  assert.equal(hit.limit, 'throttle');
+  assert.equal(hit.retrySamePool, true);
+  // Narration about it in a report is not a notice.
+  assert.equal(findQuotaFailure({}, 'The other service said inference request per min rate reached when we load-tested it last week, which we noted for later.', { now: NOW }), null);
+});
+
 // Q6: a limit's reset is known only two ways — the pool's own meter at >= 95%,
 // or a provider line that says a usage window is spent AND names the reset.
 
