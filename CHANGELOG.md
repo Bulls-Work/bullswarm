@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.40.3 — Cloudflare rate limit waits on the same pool
+
 - Cloudflare Workers AI's per-model rate limit (code 3021, `rate limiting: inference request per min rate reached`, HTTP 429) is now a `throttle`: the step backs off on the same pool and keeps its one retry. Before, it read as a provider failure, so each hit spent the retry on another pool (one step went Inkling, DeepSeek, then gpt-oss-120b). A notice line that opens with HTTP 429's reason phrase (`Too Many Requests: {...}`) now counts as a provider notice.
 - The throttle backoff is jittered: 20-30 s, then 60-90 s, instead of exactly 20 s and 60 s, so parallel workers that hit one per-minute limit do not all retry in the same second. A wait the provider names is kept as named.
 - A long limit notice (a 429 JSON body) is quoted in `why` from the matched phrase, so the line stays short.
