@@ -441,6 +441,22 @@ test('throttle backoff jitter spreads parallel workers: up to half again the fix
   assert.equal(throttleBackoffMs(1, { jitter: Number.NaN }), 20_000);
 });
 
+// Cloudflare's API-level limit, code 971, seen 8 times on 2026-11-24 and read
+// as a provider failure by 0.40.3 (bs-provider-kill-1124).
+test('the Cloudflare 971 notice and any 429 line with a JSON body are throttle notices', () => {
+  const cf971 = 'Too Many Requests: {"success":false,"errors":[{"code":971,"message":"Please wait and consider throttling your request speed"}],"messages":[],"result":null}';
+  const hit = findQuotaFailure({}, cf971, { now: NOW });
+  assert.ok(hit, '971 found');
+  assert.equal(hit.limit, 'throttle');
+  assert.equal(hit.retrySamePool, true);
+  // HTTP 429's own reason phrase with whatever JSON body a provider sends.
+  const other = findQuotaFailure({}, 'Too Many Requests: {"error":{"code":"slow_down","message":"try later"}}', { now: NOW });
+  assert.ok(other, 'a 429 JSON body found');
+  assert.equal(other.limit, 'throttle');
+  // Prose about too many requests stays prose.
+  assert.equal(findQuotaFailure({}, 'too many requests to the GitHub API slowed the crawl down', { now: NOW }), null);
+});
+
 test('the Workers AI 3021 wording is a throttle notice', () => {
   const line = 'Too Many Requests: {"errors":[{"message":"AiError: AiError: rate limiting: inference request per min rate reached (6d1ea148)","code":3021}]}';
   const hit = findQuotaFailure({}, line, { now: NOW });

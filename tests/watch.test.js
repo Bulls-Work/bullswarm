@@ -1008,6 +1008,34 @@ test('a Cloudflare 3021 rate-limit event is a throttle, not a provider failure',
   }
 });
 
+const CF_971_EVENT = {
+  type: 'error',
+  timestamp: 1795506000000,
+  sessionID: 'ses_df3fffffffffAAAAAAAAAAAAAA',
+  error: {
+    name: 'APIError',
+    data: {
+      message: 'Too Many Requests: {"success":false,"errors":[{"code":971,"message":"Please wait and consider throttling your request speed"}],"messages":[],"result":null}',
+      statusCode: 429,
+      isRetryable: true,
+      responseBody: '{"success":false,"errors":[{"code":971,"message":"Please wait and consider throttling your request speed"}],"messages":[],"result":null}',
+      metadata: { url: 'https://api.cloudflare.com/client/v4/accounts/ACCOUNT/ai/v1/chat/completions' },
+    },
+  },
+};
+
+test('a Cloudflare 971 rate-limit event is a throttle, not a provider failure', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(streamingEvent(CF_971_EVENT), 'Do the thing.', ctx.dir, ctx.paths, { usageLimitsToCaller: true });
+    assert.equal(verdict.failureKind, 'throttle', verdict.why);
+    assert.equal(verdict.throttleRetrySamePool, true);
+    assert.ok(verdict.why.length <= 160, `why is ${verdict.why.length} chars`);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('the relay 503 no-auth-available body is the same auth failure, not a retryable provider blip', async () => {
   const ctx = makeCtx();
   try {
