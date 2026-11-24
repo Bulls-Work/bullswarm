@@ -188,7 +188,7 @@ test('the default table splits into window and throttle wording with nothing los
   assert.ok(DEFAULT_THROTTLE_SIGNATURES.every((s) => !DEFAULT_WINDOW_SIGNATURES.includes(s)));
   assert.deepEqual(DEFAULT_THROTTLE_SIGNATURES, [
     'rate limit exceeded', 'rate_limit_exceeded', 'rate limited', 'too many requests',
-    'inference request per min rate reached',
+    'inference request per min rate reached', 'please wait and consider throttling your request speed',
   ]);
   for (const phrase of ['hit your session limit', 'usage limit reached', 'usage_credits_required', 'quota exceeded', 'insufficient_quota', 'out of credits']) {
     assert.ok(DEFAULT_WINDOW_SIGNATURES.includes(phrase), phrase);

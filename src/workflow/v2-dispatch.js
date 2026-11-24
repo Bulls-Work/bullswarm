@@ -600,6 +600,11 @@ async function dispatchUncapped({
           try { onQueued?.({ kind: 'pool', pools }); } catch { /* display only */ }
           if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
           await (dependencies.sleep ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); })))(dependencies.capsPollMs ?? CAPS_POLL_MS);
+          // The next pass picks the same thing again: a backoff or a
+          // same-pool replay keeps its pool. Without this, a rate-limited
+          // attempt whose pool filled up during its backoff lost the
+          // backoff here and failed "no pool can take it now" (2026-11-24).
+          replayPool = replay;
           continue;
         }
         const note = `at pool cap, sat out: ${[...full].map(([name, view]) => `${name} ${view.count}/${view.max}`).join(', ')}`;

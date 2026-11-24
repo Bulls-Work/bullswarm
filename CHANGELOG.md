@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A rate-limited attempt whose pool reached its concurrency cap during the backoff now waits for a slot on that pool and retries there. Before, the cap wait dropped the backoff, and the step failed with "no retry: no pool can take it now" after a single wait. Seen on cf:deepseek slices on 24 Nov, with the pool at cap 2 and 4 running.
+- Cloudflare's API-level rate limit (code 971, "Please wait and consider throttling your request speed") is now a `throttle`, like 3021. More generally, any `Too Many Requests: {...}` line (HTTP 429's reason phrase with a JSON body) counts as a rate-limit notice, whatever code the provider puts inside.
+- A rate-limit `why` quotes the provider's own message from a JSON body, for example "rate limiting: inference request per min rate reached", not the start of the JSON.
+
 ## 0.40.3 — Cloudflare rate limit waits on the same pool
 
 - Cloudflare Workers AI's per-model rate limit (code 3021, `rate limiting: inference request per min rate reached`, HTTP 429) is now a `throttle`: the step backs off on the same pool and keeps its one retry. Before, it read as a provider failure, so each hit spent the retry on another pool (one step went Inkling, DeepSeek, then gpt-oss-120b). A notice line that opens with HTTP 429's reason phrase (`Too Many Requests: {...}`) now counts as a provider notice.

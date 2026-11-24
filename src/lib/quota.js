@@ -65,6 +65,8 @@ const QUOTA_SIGNATURE_TABLE = Object.freeze([
   // models allow 20 requests a minute per account). Its own wording, so not
   // generic; it sits inside the 429 body, past the head of the line.
   { phrase: 'inference request per min rate reached', limit: 'throttle' },
+  // Cloudflare's API-level request limit (error code 971, 2026-11-24).
+  { phrase: 'please wait and consider throttling your request speed', limit: 'throttle' },
   { phrase: 'quota exceeded', generic: true },
   { phrase: 'exceeded your current quota' },
   { phrase: 'insufficient_quota' },
@@ -124,8 +126,12 @@ export const GENERIC_QUOTA_SIGNATURES = QUOTA_SIGNATURE_TABLE
   .filter((entry) => entry.generic)
   .map((entry) => entry.phrase);
 const GENERIC_SET = new Set(GENERIC_QUOTA_SIGNATURES.map((s) => s.toLowerCase()));
-/** What may follow a generic phrase on a bare notice line. */
-const BARE_NOTICE_TAIL = /^(?:[\s.,:;!?·•\-–—|/]*(?:\(|\[|\d|resets?\b|resetting\b|reset\b|try again\b|retry\b|retrying\b|please\b|wait\b|until\b|after\b|in\s+\d|for\s+\d|back\b|available\b|limit\b|quota\b|window\b|window\b|$))/i;
+/**
+ * What may follow a generic phrase on a bare notice line. A JSON body counts:
+ * an SDK reports HTTP 429 as `Too Many Requests: {...}` whatever code the
+ * provider put inside (Cloudflare 3021 and 971, 2026-11-24).
+ */
+const BARE_NOTICE_TAIL = /^(?:[\s.,:;!?·•\-–—|/]*(?:\(|\[|\{|\d|resets?\b|resetting\b|reset\b|try again\b|retry\b|retrying\b|please\b|wait\b|until\b|after\b|in\s+\d|for\s+\d|back\b|available\b|limit\b|quota\b|window\b|window\b|$))/i;
 
 function bareNotice(line, offset, needle) {
   const tail = line.slice(offset + needle.length);
@@ -625,6 +631,19 @@ const NOTICE_QUOTE_CHARS = 60;
  */
 function quotedNotice(line, signature) {
   const text = String(line ?? '').replace(/\s+/g, ' ').trim();
+  // A provider error with a JSON body (`Too Many Requests: {"errors":[{
+  // "message":"AiError: rate limiting: ..."}]}`): quote the provider's own
+  // message, without the error-class prefixes the SDK stacks on it.
+  // Only a flat message (no nested JSON of its own) that names the matched
+  // phrase, or sits behind a phrase that opens the line (`Too Many Requests:`).
+  const lower = text.toLowerCase();
+  const sig = String(signature ?? '').toLowerCase();
+  const phraseLeads = sig && lower.indexOf(sig) >= 0 && lower.indexOf(sig) < text.indexOf('{');
+  const messages = text.length > NOTICE_QUOTE_CHARS && text.includes('{')
+    ? [...text.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.)+)"/g)].map((m) => m[1]).filter((m) => !m.includes('{'))
+    : [];
+  const body = messages.find((m) => sig && m.toLowerCase().includes(sig)) ?? (phraseLeads ? messages[0] : null);
+  if (body) return quoted(body.replace(/^(?:[A-Za-z]*Error:\s*)+/, ''), NOTICE_QUOTE_CHARS);
   if (text.length <= NOTICE_LINE_CHARS) return quoted(text);
   const at = signature ? text.toLowerCase().indexOf(String(signature).toLowerCase()) : -1;
   if (at <= 0) return quoted(text, NOTICE_QUOTE_CHARS);
