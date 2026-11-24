@@ -282,6 +282,48 @@ test('dispatch: a pool at its cap sits out the pick; with no other pool the step
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// bs-provider-kill-1124: a rate-limited attempt backs off, and by the time
+// its same-pool retry picks, other runs fill the pool's cap. The retry must
+// wait for a slot on that pool, as any step does (C6), not lose its backoff
+// and fail with "no pool can take it now" (slice 3ntn9i, 2026-11-24 10:44Z).
+test('dispatch: a rate-limit backoff whose pool is at its cap waits for a slot, then retries on that pool', async () => {
+  const root = realpathSync(home('bs-caps-throttle-'));
+  try {
+    writeCaps(root, caps({}, { 'luna-1': 1 }));
+    const throttled = {
+      ok: false, failureKind: 'throttle', throttleWaitMs: null, throttleRetrySamePool: true,
+      usageLimit: { rule: 'transient', limit: 'throttle', line: 'Too Many Requests: rate limiting: inference request per min rate reached', until: null },
+      why: 'rate limited (transient): "…inference request per min rate reached" · meter not read',
+      meta: { exitCode: 1, wallSec: 1 },
+    };
+    const verdicts = [throttled, good];
+    let busy = null;
+    let sleeps = 0;
+    const queued = [];
+    const result = await dispatchV2Action({
+      ...dispatchArgs(root, null, 'look-throttled', { maxMechanicalRetries: 1 }),
+      onQueued: (event) => queued.push(event),
+      dependencies: {
+        ...deps(async () => verdicts.shift()),
+        random: () => 0,
+        sleep: async () => {
+          sleeps += 1;
+          // The backoff: another run takes luna-1's only slot meanwhile.
+          if (sleeps === 1) busy = registerAssignment(root, { pool: 'luna-1', lane: 'analyze', effort: 'low', source: 'run' });
+          // The second cap poll: that run ends.
+          if (sleeps === 3) releaseAssignment(root, busy.id);
+          await tick();
+        },
+      },
+    });
+    assert.equal(result.ok, true, result.verdict?.why ?? result.why);
+    assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['luna-1', 'luna-1']);
+    assert.deepEqual(result.attempts.map((attempt) => attempt.failureKind ?? null), ['throttle', null]);
+    assert.equal(result.attempts[1].retryOf?.how, 'wait', 'the retry is the backoff, not a counted retry');
+    assert.ok(queued.some((event) => event.kind === 'pool'), 'it waited at the pool cap');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('dispatch: a step cancelled while queued returns cancelled and never starts a worker', async () => {
   const root = realpathSync(home('bs-caps-cancel-'));
   try {
