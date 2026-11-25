@@ -1,0 +1,10 @@
+{
+ "repo": "A",
+ "parent": "25fa8ba",
+ "fixCommit": "08b6502",
+ "checkFiles": [
+  "tests/integrate.test.js"
+ ],
+ "checkCmd": "node --test tests/integrate.test.js",
+ "timeoutSec": 600
+}

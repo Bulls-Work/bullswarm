@@ -1,0 +1,17 @@
+{
+ "task": "06-restore-unloaded-rows",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 2.8,
+  "tail": "                                    ^\n    110|   });\n    111| });\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/2]\u23af\n\n FAIL  tests/sync/db-history.test.ts > restoring rows that are not loaded > a restore loads the version rows it does not have yet (a tab that never opened the rows view)\nTypeError: Cannot read properties of undefined (reading 'props')\n \u276f tests/sync/db-history.test.ts:137:23\n    135|     expect(r.ok).toBe(true);\n    136|     await ws2.flush();\n    137|     expect(ws2.page(r1)!.props!.note).toBe('shade');\n       |                       ^\n    138|   });\n    139| });\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[2/2]\u23af\n\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 2.5,
+  "tail": "ests/sync/db-history.test.ts (6 tests) 948ms\n   \u2713 large database versions > a database of 1,000 rows with six props keeps a whole version, and restoring it works  358ms\n   \u2713 large database versions > a database version too large to keep says so, and a restore still goes ahead  438ms\n\n Test Files  1 passed (1)\n      Tests  6 passed (6)\n   Start at  02:39:58\n   Duration  1.72s (transform 242ms, setup 0ms, collect 370ms, tests 948ms, environment 146ms, prepare 44ms)\n\nstderr | tests/sync/db-history.test.ts\nWarning: KaTeX doesn't work in quirks mode. Make sure your website has a suitable doctype.\n\n"
+ },
+ "verified": true
+}

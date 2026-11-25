@@ -1,0 +1,10 @@
+{
+ "repo": "A",
+ "parent": "c5b25cc",
+ "fixCommit": "36c89b3",
+ "checkFiles": [
+  "tests/workflow-dashboard.test.js"
+ ],
+ "checkCmd": "node --test tests/workflow-dashboard.test.js",
+ "timeoutSec": 600
+}

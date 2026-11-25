@@ -1,0 +1,17 @@
+{
+ "task": "02-ownership-glob",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 0.1,
+  "tail": "02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vA/02-ownership-glob/tests/workflow-ownership.test.js:68:22)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n1..6\n# tests 6\n# suites 0\n# pass 5\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 85.700084\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 0.3,
+  "tail": "e ownership results\n  ---\n  duration_ms: 0.155875\n  type: 'test'\n  ...\n# Subtest: captures a deterministic bounded non-git workspace manifest\nok 5 - captures a deterministic bounded non-git workspace manifest\n  ---\n  duration_ms: 94.077875\n  type: 'test'\n  ...\n# Subtest: real filenames may contain glob metacharacters; author-supplied globs still cannot\nok 6 - real filenames may contain glob metacharacters; author-supplied globs still cannot\n  ---\n  duration_ms: 0.667334\n  type: 'test'\n  ...\n1..6\n# tests 6\n# suites 0\n# pass 6\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 176.657125\n"
+ },
+ "verified": true
+}

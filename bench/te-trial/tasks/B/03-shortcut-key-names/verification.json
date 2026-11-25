@@ -1,0 +1,17 @@
+{
+ "task": "03-shortcut-key-names",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 2.3,
+  "tail": "a long-text cellEnter alone saves a title; Esc saves and closes.\u2318EnterMove between view tabs\u2190or\u2192orHomeorEndCommentsSend a commentEnterNew line in a comment\u21e7Enter\"\n\n \u276f tests/ui/shell/shortcuts.test.tsx:126:35\n    124|       expect(box.textContent).not.toContain(mac ? 'Ctrl' : '\u2318');\n    125|       // notes spell keys for the platform too, never the internal \"Mo\u2026\n    126|       expect(box.textContent).not.toMatch(/\\bMod\\b/);\n       |                                   ^\n    127|       expect(search.querySelector('.nic-shortcuts-note')!.textContent)\u2026\n    128|     }\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 2.4,
+  "tail": "\n RUN  v3.2.7 /private/tmp/claude-501/-Users-cowcow02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vB/03-shortcut-key-names\n\n \u2713 tests/ui/shell/shortcuts.test.tsx (15 tests) 208ms\n\n Test Files  1 passed (1)\n      Tests  15 passed (15)\n   Start at  02:39:28\n   Duration  1.64s (transform 767ms, setup 0ms, collect 1.06s, tests 208ms, environment 133ms, prepare 46ms)\n\n"
+ },
+ "verified": true
+}

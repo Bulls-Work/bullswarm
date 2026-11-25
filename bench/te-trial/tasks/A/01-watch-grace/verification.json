@@ -1,0 +1,17 @@
+{
+ "task": "01-watch-grace",
+ "depsChanged": "",
+ "parent": {
+  "exit": 1,
+  "failed": true,
+  "sec": 0.7,
+  "tail": "owcow02-Repo/bf120fab-9df5-4bd8-aa63-8b5611d530b8/scratchpad/te/work/vA/01-watch-grace/tests/workflow-watch.test.js:196:24)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 7\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 674.366542\n"
+ },
+ "fix": {
+  "exit": 0,
+  "passed": true,
+  "sec": 1.3,
+  "tail": "umption\n  ---\n  duration_ms: 1.45625\n  type: 'test'\n  ...\n# Subtest: compact heartbeat separates semantic quiet from live agent output\nok 7 - compact heartbeat separates semantic quiet from live agent output\n  ---\n  duration_ms: 1.630708\n  type: 'test'\n  ...\n# Subtest: watch waits a bounded grace period for a freshly launched run to write state.json\nok 8 - watch waits a bounded grace period for a freshly launched run to write state.json\n  ---\n  duration_ms: 1009.866458\n  type: 'test'\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 8\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1281.715292\n"
+ },
+ "verified": true
+}
