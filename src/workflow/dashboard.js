@@ -121,10 +121,19 @@ export function dashboardModel(row, {
   runs = null, usage = null, integration = null, installResult = null, nowMs = Date.now(),
   rollups = null, days = null, prices = null, period = '7d', budgetPeriod = 'week',
   metric = 'runs', meterHistory = null, tasks = null, task = null, taskRoot = null, taskRunsDir = null,
-  fleetPicks = null,
+  fleetPicks = null, aggregateCache = null,
 } = {}) {
   const pools = usage?.pools ?? [];
   const records = rollups ?? [];
+  // The Stats and Budget aggregates read only the index, the pools, the
+  // prices, the period and the minute. The live dashboard paints several
+  // times a second (the spinner too), so it hands in a cache and the
+  // aggregates are rebuilt only when one of those inputs is a new value.
+  const aggregateKey = [records, pools, prices, period, budgetPeriod, metric, meterHistory,
+    Math.floor(Number(nowMs) / AGGREGATE_EVERY_MS)];
+  const cached = aggregateCache?.key
+    && aggregateCache.key.length === aggregateKey.length
+    && aggregateCache.key.every((part, index) => part === aggregateKey[index]);
   const model = {
     row: row ?? null,
     task: task ?? null,
@@ -149,8 +158,13 @@ export function dashboardModel(row, {
       finished: Array.isArray(tasks?.finished) ? tasks.finished : [],
     },
   };
-  // The aggregations are the models' arithmetic, run once per paint over the
-  // rollup index — never over the run directories.
+  if (cached) {
+    model.stats = aggregateCache.stats;
+    model.budget = aggregateCache.budget;
+    return model;
+  }
+  // The aggregations are the models' arithmetic, run over the rollup index —
+  // never over the run directories.
   try {
     const overview = overviewModel(records, pools, { period, now: nowMs });
     model.stats = {
@@ -183,8 +197,16 @@ export function dashboardModel(row, {
     ]));
     model.budget = budget;
   } catch { model.budget = null; }
+  if (aggregateCache) {
+    aggregateCache.key = aggregateKey;
+    aggregateCache.stats = model.stats;
+    aggregateCache.budget = model.budget;
+  }
   return model;
 }
+
+/** How long the dashboard's Stats and Budget aggregates stay current: one minute. */
+const AGGREGATE_EVERY_MS = 60_000;
 
 /**
  * One frame of a run's dashboard page as a string, the way every existing
@@ -587,6 +609,8 @@ export async function runDashboard(bullswarmDir, {
     planBoxes: ui.runPlanBoxes,
     runFollow: ui.runFollow,
   });
+  // The aggregates last painted, reused until their inputs change (see dashboardModel).
+  const aggregateCache = {};
   const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
     // Every page but Run and Step is paintable without a run; those two fall
@@ -617,7 +641,7 @@ export async function runDashboard(bullswarmDir, {
       task,
       taskRunsDir: join(bullswarmDir, 'runs'),
       usage, integration, installResult, rollups, days, prices,
-      period: ui.period, metric: ui.metric, meterHistory, fleetPicks,
+      period: ui.period, metric: ui.metric, meterHistory, fleetPicks, aggregateCache,
     });
     // The overview's latest-turns window slides while the reader follows the
     // step; once they stop, it stays where the last frame left it.

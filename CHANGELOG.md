@@ -5,6 +5,7 @@
 - A rate-limited attempt whose pool reached its concurrency cap during the backoff now waits for a slot on that pool and retries there. Before, the cap wait dropped the backoff, and the step failed with "no retry: no pool can take it now" after a single wait. Seen on cf:deepseek slices on 24 Nov, with the pool at cap 2 and 4 running.
 - Cloudflare's API-level rate limit (code 971, "Please wait and consider throttling your request speed") is now a `throttle`, like 3021. More generally, any `Too Many Requests: {...}` line (HTTP 429's reason phrase with a JSON body) counts as a rate-limit notice, whatever code the provider puts inside.
 - A rate-limit `why` quotes the provider's own message from a JSON body, for example "rate limiting: inference request per min rate reached", not the start of the JSON.
+- The dashboard (`bullswarm` with no arguments) no longer holds a CPU core. Every paint, including the spinner's every 400 ms, rebuilt the Stats and Budget aggregates and deep-copied the whole model, rollup index and all, to show pool labels. Now the aggregates are rebuilt only when the index, the pools, the prices, the period or the minute change, and each object's labelled copy is reused while the object is unchanged. Measured on a home with 850 runs: Home page 66-86% CPU before, 10-27% after; memory no longer climbs past 500 MB in 3 minutes.
 
 ## 0.40.3 — Cloudflare rate limit waits on the same pool
 

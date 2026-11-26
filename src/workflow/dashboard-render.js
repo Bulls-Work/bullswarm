@@ -32,6 +32,9 @@ import { historyPageNotes } from './dashboard-page-history.js';
 import { statsPage } from './dashboard-page-stats.js';
 import { DASHBOARD_PAGES, STATS_TABS, FLEET_TABS } from './dashboard-pages.js';
 
+/** Each model object's label-swapped copy, per label set (see renderDashboardPage). */
+const RELABELLED = new WeakMap();
+
 /**
  * One frame of the dashboard: the page tab row, the sticky header, the body
  * window, the message line, the notes, and the sticky bottom nav — plus the
@@ -49,18 +52,28 @@ export function renderDashboardPage(model, options = {}) {
     .filter((pool) => pool?.name && pool?.poolLabel && pool.poolLabel !== pool.name)
     .map((pool) => [pool.name, pool.poolLabel]));
   if (labels.size) {
+    const ordered = [...labels].sort((a, b) => b[0].length - a[0].length);
+    const signature = ordered.map(([pool, label]) => `${pool}\u0000${label}`).join('\u0001');
     const replace = (text) => {
       let out = String(text);
-      for (const [pool, label] of [...labels].sort((a, b) => b[0].length - a[0].length)) {
-        out = out.split(pool).join(label);
-      }
+      for (const [pool, label] of ordered) out = out.split(pool).join(label);
       return out;
     };
+    // The dashboard paints several times a second and most of the model (the
+    // rollup index, the cached aggregates, the active rows between refreshes)
+    // is the same object frame after frame. Copy each object once per label
+    // set and reuse the copy: re-copying the whole index on every spinner
+    // tick held two dashboards at 85-120% CPU (Audit 9, 26 Nov).
     const visit = (value) => {
       if (typeof value === 'string') return labels.get(value) ?? replace(value);
-      if (Array.isArray(value)) return value.map(visit);
       if (!value || typeof value !== 'object') return value;
-      return Object.fromEntries(Object.entries(value).map(([key, child]) => [labels.get(key) ?? key, visit(child)]));
+      const memo = RELABELLED.get(value);
+      if (memo && memo.signature === signature) return memo.copy;
+      const copy = Array.isArray(value)
+        ? value.map(visit)
+        : Object.fromEntries(Object.entries(value).map(([key, child]) => [labels.get(key) ?? key, visit(child)]));
+      RELABELLED.set(value, { signature, copy });
+      return copy;
     };
     model = visit(model);
   }
