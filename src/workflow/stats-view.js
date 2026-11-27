@@ -2,7 +2,7 @@
 // stats-model; this module chooses model-owned values for the four tabs and
 // turns them into the shared surface's input shape.
 
-import { formatDashboardValue, periodToggle, seriesColors } from './dash-kit.js';
+import { formatDashboardValue, periodToggle, seriesColors, SERIES_PALETTE } from './dash-kit.js';
 import {
   chartAxisRowIndex,
   compactMoney,
@@ -742,7 +742,9 @@ function tokensLines(stats, { cols, height, period, ansi, slice }) {
   const buckets = model?.buckets ?? [];
   const unsplit = buckets.some((bucket) => finite(bucket.unsplit));
   const names = ['input', 'output', ...(unsplit ? ['not split'] : [])];
-  const colors = seriesColors(names);
+  // Fixed, far-apart hues: hashed palette slots gave input and output two
+  // near-identical olives on the real home (28 Nov).
+  const colors = new Map([['input', SERIES_PALETTE[8]], ['output', SERIES_PALETTE[4]], ['not split', SERIES_PALETTE[0]]]);
   const millions = (value) => (finite(value) == null ? null : Math.round((value / 1e6) * 1000) / 1000);
   const series = [
     { id: 'input', label: 'input', values: buckets.map((bucket) => millions(bucket.input)), color: colors.get('input') },

@@ -109,7 +109,7 @@ export function compactMoney({ value, known, tokenSource = null, partial = false
 
 const TABS = Object.freeze([
   { id: 'spending', label: 'Spending', key: 's' },
-  { id: 'pool', label: 'Pool', key: 'p' },
+  { id: 'tokens', label: 'Tokens', key: 't' },
   { id: 'model', label: 'Model', key: 'm' },
   { id: 'project', label: 'Project', key: 'j' },
 ]);
@@ -1157,8 +1157,7 @@ export function renderStatsSurface({
   const nav = tabsRow(tabs, { active: activeTab, width: cols, action: (item) => ({ kind: 'tab', tab: item.id }) });
   const controls = periodToggle(PERIODS, { active: activePeriod, width: cols });
   const tabLabel = TABS.find((item) => item.id === activeTab)?.label ?? 'Spending';
-  const toggle = activeTab === 'spending' ? `  [${stackBy === 'model' ? 'By Model' : 'By Pool'}] ${stackBy === 'model' ? 'By Pool' : 'By Model'}` : '';
-  const controlText = fit(`${tabLabel} · ${PERIOD_LABELS[activePeriod] ?? activePeriod}${toggle}`, cols);
+  const controlText = fit(`${tabLabel} · ${PERIOD_LABELS[activePeriod] ?? activePeriod}`, cols);
   const lines = [fit(nav.text, cols), controlText, ' '.repeat(cols)];
   const regions = [];
   const controlsMeta = [
