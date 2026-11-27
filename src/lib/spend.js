@@ -238,6 +238,53 @@ export function expectedMinutesFor(assignment = {}, opts = {}) {
 
 // --- worker minutes ----------------------------------------------------------
 
+// Each decision log's attempt windows, per pool and sorted by start, built
+// once per log. rateForWindow asks for minutes once per pair of meter
+// readings; re-parsing the whole log (archive included) for each pair held
+// the panel's usage reload at seconds of CPU (28 Nov profile). The entry
+// count and the last entry tell a log that was appended to since.
+const POOL_WINDOWS = new WeakMap();
+
+function poolWindows(decisionLog) {
+  const last = decisionLog[decisionLog.length - 1];
+  const cached = POOL_WINDOWS.get(decisionLog);
+  if (cached && cached.length === decisionLog.length && cached.last === last) return cached.byPool;
+  const raw = new Map();
+  for (const entry of decisionLog) {
+    const owner = poolOf(entry);
+    if (owner == null) continue;
+    const window = attemptWindow(entry);
+    if (!window) continue;
+    if (!raw.has(owner)) raw.set(owner, []);
+    raw.get(owner).push(window);
+  }
+  const byPool = new Map();
+  for (const [owner, list] of raw) {
+    list.sort((a, b) => a.startMs - b.startMs);
+    let maxMs = 0;
+    for (const window of list) maxMs = Math.max(maxMs, window.endMs - window.startMs);
+    byPool.set(owner, {
+      starts: list.map((window) => window.startMs),
+      ends: list.map((window) => window.endMs),
+      maxMs,
+    });
+  }
+  POOL_WINDOWS.set(decisionLog, { length: decisionLog.length, last, byPool });
+  return byPool;
+}
+
+/** The first index whose value is >= target, in an ascending array. */
+function lowerBound(values, target) {
+  let lo = 0;
+  let hi = values.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (values[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /**
  * Worker-minutes dispatched to a pool inside [fromMs, toMs] — the denominator
  * of every spend rate. Finished attempts contribute the part of their run that
@@ -258,11 +305,14 @@ export function workerMinutesForPool(pool, fromMs, toMs, opts = {}) {
   const decisionLog = resolveDecisionLog(opts.decisionLog, opts.bullswarmDir);
 
   let minutes = 0;
-  for (const entry of decisionLog) {
-    if (poolOf(entry) !== name) continue;
-    const window = attemptWindow(entry);
-    if (!window) continue;
-    minutes += overlapMinutes(window.startMs, window.endMs, from, to);
+  const windows = poolWindows(decisionLog).get(name);
+  if (windows) {
+    // Sorted by start, and no window is longer than maxMs, so only the ones
+    // starting in [from - maxMs, to) can overlap.
+    const { starts, ends, maxMs } = windows;
+    for (let i = lowerBound(starts, from - maxMs); i < starts.length && starts[i] < to; i += 1) {
+      minutes += overlapMinutes(starts[i], ends[i], from, to);
+    }
   }
   for (const record of inflightRecordsFor(name, inflight)) {
     const startedAt = num(Date.parse(record?.startedAt ?? ''));
