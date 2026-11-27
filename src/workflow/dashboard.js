@@ -48,7 +48,7 @@ import { DASHBOARD_PAGES, PERIOD_ITEMS, STATS_TABS, FLEET_TABS, STEP_SECTIONS } 
 import { readLicencePerDay } from './dashboard-licence.js';
 import { writeClipboard } from './dashboard-clipboard.js';
 import { requestCancel } from './dashboard-cancel.js';
-import { dashboardRows, activeDashboardRows, detailRow } from './dashboard-rows.js';
+import { dashboardRows, catalogRows, activeDashboardRows, detailRow } from './dashboard-rows.js';
 import { renderDetails } from './dashboard-details.js';
 import { renderDashboardPage } from './dashboard-render.js';
 export { requestCancel } from './dashboard-cancel.js';
@@ -261,6 +261,8 @@ export async function runDashboard(bullswarmDir, {
   // for it, because only that page lists finished runs one by one.
   let activeRuns = activeDashboardRows(bullswarmDir);
   let catalog = null;
+  // Each run directory's row, kept between rebuilds until its files change.
+  const catalogCache = new Map();
   let allRows = activeRuns;
   let rows = filterDashboardRows(allRows, dashboardFilter, query);
   let lastPaintedFrame = null;
@@ -562,7 +564,7 @@ export async function runDashboard(bullswarmDir, {
   /** The whole catalogue, parsed once and only for the page that lists it. */
   const ensureCatalog = () => {
     if (catalog) return catalog;
-    try { catalog = dashboardRows(bullswarmDir, { all: true }); catalogAt = Date.now(); catalogSignature = `${activeSignature()}#${rollupFingerprint}`; }
+    try { catalog = catalogRows(bullswarmDir, catalogCache); catalogAt = Date.now(); catalogSignature = `${activeSignature()}#${rollupFingerprint}`; }
     catch (err) { message = `display error: ${err.message}`; catalog = activeRuns; }
     allRows = catalog;
     rows = filterDashboardRows(allRows, dashboardFilter, query);
@@ -708,7 +710,7 @@ export async function runDashboard(bullswarmDir, {
         const signature = `${activeSignature()}#${rollupFingerprint}`;
         const stale = Date.now() - catalogAt >= CATALOG_TTL_MS || signature !== catalogSignature || rollupFingerprint !== indexBefore;
         if (stale) {
-          catalog = dashboardRows(bullswarmDir, { all: true });
+          catalog = catalogRows(bullswarmDir, catalogCache);
           catalogAt = Date.now();
           catalogSignature = signature;
         }

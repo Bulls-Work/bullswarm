@@ -228,40 +228,39 @@ export function listRuns(bullswarmDir) {
     const dir = join(runsRoot, name);
     if (!statSync(dir).isDirectory()) continue;
     if (!name.startsWith('wf-')) continue;
-    const sf = join(dir, 'state.json');
-    let raw = null, torn = false;
-    if (existsSync(sf)) {
-      try { raw = JSON.parse(readFileSync(sf, 'utf8')); } catch { torn = true; }
-    }
-    // A run still starting has no state yet; it is listed as one, not as legacy.
-    const starting = raw === null && !torn ? runStartingFacts(dir) : null;
-    if (starting) {
-      out.push(startingRunEntry(name, dir, starting));
-      continue;
-    }
-    if (!torn && isLegacyRunState(raw)) {
-      out.push(legacyRunEntry(name, dir, raw));
-      continue;
-    }
-    const state = withV2Cancellation(raw, dir);
-    const resultFile = join(dir, 'result.json');
-    const rf = existsSync(resultFile) ? resultFile : join(dir, 'report.json');
-    let report = null;
-    if (existsSync(rf)) {
-      try { report = JSON.parse(readFileSync(rf, 'utf8')); } catch { /* corrupt */ }
-    }
-    out.push({
-      runId: name,
-      shortId: state?.shortId ?? null,
-      runDir: dir,
-      dir,
-      legacy: false,
-      state,
-      report,
-      ongoing: isOngoing(dir, state),
-    });
+    out.push(runEntry(name, dir));
   }
   return out;
+}
+
+/** One run directory as listRuns lists it: starting, legacy, or a v2 run with its report. */
+export function runEntry(name, dir) {
+  const sf = join(dir, 'state.json');
+  let raw = null, torn = false;
+  if (existsSync(sf)) {
+    try { raw = JSON.parse(readFileSync(sf, 'utf8')); } catch { torn = true; }
+  }
+  // A run still starting has no state yet; it is listed as one, not as legacy.
+  const starting = raw === null && !torn ? runStartingFacts(dir) : null;
+  if (starting) return startingRunEntry(name, dir, starting);
+  if (!torn && isLegacyRunState(raw)) return legacyRunEntry(name, dir, raw);
+  const state = withV2Cancellation(raw, dir);
+  const resultFile = join(dir, 'result.json');
+  const rf = existsSync(resultFile) ? resultFile : join(dir, 'report.json');
+  let report = null;
+  if (existsSync(rf)) {
+    try { report = JSON.parse(readFileSync(rf, 'utf8')); } catch { /* corrupt */ }
+  }
+  return {
+    runId: name,
+    shortId: state?.shortId ?? null,
+    runDir: dir,
+    dir,
+    legacy: false,
+    state,
+    report,
+    ongoing: isOngoing(dir, state),
+  };
 }
 
 // A run whose kernel has not written state.json yet: no state, `starting`

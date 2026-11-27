@@ -1,10 +1,10 @@
 // Loading run rows for the dashboard: listed and in-flight runs enriched with
 // their events, liveness and step counts, and one run's detail row.
 import { withV2Cancellation } from './v2-cancellation.js';
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, isOngoing, readKernelStderrTail, runStartingFacts } from './short-id.js';
+import { listRuns, runEntry, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, isOngoing, readKernelStderrTail, runStartingFacts } from './short-id.js';
 import { readEvents } from './events.js';
 import { stateStartedAt } from './dashboard-run-state.js';
 
@@ -91,6 +91,61 @@ export function dashboardRows(bullswarmDir, { all = false } = {}) {
     .filter((r) => all || r.ongoing)
     .sort(byNewestStart)
     .map(enrichRunRow);
+}
+
+// The files a listed row is built from. A finished run whose files and
+// directory listing are unchanged gives the same row, so it is not read again.
+const ROW_SOURCES = Object.freeze(['state.json', 'events.jsonl', 'result.json', 'report.json', 'cancellation.json', ...FINISHED_MARKERS]);
+
+function rowFingerprint(dir) {
+  const parts = [];
+  for (const name of ['', ...ROW_SOURCES]) {
+    try {
+      const stat = statSync(name ? join(dir, name) : dir);
+      parts.push(`${stat.mtimeMs}:${stat.size}`);
+    } catch { parts.push('-'); }
+  }
+  return parts.join('|');
+}
+
+/**
+ * Every run, as `dashboardRows(dir, { all: true })` lists them, re-reading only
+ * the run directories that changed since the last call with the same `cache`.
+ *
+ * The Runs page rebuilds its catalogue every 15 s and whenever an active run
+ * changes status. Parsing every state.json and events.jsonl each time held the
+ * panel at ~76% CPU with 1,067 runs (27 Nov). A finished run (one that wrote
+ * a finished marker and is not ongoing) keeps its row until one of its files
+ * changes; a run without a marker is read every time, because its liveness can
+ * change with no file changing.
+ */
+export function catalogRows(bullswarmDir, cache = new Map()) {
+  const runsRoot = join(bullswarmDir, 'workflows');
+  let entries = [];
+  try { entries = existsSync(runsRoot) ? readdirSync(runsRoot, { withFileTypes: true }) : []; } catch { entries = []; }
+  // listRuns' order, so rows tied on start time sort the same way.
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const seen = new Set();
+  const rows = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('wf-')) continue;
+    const dir = join(runsRoot, entry.name);
+    seen.add(entry.name);
+    const fingerprint = rowFingerprint(dir);
+    const hit = cache.get(entry.name);
+    if (hit && hit.settled && hit.fingerprint === fingerprint) {
+      rows.push(hit.row);
+      continue;
+    }
+    const listed = runEntry(entry.name, dir);
+    const row = enrichRunRow(listed);
+    const settled = !listed.ongoing && !listed.starting
+      && FINISHED_MARKERS.some((marker) => existsSync(join(dir, marker)));
+    cache.set(entry.name, { fingerprint, row, settled });
+    rows.push(row);
+  }
+  for (const name of [...cache.keys()]) if (!seen.has(name)) cache.delete(name);
+  return rows.sort(byNewestStart);
 }
 
 /**
