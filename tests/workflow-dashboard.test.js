@@ -525,7 +525,10 @@ test('every Stats bar and legend entry labels, pins and clears without changing 
 
     const session = shellSession(home, { columns: 120, rows: 60 });
     session.press('s');
-    session.press('v'); // use the measured worker-minute/model split for hover values
+    // The Model tab charts the measured worker-minute/model split (Spending
+    // is by pool only since bs-tokens-tab-1127).
+    session.press('\t');
+    session.press('\t');
     const initial = lastFrame(session.output);
     const rows = paintedRows(initial).map(plain);
     const axisRow = rows.findIndex((line) => /┼.*(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)/.test(line));
@@ -555,31 +558,19 @@ test('every Stats bar and legend entry labels, pins and clears without changing 
     session.press(ESC_KEY);
     assert.doesNotMatch(plain(lastFrame(session.output)), /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat).*gpt-5\.6-(?:luna|sol).*of the day/, 'Escape clears the pinned column label');
 
-    const panelRow = paintedRows(chartHover).findIndex((line) => /gpt-5\.6-luna.*▓/.test(plain(line)));
-    assert.ok(panelRow > 0, 'a breakdown share bar is visible');
-    const panelX = plain(paintedRows(chartHover)[panelRow]).indexOf('▓') + 1;
-    session.press(`\x1b[<35;${panelX};${panelRow + 1}M`);
-    assert.match(plain(lastFrame(session.output)), /gpt-5\.6-luna.*of panel/);
-    session.press(`\x1b[<0;${panelX};${panelRow + 1}M`);
-    session.press('\x1b[<35;1;2M');
-    assert.match(plain(lastFrame(session.output)), /gpt-5\.6-luna.*of panel/, 'a click pins the label');
-    session.press(ESC_KEY);
-    assert.doesNotMatch(plain(lastFrame(session.output)), /gpt-5\.6-luna.*of panel/, 'Escape clears a pinned label');
-
+    // The Model tab's panels print shares without bars at this width (their
+    // bars only drew under Spending's By Model switch, removed in
+    // bs-tokens-tab-1127), so the series label is pinned from the legend.
     const legendRow = paintedRows(lastFrame(session.output)).findIndex((line) => /^Legend/.test(plain(line)) && /gpt-5\.6-luna/.test(plain(line)));
     assert.ok(legendRow > 0, 'the legend entry is a hit target');
     const legendX = plain(paintedRows(lastFrame(session.output))[legendRow]).indexOf('gpt-5.6-luna') + 1;
     session.press(`\x1b[<35;${legendX};${legendRow + 1}M`);
     assert.match(plain(lastFrame(session.output)), /gpt-5\.6-luna.*of panel/, 'hovering the legend labels its series');
+    session.press(`\x1b[<0;${legendX};${legendRow + 1}M`);
     session.press('\x1b[<35;1;2M');
-
-    // The keyboard and click paths both use the same stack-by state.
-    session.press('v');
-    assert.match(plain(lastFrame(session.output)), /\[By Pool\] By Model/);
-    const toggle = paintedRows(lastFrame(session.output)).findIndex((line) => /\[By Pool\] By Model/.test(plain(line)));
-    const toggleX = plain(paintedRows(lastFrame(session.output))[toggle]).indexOf('By Model') + 1;
-    session.press(`\x1b[<0;${toggleX};${toggle + 1}M`);
-    assert.match(plain(lastFrame(session.output)), /\[By Model\] By Pool/);
+    assert.match(plain(lastFrame(session.output)), /gpt-5\.6-luna.*of panel/, 'a click pins the label');
+    session.press(ESC_KEY);
+    assert.doesNotMatch(plain(lastFrame(session.output)), /gpt-5\.6-luna.*of panel/, 'Escape clears a pinned label');
 
     const model = dashboardModel(null, { rollups: records, nowMs: Date.parse('2026-09-18T00:00:00.000Z') });
     for (const [width, height] of [[55, 26], [120, 40]]) {
@@ -1366,7 +1357,7 @@ test('no page paints past the terminal or comes up blank, at 120x40 and at 55x26
     // so the terminal paints 54 and every page must fit it.
     for (const [width, height] of [[120, 40], [54, 26], [32, 20], [60, 26], [80, 30], [99, 30], [200, 40]]) {
       for (const name of DASHBOARD_PAGE_NAMES) {
-        for (const tab of ['spending', 'pool', 'model', 'project']) {
+        for (const tab of ['spending', 'tokens', 'model', 'project']) {
           const frame = renderDashboardPage(model, {
             page: name, width, height, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
             phaseIndex: 1, agentIndex: 0, statsTab: tab, metric: 'spend', period: '30d',
@@ -1511,7 +1502,7 @@ test('the nav records a hit region for every button, today row, chart bar and st
     const statsFrame = renderDashboardPage(model, { page: 'stats', width: 100, height: 30 });
     assert.deepEqual(
       statsFrame.regions.filter((region) => region.action.kind === 'tab').map((region) => region.action.tab),
-      ['spending', 'pool', 'model', 'project'],
+      ['spending', 'tokens', 'model', 'project'],
     );
     // Each new Stats surface retains its titled panels and share hit regions
     // at desktop and phone widths; row clicks are now hover/pin affordances,
@@ -3003,7 +2994,7 @@ test('Home marks provider, transcript, estimated and unknown usage bases', () =>
   }
 });
 
-test('Pool keeps the retained meter-history model separate from its rollup panels', () => {
+test('Spending keeps the retained meter-history model separate from its rollup panels', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-meter-dashboard-'));
   try {
     const historyDir = join(home, 'meters', 'history');
@@ -3025,15 +3016,15 @@ test('Pool keeps the retained meter-history model separate from its rollup panel
       usage: { pools, assignments: [], rungs: [] }, rollups, period: '30d', meterHistory: history,
     });
     const text = plain(renderDashboardPage(model, {
-      page: 'stats', statsTab: 'pool', period: '30d', width: 120, height: 100,
+      page: 'stats', statsTab: 'spending', period: '30d', width: 120, height: 100,
     }).lines.join('\n'));
+    // The Licence / reset history panel left with the Pool tab
+    // (bs-tokens-tab-1127); the meter-history model above is unchanged.
     assert.match(text, /Pool spend/);
-    assert.match(text, /Licence \/ reset history/);
-    assert.doesNotMatch(text, /meter history is not loaded/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test('Pool retains quota-reset evidence while rendering the shared rollup surface', () => {
+test('Spending retains quota-reset evidence while rendering the shared rollup surface', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-meter-reset-'));
   try {
     const historyDir = join(home, 'meters', 'history');
@@ -3059,10 +3050,9 @@ test('Pool retains quota-reset evidence while rendering the shared rollup surfac
       usage: { pools, assignments: [], rungs: [] }, rollups: [], period: '7d', meterHistory: history,
     });
     const text = plain(renderDashboardPage(model, {
-      page: 'stats', statsTab: 'pool', period: '7d', width: 120, height: 100,
+      page: 'stats', statsTab: 'spending', period: '7d', width: 120, height: 100,
     }).lines.join('\n'));
     assert.match(text, /Pool spend/);
-    assert.match(text, /Licence \/ reset history/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -3347,7 +3337,7 @@ test('every key in the table reaches its page or its action', async () => {
     session.press('s');
     assert.match(header(), /^ Stats · spending/);
     session.press('\t');
-    assert.match(header(), /^ Stats · pool/);
+    assert.match(header(), /^ Stats · tokens/);
     session.press('\t');
     assert.match(header(), /^ Stats · model/);
     session.press('f');
@@ -3520,7 +3510,8 @@ test('Home halves keep their clicks and hovers: a card opens its run, the chart 
     session.press('\x1b[<35;1;2M');
     for (const [needle, expected] of [
       ['spent per day', /^ Stats · spending/],
-      ['by pool', /^ Stats · pool/],
+      // Pool became Tokens (bs-tokens-tab-1127); by pool opens Spending, which is by pool.
+      ['by pool', /^ Stats · spending/],
       ['by model', /^ Stats · model/],
       ['by project', /^ Stats · project/],
     ]) {

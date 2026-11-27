@@ -162,8 +162,10 @@ export function attemptUsage(attempt) {
     subscriptionDeltaPct: finite(usage?.subscription?.deltaPct),
     subscriptionWindow: typeof usage?.subscription?.window === 'string' ? usage.subscription.window : null,
     tokens: tokenTotal(tokens),
+    standardRead: finite(tokens?.standardRead),
     cacheRead: finite(tokens?.cacheRead),
     cacheWrite: cacheWriteOf(tokens),
+    output: finite(tokens?.output),
     reasoning: finite(tokens?.reasoning),
   };
 }
@@ -545,8 +547,12 @@ export function attemptMetric(attempt, { role = 'worker' } = {}) {
     finishedAt: typeof (attempt?.finishedAt ?? attempt?.endedAt) === 'string' ? (attempt.finishedAt ?? attempt.endedAt) : null,
     wallSec: finite(attempt?.wallSec),
     tokens: usage.tokens,
+    // Uncached input and output, so the Tokens tab can split input from
+    // output; older index lines lack both until `workflow reindex --force`.
+    standardRead: usage.standardRead,
     cacheRead: usage.cacheRead,
     cacheWrite: usage.cacheWrite,
+    output: usage.output,
     reasoning: usage.reasoning,
     tokenSource: usage.tokenSource,
     apiUsd: usage.apiUsd,

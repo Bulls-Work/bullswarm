@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { statsLines } from '../src/workflow/stats-view.js';
 import { appendRollupIndex, readRollups, rollupRecord, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
 import { modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from '../src/workflow/stats-model.js';
+import { tokensModel } from '../src/workflow/tokens-model.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const visible = (value) => String(value ?? '').replace(SGR, '');
@@ -17,7 +18,7 @@ function chartColumnWidth(width) {
 
 function chartAxisReadout(view, width) {
   const chartWidth = chartColumnWidth(width);
-  const titleRow = view.lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(visible(line)));
+  const titleRow = view.lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day|Tokens per (?:day|week))/.test(visible(line)));
   const axisRow = view.lines.findLastIndex((line, index) => (
     index >= titleRow && /[┼+]/.test(visible(line).slice(0, chartWidth))
   ));
@@ -87,6 +88,7 @@ function statsOf(records, { period = '30d', now = Date.now() } = {}) {
     pools: poolsModel(records, [], { period, now }),
     models: modelsModel(records, { period, now }),
     projects: projectsModel(records, { period, now }),
+    tokens: tokensModel(records, { period, now }),
   };
 }
 
@@ -117,6 +119,15 @@ function fixture({ emptyModels = false } = {}) {
       breakdown: { pools, models, projects: [{ name: 'project-alpha-long-names', runs: 20, attempts: 40, minutes: 3000, apiEquivalentUsd: 2.1, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.427 }, { name: 'bullswarm', runs: 15, attempts: 30, minutes: 1900, apiEquivalentUsd: 1.8, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.271 }] },
     },
     spendPerDay: { metric: 'spend', segmentBasis: 'the recorded API-equivalent estimate per pool', buckets, total: 7.032817 },
+    tokens: {
+      period: '7d', bucketBy: 'day',
+      totals: { input: 1_200_000_000, uncached: 100_000_000, cacheRead: 1_050_000_000, cacheWrite: 50_000_000, output: 17_000_000, reasoning: 2_000_000, total: 1_217_000_000 },
+      attempts: { total: 180, reported: 170, estimated: 6, none: 4, unsplit: 0 },
+      buckets: buckets.map((bucket, index) => ({ key: bucket.key, label: bucket.label, input: [200e6, 500e6, 300e6, 200e6, 0, 0, 0][index], output: [3e6, 6e6, 5e6, 3e6, 0, 0, 0][index], unsplit: 0 })),
+      byPool: [{ name: 'claude-code', total: 700_000_000, share: 0.575 }, { name: 'acme', total: 517_000_000, share: 0.425 }],
+      byModel: [{ name: 'claude-opus-5', total: 700_000_000, share: 0.575 }, { name: 'gpt-5.6-luna', total: 517_000_000, share: 0.425 }],
+      byProject: [{ name: 'project-alpha-long-names', total: 1_000_000_000, share: 0.822 }, { name: 'bullswarm', total: 217_000_000, share: 0.178 }],
+    },
     pools: { rows: pools, totals: { runs: 5, attempts: 180, minutes: 3253, apiEquivalentUsd: 6.27 }, licencePerDay: null },
     models: {
       rows: models,
@@ -130,15 +141,15 @@ function fixture({ emptyModels = false } = {}) {
   };
 }
 
-test('Stats exposes exactly Spending, Pool, Model and Project tabs', () => {
+test('Stats exposes exactly Spending, Tokens, Model and Project tabs', () => {
   const view = statsLines(fixture(), { width: 120, tab: 'spending', period: '30d', ansi: false });
-  assert.deepEqual(view.regions.filter((region) => region.action.kind === 'tab').map((region) => region.action.tab), ['spending', 'pool', 'model', 'project']);
+  assert.deepEqual(view.regions.filter((region) => region.action.kind === 'tab').map((region) => region.action.tab), ['spending', 'tokens', 'model', 'project']);
   assert.deepEqual(view.regions.filter((region) => region.action.kind === 'period').map((region) => region.action.period), ['7d', '30d', 'all']);
 });
 
 test('all four tabs keep the shared order and fit 55, 120 and 200 columns', () => {
   for (const width of [55, 120, 200]) {
-    for (const tab of ['spending', 'pool', 'model', 'project']) {
+    for (const tab of ['spending', 'tokens', 'model', 'project']) {
       const view = statsLines(fixture(), { width, tab, period: '7d', stackBy: 'pool', ansi: false });
       assert.ok(view.lines.length > 0);
       for (const line of view.lines) assert.ok(visible(line).length <= width, `${tab}/${width}: ${line}`);
@@ -167,10 +178,10 @@ test('Spending renders a dated spend chart, including an unmeasured day', () => 
 
 test('every Stats chart has evenly spaced whole ticks and an explicit zero baseline', () => {
   const stats = fixture();
-  for (const tab of ['spending', 'pool', 'model', 'project']) {
+  for (const tab of ['spending', 'tokens', 'model', 'project']) {
     const view = statsLines(stats, { width: 200, tab, period: '7d', stackBy: 'pool', ansi: false });
     const lines = view.lines.map(visible);
-    const title = lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(line));
+    const title = lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day|Tokens per day)/.test(line));
     const legend = lines.findIndex((line, index) => index > title && line.startsWith('Legend'));
     const chart = lines.slice(title, legend);
     assert.ok(chart.some((line) => tab === 'spending' || tab === 'pool' ? /\$0\s*┼/.test(line) : /(?:^|\s)0\s*┼/.test(line)), `${tab}: zero baseline`);
@@ -186,7 +197,7 @@ test('every Stats chart has evenly spaced whole ticks and an explicit zero basel
 
 test('Stats money cells use compact glyphs and two decimals', () => {
   const stats = statsOf(partialIndex(), { period: '30d', now: REVIEW_NOW });
-  for (const tab of ['spending', 'pool', 'model', 'project']) {
+  for (const tab of ['spending', 'tokens', 'model', 'project']) {
     const text = statsLines(stats, { width: 200, tab, period: '30d', stackBy: 'pool', ansi: false }).lines.map(visible).join('\n');
     assert.doesNotMatch(text, /at least|\$\d+\.\d{3,}|\$\d+(?:\.\d+)?\s+api\b/i, tab);
   }
@@ -195,31 +206,11 @@ test('Stats money cells use compact glyphs and two decimals', () => {
 test('every Stats line fits every width from 55 through 260', () => {
   const stats = fixture();
   for (let width = 55; width <= 260; width += 1) {
-    for (const tab of ['spending', 'pool', 'model', 'project']) {
+    for (const tab of ['spending', 'tokens', 'model', 'project']) {
       const view = statsLines(stats, { width, tab, period: '7d', stackBy: 'pool', ansi: false });
       for (const line of view.lines) assert.ok(visible(line).length <= width, `${tab}/${width}: ${visible(line)}`);
     }
   }
-});
-
-test('the Spending toggle changes both the chart metric and visible grid basis', () => {
-  const byPool = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'pool', ansi: false });
-  const byModel = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'model', ansi: false });
-  const poolText = byPool.lines.map(visible).join('\n');
-  const modelText = byModel.lines.map(visible).join('\n');
-  assert.match(poolText, /Spend per day · API-equivalent · pool/);
-  assert.match(poolText, /\[By Pool\]/);
-  assert.match(modelText, /Worker-minutes per day · model cost is not measured/);
-  assert.match(modelText, /\[By Model\]/);
-  assert.match(modelText, /Model worker-minutes/);
-  assert.match(modelText, /Model attempts/);
-  assert.match(modelText, /model cost is not measured/);
-  const toggleActions = byPool.regions.filter((region) => region.action.kind === 'stackBy');
-  assert.deepEqual(toggleActions.map((region) => region.action.stackBy), ['pool', 'model']);
-  const modelSlices = byModel.regions.filter((region) => region.action.payload?.kind === 'slice');
-  assert.ok(modelSlices.length > 0);
-  assert.ok(modelSlices.every((region) => region.action.payload.metric === 'minutes'));
-  assert.ok(modelSlices.every((region) => region.action.payload.label !== 'model cost unavailable'));
 });
 
 test('desktop composition keeps chart and panel bar colours, bounds both layouts, and separates series hues', () => {
@@ -252,7 +243,7 @@ test('desktop composition keeps chart and panel bar colours, bounds both layouts
     },
   };
   const colours = (line) => [...String(line).matchAll(/\x1b\[38;2;([^m]+)m/g)].map((match) => match[1]);
-  const desktop = statsLines(stats, { width: 120, tab: 'spending', stackBy: 'model', ansi: true });
+  const desktop = statsLines(stats, { width: 120, tab: 'model', ansi: true });
   const chartLine = desktop.lines.find((line) => /┤.*[▁▂▃▄▅▆▇█#]/.test(line));
   const panelLine = desktop.lines.find((line) => /[▓▒░▏]/.test(line));
   assert.ok(chartLine && colours(chartLine).length > 0, 'the composed chart line retains SGR colour');
@@ -263,7 +254,7 @@ test('desktop composition keeps chart and panel bar colours, bounds both layouts
   assert.equal(new Set(legendColours).size, legendColours.length, 'one chart assigns every legend series a distinct hue');
 
   for (const width of [55, 120]) {
-    const view = statsLines(stats, { width, tab: 'spending', stackBy: 'model', ansi: true });
+    const view = statsLines(stats, { width, tab: 'model', ansi: true });
     assert.ok(view.lines.every((line) => visible(line).length <= width), `${String(width)}-column line overrun`);
   }
 });
@@ -330,7 +321,7 @@ test('a model with no measured rows is an honest empty panel, not a zero bar', (
 test('a pool with no model rows keeps its missing worker-minutes reason visible', () => {
   const stats = fixture();
   stats.pools.rows.push({ name: 'no-model-rows', runs: 1, attempts: 1, minutes: null, apiEquivalentUsd: null, tokenSource: 'unknown', live: { usedPct: null } });
-  const view = statsLines(stats, { width: 55, tab: 'pool', period: '7d', ansi: false });
+  const view = statsLines(stats, { width: 55, tab: 'spending', period: '7d', ansi: false });
   const text = view.lines.map(visible).join('\n');
   assert.match(text, /no-model-rows/);
   assert.match(text, /worker-minutes not measured/);
@@ -580,9 +571,9 @@ test('real snapshot rollups align every desktop Stats chart with its right colum
 
   for (const width of [120, 200]) {
     const leftWidth = Math.floor((width - 2) / 2);
-    for (const tab of ['spending', 'pool', 'model', 'project']) {
+    for (const tab of ['spending', 'tokens', 'model', 'project']) {
       const view = statsLines(stats, { width, tab, period: 'all', stackBy: 'pool', ansi: false });
-      const titleRow = view.lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(visible(line)));
+      const titleRow = view.lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day|Tokens per (?:day|week))/.test(visible(line)));
       assert.ok(titleRow >= 0, `${tab}/${width}: chart title missing`);
       const axisRow = view.lines.findLastIndex((line, index) => (
         index >= titleRow && /[┼+]/.test(visible(line).slice(0, leftWidth))

@@ -99,7 +99,7 @@ test('the Tokens tab shows input and output totals, the chart, and the three tab
   const stats = { tokens: tokensModel(rollups, { period: '7d', now: NOW }) };
   const view = statsLines(stats, { width: 140, height: 40, tab: 'tokens', period: '7d', ansi: false });
   const text = view.lines.join('\n');
-  assert.match(text, /Tokens · \[7d\]/);
+  assert.match(text, /^Tokens · 7d · 30d · all/m);
   assert.match(text, /Input 66\.1K/);
   assert.match(text, /Output 3\.6K/);
   assert.match(text, /3 of 5 attempts reported tokens · 1 estimated \(not counted\) · 1 not reported/);
@@ -107,7 +107,8 @@ test('the Tokens tab shows input and output totals, the chart, and the three tab
   assert.match(text, /Tokens by pool/);
   assert.match(text, /Tokens by model/);
   assert.match(text, /Tokens by project/);
-  assert.match(text, /claude-code:w\s+56\.1K\s+80\.5%/);
+  // Stats panels print a pool by its short label (claude-code:w -> w).
+  assert.match(text, /\bw\s+56\.1K\s+80\.5%/);
 });
 
 test('Spending has no By Pool / By Model switch any more', () => {

@@ -1,7 +1,7 @@
  Home  Runs  Budget  Stats  Fleet
  Stats · spending
- Spending  Pool  Model  Project
-Spending · 7d · 30d · all  [By Pool] By Model
+ Spending  Tokens  Model  Project
+Spending · 7d · 30d · all
 
 ── Summary · 30d ───────────────────────────────────────────────────────────────────────────────────────────────────────
 Totals 15 workflows · 2816.02 worker-minutes · ≥$299.87 · sub unknown (no plan price) · 3 active days

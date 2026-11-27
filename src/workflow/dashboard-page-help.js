@@ -64,7 +64,6 @@ function helpPage(model, opts, body) {
   body.push(rule('other', null, width));
   row('e · c · y', 'edit the fleet · stop this workflow · y confirms it');
   row('/ · a · i', 'filter · active/all · install (on Runs)');
-  row('v', narrow ? 'Stats: By Pool · By Model' : 'Stats Spending: By Pool · By Model');
   row('o · v · t', narrow ? 'Run: v2 planner · technical · phases' : 'Run: planner · technical (v2 runs) · phases (under 100)');
   row('v · t · f', narrow ? 'Step: overview · detail · filter · follow' : 'Step: overview · detail (the activity-rule toggle) · filter · follow');
   row('a · o · p', narrow ? 'Step: attempts · outcome · prompt' : 'Step: jump to attempts · outcome · prompt');

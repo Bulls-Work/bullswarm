@@ -9,14 +9,13 @@ import { addStatsLegendRegions, alignStatsShareRegions, boldStatsLegend } from '
 function statsPage(model, opts, body) {
   const { width } = opts;
   const tab = STATS_TABS.includes(opts.statsTab) ? opts.statsTab : 'spending';
-  const stackBy = opts.statsStackBy === 'model' ? 'model' : 'pool';
   if (!model.stats) {
     body.push(dimText(' reading the rollup index…', width));
     return ' Stats';
   }
   const slice = opts.slice ?? null;
   const view = statsLines(model.stats, {
-    width, height: opts.height, tab, period: opts.period, stackBy,
+    width, height: opts.height, tab, period: opts.period,
     ansi: meterAnsi(), slice,
   });
   // stat-kit deliberately keeps legend markers as presentation text.  The

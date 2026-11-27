@@ -234,7 +234,7 @@ function recordCost(record) {
   return recordTotals(record).apiUsd;
 }
 
-function recordProject(record) {
+export function recordProject(record) {
   const name = record?.project ?? record?.projectName;
   if (typeof name === 'string' && name.trim()) return name.trim();
   // The Stats rollup corpus also contains older workflow records whose cwd is

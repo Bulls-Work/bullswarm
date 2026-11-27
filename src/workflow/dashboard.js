@@ -21,6 +21,7 @@ import { biggestRuns, budgetModel } from './budget-model.js';
 import { historyLines } from './history-view.js';
 import { dayKey, historyDays } from './history.js';
 import { readRollups, rollupIndexPath } from './rollup.js';
+import { tokensModel } from './tokens-model.js';
 import { loadState } from '../lib/state.js';
 import { listTasks, taskKey } from '../lib/tasks.js';
 import { filterDashboardRows } from './runs-view.js';
@@ -183,6 +184,8 @@ export function dashboardModel(row, {
       },
       models: modelsModel(records, { period, now: nowMs }),
       projects: projectsModel(records, { period, now: nowMs }),
+      // The Tokens tab: input vs output per day, by pool, model and project.
+      tokens: tokensModel(records, { period, now: nowMs }),
       sparklines: tileSparklines(records, nowMs),
     };
   } catch { model.stats = null; }
@@ -1914,14 +1917,6 @@ export async function runDashboard(bullswarmDir, {
     if (keyPressed('in', key) || key === '\r' || key === '\n') return drillIn();
     if (keyPressed('up', key)) return moveVertical(-1);
     if (keyPressed('down', key)) return moveVertical(1);
-    // Spending's stack basis is a page-local view toggle.  Keep it on a
-    // letter that is otherwise only meaningful on Run/Step, while the click
-    // regions emitted by stats-view use the same state path below.
-    if (ui.page === 'stats' && ui.statsTab === 'spending' && (key === 'v' || key === 'V')) {
-      clearSliceState();
-      ui.statsStackBy = ui.statsStackBy === 'model' ? 'pool' : 'model';
-      return paint();
-    }
     const runPageOpen = ui.page === 'run' || ui.page === 'step';
     // Run v2 is one flat page — header, plan, live/spend, timeline — that the
     // shell windows like every other body. Its boxed panel, which owned a

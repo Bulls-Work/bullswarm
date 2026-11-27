@@ -353,7 +353,7 @@ test('Home restores the period band and the recent list below the budget block',
     const actionAt = (row, x) => frame.regions.find((region) => region.y === row + 1 && region.x1 <= x && x <= region.x2)?.action;
     assert.deepEqual(actionAt(head + 2, 3), { kind: 'trend', metric: 'spend' }, `${width}: the chart lost its click`);
     const x = width >= 110 ? halvesOf(width).right + 3 : 3;
-    assert.deepEqual(actionAt(at[0] + 1, x), { kind: 'tab', tab: 'pool' }, `${width}: by pool lost its click`);
+    assert.deepEqual(actionAt(at[0] + 1, x), { kind: 'tab', tab: 'spending' }, `${width}: by pool lost its click`);
     assert.deepEqual(actionAt(at[2] + 1, x), { kind: 'tab', tab: 'project' }, `${width}: by project lost its click`);
     const recentRows = lines.slice(recent + 1).filter((line) => /ago\s*$/.test(line.trimEnd()));
     assert.equal(recentRows.length, width >= 100 ? 5 : 3, `${width}: the recent list has ${recentRows.length} rows`);

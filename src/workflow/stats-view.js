@@ -22,7 +22,7 @@ import { runCountText } from './run-counts.js';
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const TABS = Object.freeze([
   { id: 'spending', label: 'Spending', key: 's' },
-  { id: 'pool', label: 'Pool', key: 'p' },
+  { id: 'tokens', label: 'Tokens', key: 't' },
   { id: 'model', label: 'Model', key: 'm' },
   { id: 'project', label: 'Project', key: 'j' },
 ]);
@@ -31,7 +31,9 @@ const PERIODS = Object.freeze([
   { id: '30d', label: '30d', key: '3' },
   { id: 'all', label: 'all', key: 'a' },
 ]);
-const TAB_ALIASES = Object.freeze({ overview: 'spending', trends: 'spending', pools: 'pool', models: 'model', projects: 'project' });
+// Pool showed what Spending shows; Tokens took its place (27 Nov), so an old
+// link to Pool opens Tokens.
+const TAB_ALIASES = Object.freeze({ overview: 'spending', trends: 'spending', pool: 'tokens', pools: 'tokens', models: 'model', projects: 'project' });
 
 export const STATS_TABS = Object.freeze(TABS.map((tab) => tab.id));
 
@@ -578,27 +580,18 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
   const poolKind = rowsOf(poolTable).some((row) => row?.poolLabel) ? 'poolLabel' : 'pool';
   const poolSpend = panelRows(poolTable, 'apiEquivalentUsd', 'usd');
   const poolMinutes = panelRows(poolTable, 'minutes', 'minutes', { shareField: 'minutesShare' });
-  const poolAttempts = panelRows(poolTable, 'attempts', 'attempts');
   const modelMinutes = panelRows(modelTable, 'minutes', 'minutes', { shareField: 'minutesShare' });
   const modelAttempts = panelRows(modelTable, 'attempts', 'attempts');
   const modelVerified = panelRows(modelTable, 'proven', 'runs', { shareField: 'provenShare', valueText: (_row, value) => `${value} proven` });
   const projectRuns = panelRows(projectTable, 'runs', 'runs');
   const projectMinutes = panelRows(projectTable, 'minutes', 'minutes', { shareField: 'minutesShare' });
   const projectSpend = panelRows(projectTable, 'apiEquivalentUsd', 'usd');
-  if (tab === 'spending') {
-    const byModel = stackBy === 'model';
-    return [
-      // Spending's By Model comparison keeps the model identity readable for
-      // hover/legend parity; the dedicated Model tab applies the compact
-      // model-name form through the same renderer.
-      { ...panel(byModel ? 'Model worker-minutes' : 'Pool spend', byModel ? modelMinutes : poolSpend, tab, byModel ? 'minutes' : 'spend', period, byModel ? 'minutes' : 'usd', basis, byModel ? null : poolKind, !byModel) },
-      { ...panel(byModel ? 'Model attempts' : 'Pool worker-minutes', byModel ? modelAttempts : poolMinutes, tab, byModel ? 'attempts' : 'minutes', period, byModel ? 'attempts' : 'minutes', basis, byModel ? null : poolKind, !byModel) },
-      { ...panel('Project runs', projectRuns, tab, 'runs', period, 'runs', basis, 'project', !byModel) },
-      { ...panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count', basis, null, !byModel) },
-    ];
-  }
-  if (tab === 'pool') return [
-    panel('Pool spend', poolSpend, tab, 'spend', period, 'usd', null, poolKind), panel('Pool worker-minutes', poolMinutes, tab, 'minutes', period, 'minutes', null, poolKind), panel('Pool attempts', poolAttempts, tab, 'attempts', period, 'attempts', null, poolKind), panel('Licence / reset history', licenceRows(poolTable), tab, 'percent', period, 'percent', null, poolKind),
+  if (tab === 'spending') return [
+    // Spending is by pool only (its By Model switch repeated the Model tab).
+    panel('Pool spend', poolSpend, tab, 'spend', period, 'usd', basis, poolKind),
+    panel('Pool worker-minutes', poolMinutes, tab, 'minutes', period, 'minutes', basis, poolKind),
+    panel('Project runs', projectRuns, tab, 'runs', period, 'runs', basis, 'project'),
+    panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count', basis),
   ];
   if (tab === 'model') return [
     panel('Model worker-minutes', modelMinutes, tab, 'minutes', period, 'minutes', null, 'model'), panel('Model attempts', modelAttempts, tab, 'attempts', period, 'attempts', null, 'model'), panel('Model fully proven', modelVerified, tab, 'verified', period, 'runs', null, 'model'), panel('Cost availability', modelCostRows(modelTable), tab, 'spend', period, 'usd', null, 'model'),
@@ -666,15 +659,6 @@ function barColumnStart(regions, hovered) {
   const start = Number(match?.columns?.start);
   return Number.isFinite(start) && start > 0 ? start : 1;
 }
-function addToggleRegions(regions, line, tab, stackBy) {
-  if (tab !== 'spending') return;
-  const plain = visible(line);
-  for (const [value, label] of [['pool', '[By Pool]'], ['model', 'By Model']]) {
-    const at = plain.indexOf(label);
-    if (at < 0) continue;
-    regions.push({ x: at + 1, y: 2, width: label.length, action: { kind: 'stackBy', stackBy: value, statsStackBy: value, active: stackBy === value } });
-  }
-}
 
 /**
  * How many lines the panel column occupies: one heading and one line per row
@@ -700,11 +684,123 @@ function chartFilling(render, budget) {
   return render(budget);
 }
 
+/** A token count the way Cloudflare prints one: 1.57B, 17.1M, 66.1K. */
+function tokenCount(value) {
+  const number = finite(value);
+  if (number == null) return '—';
+  const size = Math.abs(number);
+  for (const [divisor, suffix] of [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'K']]) {
+    if (size < divisor) continue;
+    const scaled = number / divisor;
+    const digits = Math.abs(scaled) < 10 ? 2 : Math.abs(scaled) < 100 ? 1 : 0;
+    return `${Number(scaled.toFixed(digits))}${suffix}`;
+  }
+  return String(Math.round(number));
+}
+
+function tokenPanelRows(list, whole) {
+  const table = { rows: (list ?? []).map((row) => ({ ...row })), totals: { total: whole } };
+  return panelRows(table, 'total', 'count', { shareField: 'share', valueText: (_row, value) => tokenCount(value), missingReason: 'no reported tokens' });
+}
+
+/**
+ * The Tokens tab (tokens-model.js): input and output totals, tokens per day
+ * stacked input over output, and tokens by pool, model and project.
+ */
+function tokensLines(stats, { cols, height, period, ansi, slice }) {
+  const model = object(object(stats)?.tokens);
+  const totals = model?.totals ?? {};
+  const attempts = model?.attempts ?? {};
+  const desktop = cols >= 80;
+  const chartWidth = desktop ? Math.max(1, Math.floor((cols - 2) / 2)) : cols;
+  const reasoning = finite(totals.reasoning) ? ` (reasoning ${tokenCount(totals.reasoning)})` : '';
+  const coverage = model ? [
+    `${attempts.reported ?? 0} of ${attempts.total ?? 0} attempts reported tokens`,
+    attempts.estimated ? `${attempts.estimated} estimated (not counted)` : null,
+    attempts.none ? `${attempts.none} not reported` : null,
+    attempts.unsplit ? `${attempts.unsplit} not split into input and output` : null,
+  ].filter(Boolean).join(' · ') : null;
+  const summary = {
+    title: `Summary · ${period}`,
+    items: [
+      { id: 'tokens', label: 'Tokens', value: model ? 0 : null, valueText: model ? `Input ${tokenCount(totals.input)} · Output ${tokenCount(totals.output)}${reasoning} · total ${tokenCount(totals.total)}` : null, missingReason: 'no rollup index' },
+      { id: 'coverage', label: 'Coverage', value: model ? 0 : null, valueText: coverage, missingReason: 'no rollup index' },
+    ],
+    width: cols,
+  };
+  const whole = finite(totals.total) ?? 0;
+  const ioRows = tokenPanelRows([
+    { name: 'input', total: totals.input ?? 0, share: whole > 0 ? (totals.input ?? 0) / whole : null },
+    { name: 'output', total: totals.output ?? 0, share: whole > 0 ? (totals.output ?? 0) / whole : null },
+  ], whole);
+  const panels = [
+    panel('Tokens by pool', tokenPanelRows(model?.byPool, whole), 'tokens', 'tokens', period, 'count', null, 'pool'),
+    panel('Tokens by model', tokenPanelRows(model?.byModel, whole), 'tokens', 'tokens', period, 'count', null, 'model'),
+    panel('Tokens by project', tokenPanelRows(model?.byProject, whole), 'tokens', 'tokens', period, 'count', null, 'project'),
+    panel(`Input ${tokenCount(totals.input)} · cache read ${tokenCount(totals.cacheRead)}`, ioRows, 'tokens', 'tokens', period, 'count', null, null),
+  ];
+  const buckets = model?.buckets ?? [];
+  const unsplit = buckets.some((bucket) => finite(bucket.unsplit));
+  const names = ['input', 'output', ...(unsplit ? ['not split'] : [])];
+  const colors = seriesColors(names);
+  const millions = (value) => (finite(value) == null ? null : Math.round((value / 1e6) * 1000) / 1000);
+  const series = [
+    { id: 'input', label: 'input', values: buckets.map((bucket) => millions(bucket.input)), color: colors.get('input') },
+    { id: 'output', label: 'output', values: buckets.map((bucket) => millions(bucket.output)), color: colors.get('output') },
+    ...(unsplit ? [{ id: 'not split', label: 'not split', values: buckets.map((bucket) => millions(bucket.unsplit)), color: colors.get('not split') }] : []),
+  ];
+  const chartBuckets = buckets.map((bucket) => ({ key: bucket.key, label: bucket.label, from: bucket.from, to: bucket.to }));
+  const geometry = desktop ? { rows: Math.max(1, panelColumnHeight(panels) - 3) } : { rows: 6 };
+  const title = `Tokens per ${model?.bucketBy === 'week' ? 'week' : 'day'} · millions · input ${tokenCount(totals.input)} · output ${tokenCount(totals.output)}`;
+  const chart = renderStackedColumnChart({
+    title, buckets: chartBuckets, series, width: chartWidth, height: geometry.rows, rowCount: geometry.rows,
+    unit: 'count', totals: false, tab: 'tokens', metric: 'tokens', period,
+    ...(desktop ? { fill: true, fitHeight: true } : {}),
+  });
+  // A chart taller than its few panel rows ends on its axis; keep the row
+  // under the axis that every Stats chart has for its hover readout.
+  if (chart.lines?.length && /[┼+]/.test(visible(chart.lines[chart.lines.length - 1]))) chart.lines.push('');
+  const coloredPanels = colorPanels(panels, colors);
+  const surfacePanels = desktop
+    ? desktopPanelColumns(coloredPanels, Math.max(1, cols - 2 - chartWidth), 'tokens', period)
+    : coloredPanels;
+  const panelHeight = surfacePanels.reduce((most, panelInput) => Math.max(most, panelInput.lines?.length ?? 0), 0);
+  const surfaceChart = desktop ? addDesktopDivider(chart, chartWidth, panelHeight) : chart;
+  const legendDrawn = renderLegend({ items: legendItems(names, colors), width: cols, colors: true });
+  const legend = { ...legendDrawn, lines: legendDrawn.lines.map((line, index) => index === 0 ? `Legend  ${line}` : line) };
+  const notes = [
+    'Basis · provider-reported token counts per attempt; input is uncached, cache read and cache write; output includes reasoning.',
+  ];
+  if (attempts.unsplit) notes.push('History · older index lines hold only a total; `bullswarm workflow reindex --force` splits them.');
+  const surface = renderStatsSurface({ tab: 'tokens', period, width: cols, height, stackBy: 'pool', tabs: TABS, summary, chart: surfaceChart, panels: surfacePanels, legend, notes, ansi });
+  const hovered = object(slice?.payload) ?? null;
+  surface.lines[2] = hovered ? fit(` ${formatHoverLabel({ ...hovered, kind: hovered.kind ?? slice?.kind })}`, cols) : ' '.repeat(cols);
+  const regions = [];
+  for (const region of surface.regions ?? []) {
+    if (!region?.payload || !region.columns) continue;
+    const start = Number(region.columns.start) || 1;
+    const end = Number(region.columns.end) || start;
+    regions.push({ x: Math.max(1, start), y: Math.max(1, Number(region.row) || 1), width: Math.max(1, end - start + 1), action: actionForRegion(region) });
+  }
+  for (const control of surface.meta?.controls ?? []) {
+    if (control.row === 1) regions.push({ x: control.x, y: control.row, width: control.width, action: control.action });
+  }
+  const periodControl = periodToggle(PERIODS, { active: period, width: cols });
+  const controlLine = fit(`Tokens · ${periodControl.text}`, cols);
+  surface.lines[1] = ansi ? controlLine : visible(controlLine);
+  for (const region of periodControl.regions ?? []) regions.push({ x: region.x + 'Tokens'.length + 3, y: 2, width: region.width, action: region.action });
+  return { lines: surface.lines, regions, meta: { ...surface.meta, tab: 'tokens', period, stackBy: 'pool' } };
+}
+
 /** Render the four fixed Stats tabs through the shared stat-kit surface. */
-function statsLines(stats, { width = 120, height = 36, tab = 'spending', period = '7d', stackBy = 'pool', ansi = true, slice = null } = {}) {
+function statsLines(stats, { width = 120, height = 36, tab = 'spending', period = '7d', ansi = true, slice = null } = {}) {
   const cols = widthOf(width);
   const activeTab = normalizeTab(tab);
   const activePeriod = normalizePeriod(period);
+  // Spending is by pool only: its By Model switch showed what the Model tab
+  // shows (Charlie, 27 Nov).
+  const stackBy = 'pool';
+  if (activeTab === 'tokens') return tokensLines(stats, { cols, height, period: activePeriod, ansi, slice });
   const basis = stackBy === 'model' ? 'model worker-minutes; model cost is not measured' : 'rollup values; cost is recorded per pool';
   const overview = overviewModel(stats);
   const poolTable = tableModel(stats, 'pools', overview);
@@ -790,11 +886,9 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
   }
   const periodControl = periodToggle(PERIODS, { active: activePeriod, width: cols });
   const activeLabel = TABS.find((item) => item.id === activeTab)?.label ?? 'Spending';
-  const toggleText = activeTab === 'spending' ? `  [${stackBy === 'model' ? 'By Model' : 'By Pool'}] ${stackBy === 'model' ? 'By Pool' : 'By Model'}` : '';
-  const controlLine = fit(`${activeLabel} · ${periodControl.text}${toggleText}`, cols);
+  const controlLine = fit(`${activeLabel} · ${periodControl.text}`, cols);
   surface.lines[1] = ansi ? controlLine : visible(controlLine);
   for (const region of periodControl.regions ?? []) regions.push({ x: region.x + activeLabel.length + 3, y: 2, width: region.width, action: region.action });
-  addToggleRegions(regions, surface.lines[1], activeTab, stackBy);
   return { lines: surface.lines, regions, meta: { ...surface.meta, tab: activeTab, period: activePeriod, stackBy } };
 }
 

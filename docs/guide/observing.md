@@ -133,7 +133,7 @@ The pages answer different questions:
 | **Run** | Where is this workflow in its compact phase plan, what is each attempt's pool, model, applied reasoning and tier, and what are the current active and span durations? |
 | **Step** | What is this action doing — its header, turn activity, result, task, and cost, with model, effort, and active duration? |
 | **Budget** | What does each pool's quota window report, how much measured worker time is workflows versus rest, what money is measured or labelled, how many median runs fit, and which workflows used the most worker-minutes? |
-| **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time? Its four tabs are Spending, Pool, Model, and Project. Spending puts the dated chart beside four breakdown panels; `By Pool` / `By Model` changes both the chart stacks and the visible breakdowns. |
+| **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time? Its four tabs are Spending, Tokens, Model, and Project. Spending puts the dated spend chart, by pool, beside four breakdown panels. Tokens charts input and output tokens per day, as Cloudflare's Workers AI chart does, with tokens by pool, model and project; attempts with no reported count are counted as not reported, never guessed. |
 | **Fleet** | Which model and reasoning rung each pool uses by lane or provider, its run record and meter state, and where to open setup for edits. |
 | **Help** | What every key, click, layout rule, and dashboard command does. |
 
@@ -203,8 +203,7 @@ Page-specific controls include `/` (filter), `a` (active/all), and `i`
 full-turn transcript; `Enter` to expand a selected overview turn or open every
 captured field behind a transcript row, and `Esc` to close it; `t` cycles the
 Step's activity filter and `f` follows its tail (which
-otherwise opens Fleet); `v` on Stats
-Spending to switch `By Pool` / `By Model`; and `e` on Fleet to open setup.
+otherwise opens Fleet); and `e` on Fleet to open setup.
 On Run, `p` toggles the compact plan boxes and `Space` toggles following the
 live stream; `Enter` opens the selected step. `c` requests a cooperative stop
 from Run, and `y` confirms it. Mouse reporting

@@ -20,7 +20,7 @@ const PERIOD_ITEMS = Object.freeze([
   Object.freeze({ id: 'all', label: 'All time' }),
 ]);
 /** Stats' sub-tabs and Fleet's, in the order Tab cycles them. */
-const STATS_TABS = Object.freeze(['spending', 'pool', 'model', 'project']);
+const STATS_TABS = Object.freeze(['spending', 'tokens', 'model', 'project']);
 const FLEET_TABS = Object.freeze(['lane', 'provider']);
 
 const STEP_SECTIONS = Object.freeze(['activity', 'attempts', 'outcome', 'prompt']);

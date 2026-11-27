@@ -796,9 +796,9 @@ function breakdownCells(model, opts, { cellWidth, chartLines = null }) {
         ...spendChartLines(model, opts, cellWidth, { lines: chartLines == null ? null : chartLines - 1 }),
       ],
     },
-    // The Stats tab each section opens: its `pool`, `model` and `project`
+    // The Stats tab each section opens: Spending (by pool), Model and Project
     // views (STATS_TABS in dashboard.js).
-    section('by pool · share of agent minutes', 'pools', 'green', 'pool'),
+    section('by pool · share of agent minutes', 'pools', 'green', 'spending'),
     section('by model · share of agent minutes', 'models', 'purple', 'model'),
     section('by project · runs', 'projects', 'orange', 'project', true),
   ];

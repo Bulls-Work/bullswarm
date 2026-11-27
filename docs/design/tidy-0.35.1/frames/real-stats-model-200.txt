@@ -1,6 +1,6 @@
  Home  Runs  Budget  Stats  Fleet
  Stats · model
- Spending  Pool  Model  Project
+ Spending  Tokens  Model  Project
 Model · 7d · 30d · all
 
 ── Summary · 30d ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
