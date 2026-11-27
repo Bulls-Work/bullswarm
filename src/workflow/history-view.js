@@ -546,7 +546,32 @@ function taskStartTime(record) {
   return ended != null && duration != null && duration >= 0 ? ended - duration : null;
 }
 
+// A finished run's (or ended task's) row model, per record object and glyph
+// table. The Runs page paints every 400 ms while anything runs, and remodelling
+// ~1,200 finished rows each time was most of its remaining CPU (28 Nov).
+const SETTLED_ROWS = new WeakMap();
+
+function settledRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  const ended = Boolean(record.finishedAt || record.endedAt || record.completedAt || record.state?.lifecycle?.finishedAt);
+  if (isTask(record)) return ended;
+  if (record.ongoing === true || unfinishedRun(record) || !ended) return false;
+  return !(record.state?.attempts ?? []).some((attempt) => attempt?.status === 'running');
+}
+
 function tableRowModel(record, nowMs = Date.now()) {
+  // A record cached as settled stays settled: a run that changes is listed as
+  // a new record object, so the lookup comes before reading any field.
+  const table = glyphs();
+  const memo = record && typeof record === 'object' ? SETTLED_ROWS.get(record) : null;
+  if (memo && memo.table === table) return memo.model;
+  if (!settledRecord(record)) return buildTableRowModel(record, nowMs);
+  const model = buildTableRowModel(record, nowMs);
+  SETTLED_ROWS.set(record, { table, model });
+  return model;
+}
+
+function buildTableRowModel(record, nowMs) {
   const task = isTask(record);
   const legacy = !task && isLegacy(record);
   const cost = legacy ? costInfo(null, 'unknown') : recordCostInfo(record);
