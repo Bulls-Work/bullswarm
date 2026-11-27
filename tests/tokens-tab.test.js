@@ -117,3 +117,18 @@ test('Spending has no By Pool / By Model switch any more', () => {
   assert.doesNotMatch(text, /By Model/);
   assert.doesNotMatch(text, /\[By Pool\]/);
 });
+
+test('on the Tokens tab the tab row lights Tokens, and input and output have different colours', () => {
+  const stats = { tokens: tokensModel(rollups, { period: '7d', now: NOW }) };
+  const view = statsLines(stats, { width: 140, height: 40, tab: 'tokens', period: '7d', ansi: true });
+  const tabRow = view.lines[0];
+  // The active tab is drawn in reverse video (its key letter underlined inside).
+  const lit = tabRow.match(/\x1b\[7m(.*?)\x1b\[0m/)?.[1]?.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.equal(lit, 'Tokens', 'Tokens is the lit tab');
+  const legend = view.lines.find((line) => line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').startsWith('Legend'));
+  const colours = [...legend.matchAll(/\x1b\[38;2;([0-9;]+)m/g)].map((match) => match[1]);
+  assert.equal(colours.length, 2);
+  const [a, b] = colours.map((text) => text.split(';').map(Number));
+  const distance = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  assert.ok(distance > 120, `input and output colours are far apart (distance ${distance.toFixed(0)})`);
+});
