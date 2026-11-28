@@ -560,6 +560,24 @@ test('Cloudflare wording counts after a log prefix and right after an error toke
   }
 });
 
+// Fourth strict review (28 Nov): a "message" key counts only in JSON, an
+// escaped body counts, and prose after the phrase means it is not a notice.
+test('Cloudflare wording: JSON keys only in JSON, escaped bodies count, prose after the phrase does not', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    String.raw`Error: "{\"errors\":[{\"message\":\"AiError: ${P}\",\"code\":3021}]}"`,
+    `{"errors":[{"message":" ${P}","code":3021}]}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `I matched "message": "${P}" in tests.`,
+    `Error: ${P} would be classified as a throttle, I added that.`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
 test('a window phrase inside a Too Many Requests body keeps its own signature', () => {
   const hit = findQuotaFailure({}, 'Too Many Requests: {"error":{"type":"usage_limit","code":"usage_credits_required","message":"Add credits to continue"}}', { now: NOW });
   assert.equal(hit?.signature, 'usage_credits_required');
