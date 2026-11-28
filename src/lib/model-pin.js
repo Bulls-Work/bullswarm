@@ -14,7 +14,11 @@
 // strategy.js loads theirs.
 
 export const MODEL_ID_MAX = 200;
-const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]*$/;
+// `@` may open the id or a path segment, followed by a letter or digit:
+// Cloudflare Workers AI ids are `@cf/<vendor>/<model>`, listed by an OpenCode
+// provider as `<provider>/@cf/...`. Nowhere else, so `@`, `@@` or `@/path`
+// (a response-file shape for some CLIs) is not an id.
+const MODEL_ID_RE = /^@?[A-Za-z0-9](?:[A-Za-z0-9._:/\[\]-]|(?<=\/)@(?=[A-Za-z0-9]))*$/;
 
 /** True for a string that can name a model on a worker CLI's command line. */
 export function isModelId(value) {

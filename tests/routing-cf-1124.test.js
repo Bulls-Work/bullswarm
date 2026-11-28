@@ -58,3 +58,18 @@ test('model discovery keeps ids with an @ (Workers AI)', () => {
     'cf/deepseek-v4.1-flash-low',
   ]);
 });
+
+// A connector that lists raw Workers AI ids (no provider prefix) keeps them:
+// an id may start with `@` (strict review, 28 Nov).
+test('discovery keeps a bare @cf/ Workers AI id', () => {
+  assert.deepEqual(parseDiscoveredModels('@cf/zai-org/glm-5.3\n@cf/deepseek-ai/deepseek-v4.1-flash-1017\n', {}), [
+    '@cf/zai-org/glm-5.3',
+    '@cf/deepseek-ai/deepseek-v4.1-flash-1017',
+  ]);
+});
+
+// cf:deepseek review (28 Nov): discovery follows the pin rule for `@`.
+test('discovery drops ids where @ is not a namespace opener', () => {
+  assert.deepEqual(parseDiscoveredModels('@\n@@\n@/etc/passwd\n@-x\na@b\ncf/@\n', {}), []);
+  assert.deepEqual(parseDiscoveredModels('cf/@cf/zai-org/glm-5.3\n@cf/x/y\n', {}), ['cf/@cf/zai-org/glm-5.3', '@cf/x/y']);
+});

@@ -986,8 +986,9 @@ export function parseDiscoveredModels(output, discovery = {}) {
     }
     if (parse === 'columns') line = line.replace(/^[*+-]\s+/, '').split(/\s{2,}|\t/)[0].trim();
     if (ignore?.test(line) || (include && !include.test(line))) continue;
-    // `@` is kept: every Cloudflare Workers AI id is `@cf/<vendor>/<model>`.
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9@._:/~-]*$/.test(line)) continue;
+    // `@` is kept where it opens the id or a path segment before a letter or
+    // digit (Workers AI `@cf/<vendor>/<model>`), the rule isModelId pins by.
+    if (!/^@?[a-zA-Z0-9](?:[a-zA-Z0-9._:/~-]|(?<=\/)@(?=[a-zA-Z0-9]))*$/.test(line)) continue;
     models.push(line);
   }
   return unique(models).slice(0, Number(discovery.maxModels ?? 250));

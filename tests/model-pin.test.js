@@ -101,3 +101,28 @@ test('poolCanRunModel: a model the pool\'s plan refused is not runnable there, w
   assert.deepEqual(poolCanRunModel(pool, 'gpt-6-astra'), { ok: false, reason: 'command-code plan does not include gpt-6-astra' });
   assert.deepEqual(poolCanRunModel(pool, 'gpt-6-sol'), { ok: true });
 });
+
+// Cloudflare Workers AI ids are `@cf/<vendor>/<model>`, and an OpenCode
+// provider lists them as `<provider>/@cf/...`. Discovery keeps them since
+// 0.40.2; a caller must be able to pin one too (strict review, 28 Nov).
+test('a Workers AI model id with @ can be pinned with --model and on a step', () => {
+  const id = 'cf/@cf/zai-org/glm-5.3';
+  assert.equal(isModelId(id), true);
+  assert.equal(isModelId('@cf/zai-org/glm-5.3'), true);
+  assert.equal(isModelId('cf/glm 5.3@x'), false, 'a space is still not an id');
+  const { request, error } = runStepRequest({ lane: 'analyze', prompt: 'Read README.md', model: id }, { cwd: '/work/acme' });
+  assert.equal(error, undefined);
+  assert.equal(runStepProgram(request).steps[0].model, id);
+  const cf = pool('cf', [id]);
+  assert.equal(poolCanRunModel(cf, id).ok, true);
+});
+
+// Second strict review (28 Nov): `@` opens a Workers AI namespace segment
+// only, and a bare `@cf/...` pin is not read as provider id `@cf`.
+test('@ may only open an id or a path segment, and a bare @cf/ pin reaches a provider clone', () => {
+  for (const bad of ['@', '@@', '@-x', '@/etc/passwd', 'cf/@', 'a@b']) assert.equal(isModelId(bad), false, bad);
+  for (const good of ['@cf/zai-org/glm-5.3', 'cf/@cf/zai-org/glm-5.3']) assert.equal(isModelId(good), true, good);
+  const clone = pool('wai:cf', ['@cf/zai-org/glm-5.3'], { connector: { name: 'wai', model: null, knownModels: [], profile: { providerId: 'cf' } } });
+  const picked = prepareV2DispatchPools([clone], { id: 's', lane: 'analyze', effort: 'medium' }, 'medium', { preferredModel: '@cf/zai-org/glm-5.3' });
+  assert.deepEqual(picked.map((entry) => entry.name), ['wai:cf']);
+});
