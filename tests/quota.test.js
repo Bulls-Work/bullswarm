@@ -468,6 +468,202 @@ test('the Workers AI 3021 wording is a throttle notice', () => {
   assert.equal(findQuotaFailure({}, 'When we load-tested the staging account last week, Cloudflare said inference request per min rate reached.', { now: NOW }), null);
 });
 
+// Strict review of 0.40.3 (28 Nov): Cloudflare's own wording counts only in
+// Cloudflare's error shape, which may be a bare JSON body or a long one; and a
+// 429 line is no longer "error-shaped" for the auth and plan gates.
+const CF_BODY = (msg, extra = '') => `{"errors":[{"message":"${msg}","code":3021}],"success":false,"result":{},"messages":[]${extra}}`;
+const CF_MSG = 'AiError: AiError: rate limiting: inference request per min rate reached (6d1ea148-0f94-4f01-adde-9e65e2f09183)';
+
+test('a Workers AI 3021 body counts bare, and when longer than a notice line', () => {
+  for (const [label, text] of [
+    ['bare body', CF_BODY(CF_MSG)],
+    ['429 line past 300 chars', `Too Many Requests: ${CF_BODY(CF_MSG, `,"meta":"${'x'.repeat(200)}"`)}`],
+    ['AiError line', 'AiError: AiError: rate limiting: inference request per min rate reached (6d1ea148)'],
+    ['971 bare body', '{"success":false,"errors":[{"code":971,"message":"Please wait and consider throttling your request speed"}],"messages":[],"result":null}'],
+  ]) {
+    const hit = findQuotaFailure({}, text, { now: NOW });
+    assert.ok(hit, `${label}: found`);
+    assert.equal(hit.limit, 'throttle', label);
+    assert.equal(hit.retrySamePool, true, label);
+  }
+});
+
+test('prose that quotes the Cloudflare wording is not a throttle', () => {
+  for (const line of [
+    'Cloudflare said inference request per min rate reached, so I waited and retried.',
+    'Inference request per min rate reached is the 3021 wording; I added a test for it.',
+    'Please wait and consider throttling your request speed, the docs say, for code 971.',
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
+test('a 429 line with an auth or plan word is not a sign-in failure', () => {
+  assert.equal(ERROR_SHAPED_LINE.test('Too many requests: GitHub throttled the search API, so I read files locally instead.'), false);
+  const connector = { authSignatures: ['unauthorized', 'not authenticated'] };
+  assert.equal(matchLikelyAuthFailure(connector, 'Too many requests: the relay said unauthorized for some calls, I retried them'), null);
+  assert.equal(matchLikelyAuthFailure(connector, 'Too Many Requests: rate limiting for this API key; not authenticated callers get 10 rpm'), null);
+  // The 429 JSON line itself is still a throttle notice.
+  assert.equal(findQuotaFailure({}, `Too Many Requests: ${CF_BODY(CF_MSG)}`, { now: NOW })?.limit, 'throttle');
+});
+
+// Second strict review (28 Nov): Cloudflare's wording counts where an error
+// line opens with it or with an error class, status or code; prose that only
+// mentions AiError or a code does not.
+test('Cloudflare wording counts in every error framing, and not in prose that names AiError or a code', () => {
+  for (const line of [
+    'Error: Inference request per min rate reached for model @cf/zai-org/glm-5.3',
+    '429 Inference request per min rate reached',
+    'HTTP 429: please wait and consider throttling your request speed',
+    'AI_APICallError: Inference request per min rate reached',
+    '3021: inference request per min rate reached',
+    '"message": "Please wait and consider throttling your request speed"',
+    'Inference request per min rate reached (6d1ea148)',
+    'Too Many Requests: rate limiting: inference request per min rate reached (code 3021)',
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    'The SDK throws AiError: inference request per min rate reached when we exceed 20 rpm; I added a backoff.',
+    '- AiError: inference request per min rate reached is now a throttle',
+    'I matched {"code": 3021} with the wording inference request per min rate reached in quota.js.',
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
+// Third strict review (28 Nov): the error token must sit right before the
+// wording, after any log prefix; prose that only opens like an error is not a
+// notice. A window phrase inside a 429 body keeps its own signature.
+test('Cloudflare wording counts after a log prefix and right after an error token, not in prose that opens like one', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    `2026-11-28T10:00:00.000Z ERROR AiError: ${P}`,
+    `opencode: error: ${P}`,
+    `Unhandled rejection: AiError: ${P}`,
+    `Too Many Requests: AiError: ${P}`,
+    `Too Many Requests. ${P}`,
+    `Too Many Requests - ${P}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `Error handling: when we see "${P}" we back off.`,
+    `error code 3021 means ${P}; we retry.`,
+    `3021 is the code for "${P}" in Cloudflare's docs.`,
+    `429 is returned with "${P}" message per their docs.`,
+    `error.message === "${P}"`,
+    `{"note":"the doc says ${P} for 3021"}`,
+    `"message": "I explained that ${P} is a throttle"`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
+// Fourth strict review (28 Nov): a "message" key counts only in JSON, an
+// escaped body counts, and prose after the phrase means it is not a notice.
+test('Cloudflare wording: JSON keys only in JSON, escaped bodies count, prose after the phrase does not', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    String.raw`Error: "{\"errors\":[{\"message\":\"AiError: ${P}\",\"code\":3021}]}"`,
+    `{"errors":[{"message":" ${P}","code":3021}]}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `I matched "message": "${P}" in tests.`,
+    `Error: ${P} would be classified as a throttle, I added that.`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
+// Fifth strict review (28 Nov): a ':' lead only after a log-prefix shape,
+// a '"' lead only in JSON, an "error" key like "message", a period before the
+// closing quote, and no exponential matching time.
+test('Cloudflare wording: log prefixes, not prose ending in an error token; JSON error keys; bounded time', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    '{"result":null,"success":false,"errors":[{"code":971,"message":"Please wait and consider throttling your request speed."}]}',
+    `{"error":"${P}"}`,
+    `"error": "${P}"`,
+    `[cf] AiError: ${P}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `Root cause: Error: ${P}`,
+    `The log shows: AiError: ${P}`,
+    `I got: Error: ${P}`,
+    `Cloudflare replied: 429: ${P}`,
+    `He wrote "AiError: ${P}"`,
+    `{"type":"text","text":"The run failed: AiError: ${P}"}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+  for (const line of [`${'error'.repeat(40)}x ${P}`, `${'a.error'.repeat(40)}! ${P}`, `${'error.'.repeat(60)}x ${P}`, `${'error:'.repeat(60)}x ${P}`, `${'Error. '.repeat(60)}x ${P}`]) {
+    const started = process.hrtime.bigint();
+    findQuotaFailure({}, line, { now: NOW });
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 200, `slow on ${line.slice(0, 30)}`);
+  }
+});
+
+// cf:deepseek review (28 Nov): a bracket after the wording holds an id or a
+// code, not words; after a closing quote only JSON punctuation follows.
+test('Cloudflare wording: brackets hold an id, and a closing quote ends the JSON value', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    `AiError: ${P} (6d1ea148-0f94-4f01-adde-9e65e2f09183)`,
+    `Too Many Requests: rate limiting: ${P} (code 3021)`,
+    `${P} (6d1ea148)`,
+    `"message": "${P}",`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `Error: ${P} (see the docs).`,
+    `AiError: ${P} (I added a test for this).`,
+    `[cf] AiError: ${P} (quoted from the docs)`,
+    `INFO AiError: ${P} (in my report)`,
+    `"message": "${P}" is what I matched in the test.`,
+    `Inference request per min rate reached (this is the 3021 wording)`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
+// Opus re-check (28 Nov, i6kuma): 429 framings before the reason phrase,
+// square-bracket codes and retry clauses count; prose before "rejection:"
+// does not; a run of level words and error tokens stays fast.
+test('Cloudflare wording: 429 framings, bracket codes and retry clauses count; prose rejection leads do not; fast on word runs', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    `429 Too Many Requests: ${P}`,
+    `HTTP 429 Too Many Requests: ${P}`,
+    `Error: Too Many Requests: ${P}`,
+    `AI_APICallError: Too Many Requests: ${P}`,
+    `[stderr] Too Many Requests: ${P}`,
+    `Inference request per min rate reached [code: 3021]`,
+    `AiError: ${P} [3021]`,
+    `AiError: ${P}; retry after 60s`,
+    `Unhandled promise rejection: AiError: ${P}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  assert.equal(findQuotaFailure({}, `I handled every promise rejection: AiError: ${P}`, { now: NOW }), null);
+  for (const pre of ['error '.repeat(660), '[x] '.repeat(990), 'fatal error '.repeat(330), '2026-11-28T10:00:00Z '.repeat(180)]) {
+    const line = `${pre}!${P}`;
+    const started = process.hrtime.bigint();
+    for (let i = 0; i < 10; i += 1) findQuotaFailure({}, line, { now: NOW });
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 30, `slow on ${pre.slice(0, 20)}`);
+  }
+});
+
+test('a window phrase inside a Too Many Requests body keeps its own signature', () => {
+  const hit = findQuotaFailure({}, 'Too Many Requests: {"error":{"type":"usage_limit","code":"usage_credits_required","message":"Add credits to continue"}}', { now: NOW });
+  assert.equal(hit?.signature, 'usage_credits_required');
+});
+
 // Q6: a limit's reset is known only two ways — the pool's own meter at >= 95%,
 // or a provider line that says a usage window is spent AND names the reset.
 

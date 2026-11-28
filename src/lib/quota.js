@@ -64,9 +64,9 @@ const QUOTA_SIGNATURE_TABLE = Object.freeze([
   // Cloudflare Workers AI per-model request rate (error code 3021; Paid
   // models allow 20 requests a minute per account). Its own wording, so not
   // generic; it sits inside the 429 body, past the head of the line.
-  { phrase: 'inference request per min rate reached', limit: 'throttle' },
+  { phrase: 'inference request per min rate reached', limit: 'throttle', cloudflare: true },
   // Cloudflare's API-level request limit (error code 971, 2026-11-24).
-  { phrase: 'please wait and consider throttling your request speed', limit: 'throttle' },
+  { phrase: 'please wait and consider throttling your request speed', limit: 'throttle', cloudflare: true },
   { phrase: 'quota exceeded', generic: true },
   { phrase: 'exceeded your current quota' },
   { phrase: 'insufficient_quota' },
@@ -127,6 +127,46 @@ export const GENERIC_QUOTA_SIGNATURES = QUOTA_SIGNATURE_TABLE
   .map((entry) => entry.phrase);
 const GENERIC_SET = new Set(GENERIC_QUOTA_SIGNATURES.map((s) => s.toLowerCase()));
 /**
+ * Cloudflare's own limit wording (codes 3021 and 971) counts only where its
+ * error framing sits right before it: an error class or code (`AiError:`,
+ * `Error:`, `AI_APICallError:`, `429`, `3021:`), at the start of the line or
+ * after a log prefix; a JSON `"message"` value that opens with it; HTTP 429's
+ * reason phrase leading the line; or a line that is the bare phrase. A line
+ * that opens as prose or a list item never counts, nor does prose that only
+ * opens like an error ("error code 3021 means ..."). The line may be long,
+ * up to CLOUDFLARE_LINE_CHARS, since a body carries ids and metadata
+ * (strict reviews of 0.40.3, 28 Nov).
+ */
+const CLOUDFLARE_SET = new Set(QUOTA_SIGNATURE_TABLE.filter((entry) => entry.cloudflare).map((entry) => entry.phrase));
+// One error class or code token. Each token takes a whole run of word
+// characters and dots, and repeated tokens need a separator between them, so
+// a line splits into tokens only one way (earlier forms backtracked
+// exponentially on 'errorerror...' and 'error.error...').
+const CLOUDFLARE_ERROR_TOKEN = String.raw`(?:(?<![\w.])[\w.]*error(?![\w.])(?:\s*\[[^\]]*\])?|(?<![\w.])fatal(?![\w.])|(?<![\w.])(?:http\s*|status\s*)?(?:429|3021|971)(?![\w.]))(?:\s*[:\-]\s*|\s+)`;
+// HTTP 429's reason phrase, after any status code or error class.
+const CLOUDFLARE_REASON_PHRASE = String.raw`too many requests\s*[:.\-–]\s*`;
+// What may sit before the error tokens: timestamps, bracketed tags and level
+// words that are not error tokens themselves (so a run of words splits one
+// way), then one bare tool name (`opencode:`) or an "unhandled (promise)
+// rejection:" / "exception:" lead. Not free prose ending in a colon or quote.
+const CLOUDFLARE_LOG_PREFIX = String.raw`(?:(?:(?=\S*\d\d:\d\d)\S+|\[[^\]]*\]|info|warn(?:ing)?|debug)\s+)*(?:[\w.\-/]+:\s+|(?:unhandled\s+)?(?:promise\s+)?(?:rejection|exception):\s+)?`;
+const CLOUDFLARE_PHRASE_LEAD = new RegExp([
+  // Error classes or codes and/or HTTP 429's reason phrase right before the
+  // phrase, after any log prefix.
+  String.raw`^${CLOUDFLARE_LOG_PREFIX}(?:(?:${CLOUDFLARE_ERROR_TOKEN})+(?:${CLOUDFLARE_REASON_PHRASE}(?:${CLOUDFLARE_ERROR_TOKEN})*)?|${CLOUDFLARE_REASON_PHRASE}(?:${CLOUDFLARE_ERROR_TOKEN})*)(?:rate limiting:\s*)?$`,
+  // A JSON "message" or "error" value that opens with it, escaped or not;
+  // the key only where JSON puts it (line start, or after `{`, `[` or `,`).
+  String.raw`(?:^|[{\[,]\s*)\\?"(?:message|error)\\?"\s*:\s*\\?"\s*(?:(?<![\w.])[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
+].join('|'), 'i');
+const CLOUDFLARE_LINE_CHARS = 4000;
+const TOO_MANY_REQUESTS_LINE = /^too many requests(?:[.!:]|$)/i;
+// What may follow the Cloudflare wording: an id or `code N` in round
+// brackets, or a code in square ones (`[code: 3021]`), not words; the model
+// it names; a retry clause; then the end of the line, or the end of the JSON
+// string followed by JSON punctuation. Prose after it means the line
+// talks about the wording rather than reports it.
+const CLOUDFLARE_PHRASE_TAIL = /^\s*(?:\((?:[^\s()]{1,80}|code \d+)\)\s*|\[(?:code:?\s*)?\d+\]\s*)?(?:for model \S+\s*)?(?:[;,.]?\s*(?:retry|try again|please)\b[^"]*$|[.!]?(?:\s*$|\\?"\s*(?:[,}\]\\]|$)|[}\]]))/i;
+/**
  * What may follow a generic phrase on a bare notice line. A JSON body counts:
  * an SDK reports HTTP 429 as `Too Many Requests: {...}` whatever code the
  * provider put inside (Cloudflare 3021 and 971, 2026-11-24).
@@ -161,12 +201,14 @@ const DAY_MS = 24 * 60 * 60_000;
  * Shared with `matchLikelyAuthFailure` in watch.js so both gates agree on what
  * "error-shaped" means. HTTP 402 (Payment Required) is how a spent prepaid
  * balance arrives (grok, 2026-09-25): the limit phrase sits past the head
- * window of that line, so only its error shape admits it. A line that opens
- * with HTTP 429's reason phrase (`Too Many Requests: {...}`, how an
- * OpenAI-compatible SDK reports Workers AI 3021, 2026-11-24) is one too.
+ * window of that line, so only its error shape admits it. HTTP 429's reason
+ * phrase (`Too Many Requests: {...}`) is deliberately not here: these gates
+ * are shared with auth and plan matching, and a 429 line that mentions
+ * "unauthorized" is a rate limit, not a sign-in failure. The quota matcher
+ * admits a 429 line through the generic `too many requests` phrase instead.
  */
 export const ERROR_SHAPED_LINE =
-  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login|too many requests)(?:[.!:]|$)|\b(?:http\s*(?:401|402|403|429)|status\s*(?:401|402|403|429)|payment required|login required|please login|access denied|quota exceeded)\b/i;
+  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|402|403|429)|status\s*(?:401|402|403|429)|payment required|login required|please login|access denied|quota exceeded)\b/i;
 
 function declaredList(connector, key) {
   return Array.isArray(connector?.[key]) ? connector[key] : [];
@@ -297,11 +339,20 @@ function findQuotaNotice(connector, text) {
       const newline = lower.indexOf('\n', index);
       const end = newline < 0 ? raw.length : newline;
       const line = raw.slice(start, end).trim();
-      if (!line || line.length > MAX_QUOTA_LINE_CHARS) continue;
+      if (!line) continue;
       const offset = line.toLowerCase().indexOf(needle);
       if (offset < 0) continue;
-      const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
-      if (!leads && !ERROR_SHAPED_LINE.test(line)) continue;
+      if (CLOUDFLARE_SET.has(needle)) {
+        if (line.length > CLOUDFLARE_LINE_CHARS || PROSE_LINE_PREFIX.test(line)) continue;
+        if (offset > 0 && !CLOUDFLARE_PHRASE_LEAD.test(line.slice(0, offset))) continue;
+        if (!CLOUDFLARE_PHRASE_TAIL.test(line.slice(offset + needle.length))) continue;
+      } else {
+        if (line.length > MAX_QUOTA_LINE_CHARS) continue;
+        const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
+        // HTTP 429's reason phrase leading the line is error-shaped here, for
+        // quota only (ERROR_SHAPED_LINE leaves it out for the auth gates).
+        if (!leads && !ERROR_SHAPED_LINE.test(line) && !TOO_MANY_REQUESTS_LINE.test(line)) continue;
+      }
       // A generic phrase is only a limit notice when nothing but punctuation, a
       // reset/retry clause or a detail follows it; "rate limited by GitHub" is
       // narration about another service's quota, whichever branch admitted it.
