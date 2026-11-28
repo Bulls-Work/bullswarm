@@ -507,6 +507,32 @@ test('a 429 line with an auth or plan word is not a sign-in failure', () => {
   assert.equal(findQuotaFailure({}, `Too Many Requests: ${CF_BODY(CF_MSG)}`, { now: NOW })?.limit, 'throttle');
 });
 
+// Second strict review (28 Nov): Cloudflare's wording counts where an error
+// line opens with it or with an error class, status or code; prose that only
+// mentions AiError or a code does not.
+test('Cloudflare wording counts in every error framing, and not in prose that names AiError or a code', () => {
+  for (const line of [
+    'Error: Inference request per min rate reached for model @cf/zai-org/glm-5.3',
+    '429 Inference request per min rate reached',
+    'HTTP 429: please wait and consider throttling your request speed',
+    'AI_APICallError: Inference request per min rate reached',
+    '3021: inference request per min rate reached',
+    '"message": "Please wait and consider throttling your request speed"',
+    'Inference request per min rate reached (6d1ea148)',
+    'Too Many Requests: rate limiting: inference request per min rate reached (code 3021)',
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    'The SDK throws AiError: inference request per min rate reached when we exceed 20 rpm; I added a backoff.',
+    '- AiError: inference request per min rate reached is now a throttle',
+    'I matched {"code": 3021} with the wording inference request per min rate reached in quota.js.',
+    'Too many requests: inference request per min rate reached is what Cloudflare sends, handled now.',
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
 // Q6: a limit's reset is known only two ways — the pool's own meter at >= 95%,
 // or a provider line that says a usage window is spent AND names the reset.
 
