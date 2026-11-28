@@ -11,7 +11,7 @@ import { join, sep } from 'node:path';
 import { tokensModel } from '../src/workflow/tokens-model.js';
 import { statsLines } from '../src/workflow/stats-view.js';
 import { attemptMetric } from '../src/workflow/metrics.js';
-import { workerMinutesForPool, attemptWindow } from '../src/lib/spend.js';
+import { workerMinutesForPool, attemptWindow, poolWindows } from '../src/lib/spend.js';
 import { readDecisionLog, readArchivedDecisionLog, decisionLogArchivePath } from '../src/lib/state.js';
 import { catalogRows } from '../src/workflow/dashboard-rows.js';
 import { watchOnce } from '../src/lib/watch.js';
@@ -22,11 +22,16 @@ import { readTranscriptUsage as readOpenCodeUsage } from '../src/lib/transcripts
 // 0.41.0 fixes from the strict Opus review nxbx82 (out/rv-041/fix-spec.md).
 // R1-R3 fail until the behaviour lands; R4 and R5 are guards.
 //
-// Seams and spies (no new src seam is required):
-// - R2 counts property reads on the archived decision-log rows. Those rows
-//   are the objects readArchivedDecisionLog caches and readDecisionLog /
-//   resolveDecisionLog hand out (shallow copies of one cached array), so a
-//   counting getter on each row sees every walk of the archive.
+// Seams and spies:
+// - R2 counts property reads on the archived decision-log rows and on the
+//   live tail's earlier rows. The archived rows are the objects
+//   readArchivedDecisionLog caches and readDecisionLog / resolveDecisionLog
+//   hand out (shallow copies of one cached array), so a counting getter on
+//   each row sees every walk of the archive. The merge itself copies and
+//   sorts the numeric window arrays without reading any row, so the guards
+//   also assert the merged windows are memoized: poolWindows (exported for
+//   this) returns the same object across reloads while nothing changed, and
+//   a changed archive or live tail returns a new one.
 // - R3 spies on node:fs (statSync, lstatSync, existsSync, readFileSync,
 //   readdirSync, openSync) by replacing them on the fs object and calling
 //   module.syncBuiltinESMExports(), which updates the named ESM imports that
@@ -112,11 +117,11 @@ function bruteForce(log, name, from, to) {
   return Math.round(minutes * 1e4) / 1e4;
 }
 
-// Counting getters on the cached archive rows: every walk of the archive
-// reads them, whichever array they arrive in.
-function countArchiveReads(home) {
+// Counting getters on rows: every walk of a log reads them, whichever array
+// they arrive in.
+function countRowReads(rows) {
   const counter = { reads: 0 };
-  for (const row of readArchivedDecisionLog(home)) {
+  for (const row of rows) {
     for (const [key, value] of Object.entries(row)) {
       Object.defineProperty(row, key, { enumerable: true, configurable: true, get() { counter.reads += 1; return value; } });
     }
@@ -124,12 +129,24 @@ function countArchiveReads(home) {
   return counter;
 }
 
-test('R2: a usage reload with no new decision does not walk the archive again (readDecisionLog each reload)', () => {
+function countArchiveReads(home) {
+  return countRowReads(readArchivedDecisionLog(home));
+}
+
+test('R2: a usage reload with no new decision walks neither the archive nor the earlier live rows (readDecisionLog each reload)', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-rv041-r2-'));
   try {
     writeArchive(home, Array.from({ length: 400 }, (_, i) => decision(i)));
     const counter = countArchiveReads(home);
-    const live = [{ pool: 'cf:deepseek', ts: new Date(T0 + 201 * HOUR).toISOString(), wallSec: 900 }];
+    const live = [
+      { pool: 'cf:deepseek', ts: new Date(T0 + 201 * HOUR).toISOString(), wallSec: 900 },
+      { pool: 'cf:deepseek', ts: new Date(T0 + 202 * HOUR).toISOString(), wallSec: 600 },
+    ];
+    // The merge copies and sorts the numeric window arrays without reading
+    // any row, so row reads alone cannot see it re-run. The earlier live
+    // rows can: a re-merge re-walks the whole live tail, while the memoized
+    // path reads only the last row (the memo key).
+    const liveHeadReads = countRowReads(live.slice(0, -1));
     const now = T0 + 300 * HOUR;
     // The panel's usage reload: a fresh readDecisionLog array every 10 s.
     const reload = () => workerMinutesForPool('cf:deepseek', T0 + 10 * HOUR, T0 + 210 * HOUR, {
@@ -137,8 +154,10 @@ test('R2: a usage reload with no new decision does not walk the archive again (r
     });
     const first = reload();
     counter.reads = 0;
+    liveHeadReads.reads = 0;
     for (let i = 0; i < 5; i += 1) assert.equal(reload(), first);
     assert.equal(counter.reads, 0, `five reloads read archived rows ${counter.reads} times; the archive did not change`);
+    assert.equal(liveHeadReads.reads, 0, `five reloads read earlier live rows ${liveHeadReads.reads} times; the live tail did not change`);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -153,6 +172,46 @@ test('R2: a reload through bullswarmDir (resolveDecisionLog) does not walk the a
     counter.reads = 0;
     for (let i = 0; i < 5; i += 1) assert.equal(reload(), first);
     assert.equal(counter.reads, 0, `five reloads read archived rows ${counter.reads} times; the archive did not change`);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('R2: the panel reload (fresh state rows each time) reuses one memoized merged windows object', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-rv041-r2-'));
+  try {
+    writeArchive(home, Array.from({ length: 400 }, (_, i) => decision(i)));
+    writeFileSync(join(home, 'state.json'), JSON.stringify({
+      decisionLog: [
+        { pool: 'cf:glm', ts: new Date(T0 + 201 * HOUR).toISOString(), wallSec: 900 },
+        { pool: 'cf:glm', ts: new Date(T0 + 202 * HOUR).toISOString(), wallSec: 600 },
+      ],
+    }));
+    // Warms the home scan (state migration check) so it never walks the
+    // archive rows behind the counting getters below.
+    readDecisionLog(home);
+    const counter = countArchiveReads(home);
+    const now = T0 + 300 * HOUR;
+    // The panel's real reload shape: readDecisionLog re-parses state.json,
+    // so the live rows are fresh objects every time; only their content is
+    // stable, so the memo must key on content, not object identity.
+    const reload = () => workerMinutesForPool('cf:glm', T0, T0 + 210 * HOUR, { decisionLog: readDecisionLog(home), nowMs: now });
+    const first = reload();
+    const merged = poolWindows(readDecisionLog(home));
+    counter.reads = 0;
+    for (let i = 0; i < 5; i += 1) assert.equal(reload(), first);
+    assert.equal(counter.reads, 0, `five reloads read archived rows ${counter.reads} times; the archive did not change`);
+    assert.ok(merged === poolWindows(readDecisionLog(home)), 'the merged archive+live windows are memoized across reloads');
+
+    // A new live decision is a miss: the merged object is rebuilt, and the
+    // new decision is counted.
+    const state = JSON.parse(fs.readFileSync(join(home, 'state.json'), 'utf8'));
+    state.decisionLog.push({ pool: 'cf:glm', ts: new Date(T0 + 203 * HOUR).toISOString(), wallSec: 1200 });
+    writeFileSync(join(home, 'state.json'), JSON.stringify(state));
+    const nextLog = readDecisionLog(home);
+    assert.notEqual(poolWindows(nextLog), merged, 'a new live decision rebuilds the merged windows');
+    assert.equal(
+      workerMinutesForPool('cf:glm', T0, T0 + 210 * HOUR, { decisionLog: nextLog, nowMs: now }),
+      bruteForce(nextLog, 'cf:glm', T0, T0 + 210 * HOUR),
+    );
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -185,6 +244,11 @@ test('R2 guard: cached windows match a plain sum, and see a new live decision, a
       decisionLog: readDecisionLog(home, { decisionLog: nextLive }), nowMs: now,
     }), 40, 'a fresh live array is counted');
 
+    // A same-length live tail whose last decision changed is a memo miss,
+    // not a hit: the memo keys on the last row's content, not just length.
+    live[live.length - 1] = { pool: 'agy', ts: new Date(T0 + HOUR).toISOString(), wallSec: 3600 };
+    assert.equal(minutes('agy', T0, T0 + 2 * HOUR), 60, 'a changed last live decision is re-merged');
+
     // An archive append (size and mtime change).
     const appended = { pool: 'agy', ts: new Date(T0 + 3 * HOUR).toISOString(), wallSec: 600 };
     appendFileSync(decisionLogArchivePath(home), `${JSON.stringify(appended)}\n`);
@@ -197,6 +261,35 @@ test('R2 guard: cached windows match a plain sum, and see a new live decision, a
     writeArchive(home, rotated);
     utimesSync(decisionLogArchivePath(home), new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
     check([...rotated, ...live]);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('R2 guard: an archive append walks only the new lines, not the archived prefix', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-rv041-r2-'));
+  try {
+    writeArchive(home, Array.from({ length: 400 }, (_, i) => decision(i)));
+    // Counting getters on the parsed archive rows: a full rebuild re-walks
+    // them, an incremental append walks only the new, getter-free row.
+    const before = readArchivedDecisionLog(home);
+    const counter = countRowReads(before);
+    const live = [];
+    const now = T0 + 500 * HOUR;
+    const reload = () => workerMinutesForPool('cf:deepseek', T0, now, {
+      decisionLog: readDecisionLog(home, { decisionLog: live }), nowMs: now,
+    });
+    reload();
+    counter.reads = 0;
+
+    const appended = decision(5000);
+    appendFileSync(decisionLogArchivePath(home), `${JSON.stringify(appended)}\n`);
+    utimesSync(decisionLogArchivePath(home), new Date(Date.now() + 5_000), new Date(Date.now() + 5_000));
+    const after = readArchivedDecisionLog(home);
+    assert.equal(after.length, 401);
+    assert.equal(after[0], before[0], 'the parsed prefix is reused, not re-parsed');
+    const log = readDecisionLog(home, { decisionLog: live });
+    const minutes = reload();
+    assert.equal(counter.reads, 0, `an append walked archived rows ${counter.reads} times; only the new lines should be read`);
+    assert.equal(minutes, bruteForce(log, 'cf:deepseek', T0, now), 'the appended window is counted');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

@@ -713,7 +713,11 @@ function tokensLines(stats, { cols, height, period, ansi, slice }) {
   const attempts = model?.attempts ?? {};
   const desktop = cols >= 80;
   const chartWidth = desktop ? Math.max(1, Math.floor((cols - 2) / 2)) : cols;
-  const reasoning = finite(totals.reasoning) ? ` (reasoning ${tokenCount(totals.reasoning)})` : '';
+  const reasoning = finite(totals.reasoning) && totals.reasoning > 0 ? ` (reasoning ${tokenCount(totals.reasoning)})` : '';
+  const tokenSummaryParts = [`Input ${tokenCount(totals.input)}`, `Output ${tokenCount(totals.output)}`];
+  if (finite(totals.cacheRead) && totals.cacheRead > 0) tokenSummaryParts.push(`Cache read ${tokenCount(totals.cacheRead)}`);
+  if (finite(totals.cacheWrite) && totals.cacheWrite > 0) tokenSummaryParts.push(`Cache write ${tokenCount(totals.cacheWrite)}`);
+  const tokenSummary = `${tokenSummaryParts.join(' · ')}${reasoning} · total ${tokenCount(totals.total)}`;
   const coverage = model ? [
     `${attempts.reported ?? 0} of ${attempts.total ?? 0} attempts reported tokens`,
     attempts.estimated ? `${attempts.estimated} estimated (not counted)` : null,
@@ -723,7 +727,7 @@ function tokensLines(stats, { cols, height, period, ansi, slice }) {
   const summary = {
     title: `Summary · ${period}`,
     items: [
-      { id: 'tokens', label: 'Tokens', value: model ? 0 : null, valueText: model ? `Input ${tokenCount(totals.input)} · Output ${tokenCount(totals.output)}${reasoning} · total ${tokenCount(totals.total)}` : null, missingReason: 'no rollup index' },
+      { id: 'tokens', label: 'Tokens', value: model ? 0 : null, valueText: model ? tokenSummary : null, missingReason: 'no rollup index' },
       { id: 'coverage', label: 'Coverage', value: model ? 0 : null, valueText: coverage, missingReason: 'no rollup index' },
     ],
     width: cols,

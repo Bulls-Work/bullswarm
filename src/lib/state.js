@@ -19,7 +19,7 @@
 
 import {
   appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
-  renameSync, rmSync, statSync, unlinkSync, writeSync,
+  readSync, renameSync, rmSync, statSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -296,29 +296,132 @@ const DECISION_LOG_ARCHIVE_FILE = 'decision-log-archive.jsonl';
 export const DECISION_LOG_LIVE_LIMIT = 200;
 const LIVE_DECISION_LOG_HOME = Symbol('bullswarm.liveDecisionLogHome');
 
+/**
+ * Archive identity attached (non-enumerably) to a combined decision log by
+ * readDecisionLog / resolveDecisionLog: `{path, key, cacheKey, fullKey,
+ * appendedFrom, archived}`. spend.js uses it to cache the archived rows'
+ * windows by file identity and walk only the live tail on a reload (R2,
+ * 0.41.0). `fullKey` names the last full parse of this generation; after an
+ * append it also merges only the new archive lines (`appendedFrom` is the
+ * archived row count before those lines, null when the read was a full parse).
+ * Both facts persist for the whole cache generation, so a read that follows
+ * the one that first saw the append still knows the prefix is unchanged.
+ */
+export const DECISION_LOG_ARCHIVE = Symbol('bullswarm.decisionLogArchive');
+
 export function decisionLogArchivePath(bullswarmDir) {
   return join(bullswarmDir, DECISION_LOG_ARCHIVE_FILE);
 }
 
+// One parsed snapshot per archive path: `{size, mtimeMs, ino, rows, fullKey,
+// appendedFrom}`. `size` is the byte offset of the last COMPLETE line committed
+// to `rows`, so an append that left a partial line is picked up by the next
+// read. The inode tells an append (same file, grown) from an atomic rewrite
+// (new inode via temp+rename); a plain truncate-and-rewrite that keeps the
+// inode is caught by the boundary byte check below. `fullKey`/`appendedFrom`
+// describe this generation and are reset only by a full parse.
 const archivedLogCache = new Map();
+
+function tagArchivedRows(rows, p, key, fullKey, appendedFrom) {
+  Object.defineProperty(rows, DECISION_LOG_ARCHIVE, {
+    value: { path: p, key, cacheKey: `${p}:${key}`, fullKey, appendedFrom },
+    enumerable: false,
+    configurable: true,
+  });
+  return rows;
+}
+
+function parseArchiveLines(text) {
+  const rows = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); } catch { /* skip malformed line */ }
+  }
+  return rows;
+}
+
+/**
+ * Bytes from `from` to `size`, read from `from - 1` so the caller can verify
+ * the join is a line boundary: `tail[0]` is the byte just before the cached
+ * prefix's end. Returns null on any read error.
+ */
+function readArchiveTail(p, from, size) {
+  const start = from > 0 ? from - 1 : 0;
+  const length = size - start;
+  if (length <= 0) return null;
+  const buf = Buffer.allocUnsafe(length);
+  let fd;
+  try {
+    fd = openSync(p, 'r');
+    let offset = 0;
+    while (offset < length) {
+      const read = readSync(fd, buf, offset, length - offset, start + offset);
+      if (read <= 0) break;
+      offset += read;
+    }
+    return buf.subarray(0, offset);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* best effort */ } }
+  }
+}
 
 export function readArchivedDecisionLog(bullswarmDir) {
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) return [];
   const p = decisionLogArchivePath(bullswarmDir);
   let stat;
   try { stat = statSync(p); } catch { return []; }
-  const key = `${stat.size}:${stat.mtimeMs}`;
   const cached = archivedLogCache.get(p);
-  if (cached && cached.key === key) return cached.rows.slice();
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return tagArchivedRows(
+      cached.rows.slice(), p, `${cached.size}:${cached.mtimeMs}`, cached.fullKey, cached.appendedFrom,
+    );
+  }
+  if (cached && cached.ino === stat.ino && stat.size > cached.size) {
+    const tail = readArchiveTail(p, cached.size, stat.size);
+    // The byte before the cached prefix's end must be a newline, or the file
+    // was rewritten in place rather than appended to: parse it whole.
+    if (tail && (cached.size === 0 || tail[0] === 0x0a)) {
+      const text = tail.toString('utf8', cached.size === 0 ? 0 : 1);
+      const cut = text.lastIndexOf('\n');
+      const completeText = cut >= 0 ? text.slice(0, cut + 1) : '';
+      if (completeText) {
+        const rows = cached.rows.concat(parseArchiveLines(completeText));
+        const size = cached.size + Buffer.byteLength(completeText, 'utf8');
+        archivedLogCache.set(p, {
+          size, mtimeMs: stat.mtimeMs, ino: stat.ino, rows,
+          fullKey: cached.fullKey, appendedFrom: cached.rows.length,
+        });
+        return tagArchivedRows(
+          rows.slice(), p, `${size}:${stat.mtimeMs}`, cached.fullKey, cached.rows.length,
+        );
+      }
+      // Nothing complete was appended yet: keep the snapshot we have.
+      return tagArchivedRows(
+        cached.rows.slice(), p, `${cached.size}:${cached.mtimeMs}`, cached.fullKey, cached.appendedFrom,
+      );
+    }
+  }
   let text = '';
   try { text = readFileSync(p, 'utf8'); } catch { return []; }
-  const rows = [];
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue;
-    try { rows.push(JSON.parse(line)); } catch { /* skip malformed line */ }
-  }
-  archivedLogCache.set(p, { key, rows });
-  return rows.slice();
+  const rows = parseArchiveLines(text);
+  const key = `${stat.size}:${stat.mtimeMs}`;
+  archivedLogCache.set(p, {
+    size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino, rows, fullKey: key, appendedFrom: null,
+  });
+  return tagArchivedRows(rows.slice(), p, key, key, null);
+}
+
+function tagCombinedLog(combined, archived) {
+  const info = archived?.[DECISION_LOG_ARCHIVE];
+  if (!info) return combined;
+  Object.defineProperty(combined, DECISION_LOG_ARCHIVE, {
+    value: { ...info, archived: archived.length },
+    enumerable: false,
+    configurable: true,
+  });
+  return combined;
 }
 
 export function writeArchivedDecisionLog(bullswarmDir, rows) {
@@ -335,7 +438,7 @@ export function readDecisionLog(bullswarmDir, liveState = null) {
   const archived = readArchivedDecisionLog(bullswarmDir);
   const state = liveState ?? loadState(bullswarmDir);
   const live = Array.isArray(state?.decisionLog) ? state.decisionLog : [];
-  return archived.length ? [...archived, ...live] : live.slice();
+  return archived.length ? tagCombinedLog([...archived, ...live], archived) : live.slice();
 }
 
 export function resolveDecisionLog(decisionLog, bullswarmDir = null) {
@@ -344,7 +447,7 @@ export function resolveDecisionLog(decisionLog, bullswarmDir = null) {
   const home = taggedHome ?? (decisionLog === undefined ? bullswarmDir : null);
   if (!home) return list;
   const archived = readArchivedDecisionLog(home);
-  return archived.length ? [...archived, ...list] : list;
+  return archived.length ? tagCombinedLog([...archived, ...list], archived) : list;
 }
 
 function tagLiveDecisionLog(state, bullswarmDir) {
@@ -662,7 +765,9 @@ function archiveDecisionLogOverflowLocked(bullswarmDir, state, limit = DECISION_
   mkdirSync(bullswarmDir, { recursive: true });
   const archivePath = decisionLogArchivePath(bullswarmDir);
   appendFileSync(archivePath, `${overflow.map((row) => JSON.stringify(row) ?? 'null').join('\n')}\n`);
-  archivedLogCache.delete(archivePath);
+  // The cache entry is kept: the next read sees the same inode and a larger
+  // size, parses only these appended lines, and hands spend.js their count so
+  // it merges just their windows (R2, 0.41.0).
   return overflow.length;
 }
 

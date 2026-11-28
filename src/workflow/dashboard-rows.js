@@ -97,15 +97,31 @@ export function dashboardRows(bullswarmDir, { all = false } = {}) {
 // directory listing are unchanged gives the same row, so it is not read again.
 const ROW_SOURCES = Object.freeze(['state.json', 'events.jsonl', 'result.json', 'report.json', 'cancellation.json', ...FINISHED_MARKERS]);
 
+const SETTLED_INDEX_AGE_MS = 24 * 60 * 60 * 1000;
+
 function rowFingerprint(dir) {
   const parts = [];
+  let dirMtime = null;
   for (const name of ['', ...ROW_SOURCES]) {
     try {
       const stat = statSync(name ? join(dir, name) : dir);
+      if (!name) dirMtime = stat.mtimeMs;
       parts.push(`${stat.mtimeMs}:${stat.size}`);
     } catch { parts.push('-'); }
   }
-  return parts.join('|');
+  return { fingerprint: parts.join('|'), dirMtime };
+}
+
+/** The newest finished-marker mtime, or null when no marker is present. */
+function finishedMarkerMtime(dir) {
+  let newest = null;
+  for (const marker of FINISHED_MARKERS) {
+    try {
+      const stat = statSync(join(dir, marker));
+      if (newest == null || stat.mtimeMs > newest) newest = stat.mtimeMs;
+    } catch { /* marker absent */ }
+  }
+  return newest;
 }
 
 /**
@@ -127,21 +143,45 @@ export function catalogRows(bullswarmDir, cache = new Map()) {
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const seen = new Set();
   const rows = [];
+  const now = Date.now();
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith('wf-')) continue;
     const dir = join(runsRoot, entry.name);
     seen.add(entry.name);
-    const fingerprint = rowFingerprint(dir);
     const hit = cache.get(entry.name);
-    if (hit && hit.settled && hit.fingerprint === fingerprint) {
-      rows.push(hit.row);
-      continue;
+    // A settled run whose finished marker is a day old is re-checked by its
+    // directory mtime only, so the hot set stays small (R3, 0.41.0). A
+    // younger or unsettled run keeps the full fingerprint, because a file can
+    // be rewritten in place without moving the directory.
+    if (hit?.settled) {
+      const indexed = hit.finishedMtime != null && now - hit.finishedMtime > SETTLED_INDEX_AGE_MS;
+      if (indexed) {
+        let dirMtime = null;
+        try { dirMtime = statSync(dir).mtimeMs; } catch { /* vanished */ }
+        if (dirMtime != null && dirMtime === hit.dirMtime) {
+          rows.push(hit.row);
+          continue;
+        }
+      } else {
+        const { fingerprint } = rowFingerprint(dir);
+        if (hit.fingerprint === fingerprint) {
+          rows.push(hit.row);
+          continue;
+        }
+      }
     }
+    const { fingerprint, dirMtime } = rowFingerprint(dir);
     const listed = runEntry(entry.name, dir);
     const row = enrichRunRow(listed);
     const settled = !listed.ongoing && !listed.starting
       && FINISHED_MARKERS.some((marker) => existsSync(join(dir, marker)));
-    cache.set(entry.name, { fingerprint, row, settled });
+    cache.set(entry.name, {
+      fingerprint,
+      dirMtime,
+      row,
+      settled,
+      finishedMtime: settled ? finishedMarkerMtime(dir) : null,
+    });
     rows.push(row);
   }
   for (const name of [...cache.keys()]) if (!seen.has(name)) cache.delete(name);

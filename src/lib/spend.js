@@ -23,7 +23,7 @@ import { readMeterHistory } from '../meters/registry.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
-import { resolveDecisionLog } from './state.js';
+import { DECISION_LOG_ARCHIVE, resolveDecisionLog } from './state.js';
 
 /**
  * Floor on any expected duration. Under-estimating an assignment's length
@@ -243,14 +243,37 @@ export function expectedMinutesFor(assignment = {}, opts = {}) {
 // readings; re-parsing the whole log (archive included) for each pair held
 // the panel's usage reload at seconds of CPU (28 Nov profile). The entry
 // count and the last entry tell a log that was appended to since.
+//
+// The archive part is cached by the archive file's identity (path + size +
+// mtimeMs), not by the combined array: readDecisionLog builds a fresh array
+// every reload, so keying by array identity walked and sorted the whole
+// archive every 10 s (R2, 0.41.0). A reload now walks only the live tail and
+// merges its numeric windows with the cached archive's. When the archive is
+// appended to (rotation is a rewrite and rebuilds), state.js hands us the
+// count before the new lines and we walk only those (R2, 0.41.0 follow-up).
+//
+// The MERGED result is memoized too: mergeWindows spread-copies and re-sorts
+// the archive's per-pool arrays, so recomputing it per workerMinutesForPool
+// call re-sorted the archive k times per reload for as long as the live tail
+// was non-empty (it keeps the last 200 decisions, so on a used home it always
+// is). The memo key is the archive's cacheKey plus the live tail's length and
+// last row, so a reload that appended nothing sorts nothing, while a reload
+// with a new decision (fresh row objects from loadState, content compared)
+// still rebuilds.
 const POOL_WINDOWS = new WeakMap();
+// One entry per archive PATH, holding only that file's current cacheKey: a
+// superseded key is dead the moment the file changes, and one warmed entry
+// retains the archive's window arrays (~3.9 MB at a 250k-row archive), so
+// piling up dead versions of one home cost ~125 MB before the entry cap
+// stabilized. The path cap bounds the map across homes.
+const ARCHIVE_WINDOWS = new Map();
+const ARCHIVE_WINDOWS_MAX = 32;
+const MERGED_WINDOWS = new Map();
+const MERGED_WINDOWS_MAX = 32;
 
-function poolWindows(decisionLog) {
-  const last = decisionLog[decisionLog.length - 1];
-  const cached = POOL_WINDOWS.get(decisionLog);
-  if (cached && cached.length === decisionLog.length && cached.last === last) return cached.byPool;
+function windowsByPool(entries) {
   const raw = new Map();
-  for (const entry of decisionLog) {
+  for (const entry of entries) {
     const owner = poolOf(entry);
     if (owner == null) continue;
     const window = attemptWindow(entry);
@@ -269,6 +292,89 @@ function poolWindows(decisionLog) {
       maxMs,
     });
   }
+  return byPool;
+}
+
+function mergeWindows(archived, live) {
+  if (!live.size) return archived;
+  if (!archived.size) return live;
+  const byPool = new Map(archived);
+  for (const [owner, windows] of live) {
+    const base = byPool.get(owner);
+    if (!base) { byPool.set(owner, windows); continue; }
+    const starts = [...base.starts, ...windows.starts];
+    const ends = [...base.ends, ...windows.ends];
+    const order = starts.map((_, index) => index).sort((a, b) => starts[a] - starts[b]);
+    byPool.set(owner, {
+      starts: order.map((index) => starts[index]),
+      ends: order.map((index) => ends[index]),
+      maxMs: Math.max(base.maxMs, windows.maxMs),
+    });
+  }
+  return byPool;
+}
+
+function archiveWindows(decisionLog, meta) {
+  const cached = ARCHIVE_WINDOWS.get(meta.path);
+  if (cached && cached.cacheKey === meta.cacheKey) return cached.byPool;
+  const archived = decisionLog.slice(0, meta.archived);
+  let byPool;
+  // An append (state.js saw the same inode grow) lets us walk only the lines
+  // added since the cached snapshot and merge their windows, instead of
+  // re-walking and re-sorting the whole archive. `fullKey` must match the
+  // generation our snapshot came from (a rotation resets it) and
+  // `appendedFrom` (the archived count before those lines) must be at or
+  // after our own count, so the prefix we already hold is unchanged. A
+  // rewrite (rotation) always rebuilds.
+  if (cached && meta.fullKey != null && meta.fullKey === cached.fullKey
+      && meta.appendedFrom != null && meta.appendedFrom >= cached.count
+      && meta.archived >= cached.count) {
+    byPool = mergeWindows(cached.byPool, windowsByPool(archived.slice(cached.count)));
+  } else {
+    byPool = windowsByPool(archived);
+  }
+  if (!ARCHIVE_WINDOWS.has(meta.path) && ARCHIVE_WINDOWS.size >= ARCHIVE_WINDOWS_MAX) {
+    ARCHIVE_WINDOWS.delete(ARCHIVE_WINDOWS.keys().next().value);
+  }
+  ARCHIVE_WINDOWS.set(meta.path, {
+    cacheKey: meta.cacheKey, fullKey: meta.fullKey, count: meta.archived, byPool,
+  });
+  return byPool;
+}
+
+/** The memo key for a live tail: '' when empty, null when unserializable. */
+function lastRowKey(row) {
+  if (!row) return '';
+  try { return JSON.stringify(row); } catch { return null; }
+}
+
+/**
+ * A decision log's attempt windows per pool, sorted by start — memoized so a
+ * reload with no new decision neither walks the archive nor re-sorts the
+ * merged arrays. Exported as the seam the R2 guard observes: the same merged
+ * object across reloads is the memo, a changed archive or live tail is not.
+ */
+export function poolWindows(decisionLog) {
+  const meta = decisionLog[DECISION_LOG_ARCHIVE];
+  if (meta && meta.archived > 0) {
+    const live = decisionLog.slice(meta.archived);
+    const lastKey = lastRowKey(live[live.length - 1]);
+    const cached = lastKey === null ? null : MERGED_WINDOWS.get(meta.cacheKey);
+    if (cached && cached.liveLength === live.length && cached.lastKey === lastKey) return cached.byPool;
+    const byPool = mergeWindows(archiveWindows(decisionLog, meta), windowsByPool(live));
+    if (lastKey !== null) {
+      for (const [key, entry] of MERGED_WINDOWS) {
+        if (entry.path === meta.path) MERGED_WINDOWS.delete(key);
+      }
+      if (MERGED_WINDOWS.size >= MERGED_WINDOWS_MAX) MERGED_WINDOWS.delete(MERGED_WINDOWS.keys().next().value);
+      MERGED_WINDOWS.set(meta.cacheKey, { path: meta.path, liveLength: live.length, lastKey, byPool });
+    }
+    return byPool;
+  }
+  const last = decisionLog[decisionLog.length - 1];
+  const cached = POOL_WINDOWS.get(decisionLog);
+  if (cached && cached.length === decisionLog.length && cached.last === last) return cached.byPool;
+  const byPool = windowsByPool(decisionLog);
   POOL_WINDOWS.set(decisionLog, { length: decisionLog.length, last, byPool });
   return byPool;
 }
