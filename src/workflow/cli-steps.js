@@ -581,11 +581,19 @@ export async function waitV3Nodes({
   }
 }
 
+/** A dry loop's findings line under a `workflow wait` fact. */
+function findingsLine({ known, outOfScope = [], rounds = [], stillOpen, unreviewed }) {
+  // A known finding reported again as still open keeps the loop going too.
+  return `  findings ${known.length} known${outOfScope.length ? `, ${outOfScope.length} out of scope` : ''} · new per round ${rounds.join(', ')}${stillOpen ? ` · still open per round ${stillOpen.join(', ')}` : ''}${unreviewed?.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}`;
+}
+
 /** The printed lines of one `workflow wait` fact. */
 export function waitFactLines(fact) {
   const g = glyphs();
   if (fact.type === 'loop' && fact.status === 'passed' && isUnmetEnd(fact.reason)) {
-    return [`${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds, { reason: fact.reason })}`];
+    const line = `${CONTINUED_MARK} ${continuedLoopText(fact.id, fact.round, fact.maxRounds, { reason: fact.reason })}`;
+    // A loop that ended at its last round keeps the dry facts the old wake printed.
+    return fact.findings ? [line, findingsLine(fact.findings)] : [line];
   }
   if (fact.type === 'loop' && (fact.findings?.dryIn !== undefined || fact.findings?.yieldIn !== undefined)) {
     const yieldStop = fact.findings.yieldIn !== undefined;
@@ -599,9 +607,7 @@ export function waitFactLines(fact) {
     const lines = [`${mark} ${fact.type} ${fact.id} ${fact.status}${round}${note}${reason}`];
     // A dry loop: what its reviews found so far.
     if (fact.findings) {
-      const { known, outOfScope, rounds, stillOpen, unreviewed } = fact.findings;
-      // A known finding reported again as still open keeps the loop going too.
-      lines.push(`  findings ${known.length} known${outOfScope.length ? `, ${outOfScope.length} out of scope` : ''} · new per round ${rounds.join(', ')}${stillOpen ? ` · still open per round ${stillOpen.join(', ')}` : ''}${unreviewed?.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}`);
+      lines.push(findingsLine(fact.findings));
     }
     return [...lines, ...(fact.next ? [`  continue ${fact.next}`] : [])];
   }
