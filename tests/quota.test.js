@@ -601,7 +601,7 @@ test('Cloudflare wording: log prefixes, not prose ending in an error token; JSON
   ]) {
     assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
   }
-  for (const line of [`${'error'.repeat(40)}x ${P}`, `${'a.error'.repeat(40)}! ${P}`]) {
+  for (const line of [`${'error'.repeat(40)}x ${P}`, `${'a.error'.repeat(40)}! ${P}`, `${'error.'.repeat(60)}x ${P}`, `${'error:'.repeat(60)}x ${P}`, `${'Error. '.repeat(60)}x ${P}`]) {
     const started = process.hrtime.bigint();
     findQuotaFailure({}, line, { now: NOW });
     assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 200, `slow on ${line.slice(0, 30)}`);
