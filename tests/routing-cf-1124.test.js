@@ -5,7 +5,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { preparePools } from '../src/workflow/dispatch-pools.js';
-import { noPoolCandidates } from '../src/workflow/dispatch-no-pool.js';
+import { noPoolCandidates, tierOffReasons } from '../src/workflow/dispatch-no-pool.js';
+import { noPoolWhy } from '../src/workflow/no-pool-why.js';
+import { routeUnavailableWhy } from '../src/workflow/step-route.js';
+import { pinnedPoolIssues } from '../src/workflow/cli-pool-checks.js';
 import { parseDiscoveredModels } from '../src/lib/strategy.js';
 
 const NOW = Date.parse('2026-11-24T02:00:00Z');
@@ -57,4 +60,53 @@ test('model discovery keeps ids with an @ (Workers AI)', () => {
     'cf/@cf/deepseek-ai/deepseek-v4.1-flash-1017',
     'cf/deepseek-v4.1-flash-low',
   ]);
+});
+
+// The step-level refusal said "no enabled pool has a model on the medium tier
+// for build work" when the only pool with the tier refused for want of a
+// check (biweekly eval 2026-11-28: t1 and t3 on a cf:glm pin; leads' unchecked
+// builds on the cf route). The reason must name the check, not the tier.
+test('a pool that would take the build with a check is named in the off-tier reasons', () => {
+  const step = { id: 'b', lane: 'build', effort: 'medium' };
+  const reasons = tierOffReasons([strict()], step, 'medium', { now: NOW });
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /cheap takes build steps only with a check/);
+});
+
+test('when the missing check is the only reason, the refusal does not claim the tier has no model', () => {
+  const why = noPoolWhy({
+    capableCount: 0, held: [], lane: 'build', effort: 'medium',
+    offTier: tierOffReasons([strict()], { id: 'b', lane: 'build', effort: 'medium' }, 'medium', { now: NOW }),
+  });
+  assert.match(why, /cheap takes build steps only with a check/);
+  assert.doesNotMatch(why, /has a model on the medium tier/);
+});
+
+test('a program pinned to such a pool is refused for its unchecked builds, naming the check', () => {
+  const issues = pinnedPoolIssues(
+    { config: { workerRouting: { strictPool: 'cheap' } } },
+    { actions: [{ id: 'parse', lane: 'build', effort: 'medium' }, { id: 'cli', lane: 'build', effort: 'medium', evidence: [{ type: 'command', cmd: 'npm test' }] }] },
+    [strict()],
+    { now: NOW },
+  );
+  assert.equal(issues.length, 1);
+  assert.match(issues[0], /\(parse\)/);
+  assert.match(issues[0], /only with a check/);
+  assert.doesNotMatch(issues[0], /no model on the medium tier/);
+});
+
+// Second strict review (28 Nov): under a step's route, or when a check
+// refusal sits beside another off-tier reason, the why still opened with
+// "no enabled pool has a model on the tier". The check leads instead.
+test('a check refusal leads the why under a route and beside other off-tier reasons', () => {
+  const check = 'cheap takes build steps only with a check (--check or command/schema evidence)';
+  const plan = 'luna: the plan does not include acme-6-luna';
+  const routed = routeUnavailableWhy({ summary: 'use cheap' }, { lane: 'build', effort: 'low', offTier: [check] });
+  assert.match(routed, /^no eligible pool under the step's route \(use cheap\): cheap takes build steps only with a check/);
+  assert.doesNotMatch(routed, /has a model on the low tier/);
+  const mixed = noPoolWhy({ capableCount: 0, held: [], failureKind: 'unavailable', lane: 'build', effort: 'low', offTier: [plan, check] });
+  assert.match(mixed, /^no eligible pool: cheap takes build steps only with a check .*; luna: the plan does not include acme-6-luna; add a check or route to another pool$/);
+  assert.doesNotMatch(mixed, /has a model on the low tier/);
+  // With no check refusal the tier wording stays.
+  assert.match(routeUnavailableWhy({ summary: 'use luna' }, { lane: 'build', effort: 'low', offTier: [plan] }), /no enabled pool left has a model on the low tier/);
 });

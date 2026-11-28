@@ -5,6 +5,7 @@
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { prepareV2DispatchPools } from './v2-dispatch.js';
+import { buildCheckRefusal } from './dispatch-pools.js';
 import { resolveRouteFilter, routeIssuesForPools } from './step-route.js';
 import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadPoolLabels } from '../lib/pool-labels.js';
@@ -34,7 +35,12 @@ export function pinnedPoolIssues(doc, program, pools, { now = Date.now() } = {})
     const capable = prepareV2DispatchPools(pools, action, effort, {
       preferredModel: action?.model ?? routing.model ?? routing.preferredModel ?? null, strictPool,
     });
-    if (!capable.length) {
+    if (!capable.length && pinned && buildCheckRefusal(pinned, action)
+      && prepareV2DispatchPools(pools, { ...action, evidence: [...(action.evidence ?? []), { type: 'command' }] }, effort, {
+        preferredModel: action?.model ?? routing.model ?? routing.preferredModel ?? null, strictPool,
+      }).length) {
+      issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work with no check, and ${buildCheckRefusal(pinned, action)}; add command or schema evidence to the step, or pin another pool`);
+    } else if (!capable.length) {
       issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
     }
   });
