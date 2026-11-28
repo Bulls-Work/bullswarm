@@ -142,14 +142,19 @@ const CLOUDFLARE_ERROR_TOKENS = String.raw`(?:(?:[\w.]*error(?:\s*\[[^\]]*\])?|(
 const CLOUDFLARE_PHRASE_LEAD = new RegExp([
   // An error class or code right before the phrase, at the start of the line
   // or after a log prefix (`: `, `] `, a level word).
-  String.raw`(?:^|[:\]|]\s*|\b(?:error|fatal|warn(?:ing)?)\s+)${CLOUDFLARE_ERROR_TOKENS}+(?:rate limiting:\s*)?$`,
-  // A JSON "message" value that opens with it.
-  String.raw`"message"\s*:\s*"(?:[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
+  String.raw`(?:^|[:\]|]\s*|\\?"|\b(?:error|fatal|warn(?:ing)?)\s+)${CLOUDFLARE_ERROR_TOKENS}+(?:rate limiting:\s*)?$`,
+  // A JSON "message" value that opens with it, escaped or not; the key only
+  // where JSON puts it (line start, or after `{`, `[` or `,`).
+  String.raw`(?:^|[{\[,]\s*)\\?"message\\?"\s*:\s*\\?"\s*(?:[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
   // HTTP 429's reason phrase leading the line.
   String.raw`^too many requests\s*[:.\-–]\s*(?:[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
 ].join('|'), 'i');
 const CLOUDFLARE_LINE_CHARS = 4000;
 const TOO_MANY_REQUESTS_LINE = /^too many requests(?:[.!:]|$)/i;
+// What may follow the Cloudflare wording: an id in brackets, the model it
+// names, then the end of the line or of the JSON string. Prose after it means
+// the line talks about the wording rather than reports it.
+const CLOUDFLARE_PHRASE_TAIL = /^\s*(?:\([^)]*\)\s*)?(?:for model \S+\s*)?(?:[.!]?\s*$|\\?["}\]])/i;
 /**
  * What may follow a generic phrase on a bare notice line. A JSON body counts:
  * an SDK reports HTTP 429 as `Too Many Requests: {...}` whatever code the
@@ -330,6 +335,7 @@ function findQuotaNotice(connector, text) {
         if (line.length > CLOUDFLARE_LINE_CHARS || PROSE_LINE_PREFIX.test(line)) continue;
         const bare = offset === 0 && bareNotice(line, offset, needle);
         if (!bare && !CLOUDFLARE_PHRASE_LEAD.test(line.slice(0, offset))) continue;
+        if (!bare && !CLOUDFLARE_PHRASE_TAIL.test(line.slice(offset + needle.length))) continue;
       } else {
         if (line.length > MAX_QUOTA_LINE_CHARS) continue;
         const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
