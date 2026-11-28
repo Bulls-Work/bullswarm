@@ -352,3 +352,13 @@ test('a resume after an interrupted attempt that wrote files passes', async (t) 
   assert.equal(resumed.failureKind, null);
   assert.equal(run.state.actions[0].status, 'succeeded');
 });
+
+// A cf:glm worker ran a bare `git stash` / `git stash pop` mid-step (24 Nov
+// 2026, run bjhr22). The stash stack is shared by every worktree and agent on
+// the machine, so a pop can take another agent's changes.
+test('every step brief forbids git stash, which every worktree shares', () => {
+  const action = baseAction();
+  const text = buildProgramWorkTask(briefState(action, '/tmp/acme-repo'), action, '/tmp/acme-repo', null);
+  assert.match(text, /Never run `git stash` or `git stash pop`/);
+  assert.match(text, /copy the files to a temporary directory/);
+});
