@@ -53,8 +53,16 @@ export function tierOffReasons(allPools, action, effort, opts, keep = () => true
   return allPools.flatMap((pool) => {
     if (free.has(pool.name)) return [`free models are off for ${pool.name}`];
     if (plan.has(pool.name)) return [planOffText(pool, effort, opts.preferredModel)];
+    // A pool that has the tier but takes builds only with a check (cf, 24 Nov).
+    if (keep(pool) && pool.enabled !== false && checkWouldAdmit(pool, action, effort, opts)) return [buildCheckRefusal(pool, action)];
     return [];
   });
+}
+
+function checkWouldAdmit(pool, action, effort, opts) {
+  if (!buildCheckRefusal(pool, action)) return false;
+  const checked = { ...action, evidence: [...(action?.evidence ?? []), { type: 'command' }] };
+  return preparePools([pool], checked, effort, opts).length > 0;
 }
 
 /**
