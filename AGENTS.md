@@ -127,9 +127,11 @@ first (`retryPoolTiers`).
    `workflow add --from-answer`). File territories are advisory scheduling
    hints. A check is an ordinary step, and fixing until it passes is a loop
    the caller declares (`loops`, `until` one condition, `maxRounds` 1-5); a
-   loop out of rounds or a gate waits for the caller (`workflow continue`),
-   and a failed step goes to the caller through the watcher's needs-you
-   block: rerun elsewhere, add steps (`workflow add`), take over, or accept
+   loop out of rounds ends by itself at its last round (condition not met, a dry
+   loop's findings in the result; `--out-of-rounds wait` keeps the wake), a gate
+   waits for the caller (`workflow continue`), and a failed step goes to the
+   caller through the watcher's needs-you block: rerun elsewhere, add steps
+   (`workflow add`), take over, or accept
    anyway. v3 validate refuses `defaults.verifyRounds`. `--isolation` opts
    into strict per-worker worktrees. A saved run that is not v3 is view-only
    (0.38.0): its original semantics are kept for display (`features.json`),

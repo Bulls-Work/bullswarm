@@ -110,7 +110,7 @@ export function verdictContext(
   if (verb === 'workflow goal') {
     if (v.waitingFor.length && v.shortId) return `bullswarm mod: ${waitingSentence(v.shortId, v.waitingFor, v.next)}`
     return v.shortId
-      ? `bullswarm mod: workflow ${v.shortId} launched and detached. It stops for you only at a gate, a loop out of rounds or a step that needs you: run \`bullswarm workflow watch ${v.shortId} --until trouble\` (in the background when your harness wakes you when it exits, else in the foreground with \`--timeout\` below your tool's time limit; never end your turn while it runs), act on what wakes you, and relaunch it with the \`next:\` line it prints; \`/bullswarm\` shows the meters.`
+      ? `bullswarm mod: workflow ${v.shortId} launched and detached. It stops for you only at a gate, a loop out of rounds in a run whose saved setting is wait, or a step that needs you: run \`bullswarm workflow watch ${v.shortId} --until trouble\` (in the background when your harness wakes you when it exits, else in the foreground with \`--timeout\` below your tool's time limit; never end your turn while it runs), act on what wakes you, and relaunch it with the \`next:\` line it prints; \`/bullswarm\` shows the meters.`
       : null
   }
   // A run given --answer-schema reports its answer, checked against the schema.
@@ -192,7 +192,7 @@ export function watchContext(text: string): string | null {
   const loop = [...lines]
     .reverse()
     .map(l => {
-      const m = /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+|continued by the caller after \d+ of \d+ rounds \(condition not met\)|ended at its last round \(\d+ of \d+\), condition not met \(--out-of-rounds end\))/.exec(l)
+      const m = /loop (\S+) (passed (?:in|after) round \d+ of \d+|round \d+ of \d+|blocked in round \d+|continued by the caller after \d+ of \d+ rounds \(condition not met\)|ended at its last round \(\d+ of \d+\), condition not met \(out of rounds\))/.exec(l)
       if (m) return m
       // wait's fact line: `✓ loop fix passed · round 2 of 3`.
       const fact = /loop (\S+) (passed|blocked) · round (\d+ of \d+)/.exec(l)

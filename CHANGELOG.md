@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A loop that runs out of rounds now ends by itself by default: it settles at its last round with reason `rounds-spent`, reads as `continued-unmet` (condition not met), runs the steps behind it, and hands its findings to the caller in the result (`loops[].findings` on a dry loop); its last watch line reports what the last round found and the areas not reviewed since. `workflow goal --out-of-rounds wait` keeps the old wake for a run that wants to decide. Evidence: in 14 days to 28 Nov, 99 out-of-rounds wakes; 75 were ended by hand with no more rounds, 21 were given more rounds and 14 of those ran out again, and no run used `--out-of-rounds end`. The 0.38.19 design pre-registered this flip if no caller added rounds (`docs/design/0.38.19-loops-end-themselves.md`).
+
 ## 0.40.3 — Cloudflare rate limit waits on the same pool
 
 - Cloudflare Workers AI's per-model rate limit (code 3021, `rate limiting: inference request per min rate reached`, HTTP 429) is now a `throttle`: the step backs off on the same pool and keeps its one retry. Before, it read as a provider failure, so each hit spent the retry on another pool (one step went Inkling, DeepSeek, then gpt-oss-120b). A notice line that opens with HTTP 429's reason phrase (`Too Many Requests: {...}`) now counts as a provider notice.

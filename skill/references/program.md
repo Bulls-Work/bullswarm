@@ -88,9 +88,11 @@ succeeded, so every step runs in every round: put the deciding step last, and
 give every writer work each round (a build or chore step that changes no file
 fails `not-produced`). From round 2 on, each step's task carries a `Previous
 round` block with what the loop's steps answered and their evidence. When the
-rounds run out, the loop waits like a gate: `workflow continue <run> <loop>
---rounds <1-5>` gives it more; without `--rounds` the steps behind it run, and
-the loop is recorded as `continued-unmet` (condition not met), never passed.
+rounds run out, the loop ends by itself at its last round by default, recorded
+as `continued-unmet` (condition not met), never passed. A run whose saved
+setting is `wait` parks there instead: `workflow continue <run> <loop>
+--rounds <1-5>` gives it more; without `--rounds` the steps behind it run and
+it ends the same way.
 A step in the loop that fails (after its retry) blocks the loop.
 
 A dry loop (its `until` is the dry form below) is different: the review runs
@@ -231,11 +233,12 @@ with `until: {"step": "review", "dry": 1}` and a findings answer:
   the result has `findings.yieldIn`). The last round's fixer still runs first.
   Change it with `until.yield: {"max": 1, "rounds": 3}`, or turn it off with
   `until.yield: false`; it never applies when a fixer runs before the review.
-  A loop out of rounds says its new findings per round (`perRound`, the same
-  counts as the result's `findings.rounds`), the findings reported still open
-  again per round when there were any (`reopenedPerRound`, the result's
-  `findings.stillOpen`), and its workers' tokens so far, so weigh another round
-  (`continue --rounds`) against that.
+  A loop that runs out of rounds (ended by itself by default; parked in a run
+  whose saved setting is `wait`) says its new findings per round (`perRound`,
+  the same counts as the result's `findings.rounds`), the findings reported
+  still open again per round when there were any (`reopenedPerRound`, the
+  result's `findings.stillOpen`), and its workers' tokens so far, so weigh
+  another round (`continue --rounds`, in a `wait` run) against that.
 - **Past correctness**: a single reviewer is also asked about performance,
   code structure and whether the tests would catch a regression. With `areas`,
   a review gets "non-functional: performance, code structure and test

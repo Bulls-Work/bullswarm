@@ -1,6 +1,8 @@
-// `workflow goal --out-of-rounds end` (0.38.19, docs/design/0.38.19-loops-end-themselves.md):
-// a loop that runs out of rounds ends itself, reason `rounds-spent`, instead of
-// waiting for `workflow continue`. The default `wait` is today's behaviour.
+// A loop that runs out of rounds now ends itself by default, reason
+// `rounds-spent`, instead of waiting for `workflow continue`
+// (docs/design/0.38.19-loops-end-themselves.md, pre-registered flip).
+// `--out-of-rounds wait` keeps the old wake, and a saved run that recorded
+// `wait` or predates the key keeps it too: the flip is launch-time only.
 // The real kernel with a fake worker; made-up names only.
 
 import { test } from 'node:test';
@@ -10,13 +12,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createV2GoalDocument, deserializeV2DurableState, serializeV2DurableState } from '../src/workflow/v2-state.js';
+import { buildNewGoalDocument } from '../src/workflow/cli-goal-document.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { readEvents } from '../src/workflow/events.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { FINDINGS_ANSWER } from '../src/workflow/dry-loops.js';
-import { loopOutcomes, requestContinue, applyContinueOffline } from '../src/workflow/gates-loops.js';
+import { controlWatchEvent, loopOutcomes, renderControlEvent, requestContinue, applyContinueOffline } from '../src/workflow/gates-loops.js';
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
+import { runStepGoal, runStepRequest } from '../src/lib/run-step.js';
 
 const cli = resolve('bin/bullswarm.js');
 const V3 = 'bullswarm.workflow.program.v3';
@@ -24,7 +28,10 @@ const eventsOf = (run, type) => readEvents(run.runDir).filter((event) => event.t
 const node = (run, id) => run.state.controlNodes.find((record) => record.id === id);
 const status = (run, id) => run.state.actions.find((action) => action.id === id)?.status;
 
-function fixture(t, outOfRounds) {
+// `cli: true` builds the document the way `workflow goal` does (so the launch
+// default applies); the plain form writes exactly the settings given, which is
+// how a saved run that recorded `wait` or predates the key reads.
+function fixture(t, outOfRounds, { cli = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-loop-end-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'repo');
@@ -35,10 +42,12 @@ function fixture(t, outOfRounds) {
   execFileSync('git', ['-C', workspace, 'add', '.']);
   execFileSync('git', ['-C', workspace, '-c', 'user.name=Acme Dev', '-c', 'user.email=dev@example.com', 'commit', '-qm', 'seed']);
   const goal = 'Harden the acme parser';
-  const goalDocument = createV2GoalDocument({
-    goal, cwd: workspace, requirements: implicitV3Requirements(goal),
-    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 3, ...(outOfRounds ? { outOfRounds } : {}) },
-  });
+  const goalDocument = cli
+    ? buildNewGoalDocument(goal, { cwd: workspace, ...(outOfRounds ? { 'out-of-rounds': outOfRounds } : {}) })
+    : createV2GoalDocument({
+      goal, cwd: workspace, requirements: implicitV3Requirements(goal),
+      settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 3, ...(outOfRounds ? { outOfRounds } : {}) },
+    });
   return { root, workspace, bullswarmDir, goalDocument };
 }
 
@@ -127,9 +136,24 @@ test('(a) a plain loop out of rounds under `end` settles rounds-spent in the sam
   assert.equal(eventsOf(run, 'loop.out-of-rounds').length, 0);
   assert.equal(eventsOf(run, 'workflow.waiting').length, 0, 'the run never parks');
   const passed = eventsOf(run, 'loop.passed')[0].payload;
-  assert.deepEqual([passed.reason, passed.round, passed.of, passed.source], ['rounds-spent', 2, 2, 'flag']);
+  assert.deepEqual([passed.reason, passed.round, passed.of, passed.outOfRounds], ['rounds-spent', 2, 2, 'end']);
   assert.equal(loopOutcomes(run.state)[0].outcome, 'continued-unmet', 'read as the condition never held, like a caller continue');
   assert.equal(run.result.loops[0].outcome, 'continued-unmet');
+});
+
+test('(a2) a launch with no outOfRounds setting ends an out-of-rounds loop in the same pass; ship runs; the run completes', async (t) => {
+  const f = fixture(t, undefined, { cli: true });
+  const run = await launch(f, plainProgram(2), never);
+  assert.equal(run.result?.status, 'completed', JSON.stringify(run.result));
+  assert.deepEqual(run.waiting ?? [], []);
+  assert.deepEqual([node(run, 'polish').status, node(run, 'polish').reason, node(run, 'polish').round], ['passed', 'rounds-spent', 2]);
+  assert.equal(status(run, 'ship'), 'succeeded');
+  assert.equal(eventsOf(run, 'loop.out-of-rounds').length, 0);
+  assert.equal(eventsOf(run, 'workflow.waiting').length, 0, 'the run never parks');
+  assert.equal(loopOutcomes(run.state)[0].outcome, 'continued-unmet');
+  assert.equal(run.result.loops[0].outcome, 'continued-unmet');
+  assert.equal(f.goalDocument.config.settings.outOfRounds, 'end', 'the launch records the new default');
+  assert.equal(JSON.parse(readFileSync(join(run.runDir, 'state.json'), 'utf8')).config.settings.outOfRounds, 'end');
 });
 
 test('(b) a dry loop with area reviewers under `end` likewise; the findings summary is still there', async (t) => {
@@ -145,14 +169,43 @@ test('(b) a dry loop with area reviewers under `end` likewise; the findings summ
   assert.equal(eventsOf(run, 'workflow.waiting').length, 0);
 });
 
-test('(c) the default and an explicit `wait` keep waiting; continue still ends the loop as `continued`', async (t) => {
-  for (const setting of [undefined, 'wait']) {
+test('(b2) a dry loop launched with no flag ends at its last round; the findings handoff is still there', async (t) => {
+  const f = fixture(t, undefined, { cli: true });
+  const run = await launch(f, dryProgram(2), findingEveryRound);
+  assert.equal(run.result?.status, 'completed', JSON.stringify(run.result));
+  assert.deepEqual([node(run, 'harden').status, node(run, 'harden').reason], ['passed', 'rounds-spent']);
+  assert.equal(status(run, 'ship'), 'succeeded');
+  const event = eventsOf(run, 'loop.passed')[0];
+  assert.equal(event.payload.reason, 'rounds-spent');
+  assert.deepEqual(event.payload.findings.unreviewed, ['grammar', 'types'], 'the event carries the areas not reviewed since the last finding');
+  assert.deepEqual(event.payload.findings.perRound, [2, 2], 'the event carries the new-findings count per round');
+  assert.equal(
+    renderControlEvent(controlWatchEvent(event, { token: 'acme01' })),
+    '→ loop harden ended at its last round (2 of 2), condition not met (out of rounds) · round 2 found 2 new (its fix was not reviewed) · not reviewed since: grammar, types · new per round 2, 2',
+    'the watch line carries the dry facts the old wake reported',
+  );
+  // cf review ymkk8s: the result and `workflow wait` say whether the last fix was reviewed too.
+  assert.deepEqual(run.result.loops[0].findings.lastRound, { round: 2, new: 2, reopened: 0, fix: 'runs' });
+  assert.equal(eventsOf(run, 'loop.out-of-rounds').length, 0);
+  assert.equal(eventsOf(run, 'workflow.waiting').length, 0, 'the run never parks');
+  const loop = run.result.loops[0];
+  assert.equal(loop.outcome, 'continued-unmet');
+  assert.ok(loop.findings.known.length >= 2, JSON.stringify(loop.findings));
+  assert.deepEqual(loop.findings.unreviewed, ['grammar', 'types'], 'the areas not reviewed since the last finding are carried');
+});
+
+test('(c) an explicit `wait` still parks, and a run that recorded `wait` or predates the key keeps waiting after resume', async (t) => {
+  for (const setting of ['wait', undefined]) {
     const f = fixture(t, setting);
     const run = await launch(f, plainProgram(2), never);
     assert.deepEqual(run.waiting.map((entry) => entry.id), ['polish'], String(setting));
     assert.deepEqual([node(run, 'polish').status, node(run, 'polish').reason], ['waiting', 'out-of-rounds']);
     assert.equal(eventsOf(run, 'loop.out-of-rounds').length, 1);
     assert.equal(status(run, 'ship'), 'pending');
+    const still = await resume(f, run.runId, never);
+    assert.deepEqual(still.waiting.map((entry) => entry.id), ['polish'], `still waiting after resume (${String(setting)})`);
+    assert.deepEqual([node(still, 'polish').status, node(still, 'polish').reason], ['waiting', 'out-of-rounds']);
+    assert.equal(status(still, 'ship'), 'pending');
   }
 });
 
@@ -183,12 +236,22 @@ test('(c2) a loop already waiting stays waiting under `end`; `continue --rounds`
   assert.equal(done.result?.status, 'completed');
 });
 
-test('(d) the flag survives a save and reload of the state', async (t) => {
-  const f = fixture(t, 'end');
+test('(d) a launch with no flag records outOfRounds end, `wait` records wait, and the value survives a save and reload', async (t) => {
+  const f = fixture(t, undefined, { cli: true });
   const run = await launch(f, plainProgram(2), never);
   const reloaded = deserializeV2DurableState(serializeV2DurableState(run.state));
   assert.equal(reloaded.config.settings.outOfRounds, 'end');
   assert.equal(JSON.parse(readFileSync(join(run.runDir, 'state.json'), 'utf8')).config.settings.outOfRounds, 'end');
+
+  const w = fixture(t, 'wait', { cli: true });
+  const runW = await launch(w, plainProgram(2), never);
+  assert.equal(JSON.parse(readFileSync(join(runW.runDir, 'state.json'), 'utf8')).config.settings.outOfRounds, 'wait');
+  assert.deepEqual(runW.waiting.map((entry) => entry.id), ['polish'], 'the opt-out still parks');
+});
+
+test('(d2) a `bullswarm run` launch records outOfRounds end too, so a loop added later ends by itself', () => {
+  const { request } = runStepRequest({ lane: 'analyze', rest: ['count', 'the', 'acme', 'files'] }, { cwd: '/tmp' });
+  assert.equal(runStepGoal(request).config.settings.outOfRounds, 'end');
 });
 
 test('(e) --out-of-rounds takes wait or end only: another value is a usage error, exit 2, in both forms', (t) => {
@@ -208,4 +271,37 @@ test('(e) --out-of-rounds takes wait or end only: another value is a usage error
     const ok = spawnSync(process.execPath, [cli, 'workflow', 'plan', 'validate', 'Harden the acme parser', '--program', program, '--cwd', root, '--out-of-rounds', value, '--json'], { env, encoding: 'utf8', input: '' });
     assert.equal(ok.status, 0, ok.stderr + ok.stdout);
   }
+});
+
+// cf review p4yh5s (28 Nov): `workflow wait` and the authoring contract must
+// match the new default too.
+test('(f) `workflow wait` on a loop that ended at its last round still prints its dry facts', async () => {
+  const { waitFactLines } = await import('../src/workflow/cli-steps.js');
+  const lines = waitFactLines({
+    id: 'harden', type: 'loop', status: 'passed', reason: 'rounds-spent', round: 2, maxRounds: 2,
+    findings: { known: ['a', 'b'], outOfScope: [], rounds: [2, 2], unreviewed: ['grammar', 'types'] },
+  });
+  assert.match(lines[0], /loop harden ended at its last round \(2 of 2\), condition not met \(out of rounds\)/);
+  assert.equal(lines.length, 2, lines.join('\n'));
+  assert.match(lines[1], /findings 2 known · new per round 2, 2 · not reviewed since: grammar, types/);
+  // A caller continue with no findings stays one line.
+  assert.equal(waitFactLines({ id: 'fix', type: 'loop', status: 'passed', reason: 'continued', round: 1, maxRounds: 3 }).length, 1);
+});
+
+test('(g) `workflow plan contract` says a loop out of rounds ends by itself by default', async () => {
+  const { buildV3Contract } = await import('../src/workflow/contract-v3.js');
+  const text = JSON.stringify(buildV3Contract({ goal: 'g', cwd: '/tmp', next: {} }));
+  assert.doesNotMatch(text, /the loop waits for you like a gate/);
+  assert.match(text, /maxRounds[^"]*":\s*"required whole number 1-5: rounds used up, the loop ends by itself at its last round/);
+});
+
+test('(h) `workflow wait` says whether a self-ended loop\'s last fix was reviewed', async () => {
+  const { waitFactLines } = await import('../src/workflow/cli-steps.js');
+  const base = { id: 'harden', type: 'loop', status: 'passed', reason: 'rounds-spent', round: 2, maxRounds: 2 };
+  const findings = { known: ['a', 'b'], outOfScope: [], rounds: [2, 2], unreviewed: ['types'] };
+  assert.match(waitFactLines({ ...base, findings: { ...findings, lastRound: { round: 2, new: 2, reopened: 0, fix: 'runs' } } })[1],
+    /round 2 found 2 new \(its fix was not reviewed\)/);
+  assert.match(waitFactLines({ ...base, findings: { ...findings, lastRound: { round: 2, new: 1, reopened: 0, fix: 'next' } } })[1],
+    /round 2 found 1 new \(not fixed yet, the fix runs first in another round\)/);
+  assert.doesNotMatch(waitFactLines({ ...base, findings: { ...findings, lastRound: { round: 2, new: 0, reopened: 0, fix: 'runs' } } })[1], /fix/);
 });

@@ -52,7 +52,7 @@ const LOOP_FIELDS = Object.freeze({
   id: 'required: a kebab-case id; steps after the loop list it in dependsOn, never a step inside it',
   steps: 'the step ids that repeat, in order through their own dependsOn; a step is in at most one loop; no loops inside loops',
   until: 'condition on one of the loop\'s steps: true ends the loop; false runs the next round. The dry form ends a review loop when a round finds nothing new',
-  maxRounds: `required whole number 1-${LOOP_MAX_ROUNDS}: rounds used up, the loop waits for you like a gate`,
+  maxRounds: `required whole number 1-${LOOP_MAX_ROUNDS}: rounds used up, the loop ends by itself at its last round, condition not met; only a run launched with --out-of-rounds wait parks there like a gate`,
 });
 
 const CONDITION = Object.freeze({

@@ -130,9 +130,10 @@ validate:
 now: a `fix` that has nothing to change fails `not-produced` and blocks the
 loop. Inside the loop, a failed `npm test` does not fail `check`; it makes the
 condition false and starts the next round, whose `fix` sees the failures. After
-3 rounds the loop waits for you: `bullswarm workflow continue <run>
-until-green --rounds 2`, or take over. For a review rather than a test, use
-pattern 6.
+3 rounds the loop ends by itself at its last round, condition not met (in a run
+whose saved setting is `wait` it waits for you there: `bullswarm workflow
+continue <run> until-green --rounds 2`), or take over. For a review rather
+than a test, use pattern 6.
 
 ## 6. Fix until the review is dry
 
@@ -202,7 +203,7 @@ What each worker is told:
   found 9, 4, 2, 4, 3 and 5: real edge cases keep coming on a large change, so
   the loop also ends on low yield (2 rounds in a row of 1 to 3 new,
   `until.yield`), and an extension past `maxRounds` should be weighed against
-  the tokens the out-of-rounds line reports.
+  the tokens its last watch line reports.
 - Each area reviewer (`review-area-1` to `review-area-3`, ordinary steps that
   run in parallel) gets a focus line naming its area and, from round 2, the
   "Already known" list (report a listed finding again, with `stillOpen: true`,
@@ -221,11 +222,13 @@ same as one review over 4 rounds that all find something. More areas than
 reviewers per round (`areasPerRound`) rotate, and a dry stop then needs every
 area reviewed after the last finding, so give such a loop a round more.
 
-When it runs out of rounds the loop waits and names what the last round found
-and which areas were not reviewed since. `bullswarm workflow continue <run>
-harden --rounds 1` runs one more review round (120k), and the fix only if it
-finds something to fix (a new finding, or a known one still open);
-`continue` without `--rounds` ends it unmet.
+When it runs out of rounds the loop ends by itself at its last round by
+default, and its last watch line names what that round found and which areas
+were not reviewed since; the findings are in the result. A run whose saved
+setting is `wait` parks there instead, and `bullswarm workflow continue <run>
+harden --rounds 1` runs one more review round (120k), the fix only if it finds
+something to fix (a new finding, or a known one still open); `continue` without
+`--rounds` ends it unmet.
 
 ## 3. Draft, critique, approve, publish
 
@@ -289,10 +292,11 @@ the same model.
 The critique asks only for what the sources can show: a critique that wants a
 citation for "the sources do not say X" can never pass. Two rounds are
 enough when each is a full rewrite and review. Decide before launch what you
-do if `polish` runs out of rounds: take over the last draft, or `bullswarm
-workflow continue <run> polish`, which the run records as `continued-unmet`
-(`→ loop polish continued by the caller after 2 of 2 rounds (condition not
-met)`), never as passed.
+do if `polish` runs out of rounds: by default it ends by itself at its last
+round, recorded `continued-unmet` (condition not met, never passed); in a run
+whose saved setting is `wait`, take over the last draft or run `bullswarm
+workflow continue <run> polish` for the same end (`→ loop polish continued by
+the caller after 2 of 2 rounds (condition not met)`).
 
 ## 4. Parallel slices, then a check
 

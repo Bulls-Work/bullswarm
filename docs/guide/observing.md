@@ -230,8 +230,9 @@ a run that stops for you says where, with the command that moves it. A **phase**
 is the label a step declares (`"phase": "writing"`). A **gate** is a point where
 the run stops until you run `bullswarm workflow continue`. A **loop** reruns its
 steps until its condition holds, for at most `maxRounds` rounds; out of rounds
-it waits for `workflow continue`, or, in a run launched with
-`--out-of-rounds end`, ends by itself with its condition not met.
+it ends by itself with its condition not met (recorded `rounds-spent`, a dry
+loop's findings in the result), or, in a run whose saved setting is `wait`, waits for
+`workflow continue`.
 
 A real run on grok, parked at its gate, on the Run page at 120 columns:
 
@@ -261,11 +262,14 @@ A real run on grok, parked at its gate, on the Run page at 120 columns:
   sits one level after it.
 - **A loop row** heads the phase of its first step and reads `round N of max`
   while it runs, `passed in round N of max · <condition>` when its condition
-  held, or `out of rounds (N of max) · <condition> did not hold` with its
-  `continue … --rounds <1-5>` command when it waits for you. A loop you
-  continued without more rounds reads `→ continued by the caller after N of
-  max rounds (condition not met)`: it never passed. Each attempt of a
-  loop step says its round (`write · round 2`).
+  held, `→ ended at its last round (N of max), condition not met (out of
+  rounds)` when it ends by itself, or `out of rounds (N of max) · <condition>
+  did not hold` with its `continue … --rounds <1-5>` command when it waits for
+  you in a run whose saved setting is `wait` (`--out-of-rounds wait`, or one
+  saved before the setting existed). A loop you continued
+  without more rounds reads `→ continued by the caller after N of max rounds
+  (condition not met)`: it never passed. Each attempt of a loop step says its
+  round (`write · round 2`).
 - **A gate row** heads the phase of the steps behind it and reads
   `waits after <steps>`, `waiting for you · <note>` with its `continue` command, `passed ·
   continued by the caller`, or `skipped · <condition> does not hold` when its

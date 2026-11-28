@@ -1560,7 +1560,7 @@ function validateResultLoops(loops) {
     if (entry.findings !== undefined) {
       const findings = entry.findings;
       resultObject(findings, `${name}.findings`);
-      exactFields(findings, new Set(['known', 'outOfScope', 'rounds', 'stillOpen', 'dryIn', 'yieldIn', 'unreviewed']), `${name}.findings`);
+      exactFields(findings, new Set(['known', 'outOfScope', 'rounds', 'stillOpen', 'dryIn', 'yieldIn', 'unreviewed', 'lastRound']), `${name}.findings`);
       for (const key of ['known', 'outOfScope', 'unreviewed']) {
         if (findings[key] !== undefined && (!Array.isArray(findings[key]) || findings[key].some((item) => typeof item !== 'string'))) resultFail(`${name}.findings.${key} must be an array of strings`);
       }
@@ -1569,6 +1569,15 @@ function validateResultLoops(loops) {
       if (findings.stillOpen !== undefined && (!Array.isArray(findings.stillOpen) || findings.stillOpen.some((count) => !Number.isInteger(count) || count < 0))) resultFail(`${name}.findings.stillOpen must be an array of counts`);
       if (findings.dryIn !== undefined && (!Number.isInteger(findings.dryIn) || findings.dryIn < 1)) resultFail(`${name}.findings.dryIn must be a positive integer`);
       if (findings.yieldIn !== undefined && (!Number.isInteger(findings.yieldIn) || findings.yieldIn < 1)) resultFail(`${name}.findings.yieldIn must be a positive integer`);
+      // A loop that ended at its last round: that round's facts and its fix state.
+      if (findings.lastRound !== undefined) {
+        const last = findings.lastRound;
+        resultObject(last, `${name}.findings.lastRound`);
+        exactFields(last, new Set(['round', 'new', 'reopened', 'fix']), `${name}.findings.lastRound`);
+        if (!Number.isInteger(last.round) || last.round < 1) resultFail(`${name}.findings.lastRound.round must be a positive integer`);
+        for (const key of ['new', 'reopened']) if (!Number.isInteger(last[key]) || last[key] < 0) resultFail(`${name}.findings.lastRound.${key} must be a count`);
+        if (!['runs', 'next', 'none', 'skipped'].includes(last.fix)) resultFail(`${name}.findings.lastRound.fix is invalid`);
+      }
     }
   });
 }
