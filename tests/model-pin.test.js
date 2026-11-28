@@ -116,3 +116,13 @@ test('a Workers AI model id with @ can be pinned with --model and on a step', ()
   const cf = pool('cf', [id]);
   assert.equal(poolCanRunModel(cf, id).ok, true);
 });
+
+// Second strict review (28 Nov): `@` opens a Workers AI namespace segment
+// only, and a bare `@cf/...` pin is not read as provider id `@cf`.
+test('@ may only open an id or a path segment, and a bare @cf/ pin reaches a provider clone', () => {
+  for (const bad of ['@', '@@', '@-x', '@/etc/passwd', 'cf/@', 'a@b']) assert.equal(isModelId(bad), false, bad);
+  for (const good of ['@cf/zai-org/glm-5.3', 'cf/@cf/zai-org/glm-5.3']) assert.equal(isModelId(good), true, good);
+  const clone = pool('wai:cf', ['@cf/zai-org/glm-5.3'], { connector: { name: 'wai', model: null, knownModels: [], profile: { providerId: 'cf' } } });
+  const picked = prepareV2DispatchPools([clone], { id: 's', lane: 'analyze', effort: 'medium' }, 'medium', { preferredModel: '@cf/zai-org/glm-5.3' });
+  assert.deepEqual(picked.map((entry) => entry.name), ['wai:cf']);
+});
