@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A Cloudflare Workers AI model id such as `cf/@cf/zai-org/glm-5.3` can now be pinned with `bullswarm run --model` or a step's `model`; before, `@` failed validation although discovery listed the id. Discovery also keeps a bare `@cf/...` id.
+
 ## 0.40.3 — Cloudflare rate limit waits on the same pool
 
 - Cloudflare Workers AI's per-model rate limit (code 3021, `rate limiting: inference request per min rate reached`, HTTP 429) is now a `throttle`: the step backs off on the same pool and keeps its one retry. Before, it read as a provider failure, so each hit spent the retry on another pool (one step went Inkling, DeepSeek, then gpt-oss-120b). A notice line that opens with HTTP 429's reason phrase (`Too Many Requests: {...}`) now counts as a provider notice.

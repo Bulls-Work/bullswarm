@@ -814,7 +814,7 @@ export function validateActionProgram(program, runtime = {}) {
     // Optional caller override: the exact model this step runs on. Only pools
     // that can run it stay eligible (model-pin.js); nothing substitutes another.
     if (action.model !== undefined && !isModelId(action.model)) {
-      issues.push(`${at}.model must be a model id (letters, digits, and . _ : / [ ] -), at most ${MODEL_ID_MAX} characters`);
+      issues.push(`${at}.model must be a model id (letters, digits, and @ . _ : / [ ] -), at most ${MODEL_ID_MAX} characters`);
     }
     // Folded like effort, so `plan export` shows the box each step was given.
     if (action.timeBox !== undefined && !isTimeBox(action.timeBox)) {
