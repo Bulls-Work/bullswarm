@@ -184,6 +184,8 @@ test('(b2) a dry loop launched with no flag ends at its last round; the findings
     '→ loop harden ended at its last round (2 of 2), condition not met (out of rounds) · round 2 found 2 new (its fix was not reviewed) · not reviewed since: grammar, types · new per round 2, 2',
     'the watch line carries the dry facts the old wake reported',
   );
+  // cf review ymkk8s: the result and `workflow wait` say whether the last fix was reviewed too.
+  assert.deepEqual(run.result.loops[0].findings.lastRound, { round: 2, new: 2, reopened: 0, fix: 'runs' });
   assert.equal(eventsOf(run, 'loop.out-of-rounds').length, 0);
   assert.equal(eventsOf(run, 'workflow.waiting').length, 0, 'the run never parks');
   const loop = run.result.loops[0];
@@ -291,4 +293,15 @@ test('(g) `workflow plan contract` says a loop out of rounds ends by itself by d
   const text = JSON.stringify(buildV3Contract({ goal: 'g', cwd: '/tmp', next: {} }));
   assert.doesNotMatch(text, /the loop waits for you like a gate/);
   assert.match(text, /maxRounds[^"]*":\s*"required whole number 1-5: rounds used up, the loop ends by itself at its last round/);
+});
+
+test('(h) `workflow wait` says whether a self-ended loop\'s last fix was reviewed', async () => {
+  const { waitFactLines } = await import('../src/workflow/cli-steps.js');
+  const base = { id: 'harden', type: 'loop', status: 'passed', reason: 'rounds-spent', round: 2, maxRounds: 2 };
+  const findings = { known: ['a', 'b'], outOfScope: [], rounds: [2, 2], unreviewed: ['types'] };
+  assert.match(waitFactLines({ ...base, findings: { ...findings, lastRound: { round: 2, new: 2, reopened: 0, fix: 'runs' } } })[1],
+    /round 2 found 2 new \(its fix was not reviewed\)/);
+  assert.match(waitFactLines({ ...base, findings: { ...findings, lastRound: { round: 2, new: 1, reopened: 0, fix: 'next' } } })[1],
+    /round 2 found 1 new \(not fixed yet, the fix runs first in another round\)/);
+  assert.doesNotMatch(waitFactLines({ ...base, findings: { ...findings, lastRound: { round: 2, new: 0, reopened: 0, fix: 'runs' } } })[1], /fix/);
 });
