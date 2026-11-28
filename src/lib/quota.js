@@ -64,9 +64,9 @@ const QUOTA_SIGNATURE_TABLE = Object.freeze([
   // Cloudflare Workers AI per-model request rate (error code 3021; Paid
   // models allow 20 requests a minute per account). Its own wording, so not
   // generic; it sits inside the 429 body, past the head of the line.
-  { phrase: 'inference request per min rate reached', limit: 'throttle' },
+  { phrase: 'inference request per min rate reached', limit: 'throttle', cloudflare: true },
   // Cloudflare's API-level request limit (error code 971, 2026-11-24).
-  { phrase: 'please wait and consider throttling your request speed', limit: 'throttle' },
+  { phrase: 'please wait and consider throttling your request speed', limit: 'throttle', cloudflare: true },
   { phrase: 'quota exceeded', generic: true },
   { phrase: 'exceeded your current quota' },
   { phrase: 'insufficient_quota' },
@@ -127,6 +127,18 @@ export const GENERIC_QUOTA_SIGNATURES = QUOTA_SIGNATURE_TABLE
   .map((entry) => entry.phrase);
 const GENERIC_SET = new Set(GENERIC_QUOTA_SIGNATURES.map((s) => s.toLowerCase()));
 /**
+ * Cloudflare's own limit wording (codes 3021 and 971) counts only on a line in
+ * Cloudflare's error shape: its `AiError` class, its JSON `"code"` 3021 or 971,
+ * or HTTP 429's reason phrase leading the line. Prose that quotes the wording
+ * (a worker explaining the fix) is not a notice. Such a line is admitted
+ * wherever the phrase sits, bare JSON body included, and up to
+ * CLOUDFLARE_LINE_CHARS, since the body carries ids and metadata (strict
+ * review of 0.40.3, 28 Nov).
+ */
+const CLOUDFLARE_SET = new Set(QUOTA_SIGNATURE_TABLE.filter((entry) => entry.cloudflare).map((entry) => entry.phrase));
+const CLOUDFLARE_ERROR_SHAPE = /\baierror\b|"code"\s*:\s*(?:3021|971)\b|^too many requests:/i;
+const CLOUDFLARE_LINE_CHARS = 4000;
+/**
  * What may follow a generic phrase on a bare notice line. A JSON body counts:
  * an SDK reports HTTP 429 as `Too Many Requests: {...}` whatever code the
  * provider put inside (Cloudflare 3021 and 971, 2026-11-24).
@@ -161,12 +173,14 @@ const DAY_MS = 24 * 60 * 60_000;
  * Shared with `matchLikelyAuthFailure` in watch.js so both gates agree on what
  * "error-shaped" means. HTTP 402 (Payment Required) is how a spent prepaid
  * balance arrives (grok, 2026-09-25): the limit phrase sits past the head
- * window of that line, so only its error shape admits it. A line that opens
- * with HTTP 429's reason phrase (`Too Many Requests: {...}`, how an
- * OpenAI-compatible SDK reports Workers AI 3021, 2026-11-24) is one too.
+ * window of that line, so only its error shape admits it. HTTP 429's reason
+ * phrase (`Too Many Requests: {...}`) is deliberately not here: these gates
+ * are shared with auth and plan matching, and a 429 line that mentions
+ * "unauthorized" is a rate limit, not a sign-in failure. The quota matcher
+ * admits a 429 line through the generic `too many requests` phrase instead.
  */
 export const ERROR_SHAPED_LINE =
-  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login|too many requests)(?:[.!:]|$)|\b(?:http\s*(?:401|402|403|429)|status\s*(?:401|402|403|429)|payment required|login required|please login|access denied|quota exceeded)\b/i;
+  /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|402|403|429)|status\s*(?:401|402|403|429)|payment required|login required|please login|access denied|quota exceeded)\b/i;
 
 function declaredList(connector, key) {
   return Array.isArray(connector?.[key]) ? connector[key] : [];
@@ -297,11 +311,16 @@ function findQuotaNotice(connector, text) {
       const newline = lower.indexOf('\n', index);
       const end = newline < 0 ? raw.length : newline;
       const line = raw.slice(start, end).trim();
-      if (!line || line.length > MAX_QUOTA_LINE_CHARS) continue;
+      if (!line) continue;
       const offset = line.toLowerCase().indexOf(needle);
       if (offset < 0) continue;
-      const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
-      if (!leads && !ERROR_SHAPED_LINE.test(line)) continue;
+      if (CLOUDFLARE_SET.has(needle)) {
+        if (line.length > CLOUDFLARE_LINE_CHARS || !CLOUDFLARE_ERROR_SHAPE.test(line)) continue;
+      } else {
+        if (line.length > MAX_QUOTA_LINE_CHARS) continue;
+        const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
+        if (!leads && !ERROR_SHAPED_LINE.test(line)) continue;
+      }
       // A generic phrase is only a limit notice when nothing but punctuation, a
       // reset/retry clause or a detail follows it; "rate limited by GitHub" is
       // narration about another service's quota, whichever branch admitted it.
