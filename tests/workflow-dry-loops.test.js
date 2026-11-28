@@ -1388,7 +1388,7 @@ test('end to end with the echo worker: the finding is carried forward, the fixer
 
 test('end to end with rotating areas: round 2 is clean but one area was not reviewed, the run parks; one more round ends it dry', { timeout: 120_000 }, (t) => {
   const e = echoRun(t, echoProgram({ areas: ['grammar', 'types', 'joins'], areasPerRound: 2, maxRounds: 2 }));
-  const goal = e.bullswarm('workflow', 'goal', 'Harden the acme parser', '--cwd', e.workspace, '--program', e.plan, '--foreground');
+  const goal = e.bullswarm('workflow', 'goal', 'Harden the acme parser', '--cwd', e.workspace, '--program', e.plan, '--foreground', '--out-of-rounds', 'wait');
   assert.equal(goal.status, 0, goal.stdout + goal.stderr);
   assert.match(goal.stdout, /outcome: waiting/);
   assert.match(goal.stdout, /waiting: loop harden · out of rounds \(2 of 2\); the review did not run dry; round 2 found nothing new; not reviewed since the last finding: types/);

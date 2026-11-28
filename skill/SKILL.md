@@ -6,15 +6,15 @@ description: Load before you hand work to another coding agent through the Bulls
 # Bullswarm
 
 You write the task. Bullswarm picks a worker by quota and capability, runs it,
-judges it by facts (never by the worker's own report), and records it.
+judges it by facts (never its own report), and records it.
 
 One model covers everything: a **step** is one agent task. `bullswarm run` is
 a workflow with one step. A **workflow** composes steps with **phases**,
 **gates** and **loops**, and you choose how closely to watch it.
 
 Keep the user's scope and working directory. Delegate only authorized work;
-permission to delegate does not authorize messages, releases, or other external
-writes. If `BULLSWARM_DEPTH` is set you are already a worker: do the assigned
+permission to delegate does not authorize external writes (messages, releases).
+If `BULLSWARM_DEPTH` is set you are already a worker: do the assigned
 work directly unless it explicitly requires nested delegation.
 
 ## 1. Choose the shape
@@ -22,7 +22,7 @@ work directly unless it explicitly requires nested delegation.
 Decide first, from the request itself (there is no classifier command):
 
 - **One worker can hold the whole input and make one deliverable** (triage a
-  file of 40 tickets, a research brief, one feature, a review): `bullswarm
+  file of 40 tickets, a research brief, a review): `bullswarm
   run`, with `--answer-schema` when you need a checkable answer. Do not split
   an input into chunks unless one worker cannot hold it: chunks lose
   judgement across items (a 40-ticket triage split four ways scored 31-32/40
@@ -43,22 +43,21 @@ changes. Use `--task-file` for long text. Options you will use:
 - `--answer-schema <file>`: a JSON schema. The worker writes its answer as JSON
   to a file Bullswarm names, and the verdict carries the checked `answer` (a
   mismatch is failure kind `schema`).
-- `--check '<cmd>'`: a command Bullswarm runs after the worker (up to 5); exit 0 proves the step. A build run without --check finishes unproven.
+- `--check '<cmd>'`: a command Bullswarm runs after the worker (up to 5); exit 0 proves it. A build run without --check finishes unproven.
 - `--no-retry`: one attempt, not the default one retry.
 - `--avoid-pool`, `--use-provider`, `--avoid-provider`, `--model`: routing.
   `strategy set-free never --yes` stops free models being picked.
 - `--timeout <seconds>`: kill the worker after that long (`timeout after
-  <N>s`, failure kind `interrupted`; the retry still runs).
+  <N>s`, failure kind `interrupted`; the retry runs).
 
 Read the verdict. `ok: true` means read `outFile` (and `answer`) and check the
-content before you use it. `ok: false` means inspect and report the failure;
+content before you use it. `ok: false` means inspect and report it;
 `failureKind` names it and `why` says it in one line. `pool` and `model` name
 who ran it; `shortId` names the run; the last field, `details`, is the command
 for its record and cost. A build or chore run that changes no file (files git
 ignores count) fails `not-produced`, also outside git; files its worker wrote
-outside the cwd (named in its own tool calls) count, and the result lists them
-as changed outside cwd. Do not run `doctor`
-unless dispatch reports a readiness problem.
+outside the cwd count, and the result lists them as changed outside cwd. Run
+`doctor` only when dispatch reports a readiness problem.
 
 ## 3. A workflow: write, validate, launch, watch
 
@@ -107,28 +106,31 @@ bullswarm workflow watch <shortId> --until trouble
 ```
 
 Validate exit 2 lists the `issues`: fix them and validate again. Advisories
-never block; with `--json` they are in the JSON (`advisories`). Exit 0 prints
+never block; with `--json` they are in `advisories`. Exit 0 prints
 the launch line; run it. A goal over 120 characters, or with a line break,
 shows as `"<goal>"` in that line (`launch   bullswarm workflow goal "<goal>"
 --cwd …`): put `"$(cat goal.txt)"` in its place. The launch detaches and
 returns `shortId`; report it.
 
 Old v2 programs (`bullswarm.workflow.program.v2`) still run? No: since 0.38.0
-a new run refuses them, and runs they started are view-only.
+new runs refuse them; runs they started are view-only.
 
 Start one watch right after launch; it prints nothing until a wake (a gate
-waiting, a loop out of rounds, a step that needs you, a pause, a stale step,
-steering, the end). Each exit is one wake: read the output, act, and start the
-printed `next:` line again. If your harness cannot wake you when a background
-process ends, run the watch in the foreground: it blocks until the wake; give
-it a `--timeout` under your tool's time limit (`--until trouble --timeout 100`
-for 2 minutes). A restart without `--after` attaches at the newest event and
-skips wakes in between. Never end your turn while a run you own is still
-running. At a gate: `bullswarm workflow continue <shortId> <gate>`; a loop out
-of rounds takes `--rounds <1-5>`. `workflow step accept` on a failed step
-inside a loop does not end the loop (the next round still starts); to stop a
-loop early let it run out of rounds (`maxRounds`), then
-`workflow continue <shortId> <loop>`, recorded as condition not met.
+waiting, a loop out of rounds in a wait run, a step that needs you, a pause, a
+stale step, steering, the end). Each exit is one wake: read the output, act,
+and start the printed `next:` line again. If your harness cannot wake you when
+a background process ends, run the watch in the foreground: it blocks until
+the wake; give it a `--timeout` under your tool's time limit (`--until trouble
+--timeout 100` for 2 minutes). A restart without `--after` attaches at the
+newest event and skips wakes in between. Never end your turn while a run you
+own is still running. At a gate: `bullswarm workflow continue <shortId>
+<gate>`; a loop out of rounds takes `--rounds <1-5>` (a wait run is one
+launched with `--out-of-rounds wait`, or saved before that setting). `workflow
+step accept` on a failed step inside a loop does not end the loop (the next
+round still starts); to stop a loop early let it run out of rounds
+(`maxRounds`): by default it ends by itself at its last round, recorded
+condition not met; a wait run needs `workflow continue <shortId> <loop>` for
+the same end.
 `watch --until trouble` also wakes on
 `steering received` (a person left guidance: decide what it means and add
 steps).
@@ -139,7 +141,7 @@ Lessons from real runs; each holds for this version.
 
 1. **One worker beats chunks.** Split only when one worker cannot hold the
    input (the triage above): priority and consistency are judgements across
-   items, and chunks cannot make them.
+   items; chunks cannot make them.
 2. **Write the judgement down.** A step whose decisions are spelled out (a
    numbered spec, the rulings) runs well at `effort` `medium` or `low`; open
    design needs `high`. Capability is model and reasoning together: the
@@ -166,7 +168,7 @@ Lessons from real runs; each holds for this version.
    `blindTo` the author: a builder's credible reason talks a reviewer who
    reads it out of a real finding. To fix until a review is clean, loop
    `[review, fix]` with `until: {"step": "review", "dry": 1}` ("dry": a round
-   that finds nothing new): each later review is told what is already known,
+   that finds nothing new): each later review is told what is known,
    the fixer runs only when there is something to fix, and the loop ends
    after one clean round. There `blindTo` names the builder outside the
    loop, not the fixer: the review is never handed the fixer's report. A strict review of a large change rarely answers
@@ -176,9 +178,9 @@ Lessons from real runs; each holds for this version.
    From 4 areas, 3 reviewers run per round and take turns, so ending dry
    takes more clean rounds (`areasPerRound` sets how many run).
    An area reviewer costs about one review per round, a fix round about five
-   (patterns.md 6). Let Bullswarm place the review
-   by quota as for any step; add `route.independentOf` only for your own
-   reason (another model family's view, the owner asked, a compliance rule),
+   (patterns.md 6). Bullswarm places the review
+   by quota like any step; add `route.independentOf` only for your own
+   reason (another family's view, the owner asked, compliance),
    knowing another provider may still serve the same model, so name
    `providers`/`pools` when the model family matters. Keep the brief consistent
    with the repository's own rules: a brief that contradicts a repo test cannot
@@ -196,7 +198,7 @@ Lessons from real runs; each holds for this version.
    work is right; `answer checked` is a well-formed claim.
 10. **Retries are for flakes.** The one automatic retry covers a crash or a
     failed check. A refusal at start (a sign-in failure or a model the plan
-    does not include, before any work) is picked again and does not use it.
+    does not include) is picked again and does not use it.
     A sign-in failure (meter read or worker) keeps the pool and its
     credential group out of picks: a meter one until a read succeeds, a
     worker one for 15, 30, then 60 min.
@@ -216,8 +218,8 @@ schema` (a check Bullswarm ran passed), `answer checked` (its answer passed
 its schema: a well-formed claim, not proof, so it is not counted as proven),
 `finished · unproven` (neither), and `accepted by choice` (your decision,
 never verification). When you report the outcome, quote the run's proof line
-as printed (`proof: …` at the end of watch, `# proof` in `runs result`)
-instead of paraphrasing it. Then read the real outputs and answers
+as printed (`proof: …` at the end of watch, `# proof` in `runs result`) not
+paraphrased. Then read the real outputs and answers
 (`bullswarm workflow runs result <shortId> --json` names every step's output)
 and probe the important edge cases yourself. A `partial` run lists what is
 unfinished and your options: see recovery.md.
@@ -229,7 +231,7 @@ unfinished and your options: see recovery.md.
 | a step needs you (a needs-you block), a rate limit, a usage limit or no free pool | [recovery.md](references/recovery.md) |
 | a step looks stale; pause, restart or cancel; a run ended `partial` | [recovery.md](references/recovery.md) |
 | writing a program: every field, conditions, answers, evidence, deliverables | [program.md](references/program.md) |
-| a review: the strict form and `blindTo`; fixing until it is dry, with areas | [program.md](references/program.md) "Reviews", [patterns.md](references/patterns.md) 3 and 6 |
+| a review: the strict form, `blindTo`, fixing until dry, areas | [program.md](references/program.md) "Reviews", [patterns.md](references/patterns.md) 3 and 6 |
 | copying a workflow: find then check, fix until green, fix until the review is dry, draft to publish, parallel slices, triage | [patterns.md](references/patterns.md) |
 | `workflow add` and `blocks`, `wait`, `continue`, watch modes and flags, handback fields, routing and reasoning diagnosis, view-only saved runs | [operations.md](references/operations.md) |
 | adding a provider | [providers.md](references/providers.md) |

@@ -300,9 +300,10 @@ dependents run, and the step reads `accepted by choice` and is counted apart
 in the proof line (`N accepted by choice: <steps>`). Report it as your
 decision, never as verification. `step accept` on a failed step inside a
 loop does not end the loop (the next round still starts); to stop a loop
-early let it run out of rounds (`maxRounds`), then
-`bullswarm workflow continue <shortId> <loop>`, which is recorded as
-condition not met. In a dry loop with areas, accepting a failed area reviewer
+early let it run out of rounds (`maxRounds`): by default it ends by itself at
+its last round, recorded as condition not met; a run whose saved setting is
+`wait` needs `bullswarm workflow continue <shortId> <loop>` for the same end.
+In a dry loop with areas, accepting a failed area reviewer
 (`review-area-2`, never the group id `review`) counts its area as not reviewed
 that round, so the loop cannot end dry until a later round reviews it; a
 step the loop skipped reads `skipped (nothing to fix)` and is counted apart,

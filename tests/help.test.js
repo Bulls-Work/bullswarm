@@ -478,11 +478,11 @@ test('watch --help covers v3 runs: gate and loop lines, their wake-ups, the wait
   assert.ok(!flat.includes('v2: plan revise'));
 });
 
-test('goal and plan validate --help name program.v3, and a gate or a loop out of rounds stops a run for you', () => {
+test('goal and plan validate --help name program.v3, and only a wait run stops for a loop out of rounds', () => {
   const goal = helpText(['workflow', 'goal']);
   assert.match(goal, /a bare bullswarm\.workflow\.program\.v3 document, or one inside a bullswarm\.workflow\.planner-response\.v2 envelope; a bullswarm\.workflow\.program\.v2 is refused/);
   assert.match(goal, /A bullswarm\.workflow\.program\.v2 is refused \(exit 2, nothing launched\)/);
-  assert.match(goal, /A gate stops the steps behind it until you run workflow continue; a loop repeats its steps until its condition holds, and waits for you like a gate when its rounds run out\./);
+  assert.match(goal, /A gate stops the steps behind it until you run workflow continue; a loop repeats its steps until its condition holds, and when its rounds run out it ends by itself at its last round, condition not met, and the steps behind it run\. Only a run whose saved setting is wait \(--out-of-rounds wait, or one saved before the setting existed\) waits there for workflow continue\./);
   assert.doesNotMatch(goal, /never waits/);
   assert.match(helpText(['workflow', 'plan', 'validate']), /a bare bullswarm\.workflow\.program\.v3 document, or one inside a planner response envelope/);
   const workflow = helpText(['workflow']);

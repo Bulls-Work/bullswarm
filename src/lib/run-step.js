@@ -195,7 +195,7 @@ export function runStepGoal(request) {
     goal,
     cwd: request.targetDir,
     requirements: implicitV3Requirements(goal),
-    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1 },
+    settings: { executionMode: 'program', workspaceMode: 'shared', scout: false, plannerMode: 'caller', concurrency: 1, outOfRounds: 'end' },
     // `--reasoning` is the run-wide level, as in 0.36 (source "run").
     workerRouting: request.reasoning ? { reasoning: request.reasoning } : null,
   });

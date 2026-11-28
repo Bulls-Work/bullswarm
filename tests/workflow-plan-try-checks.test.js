@@ -230,7 +230,8 @@ test('the skill and changelog describe --try-checks and accept inside a loop', (
   for (const text of [skill, readFileSync('skill/references/recovery.md', 'utf8')]) {
     const flat = text.replace(/\s+/g, ' ');
     assert.match(flat, /step accept` on a failed step inside a loop does not end the loop \(the next round still starts\)/);
-    assert.match(flat, /let it run out of rounds \(`maxRounds`\), then `(bullswarm )?workflow continue <shortId> <loop>`/);
+    // A default run ends the loop at its last round; only a wait run needs continue.
+    assert.match(flat, /let it run out of rounds \(`maxRounds`\): by default it ends by itself at its last round, recorded (as )?condition not met; a (wait run|run whose saved setting is `wait`) needs `(bullswarm )?workflow continue <shortId> <loop>`/);
   }
   const changelog = readFileSync('CHANGELOG.md', 'utf8');
   // The whole changelog: a release dates `## Unreleased` and leaves it empty.

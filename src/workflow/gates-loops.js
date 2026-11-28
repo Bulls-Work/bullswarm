@@ -63,8 +63,8 @@ export { controlOf, controlRecords };
 // --- the program's control nodes ---------------------------------------------
 
 // A loop that ended with its condition not met: the caller continued it
-// (`continued`) or `--out-of-rounds end` ended it at its last round
-// (`rounds-spent`). Every view reads the two the same way.
+// (`continued`), or the run's `end` setting (the launch default) ended it at
+// its last round (`rounds-spent`). Every view reads the two the same way.
 export const ROUNDS_SPENT = 'rounds-spent';
 export const isUnmetEnd = (reason) => reason === 'continued' || reason === ROUNDS_SPENT;
 const endsOutOfRounds = (state) => state.config?.settings?.outOfRounds === 'end';
@@ -120,7 +120,7 @@ export const CONTINUED_MARK = '→';
 
 /** The words for a loop the caller continued: it never passed (QA37). */
 export function continuedLoopText(id, rounds, maxRounds, { by = true, reason = 'continued' } = {}) {
-  if (reason === ROUNDS_SPENT) return `loop ${id} ended at its last round (${rounds} of ${maxRounds}), condition not met (--out-of-rounds end)`;
+  if (reason === ROUNDS_SPENT) return `loop ${id} ended at its last round (${rounds} of ${maxRounds}), condition not met (out of rounds)`;
   return `loop ${id} continued${by ? ' by the caller' : ''} after ${rounds} of ${maxRounds} rounds (condition not met)`;
 }
 
@@ -336,10 +336,12 @@ function stepLoop(state, loop, record, { at, emit, records, rerun }) {
     return true;
   }
   if (record.round >= record.maxRounds && endsOutOfRounds(state)) {
-    // `--out-of-rounds end`: the declared rounds are the budget; the loop ends
-    // with its condition unmet and the steps behind it run, as after a continue.
+    // The run's `outOfRounds: end` setting (the launch default): the declared
+    // rounds are the budget; the loop ends with its condition unmet and the
+    // steps behind it run, as after a continue.
     settle(record, 'passed', at, ROUNDS_SPENT);
-    emit('loop.passed', { loopId: loop.id, round: record.round, of: record.maxRounds, reason: ROUNDS_SPENT, source: 'flag' });
+    const findings = dryOutOfRounds(state, loop, record);
+    emit('loop.passed', { loopId: loop.id, round: record.round, of: record.maxRounds, reason: ROUNDS_SPENT, outOfRounds: 'end', ...(findings ? { findings } : {}) });
     return true;
   }
   if (record.round >= record.maxRounds) {
@@ -998,6 +1000,19 @@ export function isLoopVerdict(event) {
   return event?.type === 'loop.passed' || event?.type === 'loop.blocked';
 }
 
+// The dry facts a loop that ended or parked out of rounds carries
+// (dryOutOfRounds): what the last round found, the areas not reviewed since,
+// the per-round counts and the tokens spent.
+function outOfRoundsFactsText(event) {
+  const { lastNew, unreviewed = [], tokens } = event.findings;
+  const found = lastNew.new + lastNew.reopened;
+  const said = found
+    ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? ` (${lastFixText(lastNew.fix)})` : ''}`
+    : `round ${lastNew.round} found nothing new`;
+  const rounds = perRoundText(event.findings);
+  return `${said}${unreviewed.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}${rounds ? ` · ${rounds}` : ''}${tokens ? ` · ${tokenText(tokens)} worker tokens so far` : ''}`;
+}
+
 /** A gate or loop event as one human line, or null. */
 export function renderControlEvent(event) {
   const g = glyphs();
@@ -1033,20 +1048,12 @@ export function renderControlEvent(event) {
         return `${g.ok} loop ${event.loopId} dry in round ${event.round} of ${event.of} · no new findings${event.areas ? ', every area reviewed' : ''} · ${event.known} found in all`;
       }
       return isUnmetEnd(event.reason)
-        ? `${CONTINUED_MARK} ${continuedLoopText(event.loopId, event.round, event.of, { reason: event.reason })}`
+        ? `${CONTINUED_MARK} ${continuedLoopText(event.loopId, event.round, event.of, { reason: event.reason })}${event.findings ? ` · ${outOfRoundsFactsText(event)}` : ''}`
         : `${g.ok} loop ${event.loopId} passed in round ${event.round} of ${event.of} · ${event.condition ?? 'its condition'}`;
     case 'loop.out-of-rounds': {
       const continueTail = `continue: bullswarm workflow continue ${event.token} ${event.loopId} --rounds <n>`;
       if (event.findings) {
-        const { lastNew, unreviewed = [] } = event.findings;
-        const found = lastNew.new + lastNew.reopened;
-        const said = found
-          ? `round ${lastNew.round} found ${lastNew.new} new${lastNew.reopened ? `, ${lastNew.reopened} still open` : ''}${lastFixText(lastNew.fix) ? ` (${lastFixText(lastNew.fix)})` : ''}`
-          : `round ${lastNew.round} found nothing new`;
-        const { tokens } = event.findings;
-        const rounds = perRoundText(event.findings);
-        const cost = `${rounds ? ` · ${rounds}` : ''}${tokens ? ` · ${tokenText(tokens)} worker tokens so far` : ''}`;
-        return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${said}${unreviewed.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}${cost} · ${continueTail}`;
+        return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${outOfRoundsFactsText(event)} · ${continueTail}`;
       }
       return `${g.waiting} loop ${event.loopId} out of rounds (${event.round} of ${event.of}) · ${event.condition ?? 'its condition'} did not hold · ${continueTail}`;
     }

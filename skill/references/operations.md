@@ -26,7 +26,7 @@ bullswarm workflow add <shortId> --from-answer <step>                           
 bullswarm workflow wait <shortId> <id...> [--timeout <s>] [--json]                     # facts and answers of steps, gates, loops
 bullswarm workflow continue <shortId> <gate>                                           # pass a waiting gate
 bullswarm workflow continue <shortId> <loop> [--rounds <1-5>]                          # more rounds; without --rounds it ends continued, condition not met
-# a run launched with `workflow goal --out-of-rounds end` never waits here: the loop ends by itself (rounds-spent, condition not met) and the steps behind it run
+# by default (--out-of-rounds end) a run never waits here: the loop ends by itself (rounds-spent, condition not met), a dry loop's findings are in the result, and the steps behind it run; --out-of-rounds wait parks it
 bullswarm workflow step rerun <shortId> <step> [--avoid <pool>]                        # run a step again with its handoff
 bullswarm workflow step accept <shortId> <step> --reason '<why>'                       # keep a failed step, as your choice
 ```
@@ -98,8 +98,9 @@ each id (real output):
 **continue** writes a durable intent next to the run. A running kernel applies
 it; otherwise the command applies it, sets the run back to `running` and
 relaunches the kernel (`✓ gate approve passed in 98vx92; kernel relaunched`).
-Only a waiting gate or an out-of-rounds loop can be continued, and `--rounds`
-applies to a loop only.
+Only a waiting gate or an out-of-rounds loop can be continued (a loop waits
+only in a run whose saved setting is `wait`: `--out-of-rounds wait`, or a run
+saved before the setting existed), and `--rounds` applies to a loop only.
 Before you continue you may add steps. A loop continued without `--rounds`
 lets the steps behind it run and reads `→ loop <loop> continued by the caller
 after N of N rounds (condition not met)`, never passed. Real output:
@@ -110,7 +111,8 @@ after N of N rounds (condition not met)`, never passed. Real output:
 ```
 
 A watch prints gate and loop events on their own lines, and `--until trouble`
-wakes on the two that wait for you:
+wakes on a waiting gate, and on a loop out of rounds in a run whose saved
+setting is `wait`:
 
 ```text
 ⧖ gate <gate> waiting · <note> · continue: bullswarm workflow continue <shortId> <gate>
@@ -118,14 +120,16 @@ wakes on the two that wait for you:
 ↻ loop <loop> round 2 of 3 · check's evidence passed did not hold
 ✓ loop <loop> passed in round 2 of 3 · check's evidence passed
 ⧖ loop <loop> out of rounds (3 of 3) · check's evidence passed did not hold · continue: bullswarm workflow continue <shortId> <loop> --rounds <n>
+→ loop <loop> ended at its last round (3 of 3), condition not met (out of rounds)
 → loop <loop> continued by the caller after 3 of 3 rounds (condition not met)
 ```
 
 A dry loop (until `{"step": "review", "dry": 1}`, program.md "Fix until the
 review is dry") adds a findings line after each review round and a line for
 a step it skips; neither wakes `--until trouble`. It ends `dry`, or runs out
-of rounds naming what the last round found and the areas not reviewed since
-(real output, from an echo-provider run):
+of rounds. By default it ends by itself at its last round, its last line
+naming what that round found and the areas not reviewed since (real output,
+from an echo-provider run):
 
 ```text
 · loop harden round 1 of 3 · review (grammar and parsing, joins): 1 new, 1 repeated · 1 known · fix runs
@@ -133,8 +137,13 @@ of rounds naming what the last round found and the areas not reviewed since
 · loop harden round 2 of 3 · review (grammar and parsing, joins): 0 new, 2 repeated · 1 known · fix skipped
 · fix skipped · loop harden round 2: nothing new to fix
 ✓ loop harden dry in round 2 of 3 · no new findings, every area reviewed · 1 found in all
-⧖ loop <loop> out of rounds (2 of 2) · round 2 found nothing new · not reviewed since: types · continue: bullswarm workflow continue <shortId> <loop> --rounds <n>
+→ loop harden ended at its last round (2 of 2), condition not met (out of rounds) · round 2 found nothing new · not reviewed since: types · new per round 1, 0
 ```
+
+In a run whose saved setting is `wait`, the last line is instead
+`⧖ loop <loop> out of rounds (2 of 2) · round 2 found nothing new · not
+reviewed since: types · new per round 1, 0 · continue: bullswarm workflow
+continue <shortId> <loop> --rounds <n>` and the run parks.
 
 The result's reason adds `loop harden ended dry in round 2 of 3 (1
 finding)`, its `loops[i].findings` lists the known titles (`dryIn` only for
@@ -211,7 +220,7 @@ Choose how close to watch:
 
 | Mode | Wakes you on | Command |
 |---|---|---|
-| Wake-ups only (the default choice) | a gate waiting, a loop out of rounds, a step that needs you (after its retry, or at once for a usage limit), a pause, a stale step, steering, the end; each loop that finished since the last wake is printed too, without waking | `bullswarm workflow watch <shortId> --until trouble` |
+| Wake-ups only (the default choice) | a gate waiting, a loop out of rounds in a run whose saved setting is `wait`, a step that needs you (after its retry, or at once for a usage limit), a pause, a stale step, steering, the end; each loop that finished since the last wake is printed too, without waking | `bullswarm workflow watch <shortId> --until trouble` |
 | Every step | each finished step with its answer, loop rounds, plus every wake-up | `bullswarm workflow watch <shortId>` (or `--next` for one step at a time) |
 | Named steps | only the steps, gates or loops you name | `bullswarm workflow wait <shortId> <id...>` |
 
@@ -221,8 +230,8 @@ Watch without waste. Start one `bullswarm workflow watch <shortId> --until
 trouble` per run in the background and do nothing about the run until it
 exits. It prints no attach line and no routine lines. It prints only trouble:
 failed or blocked steps, rejected plan revisions, pause requests and pause
-stops, stalled workers, stale steps, steering received, a gate waiting and a
-loop out of rounds, plus one line per v3 loop that finished (its
+stops, stalled workers, stale steps, steering received, a gate waiting and, in
+a run whose saved setting is `wait`, a loop out of rounds, plus one line per v3 loop that finished (its
 verdict and round; not a wake-up). It exits on the first trouble line
 while the run goes on (exit 0). It also exits on the outcome: finished, paused,
 waiting, or interrupted, with the usual exit codes. Each exit is one wake: read
@@ -506,7 +515,9 @@ pool and rate-limit backoff are in [recovery.md](recovery.md).
 
 A run never waits for a silent worker or for a pool to come back, and a v2
 run never waits for its caller either; a v3 run waits for you only at a gate or
-a loop out of rounds you declared. A step that no pool can run now comes back
+a loop out of rounds you declared. A loop out of rounds ends by itself by
+default (a dry loop's findings are in the result); launch with `--out-of-rounds wait` to
+have it wait for you. A step that no pool can run now comes back
 to you, with its return time when one is known, and the rest of the run goes
 on. The run finishes as soon as nothing more can happen on its own. The result
 carries a `handback` whenever it is not verified or has steering nobody acted

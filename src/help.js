@@ -1130,7 +1130,7 @@ const workflowText = rich({
     + 'configured machine.',
   argsTitle: 'Commands',
   args: [
-    { name: 'goal "<goal>"', desc: 'run a program you wrote (--program): steps start when their dependencies finish, a gate or a loop out of rounds stops the run for you until workflow continue, and the run finishes when nothing more can run, handing back what is left' },
+    { name: 'goal "<goal>"', desc: 'run a program you wrote (--program): steps start when their dependencies finish, a gate or a loop out of rounds stops the run for you until workflow continue (a loop only in a run whose saved setting is wait: --out-of-rounds wait, or a run saved before the setting existed; by default it ends by itself at its last round, condition not met, and the steps behind it run), and the run finishes when nothing more can run, handing back what is left' },
     { name: 'plan ...', desc: 'plan contract prints the v3 format, plan validate checks your file without launching' },
     { name: 'pause <runId>', desc: 'stop starting new steps (--now also stops running ones); resume continues' },
     { name: 'cancel <runId>', desc: 'stop a run cooperatively; a run stopped by pause, or left waiting by an older version, is finalized immediately' },
@@ -1144,7 +1144,7 @@ const workflowText = rich({
     { name: 'step restart <runId> <step>', desc: 'stop a running step and run it again with its handoff, optionally on another pool; nothing restarts on its own' },
     { name: 'step rerun <runId> <step>', desc: 'run a failed or finished step again with its last attempt\'s handoff; --avoid keeps it off pools and stays in the step\'s route' },
     { name: 'step accept <runId> <step>', desc: 'accept a failed step, or a check\'s failing requirements, by your choice (--reason); dependents run; recorded as evidence "choice", never proof' },
-    { name: 'continue <runId> <id>', desc: 'pass a gate that waits for you, or give a loop out of rounds more rounds (--rounds); relaunches the kernel when none is running' },
+    { name: 'continue <runId> <id>', desc: 'pass a gate that waits for you, or give a loop out of rounds more rounds (--rounds) in a run whose saved setting is wait; relaunches the kernel when none is running' },
     { name: 'add <runId>', desc: 'append steps, gates or loops to a v3 run (--steps <file.json> or --from-answer <step>); never changes what the run has; reopens a finished run' },
     { name: 'wait <runId> <id...>', desc: 'block until the named steps, gates or loops finish, fail, block or wait; print their facts and checked answers' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
@@ -1168,7 +1168,7 @@ const workflowText = rich({
     { cmd: 'bullswarm workflow', note: 'open the human workflow home: runs, live preview, timeline, agents, and activity' },
     { cmd: 'bullswarm workflow plan contract "Audit this repository for TODOs" --cwd . --json', note: 'the v3 format: step, gate and loop fields, the condition form, and an example that validates' },
     { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd . --program plan.json', note: 'launched detached; prints the short id; goal needs --program or it exits 2' },
-    { cmd: 'bullswarm workflow watch ab12cd --until trouble', note: 'quiet until a gate waits, a loop runs out of rounds, a step needs you, or the run ends' },
+    { cmd: 'bullswarm workflow watch ab12cd --until trouble', note: 'quiet until a gate waits, a loop out of rounds in a run whose saved setting is wait, a step needs you, or the run ends' },
     { cmd: 'bullswarm workflow continue ab12cd approve', note: 'go past the gate approve; the steps behind it start' },
     { cmd: 'bullswarm workflow runs --all --since 7d', note: 'list every run started in the last week' },
   ],
@@ -1186,7 +1186,9 @@ const workflowGoalText = rich({
     + 'facts: a clean exit, its deliverable produced, its evidence passed and its answer matching its schema. '
     + 'A failed step gets one automatic retry, then comes back to you; a usage limit comes back at once. A gate '
     + 'stops the steps behind it until you run workflow continue; a loop repeats its steps until its condition '
-    + 'holds, and waits for you like a gate when its rounds run out. A dry loop (until {"step": "review", "dry": 1}) '
+    + 'holds, and when its rounds run out it ends by itself at its last round, condition not met, and the steps '
+    + 'behind it run. Only a run whose saved setting is wait (--out-of-rounds wait, or one saved before the setting '
+    + 'existed) waits there for workflow continue. A dry loop (until {"step": "review", "dry": 1}) '
     + 'stops after a review round that finds nothing new: each later review is told what is already known, '
     + 'the loop\'s other steps run only when there is something to fix, and a review with areas runs one '
     + 'reviewer per area each round (at most 3 unless areasPerRound says more; more areas take turns). '
@@ -1217,7 +1219,7 @@ const workflowGoalText = rich({
     { flag: '--max-actions <n>', desc: 'soft planning target for total steps, added steps included; essential steps may exceed it', default: '100' },
     { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file (not-produced) comes back at once)', default: '1' },
-    { flag: '--out-of-rounds <wait|end>', desc: 'what a review loop does when it runs out of rounds: wait parks the run for `workflow continue`; end settles the loop with its condition unmet (rounds-spent) and runs the steps behind it', default: 'wait' },
+    { flag: '--out-of-rounds <wait|end>', desc: 'what a loop does when it runs out of rounds: end (the default) settles the loop with its condition unmet (rounds-spent), puts a dry loop\'s findings in the result and runs the steps behind it; wait parks the run for `workflow continue`', default: 'end' },
     { flag: '--resume <shortId|runId>', desc: 'resume a v3 run; a run an earlier Bullswarm started is view-only and exits 2 before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
     { flag: '--caller <name>', desc: "this launch's caller name for the concurrency caps (`bullswarm caps`); without it the caller is found from BULLSWARM_CALLER, the herdr pane, or the launch directory", default: 'found from the pane or directory' },
@@ -1244,7 +1246,7 @@ const workflowGoalText = rich({
     { cmd: 'bullswarm workflow goal "Fix src/parser.js and update the docs" --cwd . --program plan.json', note: 'write plan.json from `workflow plan contract`, check it with `workflow plan validate`, then launch; watch it with bullswarm workflow watch <shortId> --until trouble' },
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --worker-reasoning high --json', note: 'every worker thinks at high unless an action sets its own reasoning field' },
   ],
-  next: 'bullswarm workflow watch <shortId> --until trouble to be woken only when you are needed (at a gate, a loop out of rounds, a step that needs you, or the end), bullswarm workflow wait <shortId> <step> for one step\'s answer, or bullswarm workflow runs result <shortId> --json --summary once it finishes.',
+  next: 'bullswarm workflow watch <shortId> --until trouble to be woken only when you are needed (at a gate, a loop out of rounds in a run whose saved setting is wait, a step that needs you, or the end), bullswarm workflow wait <shortId> <step> for one step\'s answer, or bullswarm workflow runs result <shortId> --json --summary once it finishes.',
 });
 
 // --- workflow plan ---------------------------------------------------------
@@ -1297,7 +1299,7 @@ const workflowPlanValidateText = rich({
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target for the previewed run', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency for the previewed run', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file (not-produced) comes back at once)', default: '1' },
-    { flag: '--out-of-rounds <wait|end>', desc: 'what a review loop does when it runs out of rounds: wait parks the run for `workflow continue`; end settles the loop with its condition unmet (rounds-spent) and runs the steps behind it', default: 'wait' },
+    { flag: '--out-of-rounds <wait|end>', desc: 'what a loop does when it runs out of rounds: end (the default) settles the loop with its condition unmet (rounds-spent), puts a dry loop\'s findings in the result and runs the steps behind it; wait parks the run for `workflow continue`', default: 'end' },
   ],
   safety: [
     'read-only without --try-checks — nothing is launched, dispatched, or written; the exit code is the verdict (0 valid, 2 invalid, 1 bad cwd)',
@@ -1377,7 +1379,7 @@ const workflowPlanContractText = rich({
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target recorded in the contract settings', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency recorded in the contract settings', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'automatic retries per step before it comes back to you (process failures on another pool, gate failures on the same pool with the failure attached; a build or chore step that changed no file (not-produced) comes back at once)', default: '1' },
-    { flag: '--out-of-rounds <wait|end>', desc: 'what a review loop does when it runs out of rounds: wait parks the run for `workflow continue`; end settles the loop with its condition unmet (rounds-spent) and runs the steps behind it', default: 'wait' },
+    { flag: '--out-of-rounds <wait|end>', desc: 'what a loop does when it runs out of rounds: end (the default) settles the loop with its condition unmet (rounds-spent), puts a dry loop\'s findings in the result and runs the steps behind it; wait parks the run for `workflow continue`', default: 'end' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the contract echoes back', default: 'auto (routing decides per action)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the worker model the contract echoes back', default: 'auto' },
     { flag: '--worker-reasoning <level>', desc: 'run-wide worker thinking level the contract echoes back', default: 'the strategy setting for the action effort tier' },
@@ -1554,8 +1556,9 @@ const workflowWatchText = rich({
     + '(action finished/failed/blocked/cancelled, evidence, stage completion, stall/recovery, planning, '
     + 'cancellation, and in a v3 run its gate and loop lines) and staying silent while work is merely in '
     + 'progress. A v3 gate that starts waiting prints `⧖ gate <id> waiting · <note> · continue: bullswarm '
-    + 'workflow continue <shortId> <id>`, and a loop out of rounds prints `⧖ loop <id> out of rounds (<n> of '
-    + '<n>) · <condition> did not hold · continue: bullswarm workflow continue <shortId> <id> --rounds <n>`. '
+    + 'workflow continue <shortId> <id>`, and, in a run whose saved setting is wait, a loop out of rounds '
+    + 'prints `⧖ loop <id> out of rounds (<n> of <n>) · <condition> did not hold · continue: bullswarm workflow '
+    + 'continue <shortId> <id> --rounds <n>`. '
     + 'Plain `workflow watch <runId>` follows until the outcome (a terminal status, a v3 run parked `waiting` '
     + 'at a gate or loop, a caller-planner wait, or an operator pause); a parked run prints `outcome: '
     + 'waiting`, a `waiting:` line for each gate or loop, and the `continue` commands as `next:`. '
@@ -1614,7 +1617,7 @@ const workflowWatchText = rich({
     + 'machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
-    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines, each v3 loop that finished (its verdict and round, not a wake-up) and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale or steering line (a usage limit or no free pool is a needs-you block), at a gate waiting or a loop out of rounds in a v3 run, or, in a run saved by an earlier version, at a planner or preflight scout stopped on a usage limit; blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
+    { flag: '--until outcome|trouble', desc: 'the standard background watch: print only trouble lines, each v3 loop that finished (its verdict and round, not a wake-up) and the outcome, no attach line; outcome exits at the outcome, trouble also exits at the first needs you, failed, rejected, paused, stalled, stale or steering line (a usage limit or no free pool is a needs-you block), at a gate waiting or a loop out of rounds in a v3 run, or, in a run saved by an earlier version, at a planner or preflight scout stopped on a usage limit; a loop out of rounds wakes only in a run whose saved setting is wait (--out-of-rounds wait, or one saved before the setting existed); blocked dependents are listed inside the needs-you block; cannot combine with --next, --once, --classic or --heartbeat', default: 'off (follow until terminal)' },
     { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; V2 runs only; cannot combine with --next', default: 'off (event mode)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
     { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off in event mode, 60 with --classic' },
@@ -1847,8 +1850,10 @@ const workflowContinueText = rich({
   purpose: 'Move a v3 run past a gate or loop that waits for you. A gate waits once its dependencies '
     + 'succeeded (or passes by itself when its `when` condition does not hold); continue passes it and '
     + 'the steps behind it run. A loop waits when its rounds ran out and its `until` condition still does '
-    + 'not hold; continue --rounds <n> gives it n more rounds, and continue without --rounds passes it as '
-    + 'it stands. In a dry loop the fix runs only when there is something to fix (a new in-scope finding, '
+    + 'not hold in a run whose saved setting is wait (--out-of-rounds wait, or one saved before the setting '
+    + 'existed; the default ends it by itself); continue --rounds <n> '
+    + 'gives it n more rounds, and continue without --rounds passes it as it stands. In a dry loop the fix runs '
+    + 'only when there is something to fix (a new in-scope finding, '
     + 'or a known one a review reports still open): with the fix after the review ([review, fix]) each '
     + 'extra round starts with the review and the fix runs when that review finds some; with the fix '
     + 'before it ([fix, review]) the extra round starts with the fix when the round before found some. A run where only waiting gates or loops are left parks as waiting: goal, watch and runs '

@@ -18,8 +18,9 @@ import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { readEvents } from '../src/workflow/events.js';
 import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { FINDINGS_ANSWER } from '../src/workflow/dry-loops.js';
-import { loopOutcomes, requestContinue, applyContinueOffline } from '../src/workflow/gates-loops.js';
+import { controlWatchEvent, loopOutcomes, renderControlEvent, requestContinue, applyContinueOffline } from '../src/workflow/gates-loops.js';
 import { acquireKernelLease } from '../src/workflow/v2-process.js';
+import { runStepGoal, runStepRequest } from '../src/lib/run-step.js';
 
 const cli = resolve('bin/bullswarm.js');
 const V3 = 'bullswarm.workflow.program.v3';
@@ -135,7 +136,7 @@ test('(a) a plain loop out of rounds under `end` settles rounds-spent in the sam
   assert.equal(eventsOf(run, 'loop.out-of-rounds').length, 0);
   assert.equal(eventsOf(run, 'workflow.waiting').length, 0, 'the run never parks');
   const passed = eventsOf(run, 'loop.passed')[0].payload;
-  assert.deepEqual([passed.reason, passed.round, passed.of, passed.source], ['rounds-spent', 2, 2, 'flag']);
+  assert.deepEqual([passed.reason, passed.round, passed.of, passed.outOfRounds], ['rounds-spent', 2, 2, 'end']);
   assert.equal(loopOutcomes(run.state)[0].outcome, 'continued-unmet', 'read as the condition never held, like a caller continue');
   assert.equal(run.result.loops[0].outcome, 'continued-unmet');
 });
@@ -174,7 +175,15 @@ test('(b2) a dry loop launched with no flag ends at its last round; the findings
   assert.equal(run.result?.status, 'completed', JSON.stringify(run.result));
   assert.deepEqual([node(run, 'harden').status, node(run, 'harden').reason], ['passed', 'rounds-spent']);
   assert.equal(status(run, 'ship'), 'succeeded');
-  assert.equal(eventsOf(run, 'loop.passed')[0].payload.reason, 'rounds-spent');
+  const event = eventsOf(run, 'loop.passed')[0];
+  assert.equal(event.payload.reason, 'rounds-spent');
+  assert.deepEqual(event.payload.findings.unreviewed, ['grammar', 'types'], 'the event carries the areas not reviewed since the last finding');
+  assert.deepEqual(event.payload.findings.perRound, [2, 2], 'the event carries the new-findings count per round');
+  assert.equal(
+    renderControlEvent(controlWatchEvent(event, { token: 'acme01' })),
+    '→ loop harden ended at its last round (2 of 2), condition not met (out of rounds) · round 2 found 2 new (its fix was not reviewed) · not reviewed since: grammar, types · new per round 2, 2',
+    'the watch line carries the dry facts the old wake reported',
+  );
   assert.equal(eventsOf(run, 'loop.out-of-rounds').length, 0);
   assert.equal(eventsOf(run, 'workflow.waiting').length, 0, 'the run never parks');
   const loop = run.result.loops[0];
@@ -236,6 +245,11 @@ test('(d) a launch with no flag records outOfRounds end, `wait` records wait, an
   const runW = await launch(w, plainProgram(2), never);
   assert.equal(JSON.parse(readFileSync(join(runW.runDir, 'state.json'), 'utf8')).config.settings.outOfRounds, 'wait');
   assert.deepEqual(runW.waiting.map((entry) => entry.id), ['polish'], 'the opt-out still parks');
+});
+
+test('(d2) a `bullswarm run` launch records outOfRounds end too, so a loop added later ends by itself', () => {
+  const { request } = runStepRequest({ lane: 'analyze', rest: ['count', 'the', 'acme', 'files'] }, { cwd: '/tmp' });
+  assert.equal(runStepGoal(request).config.settings.outOfRounds, 'end');
 });
 
 test('(e) --out-of-rounds takes wait or end only: another value is a usage error, exit 2, in both forms', (t) => {
