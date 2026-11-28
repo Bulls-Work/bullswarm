@@ -5,6 +5,7 @@
 
 import { modelFamilyOf } from '../lib/route.js';
 import { offLaneText, servesLane } from '../lib/pool-lanes.js';
+import { checkRefusalWhy } from './check-refusal.js';
 
 const ROUTE_KEYS = Object.freeze(['pools', 'providers', 'independentOf']);
 const LIST_KEYS = Object.freeze(['use', 'avoid']);
@@ -341,6 +342,8 @@ export function routeUnavailableWhy(filter, {
   // its connector): `offLane` holds one line per pool saying why.
   if (offLane.length) return `${head}: ${offLane.join('; ')}`;
   if (!sharedProvider) {
+    const checkWhy = checkRefusalWhy(offTier);
+    if (checkWhy) return `${head}: ${checkWhy}`;
     return `${head}: no enabled pool left has a model on the ${effort} tier for ${lane} work${offTier.length ? `; ${offTier.join('; ')}` : ''}`;
   }
   const steps = Object.keys(filter?.independentOf ?? {});

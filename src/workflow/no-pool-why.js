@@ -9,6 +9,7 @@
 import { BURST_BLOCK_PCT, windowSpent } from '../meters/framework.js';
 import { authHoldActive, meterSignInDead, meterSignInText } from './dispatch-pools.js';
 import { PINNED_ALLOWED, operatorLimit, poolIsPinned } from '../lib/pool-limits.js';
+import { checkRefusalWhy } from './check-refusal.js';
 
 function toMs(value) {
   if (value == null || value === '') return null;
@@ -74,7 +75,6 @@ export function heldEntry(name, parts) {
   return { pool: name, text: back != null ? `${name} ${reason} until ${new Date(back).toISOString()}` : `${name} ${reason}`, limit, back };
 }
 
-const CHECK_REFUSAL = /takes build steps only with a check/;
 
 /** With no attempt: a usage limit on every capable pool reads as quota. */
 export function noPoolFailureKind(capableCount, held) {
@@ -90,11 +90,10 @@ export function noPoolFailureKind(capableCount, held) {
  */
 export function noPoolWhy({ capableCount, held, failureKind, strictPool = null, lane, effort, offTier = [] }) {
   if (!capableCount) {
-    // Every pool that has the tier refused only for want of a check: say so,
+    // A pool that has the tier refused for want of a check: say so first,
     // not that the tier has no model (biweekly eval 2026-11-28).
-    if (offTier.length && offTier.every((text) => CHECK_REFUSAL.test(text))) {
-      return `no eligible pool: ${offTier.join('; ')}; add a check or route to another pool`;
-    }
+    const checkWhy = checkRefusalWhy(offTier);
+    if (checkWhy) return `no eligible pool: ${checkWhy}`;
     const off = offTier.length ? `; ${offTier.join('; ')}` : '';
     return strictPool
       ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)${off}`
