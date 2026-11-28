@@ -22,11 +22,13 @@
     "not logged in",
     "please run /login"
   ],
-  "$comment-quotaSignatures": "spent-window phrases (observed: `You've hit your session limit · resets 7pm (Asia/Hong_Kong)`): classified `quota`, a usage limit that goes back to the caller with the reset the message names. `credit balance` is out of credit, not a broken sign-in: claude 2.1.282 prints `Credit balance is too low` and `Credit balance too low · Add funds: …` (its own strings, checked 2026-09-25), so it is a usage limit, never a sign-in failure. DEFAULT_WINDOW_SIGNATURES (src/lib/quota.js) apply on top of these.",
+  "$comment-quotaSignatures": "spent-window phrases (observed: `You've hit your session limit · resets 7pm (Asia/Hong_Kong)`; since 2026-11 the CLI names the window itself: `You've hit your 5-hour limit · resets 2:30pm (Asia/Hong_Kong)`, `You've hit your weekly limit · resets 2am (Asia/Hong_Kong)`): classified `quota`, a usage limit that goes back to the caller with the reset the message names. `credit balance` is out of credit, not a broken sign-in: claude 2.1.282 prints `Credit balance is too low` and `Credit balance too low · Add funds: …` (its own strings, checked 2026-09-25), so it is a usage limit, never a sign-in failure. DEFAULT_WINDOW_SIGNATURES (src/lib/quota.js) apply on top of these.",
   "quotaSignatures": [
     "hit your session limit",
     "hit your limit",
     "hit your usage limit",
+    "hit your 5-hour limit",
+    "hit your weekly limit",
     "credit balance"
   ],
   "$comment-throttleSignatures": "empty on purpose: no claude-specific transient throttle wording has been observed; the generic throttle phrasings (rate limit exceeded, too many requests) come from DEFAULT_THROTTLE_SIGNATURES in src/lib/quota.js and are retried on this pool after a short backoff.",
