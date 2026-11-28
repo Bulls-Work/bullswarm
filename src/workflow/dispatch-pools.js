@@ -51,7 +51,9 @@ export function meterSignInText(pool, now = Date.now()) {
 function providerIdFromModel(model) {
   if (typeof model !== 'string') return null;
   const slash = model.indexOf('/');
-  return slash > 0 ? model.slice(0, slash) : null;
+  // `@cf/...` is a Workers AI namespace, not a provider id.
+  if (slash <= 0 || model.startsWith('@')) return null;
+  return model.slice(0, slash);
 }
 
 /**
