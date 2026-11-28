@@ -142,27 +142,30 @@ const CLOUDFLARE_SET = new Set(QUOTA_SIGNATURE_TABLE.filter((entry) => entry.clo
 // characters and dots, and repeated tokens need a separator between them, so
 // a line splits into tokens only one way (earlier forms backtracked
 // exponentially on 'errorerror...' and 'error.error...').
-const CLOUDFLARE_ERROR_TOKEN = String.raw`(?:(?<![\w.])[\w.]*error(?![\w.])(?:\s*\[[^\]]*\])?|(?<![\w.])(?:http\s*|status\s*)?(?:429|3021|971)(?![\w.]))(?:\s*[:\-]\s*|\s+)`;
-// What may sit before the error token: timestamps, bracketed tags and level
-// words, then one bare tool name (`opencode:`) or an "... rejection:" /
-// "... exception:" lead. Not free prose ending in a colon or a quote.
-const CLOUDFLARE_LOG_PREFIX = String.raw`(?:(?:\S*\d\d:\d\d\S*|\[[^\]]*\]|error|fatal|warn(?:ing)?|info)\s+)*(?:[\w.\-/]+:\s+|[\w ]{0,40}\b(?:rejection|exception):\s+)?`;
+const CLOUDFLARE_ERROR_TOKEN = String.raw`(?:(?<![\w.])[\w.]*error(?![\w.])(?:\s*\[[^\]]*\])?|(?<![\w.])fatal(?![\w.])|(?<![\w.])(?:http\s*|status\s*)?(?:429|3021|971)(?![\w.]))(?:\s*[:\-]\s*|\s+)`;
+// HTTP 429's reason phrase, after any status code or error class.
+const CLOUDFLARE_REASON_PHRASE = String.raw`too many requests\s*[:.\-–]\s*`;
+// What may sit before the error tokens: timestamps, bracketed tags and level
+// words that are not error tokens themselves (so a run of words splits one
+// way), then one bare tool name (`opencode:`) or an "unhandled (promise)
+// rejection:" / "exception:" lead. Not free prose ending in a colon or quote.
+const CLOUDFLARE_LOG_PREFIX = String.raw`(?:(?:(?=\S*\d\d:\d\d)\S+|\[[^\]]*\]|info|warn(?:ing)?|debug)\s+)*(?:[\w.\-/]+:\s+|(?:unhandled\s+)?(?:promise\s+)?(?:rejection|exception):\s+)?`;
 const CLOUDFLARE_PHRASE_LEAD = new RegExp([
-  // An error class or code right before the phrase, after any log prefix.
-  String.raw`^${CLOUDFLARE_LOG_PREFIX}(?:${CLOUDFLARE_ERROR_TOKEN})+(?:rate limiting:\s*)?$`,
+  // Error classes or codes and/or HTTP 429's reason phrase right before the
+  // phrase, after any log prefix.
+  String.raw`^${CLOUDFLARE_LOG_PREFIX}(?:(?:${CLOUDFLARE_ERROR_TOKEN})+(?:${CLOUDFLARE_REASON_PHRASE}(?:${CLOUDFLARE_ERROR_TOKEN})*)?|${CLOUDFLARE_REASON_PHRASE}(?:${CLOUDFLARE_ERROR_TOKEN})*)(?:rate limiting:\s*)?$`,
   // A JSON "message" or "error" value that opens with it, escaped or not;
   // the key only where JSON puts it (line start, or after `{`, `[` or `,`).
   String.raw`(?:^|[{\[,]\s*)\\?"(?:message|error)\\?"\s*:\s*\\?"\s*(?:(?<![\w.])[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
-  // HTTP 429's reason phrase leading the line.
-  String.raw`^too many requests\s*[:.\-–]\s*(?:(?<![\w.])[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
 ].join('|'), 'i');
 const CLOUDFLARE_LINE_CHARS = 4000;
 const TOO_MANY_REQUESTS_LINE = /^too many requests(?:[.!:]|$)/i;
-// What may follow the Cloudflare wording: an id or `code N` in brackets (not
-// words), the model it names, then the end of the line, or the end of the
-// JSON string followed by JSON punctuation. Prose after it means the line
+// What may follow the Cloudflare wording: an id or `code N` in round
+// brackets, or a code in square ones (`[code: 3021]`), not words; the model
+// it names; a retry clause; then the end of the line, or the end of the JSON
+// string followed by JSON punctuation. Prose after it means the line
 // talks about the wording rather than reports it.
-const CLOUDFLARE_PHRASE_TAIL = /^\s*(?:\((?:[^\s()]{1,80}|code \d+)\)\s*)?(?:for model \S+\s*)?[.!]?(?:\s*$|\\?"\s*(?:[,}\]\\]|$)|[}\]])/i;
+const CLOUDFLARE_PHRASE_TAIL = /^\s*(?:\((?:[^\s()]{1,80}|code \d+)\)\s*|\[(?:code:?\s*)?\d+\]\s*)?(?:for model \S+\s*)?(?:[;,.]?\s*(?:retry|try again|please)\b[^"]*$|[.!]?(?:\s*$|\\?"\s*(?:[,}\]\\]|$)|[}\]]))/i;
 /**
  * What may follow a generic phrase on a bare notice line. A JSON body counts:
  * an SDK reports HTTP 429 as `Too Many Requests: {...}` whatever code the
