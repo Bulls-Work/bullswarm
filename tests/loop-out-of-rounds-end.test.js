@@ -270,3 +270,25 @@ test('(e) --out-of-rounds takes wait or end only: another value is a usage error
     assert.equal(ok.status, 0, ok.stderr + ok.stdout);
   }
 });
+
+// cf review p4yh5s (28 Nov): `workflow wait` and the authoring contract must
+// match the new default too.
+test('(f) `workflow wait` on a loop that ended at its last round still prints its dry facts', async () => {
+  const { waitFactLines } = await import('../src/workflow/cli-steps.js');
+  const lines = waitFactLines({
+    id: 'harden', type: 'loop', status: 'passed', reason: 'rounds-spent', round: 2, maxRounds: 2,
+    findings: { known: ['a', 'b'], outOfScope: [], rounds: [2, 2], unreviewed: ['grammar', 'types'] },
+  });
+  assert.match(lines[0], /loop harden ended at its last round \(2 of 2\), condition not met \(out of rounds\)/);
+  assert.equal(lines.length, 2, lines.join('\n'));
+  assert.match(lines[1], /findings 2 known · new per round 2, 2 · not reviewed since: grammar, types/);
+  // A caller continue with no findings stays one line.
+  assert.equal(waitFactLines({ id: 'fix', type: 'loop', status: 'passed', reason: 'continued', round: 1, maxRounds: 3 }).length, 1);
+});
+
+test('(g) `workflow plan contract` says a loop out of rounds ends by itself by default', async () => {
+  const { buildV3Contract } = await import('../src/workflow/contract-v3.js');
+  const text = JSON.stringify(buildV3Contract({ goal: 'g', cwd: '/tmp', next: {} }));
+  assert.doesNotMatch(text, /the loop waits for you like a gate/);
+  assert.match(text, /maxRounds[^"]*":\s*"required whole number 1-5: rounds used up, the loop ends by itself at its last round/);
+});
