@@ -138,9 +138,11 @@ const GENERIC_SET = new Set(GENERIC_QUOTA_SIGNATURES.map((s) => s.toLowerCase())
  * (strict reviews of 0.40.3, 28 Nov).
  */
 const CLOUDFLARE_SET = new Set(QUOTA_SIGNATURE_TABLE.filter((entry) => entry.cloudflare).map((entry) => entry.phrase));
-// One error class or code token, on word boundaries so a run of word
-// characters splits only one way (an earlier form backtracked exponentially).
-const CLOUDFLARE_ERROR_TOKEN = String.raw`(?:\b[\w.]*error\b(?:\s*\[[^\]]*\])?|\b(?:http\s*|status\s*)?(?:429|3021|971)\b)\s*[:\-]?\s*`;
+// One error class or code token. Each token takes a whole run of word
+// characters and dots, and repeated tokens need a separator between them, so
+// a line splits into tokens only one way (earlier forms backtracked
+// exponentially on 'errorerror...' and 'error.error...').
+const CLOUDFLARE_ERROR_TOKEN = String.raw`(?:(?<![\w.])[\w.]*error(?![\w.])(?:\s*\[[^\]]*\])?|(?<![\w.])(?:http\s*|status\s*)?(?:429|3021|971)(?![\w.]))(?:\s*[:\-]\s*|\s+)`;
 // What may sit before the error token: timestamps, bracketed tags and level
 // words, then one bare tool name (`opencode:`) or an "... rejection:" /
 // "... exception:" lead. Not free prose ending in a colon or a quote.
@@ -150,9 +152,9 @@ const CLOUDFLARE_PHRASE_LEAD = new RegExp([
   String.raw`^${CLOUDFLARE_LOG_PREFIX}(?:${CLOUDFLARE_ERROR_TOKEN})+(?:rate limiting:\s*)?$`,
   // A JSON "message" or "error" value that opens with it, escaped or not;
   // the key only where JSON puts it (line start, or after `{`, `[` or `,`).
-  String.raw`(?:^|[{\[,]\s*)\\?"(?:message|error)\\?"\s*:\s*\\?"\s*(?:\b[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
+  String.raw`(?:^|[{\[,]\s*)\\?"(?:message|error)\\?"\s*:\s*\\?"\s*(?:(?<![\w.])[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
   // HTTP 429's reason phrase leading the line.
-  String.raw`^too many requests\s*[:.\-–]\s*(?:\b[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
+  String.raw`^too many requests\s*[:.\-–]\s*(?:(?<![\w.])[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
 ].join('|'), 'i');
 const CLOUDFLARE_LINE_CHARS = 4000;
 const TOO_MANY_REQUESTS_LINE = /^too many requests(?:[.!:]|$)/i;
