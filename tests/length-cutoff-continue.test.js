@@ -286,6 +286,33 @@ test('a cutoff on a pinned pool that cannot take the retry moves to another pool
   assert.deepEqual(h.calls[1].opts.conversation, { sessionId: second.session.sessionId, resume: false });
   assert.match(second.routeWhy, /gate retry moved: pool-a cannot take work now/);
   assert.deepEqual(refreshCalls, [{ force: false }, { force: true }]);
+  // Opus review (28 Nov): a fresh session gets no "continue the same
+  // conversation" line, and attempt 1 records a request, not a resume.
+  assert.doesNotMatch(h.calls[1].task, /Continue the same conversation/);
+  const note = first.notes.find((entry) => entry.kind === 'length-cutoff-continue');
+  assert.doesNotMatch(note.text, /retry resumes session/);
+  assert.match(note.text, /requested/);
+});
+
+test('a continue in an earlier loop round or rerun does not use up the step\'s continue', async (t) => {
+  const f = repoFixture(t);
+  const h = harness([cutoff(), good]);
+  const result = await dispatchV2Action({
+    failureRule: true,
+    action: build(), taskText: 'triage the tickets', targetDir: f.repo,
+    paths: (ordinal) => ({ taskFile: join(f.home, `task-task-attempt-${ordinal}.md`), outFile: join(f.home, `out-task-attempt-${ordinal}.md`) }),
+    pools: [connector('sample-pool')], bullswarmDir: f.home,
+    ledgerAttempts: [
+      { actionId: 'task', ordinal: 1, notes: [{ at: '2026-11-28T00:00:00.000Z', kind: 'length-cutoff-continue', text: 'round 1' }] },
+      { actionId: 'task', ordinal: 2 },
+    ],
+    supersededAttempts: 2,
+    dependencies: h.dependencies,
+  });
+  assert.equal(h.calls.length, 2);
+  assert.match(h.calls[1].task, /Continue the same conversation/);
+  assert.equal(h.calls[1].opts.conversation.resume, true);
+  assert.equal(result.ok, true);
 });
 
 test('runtime: a cut-off build step succeeds on attempt 2 in the first attempt\'s provider session', async (t) => {
