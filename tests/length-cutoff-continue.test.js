@@ -382,3 +382,26 @@ test('runtime: a cut-off build step succeeds on attempt 2 in the first attempt\'
   assert.deepEqual(run.state.attempts[1].retryOf, { attempt: 'write-1', how: 'same-pool' });
   assert.equal(run.state.actions.find((action) => action.id === 'write').status, 'succeeded');
 });
+
+// Opus re-check (28 Nov, ub4zpi): on a connector whose provider picks the
+// session id (opencode: no newArgs), only a length cutoff resumes a
+// session; a schema correction starts fresh, as before this change.
+test('a schema correction on a provider-chosen-id connector does not resume the session', async (t) => {
+  const f = repoFixture(t);
+  const schemaFail = {
+    ok: false, failureKind: 'schema', why: 'structured output invalid: missing field',
+    meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10, sessionId: 'ses-1' } },
+    capture: { providerSessionId: 'ses-1', sessionSource: 'provider-stream' },
+  };
+  const h = harness([schemaFail, good]);
+  const result = await dispatchV2Action({
+    failureRule: true,
+    action: { id: 'task', role: 'check', lane: 'analyze', effort: 'medium' }, taskText: 'read the tickets', targetDir: f.repo,
+    paths: (ordinal) => ({ taskFile: join(f.home, `task-task-attempt-${ordinal}.md`), outFile: join(f.home, `out-task-attempt-${ordinal}.md`) }),
+    pools: [connector('sample-pool')], bullswarmDir: f.home,
+    correctionTask: () => 'Correct the answer.',
+    dependencies: h.dependencies,
+  });
+  assert.equal(h.calls.length, 2, JSON.stringify(result.attempts?.map((a) => a.why)));
+  assert.notEqual(h.calls[1].opts.conversation?.resume, true);
+});
