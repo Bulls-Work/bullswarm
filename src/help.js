@@ -1605,7 +1605,7 @@ const workflowWatchText = rich({
     + 'pool) after BULLSWARM_WORKER_SILENCE_SEC (default 3600) seconds with no output, or, for a build or '
     + 'chore step, after BULLSWARM_WORKER_NO_PROGRESS_SEC (default 3600, 0 turns it off) seconds with no file '
     + 'change. `--until outcome` prints only trouble lines (needs you, failed, rejected, '
-    + 'scout stopped, planner stopped (saved runs only), paused, stalled, stale, steering, a gate waiting, a loop out of rounds) '
+    + 'scout stopped, planner stopped (saved runs only), paused, stalled, stale, steering, a gate waiting, a loop out of rounds in a run whose saved setting is wait) '
     + 'and the outcome, and exits at the outcome; in a v3 run it also prints one line per loop that finished '
     + '(`✓ loop <id> passed in round 2 of 3`, or blocked), without exiting, so a wake at a gate carries it; '
     + '`--until trouble` also exits at the first trouble line with a `next:` relaunch line. In a program '

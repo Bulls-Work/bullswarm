@@ -103,6 +103,10 @@ export function loopOutcomes(state) {
           ...(summary.dryIn !== undefined ? { dryIn: summary.dryIn } : {}),
           ...(summary.yieldIn !== undefined ? { yieldIn: summary.yieldIn } : {}),
           ...(summary.unreviewed ? { unreviewed: summary.unreviewed } : {}),
+          // A loop that ended at its last round: what that round found and
+          // whether its fix was reviewed, as the old out-of-rounds wake said.
+          ...(record.status === 'passed' && record.reason === ROUNDS_SPENT && summary.lastNew
+            ? { lastRound: dryOutOfRounds(state, loop, record)?.lastNew ?? summary.lastNew } : {}),
         },
       } : {}),
     };
@@ -645,7 +649,7 @@ const tokenText = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${
 // What a round that found something says about its fix, or null for a loop
 // with no fix step: a fix that ran after the review was not reviewed; a fix
 // before the review has not run on these findings yet.
-function lastFixText(fix) {
+export function lastFixText(fix) {
   if (fix === 'next') return 'not fixed yet, the fix runs first in another round';
   return fix === 'none' ? null : 'its fix was not reviewed';
 }

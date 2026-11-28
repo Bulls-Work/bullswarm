@@ -440,7 +440,7 @@ test('watch --until lists needs you as trouble (a usage limit is one), and block
   assert.ok(flatWatch.includes('A run saved by an earlier version replays its own lines, which this version no longer produces for new work'));
   assert.ok(flatWatch.includes('a preflight scout it stopped on a usage limit, a rate limit or no free pool prints `⚠ preflight scout stopped · <label> on <pool> · back at <time>`, ending `· the run continues without its report` when the run has your program'));
   assert.ok(!flatWatch.includes('In a run started by this version a preflight scout'));
-  assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped (saved runs only), paused, stalled, stale, steering, a gate waiting, a loop out of rounds)'));
+  assert.ok(flatWatch.includes('(needs you, failed, rejected, scout stopped, planner stopped (saved runs only), paused, stalled, stale, steering, a gate waiting, a loop out of rounds in a run whose saved setting is wait)'));
   assert.ok(flatWatch.includes('A dispatched planner stopped the same way prints `✗ planner stopped · <label> on <pool> · back at <time>` and the run finishes; any other planner failure still prints `× planning attempt rejected · <why>`.'));
   assert.ok(flatWatch.includes('and the block carries `back at <time>` and a `wait for it` rerun when the reset is known'));
   assert.ok(!flatWatch.includes('not paused') && !flatWatch.includes('paused until <deadline>'));

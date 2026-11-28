@@ -24,7 +24,7 @@ import { writeJsonAtomic } from '../lib/fsjson.js';
 import { glyphs } from '../lib/glyphs.js';
 import { usageLine } from '../help.js';
 import {
-  CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, isUnmetEnd, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
+  CONTINUE_MAX_ROUNDS, CONTINUED_MARK, applyContinueOffline, isUnmetEnd, lastFixText, continueRefusal, continuedLoopText, dryLoopText, loopOutcome, loopOutcomes, parkedWaitingFor, readContinueIntents, requestContinue,
 } from './gates-loops.js';
 import { isProgramV3 } from './program-v3.js';
 import { appendedProgramV3, blocksIssues, fragmentShapeIssues } from './revision-v3.js';
@@ -582,9 +582,13 @@ export async function waitV3Nodes({
 }
 
 /** A dry loop's findings line under a `workflow wait` fact. */
-function findingsLine({ known, outOfScope = [], rounds = [], stillOpen, unreviewed }) {
+function findingsLine({ known, outOfScope = [], rounds = [], stillOpen, unreviewed, lastRound }) {
+  // A loop that ended at its last round: what that round found, and its fix.
+  const found = lastRound ? lastRound.new + lastRound.reopened : 0;
+  const fixText = found ? lastFixText(lastRound.fix) : null;
+  const last = found ? ` · round ${lastRound.round} found ${lastRound.new} new${lastRound.reopened ? `, ${lastRound.reopened} still open` : ''}${fixText ? ` (${fixText})` : ''}` : '';
   // A known finding reported again as still open keeps the loop going too.
-  return `  findings ${known.length} known${outOfScope.length ? `, ${outOfScope.length} out of scope` : ''} · new per round ${rounds.join(', ')}${stillOpen ? ` · still open per round ${stillOpen.join(', ')}` : ''}${unreviewed?.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}`;
+  return `  findings ${known.length} known${outOfScope.length ? `, ${outOfScope.length} out of scope` : ''} · new per round ${rounds.join(', ')}${stillOpen ? ` · still open per round ${stillOpen.join(', ')}` : ''}${unreviewed?.length ? ` · not reviewed since: ${unreviewed.join(', ')}` : ''}${last}`;
 }
 
 /** The printed lines of one `workflow wait` fact. */

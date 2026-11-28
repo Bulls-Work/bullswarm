@@ -514,8 +514,8 @@ pool and rate-limit backoff are in [recovery.md](recovery.md).
 ## When a run finishes: the handback
 
 A run never waits for a silent worker or for a pool to come back, and a v2
-run never waits for its caller either; a v3 run waits for you only at a gate or
-a loop out of rounds you declared. A loop out of rounds ends by itself by
+run never waits for its caller either; a v3 run waits for you only at a gate you
+declared, or at a loop out of rounds in a run whose saved setting is `wait`. A loop out of rounds ends by itself by
 default (a dry loop's findings are in the result); launch with `--out-of-rounds wait` to
 have it wait for you. A step that no pool can run now comes back
 to you, with its return time when one is known, and the rest of the run goes
