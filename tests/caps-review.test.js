@@ -503,6 +503,47 @@ test('F2: a capped pool that frees after the router refused every other pool is 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// Found live on 28 Nov: claude-code:cowcow was set to max 0 and a step that
+// only that pool could take sat queued for two hours with no wake. A cap of 0
+// closes the pool: it never opens, so nothing waits for it.
+test('a pool capped at 0 is closed: a step only it could take fails at once instead of waiting', async () => {
+  const root = home('bs-caps-zero-');
+  try {
+    writeCaps(root, caps({}, { 'luna-1': 0 }));
+    const queued = [];
+    let polls = 0;
+    let started = false;
+    const result = await dispatchV2Action({
+      ...dispatchArgs(root, null, 'closed', { pools: [connector('luna-1')] }),
+      onQueued: (event) => queued.push(event),
+      shouldCancel: () => polls > 50,
+      dependencies: deps(async () => { started = true; return good; }, { sleep: async () => { polls += 1; await tick(); } }),
+    });
+    assert.equal(polls, 0, 'never waits for a closed pool');
+    assert.deepEqual(queued, []);
+    assert.equal(started, false);
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'unavailable');
+    assert.match(result.why ?? result.verdict?.why ?? '', /luna-1.*(closed|cap 0)/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a pool capped at 0 is left out of the pick; the step runs on another pool', async () => {
+  const root = home('bs-caps-zero-other-');
+  try {
+    writeCaps(root, caps({}, { 'luna-1': 0 }));
+    let polls = 0;
+    const result = await dispatchV2Action({
+      ...dispatchArgs(root, null, 'other', { pools: [connector('luna-1'), connector('luna-2')] }),
+      shouldCancel: () => polls > 50,
+      dependencies: deps(async () => good, { sleep: async () => { polls += 1; await tick(); } }),
+    });
+    assert.equal(result.ok, true, `${result.failureKind}: ${result.why ?? ''}`);
+    assert.equal(result.attempts[0].pool, 'luna-2');
+    assert.equal(polls, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // --- F3: an unlisted name falls through to pane, cwd, then default -----------------
 
 test('F3: a --caller name with no entry falls through to the pane, then the cwd prefix, then the default', () => {
