@@ -52,7 +52,9 @@ test('packaged connectors declare reasoning from their real CLIs', () => {
   });
   // command-code 1.44.0 lists the same five levels in its own rejection message.
   assert.deepEqual(commandCode.reasoning.levels, ['low', 'medium', 'high', 'xhigh', 'max']);
-  assert.deepEqual(grok.reasoning.levels, ['low', 'medium', 'high', 'xhigh', 'max']);
+  // grok 1.0.46 refuses `max`: "unknown effort level 'max'; use one of:
+  // xhigh, high, medium, low" (24 Nov 2026, 24 failed steps).
+  assert.deepEqual(grok.reasoning.levels, ['low', 'medium', 'high', 'xhigh']);
   assert.equal(grok.reasoning.flag, '--reasoning-effort');
   assert.equal(commandCode.reasoning.flag, '--effort');
   // opencode says the same five levels through `--variant`, which only means
@@ -336,4 +338,11 @@ test('a recommendation-written pool level reports source recommendation, for its
   const edited = { ...strategy, reasoning: { tiers: {}, pools: { codex: { medium: 'high' } } } };
   assert.equal(resolve('gpt-6-luna', edited).source, 'strategy-pool');
   assert.equal(reasoningRecord({ requested: 'max', applied: 'max', source: 'recommendation' }).source, 'recommendation');
+});
+
+test('a max request on grok runs at xhigh, the highest level grok 1.0.46 accepts', () => {
+  assert.deepEqual(
+    resolveReasoningLevel({ connector: grok, tier: 'high', actionOverride: 'max' }),
+    { requested: 'max', applied: 'xhigh', source: 'action', clamped: true },
+  );
 });

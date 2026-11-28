@@ -639,14 +639,21 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         errors: Array.isArray(checked.errors) ? checked.errors.map(String) : [],
         ...(checked.value !== undefined ? { value: checked.value } : {}),
       };
+      const exitedNonZero = obs.exitCode != null && obs.exitCode !== 0;
       verdict = checked.ok && obs.exitCode === 0
         ? { ok: true, why: passedWhy }
         : {
             ok: false,
             why: checked.ok
               ? noAnswer ? 'process exited non-zero · no answer declared' : 'structured output validated but process exited non-zero'
-              : `structured output invalid: ${structured.errors.join('; ') || 'validator rejected it'}`,
-            failureKind: checked.ok ? 'process' : 'schema',
+              : exitedNonZero
+                ? `process exited ${obs.exitCode} before a valid answer: ${structured.errors.join('; ') || 'validator rejected it'}`
+                : `structured output invalid: ${structured.errors.join('; ') || 'validator rejected it'}`,
+            // A worker that exited non-zero without a valid answer failed as a
+            // process (a CLI that refused its arguments at start, a crash), so
+            // its retry goes to another pool; schema is a worker that finished
+            // and wrote a wrong answer (grok refusing max, 24 Nov 2026).
+            failureKind: checked.ok || exitedNonZero ? 'process' : 'schema',
           };
     } catch (error) {
       structured = { ok: false, errors: [error.message] };
