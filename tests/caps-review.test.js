@@ -356,6 +356,35 @@ test('F1: a fresh owner-less lock is given its grace, not broken at once', async
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('F1: a holder whose lock was broken and re-taken does not remove the new holder\'s lock when it unlocks', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    const caller = { name: 'lead', cwd: '/w' };
+    const lockDir = join(slotsDir(dir), '.lock');
+    // The second contender's token, as if it broke this holder's stale-looking
+    // lock and re-took the same path while the holder was inside its critical
+    // section (pid 1 is alive, so the new lock looks fresh).
+    const newOwner = { pid: 1, at: 12345 };
+    let retaken = false;
+    const listSlotsFn = (bullswarmDir, opts) => {
+      const seen = listSlots(bullswarmDir, opts);
+      if (!retaken) {
+        retaken = true;
+        writeFileSync(join(lockDir, 'owner.json'), `${JSON.stringify(newOwner)}\n`);
+      }
+      return seen;
+    };
+    const holder = await acquireCallerSlot({ bullswarmDir: dir, caller, sleep: tick, pollMs: 1, listSlotsFn });
+    assert.equal(holder.group, 'lead');
+    assert.equal(retaken, true, 'the lock changed hands inside the holder\'s critical section');
+    assert.equal(existsSync(lockDir), true, 'the unlock left the new holder\'s lock in place');
+    assert.deepEqual(JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')), newOwner);
+    holder.release();
+    assert.equal(listSlots(dir).length, 0, 'the holder\'s own slot file was still released');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // --- dispatch helpers (as tests/caps.test.js) -------------------------------------
 
 const action = { id: 'look', lane: 'analyze', effort: 'low' };
@@ -440,6 +469,37 @@ test('F2: with no pool cap, a router that refuses every pool still fails at once
     assert.equal(result.ok, false);
     assert.equal(started, false);
     assert.equal(polls, 0, 'no wait without a pool cap');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('F2: a capped pool that frees after the router refused every other pool is refused too, and the step fails instead of waiting forever', async () => {
+  const root = home('bs-caps-f2-exit-');
+  try {
+    writeCaps(root, caps({}, { 'luna-1': 1 }));
+    const busy = registerAssignment(root, { pool: 'luna-1', lane: 'analyze', effort: 'low', source: 'run' });
+    const queued = [];
+    let polls = 0;
+    let started = false;
+    const result = await dispatchV2Action({
+      ...dispatchArgs(root, null, 'exit', { pools: [connector('luna-1'), connector('luna-2')] }),
+      onQueued: (event) => queued.push(event),
+      shouldCancel: () => polls > 50,
+      dependencies: deps(async () => { started = true; return good; }, {
+        // The router refuses luna-2 while luna-1 is capped, then refuses the
+        // freed luna-1 too: same shape as on the no-cap path.
+        pickPool: () => ({ pick: null, why: 'refused: no pool can take this step (test router)', candidates: [] }),
+        // The busy attempt on luna-1 ends during the first cap wait.
+        sleep: async () => { polls += 1; if (polls === 1) releaseAssignment(root, busy.id); await tick(); },
+      }),
+    });
+    assert.equal(result.ok, false, `stopped waiting and failed (got ok with ${result.attempts.length} attempt(s))`);
+    assert.equal(result.status, 'failed', `fails as on the no-cap path (got ${result.status})`);
+    assert.equal(result.failureKind, 'unavailable');
+    assert.deepEqual(result.attempts, []);
+    assert.equal(started, false, 'no worker started');
+    assert.ok(polls >= 1, 'it waited through the first cap wait');
+    assert.ok(polls <= 3, `it stopped waiting once the freed pool was refused too (${polls} polls)`);
+    assert.deepEqual(queued[0], { kind: 'pool', pools: [{ pool: 'luna-1', running: 1, max: 1 }] });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
