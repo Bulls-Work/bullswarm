@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { preparePools } from '../src/workflow/dispatch-pools.js';
 import { noPoolCandidates, tierOffReasons } from '../src/workflow/dispatch-no-pool.js';
 import { noPoolWhy } from '../src/workflow/no-pool-why.js';
+import { routeUnavailableWhy } from '../src/workflow/step-route.js';
 import { pinnedPoolIssues } from '../src/workflow/cli-pool-checks.js';
 import { parseDiscoveredModels } from '../src/lib/strategy.js';
 
@@ -92,4 +93,20 @@ test('a program pinned to such a pool is refused for its unchecked builds, namin
   assert.match(issues[0], /\(parse\)/);
   assert.match(issues[0], /only with a check/);
   assert.doesNotMatch(issues[0], /no model on the medium tier/);
+});
+
+// Second strict review (28 Nov): under a step's route, or when a check
+// refusal sits beside another off-tier reason, the why still opened with
+// "no enabled pool has a model on the tier". The check leads instead.
+test('a check refusal leads the why under a route and beside other off-tier reasons', () => {
+  const check = 'cheap takes build steps only with a check (--check or command/schema evidence)';
+  const plan = 'luna: the plan does not include acme-6-luna';
+  const routed = routeUnavailableWhy({ summary: 'use cheap' }, { lane: 'build', effort: 'low', offTier: [check] });
+  assert.match(routed, /^no eligible pool under the step's route \(use cheap\): cheap takes build steps only with a check/);
+  assert.doesNotMatch(routed, /has a model on the low tier/);
+  const mixed = noPoolWhy({ capableCount: 0, held: [], failureKind: 'unavailable', lane: 'build', effort: 'low', offTier: [plan, check] });
+  assert.match(mixed, /^no eligible pool: cheap takes build steps only with a check .*; luna: the plan does not include acme-6-luna; add a check or route to another pool$/);
+  assert.doesNotMatch(mixed, /has a model on the low tier/);
+  // With no check refusal the tier wording stays.
+  assert.match(routeUnavailableWhy({ summary: 'use luna' }, { lane: 'build', effort: 'low', offTier: [plan] }), /no enabled pool left has a model on the low tier/);
 });
