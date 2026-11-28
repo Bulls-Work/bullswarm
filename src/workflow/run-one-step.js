@@ -22,8 +22,12 @@ import { runVerdict } from './run-verdict.js';
 
 const PLANNER_RESPONSE = 'bullswarm.workflow.planner-response.v2';
 
-/** Run one request from run-step.js; returns the verdict (run-verdict.js). */
-export async function runOneStep({ bullswarmDir, request, pools, parentEnv = process.env, dependencies = {} }) {
+/**
+ * Run one request from run-step.js; returns the verdict (run-verdict.js).
+ * `noWait` (F4) carries `run --no-wait` into the step's slot acquisition, so a
+ * slot taken after the launch check refuses instead of queueing.
+ */
+export async function runOneStep({ bullswarmDir, request, pools, parentEnv = process.env, dependencies = {}, noWait = false }) {
   const heartbeat = createRunHeartbeat({ intervalSec: request.heartbeatSec, ...(dependencies.heartbeatWrite ? { write: dependencies.heartbeatWrite } : {}) });
   const dispatchStep = dependencies.dispatchV2Action ?? dispatchV2Action;
   let dispatched = null;
@@ -39,6 +43,7 @@ export async function runOneStep({ bullswarmDir, request, pools, parentEnv = pro
     dispatched = await dispatchStep({
       ...options,
       ...timed,
+      ...(noWait ? { noWait: true } : {}),
       onActivity: (event) => { heartbeat.activity(event); options.onActivity?.(event); },
       onAgentEvent: (event) => { heartbeat.event(); options.onAgentEvent?.(event); },
     });

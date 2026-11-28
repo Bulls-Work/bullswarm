@@ -362,7 +362,7 @@ const runText = rich({
     { flag: '--check-timeout <seconds>', desc: 'the time limit for each --check command, a whole number of seconds from 1 to 600 (needs --check)', default: '120 s (the evidence default)' },
     { flag: '--no-retry', desc: 'one attempt only; without it the step gets its one automatic retry (a usage limit is never retried)', default: 'off — one retry' },
     { flag: '--caller <name>', desc: "this launch's caller name for the concurrency caps (`bullswarm caps`); without it the caller is found from BULLSWARM_CALLER, the herdr pane, or the launch directory", default: 'found from the pane or directory' },
-    { flag: '--no-wait', desc: 'refuse at once (exit 1) when this caller already has as many steps running or queued as its cap allows; without it the run is queued and starts when a slot frees', default: 'off — queue over the cap' },
+    { flag: '--no-wait', desc: 'refuse at once (exit 1) when this caller already has as many steps running or queued as its cap allows; the launch check is a fast path and the slot is also checked when it is taken, so the run never queues; without it the run is queued and starts when a slot frees', default: 'off — queue over the cap' },
     { flag: '--avoid-pool <pool,...>', desc: 'never route this task to these pools' },
     { flag: '--use-provider <provider,...>', desc: 'route only to pools of these providers' },
     { flag: '--avoid-provider <provider,...>', desc: 'never route to pools of these providers' },
@@ -532,7 +532,8 @@ const capsText = rich({
   usage: 'bullswarm caps [show | set | set-pool | set-default | clear] [--json]',
   purpose: 'Concurrency caps: how many steps one caller (a lead) may have running at once, and how many attempts one pool may run at once. '
     + 'A step over its caller\'s cap waits in arrival order and starts when a slot frees; a pool at its cap sits out picks, and a step with no other pool waits. '
-    + 'A caller is matched by --caller / BULLSWARM_CALLER, then by herdr pane, then by the longest matching launch directory.',
+    + 'A caller is matched by --caller / BULLSWARM_CALLER, then by herdr pane, then by the longest matching launch directory; a name with no entry falls through to the pane, then the directory, then the default. '
+    + 'The pool cap is read at every pick, so two picks in the same instant can pass it by one.',
   options: [{ flag: '--json', desc: 'machine-readable view' }],
   safety: [
     'reads caps.json, caller-slots/ and assignments/ under $BULLSWARM_HOME; changes nothing',

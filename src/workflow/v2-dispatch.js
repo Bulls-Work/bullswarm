@@ -216,18 +216,28 @@ function sessionFor(connector, pool, model, current, now, uuid) {
  * pools}`) and `{kind: 'admitted', waitedMs}` when a caller wait ends.
  */
 export async function dispatchV2Action(options = {}) {
-  const { bullswarmDir, runDir = null, runId = null, shouldCancel = null, onQueued = null, dependencies = {} } = options;
+  const {
+    bullswarmDir, runDir = null, runId = null, shouldCancel = null, onQueued = null, dependencies = {}, noWait = false,
+  } = options;
   if (typeof bullswarmDir !== 'string' || !bullswarmDir || !options.action) return dispatchUncapped(options);
   const acquire = dependencies.acquireCallerSlot ?? acquireCallerSlot;
   let caller = null;
   try { caller = runDir ? readGoalCaller(runDir) : null; } catch { caller = null; }
   const slot = await acquire({
     bullswarmDir, caller, runId, actionId: options.action.id, shouldCancel,
+    ...(noWait ? { noWait: true } : {}),
     ...(dependencies.sleep ? { sleep: dependencies.sleep } : {}),
     ...(dependencies.capsPollMs != null ? { pollMs: dependencies.capsPollMs } : {}),
     onQueued: (event) => onQueued?.({ kind: 'caller', ...event }),
     onAdmitted: (event) => onQueued?.({ kind: 'admitted', ...event }),
   });
+  if (slot?.refused) {
+    // F4: the slot was taken before the real acquisition; the run ends capped
+    // with the same refusal line the launch check prints. The verdict carries
+    // the line so the kernel records it as the step's why.
+    const why = String(slot.refusal ?? '').replace(/^✗ /, '');
+    return { ok: false, failureKind: 'capped', why, verdict: { ok: false, failureKind: 'capped', why }, attempts: [] };
+  }
   if (slot?.cancelled) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts: [], verdict: null };
   try {
     return await dispatchUncapped(options);
@@ -504,10 +514,11 @@ async function dispatchUncapped({
   // retry never goes back to them. `gatePin` is a gate retry's pool until an
   // attempt starts: the pick is forced onto it whenever it can take work (D5,
   // decided at the pick that starts the retry); `gateBlocked` is set when the
-  // router refused it. A step never waits for a pool: a usage limit, or no
-  // capable pool free now, sends it to the caller (owner decision,
-  // 2026-09-25); only a transient rate limit backs off, on the same pool and
-  // only while that pool can take the step. `backoffBlocked` names the pool
+  // router refused it. A step never waits for a pool except the pool-cap
+  // backstop (C6): a usage limit, or a refusal with no pool sat out for its
+  // cap, sends it to the caller (owner decision, 2026-09-25); only a transient
+  // rate limit backs off, on the same pool and only while that pool can take
+  // the step. `backoffBlocked` names the pool
   // whose backoff could not be taken or replayed; `namedReturn` is when a
   // provider said to try again after a wait too long to sit out.
   const retryBudget = Math.max(0, (Number(maxMechanicalRetries) || 0) - (Number(retriesAlready) || 0));
@@ -589,15 +600,19 @@ async function dispatchUncapped({
     attachForecast(routingPools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
     // The pool backstop (caps.js C6): a pool already running its cap of
     // attempts sits out this pick. When every pool the step could use is at
-    // its cap, the step waits and picks again; it never fails for it.
+    // its cap, the step waits and picks again; it never fails for it. A pick
+    // that sat pools out for their cap waits too when the router refuses every
+    // pool left (F2), so the 0.40.0 promise holds: a step no other pool can
+    // take waits.
     const capsNow = readCaps(bullswarmDir);
+    let cappedPools = [];
     if (Object.keys(capsNow.pools).length) {
       const full = poolsAtCap(capsNow, new Map(routingPools.map((candidate) => [candidate.name, candidate.inflight?.count ?? 0])));
       if (full.size) {
+        cappedPools = [...full].map(([name, view]) => ({ pool: name, running: view.count, max: view.max }));
         const open = routingPools.filter((candidate) => !full.has(candidate.name));
         if (!open.length && routingPools.length) {
-          const pools = [...full].map(([name, view]) => ({ pool: name, running: view.count, max: view.max }));
-          try { onQueued?.({ kind: 'pool', pools }); } catch { /* display only */ }
+          try { onQueued?.({ kind: 'pool', pools: cappedPools }); } catch { /* display only */ }
           if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
           await (dependencies.sleep ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); })))(dependencies.capsPollMs ?? CAPS_POLL_MS);
           continue;
@@ -672,6 +687,15 @@ async function dispatchUncapped({
       // The router refused a backoff's own pool (off the lane, or a live
       // window at its limit): the caller, as above.
       if (backoffReplay) backoffBlocked = replay.name;
+      // F2: this pick sat out pools for their cap and the router refuses every
+      // pool left. Wait for a capped pool, as when no pool was open. The no-cap
+      // path keeps failing at once.
+      if (!backoffReplay && cappedPools.length) {
+        try { onQueued?.({ kind: 'pool', pools: cappedPools }); } catch { /* display only */ }
+        if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
+        await (dependencies.sleep ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); })))(dependencies.capsPollMs ?? CAPS_POLL_MS);
+        continue;
+      }
       break;
     }
     const pool = route.pick.connector;

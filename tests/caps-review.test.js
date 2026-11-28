@@ -8,12 +8,14 @@
 //
 //   acquireCallerSlot({ listSlotsFn })  F1. Injectable option, default
 //       `listSlots`, called as `listSlotsFn(bullswarmDir, { now, alive })` for
-//       every slot listing acquireCallerSlot makes while it decides. The
-//       decide (list, count admitted, find position) and the mark (write
+//       every slot listing acquireCallerSlot makes while it decides, and
+//       awaited inside the critical section, so a test can yield there and
+//       let a second acquirer try the lock between the list and the mark.
+//       The decide (list, count admitted, find position) and the mark (write
 //       `admitted: true`) must run inside one cross-process critical section
 //       (a lock in the bullswarm dir). The lock is NOT re-entrant per pid: a
 //       second acquirer in the same process waits for it like any other (the
-//       deterministic test runs both acquirers in one process), retrying
+//       deterministic tests run both acquirers in one process), retrying
 //       through the injected `sleep`.
 //
 //   acquireCallerSlot({ noWait: true })  F4. Inside the critical section, a
@@ -30,15 +32,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  acquireCallerSlot, callerCap, listSlots, normalizeCaps, writeCaps,
+  acquireCallerSlot, callerCap, listSlots, normalizeCaps, slotsDir, writeCaps,
 } from '../src/lib/caps.js';
-import { registerAssignment, releaseAssignment } from '../src/lib/assignments.js';
+import { isProcessAlive, registerAssignment, releaseAssignment } from '../src/lib/assignments.js';
 import { pickPool } from '../src/lib/route.js';
+import { runStepRequest } from '../src/lib/run-step.js';
+import { cmdRun, parseArgs } from '../src/cli.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { runOneStep } from '../src/workflow/run-one-step.js';
 import { recordGoalCaller } from '../src/workflow/goal.js';
 
 const CAPS_URL = new URL('../src/lib/caps.js', import.meta.url).href;
@@ -108,6 +113,52 @@ test('F1: a step whose file lands between another\'s list and mark is not admitt
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// The red proof of the lock itself, with an explicit yield between list and
+// mark. A lists (and sees no B), then awaits a tick inside its critical section
+// while B is started. With the lock, B cannot list until A has marked itself
+// admitted and released; without it, B lists during A's yield and both admit
+// themselves. Probed: with lockSlots made to return null at once, this test
+// double-admits every run, as does the earlier seam test (whose list now runs
+// inside the same awaited seam).
+test('F1: the slots lock keeps a second decider out between the first list and mark (deterministic, async listSlotsFn seam)', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    const caller = { name: 'lead', cwd: '/w' };
+    let bPromise = null;
+    const listSlotsFn = async (bullswarmDir, opts) => {
+      const seen = listSlots(bullswarmDir, opts);
+      if (!bPromise) {
+        bPromise = acquireCallerSlot({ bullswarmDir: dir, caller, arrival: () => 1, sleep: tick, pollMs: 1 });
+        // B runs here, between A's list and A's mark: only the lock can stop it.
+        await tick();
+      }
+      return seen;
+    };
+    const a = await acquireCallerSlot({ bullswarmDir: dir, caller, arrival: () => 2, sleep: tick, pollMs: 1, listSlotsFn });
+    assert.ok(bPromise, 'acquireCallerSlot lists slots through the injected listSlotsFn seam');
+    let bDone = false;
+    bPromise.then(() => { bDone = true; });
+    for (let i = 0; i < 15; i += 1) await tick();
+    const admitted = listSlots(dir).filter((slot) => slot.admitted === true);
+    assert.equal(admitted.length, 1, 'the lock held B out of the critical section: exactly one slot is admitted');
+    assert.equal(bDone, false, 'B is still waiting, not admitted beside A');
+    a.release();
+    const b = await bPromise;
+    assert.equal(b.group, 'lead');
+    assert.equal(b.queued, true, 'B started only after A released');
+    b.release();
+    assert.equal(listSlots(dir).length, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Hold-validation on the fixed build: 8 node processes contending for a cap-1
+// slot never hold it together under the lock. On the unfixed build it is a
+// probabilistic red proof, not a reliable one: it depends on machine speed and
+// load. The review measured it red on 3/3, 5/5 and 5/9 runs against main's
+// caps.js (1-3 violations in 96 rounds), but the round-1 fixer saw it pass
+// once on d61fffe, so a green stress run on broken code is possible. The
+// deterministic async listSlotsFn test above is the guaranteed red proof.
 test('F1: 8 node processes at a cap of 1 over several rounds never hold the slot together (stress)', async () => {
   const dir = home('bs-caps-stress-');
   try {
@@ -160,6 +211,148 @@ test('F1: 8 node processes at a cap of 1 over several rounds never hold the slot
     assert.equal(acquired, PROCS * ROUNDS, 'every child got the slot every round');
     assert.equal(violations, 0, 'two processes held the cap-1 slot at the same time');
     assert.equal(listSlots(dir).length, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- F1: the stale-lock break (dead owner, aged lock) -----------------------------
+
+/** Plant the slots lock with an owner and, optionally, an old mtime. */
+function plantLock(dir, owner, { ageMs = 0 } = {}) {
+  const lockDir = join(slotsDir(dir), '.lock');
+  mkdirSync(lockDir, { recursive: true });
+  if (owner) writeFileSync(join(lockDir, 'owner.json'), `${JSON.stringify(owner)}\n`);
+  if (ageMs > 0) {
+    const when = new Date(Date.now() - ageMs);
+    utimesSync(lockDir, when, when);
+  }
+  return lockDir;
+}
+
+test('F1: a lock whose owner pid is dead is broken at once, before any retry sleep', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    // Above every kernel's pid_max (Linux 2^22, macOS 99998), so it is dead.
+    const deadPid = 1 << 30;
+    assert.equal(isProcessAlive(deadPid), false, 'the planted pid is dead');
+    plantLock(dir, { pid: deadPid, at: Date.now() });
+    let sleeps = 0;
+    const slot = await acquireCallerSlot({
+      bullswarmDir: dir, caller: { name: 'lead', cwd: '/w' }, pollMs: 1,
+      shouldCancel: () => sleeps > 50,
+      sleep: async () => { sleeps += 1; await tick(); },
+    });
+    assert.equal(slot.group, 'lead', 'the dead owner\'s lock was broken, not waited out');
+    assert.equal(sleeps, 0, 'broken before the first lock retry sleep');
+    slot.release();
+    assert.equal(listSlots(dir).length, 0);
+    assert.equal(existsSync(join(slotsDir(dir), '.lock')), false, 'no lock left behind');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('F1: a lock older than the stale window is broken even when its owner pid is alive', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    // pid 1 is alive (or EPERM: alive) and is never this process.
+    assert.equal(isProcessAlive(1), true, 'pid 1 is alive');
+    plantLock(dir, { pid: 1, at: Date.now() - 30_000 }, { ageMs: 30_000 });
+    let sleeps = 0;
+    const slot = await acquireCallerSlot({
+      bullswarmDir: dir, caller: { name: 'lead', cwd: '/w' }, pollMs: 1,
+      shouldCancel: () => sleeps > 50,
+      sleep: async () => { sleeps += 1; await tick(); },
+    });
+    assert.equal(slot.group, 'lead', 'the aged lock was broken by age, not waited out');
+    assert.equal(sleeps, 0, 'broken before the first lock retry sleep');
+    slot.release();
+    assert.equal(listSlots(dir).length, 0);
+    assert.equal(existsSync(join(slotsDir(dir), '.lock')), false, 'no lock left behind');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('F1: a fresh lock held by a live pid is waited out, never broken', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    const lockDir = plantLock(dir, { pid: 1, at: Date.now() });
+    let sleeps = 0;
+    const slot = await acquireCallerSlot({
+      bullswarmDir: dir, caller: { name: 'lead', cwd: '/w' }, pollMs: 1,
+      shouldCancel: () => sleeps >= 2,
+      sleep: async () => { sleeps += 1; await tick(); },
+    });
+    assert.equal(slot.cancelled, true);
+    assert.ok(sleeps >= 2, 'it waited through the lock retry sleeps');
+    assert.ok(existsSync(join(lockDir, 'owner.json')), 'the live holder\'s lock was not removed');
+    assert.equal(listSlots(dir).length, 0, 'the cancelled slot was removed');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('F1: a fresh lock swapped in during the stale check is restored, not renamed away', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    const deadPid = 1 << 30;
+    const lockDir = plantLock(dir, { pid: deadPid, at: Date.now() });
+    const fresh = { pid: 1, at: Date.now() };
+    let swapped = false;
+    let sleeps = 0;
+    const slot = await acquireCallerSlot({
+      bullswarmDir: dir, caller: { name: 'lead', cwd: '/w' }, pollMs: 1,
+      shouldCancel: () => sleeps >= 2,
+      sleep: async () => { sleeps += 1; await tick(); },
+      // Swap a fresh live owner in exactly inside the read -> rename window.
+      alive: (pid) => {
+        if (pid === deadPid && !swapped) {
+          swapped = true;
+          writeFileSync(join(lockDir, 'owner.json'), `${JSON.stringify(fresh)}\n`);
+        }
+        return isProcessAlive(pid);
+      },
+    });
+    assert.equal(swapped, true, 'the fresh lock was swapped in during the stale check');
+    assert.equal(slot.cancelled, true, 'the acquirer waited on the restored fresh lock');
+    assert.ok(sleeps >= 2, 'it slept while the fresh holder kept the lock');
+    assert.equal(existsSync(lockDir), true, 'the fresh lock is still there');
+    assert.deepEqual(JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')), fresh);
+    assert.equal(listSlots(dir).length, 0, 'the cancelled slot was removed');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('F1: an owner-less lock is broken after a short grace, not the full stale window', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    plantLock(dir, null, { ageMs: 200 });
+    let sleeps = 0;
+    const slot = await acquireCallerSlot({
+      bullswarmDir: dir, caller: { name: 'lead', cwd: '/w' }, pollMs: 1,
+      shouldCancel: () => sleeps > 5,
+      sleep: async () => { sleeps += 1; await tick(); },
+    });
+    assert.equal(slot.group, 'lead', 'the owner-less lock was broken, not waited out');
+    assert.equal(sleeps, 0, 'broken before the first lock retry sleep');
+    slot.release();
+    assert.equal(existsSync(join(slotsDir(dir), '.lock')), false, 'no lock left behind');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('F1: a fresh owner-less lock is given its grace, not broken at once', async () => {
+  const dir = home();
+  try {
+    writeCaps(dir, caps({ lead: { max: 1 } }));
+    const lockDir = plantLock(dir, null);
+    let sleeps = 0;
+    const slot = await acquireCallerSlot({
+      bullswarmDir: dir, caller: { name: 'lead', cwd: '/w' }, pollMs: 1,
+      shouldCancel: () => sleeps >= 1,
+      sleep: async () => { sleeps += 1; await tick(); },
+    });
+    assert.equal(slot.cancelled, true);
+    assert.ok(sleeps >= 1, 'it waited through the grace');
+    assert.equal(existsSync(lockDir), true, 'the fresh owner-less lock was not removed');
+    assert.equal(listSlots(dir).length, 0, 'the cancelled slot was removed');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -320,6 +513,76 @@ test('F4: dispatch with noWait ends capped instead of queueing when the caller i
     assert.equal(started, false, 'no worker started');
     assert.equal(listSlots(root).length, 1, 'only the held slot remains');
     held.release();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('F4: cmdRun carries --no-wait into runOneStep, and leaves it out without the flag', async () => {
+  const root = home('bs-caps-f4-cli-');
+  const saved = { home: process.env.BULLSWARM_HOME, depth: process.env.BULLSWARM_DEPTH, log: console.log, error: console.error };
+  try {
+    const repo = join(root, 'repo');
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(root, 'state.json'), `${JSON.stringify({
+      version: 1, pools: {}, incumbents: {}, decisionLog: [],
+      config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
+    }, null, 2)}\n`);
+    process.env.BULLSWARM_HOME = root;
+    delete process.env.BULLSWARM_DEPTH;
+    console.log = () => {};
+    console.error = () => {};
+    const calls = [];
+    const run = async (args) => {
+      const opts = parseArgs(['--add-dir', repo, '--lane', 'analyze', '--prompt', 'look', ...args]);
+      const code = await cmdRun(opts, {
+        buildPools: async () => ({ pools: [] }),
+        refreshStrategy: async () => {},
+        runOneStep: async (input) => { calls.push(input); return { ok: true, why: 'ok' }; },
+      });
+      assert.equal(code, 0);
+    };
+    await run(['--no-wait']);
+    await run([]);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].noWait, true, 'run --no-wait reaches runOneStep');
+    assert.equal(Object.hasOwn(calls[1], 'noWait'), false, 'without --no-wait nothing is carried');
+  } finally {
+    console.log = saved.log;
+    console.error = saved.error;
+    if (saved.home === undefined) delete process.env.BULLSWARM_HOME; else process.env.BULLSWARM_HOME = saved.home;
+    if (saved.depth === undefined) delete process.env.BULLSWARM_DEPTH; else process.env.BULLSWARM_DEPTH = saved.depth;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('F4: runOneStep carries noWait into the step dispatch', async () => {
+  const root = home('bs-caps-f4-step-');
+  try {
+    const repo = join(root, 'repo');
+    mkdirSync(repo, { recursive: true });
+    const { request, error } = runStepRequest({ lane: 'analyze', prompt: 'look', 'add-dir': repo });
+    assert.equal(error, undefined);
+    const seen = [];
+    const result = await runOneStep({
+      bullswarmDir: root, request, pools: [], noWait: true,
+      dependencies: {
+        dispatchV2Action: async (options) => {
+          seen.push(options.noWait);
+          const files = options.paths(1);
+          writeFileSync(files.taskFile, options.taskText);
+          writeFileSync(files.outFile, 'looked\n');
+          const record = {
+            ordinal: 1, pool: 'fake-pool', model: 'fake-model', status: 'succeeded',
+            startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+            taskFile: files.taskFile, outFile: files.outFile, failureKind: null,
+          };
+          options.onAttempt?.('started', record);
+          options.onAttempt?.('finished', record);
+          return { ok: true, status: 'succeeded', attempts: [record], verdict: { ok: true, outFile: files.outFile } };
+        },
+      },
+    });
+    assert.deepEqual(seen, [true], 'noWait reaches dispatchV2Action');
+    assert.equal(result.ok, true, result.why);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

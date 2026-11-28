@@ -413,6 +413,7 @@ export async function cmdRun(opts, dependencies = {}) {
     const { pools } = await buildPools();
     verdict = await (dependencies.runOneStep ?? runOneStep)({
       bullswarmDir: home, request, pools,
+      ...(opts['no-wait'] ? { noWait: true } : {}),
       ...(dependencies.stepDependencies ? { dependencies: dependencies.stepDependencies } : {}),
     });
   }

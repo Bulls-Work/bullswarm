@@ -17,8 +17,12 @@
 //       once, and a waiting slot never overtakes an admitted one: a waiter
 //       starts when the admitted slots plus the waiters ahead of it (ordered
 //       by arrival time, sub-millisecond, then id) are fewer than `max`.
-//       Every process computes the same order from the same files, so no lock
-//       is needed.
+//       The list, the decision and the mark run in one critical section
+//       across processes: a lock directory under caller-slots/ (mkdir is
+//       atomic), retried through the injected sleep. A lock older than a few
+//       seconds, held by a dead pid, or with no readable owner after a short
+//       grace is broken (re-checking what it renamed), so a crash never blocks
+//       callers, and the lock is not re-entrant per pid.
 //   C4. A crashed process must never hold a slot: a read prunes slots whose
 //       kernel pid is gone and slots older than 12 hours, as the in-flight
 //       ledger does (assignments.js A3).
@@ -30,7 +34,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { isProcessAlive } from './assignments.js';
@@ -38,6 +42,12 @@ import { isProcessAlive } from './assignments.js';
 export const CAPS_SCHEMA = 'bullswarm.caps.v1';
 export const SLOT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 export const DEFAULT_POLL_MS = 5_000;
+/** A slots lock this old is broken, so a crashed holder never blocks callers. */
+const LOCK_STALE_MS = 5_000;
+/** A lock with no readable owner is broken after this grace (mkdir, then the write). */
+const LOCK_OWNER_GRACE_MS = 100;
+/** How often a contender retries the slots lock; short, because holding is short. */
+const LOCK_WAIT_MS = 5;
 /** A group or caller name: letters, digits, dot, dash, underscore; `default` is reserved. */
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const PANE_RE = /^w[A-Za-z0-9]+:p[0-9A-Z]+$/;
@@ -132,13 +142,10 @@ export function callerCap(caps, caller) {
   // The default cap is per caller, never one shared pool of slots: an unnamed
   // caller is its own group, keyed by its pane, else its directory.
   const own = caller.herdrPane ? `pane:${caller.herdrPane}` : caller.cwd ? `cwd:${caller.cwd}` : null;
-  const fallback = (group, source) => (caps?.default != null && (group ?? own)
-    ? { group: group ?? own, max: caps.default, source }
-    : { ...none, group: group ?? null, source });
-  if (typeof caller.name === 'string' && NAME_RE.test(caller.name)) {
-    const entry = callers[caller.name];
-    return entry ? { group: caller.name, max: entry.max, source: 'name' } : fallback(caller.name, 'name');
-  }
+  const named = typeof caller.name === 'string' && NAME_RE.test(caller.name) ? caller.name : null;
+  // F3: a name with an entry wins; a name with none falls through to the pane
+  // match, then the cwd prefix, and only then to the default keyed by the name.
+  if (named && callers[named]) return { group: named, max: callers[named].max, source: 'name' };
   if (caller.herdrPane) {
     for (const [name, entry] of Object.entries(callers)) {
       if (entry.panes.includes(caller.herdrPane)) return { group: name, max: entry.max, source: 'pane' };
@@ -151,7 +158,10 @@ export function callerCap(caps, caller) {
     }
   }
   if (best) return { group: best.name, max: best.max, source: 'cwd' };
-  return fallback(null, 'default');
+  const group = named ?? own;
+  return caps?.default != null && group
+    ? { group, max: caps.default, source: 'default' }
+    : { ...none, group: named ?? null, source: 'default' };
 }
 
 // --- slots -------------------------------------------------------------------
@@ -219,6 +229,94 @@ function removeSlot(bullswarmDir, id) {
   try { unlinkSync(join(slotsDir(bullswarmDir), `${id}.json`)); return true; } catch { return false; }
 }
 
+// The cross-process critical section around the slot decide and mark (C3).
+function lockDirOf(bullswarmDir) {
+  return join(slotsDir(bullswarmDir), '.lock');
+}
+
+function readLockOwner(lockDir) {
+  try { return JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')); } catch { return null; }
+}
+
+/**
+ * Take the slots lock. One mkdir wins, so exactly one process enters. A lock
+ * whose holder pid is dead, whose directory is older than LOCK_STALE_MS, or
+ * which has no readable owner after LOCK_OWNER_GRACE_MS is broken by a rename
+ * (only one breaker can win), and a break re-checks what it renamed so a fresh
+ * holder's lock is put back. Not re-entrant per pid: a second acquirer in this
+ * process waits like any other. Returns the lock path, 'cancelled', or null
+ * when the directory cannot be locked (the caller then decides without it:
+ * caps never break work).
+ */
+async function lockSlots({ bullswarmDir, sleep, shouldCancel, alive }) {
+  const lockDir = lockDirOf(bullswarmDir);
+  try { mkdirSync(slotsDir(bullswarmDir), { recursive: true }); } catch { return null; }
+  for (;;) {
+    try {
+      mkdirSync(lockDir);
+      try {
+        // Atomic owner write: a crash mid-write leaves no truncated owner.json
+        // (the owner-less grace below covers a crash before this rename).
+        const ownerTemp = join(lockDir, `.owner.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+        writeFileSync(ownerTemp, `${JSON.stringify({ pid: process.pid, at: Date.now() })}\n`);
+        renameSync(ownerTemp, join(lockDir, 'owner.json'));
+      } catch { /* the age check still breaks it */ }
+      return lockDir;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') return null;
+    }
+    const owner = readLockOwner(lockDir);
+    let staleBy = null;
+    if (owner && Number.isFinite(owner.pid) && owner.pid !== process.pid && !alive(owner.pid)) {
+      staleBy = 'dead';
+    } else {
+      let stat = null;
+      try { stat = statSync(lockDir); } catch { /* gone */ }
+      if (stat) {
+        const age = Date.now() - stat.mtimeMs;
+        if (!stat.isDirectory()) staleBy = 'not-dir';
+        else if (age > LOCK_STALE_MS) staleBy = 'age';
+        else if (!owner && age > LOCK_OWNER_GRACE_MS) staleBy = 'ownerless';
+      }
+    }
+    if (staleBy) {
+      const moved = `${lockDir}.stale.${process.pid}.${randomUUID().slice(0, 8)}`;
+      let movedIt = false;
+      try { renameSync(lockDir, moved); movedIt = true; } catch { /* another breaker won */ }
+      if (movedIt) {
+        // Re-validate what was renamed: another breaker may have freed the
+        // stale lock and a fresh contender taken it in the window above.
+        const movedOwner = readLockOwner(moved);
+        let same = false;
+        if (staleBy === 'dead' || staleBy === 'age') {
+          same = Boolean(owner && movedOwner && movedOwner.pid === owner.pid && movedOwner.at === owner.at);
+          if (same && staleBy === 'dead') same = !alive(movedOwner.pid);
+          if (same && staleBy === 'age') {
+            try { same = Date.now() - statSync(moved).mtimeMs > LOCK_STALE_MS; } catch { same = false; }
+          }
+        } else if (staleBy === 'ownerless') {
+          try { same = !movedOwner && Date.now() - statSync(moved).mtimeMs > LOCK_OWNER_GRACE_MS; } catch { same = false; }
+        } else {
+          try { same = !statSync(moved).isDirectory(); } catch { same = false; }
+        }
+        if (same) {
+          rmSync(moved, { recursive: true, force: true });
+        } else {
+          // A fresh holder's lock was renamed by mistake: put it back.
+          try { renameSync(moved, lockDir); } catch { rmSync(moved, { recursive: true, force: true }); }
+        }
+      }
+      continue;
+    }
+    if (shouldCancel?.()) return 'cancelled';
+    await sleep(LOCK_WAIT_MS);
+  }
+}
+
+function unlockSlots(lockDir) {
+  try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
 const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
 
 /**
@@ -235,7 +333,7 @@ export async function acquireCallerSlot({
   bullswarmDir, caller, runId = null, actionId = null,
   shouldCancel = null, onQueued = null, onAdmitted = null,
   now = Date.now, arrival = arrivalNow, sleep = defaultSleep, pollMs = DEFAULT_POLL_MS, alive = isProcessAlive,
-  readCapsFn = readCaps,
+  readCapsFn = readCaps, listSlotsFn = listSlots, noWait = false,
 } = {}) {
   const noop = { release() {}, group: null, max: null, waitedMs: 0, queued: false };
   let caps = readCapsFn(bullswarmDir);
@@ -250,16 +348,45 @@ export async function acquireCallerSlot({
   let queued = false;
   let lastAhead = null;
   for (;;) {
-    const mine = listSlots(bullswarmDir, { now: now(), alive }).filter((s) => s.group === slot.group);
-    // A slot that vanished (pruned by mistake, a cleared home) is rewritten in place.
-    if (!mine.some((s) => s.id === slot.id)) { try { writeSlot(bullswarmDir, slot); } catch { return noop; } continue; }
-    const admitted = mine.filter((s) => s.admitted === true).length;
-    const waiters = mine.filter((s) => s.admitted !== true);
-    const position = waiters.findIndex((s) => s.id === slot.id);
-    if (cap.max == null || admitted + position < cap.max) {
-      slot.admitted = true;
-      try { writeSlot(bullswarmDir, slot); } catch { /* still runs; it just shows as waiting */ }
-      break;
+    // F1: the list, the decision and the mark are one critical section across
+    // processes, so a slot whose file lands between another's list and mark is
+    // never admitted beside it.
+    const lock = await lockSlots({ bullswarmDir, sleep, shouldCancel, alive });
+    if (lock === 'cancelled') {
+      removeSlot(bullswarmDir, slot.id);
+      return { ...noop, cancelled: true, group: slot.group, max: cap.max, waitedMs: now() - startedWaiting, queued };
+    }
+    let mine = [];
+    let admitted = 0;
+    let position = 0;
+    let vanished = false;
+    let take = false;
+    try {
+      mine = (await listSlotsFn(bullswarmDir, { now: now(), alive })).filter((s) => s.group === slot.group);
+      // A slot that vanished (pruned by mistake, a cleared home) is rewritten in place.
+      if (!mine.some((s) => s.id === slot.id)) {
+        vanished = true;
+        try { writeSlot(bullswarmDir, slot); } catch { return noop; }
+      } else {
+        admitted = mine.filter((s) => s.admitted === true).length;
+        const waiters = mine.filter((s) => s.admitted !== true);
+        position = waiters.findIndex((s) => s.id === slot.id);
+        if (cap.max == null || admitted + position < cap.max) {
+          slot.admitted = true;
+          try { writeSlot(bullswarmDir, slot); } catch { /* still runs; it just shows as waiting */ }
+          take = true;
+        }
+      }
+    } finally {
+      if (lock) unlockSlots(lock);
+    }
+    if (vanished) continue;
+    if (take) break;
+    if (noWait) {
+      // F4: inside the critical section, refuse instead of queueing.
+      removeSlot(bullswarmDir, slot.id);
+      const inUse = Math.max(0, mine.length - 1);
+      return { refused: true, refusal: noWaitRefusalLine(slot.group, inUse, cap.max), group: slot.group, max: cap.max };
     }
     if (shouldCancel?.()) {
       removeSlot(bullswarmDir, slot.id);
@@ -311,9 +438,16 @@ export function applyCallerFlag(value, env = process.env) {
   return null;
 }
 
+/** The `--no-wait` refusal line, shared by the launch check and slot acquisition. */
+function noWaitRefusalLine(group, inUse, max) {
+  return `✗ not started (--no-wait): caller ${group} already has ${inUse} step${inUse === 1 ? '' : 's'} running or queued`
+    + ` and its cap is ${max} (bullswarm caps show). Run it again without --no-wait to queue it.`;
+}
+
 /**
  * `--no-wait`: the refusal line when this caller's group has no free slot now,
  * otherwise null. A launch check only: a workflow's later steps still queue.
+ * A single `run --no-wait` also decides inside slot acquisition (F4).
  */
 export function noWaitRefusal(bullswarmDir, caller, opts = {}) {
   const caps = (opts.readCapsFn ?? readCaps)(bullswarmDir);
@@ -321,6 +455,5 @@ export function noWaitRefusal(bullswarmDir, caller, opts = {}) {
   if (!cap.group || cap.max == null) return null;
   const inUse = listSlots(bullswarmDir, opts).filter((slot) => slot.group === cap.group).length;
   if (inUse < cap.max) return null;
-  return `✗ not started (--no-wait): caller ${cap.group} already has ${inUse} step${inUse === 1 ? '' : 's'} running or queued`
-    + ` and its cap is ${cap.max} (bullswarm caps show). Run it again without --no-wait to queue it.`;
+  return noWaitRefusalLine(cap.group, inUse, cap.max);
 }

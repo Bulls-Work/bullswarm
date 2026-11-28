@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A caller cap is now decided under a short cross-process lock in the caps directory, so a cap of 1 cannot admit two steps that arrive together. The lock is a directory under `caller-slots/`; one older than a few seconds, or held by a dead process, is broken so a crash never blocks callers, a lock with no readable owner is broken after a short grace, and a stale break re-checks what it renamed so a fresh holder's lock is put back. A deterministic seam test interleaves a second acquirer between the first's list and mark and fails whenever the lock stops excluding; a real multi-process stress test holds 8-way contention under the lock (on the unfixed code it is a probabilistic red proof, timing-dependent).
+- A step whose pool is at its cap now waits when the router refuses every other open pool, instead of failing. That is what 0.40.0 promised: a step no other pool can take waits.
+- An unlisted `--caller` / `BULLSWARM_CALLER` name no longer escapes pane and directory caps. It falls through to the pane match, then the cwd prefix, and only then to the default cap keyed by the name.
+- `bullswarm run --no-wait` now also decides inside slot acquisition: when the slot is taken between the launch check and the real acquisition, the run ends `capped` with the same refusal line instead of queueing. The launch check stays as the fast path; `workflow goal --no-wait` is still a launch check only.
+- New tests: a step keeps its caller slot through a mechanical retry and releases it once; a killed holder's slot is pruned so a waiter starts.
+- The pool cap is read at every pick, so two picks in the same instant can pass it by one.
+
 ## 0.40.3 — Cloudflare rate limit waits on the same pool
 
 - Cloudflare Workers AI's per-model rate limit (code 3021, `rate limiting: inference request per min rate reached`, HTTP 429) is now a `throttle`: the step backs off on the same pool and keeps its one retry. Before, it read as a provider failure, so each hit spent the retry on another pool (one step went Inkling, DeepSeek, then gpt-oss-120b). A notice line that opens with HTTP 429's reason phrase (`Too Many Requests: {...}`) now counts as a provider notice.

@@ -53,6 +53,10 @@ A **usage limit** is a limit notice that says a usage window, a quota or a balan
 
 A **sign-in failure** (failure kind `auth`) gets the step's one automatic retry on a pool that does not share the dead credential: every pool in the same credential group is skipped for the rest of that step. Nothing is stored, so a later step can pick that pool again.
 
+## Concurrency caps
+
+`bullswarm caps` limits how many steps one caller (a lead) may have running at once. A step over its caller's cap waits in arrival order and starts when a slot frees. The slot list, the decision and the admitted mark are taken under one short cross-process lock in the caps directory, so two steps that arrive together never share the last slot, and a lock held by a dead process is broken. A caller is matched by `--caller` / `BULLSWARM_CALLER` name first; a name with no entry falls through to its herdr pane, then its launch directory, then the default cap keyed by the name. A per-pool cap is a backstop read at every pick: a pool at its cap sits out, and a step no other pool can take waits. It is not slot-ordered, so two picks in the same instant can pass it by one. `run --no-wait` refuses instead of queueing when the slot is taken; `workflow goal --no-wait` checks only the launch.
+
 ## The run directory
 
 Each `bullswarm run` writes three files under `~/.bullswarm/runs/`: `task-<stamp>.md`, the prompt handed to the delegate; `out-<stamp>.md`, the output it produced; and the CLI's raw capture — `stream-<stamp>.jsonl` for a CLI that streams JSON events, `stdout-<stamp>.log` for any other. The verdict's `taskFile` and `outFile` are the first two paths, and `bullswarm health` re-judges every saved `out-*` file against the verify gate later.
