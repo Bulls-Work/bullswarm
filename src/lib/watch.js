@@ -770,6 +770,11 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       providerFailureType: obs.providerFailureType,
       providerFailureAt: obs.providerFailureAt,
       providerFailureText: obs.providerFailureText,
+      // The provider-declared end of its last model request, when the
+      // connector declares one (opencode: `length` means the output cap cut
+      // the turn). A fact about the turn, independent of the text heuristic
+      // above and of the verdict's classification.
+      ...(obs.stopReason ? { stopReason: obs.stopReason } : {}),
       wallSec,
       outBytes: output.length,
       ...(outputTruncated ? { outputTruncated: true, ...(outputSource ? { outputSource } : {}) } : {}),

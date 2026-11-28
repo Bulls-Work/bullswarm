@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A build or chore step on an OpenCode-based pool (the cf pools) whose turn ended at the provider's output limit with no file written now gets one same-session continue on the same pool, instead of `not-produced` with no retry. It needs a retry left and a session id the provider reported in its stream; otherwise the step goes to the caller as before. Measured on 28 Nov: GLM 5.3's long build was cut off this way in 4 of 5 runs, and one continue finished both cut-off runs tested. A second cutoff goes to the caller. The continue is used once per step (a new loop round or rerun gets its own) even when the pool could not take it and the retry moved to another pool, in a fresh session. Other retries on such a pool (a bad answer, a failed check, a rate-limit wait after the continue) start a fresh session, as before; codex and agy, which resume by follow-up, keep their session on a correction as before. A pool made from the OpenCode template before this release needs its connector refreshed to declare `conversation` and `eventStream.stopReason`.
+
 ## 0.40.3 — Cloudflare rate limit waits on the same pool
 
 - Cloudflare Workers AI's per-model rate limit (code 3021, `rate limiting: inference request per min rate reached`, HTTP 429) is now a `throttle`: the step backs off on the same pool and keeps its one retry. Before, it read as a provider failure, so each hit spent the retry on another pool (one step went Inkling, DeepSeek, then gpt-oss-120b). A notice line that opens with HTTP 429's reason phrase (`Too Many Requests: {...}`) now counts as a provider notice.

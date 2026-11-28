@@ -252,9 +252,16 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
   const usageRules = Array.isArray(eventStream.usage)
     ? eventStream.usage
     : eventStream.usage ? [eventStream.usage] : [];
+  const stopReasonRules = Array.isArray(eventStream.stopReason)
+    ? eventStream.stopReason
+    : eventStream.stopReason ? [eventStream.stopReason] : [];
   const usageMatches = usageRules.map(() => ({}));
   const usageSeen = usageRules.map(() => false);
   const usageFields = new Set(usageRules.flatMap((rule) => Object.keys(rule?.fields ?? {})));
+  // The first stop reason a rule matched, and never cleared: a turn cut off
+  // at its output limit stays a cutoff even when a later model request in the
+  // same run ends cleanly (one step_finish arrives per request).
+  let stopReasonValue = null;
   let sequence = 0;
   const consecutive = new Map();
   let lastRuleIndex = null;
@@ -305,6 +312,28 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
         for (const [field, path] of Object.entries(usageRule.fields ?? {})) {
           mergeUsageField(usageMatches[index], field, getPath(context, path), mode);
         }
+      }
+    }
+
+    // A provider-declared terminal reason (opencode's step_finish
+    // part.reason): the connector says which values mean the turn was cut off
+    // at its output limit. Evaluated beside usage because it is a fact about
+    // one request's end, not a semantic action; the first match wins and is
+    // never replaced by a later clean stop.
+    if (stopReasonValue == null) {
+      for (const rule of stopReasonRules) {
+        if (!matches(root, rule.match)) continue;
+        for (const context of contextsFor(root, rule.forEach)) {
+          if (!matches(context, rule.itemMatch)) continue;
+          const value = getPath(context, rule.path);
+          const hit = Array.isArray(rule.values) ? rule.values.includes(value)
+            : Object.hasOwn(rule, 'equals') ? value === rule.equals
+              : value != null;
+          if (!hit) continue;
+          stopReasonValue = value;
+          break;
+        }
+        if (stopReasonValue != null) break;
       }
     }
 
@@ -403,6 +432,9 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
       // been merged, and floor each exclusive class at zero.
       for (const usageRule of usageRules) applyInclusiveUsage(result, usageRule.inclusive);
       return result;
+    },
+    stopReason() {
+      return stopReasonValue;
     },
   };
 }

@@ -954,6 +954,30 @@ const streamingEvent = (event, overrides = {}) => ({
   ...overrides,
 });
 
+// Several rows on one stdout, with the exit code the worker reported.
+const streamingRows = (rows, exitCode = 1) => ({
+  ...packagedOpenCode2,
+  spawn: {
+    ...packagedOpenCode2.spawn,
+    cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row)); process.exit(${exitCode})`, '--'],
+  },
+});
+
+const OPENCODE_LENGTH_EVENT = {
+  type: 'step_finish',
+  timestamp: 1789872167579,
+  sessionID: 'ses_lencut0000000000000000000',
+  part: {
+    id: 'prt_lencut', reason: 'length', messageID: 'msg_lencut', sessionID: 'ses_lencut0000000000000000000',
+    type: 'step-finish', tokens: { total: 65536, input: 65000, output: 500, reasoning: 36, cache: { write: 0, read: 0 } }, cost: 0,
+  },
+};
+
+const OPENCODE_STOP_EVENT = {
+  ...OPENCODE_LENGTH_EVENT,
+  part: { ...OPENCODE_LENGTH_EVENT.part, id: 'prt_clean', reason: 'stop' },
+};
+
 test('a provider error event carrying the real relay 401 body is an auth failure', async () => {
   const ctx = makeCtx();
   try {
@@ -1116,6 +1140,57 @@ test('a usage limit inside a provider error event keeps its throttle or quota ki
     );
     assert.equal(both.failureKind, 'throttle', both.why);
     assert.doesNotMatch(both.why, /upstream auth failure/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('an opencode step_finish part.reason length is a length cutoff on the verdict', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(streamingRows([OPENCODE_LENGTH_EVENT]), 'Do the thing.', ctx.dir, ctx.paths, {});
+    assert.equal(verdict.meta.stopReason, 'length');
+    // The session id is the provider's own: the continue gate reads this.
+    assert.equal(verdict.meta.capture.sessionSource, 'provider-stream');
+    assert.equal(verdict.meta.capture.providerSessionId, OPENCODE_LENGTH_EVENT.sessionID);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a normal opencode turn leaves meta.stopReason absent', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(
+      streamingRows([
+        { type: 'text', part: { id: 'prt_ok', text: 'Completed the requested implementation, updated the affected files, and verified the relevant tests with no remaining failures.' } },
+        OPENCODE_STOP_EVENT,
+      ], 0),
+      'Do the thing.', ctx.dir, ctx.paths, {},
+    );
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.equal(Object.hasOwn(verdict.meta, 'stopReason'), false);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a quota or auth event still classifies first when a length step_finish came before it', async () => {
+  const ctx = makeCtx();
+  try {
+    const auth = await watchOnce(
+      streamingRows([OPENCODE_LENGTH_EVENT, RELAY_401_EVENT]),
+      'Do the thing.', ctx.dir, ctx.paths, {},
+    );
+    assert.equal(auth.failureKind, 'auth', auth.why);
+    assert.equal(auth.meta.stopReason, 'length');
+
+    const quota = await watchOnce(
+      streamingRows([OPENCODE_LENGTH_EVENT, limitEvent("You've hit your session limit · resets in 2 hours")]),
+      'Do the thing.', ctx.dir, ctx.paths,
+    );
+    assert.equal(quota.failureKind, 'quota', quota.why);
+    assert.equal(quota.meta.stopReason, 'length');
   } finally {
     ctx.cleanup();
   }

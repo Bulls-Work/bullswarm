@@ -597,6 +597,7 @@ async function runV2Kernel({
       runDir,
       timeBox,
       ledgerAttempts: state.attempts,
+      supersededAttempts: runtime.supersededAttempts ?? 0,
       onAttempt: (stage, record, verdict) => {
         // The dispatcher names attempts by its own count; the run's ids start
         // after this step's earlier attempts.

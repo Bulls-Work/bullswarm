@@ -168,6 +168,17 @@
         }
       }
     ],
+    "stopReason": {
+      "$comment": "Optional. On an event that matches `match`, the value at `path` is the provider's reason its model request ended; a value listed in `values` marks the turn as cut off at the provider's output limit. Once any request in the turn is cut off, the turn counts as cut off.",
+      "match": {
+        "path": "provider.event.type",
+        "equals": "step_finish"
+      },
+      "path": "provider stop-reason path",
+      "values": [
+        "length"
+      ]
+    },
     "output": [
       {
         "match": {

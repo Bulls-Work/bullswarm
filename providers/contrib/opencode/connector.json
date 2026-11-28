@@ -2,6 +2,11 @@
   "name": "opencode",
   "bin": "opencode",
   "configDirs": ["~/.config/opencode"],
+  "conversation": {
+    "newArgs": [],
+    "resumeArgs": ["--session", "{sessionId}"],
+    "$comment": "verified 2026-11-28 with opencode 1.19.6: `opencode run --session <id>` continued two cut-off cf:glm sessions to a full result, and `run` without it starts a new one. A length-cutoff continue reuses the same session so the worker keeps its context."
+  },
   "spawn": {
     "cmd": ["opencode", "run", "--auto", "{taskFile}"],
     "cwdMode": "pwd",
@@ -28,6 +33,8 @@
       "grep": "search"
     },
     "failureTypes": ["error"],
+    "$comment-stopReason": "verified 2026-11-28 against a real cf build capture: each model request ends with `step_finish` whose `part.reason` is `stop` for a clean finish and `length` when the output cap cut the turn. The decoder reports `length` once any step hit the cap, even when a later request stops cleanly.",
+    "stopReason": { "match": { "path": "type", "equals": "step_finish" }, "path": "part.reason", "values": ["length"] },
     "rules": [
       { "rootMatch": { "path": "type", "equals": "tool_use" }, "idPaths": ["part.callID", "part.id"], "kindPaths": ["part.tool"], "summaryPaths": ["part.state.input.command", "part.state.input.file_path", "part.state.input.path", "part.state.title"], "statusPath": "part.state.status" },
       { "rootMatch": { "path": "type", "equals": "text" }, "idPaths": ["part.id"], "kind": "response", "summaryPaths": ["part.text"], "status": "completed" }

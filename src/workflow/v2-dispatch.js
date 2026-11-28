@@ -70,6 +70,10 @@ const OUTSIDE_WHY_CHARS = 160;
 const NOT_PRODUCED_SKIP_SUFFIX = ' · retry skipped: a step that changed no file rarely does on a rerun';
 // The lanes whose deliverable is a changed file: their not-produced has no automatic retry.
 const FILE_WRITING_LANES = new Set(['build', 'chore']);
+// The one line a length-cutoff continue adds after the handoff: the worker
+// already did the reading and planning in the same session, so the remaining
+// work is to write, not to explain.
+const CONTINUE_INSTRUCTION = 'Continue the same conversation: write each remaining file with a tool call before you finish.';
 
 // The `outside:` blockers in an attempt's out file; an unreadable or missing
 // file (a killed worker) names none.
@@ -273,6 +277,9 @@ async function dispatchUncapped({
   onAgentProgress = null,
   evidence = null,
   ledgerAttempts = [],
+  // Attempts of this step from earlier loop rounds, reruns or revisions
+  // (runtime.supersededAttempts): they do not use up its one continue.
+  supersededAttempts = 0,
   dependencies = {},
   resumeAttempt = null,
   resumeHandoff = null,
@@ -512,6 +519,17 @@ async function dispatchUncapped({
   // provider said to try again after a wait too long to sit out.
   const retryBudget = Math.max(0, (Number(maxMechanicalRetries) || 0) - (Number(retriesAlready) || 0));
   let retriesStarted = 0;
+  // A length-cutoff continue is a one-time rescue for the step, not one per
+  // counted retry: with retry: 2 the budget allows a second counted retry,
+  // but a second cutoff after the continue goes to the caller (design risks).
+  // A prior dispatch of the step records the continue as a note on the
+  // attempt that decided it, so a resume does not grant it again.
+  let lengthContinued = (Array.isArray(ledgerAttempts) ? ledgerAttempts : []).some((attempt) => (
+    attempt?.actionId === action.id
+    && !(Number(attempt.ordinal) <= (Number(supersededAttempts) || 0))
+    && Array.isArray(attempt.notes)
+    && attempt.notes.some((note) => note?.kind === 'length-cutoff-continue')
+  ));
   // Refusal re-picks the step already made, counted from its stored attempts.
   let refusalRepicks = Math.max(0, Number(refusalsAlready) || 0);
   let pendingRetry = null;
@@ -769,7 +787,12 @@ async function dispatchUncapped({
     // below reads it to stop, time out or reroute the attempt.
     const box = typeof timeBox === 'function' ? timeBox({ pool: pool.name, startedAt }) : null;
     const answerText = typeof answerBrief === 'function' ? answerBrief({ files, ordinal }) : null;
-    const briefed = answerText ? `${nextTask}\n\n${answerText}` : nextTask;
+    // A requested continue is told to the worker only when this attempt
+    // really resumes the session; a retry that moved starts fresh and works
+    // from the handoff alone.
+    const continuing = pendingRetry?.continue === true && session?.invocation?.resume === true;
+    const taskBody = continuing ? `${nextTask}\n\n${CONTINUE_INSTRUCTION}` : nextTask;
+    const briefed = answerText ? `${taskBody}\n\n${answerText}` : taskBody;
     const attemptTask = box?.text ? `${briefed}\n\n${box.text}` : briefed;
     // D3: the retry becomes a fact only when its attempt starts. A counted
     // retry is `same-pool` when it landed where the failure happened (a
@@ -1033,6 +1056,20 @@ async function dispatchUncapped({
     const lastEvents = lastResponseEvents(streamFile);
     const finishedAt = workerFinishedAt;
     const kind = failureKindOf(verdict, pool);
+    // A provider-measured output cutoff on a file-writing step that produced
+    // no file: the turn ended at the provider's output cap, not because the
+    // work was impossible. The connector declares the signal
+    // (eventStream.stopReason), watch records meta.stopReason, and only a
+    // provider-reported session id makes a same-session continue possible.
+    // The capture's source says who minted the id: a workflow-assigned uuid
+    // names a session the provider never created, and resuming it would
+    // spend the step's one retry on a guaranteed failure.
+    const lengthCutoff = kind === 'not-produced' && noFileChanged
+      && verdict.meta?.stopReason === 'length'
+      && FILE_WRITING_LANES.has(action.lane ?? 'chore')
+      && verdict.meta?.capture?.sessionSource === 'provider-stream'
+      && Boolean(verdict.meta?.usage?.sessionId)
+      && connector.conversation != null;
     // D5: failed checks are a gate failure and take the rule below; an act
     // step's failed checks still say why they go to the caller.
     if (kind === 'failed-evidence' && roleOf(action) === 'act' && !evidenceRun?.checkFault) {
@@ -1168,6 +1205,22 @@ async function dispatchUncapped({
       } else if (failureClass === 'gate') {
         if (hasBudget && kind === 'schema') {
           if (typeof correctionTask === 'function') next = { how: 'same-pool', correction: true };
+        } else if (hasBudget && lengthCutoff && !lengthContinued) {
+          // The provider's own output cap ended a turn that changed no file.
+          // One continue in the same provider session, on the same pool: the
+          // conversation already holds the work, so a fresh session would
+          // repeat the same long turn from nothing.
+          lengthContinued = true;
+          next = { how: 'same-pool', gate: true, fresh: false, continue: true };
+          verdict = {
+            ...verdict,
+            why: `${verdict.why ?? kind} · a same-session continue is requested: the provider stopped at its output limit`,
+            notes: [...(Array.isArray(verdict.notes) ? verdict.notes : []), {
+              at: new Date(now()).toISOString(),
+              kind: 'length-cutoff-continue',
+              text: `the provider reported stopReason ${verdict.meta.stopReason} with no file changed; a same-session continue was requested for the step's one retry (session ${verdict.meta.usage.sessionId} on ${pool.name}); the retry's own record says whether it resumed`,
+            }],
+          };
         } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane ?? 'chore')
           && noFileChanged) {
           // A build or chore step whose deliverable gate read "no file
@@ -1250,10 +1303,27 @@ async function dispatchUncapped({
     // opening a second session and losing the model's immediate context.
     // A failed check follows a finished worker turn too: its retry continues
     // that conversation with the check output attached.
-    const sessionEstablished = verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence';
+    // A connector whose provider picks the session id (no `{sessionId}` in its
+    // newArgs: opencode) resumes only for a length-cutoff continue, which
+    // checked the id was provider-measured; its other retries start fresh as
+    // before the cutoff change (Opus re-check, 2026-11-28).
+    // Only a connector that starts without an id and resumes by one counts:
+    // a follow-up-only connector (codex, agy: no newArgs, no resumeArgs)
+    // keeps the old rule (Opus final check 26knws).
+    const conversation = connector.conversation ?? {};
+    const providerPicksId = Array.isArray(conversation.newArgs)
+      && !conversation.newArgs.some((arg) => String(arg).includes('{sessionId}'))
+      && (conversation.resumeArgs ?? []).some((arg) => String(arg).includes('{sessionId}'));
+    const sessionEstablished = providerPicksId
+      ? lengthCutoff
+      : verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence';
     if (session && sessionEstablished) {
       record.session.lastUsedAt = finishedAt;
       currentSession = clone(record.session);
+    } else if (session && providerPicksId) {
+      // The cutoff's session serves its one continue only: any later retry
+      // on the pool (a throttle wait, a check retry) starts fresh.
+      currentSession = null;
     }
     last = verdict;
     appendDecision(bullswarmDir, {
@@ -1277,7 +1347,7 @@ async function dispatchUncapped({
     // D10: a failure that will not be retried goes to the caller; the
     // dispatcher never walks on to another pool by itself.
     if (!next) break;
-    pendingRetry = { attempt: `${action.id}-${ordinal}`, pool: pool.name, how: next.how };
+    pendingRetry = { attempt: `${action.id}-${ordinal}`, pool: pool.name, how: next.how, ...(next.continue ? { continue: true } : {}) };
     promisedRecord = record;
     if (next.how === 'refused') {
       // The refused try did no work: the next pick gets the same task, no
