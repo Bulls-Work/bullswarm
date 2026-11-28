@@ -28,7 +28,7 @@ function decode(name, rows) {
   decoder.push(payload.slice(0, 37), 'stdout', '2026-08-28T01:00:00.000Z');
   decoder.push(payload.slice(37), 'stdout', '2026-08-28T01:00:01.000Z');
   decoder.finish();
-  return { actions, progress, output: decoder.output(), usage: decoder.usage() };
+  return { actions, progress, output: decoder.output(), usage: decoder.usage(), decoder };
 }
 
 function decodeFixture(name, { onEvent } = {}) {
@@ -113,6 +113,27 @@ test('Claude result usage is decoded once with provider cost and session id', ()
     cacheWrite1h: 5,
     output: 6,
   });
+});
+
+test('opencode step_finish part.reason length is a cutoff even when a later step stops cleanly', () => {
+  const cut = decode('opencode', [
+    { type: 'step_finish', part: { reason: 'length' } },
+    { type: 'step_finish', part: { reason: 'stop' } },
+  ]);
+  assert.equal(typeof cut.decoder.stopReason, 'function', 'the decoder exposes stopReason()');
+  assert.equal(cut.decoder.stopReason(), 'length');
+
+  const clean = decode('opencode', [{ type: 'step_finish', part: { reason: 'stop' } }]);
+  assert.equal(clean.decoder.stopReason(), null);
+});
+
+test('the real opencode hello capture is a clean stop, not a length cutoff', () => {
+  const rows = readFileSync(join(REPO, 'tests', 'fixtures', 'streams', 'opencode-hello.jsonl'), 'utf8');
+  const decoder = createAgentEventDecoder(connector('opencode').eventStream);
+  decoder.push(rows, 'stdout', '2026-09-19T17:30:00.000Z');
+  decoder.finish('2026-09-19T17:30:01.000Z');
+  assert.equal(typeof decoder.stopReason, 'function', 'the decoder exposes stopReason()');
+  assert.equal(decoder.stopReason(), null);
 });
 
 test('event stream CLI flags are connector-owned and appended to direct argv', () => {
