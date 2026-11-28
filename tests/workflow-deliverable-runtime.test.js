@@ -20,7 +20,7 @@ const KIND_ONLY_BRIEF = `Bullswarm program action: write
 Purpose: Deliver write
 Workspace: /tmp/acme-repo
 Your intended territory: write.txt. This is coordination guidance, not an exact-file enforcement gate. Stay within your action purpose; report cross-territory requests for the integrator to apply.
-Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Do not commit unless the user explicitly requires it.
+Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Never run \`git stash\` or \`git stash pop\`: every worktree and agent on this machine shares one stash stack; to set work aside, copy the files to a temporary directory. Do not commit unless the user explicitly requires it.
 Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file requests. An integration action applies those requests, reconciles the combined work, and runs the repository acceptance gates.
 Dependency artifacts:
 []
@@ -351,4 +351,14 @@ test('a resume after an interrupted attempt that wrote files passes', async (t) 
   assert.equal(resumed.status, 'succeeded');
   assert.equal(resumed.failureKind, null);
   assert.equal(run.state.actions[0].status, 'succeeded');
+});
+
+// A cf:glm worker ran a bare `git stash` / `git stash pop` mid-step (24 Nov
+// 2026, run bjhr22). The stash stack is shared by every worktree and agent on
+// the machine, so a pop can take another agent's changes.
+test('every step brief forbids git stash, which every worktree shares', () => {
+  const action = baseAction();
+  const text = buildProgramWorkTask(briefState(action, '/tmp/acme-repo'), action, '/tmp/acme-repo', null);
+  assert.match(text, /Never run `git stash` or `git stash pop`/);
+  assert.match(text, /copy the files to a temporary directory/);
 });

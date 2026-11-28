@@ -173,7 +173,7 @@ export function buildProgramWorkTask(state, action, targetDir, runDir = null, { 
           : action.ownedFiles.length
             ? `Your intended territory: ${action.ownedFiles.join(', ')}. This is coordination guidance, not an exact-file enforcement gate. Stay within your action purpose; report cross-territory requests for the integrator to apply.`
             : 'You are the sole unrestricted integrator. You may edit any file needed for this action; no other action runs alongside you.',
-    'Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Do not commit unless the user explicitly requires it.',
+    'Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Never run `git stash` or `git stash pop`: every worktree and agent on this machine shares one stash stack; to set work aside, copy the files to a temporary directory. Do not commit unless the user explicitly requires it.',
     'Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file requests. An integration action applies those requests, reconciles the combined work, and runs the repository acceptance gates.',
     `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}`,
     ...(blindIds(state, action).length ? [blindLine(blindIds(state, action))] : []),
