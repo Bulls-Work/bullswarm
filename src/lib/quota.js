@@ -127,16 +127,17 @@ export const GENERIC_QUOTA_SIGNATURES = QUOTA_SIGNATURE_TABLE
   .map((entry) => entry.phrase);
 const GENERIC_SET = new Set(GENERIC_QUOTA_SIGNATURES.map((s) => s.toLowerCase()));
 /**
- * Cloudflare's own limit wording (codes 3021 and 971) counts only on a line in
- * Cloudflare's error shape: its `AiError` class, its JSON `"code"` 3021 or 971,
- * or HTTP 429's reason phrase leading the line. Prose that quotes the wording
- * (a worker explaining the fix) is not a notice. Such a line is admitted
- * wherever the phrase sits, bare JSON body included, and up to
- * CLOUDFLARE_LINE_CHARS, since the body carries ids and metadata (strict
- * review of 0.40.3, 28 Nov).
+ * Cloudflare's own limit wording (codes 3021 and 971) counts on a line that
+ * opens like an error: a JSON body or one of its `"message":` lines, an error
+ * class (`Error:`, `AiError:`, `AI_APICallError:`), HTTP 429, the code itself,
+ * or `Too Many Requests:` before JSON or `rate limiting`; or on a line that is
+ * the bare phrase. Then the phrase may sit anywhere, up to
+ * CLOUDFLARE_LINE_CHARS, since a body carries ids and metadata. A line that
+ * opens as prose or a list item is not a notice, even when it names AiError
+ * or a code (strict reviews of 0.40.3, 28 Nov).
  */
 const CLOUDFLARE_SET = new Set(QUOTA_SIGNATURE_TABLE.filter((entry) => entry.cloudflare).map((entry) => entry.phrase));
-const CLOUDFLARE_ERROR_SHAPE = /\baierror\b|"code"\s*:\s*(?:3021|971)\b|^too many requests:/i;
+const CLOUDFLARE_ERROR_LEAD = /^(?:[{[]|"(?:message|error|errors)"\s*:|[\w.]*error\b|(?:http\s*|status\s*)?429\b|(?:3021|971)\b|too many requests:\s*(?:\{|rate limiting\b))/i;
 const CLOUDFLARE_LINE_CHARS = 4000;
 /**
  * What may follow a generic phrase on a bare notice line. A JSON body counts:
@@ -315,7 +316,9 @@ function findQuotaNotice(connector, text) {
       const offset = line.toLowerCase().indexOf(needle);
       if (offset < 0) continue;
       if (CLOUDFLARE_SET.has(needle)) {
-        if (line.length > CLOUDFLARE_LINE_CHARS || !CLOUDFLARE_ERROR_SHAPE.test(line)) continue;
+        if (line.length > CLOUDFLARE_LINE_CHARS || PROSE_LINE_PREFIX.test(line)) continue;
+        const bare = offset === 0 && bareNotice(line, offset, needle);
+        if (!bare && !CLOUDFLARE_ERROR_LEAD.test(line)) continue;
       } else {
         if (line.length > MAX_QUOTA_LINE_CHARS) continue;
         const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
