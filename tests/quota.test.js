@@ -468,6 +468,45 @@ test('the Workers AI 3021 wording is a throttle notice', () => {
   assert.equal(findQuotaFailure({}, 'When we load-tested the staging account last week, Cloudflare said inference request per min rate reached.', { now: NOW }), null);
 });
 
+// Strict review of 0.40.3 (28 Nov): Cloudflare's own wording counts only in
+// Cloudflare's error shape, which may be a bare JSON body or a long one; and a
+// 429 line is no longer "error-shaped" for the auth and plan gates.
+const CF_BODY = (msg, extra = '') => `{"errors":[{"message":"${msg}","code":3021}],"success":false,"result":{},"messages":[]${extra}}`;
+const CF_MSG = 'AiError: AiError: rate limiting: inference request per min rate reached (6d1ea148-0f94-4f01-adde-9e65e2f09183)';
+
+test('a Workers AI 3021 body counts bare, and when longer than a notice line', () => {
+  for (const [label, text] of [
+    ['bare body', CF_BODY(CF_MSG)],
+    ['429 line past 300 chars', `Too Many Requests: ${CF_BODY(CF_MSG, `,"meta":"${'x'.repeat(200)}"`)}`],
+    ['AiError line', 'AiError: AiError: rate limiting: inference request per min rate reached (6d1ea148)'],
+    ['971 bare body', '{"success":false,"errors":[{"code":971,"message":"Please wait and consider throttling your request speed"}],"messages":[],"result":null}'],
+  ]) {
+    const hit = findQuotaFailure({}, text, { now: NOW });
+    assert.ok(hit, `${label}: found`);
+    assert.equal(hit.limit, 'throttle', label);
+    assert.equal(hit.retrySamePool, true, label);
+  }
+});
+
+test('prose that quotes the Cloudflare wording is not a throttle', () => {
+  for (const line of [
+    'Cloudflare said inference request per min rate reached, so I waited and retried.',
+    'Inference request per min rate reached is the 3021 wording; I added a test for it.',
+    'Please wait and consider throttling your request speed, the docs say, for code 971.',
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
+test('a 429 line with an auth or plan word is not a sign-in failure', () => {
+  assert.equal(ERROR_SHAPED_LINE.test('Too many requests: GitHub throttled the search API, so I read files locally instead.'), false);
+  const connector = { authSignatures: ['unauthorized', 'not authenticated'] };
+  assert.equal(matchLikelyAuthFailure(connector, 'Too many requests: the relay said unauthorized for some calls, I retried them'), null);
+  assert.equal(matchLikelyAuthFailure(connector, 'Too Many Requests: rate limiting for this API key; not authenticated callers get 10 rpm'), null);
+  // The 429 JSON line itself is still a throttle notice.
+  assert.equal(findQuotaFailure({}, `Too Many Requests: ${CF_BODY(CF_MSG)}`, { now: NOW })?.limit, 'throttle');
+});
+
 // Q6: a limit's reset is known only two ways — the pool's own meter at >= 95%,
 // or a provider line that says a usage window is spent AND names the reset.
 
