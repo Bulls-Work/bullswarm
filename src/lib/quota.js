@@ -156,10 +156,11 @@ const CLOUDFLARE_PHRASE_LEAD = new RegExp([
 ].join('|'), 'i');
 const CLOUDFLARE_LINE_CHARS = 4000;
 const TOO_MANY_REQUESTS_LINE = /^too many requests(?:[.!:]|$)/i;
-// What may follow the Cloudflare wording: an id in brackets, the model it
-// names, then the end of the line or of the JSON string. Prose after it means
-// the line talks about the wording rather than reports it.
-const CLOUDFLARE_PHRASE_TAIL = /^\s*(?:\([^)]*\)\s*)?(?:for model \S+\s*)?[.!]?(?:\s*$|\\?["}\]])/i;
+// What may follow the Cloudflare wording: an id or `code N` in brackets (not
+// words), the model it names, then the end of the line, or the end of the
+// JSON string followed by JSON punctuation. Prose after it means the line
+// talks about the wording rather than reports it.
+const CLOUDFLARE_PHRASE_TAIL = /^\s*(?:\((?:[^\s()]{1,80}|code \d+)\)\s*)?(?:for model \S+\s*)?[.!]?(?:\s*$|\\?"\s*(?:[,}\]\\]|$)|[}\]])/i;
 /**
  * What may follow a generic phrase on a bare notice line. A JSON body counts:
  * an SDK reports HTTP 429 as `Too Many Requests: {...}` whatever code the
@@ -338,9 +339,8 @@ function findQuotaNotice(connector, text) {
       if (offset < 0) continue;
       if (CLOUDFLARE_SET.has(needle)) {
         if (line.length > CLOUDFLARE_LINE_CHARS || PROSE_LINE_PREFIX.test(line)) continue;
-        const bare = offset === 0 && bareNotice(line, offset, needle);
-        if (!bare && !CLOUDFLARE_PHRASE_LEAD.test(line.slice(0, offset))) continue;
-        if (!bare && !CLOUDFLARE_PHRASE_TAIL.test(line.slice(offset + needle.length))) continue;
+        if (offset > 0 && !CLOUDFLARE_PHRASE_LEAD.test(line.slice(0, offset))) continue;
+        if (!CLOUDFLARE_PHRASE_TAIL.test(line.slice(offset + needle.length))) continue;
       } else {
         if (line.length > MAX_QUOTA_LINE_CHARS) continue;
         const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
