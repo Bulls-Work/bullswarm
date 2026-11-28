@@ -405,3 +405,53 @@ test('a schema correction on a provider-chosen-id connector does not resume the 
   assert.equal(h.calls.length, 2, JSON.stringify(result.attempts?.map((a) => a.why)));
   assert.notEqual(h.calls[1].opts.conversation?.resume, true);
 });
+
+// Opus final check of PR #97 (26knws, 28 Nov): the provider-picks-id rule must
+// not catch connectors that resume by follow-up only (codex, agy), and the
+// cutoff's session must not carry into later retries on the same cf pool.
+const followUpOnly = (name) => ({
+  ...connector(name, { conversation: false }),
+  conversation: { followUp: { cmd: ['fake', 'resume', '{sessionId}', '{prompt}'] } },
+});
+
+test('a follow-up-only connector (codex, agy) keeps its session on a schema correction, as before the cutoff change', async (t) => {
+  const f = repoFixture(t);
+  const schemaFail = {
+    ok: false, failureKind: 'schema', why: 'structured output invalid: missing field',
+    meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10, sessionId: 'thread-1' }, capture: { providerSessionId: 'thread-1', sessionSource: 'provider-stream' } },
+  };
+  const h = harness([schemaFail, good]);
+  const result = await dispatchV2Action({
+    failureRule: true,
+    action: { id: 'task', role: 'check', lane: 'analyze', effort: 'medium' }, taskText: 'read the tickets', targetDir: f.repo,
+    paths: (ordinal) => ({ taskFile: join(f.home, `task-task-attempt-${ordinal}.md`), outFile: join(f.home, `out-task-attempt-${ordinal}.md`) }),
+    pools: [followUpOnly('sample-pool')], bullswarmDir: f.home,
+    correctionTask: () => 'Correct the answer.',
+    dependencies: h.dependencies,
+  });
+  assert.equal(h.calls.length, 2, JSON.stringify(result.attempts?.map((a) => a.why)));
+  assert.equal(h.calls[1].opts.conversation?.resume, true, JSON.stringify(h.calls[1].opts.conversation));
+  assert.equal(result.attempts[1].continued, true);
+});
+
+test('after a cutoff continue, a throttled retry on the same cf pool starts a fresh session with no continue line', async (t) => {
+  const f = repoFixture(t);
+  const throttled = {
+    ok: false, failureKind: 'throttle', throttleWaitMs: null, throttleRetrySamePool: true,
+    usageLimit: { rule: 'transient', limit: 'throttle', until: null, line: 'Too Many Requests: rate limited' },
+    why: 'rate limited (transient)', meta: { exitCode: 1, wallSec: 0.2, usage: { sessionId: 'ses-1' } },
+  };
+  const h = harness([cutoff(), throttled, writesTicket(f.repo)]);
+  const result = await dispatchV2Action({
+    failureRule: true,
+    action: build(), taskText: 'triage the tickets', targetDir: f.repo,
+    paths: (ordinal) => ({ taskFile: join(f.home, `task-task-attempt-${ordinal}.md`), outFile: join(f.home, `out-task-attempt-${ordinal}.md`) }),
+    pools: [connector('sample-pool')], bullswarmDir: f.home, maxMechanicalRetries: 1,
+    dependencies: { ...h.dependencies, sleep: async () => {} },
+  });
+  assert.equal(h.calls.length, 3, JSON.stringify(result.attempts?.map((a) => a.why)));
+  assert.equal(h.calls[1].opts.conversation?.resume, true, 'attempt 2 is the continue');
+  assert.notEqual(h.calls[2].opts.conversation?.resume, true, JSON.stringify(h.calls[2].opts.conversation));
+  assert.equal(h.calls[2].task.includes('Continue the same conversation'), false);
+  assert.equal(result.ok, true);
+});
