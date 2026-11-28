@@ -127,18 +127,29 @@ export const GENERIC_QUOTA_SIGNATURES = QUOTA_SIGNATURE_TABLE
   .map((entry) => entry.phrase);
 const GENERIC_SET = new Set(GENERIC_QUOTA_SIGNATURES.map((s) => s.toLowerCase()));
 /**
- * Cloudflare's own limit wording (codes 3021 and 971) counts on a line that
- * opens like an error: a JSON body or one of its `"message":` lines, an error
- * class (`Error:`, `AiError:`, `AI_APICallError:`), HTTP 429, the code itself,
- * or `Too Many Requests:` before JSON or `rate limiting`; or on a line that is
- * the bare phrase. Then the phrase may sit anywhere, up to
- * CLOUDFLARE_LINE_CHARS, since a body carries ids and metadata. A line that
- * opens as prose or a list item is not a notice, even when it names AiError
- * or a code (strict reviews of 0.40.3, 28 Nov).
+ * Cloudflare's own limit wording (codes 3021 and 971) counts only where its
+ * error framing sits right before it: an error class or code (`AiError:`,
+ * `Error:`, `AI_APICallError:`, `429`, `3021:`), at the start of the line or
+ * after a log prefix; a JSON `"message"` value that opens with it; HTTP 429's
+ * reason phrase leading the line; or a line that is the bare phrase. A line
+ * that opens as prose or a list item never counts, nor does prose that only
+ * opens like an error ("error code 3021 means ..."). The line may be long,
+ * up to CLOUDFLARE_LINE_CHARS, since a body carries ids and metadata
+ * (strict reviews of 0.40.3, 28 Nov).
  */
 const CLOUDFLARE_SET = new Set(QUOTA_SIGNATURE_TABLE.filter((entry) => entry.cloudflare).map((entry) => entry.phrase));
-const CLOUDFLARE_ERROR_LEAD = /^(?:[{[]|"(?:message|error|errors)"\s*:|[\w.]*error\b|(?:http\s*|status\s*)?429\b|(?:3021|971)\b|too many requests:\s*(?:\{|rate limiting\b))/i;
+const CLOUDFLARE_ERROR_TOKENS = String.raw`(?:(?:[\w.]*error(?:\s*\[[^\]]*\])?|(?:http\s*|status\s*)?(?:429|3021|971))\s*[:\-]?\s*)`;
+const CLOUDFLARE_PHRASE_LEAD = new RegExp([
+  // An error class or code right before the phrase, at the start of the line
+  // or after a log prefix (`: `, `] `, a level word).
+  String.raw`(?:^|[:\]|]\s*|\b(?:error|fatal|warn(?:ing)?)\s+)${CLOUDFLARE_ERROR_TOKENS}+(?:rate limiting:\s*)?$`,
+  // A JSON "message" value that opens with it.
+  String.raw`"message"\s*:\s*"(?:[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
+  // HTTP 429's reason phrase leading the line.
+  String.raw`^too many requests\s*[:.\-–]\s*(?:[\w.]*error:\s*)*(?:rate limiting:\s*)?$`,
+].join('|'), 'i');
 const CLOUDFLARE_LINE_CHARS = 4000;
+const TOO_MANY_REQUESTS_LINE = /^too many requests(?:[.!:]|$)/i;
 /**
  * What may follow a generic phrase on a bare notice line. A JSON body counts:
  * an SDK reports HTTP 429 as `Too Many Requests: {...}` whatever code the
@@ -318,11 +329,13 @@ function findQuotaNotice(connector, text) {
       if (CLOUDFLARE_SET.has(needle)) {
         if (line.length > CLOUDFLARE_LINE_CHARS || PROSE_LINE_PREFIX.test(line)) continue;
         const bare = offset === 0 && bareNotice(line, offset, needle);
-        if (!bare && !CLOUDFLARE_ERROR_LEAD.test(line)) continue;
+        if (!bare && !CLOUDFLARE_PHRASE_LEAD.test(line.slice(0, offset))) continue;
       } else {
         if (line.length > MAX_QUOTA_LINE_CHARS) continue;
         const leads = offset <= QUOTA_SIGNATURE_HEAD_CHARS && !PROSE_LINE_PREFIX.test(line);
-        if (!leads && !ERROR_SHAPED_LINE.test(line)) continue;
+        // HTTP 429's reason phrase leading the line is error-shaped here, for
+        // quota only (ERROR_SHAPED_LINE leaves it out for the auth gates).
+        if (!leads && !ERROR_SHAPED_LINE.test(line) && !TOO_MANY_REQUESTS_LINE.test(line)) continue;
       }
       // A generic phrase is only a limit notice when nothing but punctuation, a
       // reset/retry clause or a detail follows it; "rate limited by GitHub" is
