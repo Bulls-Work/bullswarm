@@ -608,6 +608,30 @@ test('Cloudflare wording: log prefixes, not prose ending in an error token; JSON
   }
 });
 
+// cf:deepseek review (28 Nov): a bracket after the wording holds an id or a
+// code, not words; after a closing quote only JSON punctuation follows.
+test('Cloudflare wording: brackets hold an id, and a closing quote ends the JSON value', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    `AiError: ${P} (6d1ea148-0f94-4f01-adde-9e65e2f09183)`,
+    `Too Many Requests: rate limiting: ${P} (code 3021)`,
+    `${P} (6d1ea148)`,
+    `"message": "${P}",`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `Error: ${P} (see the docs).`,
+    `AiError: ${P} (I added a test for this).`,
+    `[cf] AiError: ${P} (quoted from the docs)`,
+    `INFO AiError: ${P} (in my report)`,
+    `"message": "${P}" is what I matched in the test.`,
+    `Inference request per min rate reached (this is the 3021 wording)`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
 test('a window phrase inside a Too Many Requests body keeps its own signature', () => {
   const hit = findQuotaFailure({}, 'Too Many Requests: {"error":{"type":"usage_limit","code":"usage_credits_required","message":"Add credits to continue"}}', { now: NOW });
   assert.equal(hit?.signature, 'usage_credits_required');
