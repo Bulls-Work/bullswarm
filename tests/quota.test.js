@@ -578,6 +578,36 @@ test('Cloudflare wording: JSON keys only in JSON, escaped bodies count, prose af
   }
 });
 
+// Fifth strict review (28 Nov): a ':' lead only after a log-prefix shape,
+// a '"' lead only in JSON, an "error" key like "message", a period before the
+// closing quote, and no exponential matching time.
+test('Cloudflare wording: log prefixes, not prose ending in an error token; JSON error keys; bounded time', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    '{"result":null,"success":false,"errors":[{"code":971,"message":"Please wait and consider throttling your request speed."}]}',
+    `{"error":"${P}"}`,
+    `"error": "${P}"`,
+    `[cf] AiError: ${P}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `Root cause: Error: ${P}`,
+    `The log shows: AiError: ${P}`,
+    `I got: Error: ${P}`,
+    `Cloudflare replied: 429: ${P}`,
+    `He wrote "AiError: ${P}"`,
+    `{"type":"text","text":"The run failed: AiError: ${P}"}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+  for (const line of [`${'error'.repeat(40)}x ${P}`, `${'a.error'.repeat(40)}! ${P}`]) {
+    const started = process.hrtime.bigint();
+    findQuotaFailure({}, line, { now: NOW });
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 200, `slow on ${line.slice(0, 30)}`);
+  }
+});
+
 test('a window phrase inside a Too Many Requests body keeps its own signature', () => {
   const hit = findQuotaFailure({}, 'Too Many Requests: {"error":{"type":"usage_limit","code":"usage_credits_required","message":"Add credits to continue"}}', { now: NOW });
   assert.equal(hit?.signature, 'usage_credits_required');
