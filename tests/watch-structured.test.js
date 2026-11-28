@@ -98,3 +98,20 @@ test('an invalid answer with a non-zero exit is not usable', async () => {
     assert.equal(result.contentUsableDespiteExit, false);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
+
+// grok 1.0.46 refused `--reasoning-effort max` before any work (exit 1, one
+// error line, no answer file). That read `schema`, so the retry ran on the
+// same pool and met the same refusal (24 Nov 2026: 24 steps, 5 workflows).
+test('a worker that exits non-zero with no valid answer is a process failure, not schema', async () => {
+  const refusal = '{"type":"error","message":"--effort/--reasoning-effort: unknown effort level \'max\'; use one of: xhigh, high, medium, low"}\n';
+  const f = fixture(refusal, 1);
+  try {
+    const result = await watchOnce(f.connector, 'return structured data', f.dir, f.paths, {
+      outputValidator: () => ({ ok: false, errors: ['file missing: answer.json'] }),
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failureKind, 'process');
+    assert.match(result.why, /exited 1/);
+    assert.match(result.why, /file missing: answer\.json/);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
