@@ -531,7 +531,7 @@ const poolsLabelText = rich({
 const capsText = rich({
   usage: 'bullswarm caps [show | set | set-pool | set-default | clear] [--json]',
   purpose: 'Concurrency caps: how many steps one caller (a lead) may have running at once, and how many attempts one pool may run at once. '
-    + 'A step over its caller\'s cap waits in arrival order and starts when a slot frees; a pool at its cap sits out picks, and a step with no other pool waits. '
+    + 'A step over its caller\'s cap waits in arrival order and starts when a slot frees; a pool at its cap sits out picks, and a step with no other pool waits; a pool capped at 0 is closed, so a step no other pool can take comes back to you at once instead of waiting. '
     + 'A caller is matched by --caller / BULLSWARM_CALLER, then by herdr pane, then by the longest matching launch directory; a name with no entry falls through to the pane, then the directory, then the default. '
     + 'The pool cap is read at every pick, so two picks in the same instant can pass it by one.',
   options: [{ flag: '--json', desc: 'machine-readable view' }],

@@ -7,6 +7,7 @@
 - An unlisted `--caller` / `BULLSWARM_CALLER` name no longer escapes pane and directory caps. It falls through to the pane match, then the cwd prefix, and only then to the default cap keyed by the name.
 - `bullswarm run --no-wait` now also decides inside slot acquisition: when the slot is taken between the launch check and the real acquisition, the run ends `capped` with the same refusal line instead of queueing. The launch check stays as the fast path; `workflow goal --no-wait` is still a launch check only.
 - New tests: a step keeps its caller slot through a mechanical retry and releases it once; a killed holder's slot is pruned so a waiter starts.
+- A pool capped at 0 is closed: it leaves the pick, and a step no other pool can take comes back at once (`unavailable`, naming the closed pool); a closed pool never opens, so nothing waits on it. Seen live: a step only `claude-code:cowcow` could take sat queued two hours at its cap of 0.
 - The pool cap is read at every pick, so two picks in the same instant can pass it by one.
 
 ## 0.40.3 — Cloudflare rate limit waits on the same pool

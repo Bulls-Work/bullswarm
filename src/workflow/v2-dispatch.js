@@ -606,6 +606,18 @@ async function dispatchUncapped({
     // take waits.
     const capsNow = readCaps(bullswarmDir);
     let cappedPools = [];
+    // A pool capped at 0 is closed: it never opens, so it leaves the pick
+    // instead of making the step wait for it.
+    const closed = routingPools.filter((candidate) => capsNow.pools[candidate.name] === 0);
+    if (closed.length) {
+      const closedNote = `${closed.map((candidate) => candidate.name).join(', ')} closed (pool cap 0)`;
+      routingPools = routingPools.filter((candidate) => capsNow.pools[candidate.name] !== 0);
+      if (!routingPools.length) {
+        const why = `no pool can take this step: ${closedNote} (bullswarm caps show)`;
+        return { ok: false, status: 'failed', failureKind: 'unavailable', why, attempts, verdict: last ?? { ok: false, failureKind: 'unavailable', why } };
+      }
+      if (!fallbackWhy?.includes(closedNote)) fallbackWhy = fallbackWhy ? `${fallbackWhy} · ${closedNote}` : closedNote;
+    }
     if (Object.keys(capsNow.pools).length) {
       const full = poolsAtCap(capsNow, new Map(routingPools.map((candidate) => [candidate.name, candidate.inflight?.count ?? 0])));
       if (full.size) {
