@@ -527,10 +527,42 @@ test('Cloudflare wording counts in every error framing, and not in prose that na
     'The SDK throws AiError: inference request per min rate reached when we exceed 20 rpm; I added a backoff.',
     '- AiError: inference request per min rate reached is now a throttle',
     'I matched {"code": 3021} with the wording inference request per min rate reached in quota.js.',
-    'Too many requests: inference request per min rate reached is what Cloudflare sends, handled now.',
   ]) {
     assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
   }
+});
+
+// Third strict review (28 Nov): the error token must sit right before the
+// wording, after any log prefix; prose that only opens like an error is not a
+// notice. A window phrase inside a 429 body keeps its own signature.
+test('Cloudflare wording counts after a log prefix and right after an error token, not in prose that opens like one', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    `2026-11-28T10:00:00.000Z ERROR AiError: ${P}`,
+    `opencode: error: ${P}`,
+    `Unhandled rejection: AiError: ${P}`,
+    `Too Many Requests: AiError: ${P}`,
+    `Too Many Requests. ${P}`,
+    `Too Many Requests - ${P}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  for (const line of [
+    `Error handling: when we see "${P}" we back off.`,
+    `error code 3021 means ${P}; we retry.`,
+    `3021 is the code for "${P}" in Cloudflare's docs.`,
+    `429 is returned with "${P}" message per their docs.`,
+    `error.message === "${P}"`,
+    `{"note":"the doc says ${P} for 3021"}`,
+    `"message": "I explained that ${P} is a throttle"`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW }), null, line);
+  }
+});
+
+test('a window phrase inside a Too Many Requests body keeps its own signature', () => {
+  const hit = findQuotaFailure({}, 'Too Many Requests: {"error":{"type":"usage_limit","code":"usage_credits_required","message":"Add credits to continue"}}', { now: NOW });
+  assert.equal(hit?.signature, 'usage_credits_required');
 });
 
 // Q6: a limit's reset is known only two ways — the pool's own meter at >= 95%,
