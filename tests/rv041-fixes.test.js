@@ -264,6 +264,38 @@ test('R2 guard: cached windows match a plain sum, and see a new live decision, a
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+// cf review 5zq3s2 (28 Nov): the spec names "an archive replaced with one of
+// the same size", which the rotation case above does not cover (its size
+// changes). Both a rename over the file and an in-place rewrite are covered.
+test('R2 guard: an archive replaced with one of the same size is re-read', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-rv041-r2-'));
+  try {
+    const path = decisionLogArchivePath(home);
+    const rows = (wallSec) => Array.from({ length: 120 }, (_, i) => ({ ...decision(i), wallSec }));
+    writeArchive(home, rows(600));
+    const now = T0 + 400 * HOUR;
+    const minutes = () => workerMinutesForPool('cf:glm', T0 - HOUR, T0 + 500 * HOUR, {
+      decisionLog: readDecisionLog(home, { decisionLog: [] }), nowMs: now,
+    });
+    assert.equal(minutes(), bruteForce(rows(600), 'cf:glm', T0 - HOUR, T0 + 500 * HOUR));
+    const size = fs.statSync(path).size;
+
+    // Rename over it (new inode), same byte length, later mtime.
+    const temp = `${path}.tmp`;
+    writeFileSync(temp, `${rows(900).map((row) => JSON.stringify(row)).join('\n')}\n`);
+    utimesSync(temp, new Date(Date.now() + 5_000), new Date(Date.now() + 5_000));
+    fs.renameSync(temp, path);
+    assert.equal(fs.statSync(path).size, size, 'same size');
+    assert.equal(minutes(), bruteForce(rows(900), 'cf:glm', T0 - HOUR, T0 + 500 * HOUR), 'a same-size rename is re-read');
+
+    // Rewritten in place (same inode), same byte length, later mtime.
+    writeArchive(home, rows(300));
+    utimesSync(path, new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
+    assert.equal(fs.statSync(path).size, size, 'same size');
+    assert.equal(minutes(), bruteForce(rows(300), 'cf:glm', T0 - HOUR, T0 + 500 * HOUR), 'a same-size in-place rewrite is re-read');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('R2 guard: an archive append walks only the new lines, not the archived prefix', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-rv041-r2-'));
   try {
