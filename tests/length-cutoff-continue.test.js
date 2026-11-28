@@ -21,17 +21,18 @@ import { implicitV3Requirements } from '../src/workflow/program-v3.js';
 import { pickPool } from '../src/lib/route.js';
 
 const good = { ok: true, why: 'structured output validated', meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10 } } };
-const connector = (name, { pace } = {}) => ({
+const connector = (name, { pace, conversation = true } = {}) => ({
   name, lanes: ['analyze', 'build', 'chore'], enabled: true, spawn: { cmd: ['fake'] },
   modelSelection: { flag: '--model' },
   strategyAssignments: { low: { pool: name, model: 'gpt-5.6-luna' }, medium: { pool: name, model: 'gpt-5.6-luna' } },
-  conversation: { newArgs: [], resumeArgs: ['--session', '{sessionId}'] },
+  ...(conversation ? { conversation: { newArgs: [], resumeArgs: ['--session', '{sessionId}'] } } : {}),
   ...(pace === undefined ? {} : { pace }),
 });
 
 // A worker verdict that reports a provider-measured session and, by default,
-// the length stop.
-const cutoff = ({ sessionId = 'ses-1', stopReason = 'length' } = {}) => ({
+// the length stop. `sessionSource` is the capture fact watch writes: only
+// 'provider-stream' says the provider itself minted the id.
+const cutoff = ({ sessionId = 'ses-1', stopReason = 'length', sessionSource = 'provider-stream' } = {}) => ({
   ok: true,
   why: 'structured output validated',
   meta: {
@@ -39,6 +40,7 @@ const cutoff = ({ sessionId = 'ses-1', stopReason = 'length' } = {}) => ({
     wallSec: 1,
     usage: { totalTokens: 10, ...(sessionId ? { sessionId } : {}) },
     ...(stopReason ? { stopReason } : {}),
+    ...(sessionId ? { capture: { providerSessionId: sessionId, sessionSource } } : {}),
   },
 });
 
@@ -93,7 +95,7 @@ async function dispatch(f, action, watches, { pools = ['sample-pool'], refreshPo
     failureRule: true,
     action, taskText: 'triage the tickets', targetDir: f.repo,
     paths: (ordinal) => ({ taskFile: join(f.home, `task-${action.id}-attempt-${ordinal}.md`), outFile: join(f.home, `out-${action.id}-attempt-${ordinal}.md`) }),
-    pools: pools.map((name) => connector(name)),
+    pools: pools.map((name) => (typeof name === 'string' ? connector(name) : name)),
     bullswarmDir: f.home,
     ...(refreshPools ? { refreshPools } : {}),
     ...options,
@@ -197,6 +199,66 @@ test('no retry budget: one attempt, no continue', async (t) => {
   }
 });
 
+test('a second length cutoff goes to the caller even when the budget allows another retry', async (t) => {
+  const f = repoFixture(t);
+  const { result, calls } = await dispatch(f, build(), [cutoff(), cutoff(), good], {
+    options: { maxMechanicalRetries: 2 },
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(result.ok, false);
+  assert.equal(result.failureKind, 'not-produced');
+  assert.equal(result.attempts.length, 2);
+  assert.equal(result.attempts[0].willRetry, true);
+  assert.deepEqual(result.attempts[1].retryOf, { attempt: 'task-1', how: 'same-pool' });
+  assert.equal(result.attempts[1].willRetry, false);
+  assert.ok(result.attempts[1].why.endsWith(SKIP_SUFFIX), result.attempts[1].why);
+});
+
+test('a workflow-assigned session id is not a measured id: one attempt with the skip reason', async (t) => {
+  const f = repoFixture(t);
+  const { result, calls } = await dispatch(f, build(), [
+    cutoff({ sessionId: 'session-1', sessionSource: 'bullswarm-assigned' }), good,
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].willRetry, false);
+  assert.ok(result.attempts[0].why.endsWith(SKIP_SUFFIX), result.attempts[0].why);
+});
+
+test('a connector with no conversation declaration is not continued: one attempt with the skip reason', async (t) => {
+  const f = repoFixture(t);
+  const { result, calls } = await dispatch(f, build(), [cutoff(), good], {
+    pools: [connector('sample-pool', { conversation: false })],
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.failureKind, 'not-produced');
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].willRetry, false);
+  assert.ok(result.attempts[0].why.endsWith(SKIP_SUFFIX), result.attempts[0].why);
+});
+
+test('a prior dispatch that already continued is not continued again', async (t) => {
+  const f = repoFixture(t);
+  const h = harness([cutoff(), good]);
+  const result = await dispatchV2Action({
+    failureRule: true,
+    action: build(), taskText: 'triage the tickets', targetDir: f.repo,
+    paths: { taskFile: join(f.home, 'task-task.md'), outFile: join(f.home, 'out-task.md') },
+    pools: [connector('sample-pool')], bullswarmDir: f.home,
+    ledgerAttempts: [{
+      actionId: 'task',
+      notes: [{ at: '2026-11-28T00:00:00.000Z', kind: 'length-cutoff-continue', text: 'continued once' }],
+    }],
+    dependencies: h.dependencies,
+  });
+  assert.equal(h.calls.length, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts[0].willRetry, false);
+  assert.ok(result.attempts[0].why.endsWith(SKIP_SUFFIX), result.attempts[0].why);
+});
+
 test('a cutoff on a pinned pool that cannot take the retry moves to another pool in a fresh session', async (t) => {
   const f = repoFixture(t);
   const launch = [connector('pool-a', { pace: 90 }), connector('pool-b', { pace: -90 })];
@@ -262,6 +324,7 @@ test('runtime: a cut-off build step succeeds on attempt 2 in the first attempt\'
           meta: {
             exitCode: 0, wallSec: 1,
             usage: { totalTokens: 10, sessionId: 'ses-1' },
+            capture: { providerSessionId: 'ses-1', sessionSource: 'provider-stream' },
             ...(turn === 1 ? { stopReason: 'length' } : {}),
           },
         };

@@ -1150,6 +1150,9 @@ test('an opencode step_finish part.reason length is a length cutoff on the verdi
   try {
     const verdict = await watchOnce(streamingRows([OPENCODE_LENGTH_EVENT]), 'Do the thing.', ctx.dir, ctx.paths, {});
     assert.equal(verdict.meta.stopReason, 'length');
+    // The session id is the provider's own: the continue gate reads this.
+    assert.equal(verdict.meta.capture.sessionSource, 'provider-stream');
+    assert.equal(verdict.meta.capture.providerSessionId, OPENCODE_LENGTH_EVENT.sessionID);
   } finally {
     ctx.cleanup();
   }

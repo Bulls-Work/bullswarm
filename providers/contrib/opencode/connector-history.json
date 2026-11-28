@@ -39,6 +39,23 @@
         "e8d7ba28f72f6300"
       ]
     },
+    "conversation": {
+      "absent": true,
+      "values": [
+        "c811b26587ac2701"
+      ],
+      "keys": {
+        "$comment": [
+          "b176df3d21bd5522"
+        ],
+        "newArgs": [
+          "4f53cda18c2baa0c"
+        ],
+        "resumeArgs": [
+          "ee060636b264fe96"
+        ]
+      }
+    },
     "costRank": {
       "values": [
         "6b86b273ff34fce1"
@@ -47,10 +64,14 @@
     "eventStream": {
       "values": [
         "0b474083c4c8b589",
+        "4bbbe9db9ccb43dc",
         "5fccafed47db2f82",
         "ee2274eb6c35a8c7"
       ],
       "keys": {
+        "$comment-stopReason": [
+          "b29938ad10612b24"
+        ],
         "$comment-toolKinds": [
           "97a6e17e5a120ee2"
         ],
@@ -74,6 +95,9 @@
         ],
         "silenceThresholdSec": [
           "284b7e6d788f363f"
+        ],
+        "stopReason": [
+          "7de48db1d6ff4b40"
         ],
         "toolKinds": [
           "28de1f79fb69e445"

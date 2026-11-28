@@ -70,6 +70,10 @@ const OUTSIDE_WHY_CHARS = 160;
 const NOT_PRODUCED_SKIP_SUFFIX = ' · retry skipped: a step that changed no file rarely does on a rerun';
 // The lanes whose deliverable is a changed file: their not-produced has no automatic retry.
 const FILE_WRITING_LANES = new Set(['build', 'chore']);
+// The one line a length-cutoff continue adds after the handoff: the worker
+// already did the reading and planning in the same session, so the remaining
+// work is to write, not to explain.
+const CONTINUE_INSTRUCTION = 'Continue the same conversation: write each remaining file with a tool call before you finish.';
 
 // The `outside:` blockers in an attempt's out file; an unreadable or missing
 // file (a killed worker) names none.
@@ -512,6 +516,16 @@ async function dispatchUncapped({
   // provider said to try again after a wait too long to sit out.
   const retryBudget = Math.max(0, (Number(maxMechanicalRetries) || 0) - (Number(retriesAlready) || 0));
   let retriesStarted = 0;
+  // A length-cutoff continue is a one-time rescue for the step, not one per
+  // counted retry: with retry: 2 the budget allows a second counted retry,
+  // but a second cutoff after the continue goes to the caller (design risks).
+  // A prior dispatch of the step records the continue as a note on the
+  // attempt that decided it, so a resume does not grant it again.
+  let lengthContinued = (Array.isArray(ledgerAttempts) ? ledgerAttempts : []).some((attempt) => (
+    attempt?.actionId === action.id
+    && Array.isArray(attempt.notes)
+    && attempt.notes.some((note) => note?.kind === 'length-cutoff-continue')
+  ));
   // Refusal re-picks the step already made, counted from its stored attempts.
   let refusalRepicks = Math.max(0, Number(refusalsAlready) || 0);
   let pendingRetry = null;
@@ -1033,6 +1047,20 @@ async function dispatchUncapped({
     const lastEvents = lastResponseEvents(streamFile);
     const finishedAt = workerFinishedAt;
     const kind = failureKindOf(verdict, pool);
+    // A provider-measured output cutoff on a file-writing step that produced
+    // no file: the turn ended at the provider's output cap, not because the
+    // work was impossible. The connector declares the signal
+    // (eventStream.stopReason), watch records meta.stopReason, and only a
+    // provider-reported session id makes a same-session continue possible.
+    // The capture's source says who minted the id: a workflow-assigned uuid
+    // names a session the provider never created, and resuming it would
+    // spend the step's one retry on a guaranteed failure.
+    const lengthCutoff = kind === 'not-produced' && noFileChanged
+      && verdict.meta?.stopReason === 'length'
+      && FILE_WRITING_LANES.has(action.lane ?? 'chore')
+      && verdict.meta?.capture?.sessionSource === 'provider-stream'
+      && Boolean(verdict.meta?.usage?.sessionId)
+      && connector.conversation != null;
     // D5: failed checks are a gate failure and take the rule below; an act
     // step's failed checks still say why they go to the caller.
     if (kind === 'failed-evidence' && roleOf(action) === 'act' && !evidenceRun?.checkFault) {
@@ -1168,6 +1196,22 @@ async function dispatchUncapped({
       } else if (failureClass === 'gate') {
         if (hasBudget && kind === 'schema') {
           if (typeof correctionTask === 'function') next = { how: 'same-pool', correction: true };
+        } else if (hasBudget && lengthCutoff && !lengthContinued) {
+          // The provider's own output cap ended a turn that changed no file.
+          // One continue in the same provider session, on the same pool: the
+          // conversation already holds the work, so a fresh session would
+          // repeat the same long turn from nothing.
+          lengthContinued = true;
+          next = { how: 'same-pool', gate: true, fresh: false, continue: true };
+          verdict = {
+            ...verdict,
+            why: `${verdict.why ?? kind} · continuing the same conversation once: the provider stopped at its output limit`,
+            notes: [...(Array.isArray(verdict.notes) ? verdict.notes : []), {
+              at: new Date(now()).toISOString(),
+              kind: 'length-cutoff-continue',
+              text: `the provider reported stopReason ${verdict.meta.stopReason} with no file changed; the step's one retry resumes session ${verdict.meta.usage.sessionId}`,
+            }],
+          };
         } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane ?? 'chore')
           && noFileChanged) {
           // A build or chore step whose deliverable gate read "no file
@@ -1250,7 +1294,8 @@ async function dispatchUncapped({
     // opening a second session and losing the model's immediate context.
     // A failed check follows a finished worker turn too: its retry continues
     // that conversation with the check output attached.
-    const sessionEstablished = verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence';
+    const sessionEstablished = verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence'
+      || lengthCutoff;
     if (session && sessionEstablished) {
       record.session.lastUsedAt = finishedAt;
       currentSession = clone(record.session);
@@ -1318,6 +1363,7 @@ async function dispatchUncapped({
       ...(next.gate ? { gate: true } : {}),
     });
     nextTask = `${baseTaskText}\n\n${block}`;
+    if (next.continue) nextTask = `${nextTask}\n\n${CONTINUE_INSTRUCTION}`;
     priorHandoff = {
       from: `${action.id}-${ordinal}`,
       bytes: Buffer.byteLength(block, 'utf8'),
