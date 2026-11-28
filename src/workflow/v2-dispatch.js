@@ -277,6 +277,9 @@ async function dispatchUncapped({
   onAgentProgress = null,
   evidence = null,
   ledgerAttempts = [],
+  // Attempts of this step from earlier loop rounds, reruns or revisions
+  // (runtime.supersededAttempts): they do not use up its one continue.
+  supersededAttempts = 0,
   dependencies = {},
   resumeAttempt = null,
   resumeHandoff = null,
@@ -523,6 +526,7 @@ async function dispatchUncapped({
   // attempt that decided it, so a resume does not grant it again.
   let lengthContinued = (Array.isArray(ledgerAttempts) ? ledgerAttempts : []).some((attempt) => (
     attempt?.actionId === action.id
+    && !(Number(attempt.ordinal) <= (Number(supersededAttempts) || 0))
     && Array.isArray(attempt.notes)
     && attempt.notes.some((note) => note?.kind === 'length-cutoff-continue')
   ));
@@ -783,7 +787,12 @@ async function dispatchUncapped({
     // below reads it to stop, time out or reroute the attempt.
     const box = typeof timeBox === 'function' ? timeBox({ pool: pool.name, startedAt }) : null;
     const answerText = typeof answerBrief === 'function' ? answerBrief({ files, ordinal }) : null;
-    const briefed = answerText ? `${nextTask}\n\n${answerText}` : nextTask;
+    // A requested continue is told to the worker only when this attempt
+    // really resumes the session; a retry that moved starts fresh and works
+    // from the handoff alone.
+    const continuing = pendingRetry?.continue === true && session?.invocation?.resume === true;
+    const taskBody = continuing ? `${nextTask}\n\n${CONTINUE_INSTRUCTION}` : nextTask;
+    const briefed = answerText ? `${taskBody}\n\n${answerText}` : taskBody;
     const attemptTask = box?.text ? `${briefed}\n\n${box.text}` : briefed;
     // D3: the retry becomes a fact only when its attempt starts. A counted
     // retry is `same-pool` when it landed where the failure happened (a
@@ -1205,11 +1214,11 @@ async function dispatchUncapped({
           next = { how: 'same-pool', gate: true, fresh: false, continue: true };
           verdict = {
             ...verdict,
-            why: `${verdict.why ?? kind} · continuing the same conversation once: the provider stopped at its output limit`,
+            why: `${verdict.why ?? kind} · a same-session continue is requested: the provider stopped at its output limit`,
             notes: [...(Array.isArray(verdict.notes) ? verdict.notes : []), {
               at: new Date(now()).toISOString(),
               kind: 'length-cutoff-continue',
-              text: `the provider reported stopReason ${verdict.meta.stopReason} with no file changed; the step's one retry resumes session ${verdict.meta.usage.sessionId}`,
+              text: `the provider reported stopReason ${verdict.meta.stopReason} with no file changed; a same-session continue was requested for the step's one retry (session ${verdict.meta.usage.sessionId} on ${pool.name}); the retry's own record says whether it resumed`,
             }],
           };
         } else if (hasBudget && kind === 'not-produced' && FILE_WRITING_LANES.has(action.lane ?? 'chore')
@@ -1322,7 +1331,7 @@ async function dispatchUncapped({
     // D10: a failure that will not be retried goes to the caller; the
     // dispatcher never walks on to another pool by itself.
     if (!next) break;
-    pendingRetry = { attempt: `${action.id}-${ordinal}`, pool: pool.name, how: next.how };
+    pendingRetry = { attempt: `${action.id}-${ordinal}`, pool: pool.name, how: next.how, ...(next.continue ? { continue: true } : {}) };
     promisedRecord = record;
     if (next.how === 'refused') {
       // The refused try did no work: the next pick gets the same task, no
@@ -1363,7 +1372,6 @@ async function dispatchUncapped({
       ...(next.gate ? { gate: true } : {}),
     });
     nextTask = `${baseTaskText}\n\n${block}`;
-    if (next.continue) nextTask = `${nextTask}\n\n${CONTINUE_INSTRUCTION}`;
     priorHandoff = {
       from: `${action.id}-${ordinal}`,
       bytes: Buffer.byteLength(block, 'utf8'),

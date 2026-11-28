@@ -296,7 +296,7 @@ test('a cutoff on a pinned pool that cannot take the retry moves to another pool
 
 test('a continue in an earlier loop round or rerun does not use up the step\'s continue', async (t) => {
   const f = repoFixture(t);
-  const h = harness([cutoff(), good]);
+  const h = harness([cutoff(), writesTicket(f.repo)]);
   const result = await dispatchV2Action({
     failureRule: true,
     action: build(), taskText: 'triage the tickets', targetDir: f.repo,
