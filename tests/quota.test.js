@@ -165,6 +165,9 @@ test('connector-declared signatures extend the defaults', () => {
 /** The two provider limit notices observed in real runs (2026-09). */
 const COMMAND_CODE_THROTTLE = 'Error: Rate limit exceeded. Please wait a moment and try again.';
 const CLAUDE_SESSION_WINDOW = "You've hit your session limit · resets 7pm (Asia/Hong_Kong)";
+/** Claude Code's newer window-specific wording, observed 2026-11. */
+const CLAUDE_FIVE_HOUR_WINDOW = "You've hit your 5-hour limit · resets 2:30pm (Asia/Hong_Kong)";
+const CLAUDE_WEEKLY_WINDOW = "You've hit your weekly limit · resets 2am (Asia/Hong_Kong)";
 
 const PROVIDER_CONNECTORS = {
   'claude-code': 'src/providers/claude-code/connector.json',
@@ -212,6 +215,27 @@ test("claude-code's real session-limit notice is a spent window that names its r
     // 19:00 Asia/Hong_Kong = 11:00Z, one hour after the fixed clock.
     waitMs: 60 * 60_000,
   });
+});
+
+test("claude-code's 5-hour and weekly limit notices are spent windows that name their resets", () => {
+  const connector = connectorOf(PROVIDER_CONNECTORS['claude-code']);
+  assert.deepEqual(limitOf(connector, CLAUDE_FIVE_HOUR_WINDOW), {
+    signature: 'hit your 5-hour limit', limit: 'window', transient: false,
+    // 14:30 Asia/Hong_Kong = 06:30Z, already past the 10:00Z clock, so the
+    // reset rolls to tomorrow: 20.5 hours ahead.
+    waitMs: 20.5 * 60 * 60_000,
+  });
+  assert.deepEqual(limitOf(connector, CLAUDE_WEEKLY_WINDOW), {
+    signature: 'hit your weekly limit', limit: 'window', transient: false,
+    // 02:00 Asia/Hong_Kong tomorrow = 18:00Z today, eight hours ahead.
+    waitMs: 8 * 60 * 60_000,
+  });
+  // An ordinary sentence that merely mentions the 5-hour limit in prose is
+  // not a provider notice, even with the words near the front of the line.
+  assert.equal(
+    findQuotaFailure(connector, 'The 5-hour limit on the caller pool resets Monday, so pace the run until then.'),
+    null,
+  );
 });
 
 // L8: the record grok 1.0.x printed when its Grok Build balance ran out
