@@ -1307,13 +1307,23 @@ async function dispatchUncapped({
     // newArgs: opencode) resumes only for a length-cutoff continue, which
     // checked the id was provider-measured; its other retries start fresh as
     // before the cutoff change (Opus re-check, 2026-11-28).
-    const providerPicksId = !(connector.conversation?.newArgs ?? []).some((arg) => String(arg).includes('{sessionId}'));
+    // Only a connector that starts without an id and resumes by one counts:
+    // a follow-up-only connector (codex, agy: no newArgs, no resumeArgs)
+    // keeps the old rule (Opus final check 26knws).
+    const conversation = connector.conversation ?? {};
+    const providerPicksId = Array.isArray(conversation.newArgs)
+      && !conversation.newArgs.some((arg) => String(arg).includes('{sessionId}'))
+      && (conversation.resumeArgs ?? []).some((arg) => String(arg).includes('{sessionId}'));
     const sessionEstablished = providerPicksId
       ? lengthCutoff
       : verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence';
     if (session && sessionEstablished) {
       record.session.lastUsedAt = finishedAt;
       currentSession = clone(record.session);
+    } else if (session && providerPicksId) {
+      // The cutoff's session serves its one continue only: any later retry
+      // on the pool (a throttle wait, a check retry) starts fresh.
+      currentSession = null;
     }
     last = verdict;
     appendDecision(bullswarmDir, {
