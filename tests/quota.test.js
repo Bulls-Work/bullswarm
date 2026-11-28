@@ -632,6 +632,33 @@ test('Cloudflare wording: brackets hold an id, and a closing quote ends the JSON
   }
 });
 
+// Opus re-check (28 Nov, i6kuma): 429 framings before the reason phrase,
+// square-bracket codes and retry clauses count; prose before "rejection:"
+// does not; a run of level words and error tokens stays fast.
+test('Cloudflare wording: 429 framings, bracket codes and retry clauses count; prose rejection leads do not; fast on word runs', () => {
+  const P = 'inference request per min rate reached';
+  for (const line of [
+    `429 Too Many Requests: ${P}`,
+    `HTTP 429 Too Many Requests: ${P}`,
+    `Error: Too Many Requests: ${P}`,
+    `AI_APICallError: Too Many Requests: ${P}`,
+    `[stderr] Too Many Requests: ${P}`,
+    `Inference request per min rate reached [code: 3021]`,
+    `AiError: ${P} [3021]`,
+    `AiError: ${P}; retry after 60s`,
+    `Unhandled promise rejection: AiError: ${P}`,
+  ]) {
+    assert.equal(findQuotaFailure({}, line, { now: NOW })?.limit, 'throttle', line);
+  }
+  assert.equal(findQuotaFailure({}, `I handled every promise rejection: AiError: ${P}`, { now: NOW }), null);
+  for (const pre of ['error '.repeat(660), '[x] '.repeat(990), 'fatal error '.repeat(330), '2026-11-28T10:00:00Z '.repeat(180)]) {
+    const line = `${pre}!${P}`;
+    const started = process.hrtime.bigint();
+    for (let i = 0; i < 10; i += 1) findQuotaFailure({}, line, { now: NOW });
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 30, `slow on ${pre.slice(0, 20)}`);
+  }
+});
+
 test('a window phrase inside a Too Many Requests body keeps its own signature', () => {
   const hit = findQuotaFailure({}, 'Too Many Requests: {"error":{"type":"usage_limit","code":"usage_credits_required","message":"Add credits to continue"}}', { now: NOW });
   assert.equal(hit?.signature, 'usage_credits_required');
