@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- An OpenCode-based pool (the cf pools) whose turn ended at the provider's output limit with no file written now gets one same-session continue on the same pool, instead of `not-produced` with no retry. Measured on 28 Nov: GLM 5.3's long build was cut off this way in 4 of 5 runs, and one continue finished both cut-off runs tested. A second cutoff goes to the caller. A pool made from the OpenCode template before this release needs its connector refreshed to declare `conversation` and `eventStream.stopReason`.
+- An OpenCode-based pool (the cf pools) whose turn ended at the provider's output limit with no file written now gets one same-session continue on the same pool, instead of `not-produced` with no retry. Measured on 28 Nov: GLM 5.3's long build was cut off this way in 4 of 5 runs, and one continue finished both cut-off runs tested. A second cutoff goes to the caller. Other retries on such a pool (a bad answer, a failed check) start a fresh session, as before. A pool made from the OpenCode template before this release needs its connector refreshed to declare `conversation` and `eventStream.stopReason`.
 
 ## 0.40.3 — Cloudflare rate limit waits on the same pool
 

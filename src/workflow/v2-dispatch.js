@@ -1303,8 +1303,14 @@ async function dispatchUncapped({
     // opening a second session and losing the model's immediate context.
     // A failed check follows a finished worker turn too: its retry continues
     // that conversation with the check output attached.
-    const sessionEstablished = verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence'
-      || lengthCutoff;
+    // A connector whose provider picks the session id (no `{sessionId}` in its
+    // newArgs: opencode) resumes only for a length-cutoff continue, which
+    // checked the id was provider-measured; its other retries start fresh as
+    // before the cutoff change (Opus re-check, 2026-11-28).
+    const providerPicksId = !(connector.conversation?.newArgs ?? []).some((arg) => String(arg).includes('{sessionId}'));
+    const sessionEstablished = providerPicksId
+      ? lengthCutoff
+      : verdict.ok || kind === 'schema' || kind === 'semantic' || kind === 'failed-evidence';
     if (session && sessionEstablished) {
       record.session.lastUsedAt = finishedAt;
       currentSession = clone(record.session);
