@@ -244,9 +244,9 @@ function readLockOwner(lockDir) {
  * which has no readable owner after LOCK_OWNER_GRACE_MS is broken by a rename
  * (only one breaker can win), and a break re-checks what it renamed so a fresh
  * holder's lock is put back. Not re-entrant per pid: a second acquirer in this
- * process waits like any other. Returns the lock path, 'cancelled', or null
- * when the directory cannot be locked (the caller then decides without it:
- * caps never break work).
+ * process waits like any other. Returns the lock with the owner token this
+ * holder wrote ({dir, owner}), 'cancelled', or null when the directory cannot
+ * be locked (the caller then decides without it: caps never break work).
  */
 async function lockSlots({ bullswarmDir, sleep, shouldCancel, alive }) {
   const lockDir = lockDirOf(bullswarmDir);
@@ -254,14 +254,15 @@ async function lockSlots({ bullswarmDir, sleep, shouldCancel, alive }) {
   for (;;) {
     try {
       mkdirSync(lockDir);
+      const owner = { pid: process.pid, at: Date.now() };
       try {
         // Atomic owner write: a crash mid-write leaves no truncated owner.json
         // (the owner-less grace below covers a crash before this rename).
         const ownerTemp = join(lockDir, `.owner.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
-        writeFileSync(ownerTemp, `${JSON.stringify({ pid: process.pid, at: Date.now() })}\n`);
+        writeFileSync(ownerTemp, `${JSON.stringify(owner)}\n`);
         renameSync(ownerTemp, join(lockDir, 'owner.json'));
       } catch { /* the age check still breaks it */ }
-      return lockDir;
+      return { dir: lockDir, owner };
     } catch (err) {
       if (err?.code !== 'EEXIST') return null;
     }
@@ -313,8 +314,17 @@ async function lockSlots({ bullswarmDir, sleep, shouldCancel, alive }) {
   }
 }
 
-function unlockSlots(lockDir) {
-  try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
+/**
+ * Remove the slots lock, but only while it is still this holder's: a contender
+ * may have broken this holder's stale-looking lock and re-taken the path since
+ * lockSlots returned, and removing that lock would break the critical section
+ * for the new holder. An owner that cannot be read is left for the stale-break
+ * rules.
+ */
+function unlockSlots(lock) {
+  const current = readLockOwner(lock.dir);
+  if (!current || current.pid !== lock.owner.pid || current.at !== lock.owner.at) return;
+  try { rmSync(lock.dir, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 
 const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
@@ -383,7 +393,9 @@ export async function acquireCallerSlot({
     if (vanished) continue;
     if (take) break;
     if (noWait) {
-      // F4: inside the critical section, refuse instead of queueing.
+      // F4: refuse instead of queueing. The decision is made under the lock
+      // (the list and the would-take check above); the refusal itself — the
+      // slot removal and the return — runs after the unlock.
       removeSlot(bullswarmDir, slot.id);
       const inUse = Math.max(0, mine.length - 1);
       return { refused: true, refusal: noWaitRefusalLine(slot.group, inUse, cap.max), group: slot.group, max: cap.max };
